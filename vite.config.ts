@@ -26,7 +26,7 @@ function proxyEndpoint(): Plugin {
 }
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss(), proxyEndpoint()],
 
   resolve: {
@@ -42,7 +42,12 @@ export default defineConfig({
   },
 
   define: {
-    "process.env.NODE_ENV": JSON.stringify("development"),
+    // Mode-aware: this top-level define applies to `vite build` too, and an
+    // explicit NODE_ENV here overrides Vite's per-mode default — hardcoding
+    // "development" would ship dev-mode React in the production bundle.
+    "process.env.NODE_ENV": JSON.stringify(
+      mode === "production" ? "production" : "development"
+    ),
     "process.env": "{}",
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -72,4 +77,4 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 10000,
   },
-});
+}));

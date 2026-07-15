@@ -139,9 +139,14 @@ async function authenticate(payload: Record<string, unknown>): Promise<TokenResp
     } catch {
       /* non-JSON body — keep the HTTP status message */
     }
-    // 4xx = the grant itself was refused (bad/expired code or refresh token);
+    // Only statuses that speak to the grant itself count as a refusal
+    // (bad/expired code or refresh token). Other 4xx — notably 429 (WorkOS
+    // rate-limits this API) and 408 — say nothing about the grant and must
+    // stay transient, or a rate-limited refresh would destroy a valid session.
     // 5xx / network = transient, worth retrying.
-    if (resp.status >= 400 && resp.status < 500) throw new AuthRejectedError(msg);
+    if (resp.status === 400 || resp.status === 401 || resp.status === 403) {
+      throw new AuthRejectedError(msg);
+    }
     throw new Error(msg);
   }
 
@@ -290,9 +295,16 @@ export async function authRefresh(): Promise<AuthSession | null> {
     return sessionFrom(tokens);
   } catch (e) {
     if (e instanceof AuthRejectedError) {
-      // WorkOS rejected the refresh token — genuinely signed out.
-      localStorage.removeItem(refreshTokenKey(WORKOS_CLIENT_ID));
-      return null;
+      // WorkOS rejected the refresh token. Only purge storage if it still
+      // holds the exact token that was rejected — WorkOS rotates the token on
+      // every use, so when two tabs refresh concurrently the loser's
+      // rejection must not delete the winner's freshly rotated token.
+      if (localStorage.getItem(refreshTokenKey(WORKOS_CLIENT_ID)) === refreshToken) {
+        localStorage.removeItem(refreshTokenKey(WORKOS_CLIENT_ID));
+        return null;
+      }
+      // Another tab already rotated the token — transient from this tab's
+      // perspective; the caller's retry path picks up the new token.
     }
     throw new Error(
       `refresh failed: ${e instanceof Error ? e.message : String(e)}`,

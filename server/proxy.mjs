@@ -62,6 +62,25 @@ function isUrlAllowed(raw) {
 }
 
 function readBody(req) {
+  // On Vercel, the Node runtime helpers consume the request stream before the
+  // handler runs (whenever a content-type header is present) and expose the
+  // parsed result as `req.body` — waiting on stream events then hangs until
+  // the function times out. Re-serialize the pre-read body instead. The Vite
+  // middleware mount passes an untouched stream, so `req.body` is undefined
+  // there and the listener path below runs.
+  const preread = req.body;
+  if (preread !== undefined && preread !== null) {
+    if (Buffer.isBuffer(preread)) return Promise.resolve(preread);
+    if (typeof preread === "string") return Promise.resolve(Buffer.from(preread));
+    const contentType = String(req.headers["content-type"] ?? "");
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      return Promise.resolve(Buffer.from(new URLSearchParams(preread).toString()));
+    }
+    return Promise.resolve(Buffer.from(JSON.stringify(preread)));
+  }
+  // Stream already drained with nothing on `req.body` (e.g. an empty body):
+  // `end` won't fire again, so don't wait for it.
+  if (req.readableEnded) return Promise.resolve(Buffer.alloc(0));
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));

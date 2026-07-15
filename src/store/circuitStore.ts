@@ -304,8 +304,14 @@ function pushHistory(
   return { history: capped, historyIndex: capped.length - 1 };
 }
 
-function escapeJsxValue(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+// Render a string as a complete JSX attribute value. JSX attribute strings
+// have no escape sequences — a `"` can't be backslash-escaped, and a `\`
+// wouldn't round-trip — so such values are emitted as expression containers,
+// where JS string escaping is valid.
+function jsxAttrValue(value: string): string {
+  return value.includes('"') || value.includes("\\")
+    ? `{${JSON.stringify(value)}}`
+    : `"${value}"`;
 }
 
 export function cleanImportedTsx(tsx: string): string {
@@ -338,10 +344,10 @@ function buildComponentSnippet(
   if (!def) return `{/* Unknown component type: ${type} */}`;
 
   if (type === "gnd") {
-    return `<net name="${escapeJsxValue(name)}" isGroundNet />`;
+    return `<net name=${jsxAttrValue(name)} isGroundNet />`;
   }
   if (type === "vcc") {
-    return `<net name="${escapeJsxValue(name)}" isPowerNet />`;
+    return `<net name=${jsxAttrValue(name)} isPowerNet />`;
   }
 
   const elementName = def.tscircuitElement ?? type;
@@ -358,7 +364,7 @@ function buildComponentSnippet(
   };
   const tag = ELEMENT_MAP[type] ?? elementName;
 
-  const props: string[] = [`name="${escapeJsxValue(name)}"`];
+  const props: string[] = [`name=${jsxAttrValue(name)}`];
 
   const valuePropName = ELEMENT_VALUE_PROP[tag];
   if (valuePropName && value) {
@@ -366,12 +372,12 @@ function buildComponentSnippet(
       const pinCount = def.pinCount ?? (parseInt(value, 10) || 2);
       props.push(`pinCount={${pinCount}}`);
     } else {
-      props.push(`${valuePropName}="${escapeJsxValue(value)}"`);
+      props.push(`${valuePropName}=${jsxAttrValue(value)}`);
     }
   }
 
   if (footprint && footprint !== "none") {
-    props.push(`footprint="${escapeJsxValue(footprint)}"`);
+    props.push(`footprint=${jsxAttrValue(footprint)}`);
   }
 
   if (type === "ic" && def.pinLabels) {

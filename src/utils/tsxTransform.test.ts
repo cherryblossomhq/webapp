@@ -210,6 +210,24 @@ describe("tsxTransform — round-trip mutations", () => {
     expect(led?.props.footprint).toBe("0603");
   });
 
+  it("survives values containing double quotes and backslashes", () => {
+    // JSX attribute strings have no escape sequences — these values must be
+    // emitted as expression containers or the document stops parsing.
+    const quoted = updateComponentProp(SAMPLE_TSX, "R1", "resistance", '0.1" spacing');
+    expect(extractComponentByName(quoted, "R1")?.props.resistance).toBe('0.1" spacing');
+    // The document must still be editable afterwards (a parse failure would
+    // make every subsequent AST edit silently no-op).
+    const again = updateComponentProp(quoted, "R1", "resistance", "10k");
+    expect(extractComponentByName(again, "R1")?.props.resistance).toBe("10k");
+
+    const slashed = updateComponentProp(SAMPLE_TSX, "R1", "resistance", "a\\b");
+    expect(extractComponentByName(slashed, "R1")?.props.resistance).toBe("a\\b");
+
+    const renamed = renameComponent(SAMPLE_TSX, "R1", 'R"1');
+    expect(extractComponentByName(renamed, 'R"1')).toBeDefined();
+    expect(extractComponents(renamed)).toHaveLength(3);
+  });
+
   it("removes a prop", () => {
     const updated = removeComponentProp(SAMPLE_TSX, "R1", "footprint");
     const r1 = extractComponentByName(updated, "R1");

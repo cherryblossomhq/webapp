@@ -373,6 +373,16 @@ export function extractComponentByName(
 
 // ─── Write operations ───────────────────────────────────────────────────────────
 
+// JSX attribute strings have no escape sequences, but recast prints a
+// StringLiteral containing `"` as `\"` (unparseable) and `\` as `\\` (value
+// changes on round-trip). Wrap such values in an expression container, where
+// JS escaping is valid; getStringAttr reads both shapes.
+function jsxAttrString(value: string): t.StringLiteral | t.JSXExpressionContainer {
+  return value.includes('"') || value.includes("\\")
+    ? t.jsxExpressionContainer(t.stringLiteral(value))
+    : t.stringLiteral(value);
+}
+
 export function updateComponentProp(
   tsx: string,
   componentName: string,
@@ -395,7 +405,7 @@ export function updateComponentProp(
             t.isJSXIdentifier(attr.name) &&
             attr.name.name === propName
           ) {
-            attr.value = t.stringLiteral(value);
+            attr.value = jsxAttrString(value);
             modified = true;
             return;
           }
@@ -404,7 +414,7 @@ export function updateComponentProp(
         // Attribute doesn't exist — add it
         const newAttr = t.jsxAttribute(
           t.jsxIdentifier(propName),
-          t.stringLiteral(value)
+          jsxAttrString(value)
         );
         path.node.attributes.push(newAttr);
         modified = true;
@@ -587,7 +597,7 @@ export function renameComponent(
               t.isJSXIdentifier(attr.name) &&
               attr.name.name === "name"
             ) {
-              attr.value = t.stringLiteral(newName);
+              attr.value = jsxAttrString(newName);
               modified = true;
               break;
             }
@@ -1047,11 +1057,11 @@ export function updateBoardDimensions(
     for (const attr of board.openingElement.attributes) {
       if (!t.isJSXAttribute(attr) || !t.isJSXIdentifier(attr.name)) continue;
       if (attr.name.name === "width") {
-        attr.value = t.stringLiteral(width);
+        attr.value = jsxAttrString(width);
         modified = true;
       }
       if (attr.name.name === "height") {
-        attr.value = t.stringLiteral(height);
+        attr.value = jsxAttrString(height);
         modified = true;
       }
     }

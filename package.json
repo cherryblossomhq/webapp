@@ -4,8 +4,9 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "doppler run -- vite",
     "build": "tsc && vite build",
+    "build:local": "doppler run -- npm run build",
     "preview": "vite preview",
     "check": "tsc --noEmit && vitest run",
     "test": "vitest run",

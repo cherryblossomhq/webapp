@@ -25,21 +25,25 @@ Describe a circuit in plain English, drag components onto the board, or do both.
 
 ## Getting started
 
+Env vars (the WorkOS client id + managed AI URL) come from [Doppler](https://docs.doppler.com/docs/install-cli) — no `.env` files to pass around. Install the CLI, log in, then run `doppler setup` once; it reads the committed `doppler.yaml` and points this repo at the `webapp` project's `prd` config automatically.
+
 ```bash
+doppler login          # once per machine
+doppler setup          # once per clone — auto-configures from doppler.yaml
+
 npm install
-npm run dev            # http://localhost:5173
+npm run dev            # http://localhost:5173 — env injected via `doppler run`
 
 # Production build (dist/)
-npm run build
+npm run build:local    # doppler-wrapped local build
 npm run preview        # serve the production bundle locally
 ```
 
-Everything runs in the browser out of the box — add your Anthropic API key in **Settings → AI** to use the design assistant. Two optional build-time env vars (see `.env.example`) enable WorkOS sign-in and the managed AI proxy:
+Switch environments with `doppler configure set config dev` (or `dev_personal`). Rotate a value once in the [Doppler dashboard](https://dashboard.doppler.com) and everyone's next run picks it up.
 
-- `VITE_WORKOS_CLIENT_ID` — public AuthKit client id; register `{origin}/callback` on the WorkOS environment's Redirects page.
-- `VITE_MANAGED_AI_URL` — the managed Anthropic-compatible proxy endpoint paired with that WorkOS environment.
+**Hosting (Vercel):** the deployed build runs plain `npm run build` — env vars reach it through the **Doppler → Vercel sync integration** (Doppler dashboard → `webapp` → config → Integrations → Vercel), which mirrors the config into the Vercel project's environment. The `/api/proxy` relay (`server/proxy.mjs`) deploys as the `api/proxy.mjs` function with the SPA rewrite in `vercel.json`; the Vite dev/preview servers mount the same handler locally.
 
-The only server-side piece is `/api/proxy` (`server/proxy.mjs`), a small same-origin relay for the few upstream hosts that don't send CORS headers (EasyEDA, the tscircuit model CDN, LCSC datasheets). The Vite dev/preview servers mount it automatically; on Vercel it deploys as the `api/proxy.mjs` function with the SPA rewrite in `vercel.json`.
+Everything else runs in the browser — add your Anthropic API key in **Settings → AI** to use the design assistant without WorkOS sign-in.
 
 > 💡 Before committing, run `npm run check` (typecheck + tests).
 

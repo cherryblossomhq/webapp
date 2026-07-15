@@ -20,8 +20,9 @@ Vendor-neutral guide for any coding agent (Claude Code, Codex, Cursor, Aider, et
 
 ```bash
 npm install              # Install dependencies (first time)
-npm run dev              # Vite dev server at http://localhost:5173
-npm run build            # tsc + production web bundle (dist/)
+npm run dev              # Vite dev server at http://localhost:5173 (doppler-wrapped)
+npm run build            # tsc + production web bundle (dist/) — plain env (Vercel)
+npm run build:local      # doppler-wrapped local production build
 npm run preview          # Serve the production bundle locally
 
 npm run check            # tsc --noEmit + vitest run  ← run this before committing
@@ -34,7 +35,9 @@ npm run lint             # eslint .
 
 ### Environment Variables & Secrets
 
-- Env vars come from a local `.env` (gitignored; see `.env.example`) or the deploy platform's env settings. Both are optional and **baked into the bundle at build time** — without them the app runs in bring-your-own-Anthropic-key mode.
+- **Doppler** manages all env vars — no `.env` files, ever. One-time setup: install the [Doppler CLI](https://docs.doppler.com/docs/install-cli), `doppler login`, then `doppler setup` (reads `doppler.yaml` → project **`webapp`**, config `prd` by default).
+- **Injection paths:** local `npm run dev` / `npm run build:local` are `doppler run --` wrapped, so `VITE_*` vars flow from the active Doppler config and are **baked into the bundle at build time**. Deployed builds on Vercel run plain `npm run build` — env arrives via the **Doppler → Vercel sync integration** (configured in the Doppler dashboard on the `webapp` project), which mirrors the config into the Vercel project env.
+- **Configs** (Doppler project `webapp`): `dev` — staging WorkOS client id + `VITE_MANAGED_AI_URL` pointing at a localhost website checkout; `dev_personal` — per-developer config; `prd` — production values. `doppler.yaml` selects `prd`, so a fresh checkout runs against the live API. Switch with `doppler configure set config dev`.
 - The two build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
 - There are no server-side secrets in this repo: the WorkOS client id is a public identifier, and the `/api/proxy` endpoint holds no credentials.
 

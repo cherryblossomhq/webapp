@@ -116,8 +116,8 @@ function rectsIntersect(
 }
 
 // Append a rounded-rect subpath. Used for the board outline and pill/round-rect
-// pads instead of ctx.roundRect, which isn't available on every WebView the
-// desktop app ships against.
+// pads instead of ctx.roundRect, which isn't available in every browser we
+// support.
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
   x: number,

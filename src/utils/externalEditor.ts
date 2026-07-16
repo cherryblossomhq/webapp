@@ -1,8 +1,7 @@
 // externalEditor — "Open in editor" for the Code tab.
 //
-// The desktop app wrote a scratch file and launched a local code editor on it.
-// A browser can't launch apps or write to disk, so the web equivalent is a
-// download: `openInEditor()` saves the current circuit TSX as `circuit.tsx`
+// A browser can't launch local apps or write to disk, so "open in editor" is
+// a download: `openInEditor()` saves the current circuit TSX as `circuit.tsx`
 // for the user to open wherever they like. There is no sync-back either way.
 // `listEditors()` returns [] so the editor-picker dropdown never renders.
 

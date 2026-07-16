@@ -27,16 +27,16 @@ describe("settingsStore", () => {
   });
 
   it("openSettings(tab) opens directly to the requested tab", () => {
-    useSettingsStore.getState().openSettings("updates");
-    expect(useSettingsStore.getState()).toMatchObject({ open: true, activeTab: "updates" });
+    useSettingsStore.getState().openSettings("advanced");
+    expect(useSettingsStore.getState()).toMatchObject({ open: true, activeTab: "advanced" });
   });
 
   it("every open resets the active tab to the requested one", () => {
-    // Open on Account, navigate to Updates, close...
+    // Open on Account, navigate to Advanced, close...
     useSettingsStore.getState().openSettings("account");
-    useSettingsStore.getState().setActiveTab("updates");
+    useSettingsStore.getState().setActiveTab("advanced");
     useSettingsStore.getState().closeSettings();
-    expect(useSettingsStore.getState().activeTab).toBe("updates"); // retained while closed
+    expect(useSettingsStore.getState().activeTab).toBe("advanced"); // retained while closed
 
     // ...reopening with the default lands back on AI, not the last view.
     useSettingsStore.getState().openSettings();

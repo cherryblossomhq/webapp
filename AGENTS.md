@@ -8,11 +8,11 @@ Vendor-neutral guide for any coding agent (Claude Code, Codex, Cursor, Aider, et
 ## Product Context
 
 - **What this is:** A modern, AI-first PCB design tool with a UI that rivals Figma's aesthetic while delivering Altium-level feature power.
-- **Source:** Closed source. Code lives in the **private** repo `cherryblossomhq/cherryblossom` under the `cherryblossomhq` GitHub org. Built release binaries are published to the separate **public** repo [`cherryblossomhq/releases`](https://github.com/cherryblossomhq/releases), which is download-only (no source).
+- **Source:** Closed source. Code lives in the **private** repo [`cherryblossomhq/webapp`](https://github.com/cherryblossomhq/webapp) under the `cherryblossomhq` GitHub org. (The app started as a Tauri desktop app in `cherryblossomhq/cherryblossom`; it has since been ported to this web app, and there are no downloadable releases anymore.)
 - **Who it's for:** Hobbyists building at home + professional hardware engineers.
 - **Space:** EDA (Electronic Design Automation) / PCB design.
 - **Project type:** Web app — React 19 + TypeScript SPA built with Vite. Fully client-side except one tiny same-origin endpoint, `/api/proxy` (`server/proxy.mjs`), which replays requests to a fixed allowlist of CORS-less upstreams (EasyEDA, the tscircuit model CDN, the LCSC datasheet hosts). In dev/preview the endpoint is a Vite middleware; deployed, it's the Vercel function `api/proxy.mjs`. There is no other backend in this repo.
-- **Stage:** Early-stage startup, **not launched yet** — there are no production users. Backward compatibility is **not** a concern: don't add migration shims, compatibility layers, or deprecation cycles to preserve old behavior. Prefer clean, decisive changes. Large breaking changes (data model, file formats, IPC contracts, APIs) are welcome when they make the design better.
+- **Stage:** Early-stage startup, **not launched yet** — there are no production users. Backward compatibility is **not** a concern: don't add migration shims, compatibility layers, or deprecation cycles to preserve old behavior. Prefer clean, decisive changes. Large breaking changes (data model, file formats, APIs) are welcome when they make the design better.
 
 ---
 
@@ -41,9 +41,9 @@ npm run lint             # eslint .
 - The two build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
 - There are no server-side secrets in this repo: the WorkOS client id is a public identifier, and the `/api/proxy` endpoint holds no credentials.
 
-### Release / Versioning
+### Deployment / Versioning
 
-The app deploys like any static SPA + one serverless function (`vercel.json` carries the SPA rewrite). Bump `version` in `package.json` when cutting a release — it's injected into the bundle as `__APP_VERSION__` (vite.config.ts) and drives the one-time "What's New" tab, which fetches the matching `vX.Y.Z` release notes from the public `cherryblossomhq/releases` repo. Keep publishing release notes there under matching tags if you want the tab to show content.
+The app deploys like any static SPA + one serverless function (`vercel.json` carries the SPA rewrite): every push to `main` goes live on Vercel. There are no versioned releases, binaries, or release notes — a page reload always serves the latest deploy. The `version` in `package.json` is informational only: it's injected into the bundle as `__APP_VERSION__` (vite.config.ts) and shown in the Settings dialog.
 
 ---
 
@@ -96,7 +96,7 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 ### Sign-in (web SPA)
 - This app is a *public client* — PKCE, no client secret; only the public `VITE_WORKOS_CLIENT_ID` ships in the bundle. Don't reuse the marketing/API site's WorkOS application; this app needs its own (or at least its own redirect URI).
 - The flow lives in **`src/utils/authTransport.ts`**: PKCE verifier + CSRF state in sessionStorage → full-page redirect to the AuthKit authorize URL → WorkOS redirects back to `{origin}/callback?code=…` → `authRefresh` (from authStore's launch-time `init`) exchanges the code and cleans the URL. Register `{origin}/callback` (dev: `http://localhost:5173/callback`) on the WorkOS environment's Redirects page.
-- The **rotating refresh token** persists in localStorage (scoped per client id) — the browser equivalent of the desktop-era OS keychain. JS holds the short-lived access token in memory only — `src/store/authStore.ts` (session state + scheduled refresh).
+- The **rotating refresh token** persists in localStorage (scoped per client id). JS holds the short-lived access token in memory only — `src/store/authStore.ts` (session state + scheduled refresh).
 
 ### Managed AI (the "account" provider)
 - Signed-in users can use Cherry Blossom's managed AI instead of their own Anthropic key (`aiProvider` setting: `"account"` vs `"apiKey"`). The server side is the website repo's `POST /api/v1/messages` — an **Anthropic Messages wire-compatible** proxy that takes the WorkOS access token as `Authorization: Bearer`, enforces plan/model/rate limits via Convex, and streams Anthropic's SSE back unchanged. The app sends its normal Anthropic payload; only the endpoint and auth header differ (see `ChatAuth` in `chatTransport.ts`). Being browser-called now, that endpoint must allow this app's origin in its CORS policy.

@@ -12,7 +12,6 @@ Describe a circuit in plain English, drag components onto the board, or do both.
 
 ![Web](https://img.shields.io/badge/Web-Vite%20%2B%20SPA-646CFF?logo=vite&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![version](https://img.shields.io/github/v/release/cherryblossomhq/releases?label=latest&color=brightgreen)
 ![Status](https://img.shields.io/badge/status-early%20stage-ff69b4)
 
 </div>

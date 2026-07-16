@@ -13,9 +13,10 @@ import {
 // ─── Auth store ──────────────────────────────────────────────────────────────
 //
 // Session state for WorkOS sign-in. Deliberately NOT persisted: the access
-// token is short-lived and memory-only; durable state (the refresh token) is
-// the Rust side's job (OS keychain). On launch, `init` asks Rust to restore
-// the session, then a timer keeps the access token fresh ahead of its expiry.
+// token is short-lived and memory-only; durable state (the rotating refresh
+// token) lives in localStorage, owned by authTransport. On launch, `init`
+// restores the session from it, then a timer keeps the access token fresh
+// ahead of its expiry.
 
 /** Refresh this far before the token's `exp` so we never hold a stale token. */
 const REFRESH_MARGIN_MS = 60_000;
@@ -79,7 +80,7 @@ async function runRefresh() {
     }
   } catch (err) {
     if (epoch !== sessionEpoch) return;
-    // Transient (likely offline): the keychain token is still good, so keep
+    // Transient (likely offline): the stored refresh token is still good, so keep
     // the session visible and retry rather than bouncing the user out.
     console.warn("[auth] refresh failed, retrying:", err);
     clearRefreshTimer();
@@ -115,8 +116,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         else set({ status: "signedOut" });
       } catch (err) {
         // Offline at launch — can't prove the session either way. Show signed
-        // out; the keychain token survives, so the next launch (or a manual
-        // sign-in) recovers it.
+        // out; the stored refresh token survives, so the next launch (or a
+        // manual sign-in) recovers it.
         console.warn("[auth] startup session restore failed:", err);
         set({ status: "signedOut" });
       }
@@ -153,7 +154,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       await authLogout(token ?? undefined);
     } catch (err) {
-      // Keychain cleanup failed — worst case the next launch restores the
+      // Token cleanup failed — worst case the next launch restores the
       // session and the user signs out again. Not worth blocking the UI.
       console.error("[auth] sign-out cleanup failed:", err);
     }

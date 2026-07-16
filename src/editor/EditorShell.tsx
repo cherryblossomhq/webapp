@@ -17,8 +17,6 @@ import { useCircuitStore } from "@/store/circuitStore";
 import { useEditorStore, type EditorTab } from "@/editor/state/editorStore";
 import { selectionIsSingleComponent } from "@/editor/shared/componentSelection";
 import { useSettingsStore } from "@/store/settingsStore";
-import { useWhatsNewStore } from "@/store/whatsNewStore";
-import { WhatsNewTab } from "@/components/WhatsNewTab";
 import { SchematicReadonlyView } from "@/editor/schematic/SchematicReadonlyView";
 import { PcbCanvas } from "@/editor/pcb/PcbCanvas";
 import { overlayManualRoutes } from "@/editor/pcb/circuitJsonMerge";
@@ -27,7 +25,7 @@ import { usePcbDrc } from "@/editor/services/usePcbDrc";
 import { PropertiesPanel } from "@/editor/PropertiesPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { cn } from "@/lib/utils";
-import { Loader2, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 // The Properties drawer slides in from the left when a component is selected;
 // 280px matches the old fixed rail width.
@@ -61,7 +59,7 @@ const CadViewerLazy = lazy(async () => {
   return { default: m.CadViewer };
 });
 
-type TabDef = { key: EditorTab; label: string; closeable?: boolean };
+type TabDef = { key: EditorTab; label: string };
 
 const TABS: TabDef[] = [
   { key: "schematic", label: "Schematic" },
@@ -89,39 +87,18 @@ export function EditorShell() {
   // The Code tab is an opt-in power-user surface (Settings → Advanced), hidden
   // by default. When off it's dropped from the tab bar and never mounted.
   const showCodeTab = useSettingsStore((s) => s.showCodeTab);
-  // The "What's New" tab is shown once after an app update, then closed (see
-  // whatsNewStore). It's appended last so it never shifts the persistent tabs.
-  const whatsNewVisible = useWhatsNewStore((s) => s.visible);
-  const dismissWhatsNew = useWhatsNewStore((s) => s.dismiss);
-  const visibleTabs = useMemo(() => {
-    const tabs = TABS.filter((t) => t.key !== "code" || showCodeTab);
-    if (whatsNewVisible) {
-      tabs.push({ key: "whatsnew", label: "What's New", closeable: true });
-    }
-    return tabs;
-  }, [showCodeTab, whatsNewVisible]);
-  // If the active tab is no longer available — the Code tab was toggled off, or
-  // the What's New tab was closed — fall back to the schematic: immediately for
-  // rendering and in the store right after, so nothing flashes blank.
-  const activeTabGone =
-    (!showCodeTab && activeTab === "code") ||
-    (!whatsNewVisible && activeTab === "whatsnew");
+  const visibleTabs = useMemo(
+    () => TABS.filter((t) => t.key !== "code" || showCodeTab),
+    [showCodeTab]
+  );
+  // If the active tab is no longer available — the Code tab was toggled off —
+  // fall back to the schematic: immediately for rendering and in the store
+  // right after, so nothing flashes blank.
+  const activeTabGone = !showCodeTab && activeTab === "code";
   const effectiveTab: EditorTab = activeTabGone ? "schematic" : activeTab;
   useEffect(() => {
     if (activeTabGone) setActiveTab("schematic");
   }, [activeTabGone, setActiveTab]);
-
-  // Closing the What's New tab dismisses it and, if it was active, drops back to
-  // the schematic (the fallback effect above also covers this, but switching
-  // here avoids a one-frame flash).
-  const handleTabClose = useCallback(
-    (tab: EditorTab) => {
-      if (tab !== "whatsnew") return;
-      dismissWhatsNew();
-      if (activeTab === "whatsnew") setActiveTab("schematic");
-    },
-    [activeTab, dismissWhatsNew, setActiveTab]
-  );
 
   // The Code tab is mount-once: lazy-load it on first visit, then keep it
   // mounted (just hidden) so its editor state — cursor line, scroll, selection,
@@ -151,14 +128,12 @@ export function EditorShell() {
         tabs={visibleTabs}
         active={effectiveTab}
         onChange={handleTabChange}
-        onClose={handleTabClose}
       />
       <div className="flex-1 min-h-0 min-w-0 relative">
         {effectiveTab === "schematic" && <SchematicReadonlyView />}
         {effectiveTab === "pcb" && <PcbTabContent />}
         {effectiveTab === "cad" && <CadTabContent />}
         {effectiveTab === "bom" && <BomTabContent />}
-        {effectiveTab === "whatsnew" && <WhatsNewTab />}
         {codeMounted && (
           <div className={cn("absolute inset-0", effectiveTab !== "code" && "hidden")}>
             <Suspense fallback={<ViewerLoading label="Loading code editor…" />}>
@@ -236,12 +211,10 @@ function EditorTabBar({
   tabs,
   active,
   onChange,
-  onClose,
 }: {
   tabs: TabDef[];
   active: EditorTab;
   onChange: (tab: EditorTab) => void;
-  onClose: (tab: EditorTab) => void;
 }) {
   return (
     <div
@@ -258,7 +231,6 @@ function EditorTabBar({
               onClick={() => onChange(tab.key)}
               className={cn(
                 "px-3 text-xs font-medium transition-colors",
-                tab.closeable && "pr-1",
                 isActive
                   ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground"
@@ -266,16 +238,6 @@ function EditorTabBar({
             >
               {tab.label}
             </button>
-            {tab.closeable && (
-              <button
-                type="button"
-                onClick={() => onClose(tab.key)}
-                aria-label={`Close ${tab.label}`}
-                className="mr-1.5 flex items-center rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3" />
-              </button>
-            )}
             {isActive && (
               <span className="absolute bottom-0 left-1 right-1 h-0.5 bg-primary rounded-t" />
             )}

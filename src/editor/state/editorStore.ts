@@ -39,9 +39,7 @@ interface ViewportPair {
 
 const INITIAL_VIEWPORT: ViewportTransform = { x: 0, y: 0, scale: 1 };
 
-// "whatsnew" is a transient, closeable tab shown once after an app update (see
-// whatsNewStore) — not a persistent view mode like the others.
-export type EditorTab = "schematic" | "pcb" | "cad" | "bom" | "code" | "whatsnew";
+export type EditorTab = "schematic" | "pcb" | "cad" | "bom" | "code";
 
 interface EditorStore {
   // ─── Selection (shared across schematic / pcb tabs) ──────────────────────

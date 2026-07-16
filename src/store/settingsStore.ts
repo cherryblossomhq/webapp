@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /** The Settings dialog's nav sections. `ai` is the default landing tab. */
-export type SettingsTab = "ai" | "advanced" | "account" | "updates";
+export type SettingsTab = "ai" | "advanced" | "account";
 
 // Persisted across sessions on this device (like the API key). The Code tab is
 // power-user surface, so it's hidden by default and opted into here.

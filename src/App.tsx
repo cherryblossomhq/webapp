@@ -3,7 +3,6 @@ import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { EditorView } from "@/views/EditorView";
-import { UpdateManager } from "@/components/UpdateManager";
 import { useAuthStore } from "@/store/authStore";
 
 // Top-level error boundary to catch render crashes
@@ -46,7 +45,6 @@ export default function App() {
       <ThemeProvider>
         <TooltipProvider>
           <EditorView />
-          <UpdateManager />
           <Toaster richColors position="bottom-right" />
         </TooltipProvider>
       </ThemeProvider>

@@ -8,14 +8,13 @@
  *  - AI       — how the assistant connects: managed AI via the signed-in
  *               account, or the user's own Anthropic API key
  *  - Account  — WorkOS sign-in / signed-in card
- *  - Updates  — version + check for updates (desktop updater)
+ *  - Advanced — power-user toggles
  */
 import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useDialogReturnFocus } from "@/hooks/useDialogReturnFocus";
 import { useChatStore } from "@/store/chatStore";
-import { useUpdaterStore } from "@/store/updaterStore";
 import { useSettingsStore, type SettingsTab } from "@/store/settingsStore";
 import { useAuthStore } from "@/store/authStore";
 import { isAuthAvailable, type AuthUser } from "@/utils/authTransport";
@@ -24,14 +23,12 @@ import { cn } from "@/lib/utils";
 import {
   Sparkles,
   User,
-  Download,
   Eye,
   EyeOff,
   Check,
   ExternalLink,
   Lock,
   Loader2,
-  ArrowUpCircle,
   AlertCircle,
   SlidersHorizontal,
 } from "lucide-react";
@@ -42,7 +39,6 @@ const SAVED_RESET_MS = 1500;
 const TABS: { id: SettingsTab; label: string; icon: typeof Sparkles }[] = [
   { id: "ai", label: "AI", icon: Sparkles },
   { id: "account", label: "Account", icon: User },
-  { id: "updates", label: "Updates", icon: Download },
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
 ];
 
@@ -466,80 +462,12 @@ function AccountSection() {
   );
 }
 
-function UpdatesSection() {
-  const currentVersion = useUpdaterStore((s) => s.currentVersion);
-  const newVersion = useUpdaterStore((s) => s.newVersion);
-  const checking = useUpdaterStore((s) => s.checking);
-  const checkResult = useUpdaterStore((s) => s.checkResult);
-  const checkForUpdates = useUpdaterStore((s) => s.checkForUpdates);
-
-  return (
-    <div className="flex flex-col gap-5">
-      <SectionHeader
-        title="Updates"
-        description="Keep Cherry Blossom up to date with the latest features and fixes."
-      />
-
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Current version</span>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {currentVersion ? `v${currentVersion}` : "—"}
-          </span>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={checking}
-          onClick={() => void checkForUpdates()}
-        >
-          {checking ? (
-            <>
-              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-              Checking…
-            </>
-          ) : (
-            "Check for updates"
-          )}
-        </Button>
-      </div>
-
-      {!checking && newVersion && (
-        <p className="flex items-center gap-1.5 text-xs text-primary">
-          <ArrowUpCircle className="size-3.5 shrink-0" aria-hidden="true" />
-          Update available: v{newVersion}
-        </p>
-      )}
-      {!checking && !newVersion && checkResult === "uptodate" && (
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Check className="size-3.5 shrink-0" aria-hidden="true" />
-          You're up to date.
-        </p>
-      )}
-      {!checking && !newVersion && checkResult === "error" && (
-        <p className="flex items-center gap-1.5 text-xs text-destructive">
-          <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
-          Couldn't check for updates. Check your connection and try again.
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function SettingsDialog() {
   const open = useSettingsStore((s) => s.open);
   const activeTab = useSettingsStore((s) => s.activeTab);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const setActiveTab = useSettingsStore((s) => s.setActiveTab);
-  const resetCheckResult = useUpdaterStore((s) => s.resetCheckResult);
   const onCloseAutoFocus = useDialogReturnFocus(open);
-
-  // Each fresh open starts from a clean inline status — a stale "up to date" /
-  // "couldn't check" from a prior session shouldn't reappear on reopen. An
-  // actually-available update lives in `newVersion`, so it survives.
-  useEffect(() => {
-    if (open) resetCheckResult();
-  }, [open, resetCheckResult]);
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) closeSettings(); }}>
@@ -570,12 +498,14 @@ export function SettingsDialog() {
                 </button>
               );
             })}
+            <span className="mt-auto px-2 pb-1 text-xs text-muted-foreground tabular-nums">
+              v{__APP_VERSION__}
+            </span>
           </nav>
 
           <div className="flex-1 overflow-y-auto p-6">
             {activeTab === "ai" && <AiSection />}
             {activeTab === "account" && <AccountSection />}
-            {activeTab === "updates" && <UpdatesSection />}
             {activeTab === "advanced" && <AdvancedSection />}
           </div>
         </div>

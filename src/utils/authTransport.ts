@@ -7,8 +7,7 @@
 // store's `init` on every launch) detects that callback, exchanges the code as
 // a *public client* (PKCE `code_verifier`, no client secret), and cleans the
 // URL. Between launches the session is restored with the rotating refresh
-// token, kept in localStorage — the browser equivalent of the desktop app's
-// OS-keychain storage.
+// token, kept in localStorage (scoped per client id).
 //
 // Register `{origin}/callback` (dev: http://localhost:5173/callback) on the
 // WorkOS environment's Redirects page.
@@ -211,7 +210,7 @@ function readPkce(): PkceRecord | null {
   }
 }
 
-// ─── Public API (same shape the desktop transport exposed) ──────────────────
+// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Kick off the sign-in flow: stash PKCE state and navigate this page to the

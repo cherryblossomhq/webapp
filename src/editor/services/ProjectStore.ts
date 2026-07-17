@@ -242,8 +242,10 @@ export function pruneOrphanEdits(
   const pruned: StableKey[] = [];
   const out: ManualEditsMap = {};
   for (const [key, val] of Object.entries(manualEdits)) {
-    // A route edit is a manual route OR a noAutoroute deletion marker — both
-    // are keyed by a pad-pair connection id and share the same liveness rule.
+    // A route edit is a manual route OR a noAutoroute deletion marker. Both
+    // share the same liveness rule; the liveness set covers both key shapes —
+    // pad-pair connection ids, plus the synthetic `pcbtrace_` keys a marker on
+    // an endpoint-less eval trace uses (see liveRouteConnIds).
     const hasRouteEdit =
       (val.pcb?.route?.length ?? 0) >= 2 || val.pcb?.noAutoroute === true;
     const keep =

@@ -470,9 +470,12 @@ function makePcbVia(
  *
  * Built in the SAME selector space as the route key (padSelectorFor over the
  * port's first hint), so named-pin parts (`anode`, `SDA`, `left`) match too —
- * the tsx `connections` label is never consulted. Returns null when there's no
- * circuit-json (no eval yet): the caller then can't prove a route is orphaned
- * and keeps every route rather than risk deleting drawn copper.
+ * the tsx `connections` label is never consulted. Also includes the synthetic
+ * `pcbtrace_<pcb_trace_id>` key of every current eval trace, so a noAutoroute
+ * marker stored under that fallback (evalTraceEndpoints) stays live while its
+ * trace exists. Returns null when there's no circuit-json (no eval yet): the
+ * caller then can't prove a route is orphaned and keeps every route rather
+ * than risk deleting drawn copper.
  */
 export function liveRouteConnIds(
   circuitJson: ReadonlyArray<AnyCircuitElement> | null | undefined,
@@ -535,6 +538,17 @@ export function liveRouteConnIds(
         out.add(connectionId(sels[i], sels[j]));
       }
     }
+  }
+
+  // Route edits are keyed by pad-pair connection ids — EXCEPT a noAutoroute
+  // marker on an eval trace that resolved no pad pair, which lives under the
+  // synthetic `pcbtrace_<pcb_trace_id>` fallback key (evalTraceEndpoints).
+  // Such a marker is live exactly while its trace is still in the circuit-json,
+  // so add every current eval-trace key via the same keying function the canvas
+  // and overlay use: resolved keys are pad pairs already in the set; synthetic
+  // ones keep their deletion markers from being pruned on save.
+  for (const [, ends] of evalTraceEndpoints(circuitJson)) {
+    out.add(ends.key);
   }
   return out;
 }

@@ -654,4 +654,30 @@ describe("liveRouteConnIds", () => {
     expect(set.has(connectionId("R1.pin1", "R2.pin1"))).toBe(false);
     expect(set.size).toBe(0);
   });
+
+  it("includes the synthetic pcbtrace_ key of an eval trace that resolves no pad pair", () => {
+    // A noAutoroute marker on such a trace is stored under the
+    // `pcbtrace_<pcb_trace_id>` fallback key (evalTraceEndpoints). It must be
+    // live — survive pruneOrphanEdits at save time — for as long as the trace
+    // is in the circuit-json, or the user's deletion reappears after reload.
+    const trace = {
+      type: "pcb_trace",
+      pcb_trace_id: "pt_orphan",
+      route: [
+        { route_type: "wire", x: 0, y: 0, layer: "top", width: 0.15 },
+        { route_type: "wire", x: 1, y: 0, layer: "top", width: 0.15 },
+      ],
+    };
+    const withTrace = liveRouteConnIds([
+      ...powerNet(),
+      trace,
+    ] as unknown as AnyCircuitElement[])!;
+    expect(withTrace.has("pcbtrace_pt_orphan" as StableKey)).toBe(true);
+    // Pad-pair liveness is unaffected by the extra keys.
+    expect(withTrace.has(connectionId("R1.pin1", "R2.pin1"))).toBe(true);
+    // Trace gone from the eval → its synthetic key goes with it (the marker
+    // is orphaned and prunable).
+    const withoutTrace = liveRouteConnIds(powerNet())!;
+    expect(withoutTrace.has("pcbtrace_pt_orphan" as StableKey)).toBe(false);
+  });
 });

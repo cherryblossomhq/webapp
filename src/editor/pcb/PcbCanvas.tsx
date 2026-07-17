@@ -37,12 +37,10 @@ import {
   type PcbPadRecord,
   type PcbTraceRecord,
   type PcbTraceSegment,
+  type UnroutedNet,
 } from "./pcbModel";
 import { computeRatsnest, type RatsnestEdge } from "./ratsnest";
 import {
-  autorouteAll,
-  autorouteEdge,
-  autorouteFocusedNet,
   findNetContainingSelector,
   findUserRouteAtPad,
   isPadOnNet,
@@ -118,6 +116,26 @@ const SMART_PREVIEW_THROTTLE_MS = 32;
 function pcbEditWithoutRoute(pcb: PcbEdit): PcbEdit | null {
   const { route: _route, width: _width, ...rest } = pcb;
   return Object.keys(rest).length > 0 ? rest : null;
+}
+
+// Restore-to-autoroute variant: also drops the noAutoroute deletion marker so
+// the autorouter's copper shows again for the connection.
+function pcbEditWithoutRouteState(pcb: PcbEdit): PcbEdit | null {
+  const { noAutoroute: _del, ...rest } = pcbEditWithoutRoute(pcb) ?? {};
+  return Object.keys(rest).length > 0 ? rest : null;
+}
+
+// Every pad-pair connection id on a net — the key space route edits (manual
+// routes and noAutoroute deletions) are stored under.
+function netConnIds(net: UnroutedNet): StableKey[] {
+  const sels = net.pads.map((p) => p.selector);
+  const out: StableKey[] = [];
+  for (let i = 0; i < sels.length; i++) {
+    for (let j = i + 1; j < sels.length; j++) {
+      out.push(connectionId(sels[i], sels[j]));
+    }
+  }
+  return out;
 }
 
 // Visual constants (colors + grid pitch) are shared with the canvas draw layer
@@ -288,154 +306,87 @@ export function PcbCanvas() {
   );
   const displayLayers = useMemo(() => layersForCount(numLayers), [numLayers]);
 
-  const commitAutorouteResults = useCallback(
-    (
-      results: ReturnType<typeof autorouteFocusedNet>,
-      label: string,
-      rerouted = false,
-      successNote?: string
-    ) => {
-      if (results.length === 0) {
-        toast.error(`Could not ${label}`, {
+  // ─── Autoroute restore ────────────────────────────────────────────────────
+  // The board is autorouted by core's capacity-mesh autorouter on every eval;
+  // pcbModel displays those routes directly. The sidecar only records the
+  // user's per-connection edits — a manual route (override) or a noAutoroute
+  // flag (deleted copper). "Re-autorouting" therefore just clears those edits
+  // so the fresh eval result shows through again.
+
+  // Sidecar keys carrying a route edit — drives the toolbar's board-restore
+  // button enablement.
+  const routeEditKeys = useMemo(() => {
+    const keys: StableKey[] = [];
+    for (const [k, entry] of Object.entries(manualEdits)) {
+      if (entry.pcb?.route?.length || entry.pcb?.noAutoroute) {
+        keys.push(k as StableKey);
+      }
+    }
+    return keys;
+  }, [manualEdits]);
+
+  const clearRouteEdits = useCallback(
+    (keys: ReadonlyArray<StableKey>, what: "net" | "board") => {
+      // manualEdits is read via getState so this callback stays identity-
+      // stable across drag frames (it feeds the memoized RatsnestLayer via
+      // handleRouteEdge).
+      const edits = useEditorStore.getState().manualEdits;
+      const entries = keys
+        .filter((k) => {
+          const pcb = edits[k]?.pcb;
+          return !!pcb && (!!pcb.route?.length || pcb.noAutoroute === true);
+        })
+        .map((k) => [k, pcbEditWithoutRouteState(edits[k]!.pcb!)] as const);
+      if (entries.length === 0) {
+        toast.message("Nothing to restore", {
           description:
-            "No unobstructed path found. Try moving parts or routing manually.",
+            "No route edits to clear. If an airwire remains, the autorouter couldn't route that connection — route it manually (W).",
         });
         return;
       }
-      // Batched: one store update (and one model rebuild) regardless of how
-      // many nets the autoroute committed. manualEdits is read via getState so
-      // this callback stays identity-stable across drag frames — it feeds the
-      // memoized ratsnest layer through runAutorouteEdge.
-      const edits = useEditorStore.getState().manualEdits;
-      setPcbEdits(
-        results.map(
-          (r) =>
-            [
-              r.connId,
-              {
-                ...(edits[r.connId]?.pcb ?? {}),
-                route: r.route,
-                width: traceWidth,
-              },
-            ] as const
-        )
-      );
-      const verb = rerouted ? "Rerouted" : "Routed";
+      setPcbEdits(entries);
       toast.success(
-        results.length === 1
-          ? `${verb} 1 connection`
-          : `${verb} ${results.length} connections`,
-        successNote ? { description: successNote } : undefined
+        what === "board" ? "Board re-autorouted" : "Net re-autorouted",
+        {
+          description: `Cleared ${entries.length} route edit${
+            entries.length === 1 ? "" : "s"
+          } — the autorouter's routes now show.`,
+        }
       );
     },
-    [setPcbEdits, traceWidth]
+    [setPcbEdits]
   );
 
-  const runAutorouteAll = useCallback(() => {
-    // The toolbar button is disabled when there's nothing to route, but the ⇧A
-    // shortcut bypasses that gate — guard here so an already-routed board gets a
-    // neutral note instead of commitAutorouteResults' "Could not autoroute" error.
-    if (model.unroutedNets.length === 0) {
-      toast.message("Nothing to autoroute", {
-        description: "Every net is already routed.",
-      });
-      return;
-    }
-    const { results, failedNets } = autorouteAll(
-      model,
-      manualEdits,
-      traceWidth,
-      numLayers,
-      activeLayer,
-      (edits) => buildPcbModel(circuitJson, tsxCode, edits)
-    );
-    commitAutorouteResults(
-      results,
-      "autoroute board",
-      false,
-      failedNets > 0
-        ? `${failedNets} net${
-            failedNets === 1 ? "" : "s"
-          } couldn't be routed — move parts or route those manually`
-        : undefined
-    );
-  }, [
-    model,
-    manualEdits,
-    traceWidth,
-    numLayers,
-    activeLayer,
-    circuitJson,
-    tsxCode,
-    commitAutorouteResults,
-  ]);
-
-  const runAutorouteFocusedNet = useCallback(() => {
+  // A — restore the focused net to the autorouter's result (drops that net's
+  // manual routes and deleted-route markers).
+  const restoreNetAutoroute = useCallback(() => {
     const key = useEditorStore.getState().focusedNetKey;
-    if (!key) {
+    const net = key ? model.nets.find((n) => n.traceKey === key) : null;
+    if (!net) {
       toast.message("Focus a net first", {
         description:
-          "Click an airwire or an existing trace, then press A to autoroute that net.",
+          "Click a trace or an airwire, then press A to restore that net's autoroute.",
       });
       return;
     }
-    commitAutorouteResults(
-      autorouteFocusedNet(
-        model,
-        manualEdits,
-        traceWidth,
-        numLayers,
-        activeLayer,
-        key
-      ),
-      "autoroute net"
-    );
-  }, [model, manualEdits, traceWidth, numLayers, activeLayer, commitAutorouteResults]);
+    clearRouteEdits(netConnIds(net), "net");
+  }, [model, clearRouteEdits]);
 
-  const runAutorouteEdge = useCallback(
-    (edge: RatsnestEdge, replaceExisting = false) => {
-      setFocusedNetKey(edge.traceKey);
-      const result = autorouteEdge(
-        model,
-        edge,
-        traceWidth,
-        numLayers,
-        activeLayer,
-        { replaceExisting }
-      );
-      if (!result) {
-        toast.error("Could not autoroute connection", {
-          description: "No unobstructed path found between these pads.",
-        });
-        return;
-      }
-      commitAutorouteResults(
-        [result],
-        replaceExisting ? "reroute connection" : "autoroute connection",
-        replaceExisting
-      );
-    },
-    [
-      model,
-      traceWidth,
-      numLayers,
-      activeLayer,
-      setFocusedNetKey,
-      commitAutorouteResults,
-    ]
-  );
+  // ⇧A — restore the whole board to the autorouter's result.
+  const restoreBoardAutoroute = useCallback(() => {
+    clearRouteEdits(routeEditKeys, "board");
+  }, [clearRouteEdits, routeEditKeys]);
 
-  // Double-click on an airwire: (re)route just that edge. manualEdits is read
-  // via getState so the callback identity doesn't churn per drag frame — it's
-  // a prop of the memoized RatsnestLayer.
+  // Double-click on an airwire: restore its net's autoroute. The airwire is
+  // there because a route was deleted, replaced, or never found — bring back
+  // whatever the autorouter has for the net.
   const handleRouteEdge = useCallback(
     (edge: RatsnestEdge) => {
-      const connId = connectionId(edge.fromSelector, edge.toSelector);
-      const replaceExisting =
-        !!useEditorStore.getState().manualEdits[connId]?.pcb?.route?.length;
-      runAutorouteEdge(edge, replaceExisting);
+      if (edge.traceKey) setFocusedNetKey(edge.traceKey);
+      const net = model.nets.find((n) => n.traceKey === edge.traceKey);
+      if (net) clearRouteEdits(netConnIds(net), "net");
     },
-    [runAutorouteEdge]
+    [model, setFocusedNetKey, clearRouteEdits]
   );
 
   // If the board layer count shrank out from under the active layer (e.g. the
@@ -691,27 +642,32 @@ export function PcbCanvas() {
 
   // Delete the SELECTED ENTITIES — Altium-style: the PCB editor is the
   // PHYSICAL layout. Connectivity lives in the schematic / `connections`.
-  // So "delete trace" here rips the copper geometry (the sidecar route entry,
-  // keyed by connection id) and nothing else; the tsx is untouched because
-  // routes were never written there. The ratsnest reappears for that net
-  // because pcbModel sees no manual route. To delete the connection itself,
-  // the user goes to the schematic and removes the wire.
+  // So "delete trace" here rips the copper geometry — the sidecar route for a
+  // manual trace — and marks the connection noAutoroute so the autorouter's
+  // copper doesn't pop right back on the next eval. The tsx is untouched
+  // (routes were never written there); the ratsnest reappears for that net.
+  // To delete the connection itself, the user goes to the schematic and
+  // removes the wire.
   // Components are deferred to PR 2 (component delete needs tsxTransform
   // plumbing the schematic editor already has).
   const deleteSelection = useCallback(() => {
     const sel = useEditorStore.getState().selectedKeys;
     if (sel.size === 0) return;
     const edits = useEditorStore.getState().manualEdits;
+    const entries: Array<readonly [StableKey, PcbEdit]> = [];
     for (const key of sel) {
       const entry = model.byKey.get(key);
       // Trace records carry a `segments` array; component records don't.
       if (!entry || !("segments" in entry)) continue;
-      const cur = edits[key]?.pcb;
-      if (!cur) continue;
-      setPcbEdit(key, pcbEditWithoutRoute(cur));
+      const cur = edits[key]?.pcb ?? {};
+      entries.push([
+        key,
+        { ...(pcbEditWithoutRoute(cur) ?? {}), noAutoroute: true },
+      ]);
     }
+    if (entries.length > 0) setPcbEdits(entries);
     clearSelection();
-  }, [model, setPcbEdit, clearSelection]);
+  }, [model, setPcbEdits, clearSelection]);
 
   // ─── Fit-to-view (F shortcut + double-click on empty canvas) ────────────
   // Always fits the whole board / model regardless of selection — same
@@ -795,8 +751,8 @@ export function PcbCanvas() {
       })),
       { key: "t", handler: () => cycleTraceWidth() },
       { key: "g", handler: () => cycleRoutingMode() },
-      { key: "a", handler: () => runAutorouteFocusedNet() },
-      { key: "a", shift: true, handler: () => runAutorouteAll() },
+      { key: "a", handler: () => restoreNetAutoroute() },
+      { key: "a", shift: true, handler: () => restoreBoardAutoroute() },
       {
         key: "backspace",
         handler: () => {
@@ -847,8 +803,8 @@ export function PcbCanvas() {
     activateLayer,
     deleteSelection,
     fitToView,
-    runAutorouteFocusedNet,
-    runAutorouteAll,
+    restoreNetAutoroute,
+    restoreBoardAutoroute,
   ]);
 
   // ─── Mouse wheel zoom ───────────────────────────────────────────────────
@@ -1030,8 +986,8 @@ export function PcbCanvas() {
         return;
       }
 
-      // Hit something — selection logic. Clicking a trace focuses its net (so A
-      // autoroutes any remaining airwires on it); any other pick clears focus.
+      // Hit something — selection logic. Clicking a trace focuses its net (so
+      // A can restore its autoroute); any other pick clears focus.
       // Airwire clicks stopPropagation on their handler and never reach here.
       if (hit.kind === "trace") {
         const net = findNetContainingSelector(model, hit.record.fromSelector);
@@ -1887,9 +1843,10 @@ export function PcbCanvas() {
           onSelectTool={setToolMode}
           onSetRoutingMode={setRoutingMode}
           onFit={fitToView}
-          onAutoroute={() => runAutorouteFocusedNet()}
-          onAutorouteAll={() => runAutorouteAll()}
-          canAutoroute={ratsnest.length > 0}
+          onRestoreNetAutoroute={() => restoreNetAutoroute()}
+          onRestoreBoardAutoroute={() => restoreBoardAutoroute()}
+          canRestoreNet={focusedNetKey !== null}
+          canRestoreBoard={routeEditKeys.length > 0}
         />
 
         <RouteModeBanner
@@ -1962,11 +1919,22 @@ export function PcbCanvas() {
     const connId = connectionId(fromSel, toSel);
     const prevKey = finished.traceKey;
     if (prevKey && prevKey !== connId) {
+      // The route was picked up from another pad pair: that connection loses
+      // its copper, and noAutoroute keeps the autorouter from re-covering it.
       const prev = manualEdits[prevKey]?.pcb;
-      if (prev) setPcbEdit(prevKey, pcbEditWithoutRoute(prev));
+      if (prev) {
+        setPcbEdit(prevKey, {
+          ...(pcbEditWithoutRoute(prev) ?? {}),
+          noAutoroute: true,
+        });
+      }
     }
+    // Drawing copper un-deletes the connection — drop any noAutoroute marker
+    // so the entry doesn't carry stale "deleted" state alongside a live route.
+    const { noAutoroute: _undeleted, ...restPcb } =
+      manualEdits[connId]?.pcb ?? {};
     setPcbEdit(connId, {
-      ...(manualEdits[connId]?.pcb ?? {}),
+      ...restPcb,
       route: finished.points,
       width: finished.width,
     });
@@ -2034,8 +2002,8 @@ const RatsnestLayer = memo(function RatsnestLayer({
             />
             <title>
               {focused
-                ? "Focused net — A autoroutes all airwires, double-click routes this edge"
-                : "Click to focus net, double-click to autoroute this edge"}
+                ? "Focused net — A or double-click restores its autoroute"
+                : "Click to focus net, double-click to restore its autoroute"}
             </title>
           </g>
         );
@@ -2200,8 +2168,8 @@ function RouteModeBanner({
   const color = getLayerColor(activeLayer);
   const modeHint = routingModeLabel(routingMode);
   const text = drafting
-    ? `Routing on ${layerName} (${modeHint})  •  Click a pad to finish  •  Click empty to add corner  •  Smart path preview  •  / or V = via  •  A = autoroute  •  G = mode  •  Esc = cancel`
-    : `Route tool — ${layerName} (${modeHint})  •  Click a pad to start or pick up trace  •  Click airwire to focus net  •  A = autoroute net  •  ⇧A = autoroute all  •  Esc = cancel`;
+    ? `Routing on ${layerName} (${modeHint})  •  Click a pad to finish  •  Click empty to add corner  •  Smart path preview  •  / or V = via  •  G = mode  •  Esc = cancel`
+    : `Route tool — ${layerName} (${modeHint})  •  Click a pad to start or pick up trace  •  Click airwire to focus net  •  A = re-autoroute net  •  ⇧A = re-autoroute board  •  Esc = cancel`;
   return (
     <div
       style={{

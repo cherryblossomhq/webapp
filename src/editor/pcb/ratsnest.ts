@@ -20,7 +20,7 @@ export interface RatsnestEdge {
   fromY: number;
   toX: number;
   toY: number;
-  // Pad selectors at each end — used for autoroute and net focus.
+  // Pad selectors at each end — used for net focus / autoroute restore.
   fromSelector: string;
   toSelector: string;
   // The source_trace this airwire belongs to — used for selection /

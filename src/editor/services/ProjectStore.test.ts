@@ -346,6 +346,26 @@ describe("pruneOrphanEdits", () => {
     expect(pruned).toEqual([]);
   });
 
+  it("keeps a noAutoroute marker under a synthetic pcbtrace_ key while its trace is live", () => {
+    // Deleting an eval trace that resolved no pad pair stores the marker under
+    // `pcbtrace_<pcb_trace_id>` (evalTraceEndpoints). liveRouteConnIds includes
+    // that key while the trace exists in the circuit-json, so the deletion
+    // survives save/reload; once the trace is gone, the marker is orphaned.
+    const tsx = `circuit.add(
+  <board>
+    <resistor key="r_keep11" name="R1" />
+  </board>
+)
+`;
+    const edits = { pcbtrace_pt1: { pcb: { noAutoroute: true } } };
+    const kept = pruneOrphanEdits(tsx, edits, new Set(["pcbtrace_pt1"]));
+    expect(Object.keys(kept.manualEdits)).toContain("pcbtrace_pt1");
+    expect(kept.pruned).toEqual([]);
+    const gone = pruneOrphanEdits(tsx, edits, new Set());
+    expect(gone.manualEdits).toEqual({});
+    expect(gone.pruned).toEqual(["pcbtrace_pt1"]);
+  });
+
   it("keeps every route when liveRouteConnIds is null/omitted (no eval — never guess)", () => {
     // Before the first eval the caller has no circuit-json, so route liveness is
     // unknown. We must keep all routes rather than risk deleting drawn copper.

@@ -18,14 +18,14 @@
 //     override) but pads stay at their eval coords until the debounced
 //     eval re-runs (~300ms). This is intentional MVP — relative-to-
 //     component pad transforms are tracked as a follow-up.
-//   - Manual routes COMPLETELY override eval routes. If
-//     manualEdits[traceKey].pcb.route exists, the renderer uses it and
-//     ignores the eval's pcb_trace.route for that trace. This is what
-//     makes "tsx as source of truth for connectivity, sidecar for
+//   - Autorouted traces (the eval's pcb_trace elements) render by default.
+//     A manual sidecar route overrides the autoroute for its connection, and
+//     a `noAutoroute` flag hides it (the user deleted that copper). Both are
+//     keyed by the pad-pair connection id (see evalTraceEndpoints), which is
+//     what makes "tsx as source of truth for connectivity, sidecar for
 //     geometry" work.
-//   - Ratsnest only computes for source_traces whose pcb_trace has no
-//     route AND whose manualEdit has no route. Routed nets don't get a
-//     ratsnest hint.
+//   - Ratsnest only computes for connections with no displayed copper —
+//     neither an autorouted trace nor a manual route.
 
 import type { AnyCircuitElement } from "circuit-json";
 import type {
@@ -478,6 +478,102 @@ export function endpointSelectors(
   };
 }
 
+export interface EvalTraceEndpoints {
+  // Sidecar key for this trace: the connection id of the two pads its route
+  // physically spans — the SAME key manual routes use (PcbCanvas.commitRoute),
+  // so one lookup answers "is this eval trace overridden by a manual route /
+  // hidden by noAutoroute?". Falls back to a `pcbtrace_`-prefixed synthetic
+  // key when no pad pair resolves — still selectable and deletable, just only
+  // as stable as the eval's pcb_trace_id.
+  key: StableKey;
+  fromSel?: string;
+  toSel?: string;
+}
+
+// Resolve every autorouter pcb_trace to its sidecar key. Shared by pcbModel
+// (canvas render) and circuitJsonMerge (3D / DRC / fab overlay) so the two
+// agree on which sidecar entry overrides or hides which eval trace. Endpoints
+// come from the route's start/end_pcb_port_id (the pads the autorouter landed
+// on); a route without them falls back to its source_trace's first/last port.
+export function evalTraceEndpoints(
+  circuitJson: ReadonlyArray<AnyCircuitElement>,
+): Map<string, EvalTraceEndpoints> {
+  const { sourcePortInfo, sourceTraces } = resolveSourceGraph(circuitJson);
+
+  // pcb_port_id → canonical pad selector.
+  const selByPcbPortId = new Map<string, string>();
+  for (const el of circuitJson) {
+    const r = asRecord(el);
+    if (!r || asString(r.type) !== "pcb_port") continue;
+    const portId = asString(r.pcb_port_id);
+    const srcPortId = asString(r.source_port_id);
+    if (!portId || !srcPortId) continue;
+    const info = sourcePortInfo.get(srcPortId);
+    if (info) {
+      selByPcbPortId.set(portId, padSelectorFor(info.componentName, info.hint));
+    }
+  }
+
+  // Fallback pairing per source_trace (first/last port) for routes whose
+  // points don't carry endpoint port ids.
+  const selsBySourceTraceId = new Map<
+    string,
+    { fromSel: string; toSel: string }
+  >();
+  for (const st of sourceTraces) {
+    const ports = st.portIds
+      .map((pid) => sourcePortInfo.get(pid))
+      .filter((p): p is SourcePortInfo => !!p);
+    const sels = endpointSelectors(ports);
+    if (sels) selsBySourceTraceId.set(st.id, sels);
+  }
+
+  const out = new Map<string, EvalTraceEndpoints>();
+  for (const el of circuitJson) {
+    const r = asRecord(el);
+    if (!r || asString(r.type) !== "pcb_trace") continue;
+    const pcbTraceId = asString(r.pcb_trace_id);
+    if (!pcbTraceId) continue;
+
+    let fromSel: string | undefined;
+    let toSel: string | undefined;
+    const route = r.route;
+    if (Array.isArray(route)) {
+      let startPortId: string | undefined;
+      let endPortId: string | undefined;
+      for (const item of route) {
+        const p = asRecord(item);
+        if (!p) continue;
+        const s = asString(p.start_pcb_port_id);
+        if (s && !startPortId) startPortId = s;
+        const e = asString(p.end_pcb_port_id);
+        if (e) endPortId = e; // keep the last one we see
+      }
+      if (startPortId) fromSel = selByPcbPortId.get(startPortId);
+      if (endPortId) toSel = selByPcbPortId.get(endPortId);
+    }
+    if (!fromSel || !toSel || fromSel === toSel) {
+      const fallback = selsBySourceTraceId.get(
+        asString(r.source_trace_id) ?? "",
+      );
+      if (fallback && fallback.fromSel !== fallback.toSel) {
+        fromSel = fallback.fromSel;
+        toSel = fallback.toSel;
+      } else {
+        fromSel = undefined;
+        toSel = undefined;
+      }
+    }
+    out.set(
+      pcbTraceId,
+      fromSel && toSel
+        ? { key: connectionId(fromSel, toSel), fromSel, toSel }
+        : { key: `pcbtrace_${pcbTraceId}` as StableKey },
+    );
+  }
+  return out;
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────────
 
 export function buildPcbModel(
@@ -824,37 +920,16 @@ export function buildPcbModel(
     }
   }
 
-  // ─── Phase 5: Traces (eval-side routes + manual overrides) ─────────────
+  // ─── Phase 5: Traces (manual sidecar routes + autorouted eval routes) ───
   const traces: PcbTraceRecord[] = [];
+
+  // Standalone pcb_via elements are still not collected: the autorouter emits
+  // every via twice — as a `route_type: "via"` entry inside pcb_trace.route
+  // AND as a standalone pcb_via element at the same x/y. The route entries
+  // render as inline trace vias below; collecting the standalone copies too
+  // would double-draw every hole (issue #23's floating vias were these,
+  // orphaned when their traces were hidden). `standaloneVias` stays empty.
   const standaloneVias: PcbViaRecord[] = [];
-
-  // First, walk circuit-json pcb_trace elements to capture the eval's
-  // route for each source_trace_id. Manual edits override this below.
-  const evalRouteBySourceTraceId = new Map<
-    string,
-    { segments: PcbTraceSegment[]; vias: PcbViaRecord[] }
-  >();
-  for (const el of circuitJson) {
-    if (!el || typeof el !== "object") continue;
-    const r = el as Record<string, unknown>;
-    if (asString(r.type) !== "pcb_trace") continue;
-    const srcTraceId = asString(r.source_trace_id);
-    const routeArr = r.route as unknown[] | undefined;
-    if (!srcTraceId || !Array.isArray(routeArr)) continue;
-    const built = buildSegmentsFromCircuitJsonRoute(routeArr);
-    if (built.segments.length === 0 && built.vias.length === 0) continue;
-    evalRouteBySourceTraceId.set(srcTraceId, built);
-  }
-
-  // Standalone vias from circuitJson are intentionally NOT rendered. They are
-  // emitted by the tscircuit autorouter as part of its multi-layer routes —
-  // but the editor is manual-only and already ignores the autorouter's
-  // pcb_trace geometry (see the "No eval-route fallback" note in Phase 5
-  // below). Rendering the vias without their owning traces produced floating
-  // vias "coming from nowhere" (issue #23). Vias the user actually placed live
-  // in manualEdits as route layer-changes and surface as inline trace vias.
-  // To restore autoroute display, re-introduce both the eval-route lookup AND
-  // this pcb_via collection together. `standaloneVias` stays an empty array.
 
   // Pair every source_trace to the connection id of its endpoint pads. A
   // sidecar route is keyed by that same connection id (see
@@ -877,15 +952,13 @@ export function buildPcbModel(
     if (!selectorsByConnId.has(connId)) selectorsByConnId.set(connId, sels);
   }
 
-  // Render every sidecar route. Routes live ONLY in the sidecar (there is no
-  // <trace> in the tsx — connectivity is `connections`), keyed by the
+  // Render every sidecar route. Manual routes live ONLY in the sidecar (there
+  // is no <trace> in the tsx — connectivity is `connections`), keyed by the
   // connection id of their two endpoints. This is fully decoupled from the
   // eval: a freshly-drawn route shows immediately, with no one-cycle lag, and
   // a route whose net the eval already produced recovers its from/to selectors
   // from the map above. A component-placement entry carries pcb.{x,y} but no
-  // route, so it is skipped here. No eval-route (autoroute) display fallback —
-  // every connection the user hasn't routed surfaces as a ratsnest airwire
-  // (Phase 8); `evalRouteBySourceTraceId` is gathered for a future restore.
+  // route, so it is skipped here.
   for (const [k, entry] of Object.entries(manualEdits)) {
     const manualRoute = entry?.pcb?.route;
     if (!manualRoute || manualRoute.length < 2) continue;
@@ -903,6 +976,36 @@ export function buildPcbModel(
       segments: built.segments,
       vias: built.vias,
       userRouted: true,
+    });
+  }
+
+  // Autorouted traces — the eval's pcb_trace elements, displayed by default.
+  // Each is keyed by the pad-pair connection id its route physically spans
+  // (evalTraceEndpoints), the same key space as manual routes, so a sidecar
+  // entry can override (pcb.route, above) or hide (pcb.noAutoroute, set on
+  // delete) one specific connection and survive re-evals.
+  const manualRouteKeys = new Set(traces.map((t) => t.key));
+  const evalEndpoints = evalTraceEndpoints(circuitJson);
+  for (const el of circuitJson) {
+    if (!el || typeof el !== "object") continue;
+    const r = el as Record<string, unknown>;
+    if (asString(r.type) !== "pcb_trace") continue;
+    const pcbTraceId = asString(r.pcb_trace_id);
+    const routeArr = r.route as unknown[] | undefined;
+    if (!pcbTraceId || !Array.isArray(routeArr)) continue;
+    const ends = evalEndpoints.get(pcbTraceId);
+    if (!ends) continue;
+    if (manualRouteKeys.has(ends.key)) continue; // manual route overrides
+    if (manualEdits[ends.key]?.pcb?.noAutoroute) continue; // user deleted
+    const built = buildSegmentsFromCircuitJsonRoute(routeArr, ends.key);
+    if (built.segments.length === 0 && built.vias.length === 0) continue;
+    traces.push({
+      key: ends.key,
+      fromSelector: ends.fromSel ?? "",
+      toSelector: ends.toSel ?? "",
+      segments: built.segments,
+      vias: built.vias,
+      userRouted: false,
     });
   }
 
@@ -1130,8 +1233,9 @@ export function buildPcbModel(
   // We union source_port ids, bridged by a synthetic node per net so all pads
   // on one net collapse into a single component (mirrors liveRouteConnIds in
   // circuitJsonMerge.ts — the two read connectivity the same way so they can't
-  // drift). Autorouter ignored: a net is "routed" only when a manualEdits
-  // sidecar route exists, never because the eval produced a pcb_trace.route.
+  // drift). A net counts as "routed" when DISPLAYED copper joins its pads —
+  // an autorouted eval trace or a manual sidecar route alike (a deleted
+  // autoroute displays nothing, so its airwire returns).
   const parent = new Map<string, string>();
   const find = (x: string): string => {
     if (!parent.has(x)) {
@@ -1185,17 +1289,22 @@ export function buildPcbModel(
     }
   }
 
+  // Connection ids joined by displayed copper — manual routes and autorouted
+  // eval traces alike (both are in `traces` by now, keyed identically).
+  const routedConnIds = new Set<StableKey>(traces.map((t) => t.key));
+
   const nets: UnroutedNet[] = [];
   const unroutedNets: UnroutedNet[] = [];
   for (const padMap of padsByRoot.values()) {
     const sels = [...padMap.keys()];
     if (sels.length < 2) continue;
 
-    // Cluster pads already joined by committed copper. A sidecar route is keyed
-    // by connectionId(endpoints) — the same key PcbCanvas.commitRoute wrote — so
-    // pads with a route between them collapse into one cluster. The MST then
-    // skips airwires over routed copper but still ratsnests the rest, so a
-    // partially-routed power net keeps guiding the user to its remaining pads.
+    // Cluster pads already joined by displayed copper. Routes are keyed by
+    // connectionId(endpoints) — manual ones by PcbCanvas.commitRoute, eval
+    // ones by evalTraceEndpoints — so pads with copper between them collapse
+    // into one cluster. The MST then skips airwires over routed copper but
+    // still ratsnests the rest, so a partially-routed power net keeps guiding
+    // the user to its remaining pads.
     const clusterParent = new Map<string, string>();
     const cFind = (x: string): string => {
       if (!clusterParent.has(x)) {
@@ -1214,7 +1323,7 @@ export function buildPcbModel(
     for (const sel of sels) cFind(sel);
     for (let i = 0; i < sels.length; i++) {
       for (let j = i + 1; j < sels.length; j++) {
-        if (manualEdits[connectionId(sels[i], sels[j])]?.pcb?.route?.length) {
+        if (routedConnIds.has(connectionId(sels[i], sels[j]))) {
           cUnion(sels[i], sels[j]);
         }
       }
@@ -1560,7 +1669,8 @@ function applyPositionDelta(
 }
 
 function buildSegmentsFromCircuitJsonRoute(
-  route: ReadonlyArray<unknown>
+  route: ReadonlyArray<unknown>,
+  traceKey: StableKey | null = null
 ): { segments: PcbTraceSegment[]; vias: PcbViaRecord[] } {
   const segments: PcbTraceSegment[] = [];
   const vias: PcbViaRecord[] = [];
@@ -1578,14 +1688,18 @@ function buildSegmentsFromCircuitJsonRoute(
     if (rt === "via") {
       const fromLayer = normalizeLayer(p.from_layer, "top");
       const toLayer = normalizeLayer(p.to_layer, "bottom");
+      // The autorouter names via dims via_hole_diameter / via_diameter;
+      // hole_diameter / outer_diameter are accepted as legacy spellings.
       vias.push({
         x,
         y,
-        drillDiameter: asNumber(p.hole_diameter) ?? 0.3,
-        outerDiameter: asNumber(p.outer_diameter) ?? 0.6,
+        drillDiameter:
+          asNumber(p.hole_diameter) ?? asNumber(p.via_hole_diameter) ?? 0.3,
+        outerDiameter:
+          asNumber(p.outer_diameter) ?? asNumber(p.via_diameter) ?? 0.6,
         fromLayer,
         toLayer,
-        traceKey: null,
+        traceKey,
       });
       // After a via, subsequent wire points are on the new layer. The
       // route's next wire entry carries its own layer field, so we rely

@@ -83,16 +83,47 @@ function vias(json: unknown[]) {
 }
 
 describe("overlayManualRoutes", () => {
-  it("strips the autoroute even when there are no manual routes (manual-only)", () => {
-    // WYSIWYG: with nothing routed, the board shows bare pads — the same state
-    // the PCB canvas shows (a ratsnest, no copper). The autorouter's pcb_trace
-    // and pcb_via must not survive into 3D / DRC / fab.
+  it("keeps the autoroute when there are no manual routes (autoroute-by-default)", () => {
+    // WYSIWYG: the canvas shows the autorouter's routes by default, so 3D /
+    // DRC / fab must ship them too.
     const { circuitJson } = fixture();
     const merged = overlayManualRoutes(circuitJson, {});
-    expect(merged.find((e) => (e as Record<string, unknown>).type === "pcb_trace")).toBeUndefined();
-    expect(merged.find((e) => (e as Record<string, unknown>).type === "pcb_via")).toBeUndefined();
+    expect(
+      (merged.find((e) => (e as Record<string, unknown>).type === "pcb_trace") as Record<string, unknown>)
+        ?.pcb_trace_id,
+    ).toBe("pt1");
+    expect(
+      (merged.find((e) => (e as Record<string, unknown>).type === "pcb_via") as Record<string, unknown>)
+        ?.pcb_via_id,
+    ).toBe("auto_via");
     // Non-routing elements are preserved.
     expect(merged.filter((e) => (e as Record<string, unknown>).type === "source_port")).toHaveLength(2);
+  });
+
+  it("drops an autoroute the user deleted (noAutoroute) along with its vias", () => {
+    // Deleting a route on the canvas writes { noAutoroute: true } under the
+    // connection id — the merge must hide the eval trace AND its linked
+    // pcb_via so no floating hole ships (issue #23).
+    const { circuitJson } = fixture();
+    const manualEdits: ManualEditsMap = {
+      [ROUTE_KEY]: { pcb: { noAutoroute: true } },
+    };
+    const merged = overlayManualRoutes(circuitJson, manualEdits);
+    expect(merged.find((e) => (e as Record<string, unknown>).type === "pcb_trace")).toBeUndefined();
+    expect(merged.find((e) => (e as Record<string, unknown>).type === "pcb_via")).toBeUndefined();
+    expect(merged.filter((e) => (e as Record<string, unknown>).type === "source_port")).toHaveLength(2);
+  });
+
+  it("noAutoroute on one connection leaves other autoroutes untouched", () => {
+    const { circuitJson } = fixture();
+    const manualEdits: ManualEditsMap = {
+      [connectionId("R9.pin1", "R8.pin2")]: { pcb: { noAutoroute: true } },
+    };
+    const merged = overlayManualRoutes(circuitJson, manualEdits);
+    expect(
+      (merged.find((e) => (e as Record<string, unknown>).type === "pcb_trace") as Record<string, unknown>)
+        ?.pcb_trace_id,
+    ).toBe("pt1");
   });
 
   it("returns an empty array for empty/null input", () => {
@@ -187,9 +218,9 @@ describe("overlayManualRoutes", () => {
   });
 
   it("synthesizes a route that pairs to no source_trace (rendered from geometry)", () => {
-    // The route's pads aren't a known source_trace. The drawn copper must still
-    // appear (matching the canvas) — just with no source_trace_id, and the
-    // autoroute is still stripped.
+    // The route's pads aren't a known source_trace. The drawn copper must
+    // still appear (matching the canvas) — just with no source_trace_id — and
+    // the autoroute it doesn't override (pt1) is kept.
     const { circuitJson } = fixture();
     const manualEdits: ManualEditsMap = {
       ["conn_abc123" as StableKey]: {
@@ -202,13 +233,14 @@ describe("overlayManualRoutes", () => {
       },
     };
     const merged = overlayManualRoutes(circuitJson, manualEdits);
-    // pt1 / auto_via stripped; exactly the orphan route synthesized.
     const traces = merged.filter(
       (e) => (e as Record<string, unknown>).type === "pcb_trace"
-    );
-    expect(traces).toHaveLength(1);
-    expect((traces[0] as Record<string, unknown>).source_trace_id).toBeUndefined();
-    expect((traces[0] as Record<string, unknown>).route).toHaveLength(2);
+    ) as Array<Record<string, unknown>>;
+    expect(traces).toHaveLength(2);
+    expect(traces.some((t) => t.pcb_trace_id === "pt1")).toBe(true);
+    const orphan = traces.find((t) => t.pcb_trace_id !== "pt1")!;
+    expect(orphan.source_trace_id).toBeUndefined();
+    expect(orphan.route).toHaveLength(2);
   });
 
   it("emits one pcb_via per layer change with unique ids for multi-via routes", () => {
@@ -385,10 +417,15 @@ describe("overlayManualRoutes", () => {
         },
       },
     };
-    // The bad route isn't shipped; with no other manual route the autoroute is
-    // still stripped (manual-only), so no pcb_trace survives.
+    // The bad route isn't shipped — and since it never became a valid
+    // override, the autoroute for that connection survives instead. Either
+    // way no NaN reaches the output.
     const merged = overlayManualRoutes(circuitJson, manualEdits);
-    expect(merged.find((e) => (e as Record<string, unknown>).type === "pcb_trace")).toBeUndefined();
+    const traces = merged.filter(
+      (e) => (e as Record<string, unknown>).type === "pcb_trace"
+    ) as Array<Record<string, unknown>>;
+    expect(traces).toHaveLength(1);
+    expect(traces[0].pcb_trace_id).toBe("pt1");
   });
 
   it("reattaches subcircuit_id (captured before strip) to the synthesized trace and its via", () => {
@@ -616,5 +653,31 @@ describe("liveRouteConnIds", () => {
     const set = liveRouteConnIds(json)!;
     expect(set.has(connectionId("R1.pin1", "R2.pin1"))).toBe(false);
     expect(set.size).toBe(0);
+  });
+
+  it("includes the synthetic pcbtrace_ key of an eval trace that resolves no pad pair", () => {
+    // A noAutoroute marker on such a trace is stored under the
+    // `pcbtrace_<pcb_trace_id>` fallback key (evalTraceEndpoints). It must be
+    // live — survive pruneOrphanEdits at save time — for as long as the trace
+    // is in the circuit-json, or the user's deletion reappears after reload.
+    const trace = {
+      type: "pcb_trace",
+      pcb_trace_id: "pt_orphan",
+      route: [
+        { route_type: "wire", x: 0, y: 0, layer: "top", width: 0.15 },
+        { route_type: "wire", x: 1, y: 0, layer: "top", width: 0.15 },
+      ],
+    };
+    const withTrace = liveRouteConnIds([
+      ...powerNet(),
+      trace,
+    ] as unknown as AnyCircuitElement[])!;
+    expect(withTrace.has("pcbtrace_pt_orphan" as StableKey)).toBe(true);
+    // Pad-pair liveness is unaffected by the extra keys.
+    expect(withTrace.has(connectionId("R1.pin1", "R2.pin1"))).toBe(true);
+    // Trace gone from the eval → its synthetic key goes with it (the marker
+    // is orphaned and prunable).
+    const withoutTrace = liveRouteConnIds(powerNet())!;
+    expect(withoutTrace.has("pcbtrace_pt_orphan" as StableKey)).toBe(false);
   });
 });

@@ -242,15 +242,20 @@ export function pruneOrphanEdits(
   const pruned: StableKey[] = [];
   const out: ManualEditsMap = {};
   for (const [key, val] of Object.entries(manualEdits)) {
-    const hasRoute = (val.pcb?.route?.length ?? 0) >= 2;
+    // A route edit is a manual route OR a noAutoroute deletion marker. Both
+    // share the same liveness rule; the liveness set covers both key shapes —
+    // pad-pair connection ids, plus the synthetic `pcbtrace_` keys a marker on
+    // an endpoint-less eval trace uses (see liveRouteConnIds).
+    const hasRouteEdit =
+      (val.pcb?.route?.length ?? 0) >= 2 || val.pcb?.noAutoroute === true;
     const keep =
       liveKeys.has(key) ||
       liveConnIds.has(key) ||
-      // PCB route geometry is sidecar-OWNED (no `<trace>` in the tsx). Keep it
+      // PCB route state is sidecar-OWNED (no `<trace>` in the tsx). Keep it
       // iff its endpoints are still co-netted in the evaluated design; an
       // orphaned route (its net/components deleted) is pruned. When liveness is
       // unknown (canPruneRoutes === false), keep it.
-      (hasRoute && (!canPruneRoutes || liveRouteConnIds!.has(key)));
+      (hasRouteEdit && (!canPruneRoutes || liveRouteConnIds!.has(key)));
     if (keep) out[key] = val;
     else pruned.push(key);
   }

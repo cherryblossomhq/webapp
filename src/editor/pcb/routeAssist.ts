@@ -1,10 +1,16 @@
-// routeAssist — interactive routing helpers for the PCB editor.
+// routeAssist — interactive MANUAL-routing helpers for the PCB editor: the
+// obstacle-aware smart path preview while drawing with the route tool, plus
+// net-lookup utilities for focus highlighting.
 //
-// Uses @tscircuit/infgrid-ijump-astar (IJump / MultilayerIjump) for orthogonal
-// autoroute, and an in-house 8-direction grid A* for 45° / free modes.
+// Autorouting is NOT here: the board is autorouted by @tscircuit/core's
+// capacity-mesh autorouter during eval, and pcbModel displays those routes
+// directly (the sidecar only overrides or hides them per connection).
 //
-// Obstacles are built from the live pcbModel (pads + committed traces).
-// Pads on the net being routed are excluded so the path can terminate on them.
+// Uses @tscircuit/infgrid-ijump-astar (IJump / MultilayerIjump) for the
+// orthogonal preview, and an in-house 8-direction grid A* for 45° / free
+// modes. Obstacles are built from the live pcbModel (pads + displayed
+// traces). Pads on the net being routed are excluded so the path can
+// terminate on them.
 
 import {
   IJumpAutorouter,
@@ -13,7 +19,6 @@ import {
 import { canonEndpoint, connectionId } from "@/editor/shared/connectionId";
 import type {
   LayerId,
-  ManualEditsMap,
   PcbRoutePoint,
   PcbRoutingMode,
   StableKey,
@@ -25,7 +30,6 @@ import {
   type PcbTraceSegment,
   type UnroutedNet,
 } from "./pcbModel";
-import { computeNetMst, type RatsnestEdge } from "./ratsnest";
 import { copperLayersForCount } from "./layers";
 
 const OBSTACLE_MARGIN = 0.15;
@@ -48,18 +52,6 @@ export interface RouteEndpoint {
   x: number;
   y: number;
   layer: LayerId;
-}
-
-export interface AutorouteResult {
-  connId: StableKey;
-  fromSelector: string;
-  toSelector: string;
-  route: PcbRoutePoint[];
-}
-
-export interface AutorouteOpts {
-  replaceExisting?: boolean;
-  excludeTraceKey?: StableKey | null;
 }
 
 // ─── Net lookup ───────────────────────────────────────────────────────────────
@@ -637,208 +629,4 @@ function fromSamePoint(
   b: { x: number; y: number }
 ): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) < GRID_STEP / 2;
-}
-
-// ─── Autoroute ────────────────────────────────────────────────────────────────
-
-export function autorouteEdge(
-  model: PcbModel,
-  edge: RatsnestEdge,
-  traceWidth: number,
-  layerCount: number,
-  activeLayer: LayerId,
-  opts?: AutorouteOpts
-): AutorouteResult | null {
-  const fromPad = model.padBySelector.get(edge.fromSelector);
-  const toPad = model.padBySelector.get(edge.toSelector);
-  if (!fromPad || !toPad) return null;
-
-  const fromLayer = fromPad.isThroughHole ? activeLayer : fromPad.layer;
-  const toLayer = toPad.isThroughHole ? activeLayer : toPad.layer;
-  const connId = connectionId(edge.fromSelector, edge.toSelector);
-
-  const route = findRoutePath({
-    model,
-    from: {
-      selector: edge.fromSelector,
-      x: fromPad.x,
-      y: fromPad.y,
-      layer: fromLayer,
-    },
-    to: {
-      selector: edge.toSelector,
-      x: toPad.x,
-      y: toPad.y,
-      layer: toLayer,
-    },
-    traceWidth,
-    layerCount,
-    excludeSelectors: selectorsOnNet(
-      model.nets.find((n) => n.traceKey === edge.traceKey) ?? {
-        traceKey: edge.traceKey,
-        fromSelector: edge.fromSelector,
-        toSelector: edge.toSelector,
-        pads: [
-          {
-            selector: edge.fromSelector,
-            x: fromPad.x,
-            y: fromPad.y,
-            componentKey: fromPad.componentKey,
-          },
-          {
-            selector: edge.toSelector,
-            x: toPad.x,
-            y: toPad.y,
-            componentKey: toPad.componentKey,
-          },
-        ],
-      }
-    ),
-    excludeTraceKey: opts?.replaceExisting ? connId : opts?.excludeTraceKey,
-    // Autoroute always uses the orthogonal IJump router. The 45°/free grid
-    // A* is fine for short interactive previews but stair-steps badly over
-    // longer autoroute spans, so we force clean 90° geometry here regardless
-    // of the editor's manual routing mode.
-    routingMode: "ortho",
-  });
-
-  if (!route) return null;
-  return {
-    connId,
-    fromSelector: edge.fromSelector,
-    toSelector: edge.toSelector,
-    route,
-  };
-}
-
-export function autorouteNet(
-  model: PcbModel,
-  net: UnroutedNet,
-  manualEdits: ManualEditsMap,
-  traceWidth: number,
-  layerCount: number,
-  activeLayer: LayerId,
-  opts?: AutorouteOpts
-): AutorouteResult[] {
-  const edges = computeNetMst(net);
-  const out: AutorouteResult[] = [];
-  for (const edge of edges) {
-    const connId = connectionId(edge.fromSelector, edge.toSelector);
-    if (!opts?.replaceExisting && manualEdits[connId]?.pcb?.route?.length) {
-      continue;
-    }
-    const result = autorouteEdge(
-      model,
-      edge,
-      traceWidth,
-      layerCount,
-      activeLayer,
-      opts
-    );
-    if (result) out.push(result);
-  }
-  return out;
-}
-
-export function autorouteFocusedNet(
-  model: PcbModel,
-  manualEdits: ManualEditsMap,
-  traceWidth: number,
-  layerCount: number,
-  activeLayer: LayerId,
-  netKey: StableKey | null,
-  opts?: AutorouteOpts
-): AutorouteResult[] {
-  if (!netKey) return [];
-  const net = model.nets.find((n) => n.traceKey === netKey);
-  if (!net) return [];
-  return autorouteNet(
-    model,
-    net,
-    manualEdits,
-    traceWidth,
-    layerCount,
-    activeLayer,
-    opts
-  );
-}
-
-export interface AutorouteAllResult {
-  results: AutorouteResult[];
-  // Nets where not a single airwire could be routed (no unobstructed path).
-  failedNets: number;
-}
-
-// Autoroute every unrouted net on the board. Nets are routed one at a time and
-// the obstacle model is rebuilt after each, so a net's freshly laid traces
-// become obstacles for the nets still to route — that's what keeps two
-// different nets off the same copper (a short). Rebuilding reshapes
-// `unroutedNets`, so the work list is snapshotted up front: every net is
-// attempted exactly once and the loop always terminates.
-//
-// `rebuildModel` produces a PcbModel from an updated manualEdits sidecar; the
-// caller supplies it (it owns circuitJson + tsx) so this stays renderer-free.
-export function autorouteAll(
-  model: PcbModel,
-  manualEdits: ManualEditsMap,
-  traceWidth: number,
-  layerCount: number,
-  activeLayer: LayerId,
-  rebuildModel: (edits: ManualEditsMap) => PcbModel,
-  opts?: AutorouteOpts
-): AutorouteAllResult {
-  const targetKeys = model.unroutedNets
-    .map((n) => n.traceKey)
-    .filter((k): k is StableKey => k != null);
-
-  let workingModel = model;
-  let edits = manualEdits;
-  const results: AutorouteResult[] = [];
-  let failedNets = 0;
-
-  for (const key of targetKeys) {
-    // Re-resolve the net against the rebuilt model so its cluster ids (and thus
-    // the remaining airwires its MST spans) reflect copper laid by prior nets.
-    const net = workingModel.nets.find((n) => n.traceKey === key);
-    if (!net) continue;
-    const netResults = autorouteNet(
-      workingModel,
-      net,
-      edits,
-      traceWidth,
-      layerCount,
-      activeLayer,
-      opts
-    );
-    if (netResults.length === 0) {
-      failedNets++;
-      continue;
-    }
-    edits = withAutoroutedTraces(edits, netResults, traceWidth);
-    workingModel = rebuildModel(edits);
-    results.push(...netResults);
-  }
-
-  return { results, failedNets };
-}
-
-// Merge a batch of routes into a manualEdits copy the same way
-// commitAutorouteResults (the single-net commit path in PcbCanvas) builds each
-// edit before handing it to setPcbEdit — preserve any existing pcb fields, set
-// route + width. (setPcbEdit itself replaces the whole pcb object, so the
-// spread that preserves sibling fields lives here, at the call site.)
-function withAutoroutedTraces(
-  edits: ManualEditsMap,
-  results: AutorouteResult[],
-  traceWidth: number
-): ManualEditsMap {
-  const next: ManualEditsMap = { ...edits };
-  for (const r of results) {
-    const prev = next[r.connId] ?? {};
-    next[r.connId] = {
-      ...prev,
-      pcb: { ...(prev.pcb ?? {}), route: r.route, width: traceWidth },
-    };
-  }
-  return next;
 }

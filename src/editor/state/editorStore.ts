@@ -77,13 +77,13 @@ interface EditorStore {
   // Trace width for new segments (mm). Pressing `T` cycles width profiles.
   traceWidth: number;
   activeWidthProfileId: string | null;
-  // Angle constraint for manual routing, preview, and autoroute.
+  // Angle constraint for manual routing and the smart preview.
   routingMode: PcbRoutingMode;
   // In-progress PCB route. Owned here so the canvas, status bar, and
   // keyboard shortcut handlers all coordinate.
   pcbRouteDraft: PcbRouteDraft | null;
   // Net currently in focus for routing (highlights pads/traces, dims the rest).
-  // Set when a route starts or when the user picks a ratsnest edge to autoroute.
+  // Set when a route starts or when the user picks a ratsnest edge.
   focusedNetKey: StableKey | null;
   // Hovered element under the cursor (for highlight overlay). Set per
   // pointermove from the canvas hit-test. Null when not hovering.
@@ -117,8 +117,8 @@ interface EditorStore {
   setSchematicEdit: (key: StableKey, edit: SchematicEdit | null) => void;
   setPcbEdit: (key: StableKey, edit: PcbEdit | null) => void;
   // Batch variant of setPcbEdit: applies every entry in ONE store update so a
-  // multi-select drag (or an autoroute-all commit) costs one notification and
-  // one manualEdits copy per frame instead of one per key.
+  // multi-select drag (or a board-wide re-autoroute restore) costs one
+  // notification and one manualEdits copy per frame instead of one per key.
   setPcbEdits: (
     entries: ReadonlyArray<readonly [StableKey, PcbEdit | null]>
   ) => void;

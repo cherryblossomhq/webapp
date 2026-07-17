@@ -555,12 +555,11 @@ describe("buildPcbModel", () => {
     expect(t!.segments).toHaveLength(1);
   });
 
-  it("ignores eval pcb_trace routes (autorouter display is off)", () => {
-    // The tscircuit autorouter emits pcb_trace.route arrays even when the
-    // user wants manual routing only. The pcbModel must NOT surface those
-    // as rendered traces — connectivity is in tsx, geometry is in the
-    // sidecar. Eval-only nets render as ratsnest.
-    const json = [
+  // A json fixture whose net (R1.pin1 ↔ R2.pin1) was routed by the eval's
+  // autorouter. No endpoint port ids on the route — the key falls back to the
+  // source_trace pairing, which is the same connection id (ROUTE_KEY).
+  function fakePcbJsonWithAutoroute(): unknown[] {
+    return [
       ...fakePcbJson(),
       {
         type: "pcb_trace",
@@ -572,12 +571,87 @@ describe("buildPcbModel", () => {
         ],
       },
     ];
-    const m = buildPcbModel(json as never, TSX_FIXTURE, {});
-    // No traces rendered (no manualEdits route exists).
+  }
+
+  it("renders eval pcb_trace routes by default (autoroute-on)", () => {
+    const m = buildPcbModel(fakePcbJsonWithAutoroute() as never, TSX_FIXTURE, {});
+    const t = m.traces.find((tr) => tr.key === ROUTE_KEY);
+    expect(t).toBeDefined();
+    expect(t!.userRouted).toBe(false);
+    expect(t!.segments).toHaveLength(1);
+    expect(t!.fromSelector).toBe("r1.pin1");
+    expect(t!.toSelector).toBe("r2.pin1");
+    // Displayed copper joins the net's pads — no airwire over it.
+    expect(m.unroutedNets).toHaveLength(0);
+  });
+
+  it("hides a deleted autoroute (noAutoroute) and brings back the airwire", () => {
+    const edits: ManualEditsMap = {
+      [ROUTE_KEY]: { pcb: { noAutoroute: true } },
+    };
+    const m = buildPcbModel(fakePcbJsonWithAutoroute() as never, TSX_FIXTURE, edits);
     expect(m.traces).toHaveLength(0);
-    // The ratsnest still includes the net so the user knows it's
-    // unrouted — the eval route doesn't suppress the airwire.
     expect(m.unroutedNets.length).toBeGreaterThan(0);
+  });
+
+  it("a manual sidecar route overrides the eval route for its connection", () => {
+    const edits: ManualEditsMap = {
+      [ROUTE_KEY]: {
+        pcb: {
+          route: [
+            { x: -0.4, y: 0, layer: "top" },
+            { x: -0.4, y: 1, layer: "top" },
+            { x: 2.6, y: 1, layer: "top" },
+            { x: 2.6, y: 0, layer: "top" },
+          ],
+          width: 0.3,
+        },
+      },
+    };
+    const m = buildPcbModel(fakePcbJsonWithAutoroute() as never, TSX_FIXTURE, edits);
+    // Exactly one trace for the connection — the manual one.
+    const matching = m.traces.filter((tr) => tr.key === ROUTE_KEY);
+    expect(matching).toHaveLength(1);
+    expect(matching[0].userRouted).toBe(true);
+    expect(matching[0].segments).toHaveLength(3);
+  });
+
+  it("keys an eval trace by its route's endpoint port ids when present", () => {
+    // start/end_pcb_port_id name the pads the autorouter actually landed on
+    // (here R1.pin2 ↔ R2.pin1) and win over the source_trace fallback
+    // (which would pair R1.pin1 ↔ R2.pin1).
+    const json = [
+      ...fakePcbJson(),
+      {
+        type: "pcb_trace",
+        pcb_trace_id: "pt_2",
+        source_trace_id: "st_1",
+        route: [
+          {
+            route_type: "wire",
+            x: 0.4,
+            y: 0,
+            layer: "top",
+            width: 0.15,
+            start_pcb_port_id: "pp_r1_2",
+          },
+          {
+            route_type: "wire",
+            x: 2.6,
+            y: 0,
+            layer: "top",
+            width: 0.15,
+            end_pcb_port_id: "pp_r2_1",
+          },
+        ],
+      },
+    ];
+    const m = buildPcbModel(json as never, TSX_FIXTURE, {});
+    const t = m.traces[0];
+    expect(t).toBeDefined();
+    expect(t.key).toBe(connectionId("R1.pin2", "R2.pin1"));
+    expect(t.fromSelector).toBe("r1.pin2");
+    expect(t.toSelector).toBe("r2.pin1");
   });
 
   it("renders a sidecar route over its net (userRouted=true)", () => {

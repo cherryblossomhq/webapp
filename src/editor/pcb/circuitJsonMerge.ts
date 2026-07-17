@@ -1,21 +1,23 @@
 // overlayManualRoutes — produce the single "what-you-see-is-what-you-get"
 // circuit-json shared by every consumer that isn't the live PCB canvas: the 3D
 // viewer, the DRC runner, and fabrication exporters (Gerber, drill, PnP). The
-// result contains exactly the copper the user drew — nothing the autorouter
-// produced — so 3D / DRC / fab match the PCB editor pixel-for-pixel.
+// result contains exactly the copper the PCB canvas shows — the autorouter's
+// routes by default, minus what the user deleted, with manual routes spliced
+// over — so 3D / DRC / fab match the PCB editor pixel-for-pixel.
 //
 // What it does
 // ------------
-// 1. Strips EVERY autorouter `pcb_trace` + `pcb_via`. The editor is manual-only
-//    (pcbModel Phase 5 never renders eval routes), so neither does anything
-//    downstream — an unrouted net shows bare pads here just as it shows a
-//    ratsnest airwire on the canvas.
+// 1. Drops the autorouter `pcb_trace`s (and their linked `pcb_via`s) that the
+//    sidecar replaces (a manual route at the same connection key) or hides
+//    (`pcb.noAutoroute`, set when the user deletes a route). Everything else
+//    the autorouter produced is kept — same rule pcbModel Phase 5 renders by,
+//    via the shared evalTraceEndpoints keying.
 // 2. Synthesizes a `pcb_trace` (+ linked `pcb_via` per layer change) from every
 //    sidecar route. Routes live ONLY in the sidecar (no `<trace>` in the tsx —
 //    connectivity is `connections`), keyed by the connection id of their
 //    endpoints (PcbCanvas.commitRoute). We recompute that id from each
 //    source_trace's pads to reattach `source_trace_id` + the autorouter's
-//    endpoint `*_pcb_port_id`s + `subcircuit_id` (captured before stripping) so
+//    endpoint `*_pcb_port_id`s + `subcircuit_id` (captured before dropping) so
 //    DRC sees the route as a real, connected, net-scoped trace. A route with no
 //    matching source_trace is still emitted and rendered from its geometry.
 //
@@ -36,7 +38,12 @@ import {
   DEFAULT_VIA_DRILL_MM,
   DEFAULT_VIA_PAD_MM,
 } from "./layers";
-import { endpointSelectors, padSelectorFor, resolveSourceGraph } from "./pcbModel";
+import {
+  endpointSelectors,
+  evalTraceEndpoints,
+  padSelectorFor,
+  resolveSourceGraph,
+} from "./pcbModel";
 import { connectionId } from "../shared/connectionId";
 import type {
   LayerId,
@@ -66,12 +73,14 @@ function isFinitePoint(p: PcbRoutePoint): boolean {
 }
 
 /**
- * Build the manual-only circuit-json shared by the 3D viewer, DRC, and fab
- * export: every autorouter pcb_trace/pcb_via stripped, one pcb_trace (+ vias)
- * synthesized per sidecar route, so the output matches the PCB canvas exactly.
- * The input array is never mutated. A route with a non-finite coord is skipped
- * (never shipped); a route that pairs to no source_trace is still emitted and
- * rendered from its geometry, just without net/port linkage.
+ * Build the WYSIWYG circuit-json shared by the 3D viewer, DRC, and fab
+ * export: the autorouter's pcb_trace/pcb_via kept by default, minus the
+ * connections the sidecar overrides (manual route) or hides (noAutoroute),
+ * plus one pcb_trace (+ vias) synthesized per sidecar route — so the output
+ * matches the PCB canvas exactly. The input array is never mutated. A route
+ * with a non-finite coord is skipped (never shipped); a route that pairs to
+ * no source_trace is still emitted and rendered from its geometry, just
+ * without net/port linkage.
  */
 export function overlayManualRoutes(
   circuitJson: ReadonlyArray<AnyCircuitElement> | null | undefined,
@@ -88,12 +97,28 @@ export function overlayManualRoutes(
     const route = manualEdits[k]?.pcb?.route;
     return !!route && route.length >= 2 && route.every(isFinitePoint);
   });
-  // Always strip the autoroute so the result is consistently manual-only —
-  // even with nothing routed yet (bare pads, mirroring the canvas's ratsnest).
-  if (routedKeys.length === 0) return stripAutorouted(circuitJson);
+
+  // Autorouter traces the sidecar replaces (manual route at the same
+  // connection key) or hides (noAutoroute). evalTraceEndpoints keys eval
+  // traces exactly like pcbModel does, so the drop set can't drift from what
+  // the canvas hides.
+  const manualKeySet = new Set<StableKey>(routedKeys);
+  const droppedTraceIds = new Set<string>();
+  for (const [pcbTraceId, ends] of evalTraceEndpoints(circuitJson)) {
+    if (
+      manualKeySet.has(ends.key) ||
+      manualEdits[ends.key]?.pcb?.noAutoroute
+    ) {
+      droppedTraceIds.add(pcbTraceId);
+    }
+  }
+
+  if (routedKeys.length === 0) {
+    return dropHiddenRoutes(circuitJson, droppedTraceIds);
+  }
 
   // Capture, per source_trace, the autorouter's endpoint port ids + subcircuit
-  // BEFORE stripping. A synthesized manual route reattaches these so DRC sees
+  // BEFORE dropping. A synthesized manual route reattaches these so DRC sees
   // its endpoints land on the pads (connectivity) and scopes it to the right
   // subcircuit. First pcb_trace per source_trace wins.
   const metaBySourceTraceId = new Map<
@@ -139,8 +164,9 @@ export function overlayManualRoutes(
   // label points[0] (at pad B) with pad A's id when the two orders disagree.
   const portPosById = buildPortPositionMap(circuitJson);
 
-  // Strip autoroute, then synthesize one pcb_trace (+ vias) per sidecar route.
-  const result = stripAutorouted(circuitJson);
+  // Drop the overridden/hidden autoroutes, then synthesize one pcb_trace
+  // (+ vias) per sidecar route.
+  const result = dropHiddenRoutes(circuitJson, droppedTraceIds);
   let counter = 0;
   for (const key of routedKeys) {
     const pcb = manualEdits[key]?.pcb;
@@ -178,38 +204,59 @@ export function overlayManualRoutes(
   return dedupeCoincidentVias(result);
 }
 
-// Strip every autorouter-generated pcb_trace + pcb_via. The editor is
-// manual-only (pcbModel Phase 5 never renders eval routes), so neither does
-// any downstream consumer — an unrouted net shows bare pads.
-function stripAutorouted(
+// Remove the autorouter pcb_traces in the drop set, and their standalone
+// pcb_via elements (linked by pcb_trace_id) — a hidden trace's vias would
+// otherwise remain as floating holes on the board (issue #23).
+function dropHiddenRoutes(
   circuitJson: ReadonlyArray<AnyCircuitElement>,
+  droppedTraceIds: ReadonlySet<string>,
 ): AnyCircuitElement[] {
+  if (droppedTraceIds.size === 0) return [...circuitJson];
   return circuitJson.filter((el) => {
     const r = asRecord(el);
     if (!r) return true;
     const t = asString(r.type);
-    return t !== "pcb_trace" && t !== "pcb_via";
+    if (t !== "pcb_trace" && t !== "pcb_via") return true;
+    return !droppedTraceIds.has(asString(r.pcb_trace_id) ?? "");
   });
 }
 
 function dedupeCoincidentVias(
   elements: AnyCircuitElement[]
 ): AnyCircuitElement[] {
+  const posKey = (r: Rec): string => {
+    // Sort the layer pair so top→bottom and bottom→top collapse together.
+    const layers = [asString(r.from_layer) ?? "", asString(r.to_layer) ?? ""]
+      .sort()
+      .join("~");
+    return `${r.x}|${r.y}|${layers}`;
+  };
+
+  // Positions covered by a trace-owned via. An OWNERLESS via (a tsx-baked
+  // <via> with no pcb_trace_id) that lands exactly here is the same physical
+  // hole — e.g. a baked crossover the sidecar route also produces — and is
+  // dropped in the pass below.
+  const ownedPositions = new Set<string>();
+  for (const el of elements) {
+    const r = asRecord(el);
+    if (r && asString(r.type) === "pcb_via" && asString(r.pcb_trace_id)) {
+      ownedPositions.add(posKey(r));
+    }
+  }
+
   const seen = new Set<string>();
   const out: AnyCircuitElement[] = [];
   for (const el of elements) {
     const r = asRecord(el);
     if (r && asString(r.type) === "pcb_via") {
-      // Sort the layer pair so top→bottom and bottom→top collapse together.
-      const layers = [asString(r.from_layer) ?? "", asString(r.to_layer) ?? ""]
-        .sort()
-        .join("~");
       // Scope the key to the owning pcb_trace. Two DIFFERENT traces (i.e.
       // different nets) that happen to change layer at the same (x,y) are two
       // distinct physical holes; collapsing them across nets would short the
-      // nets or drop a real hole. Only true duplicates within one trace merge.
+      // nets or drop a real hole. Only true duplicates within one trace merge,
+      // plus ownerless vias absorbed by a coincident owned one.
       const traceId = asString(r.pcb_trace_id) ?? "";
-      const key = `${traceId}|${r.x}|${r.y}|${layers}`;
+      if (!traceId && ownedPositions.has(posKey(r))) continue;
+      const key = `${traceId}|${posKey(r)}`;
       if (seen.has(key)) continue;
       seen.add(key);
     }

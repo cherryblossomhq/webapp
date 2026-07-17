@@ -281,9 +281,9 @@ function PcbTabContent() {
 }
 
 function CadTabContent() {
-  // The 3D viewer sees a "display" circuitJson: raw eval output with the
-  // autorouter's pcb_trace / pcb_via stripped, and the user's manual
-  // routes overlaid. This is the SAME overlay the DRC runner and fab
+  // The 3D viewer sees a "display" circuitJson: the autorouter's routes kept
+  // by default, minus connections the user deleted (noAutoroute), with manual
+  // routes spliced over. This is the SAME overlay the DRC runner and fab
   // exporter use (overlayManualRoutes), so 3D / DRC / fab are guaranteed to
   // match the PCB canvas. Raw circuitJson is preserved in the store untouched
   // so debugging / future tooling can opt back into the eval view.

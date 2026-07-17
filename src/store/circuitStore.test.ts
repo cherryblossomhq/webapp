@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { AnyCircuitElement } from "circuit-json";
 import { useCircuitStore } from "./circuitStore";
+import { useEditorStore } from "../editor/state/editorStore";
 import { extractConnections } from "../utils/tsxTransform";
 
 const getState = () => useCircuitStore.getState();
@@ -8,6 +9,7 @@ const getState = () => useCircuitStore.getState();
 describe("circuitStore", () => {
   beforeEach(() => {
     getState().resetCircuit();
+    useEditorStore.getState().reset();
   });
 
   describe("addComponent", () => {
@@ -344,10 +346,12 @@ describe("circuitStore", () => {
       expect(getState().getCircuitJsonForExport()).toBeNull();
     });
 
-    it("strips the autorouter so export matches the manual-only PCB", () => {
-      // With no manual routes, overlayManualRoutes drops autorouted
-      // pcb_trace/pcb_via and passes the rest through. The getter must route
-      // through it, not hand back the raw evaluated circuitJson.
+    it("applies the route overlay so export matches the PCB canvas", () => {
+      // Autorouted traces ship by default, but a connection the user deleted
+      // (noAutoroute in the editor sidecar) must be dropped. The getter must
+      // route through overlayManualRoutes, not hand back the raw evaluated
+      // circuitJson. This trace resolves no pad pair, so it's keyed by the
+      // synthetic fallback key (`pcbtrace_<pcb_trace_id>`).
       getState().setCircuitJson([
         { type: "source_component", source_component_id: "sc1", name: "R1" },
         {
@@ -360,6 +364,15 @@ describe("circuitStore", () => {
         },
       ] as unknown as AnyCircuitElement[]);
 
+      const kept = getState().getCircuitJsonForExport();
+      expect((kept ?? []).map((e) => (e as { type: string }).type)).toEqual([
+        "source_component",
+        "pcb_trace",
+      ]);
+
+      useEditorStore.setState({
+        manualEdits: { pcbtrace_pt1: { pcb: { noAutoroute: true } } },
+      });
       const exported = getState().getCircuitJsonForExport();
       expect(exported).not.toBeNull();
       const types = (exported ?? []).map((e) => (e as { type: string }).type);

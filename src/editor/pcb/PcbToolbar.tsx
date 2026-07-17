@@ -17,9 +17,10 @@ interface PcbToolbarProps {
   onSelectTool: (mode: ToolMode) => void;
   onSetRoutingMode: (mode: PcbRoutingMode) => void;
   onFit: () => void;
-  onAutoroute: () => void;
-  onAutorouteAll: () => void;
-  canAutoroute: boolean;
+  onRestoreNetAutoroute: () => void;
+  onRestoreBoardAutoroute: () => void;
+  canRestoreNet: boolean;
+  canRestoreBoard: boolean;
 }
 
 interface ToolDef {
@@ -40,9 +41,10 @@ export function PcbToolbar({
   onSelectTool,
   onSetRoutingMode,
   onFit,
-  onAutoroute,
-  onAutorouteAll,
-  canAutoroute,
+  onRestoreNetAutoroute,
+  onRestoreBoardAutoroute,
+  canRestoreNet,
+  canRestoreBoard,
 }: PcbToolbarProps) {
   return (
     <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex flex-row items-center gap-1 p-1 rounded-lg bg-sidebar/90 backdrop-blur-sm border border-border shadow-lg">
@@ -84,16 +86,16 @@ export function PcbToolbar({
 
       <ToolButton
         Icon={Zap}
-        title="Autoroute focused net (A)"
-        disabled={!canAutoroute}
-        onClick={onAutoroute}
+        title="Re-autoroute focused net — discard its manual routes & deletions (A)"
+        disabled={!canRestoreNet}
+        onClick={onRestoreNetAutoroute}
       />
 
       <ToolButton
         Icon={Waypoints}
-        title="Autoroute all nets (⇧A)"
-        disabled={!canAutoroute}
-        onClick={onAutorouteAll}
+        title="Re-autoroute board — discard all manual routes & deletions (⇧A)"
+        disabled={!canRestoreBoard}
+        onClick={onRestoreBoardAutoroute}
       />
 
       <ToolButton Icon={Maximize} title="Fit to view (F)" onClick={onFit} />

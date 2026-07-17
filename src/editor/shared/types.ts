@@ -27,7 +27,7 @@ export interface SchematicEdit {
 // top + bottom only; inner layers are a UI-only follow-up.
 export type LayerId = "top" | "bottom" | string;
 
-/** Angle constraint for manual routing, smart preview, and autoroute. */
+/** Angle constraint for manual routing and the smart path preview. */
 export type PcbRoutingMode = "ortho" | "diag45" | "free";
 
 // One point along a routed trace. Adjacent points with different `layer`
@@ -60,6 +60,12 @@ export interface PcbEdit {
   // Trace width in mm. When unset, the canvas uses the global default
   // (editorStore.traceWidth).
   width?: number;
+  // The user deleted this connection's copper. The autorouter's pcb_trace for
+  // the connection is hidden everywhere (canvas, 3D, DRC, fab export) and the
+  // ratsnest airwire returns — without this flag the eval's route would pop
+  // right back after a delete. A manual `route` overrides the autoroute on
+  // its own; the two never coexist on one entry.
+  noAutoroute?: boolean;
 }
 
 export interface ManualEditEntry {

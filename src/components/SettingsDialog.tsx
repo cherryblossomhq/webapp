@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 
 const ANTHROPIC_KEYS_URL = "https://console.anthropic.com/settings/keys";
+const MANAGE_ACCOUNT_URL = "https://www.trycherryblossom.com/account";
 const SAVED_RESET_MS = 1500;
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Sparkles }[] = [
@@ -374,6 +375,16 @@ function SignedInCard({ user }: { user: AuthUser }) {
   );
 }
 
+// One labeled key/value row in the account details block.
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-sm font-medium">{value}</span>
+    </div>
+  );
+}
+
 function AccountSection() {
   const status = useAuthStore((s) => s.status);
   const user = useAuthStore((s) => s.user);
@@ -384,6 +395,7 @@ function AccountSection() {
   const available = isAuthAvailable();
 
   if (available && status === "signedIn" && user) {
+    const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
     return (
       <div className="flex flex-col gap-5">
         <SectionHeader
@@ -391,6 +403,26 @@ function AccountSection() {
           description="You're signed in — managed AI is available in the AI tab, no API key needed."
         />
         <SignedInCard user={user} />
+
+        <div className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border">
+          {fullName && <DetailRow label="Name" value={fullName} />}
+          <DetailRow label="Email" value={user.email} />
+          <DetailRow label="Managed AI" value="Enabled" />
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <Button
+            variant="outline"
+            className="self-start"
+            onClick={() => openExternal(MANAGE_ACCOUNT_URL)}
+          >
+            Manage account
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Update your profile, plan, and billing on trycherryblossom.com.
+          </p>
+        </div>
       </div>
     );
   }

@@ -68,7 +68,7 @@ The app deploys like any static SPA + one serverless function (`vercel.json` car
 
 ### Transport layer (`src/utils/chatTransport.ts`)
 Every external call the AI loop makes is a browser fetch behind one seam. The multi-turn tool loop is **not** here — it runs in `src/store/chatStore.ts`. The transport only does single per-call work:
-- `streamTurn({auth, model, system, messages, tools?, thinkingEffort?}, callbacks?)` — streams **one** Claude turn over SSE and returns the assembled result (text, tool calls, thinking blocks, stop reason); live text/thinking deltas fire the `onText`/`onThinking` callbacks. The JS loop calls it repeatedly. `auth` is `{kind:"apiKey", key}` (user's own key → api.anthropic.com, allowed cross-origin via the `anthropic-dangerous-direct-browser-access` header) or `{kind:"managed", token, url}` (WorkOS access token → the managed proxy at `url`, Anthropic wire-compatible); JS resolves it per call from the `aiProvider` setting (`resolveChatAuth` in chatStore). The proxy `url` is baked in at build time from `VITE_MANAGED_AI_URL`, falling back to the production URL. `system`/`messages`/`tools` arrive already-shaped (the caller owns the `cache_control` breakpoints); `thinkingEffort` (e.g. `"high"`) turns on Opus adaptive thinking at that effort level. Failure contract: HTTP errors reject with `"{status}:{body}"`, mid-stream SSE errors with `"api_error:{msg}"` (matched by `friendlyChatError`).
+- `streamTurn({auth, model, system, messages, tools?, thinkingEffort?, sessionId?}, callbacks?)` — streams **one** model turn over SSE and returns the assembled result using OpenRouter Chat Completions semantics (`text`, tool calls, `reasoning.text` / `reasoning.details` / opaque replay payload, and `finishReason: "stop" | "length" | "tool_calls" | …`). Live non-empty text/thinking deltas fire `onText`/`onThinking`; empty provider deltas are ignored so they cannot split a continuous UI trace. The JS loop calls it repeatedly. `auth` is `{kind:"managed", token, url}` (WorkOS access token → the OpenAI-compatible OpenRouter proxy at `/api/v1/chat/completions`) or the legacy `{kind:"apiKey", key}` BYOK route (user's own key → Anthropic's native Messages API). Managed requests move system blocks into the messages array, translate tool calls/results, and preserve `reasoning_details` unchanged through tool rounds. The Anthropic adapter retains native IDs/headers/body/SSE but maps its stop reasons and signed thinking blocks into the OpenRouter-first turn contract. The managed origin is baked in from `VITE_MANAGED_AI_URL`; the client forces the current completions path. HTTP errors reject with `"{status}:{body}"`, mid-stream errors with `"api_error:{msg}"`, and safe diagnostics retain `Retry-After` / `x-generation-id`.
 - `searchJlcpcb(query, limit?)` / `lookupFootprint(lcscId?, mpn?)` — direct fetches to `jlcsearch.tscircuit.com` (CORS-enabled), formatted for the model.
 - `fetchDatasheet(auth, lcscId, mpn?)` — delegates to `src/utils/datasheets.ts` (same `auth` shape as `streamTurn`).
 - `import_component` has no HTTP backend of its own — it resolves inline via `easyedaImport.fetchComponentDef`.
@@ -78,7 +78,7 @@ Tool-action rows (search / footprint / datasheet / import) are pushed directly b
 ### AI Edit Flow
 ```
 User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
-  repeat: streamTurn (one turn) → if stop_reason == tool_use,
+  repeat: streamTurn (one turn) → if finishReason == tool_calls,
           dispatch each tool in JS (search_jlcpcb / lookup_footprint /
           fetch_datasheet / import_component) → feed tool_results
           back → loop, until the model emits answer text (or MAX_TOOL_ROUNDS)
@@ -99,8 +99,8 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 - The **rotating refresh token** persists in localStorage (scoped per client id). JS holds the short-lived access token in memory only — `src/store/authStore.ts` (session state + scheduled refresh).
 
 ### Managed AI (the "account" provider)
-- Signed-in users can use Cherry Blossom's managed AI instead of their own Anthropic key (`aiProvider` setting: `"account"` vs `"apiKey"`). The server side is the website repo's `POST /api/v1/messages` — an **Anthropic Messages wire-compatible** proxy that takes the WorkOS access token as `Authorization: Bearer`, enforces plan/model/rate limits via Convex, and streams Anthropic's SSE back unchanged. The app sends its normal Anthropic payload; only the endpoint and auth header differ (see `ChatAuth` in `chatTransport.ts`). Being browser-called now, that endpoint must allow this app's origin in its CORS policy.
-- **Error contract** the app branches on (all `{ "error": { "type", "message" } }`): `401 not_authenticated`, `403 plan_required | model_not_allowed` (surface the server's message — it names the plan/model), `429 rate_limited` (+ `Retry-After`), `502 upstream_error`. Anthropic's own non-2xx pass through verbatim. User-facing mapping lives in `friendlyChatError` (`chatStore.ts`).
+- Signed-in users can use Cherry Blossom's managed AI instead of their own Anthropic key (`aiProvider`: `"account"` vs `"apiKey"`). The website repo exposes `POST /api/v1/chat/completions`, an **OpenAI Chat Completions-compatible OpenRouter proxy** authenticated with the WorkOS access token as `Authorization: Bearer`. It enforces plan/model/rate limits via Convex and passes OpenRouter JSON/SSE through unchanged. The browser client builds the Chat Completions payload and parses OpenRouter's stream; the proxy must allow this app's origin in its CORS policy. Direct BYOK remains a separate native Anthropic Messages call and never uses OpenRouter model IDs.
+- **Error contract:** proxy errors are `{ "error": { "type", "message" } }`: `401 not_authenticated`, `403 plan_required | model_not_allowed` (surface the server's message — it names the plan/model), `429 rate_limited` (+ `Retry-After`), `400 invalid_request`, or `502 upstream_error`. OpenRouter-originated non-2xx responses pass through and may only provide `error.message` / `error.code`; mid-stream errors can arrive in an HTTP-200 SSE chunk. User-facing mapping lives in `friendlyChatError` (`chatStore.ts`).
 - Plans (`free`/`pro`/`enterprise`) and their per-minute/per-day rates + monthly token quotas are defined in the **website repo** (`convex/plans.ts`) — this repo never sees plan logic, only the error types above.
 
 ---
@@ -120,9 +120,6 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 ## Repo-Level Skills
 
 `skills-lock.json` is managed by `npx skills` — a small CLI that pins agent skill files (markdown guides for specific libraries) from GitHub by content hash, so every agent that runs in this repo gets the same version.
-
-Currently locked:
-- `tscircuit/skill` → `SKILL.md` — guide for working with tscircuit components, footprints, traces, fabrication output.
 
 To refresh or add skills: `npx skills add <owner>/<repo>` / `npx skills update`. Commit the updated `skills-lock.json`. Don't hand-edit it.
 

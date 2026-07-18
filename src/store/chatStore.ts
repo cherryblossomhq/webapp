@@ -21,7 +21,7 @@ import {
   lookupFootprint,
   fetchDatasheet,
   CHAT_TOOLS,
-  MANAGED_MESSAGES_URL,
+  MANAGED_CHAT_COMPLETIONS_URL,
   type ChatAuth,
   type ChatTurnResult,
   type ChatToolCall,
@@ -160,8 +160,8 @@ export interface ChatMessage {
 }
 
 // How AI calls are credentialed: `account` = managed AI through the signed-in
-// user's Cherry Blossom account (our proxy holds the Anthropic key), `apiKey` =
-// the user's own Anthropic key, straight to the API.
+// user's Cherry Blossom account (the server holds its OpenRouter key), `apiKey`
+// = the user's own Anthropic key, sent straight to Anthropic.
 export type AiProvider = "account" | "apiKey";
 
 interface ChatStore {
@@ -181,6 +181,9 @@ interface ChatStore {
   // messages it already covers. Together they form the "summarized prefix".
   sessionNotes: string | null;
   summarizedCount: number;
+  // Stable, random routing key for managed OpenRouter provider/cache affinity.
+  // It contains no user data and rotates whenever chat history is cleared.
+  sessionId: string;
 
   // ─── Resizable chat rail ─────────────────────────────────────────────────
   // Chat replaces the right rail while open (to see Properties, close chat).
@@ -268,7 +271,11 @@ export function resolveChatAuth(): ChatAuth | null {
   if (aiProvider === "account") {
     const { status, accessToken } = useAuthStore.getState();
     if (status !== "signedIn" || !accessToken) return null;
-    return { kind: "managed", token: accessToken, url: MANAGED_MESSAGES_URL };
+    return {
+      kind: "managed",
+      token: accessToken,
+      url: MANAGED_CHAT_COMPLETIONS_URL,
+    };
   }
   const key = apiKey.trim();
   return key ? { kind: "apiKey", key } : null;
@@ -344,10 +351,10 @@ export function applyTsxStringEdit(
   return { ok: true, tsx: next, replacements: replaceAll ? occurrences : 1 };
 }
 
-// Map a failed turn to a user-facing message. Rust rejects with "{status}:{body}"
-// for HTTP errors and "api_error:{msg}" for mid-stream SSE errors; both the
-// managed proxy and Anthropic put `{error: {type, message}}` in the body, so one
-// parse covers both — the provider only changes whose credential the fix is.
+// Map a failed browser turn to a user-facing message. The transport rejects
+// with "{status}:{body}" for HTTP errors and "api_error:{msg}" for mid-stream
+// SSE errors. Both proxy and upstream error shapes expose `error.message`;
+// proxy plan gates additionally expose `error.type`.
 function friendlyChatError(errorStr: string, provider: AiProvider): string {
   if (errorStr.includes("auth_lost")) {
     return provider === "account"
@@ -396,14 +403,13 @@ function toolResult(toolUseId: string, content: string) {
 }
 
 // Reassemble the assistant message from a streamed turn for replay on the next
-// loop iteration. Order is load-bearing: the thinking blocks (with their
-// signatures) MUST lead, then any answer text, then the tool_use blocks — any
-// other order makes the next request 400.
+// loop iteration. The transport owns the provider-specific reasoning replay
+// payload; text and tool calls follow in the loop's internal message format.
 function assistantMsgFromTurn(turn: ChatTurnResult): {
   role: "assistant";
   content: unknown[];
 } {
-  const content: unknown[] = [...turn.thinkingBlocks];
+  const content: unknown[] = [...turn.reasoning.replay];
   if (turn.text) content.push({ type: "text", text: turn.text });
   for (const tc of turn.toolCalls) {
     content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
@@ -672,6 +678,7 @@ async function foldHistoryIfNeeded(): Promise<void> {
       model: MODEL_HAIKU,
       system: [{ type: "text", text: SUMMARY_SYSTEM_PROMPT }],
       messages: [{ role: "user", content: prompt }],
+      sessionId: useChatStore.getState().sessionId,
     });
     const notes = turn.text;
 
@@ -705,6 +712,7 @@ export const useChatStore = create<ChatStore>()(
   error: null,
   sessionNotes: null,
   summarizedCount: 0,
+  sessionId: crypto.randomUUID(),
   chatWidth: CHAT_DEFAULT_WIDTH,
   chatResizing: false,
 
@@ -831,6 +839,7 @@ export const useChatStore = create<ChatStore>()(
       // Append a text delta, coalescing into the trailing text segment so a run
       // of chunks renders as one bubble; a non-text event in between splits it.
       const appendText = (delta: string) => {
+        if (delta === "") return;
         fullResponse += delta;
         const last = events[events.length - 1];
         if (last?.kind === "text") {
@@ -844,6 +853,7 @@ export const useChatStore = create<ChatStore>()(
       // Same coalescing for reasoning deltas — a contiguous run of thinking stays
       // one collapsible block until text or a tool call interrupts it.
       const appendThinking = (delta: string) => {
+        if (delta === "") return;
         const last = events[events.length - 1];
         if (last?.kind === "thinking") {
           events[events.length - 1] = { kind: "thinking", text: last.text + delta };
@@ -876,7 +886,7 @@ export const useChatStore = create<ChatStore>()(
 
       {
         // ─── Free-running agentic tool loop ─────────────────────────────────
-        // Each iteration streams one model turn; if it stopped on tool_use we run
+        // Each iteration streams one model turn; if it finished on tool_calls we run
         // every tool call, append the assistant + tool_result turns, and loop. A
         // turn that stops WITHOUT a tool call ends the loop — except the one-time
         // recovery nudge below.
@@ -899,10 +909,11 @@ export const useChatStore = create<ChatStore>()(
               messages: apiMessages,
               tools: CHAT_TOOLS,
               thinkingEffort: DESIGN_EFFORT,
+              sessionId: get().sessionId,
             },
             streamCallbacks
           );
-          if (turn.stopReason === "tool_use" && turn.toolCalls.length > 0) {
+          if (turn.finishReason === "tool_calls" && turn.toolCalls.length > 0) {
             apiMessages.push(assistantMsgFromTurn(turn));
             // Every tool_use MUST get a matching tool_result or the next request
             // 400s. dispatchTool catches internally today, but guard here too so a
@@ -1171,6 +1182,7 @@ export const useChatStore = create<ChatStore>()(
       error: null,
       sessionNotes: null,
       summarizedCount: 0,
+      sessionId: crypto.randomUUID(),
     }),
   clearError: () => set({ error: null }),
     }),
@@ -1184,6 +1196,7 @@ export const useChatStore = create<ChatStore>()(
         messages: capSnapshots(state.messages, MAX_SNAPSHOTS),
         sessionNotes: state.sessionNotes,
         summarizedCount: state.summarizedCount,
+        sessionId: state.sessionId,
         chatWidth: state.chatWidth,
       }),
     }

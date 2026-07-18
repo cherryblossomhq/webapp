@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 
-// Mock the chat transport before chatStore is imported. The mock keeps the
-// old Tauri-IPC calling convention — mockInvoke("<command>", args) — so test
-// bodies stay written against one dispatcher: streamTurn maps to
-// "chat_stream_turn", the tool backends to their command names. Live text
-// deltas flow through the callbacks captured from the most recent streamTurn
-// call (emitStream below).
+// Mock the chat transport before chatStore is imported. Test calls use a single
+// dispatcher-style spy: streamTurn maps to "chat_stream_turn", and tool
+// backends map to their command names. Live deltas flow through callbacks from
+// the most recent streamTurn call (emitStream below).
 const mockInvoke = vi.fn();
 
 interface CapturedCallbacks {
@@ -15,7 +13,8 @@ interface CapturedCallbacks {
 let currentCallbacks: CapturedCallbacks | null = null;
 
 vi.mock("../utils/chatTransport", () => ({
-  MANAGED_MESSAGES_URL: "https://www.trycherryblossom.com/api/v1/messages",
+  MANAGED_CHAT_COMPLETIONS_URL:
+    "https://www.trycherryblossom.com/api/v1/chat/completions",
   // The loop only reads tool names out of the catalog; a name-only stub keeps
   // the mock decoupled from the real schemas.
   CHAT_TOOLS: [
@@ -70,22 +69,36 @@ import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
 
-// A turn that stops on tool_use with the given tool calls.
+// A turn that finishes on tool_calls with the given tool calls.
 function toolUseTurn(
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>
 ) {
-  return { text: "", toolCalls, thinkingBlocks: [], stopReason: "tool_use" };
+  return {
+    text: "",
+    toolCalls,
+    reasoning: { text: "", details: [], replay: [] },
+    finishReason: "tool_calls",
+  };
 }
 
 function emitStream(text: string) {
   currentCallbacks?.onText?.(text);
 }
 
+function emitThinking(text: string) {
+  currentCallbacks?.onThinking?.(text);
+}
+
 // A single-turn `chat_stream_turn` result: no tool calls, model is done. The
 // live answer text streams via the onText callback (emitStream); `text` here
 // is just what the resolved turn carries.
 function turnResult(text = "") {
-  return { text, toolCalls: [], thinkingBlocks: [], stopReason: "end_turn" };
+  return {
+    text,
+    toolCalls: [],
+    reasoning: { text: "", details: [], replay: [] },
+    finishReason: "stop",
+  };
 }
 
 // Read a message's text whether it's a plain string or a cache-marked content
@@ -278,6 +291,28 @@ describe("chatStore", () => {
   });
 
   describe("sendMessage — happy path", () => {
+    it("keeps reasoning contiguous when a provider interleaves empty text deltas", async () => {
+      mockInvoke.mockImplementation(async () => {
+        emitThinking("The");
+        emitStream("");
+        emitThinking(" user");
+        emitStream("");
+        emitThinking(" asks");
+        emitStream("Answer");
+        return turnResult("Answer");
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((message) => message.role === "assistant");
+      expect(assistant?.events).toEqual([
+        { kind: "thinking", text: "The user asks" },
+        { kind: "text", text: "Answer" },
+      ]);
+    });
+
     it("streams assistant content and stores the assistant message", async () => {
       mockInvoke.mockImplementation(async () => {
         emitStream("Hello ");
@@ -429,11 +464,13 @@ describe("chatStore", () => {
       });
       await useChatStore.getState().sendMessage("hi");
       const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
-      expect((call![1] as { auth: unknown }).auth).toEqual({
+      const args = call![1] as { auth: unknown; sessionId: string };
+      expect(args.auth).toEqual({
         kind: "managed",
         token: "workos-token",
-        url: "https://www.trycherryblossom.com/api/v1/messages",
+        url: "https://www.trycherryblossom.com/api/v1/chat/completions",
       });
+      expect(args.sessionId).toBe(useChatStore.getState().sessionId);
     });
   });
 
@@ -479,6 +516,12 @@ describe("chatStore", () => {
       useChatStore.getState().clearHistory();
       expect(useChatStore.getState().sessionNotes).toBeNull();
       expect(useChatStore.getState().summarizedCount).toBe(0);
+    });
+
+    it("rotates the managed routing session ID", () => {
+      const previous = useChatStore.getState().sessionId;
+      useChatStore.getState().clearHistory();
+      expect(useChatStore.getState().sessionId).not.toBe(previous);
     });
   });
 

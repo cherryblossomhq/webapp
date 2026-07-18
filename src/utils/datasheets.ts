@@ -14,7 +14,7 @@
 // main chat model via listCachedDatasheets → buildDynamicContext.
 
 import { proxyFetch } from "./proxy-fetch";
-import { messagesPost, type ChatAuth } from "./chatTransport";
+import { completeText, type ChatAuth } from "./chatTransport";
 
 const MAX_PDF_BYTES = 12 * 1024 * 1024; // 12 MiB hard cap
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
@@ -187,18 +187,12 @@ async function extractViaHaiku(
   }
   content.push({ type: "text", text: extractionPrompt });
 
-  const resp = await messagesPost(auth, {
+  const answer = await completeText({
+    auth,
     model: HAIKU_MODEL,
-    max_tokens: 1024,
+    maxTokens: 1024,
     messages: [{ role: "user", content }],
   });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Haiku HTTP ${resp.status}: ${text}`);
-  }
-
-  const raw = (await resp.json()) as { content?: Array<{ text?: string }> };
-  const answer = raw.content?.[0]?.text?.trim();
   if (!answer) throw new Error("Haiku returned no text");
 
   // Haiku sometimes adds a leading "Here's the JSON:" preamble despite the

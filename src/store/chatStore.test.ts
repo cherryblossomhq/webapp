@@ -1107,6 +1107,62 @@ describe("chatStore", () => {
       );
     });
 
+    it("applies semantic component and connectivity tools to the draft", async () => {
+      useCircuitStore.getState().setTsxCode(
+        `export default () => (\n  <board width="50mm" height="50mm">\n    <resistor name="R1" resistance="10k" footprint="0402" key="r1_aaa111" />\n  </board>\n)`
+      );
+
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "";
+        const current = turn++;
+        if (current === 0) {
+          return toolUseTurn([
+            {
+              id: "s1",
+              name: "add_component",
+              input: {
+                tag: "capacitor",
+                name: "C1",
+                props: { capacitance: "100nF", footprint: "0402" },
+              },
+            },
+          ]);
+        }
+        if (current === 1) {
+          return toolUseTurn([
+            {
+              id: "s2",
+              name: "connect_pins",
+              input: { owner: "C1", pin: "pin1", target: "net.VCC" },
+            },
+          ]);
+        }
+        emitStream("Added the decoupling capacitor.");
+        return turnResult("Added the decoupling capacitor.");
+      });
+
+      await useChatStore.getState().sendMessage("add a decoupling capacitor");
+
+      const tsx = useCircuitStore.getState().tsxCode;
+      expect(tsx).toContain('name="C1"');
+      expect(tsx).toMatch(/<capacitor\s+key="c_[a-z0-9]{6}"/);
+      expect(tsx).toContain('pin1: "net.VCC"');
+      const assistant = useChatStore.getState().messages.find(
+        (message) => message.role === "assistant"
+      );
+      expect(
+        assistant?.events?.filter(
+          (event) => event.kind === "activity" && event.activity.kind === "semantic"
+        )
+      ).toHaveLength(2);
+
+      useCircuitStore.setState({ circuitJson: [], evalInputHash: null });
+      await vi.waitFor(() =>
+        expect(useCircuitStore.getState().isValidating).toBe(false)
+      );
+    });
+
     it("repairs a rejected draft before committing it", async () => {
       useCircuitStore.getState().setTsxCode(
         `export default () => (\n  <board width="50mm" height="50mm">\n    <resistor name="R1" resistance="10k" footprint="0402" key="r1_aaa111" />\n  </board>\n)`

@@ -32,6 +32,7 @@ import {
   SquarePen,
   FileCode2,
   ShieldCheck,
+  CircuitBoard,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { marked } from "marked";
@@ -257,6 +258,7 @@ const ACTIVITY_META: Record<
   footprint: { icon: Ruler, label: "Looking up footprint" },
   datasheet: { icon: FileText, label: "Reading datasheet" },
   import: { icon: Package, label: "Importing" },
+  semantic: { icon: CircuitBoard, label: "Updating circuit" },
   validation: { icon: ShieldCheck, label: "Repairing validation errors" },
 };
 

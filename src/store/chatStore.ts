@@ -34,6 +34,10 @@ import {
   validateCandidateTsx,
   type CandidateValidationResult,
 } from "../ai/candidateValidation";
+import {
+  applySemanticCircuitTool,
+  isSemanticCircuitTool,
+} from "../ai/semanticCircuitTools";
 
 // Resolve current selection (single component) and active view for the AI.
 // We snapshot from the editor + circuit stores so the AI sees the same context
@@ -136,6 +140,7 @@ export interface ChatActivity {
     | "import"
     | "edit"
     | "write"
+    | "semantic"
     | "validation";
   detail: string;
   // `edit` actions carry the exact string-replace tool call. The chat trail
@@ -477,6 +482,17 @@ async function dispatchTool(
   workingTsx: { tsx: string; edited: boolean }
 ): Promise<OpenRouterMessage> {
   const input = tc.input ?? {};
+  if (isSemanticCircuitTool(tc.name)) {
+    const result = applySemanticCircuitTool(workingTsx.tsx, tc.name, input);
+    if (result.ok) {
+      if (result.edited) {
+        workingTsx.tsx = result.tsx;
+        workingTsx.edited = true;
+      }
+      pushActivity("semantic", result.activity);
+    }
+    return toolResult(tc.id, result.content);
+  }
   switch (tc.name) {
     case "edit_tsx": {
       const oldString = asString(input.old_string);

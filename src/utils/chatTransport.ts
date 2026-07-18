@@ -5,6 +5,7 @@
 // Keep all chat HTTP in this file.
 
 import { fetchAndSummarize, renderForModel } from "./datasheets";
+import { SEMANTIC_CIRCUIT_TOOLS } from "../ai/semanticCircuitTools";
 
 // Credential + routing for one model call through Cherry Blossom's OpenRouter
 // proxy, authenticated by the signed-in user's WorkOS access token.
@@ -595,6 +596,7 @@ export const CHAT_TOOLS: ChatToolDefinition[] = [
       },
     },
   },
+  ...SEMANTIC_CIRCUIT_TOOLS,
   {
     type: "function",
     function: {

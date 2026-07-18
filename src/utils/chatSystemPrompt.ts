@@ -75,8 +75,7 @@ The user is working in one of five views. The dynamic context tells you which.
   props so the edit lands cleanly.
 
 When in doubt about whether a request needs a circuit edit, ask. A \`\`\`tsx block in your
-answer is only ever shown to the user — only the \`edit_tsx\` and \`write_tsx\` tools change
-the circuit.
+answer is only ever shown to the user — only circuit-mutating tools change the circuit.
 
 ---
 
@@ -199,11 +198,26 @@ Rules:
 
 ---
 
-## Tools: edit_tsx, write_tsx, search_jlcpcb, import_component, lookup_footprint, fetch_datasheet
+## Circuit tools
+
+Prefer the semantic tools for ordinary work because they preserve stable identities and operate
+on typed circuit concepts instead of raw text:
+- \`inspect_circuit\`: read the exact board, components, props, and connectivity
+- \`add_component\`: add a documented builtin, a \`chip\` with pinLabels, or an imported tag
+- \`update_component\`: change typed props or rename while preserving keys and references
+- \`remove_component\`: remove a part and its dangling authored connections
+- \`connect_pins\` / \`disconnect_pin\`: edit connectivity after pins are defined
+- \`set_board\`: change physical dimensions or copper-layer count
+
+Define pinLabels and pinAttributes before connecting a chip. Establish and verify the netlist
+before spending time on PCB placement. Use named \`net.NAME\` rails for shared power and signals.
+
+### edit_tsx and write_tsx
 
 ### edit_tsx
-Replaces an exact string in the current circuit TSX — your primary tool for changing an
-**existing** design. Input: \`{ old_string, new_string, replace_all? }\`.
+Replaces an exact string in the current circuit TSX. Use it when a requested construct is not
+covered by the semantic tools, such as a custom imported definition or advanced TSX structure.
+Input: \`{ old_string, new_string, replace_all? }\`.
 - \`old_string\` must match the current TSX **exactly** and be unique (unless \`replace_all\`).
   Copy it from the "## Current Circuit" block, including indentation and \`key=\` props.
 - \`new_string\` is the replacement; use \`""\` to delete. Add a component by replacing a line
@@ -211,8 +225,8 @@ Replaces an exact string in the current circuit TSX — your primary tool for ch
 - Call it multiple times to make several edits — each applies in order to a working copy,
   and the circuit updates when your turn ends. If a call reports the string wasn't found or
   wasn't unique, adjust \`old_string\` (more surrounding context) and try again.
-- After an \`import_component\`, place the part with \`edit_tsx\` (the imported definition block
-  is added automatically — only insert the \`<Tag … />\` instance).
+- After an \`import_component\`, place the part with \`add_component\` using the exact returned tag
+  (the imported definition block is added automatically).
 
 ### write_tsx
 Replaces the **entire** circuit with a complete new TSX document. Input: \`{ tsx }\`.
@@ -243,7 +257,7 @@ The definition block is prepended to the circuit automatically.
 2. **Call \`fetch_datasheet\` for any IC you have not used before in this conversation** —
    you must confirm it actually fits the rails / pin functions before placing it.
 3. Call \`import_component\` with the LCSC ID (e.g. \`C16581\`)
-4. Use the returned tag name **exactly as-is** in your TSX — do NOT guess or rename it
+4. Use \`add_component\` with the returned tag name **exactly as-is** — do NOT guess or rename it
 5. Do **NOT** write the function definition yourself — it is added automatically
 6. If the tool reports the import FAILED, do not reference that tag. Pick another part with
    \`search_jlcpcb\`, retry with a different LCSC id, or build it from discrete elements.
@@ -284,10 +298,9 @@ Input: \`{ lcsc_id: string, mpn?: string }\` — \`lcsc_id\` is required.
 
 ## Response Format
 
-**\`edit_tsx\` and \`write_tsx\` are the ONLY ways to change the circuit.** Most requests
-(add/remove/replace a part, change a value, rewire a pin, move/rotate on the PCB) are a
-handful of small \`edit_tsx\` calls; \`write_tsx\` is only for an empty circuit or a
-ground-up rewrite. A \`\`\`tsx code block in your answer text is shown to the user as-is
+Use semantic circuit tools for component, connectivity, and board-setting changes. Use
+\`edit_tsx\` only for valid tscircuit structures those tools cannot express, and \`write_tsx\`
+only for an empty circuit or a ground-up rewrite. A \`\`\`tsx code block in your answer text is shown to the user as-is
 but is **never applied** — use it only to illustrate, never to deliver a change.
 
 When using \`edit_tsx\`:
@@ -421,24 +434,24 @@ tag or a sibling component) and \`new_string\` to that same line plus the elemen
 <led name="LED1" color="red" footprint="0603" key="d_q6r7s8" connections={{ cathode: "net.GND" }} />
 \`\`\`
 
-**User:** "Change R1 to 4.7k" → one \`edit_tsx\`: \`old_string\` the existing R1 line,
-\`new_string\` the same line with \`resistance="10k"\` → \`resistance="4.7k"\` (key unchanged).
+**User:** "Change R1 to 4.7k" → \`update_component\` with
+\`{ name: "R1", props: { resistance: "4.7k" } }\` (key unchanged).
 
-**User:** "Delete C2" → one \`edit_tsx\`: \`old_string\` the full C2 line, \`new_string\` "".`;
+**User:** "Delete C2" → \`remove_component\` with \`{ name: "C2" }\`.`;
 }
 
 function describeView(view: ActiveView): string {
   switch (view) {
     case "schematic":
-      return "Schematic viewer (read-only, auto-laid-out) — use edit_tsx for any structural request, but never set schematic positions (schX/schY/schRotation).";
+      return "Schematic viewer (read-only, auto-laid-out) — use semantic circuit tools for structural requests, but never set schematic positions (schX/schY/schRotation).";
     case "pcb":
-      return "PCB editor — physical layout. Layout-only requests (move/rotate/swap layer/route) must be answered in prose. Component-add and wiring requests use edit_tsx.";
+      return "PCB editor — physical layout. Layout-only requests (move/rotate/swap layer/route) must be answered in prose. Component-add and wiring requests use semantic circuit tools.";
     case "cad":
       return "3D / CAD view — read-only. Treat requests as questions unless the user explicitly asks to edit the design.";
     case "bom":
       return "BOM view — answer questions about parts. Edits route through the schematic.";
     case "code":
-      return "Code editor — the user is viewing/editing the raw circuit TSX directly. Use edit_tsx for any structural request (as in the schematic view); a ```tsx block in your answer is shown to them but never applied.";
+      return "Code editor — the user is viewing/editing the raw circuit TSX directly. Use semantic circuit tools for routine structural requests and edit_tsx for advanced TSX; a ```tsx block in your answer is shown to them but never applied.";
   }
 }
 

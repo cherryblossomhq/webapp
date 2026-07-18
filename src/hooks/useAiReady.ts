@@ -45,10 +45,17 @@ export function useAiReady(): AiReady {
       currentAccount?.plan.managedAi === true &&
       selectedModel !== null &&
       currentAccount.plan.allowedModels.includes(selectedModel);
+    const accountUserMismatch =
+      authStatus === "signedIn" &&
+      authUserId !== null &&
+      accountUserId !== null &&
+      accountUserId !== authUserId;
     const accountPending =
       authStatus === "signedIn" &&
       currentAccount === null &&
-      (accountStatus === "idle" || accountStatus === "loading");
+      (accountUserMismatch ||
+        accountStatus === "idle" ||
+        accountStatus === "loading");
 
     if (authPending || accountPending) {
       return {

@@ -157,6 +157,24 @@ describe("useAiReady", () => {
     expect(result.current.ctaMessage).toMatch(/managed AI.*unavailable/i);
   });
 
+  it("stays pending while a replacement user's account is unresolved", () => {
+    useAuthStore.setState({
+      status: "signedIn",
+      user,
+      accessToken: "token",
+    });
+    useAccountStore.setState({
+      account: account(["anthropic/claude-opus-4.8"]),
+      accountUserId: "previous_user",
+      status: "ready",
+      selectedModel: "anthropic/claude-opus-4.8",
+    });
+
+    const { result } = renderHook(() => useAiReady());
+
+    expect(result.current).toMatchObject({ ready: false, pending: true });
+  });
+
   it("preserves API-key readiness behavior", () => {
     useChatStore.setState({ aiProvider: "apiKey", apiKey: " sk-user " });
 

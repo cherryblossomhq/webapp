@@ -53,10 +53,15 @@ export function ManagedModelSelector() {
     selectedModel && models.includes(selectedModel)
       ? selectedModel
       : (models[0] ?? null);
+  const accountUserMismatch =
+    authStatus === "signedIn" &&
+    authUserId !== null &&
+    accountUserId !== null &&
+    accountUserId !== authUserId;
   const firstLoad =
     authStatus === "signedIn" &&
     currentAccount === null &&
-    (status === "idle" || status === "loading");
+    (accountUserMismatch || status === "idle" || status === "loading");
   const triggerText = firstLoad
     ? "Loading models…"
     : currentModel

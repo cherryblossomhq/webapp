@@ -238,6 +238,7 @@ describe("accountStore", () => {
 
     expect(fetchMe).toHaveBeenCalledTimes(2);
     expect(signOut).toHaveBeenCalledTimes(1);
+    expect(useAccountStore.getState().error).toBeNull();
   });
 
   it("clears account data without deleting the model preference", async () => {

@@ -144,11 +144,16 @@ function requestAccount(force: boolean): Promise<void> {
       });
     })
     .catch((error: unknown) => {
+      // The second 401 already signed out. Reject to the caller, but never write
+      // account error state after sign-out (the lifecycle owns clearing memory).
+      if (error instanceof TerminalAccountAuthError) {
+        throw error.accountError;
+      }
       const latestAuth = useAuthStore.getState();
       if (
         epoch !== requestEpoch ||
-        (!(error instanceof TerminalAccountAuthError) &&
-          (latestAuth.status !== "signedIn" || latestAuth.user?.id !== userId))
+        latestAuth.status !== "signedIn" ||
+        latestAuth.user?.id !== userId
       ) {
         return;
       }

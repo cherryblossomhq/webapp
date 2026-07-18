@@ -85,6 +85,21 @@ describe("ManagedModelSelector", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows loading while account data still belongs to the previous user", () => {
+    useAccountStore.setState({
+      account: account([opus]),
+      accountUserId: "previous_user",
+      status: "ready",
+      selectedModel: opus,
+    });
+
+    render(<ManagedModelSelector />);
+
+    expect(
+      screen.getByRole("button", { name: /managed model: loading/i }),
+    ).toBeInTheDocument();
+  });
+
   it("renders allowed models, refreshes on open, and switches selection", async () => {
     useAccountStore.setState({
       account: account([sonnet, opus]),

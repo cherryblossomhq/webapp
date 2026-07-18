@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { runAllChecks } from "@tscircuit/checks";
 import { toast } from "sonner";
 import { useCircuitStore, cleanImportedTsx } from "./circuitStore";
 import { useEditorStore } from "../editor/state/editorStore";
@@ -540,110 +539,14 @@ async function dispatchTool(
   }
 }
 
-type CircuitEl = { type: string; message?: string };
-
-function collectErrors(circuitJson: unknown[]): string[] {
-  return (circuitJson as CircuitEl[])
-    .filter(
-      (el) =>
-        typeof el.type === "string" &&
-        (el.type.endsWith("_error") || el.type.endsWith("_warning")) &&
-        typeof el.message === "string"
-    )
-    .map((el) => el.message as string);
-}
-
-const ALWAYS_NOISE = ["are underspecified"];
-
-function isAlwaysNoise(msg: string): boolean {
-  return ALWAYS_NOISE.some((p) => msg.includes(p));
-}
-
-const POWER_PIN_RE = /^(VCC|VDD|VBAT|VIN|V_OUT|V3_3|V5|POWER|PWR|DVCC|AVCC|\+3\.?3V|\+5V)$/i;
-const GND_PIN_RE   = /^(GND|GROUND|GND_OUT|VSS|AGND|PGND|DGND|SGND)$/i;
-
-type AnyEl = Record<string, unknown>;
-
-function hasConnectedPin(compName: string, pinRe: RegExp, circuitJson: unknown[]): boolean {
-  const els = circuitJson as AnyEl[];
-  const comp = els.find(
-    (el) => el["type"] === "source_component" && el["name"] === compName
-  );
-  if (!comp) return false;
-  const compId = comp["source_component_id"] as string;
-  const matchingPorts = els.filter(
-    (el) =>
-      el["type"] === "source_port" &&
-      el["source_component_id"] === compId &&
-      pinRe.test(String(el["name"] ?? ""))
-  );
-  if (matchingPorts.length === 0) return false;
-  const portIds = new Set(matchingPorts.map((p) => p["source_port_id"] as string));
-  return els.some(
-    (el) =>
-      el["type"] === "source_trace" &&
-      ((el["connected_source_port_ids"] as string[]) ?? []).some((id) => portIds.has(id))
-  );
-}
-
-function hasNamedPinLabel(compName: string, pinRe: RegExp, circuitJson: unknown[]): boolean {
-  const els = circuitJson as AnyEl[];
-  const comp = els.find(
-    (el) => el["type"] === "source_component" && el["name"] === compName
-  );
-  if (!comp) return false;
-  const ports = els.filter(
-    (el) => el["type"] === "source_port" && el["source_component_id"] === comp["source_component_id"]
-  );
-  return ports.some((p) => pinRe.test(String(p["name"] ?? "")));
-}
-
-async function collectAllErrors(circuitJson: unknown[]): Promise<string[]> {
-  const embedded = collectErrors(circuitJson);
-
-  let checkMsgs: string[] = [];
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const checks = await runAllChecks(circuitJson as any[]);
-    checkMsgs = checks
-      .map((e) => (e as { message?: string }).message ?? "")
-      .filter(Boolean);
-  } catch {
-    /* ignore check failures */
-  }
-
-  const seen = new Set<string>();
-  const all: string[] = [];
-  for (const msg of [...embedded, ...checkMsgs]) {
-    if (seen.has(msg) || isAlwaysNoise(msg)) continue;
-
-    const powerMatch = msg.match(/^(\S+) has no pin with requires_power/);
-    if (powerMatch && (
-      hasConnectedPin(powerMatch[1], POWER_PIN_RE, circuitJson) ||
-      hasNamedPinLabel(powerMatch[1], POWER_PIN_RE, circuitJson)
-    )) continue;
-
-    const gndMatch = msg.match(/^(\S+) has no pin with requires_ground/);
-    if (gndMatch && (
-      hasConnectedPin(gndMatch[1], GND_PIN_RE, circuitJson) ||
-      hasNamedPinLabel(gndMatch[1], GND_PIN_RE, circuitJson)
-    )) continue;
-
-    seen.add(msg);
-    all.push(msg);
-  }
-  return all;
-}
-
 type SetFn = (updater: ((s: ChatStore) => Partial<ChatStore>) | Partial<ChatStore>) => void;
 
 // After an AI edit applies, watch the background evaluator for the render of the
-// exact tsx we sent (matched by input hash) and surface the outcome as a system
-// message — clean (__ok__), soft rule/DRC errors (__errors__:), a hard render
-// failure (__render_failed__:), or a stuck render (__timeout__). It deliberately
-// does NOT auto-fix: the user reads the issues and decides whether to ask the
-// model for a fix, so an automatic full-TSX rewrite never silently clobbers
-// manual PCB routing work.
+// exact tsx we sent (matched by input hash) and surface the outcome as a compact
+// system message — clean (__ok__), issue counts (__issues__:), or a stuck render
+// (__timeout__). Details live in the shared Issues drawer rather than flooding
+// chat. It deliberately does NOT auto-fix, so an automatic full-TSX rewrite
+// never silently clobbers manual PCB routing work.
 function startValidationCycle(
   checkingId: string,
   set: SetFn,
@@ -680,7 +583,7 @@ function startValidationCycle(
     });
   }, VALIDATION_RENDER_TIMEOUT_MS);
 
-  ctx.unsub = useCircuitStore.subscribe(async (state) => {
+  ctx.unsub = useCircuitStore.subscribe((state) => {
     if (ctx.done) return;
 
     // The exact tsx we applied FAILED to evaluate (compile/runtime error, or the
@@ -688,7 +591,7 @@ function startValidationCycle(
     // failure instead of waiting out the backstop and mislabeling it as a timeout.
     if (state.evalErrorHash === expectedInputHash) {
       cleanup();
-      resolve(`__render_failed__:${state.evalError ?? "The circuit failed to render."}`);
+      resolve("__issues__:1:0");
       return;
     }
 
@@ -702,10 +605,18 @@ function startValidationCycle(
     if (state.evalInputHash !== null && state.evalInputHash !== expectedInputHash) {
       return;
     }
+    // The full check pass is asynchronous and stamped with the eval version.
+    // Wait for it so the compact chat summary and Issues drawer agree.
+    if (state.evalIssuesVersion !== state.evalVersion) return;
     cleanup();
 
-    const allErrors = await collectAllErrors(state.circuitJson);
-    resolve(allErrors.length === 0 ? "__ok__" : `__errors__:${allErrors.join("\n")}`);
+    const errors = state.evalIssues.filter((issue) => issue.severity === "error").length;
+    const warnings = state.evalIssues.filter((issue) => issue.severity === "warning").length;
+    resolve(
+      errors === 0 && warnings === 0
+        ? "__ok__"
+        : `__issues__:${errors}:${warnings}`,
+    );
   });
 }
 

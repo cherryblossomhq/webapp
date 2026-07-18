@@ -22,12 +22,14 @@ import { buildPcbModel } from "@/editor/pcb/pcbModel";
 import type { StableKey } from "@/editor/shared/types";
 import type { AnyCircuitElement } from "circuit-json";
 import { log } from "@/utils/logger";
+import { collectEvalIssues } from "@/editor/issues";
 
 export function useBackgroundEvaluator(): void {
   const tsxCode = useCircuitStore((s) => s.tsxCode);
   const manualEdits = useEditorStore((s) => s.manualEdits);
   const setCircuitJson = useCircuitStore((s) => s.setCircuitJson);
   const setEvalResult = useCircuitStore((s) => s.setEvalResult);
+  const setEvalIssues = useCircuitStore((s) => s.setEvalIssues);
   const setEvalFailure = useCircuitStore((s) => s.setEvalFailure);
 
   const evaluatorRef = useRef<CircuitEvaluator | null>(null);
@@ -37,12 +39,25 @@ export function useBackgroundEvaluator(): void {
     const ev = new CircuitEvaluator({
       onResult: (r) => {
         const circuitJson = r.circuitJson as AnyCircuitElement[];
-        setCircuitJson(circuitJson);
-        // setEvalResult also clears any prior hard-failure banner (evalError) and
-        // the failed-input hash, all under its monotonic guard. (Soft errors —
-        // *_error / *_warning elements inside circuitJson — are surfaced
-        // separately by the chat validation cycle.)
+        // Publish the version/hash before circuitJson. Zustand subscribers run
+        // synchronously, and the chat validation gate must see this result's
+        // metadata (and the resulting pending issues version) before the JSON
+        // becomes available.
         setEvalResult({ version: r.version, inputHash: r.inputHash });
+        setCircuitJson(circuitJson);
+        if (useCircuitStore.getState().isValidating) {
+          // AI edits keep the existing full validation pass before chat reports
+          // completion. The store's version guard drops it if a newer edit
+          // evaluates first.
+          void collectEvalIssues(circuitJson).then((issues) => {
+            setEvalIssues({ version: r.version, issues });
+          });
+        } else {
+          // Ordinary edits publish the findings already emitted by eval without
+          // paying for a second, CPU-heavy full check pass. PCB routing DRC has
+          // its own debounced pass while the PCB tab is visible.
+          setEvalIssues({ version: r.version, issues: r.issues });
+        }
 
         // Reconcile the optimistic PCB drag overrides: now that this eval
         // reflects the baked tsx, any sidecar placement that matches the
@@ -90,7 +105,7 @@ export function useBackgroundEvaluator(): void {
       ev.dispose();
       evaluatorRef.current = null;
     };
-  }, [setCircuitJson, setEvalResult, setEvalFailure]);
+  }, [setCircuitJson, setEvalResult, setEvalIssues, setEvalFailure]);
 
   // Schedule a fresh eval whenever tsx or manualEdits changes.
   useEffect(() => {

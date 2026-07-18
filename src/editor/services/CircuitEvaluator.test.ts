@@ -172,6 +172,10 @@ describe("CircuitEvaluator — versioning + result delivery", () => {
       "syntax error on line 3",
       "trace too narrow",
     ]);
+    expect(result?.issues.map((issue) => issue.severity)).toEqual([
+      "error",
+      "warning",
+    ]);
   });
 
   it("emits versions monotonically across evaluations", async () => {

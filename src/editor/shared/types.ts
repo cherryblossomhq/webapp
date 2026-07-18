@@ -191,8 +191,21 @@ export interface EvaluatorResult {
   circuitJson: unknown[];
   // Errors collected during evaluation (compile or runtime). Empty on success.
   errors: string[];
+  // Structured eval/check findings, preserving warning vs error severity for
+  // the shared Issues panel. Unlike `errors`, repeated findings stay separate
+  // so the UI can report their real occurrence count before grouping them.
+  issues: EvalIssue[];
   // Wall-clock duration in ms — useful for performance overlays.
   durationMs: number;
+}
+
+export type IssueSeverity = "error" | "warning";
+
+export interface EvalIssue {
+  id: string;
+  type: string;
+  message: string;
+  severity: IssueSeverity;
 }
 
 export interface EvaluatorError {

@@ -42,7 +42,11 @@ import {
 import { useEditorStore } from "../editor/state/editorStore";
 import { overlayManualRoutes, liveRouteConnIds } from "../editor/pcb/circuitJsonMerge";
 import type { DrcViolation } from "../editor/pcb/drc";
-import type { ManualEditsMap, ProjectFile } from "../editor/shared/types";
+import type {
+  EvalIssue,
+  ManualEditsMap,
+  ProjectFile,
+} from "../editor/shared/types";
 import type { PcbTransformUpdate } from "../editor/pcb/pcbModel";
 
 // ─── Reverse mappings ───────────────────────────────────────────────────────────
@@ -239,6 +243,9 @@ interface CircuitStore {
   // keeps the last good render, so this is how the read-only schematic surfaces
   // a subtle "showing last working version" chip. Cleared on the next good eval.
   evalError: string | null;
+  // Structured findings from the latest successful tscircuit eval + checks.
+  evalIssues: EvalIssue[];
+  evalIssuesVersion: number;
 
   // ─── Evaluator versioning (Phase 0) ──────────────────────────────────────
   // The CircuitEvaluator stamps every result with a monotonic version. The
@@ -250,6 +257,7 @@ interface CircuitStore {
   // the chat saw when it sent the message — closes the codex finding #6 race.
   evalInputHash: string | null;
   setEvalResult: (params: { version: number; inputHash: string }) => void;
+  setEvalIssues: (params: { version: number; issues: EvalIssue[] }) => void;
   // Hash of the input whose eval FAILED (compile/runtime error or eval timeout),
   // mirroring evalInputHash for the success case. Lets the chat validation cycle
   // react to a failed render of the exact tsx it applied — instead of hanging
@@ -467,6 +475,8 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
   drcViolations: [],
   isValidating: false,
   evalError: null,
+  evalIssues: [],
+  evalIssuesVersion: 0,
   evalVersion: 0,
   evalInputHash: null,
   evalErrorHash: null,
@@ -885,6 +895,8 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
     set((state) => ({
       tsxCode: keyed,
       circuitJson: null,
+      drcViolations: [],
+      evalIssues: [],
       ...pushHistory(state.history, state.historyIndex, keyed),
     }));
   },
@@ -927,7 +939,10 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
       // Drop the prior project's render so the read-only schematic doesn't show
       // it under the new (empty) project until the next eval lands.
       circuitJson: null,
+      drcViolations: [],
       evalError: null,
+      evalIssues: [],
+      evalIssuesVersion: 0,
       evalVersion: 0,
       evalInputHash: null,
       evalErrorHash: null,
@@ -962,7 +977,10 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
       // shows "Building schematic…" for the new tsx rather than the prior
       // project's stale circuit (or a stale failure banner) until eval lands.
       circuitJson: null,
+      drcViolations: [],
       evalError: null,
+      evalIssues: [],
+      evalIssuesVersion: 0,
       evalVersion: 0,
       evalInputHash: null,
       evalErrorHash: null,
@@ -1016,14 +1034,16 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
     set((state) => ({
       tsxCode: keyed,
       circuitJson: null,
+      drcViolations: [],
       evalError: null,
+      evalIssues: [],
       ...pushHistory(state.history, state.historyIndex, keyed),
     }));
     get().refreshFootprintIssues();
     return true;
   },
 
-  setCircuitJson: (json) => set({ circuitJson: json }),
+  setCircuitJson: (json) => set({ circuitJson: json, drcViolations: [] }),
   setDrcViolations: (violations) => set({ drcViolations: violations }),
   setValidating: (v) => set({ isValidating: v }),
 
@@ -1040,6 +1060,13 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
     });
   },
 
+  setEvalIssues: ({ version, issues }) => {
+    // Full checks finish asynchronously after the core eval. Only publish them
+    // if the corresponding eval is still current.
+    if (version !== get().evalVersion) return;
+    set({ evalIssues: issues, evalIssuesVersion: version });
+  },
+
   setEvalFailure: ({ version, inputHash, message }) => {
     // Same monotonic guard as setEvalResult, so a late error from a superseded
     // eval can't clobber a newer result. Records the failed input's hash (and
@@ -1047,7 +1074,17 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
     // out its ceiling. Leaves circuitJson + evalInputHash on the last good render
     // so the read-only views keep showing it under a "stale" chip.
     if (version <= get().evalVersion) return;
-    set({ evalVersion: version, evalErrorHash: inputHash, evalError: message });
+    set({
+      evalVersion: version,
+      evalErrorHash: inputHash,
+      evalError: message,
+      evalIssues: [],
+      evalIssuesVersion: version,
+      drcViolations: [],
+    });
+    // A hard compiler/runtime failure leaves the canvas showing stale output,
+    // so bring the dedicated Issues surface forward immediately.
+    useEditorStore.getState().setIssuesOpen(true);
   },
 
   // ─── Derived queries ──────────────────────────────────────────────────────

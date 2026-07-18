@@ -31,6 +31,7 @@ import {
   UndoDot,
   SquarePen,
   FileCode2,
+  ShieldCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { marked } from "marked";
@@ -256,6 +257,7 @@ const ACTIVITY_META: Record<
   footprint: { icon: Ruler, label: "Looking up footprint" },
   datasheet: { icon: FileText, label: "Reading datasheet" },
   import: { icon: Package, label: "Importing" },
+  validation: { icon: ShieldCheck, label: "Repairing validation errors" },
 };
 
 // Click-to-expand `edit_tsx` row: collapsed it's just the icon + label (no inline

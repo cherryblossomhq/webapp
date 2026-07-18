@@ -29,6 +29,11 @@ import {
 import { useAuthStore } from "./authStore";
 import { useAccountStore } from "./accountStore";
 import { listCachedDatasheets } from "../utils/datasheets";
+import {
+  buildCandidateRepairPrompt,
+  validateCandidateTsx,
+  type CandidateValidationResult,
+} from "../ai/candidateValidation";
 
 // Resolve current selection (single component) and active view for the AI.
 // We snapshot from the editor + circuit stores so the AI sees the same context
@@ -124,7 +129,14 @@ const MAX_SNAPSHOTS = 20;
 // datasheet read / part import), surfaced as an icon+label row in the chat.
 export interface ChatActivity {
   id: string;
-  kind: "search" | "footprint" | "datasheet" | "import" | "edit" | "write";
+  kind:
+    | "search"
+    | "footprint"
+    | "datasheet"
+    | "import"
+    | "edit"
+    | "write"
+    | "validation";
   detail: string;
   // `edit` actions carry the exact string-replace tool call. The chat trail
   // shows these in a click-to-expand panel (like the Thinking trace) rather than
@@ -242,6 +254,7 @@ const DESIGN_EFFORT = "high";
 // stuck in a loop, so we break and tell the user rather than apply a
 // half-finished circuit. Bump it if legitimate large designs hit the ceiling.
 const MAX_TOOL_ROUNDS = 25;
+const MAX_CANDIDATE_REPAIR_ATTEMPTS = 2;
 
 // One-time nudge when a turn ends having neither edited the circuit (via edit_tsx)
 // nor produced any answer text — almost always the model stopping mid-task after
@@ -417,6 +430,27 @@ function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
     message.reasoning = turn.reasoning.text;
   }
   return message;
+}
+
+function materializeCandidateTsx(
+  draftTsx: string,
+  importedDefs: ReadonlyMap<string, { rawTsx: string }>,
+): string {
+  let candidate = draftTsx;
+  for (const [componentName, { rawTsx }] of importedDefs) {
+    if (!candidate.includes(`<${componentName}`)) continue;
+    const alreadyDefined =
+      candidate.includes(`const ${componentName}`) ||
+      candidate.includes(`function ${componentName}`);
+    if (alreadyDefined) continue;
+    const cleaned = cleanImportedTsx(rawTsx);
+    const idx = candidate.indexOf("export default");
+    if (idx >= 0) {
+      candidate =
+        candidate.slice(0, idx) + cleaned + "\n\n" + candidate.slice(idx);
+    }
+  }
+  return candidate;
 }
 
 const asString = (v: unknown): string =>
@@ -854,6 +888,9 @@ export const useChatStore = create<ChatStore>()(
     const workingTsx = { tsx: currentTsx, edited: false };
     // Tripped when the soft round backstop fires (see MAX_TOOL_ROUNDS).
     let stuck = false;
+    let validatedCandidateTsx: string | null = null;
+    let rejectedCandidate: CandidateValidationResult | null = null;
+    let candidateRepairAttempts = 0;
 
     try {
       const flushEvents = () => set({ streamingEvents: [...events] });
@@ -975,8 +1012,64 @@ export const useChatStore = create<ChatStore>()(
             apiMessages.push({ role: "user", content: RECOVERY_PROMPT });
             continue;
           }
+
+          if (workingTsx.edited) {
+            const candidateTsx = materializeCandidateTsx(
+              workingTsx.tsx,
+              importedDefs,
+            );
+            const validation = await validateCandidateTsx({
+              candidateTsx,
+              manualEdits,
+              baselineIssues: circuitState.evalIssues,
+            });
+            if (!validation.ok) {
+              if (
+                candidateRepairAttempts < MAX_CANDIDATE_REPAIR_ATTEMPTS
+              ) {
+                candidateRepairAttempts += 1;
+                workingTsx.tsx = candidateTsx;
+                const assistantMsg = assistantMsgFromTurn(turn);
+                if ((assistantMsg.content as unknown[]).length > 0) {
+                  apiMessages.push(assistantMsg);
+                }
+                events.push({
+                  kind: "activity",
+                  activity: {
+                    id: crypto.randomUUID(),
+                    kind: "validation",
+                    detail: `Repair ${candidateRepairAttempts}/${MAX_CANDIDATE_REPAIR_ATTEMPTS}`,
+                  },
+                });
+                flushEvents();
+                apiMessages.push({
+                  role: "user",
+                  content: buildCandidateRepairPrompt(validation),
+                });
+                continue;
+              }
+              rejectedCandidate = validation;
+              break;
+            }
+            validatedCandidateTsx = candidateTsx;
+          }
           break;
         }
+      }
+
+      if (rejectedCandidate) {
+        const details =
+          rejectedCandidate.evaluationError ??
+          rejectedCandidate.newErrors
+            .slice(0, 2)
+            .map((issue) => issue.message)
+            .join(" ");
+        const message =
+          `The draft still failed validation after ${MAX_CANDIDATE_REPAIR_ATTEMPTS} repair attempts. ` +
+          `Nothing was applied.${details ? ` ${details}` : ""}`;
+        set({ isStreaming: false, streamingEvents: [], error: message });
+        toast.error("Draft was not applied", { description: message });
+        return;
       }
 
       // Only persist a non-empty assistant turn. On the stuck / empty-recovery
@@ -1032,26 +1125,17 @@ export const useChatStore = create<ChatStore>()(
       // edit_tsx and write_tsx are the ONLY paths that change the circuit. A ```tsx
       // block in the answer text is illustrative prose now — never extracted, never
       // applied — so the working copy is the sole source of an applied change.
-      let tsxCode: string | null = workingTsx.edited ? workingTsx.tsx : null;
+      let tsxCode: string | null = workingTsx.edited
+        ? validatedCandidateTsx ??
+          materializeCandidateTsx(workingTsx.tsx, importedDefs)
+        : null;
 
       // Prepend the real imported component definitions. The model used the exact
       // tag name import_component returned, so the key matches directly — no
       // rename dance and no post-turn race. Footprint meta was already stamped at
       // import time; only inject defs the final TSX actually references.
-      if (tsxCode && importedDefs.size > 0) {
-        for (const [componentName, { rawTsx }] of importedDefs) {
-          if (!tsxCode.includes(`<${componentName}`)) continue;
-          const alreadyDefined =
-            tsxCode.includes(`const ${componentName}`) ||
-            tsxCode.includes(`function ${componentName}`);
-          if (alreadyDefined) continue;
-          const cleaned = cleanImportedTsx(rawTsx);
-          const idx = tsxCode.indexOf("export default");
-          if (idx >= 0) {
-            tsxCode = tsxCode.slice(0, idx) + cleaned + "\n\n" + tsxCode.slice(idx);
-          }
-        }
-      }
+      // Imported definitions were included in the pre-commit candidate so the
+      // exact TSX that passed validation is the TSX committed here.
 
       if (tsxCode) {
         // Structural parse check before applying — surfaces malformed TSX immediately

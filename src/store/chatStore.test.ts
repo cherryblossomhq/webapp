@@ -6,6 +6,9 @@ import type { MeResponse } from "@/utils/accountApi";
 // backends map to their command names. Live deltas flow through callbacks from
 // the most recent streamTurn call (emitStream below).
 const mockInvoke = vi.fn();
+const candidateValidationHarness = vi.hoisted(() => ({
+  validate: vi.fn(),
+}));
 
 interface CapturedCallbacks {
   onText?: (delta: string) => void;
@@ -45,6 +48,12 @@ vi.mock("../utils/chatTransport", () => ({
 // Datasheet summaries live in localStorage; no cache entries in tests.
 vi.mock("../utils/datasheets", () => ({
   listCachedDatasheets: vi.fn(() => []),
+}));
+
+vi.mock("../ai/candidateValidation", () => ({
+  validateCandidateTsx: candidateValidationHarness.validate,
+  buildCandidateRepairPrompt: (result: { candidateTsx: string }) =>
+    `VALIDATION_REPAIR\n${result.candidateTsx}`,
 }));
 
 // Sonner toast — silence in tests
@@ -368,6 +377,17 @@ describe("chatStore", () => {
     currentCallbacks = null;
     mockInvoke.mockReset();
     mockFetchDef.mockReset();
+    candidateValidationHarness.validate.mockReset();
+    candidateValidationHarness.validate.mockImplementation(
+      async ({ candidateTsx }: { candidateTsx: string }) => ({
+        ok: true,
+        candidateTsx,
+        issues: [],
+        newErrors: [],
+        newWarnings: [],
+        durationMs: 1,
+      }),
+    );
     useChatStore.setState({
       messages: [],
       isStreaming: false,
@@ -1085,6 +1105,148 @@ describe("chatStore", () => {
       await vi.waitFor(() =>
         expect(useCircuitStore.getState().isValidating).toBe(false)
       );
+    });
+
+    it("repairs a rejected draft before committing it", async () => {
+      useCircuitStore.getState().setTsxCode(
+        `export default () => (\n  <board width="50mm" height="50mm">\n    <resistor name="R1" resistance="10k" footprint="0402" key="r1_aaa111" />\n  </board>\n)`
+      );
+      let validation = 0;
+      candidateValidationHarness.validate.mockImplementation(
+        async ({ candidateTsx }: { candidateTsx: string }) => {
+          if (validation++ === 0) {
+            return {
+              ok: false,
+              candidateTsx,
+              issues: [],
+              newErrors: [
+                {
+                  id: "bad-value",
+                  type: "test_error",
+                  message: "R1 is still invalid",
+                  severity: "error",
+                },
+              ],
+              newWarnings: [],
+              durationMs: 1,
+            };
+          }
+          return {
+            ok: true,
+            candidateTsx,
+            issues: [],
+            newErrors: [],
+            newWarnings: [],
+            durationMs: 1,
+          };
+        },
+      );
+
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "";
+        const current = turn++;
+        if (current === 0) {
+          return toolUseTurn([
+            {
+              id: "e1",
+              name: "edit_tsx",
+              input: {
+                old_string: 'resistance="10k"',
+                new_string: 'resistance="4.7k"',
+              },
+            },
+          ]);
+        }
+        if (current === 1) {
+          emitStream("Initial draft complete.");
+          return turnResult("Initial draft complete.");
+        }
+        if (current === 2) {
+          return toolUseTurn([
+            {
+              id: "e2",
+              name: "edit_tsx",
+              input: {
+                old_string: 'resistance="4.7k"',
+                new_string: 'resistance="1k"',
+              },
+            },
+          ]);
+        }
+        emitStream(" Repaired.");
+        return turnResult("Repaired.");
+      });
+
+      await useChatStore.getState().sendMessage("set R1 correctly");
+
+      expect(candidateValidationHarness.validate).toHaveBeenCalledTimes(2);
+      expect(useCircuitStore.getState().tsxCode).toContain('resistance="1k"');
+      const designCalls = mockInvoke.mock.calls.filter(
+        (call) => call[0] === "chat_stream_turn",
+      );
+      expect(
+        (designCalls.at(-2)?.[1] as { messages: Array<{ content: unknown }> })
+          .messages.some(
+            (message) =>
+              typeof message.content === "string" &&
+              message.content.includes("VALIDATION_REPAIR"),
+          ),
+      ).toBe(true);
+
+      useCircuitStore.setState({ circuitJson: [], evalInputHash: null });
+      await vi.waitFor(() =>
+        expect(useCircuitStore.getState().isValidating).toBe(false)
+      );
+    });
+
+    it("fails closed after two unsuccessful candidate repairs", async () => {
+      const original =
+        `export default () => (\n  <board width="50mm" height="50mm">\n    <resistor name="R1" resistance="10k" footprint="0402" key="r1_aaa111" />\n  </board>\n)`;
+      useCircuitStore.getState().setTsxCode(original);
+      candidateValidationHarness.validate.mockImplementation(
+        async ({ candidateTsx }: { candidateTsx: string }) => ({
+          ok: false,
+          candidateTsx,
+          issues: [],
+          newErrors: [
+            {
+              id: "still-broken",
+              type: "test_error",
+              message: "Still broken",
+              severity: "error",
+            },
+          ],
+          newWarnings: [],
+          durationMs: 1,
+        }),
+      );
+
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            {
+              id: "e1",
+              name: "edit_tsx",
+              input: {
+                old_string: 'resistance="10k"',
+                new_string: 'resistance="bad"',
+              },
+            },
+          ]);
+        }
+        emitStream("Done.");
+        return turnResult("Done.");
+      });
+
+      await useChatStore.getState().sendMessage("break R1");
+
+      expect(candidateValidationHarness.validate).toHaveBeenCalledTimes(3);
+      expect(useCircuitStore.getState().tsxCode).toContain('resistance="10k"');
+      expect(useCircuitStore.getState().tsxCode).not.toContain('resistance="bad"');
+      expect(useChatStore.getState().error).toMatch(/nothing was applied/i);
     });
 
     it("write_tsx builds a circuit from an empty (deleted) TSX", async () => {

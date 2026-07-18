@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { toast } from "sonner";
+import type { AnyCircuitElement } from "circuit-json";
 import { useCircuitStore, cleanImportedTsx } from "./circuitStore";
 import { useEditorStore } from "../editor/state/editorStore";
-import { hashInput } from "../editor/services/CircuitEvaluator";
 import { summarizeManualEdits } from "../editor/services/ProjectStore";
 import {
   buildSystemPrompt,
@@ -242,12 +242,6 @@ try {
   // The app can still load when the storage API itself is unavailable.
 }
 
-// Backstop for how long the chat waits on the post-edit render before giving up.
-// The evaluator has its own (shorter) internal timeout that surfaces eval
-// failures the validation cycle observes directly — so this only catches a
-// render that neither completes nor errors. Kept generous so a heavy Opus circuit
-// that legitimately takes a while to settle isn't cut off mid-render.
-const VALIDATION_RENDER_TIMEOUT_MS = 120_000;
 // Opus 4.8 uses adaptive thinking — the model decides how much to reason — with
 // an effort level (low | medium | high | xhigh | max) controlling the depth.
 // "high" is the recommended floor for intelligence-sensitive work; design turns
@@ -261,20 +255,127 @@ const DESIGN_EFFORT = "high";
 // half-finished circuit. Bump it if legitimate large designs hit the ceiling.
 const MAX_TOOL_ROUNDS = 25;
 const MAX_CANDIDATE_REPAIR_ATTEMPTS = 2;
+const MAX_WORKFLOW_CONTINUATIONS = 3;
 
-// One-time nudge when a turn ends having neither edited the circuit (via edit_tsx)
+const DIRECT_EDIT_INTENT =
+  /\b(add|build|create|design|make|implement|edit|change|update|replace|remove|delete|connect|wire|fix|repair|rewrite)\b/i;
+const INFORMATIONAL_PREFIX = /^(how|why|what|where|when)\b/i;
+const HOW_TO_REQUEST = /\b(tell|show|explain)\s+me\s+how\b/i;
+const RESEARCH_REQUIRED_TAGS = new Set(["chip", "opamp"]);
+
+function isDirectCircuitEditRequest(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (INFORMATIONAL_PREFIX.test(trimmed) || HOW_TO_REQUEST.test(trimmed)) {
+    return false;
+  }
+  return DIRECT_EDIT_INTENT.test(trimmed);
+}
+
+function isClarifyingQuestion(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.endsWith("?") &&
+    /\b(which|what|where|how many|voltage|current|package|size|frequency|speed|interface)\b/i.test(
+      trimmed
+    )
+  );
+}
+
+function isResearchRequiredTag(tag: string): boolean {
+  return (
+    RESEARCH_REQUIRED_TAGS.has(tag) ||
+    (tag.length > 0 && tag[0] === tag[0].toUpperCase())
+  );
+}
+
+function successfulResearchTool(name: string, content: string): boolean {
+  switch (name) {
+    case "search_jlcpcb":
+      return content.startsWith("Found ");
+    case "lookup_footprint":
+      return content.startsWith("Best match:");
+    case "fetch_datasheet":
+      return content.startsWith("Datasheet summary for ");
+    case "import_component":
+      return content.startsWith("Imported ");
+    default:
+      return false;
+  }
+}
+
+function missingComponentResearch(
+  baselineTsx: string,
+  candidateTsx: string,
+  attemptedTools: ReadonlySet<string>,
+  successfulTools: ReadonlySet<string>
+): string[] {
+  const baselineByName = new Map(
+    extractComponents(baselineTsx).map((component) => [component.name, component])
+  );
+  const newComplexComponents = extractComponents(candidateTsx).filter(
+    (component) => {
+      const baseline = baselineByName.get(component.name);
+      return (
+        isResearchRequiredTag(component.elementTag) &&
+        (!baseline || baseline.elementTag !== component.elementTag)
+      );
+    }
+  );
+  if (newComplexComponents.length === 0) return [];
+
+  const missing: string[] = [];
+  if (!successfulTools.has("search_jlcpcb")) {
+    missing.push("search_jlcpcb must return a real orderable match");
+  }
+  if (!attemptedTools.has("fetch_datasheet")) {
+    missing.push("fetch_datasheet must be attempted for the selected LCSC part");
+  }
+  if (!successfulTools.has("lookup_footprint")) {
+    missing.push("lookup_footprint must confirm the selected package family");
+  }
+  if (!successfulTools.has("import_component")) {
+    missing.push("import_component must successfully import the selected IC and its footprint");
+  }
+  if (
+    successfulTools.has("import_component") &&
+    newComplexComponents.some((component) =>
+      RESEARCH_REQUIRED_TAGS.has(component.elementTag)
+    )
+  ) {
+    missing.push("replace the generic chip/opamp with the exact imported JSX tag");
+  }
+  return missing;
+}
+
+// One-time nudge when a turn ends having neither edited the circuit
 // nor produced any answer text — almost always the model stopping mid-task after
 // some tool calls. Re-prompted with tools still on so it can actually finish.
 const RECOVERY_PROMPT =
   "You ended your turn without changing the circuit or answering. If the request needs a " +
-  "circuit change, make it now with the edit_tsx tool (or write_tsx if the circuit is empty " +
-  "or you're rewriting it wholesale), then add a one-line summary. " +
+  "circuit change, make it now with semantic circuit tools when possible (use edit_tsx for " +
+  "advanced structures or write_tsx for an empty/wholesale rewrite), then add a one-line summary. " +
   "If it was a question, just answer it.";
 
 const AI_SETUP_ERRORS = new Set(["no_account", "no_managed_model"]);
 
 export function isAiSetupError(error: string | null): boolean {
   return error !== null && AI_SETUP_ERRORS.has(error);
+}
+
+const EXECUTION_CONTINUATION_PROMPT =
+  "The user requested an actual circuit change, so a prose plan is not completion. Continue now with " +
+  "the available tools and finish the circuit. For every new non-trivial IC, first call search_jlcpcb, " +
+  "then lookup_footprint, fetch_datasheet, and import_component, and place the exact returned JSX tag. Use semantic " +
+  "circuit tools for the remaining parts and wiring. Only stop without an edit if one indispensable " +
+  "user decision is missing; in that case ask exactly one concrete question.";
+
+function researchContinuationPrompt(missing: readonly string[]): string {
+  return (
+    "The draft adds a non-trivial IC but its component-research workflow is incomplete, so it cannot " +
+    "be applied yet. Continue using tools now. Missing requirements:\n- " +
+    missing.join("\n- ") +
+    "\nDo not merely describe these steps. Execute them, update the draft to use the imported part, then finish."
+  );
 }
 
 // Resolve the credential for the next OpenRouter call. Read fresh at every call
@@ -602,87 +703,6 @@ async function dispatchTool(
   }
 }
 
-type SetFn = (updater: ((s: ChatStore) => Partial<ChatStore>) | Partial<ChatStore>) => void;
-
-// After an AI edit applies, watch the background evaluator for the render of the
-// exact tsx we sent (matched by input hash) and surface the outcome as a compact
-// system message — clean (__ok__), issue counts (__issues__:), or a stuck render
-// (__timeout__). Details live in the shared Issues drawer rather than flooding
-// chat. It deliberately does NOT auto-fix, so an automatic full-TSX rewrite
-// never silently clobbers manual PCB routing work.
-function startValidationCycle(
-  checkingId: string,
-  set: SetFn,
-  expectedInputHash: string
-): void {
-  // Ref-cell pattern: ensures `done` and `unsub` are visible to both the timeout
-  // and subscription callbacks, no matter which fires first.
-  const ctx: { unsub?: () => void; done: boolean } = { done: false };
-
-  const cleanup = () => {
-    if (ctx.done) return;
-    ctx.done = true;
-    ctx.unsub?.();
-    clearTimeout(timeoutId);
-  };
-
-  // Every terminal outcome clears the validating flag and rewrites the checking
-  // placeholder to its final state.
-  const resolve = (content: string) => {
-    useCircuitStore.getState().setValidating(false);
-    set((s) => ({
-      messages: s.messages.map((m) =>
-        m.id === checkingId ? { ...m, content } : m
-      ),
-    }));
-  };
-
-  const timeoutId = setTimeout(() => {
-    if (ctx.done) return;
-    cleanup();
-    resolve("__timeout__");
-    toast.error("Validation didn't finish", {
-      description: "The render may be stuck.",
-    });
-  }, VALIDATION_RENDER_TIMEOUT_MS);
-
-  ctx.unsub = useCircuitStore.subscribe((state) => {
-    if (ctx.done) return;
-
-    // The exact tsx we applied FAILED to evaluate (compile/runtime error, or the
-    // evaluator's own internal timeout). Surface the real message as a hard render
-    // failure instead of waiting out the backstop and mislabeling it as a timeout.
-    if (state.evalErrorHash === expectedInputHash) {
-      cleanup();
-      resolve("__issues__:1:0");
-      return;
-    }
-
-    if (state.circuitJson === null) return;
-    // Codex finding #6: don't act on a circuitJson that was produced from a
-    // tsx the chat didn't see. The evaluator stamps every output with the
-    // input hash; we wait for one that matches the snapshot we just sent.
-    // Older render paths (RunFrame's onRenderFinished) won't set
-    // evalInputHash — those paths are still trusted, so a null hash is
-    // treated as "matches by default" to preserve Phase 0 behavior.
-    if (state.evalInputHash !== null && state.evalInputHash !== expectedInputHash) {
-      return;
-    }
-    // The full check pass is asynchronous and stamped with the eval version.
-    // Wait for it so the compact chat summary and Issues drawer agree.
-    if (state.evalIssuesVersion !== state.evalVersion) return;
-    cleanup();
-
-    const errors = state.evalIssues.filter((issue) => issue.severity === "error").length;
-    const warnings = state.evalIssues.filter((issue) => issue.severity === "warning").length;
-    resolve(
-      errors === 0 && warnings === 0
-        ? "__ok__"
-        : `__issues__:${errors}:${warnings}`,
-    );
-  });
-}
-
 const SUMMARY_SYSTEM_PROMPT =
   "You maintain concise running notes for an in-progress PCB design session. " +
   "Capture only durable context: user preferences, design decisions and their " +
@@ -912,11 +932,17 @@ export const useChatStore = create<ChatStore>()(
     // starts as the exact TSX shown in dynamic context, so raw edit anchors match.
     // A ```tsx block in answer text remains illustrative and is never applied.
     const workingTsx = { tsx: currentTsx, edited: false };
+    const directEditRequest = isDirectCircuitEditRequest(trimmedContent);
+    const attemptedTools = new Set<string>();
+    const successfulTools = new Set<string>();
     // Tripped when the soft round backstop fires (see MAX_TOOL_ROUNDS).
     let stuck = false;
-    let validatedCandidateTsx: string | null = null;
+    let validatedCandidate: CandidateValidationResult | null = null;
     let rejectedCandidate: CandidateValidationResult | null = null;
     let candidateRepairAttempts = 0;
+    let workflowContinuations = 0;
+    let forceToolNextTurn = directEditRequest;
+    let incompleteWorkflow: string | null = null;
 
     try {
       const flushEvents = () => set({ streamingEvents: [...events] });
@@ -986,6 +1012,8 @@ export const useChatStore = create<ChatStore>()(
           // dead token.
           const auth = resolveChatAuth();
           if (!auth) throw new Error("auth_lost");
+          const toolChoice = forceToolNextTurn ? "required" : undefined;
+          forceToolNextTurn = false;
           const turn = await streamTurn(
             {
               auth,
@@ -993,6 +1021,7 @@ export const useChatStore = create<ChatStore>()(
               system: systemBlocks,
               messages: apiMessages,
               tools: CHAT_TOOLS,
+              toolChoice,
               thinkingEffort: DESIGN_EFFORT,
               sessionId: get().sessionId,
             },
@@ -1016,7 +1045,35 @@ export const useChatStore = create<ChatStore>()(
                 ),
               )
             );
+            turn.toolCalls.forEach((toolCall, index) => {
+              attemptedTools.add(toolCall.name);
+              const resultContent = results[index]?.content;
+              const content = typeof resultContent === "string" ? resultContent : "";
+              if (successfulResearchTool(toolCall.name, content)) {
+                successfulTools.add(toolCall.name);
+              }
+            });
             apiMessages.push(...results);
+            continue;
+          }
+
+          if (
+            directEditRequest &&
+            !workingTsx.edited &&
+            !isClarifyingQuestion(turn.text)
+          ) {
+            if (workflowContinuations >= MAX_WORKFLOW_CONTINUATIONS) {
+              incompleteWorkflow =
+                "The assistant stopped before making the requested circuit change. Nothing was applied.";
+              break;
+            }
+            workflowContinuations += 1;
+            const assistantMsg = assistantMsgFromTurn(turn);
+            if ((assistantMsg.content as unknown[]).length > 0) {
+              apiMessages.push(assistantMsg);
+            }
+            apiMessages.push({ role: "user", content: EXECUTION_CONTINUATION_PROMPT });
+            forceToolNextTurn = true;
             continue;
           }
 
@@ -1044,6 +1101,30 @@ export const useChatStore = create<ChatStore>()(
               workingTsx.tsx,
               importedDefs,
             );
+            const missingResearch = missingComponentResearch(
+              currentTsx,
+              candidateTsx,
+              attemptedTools,
+              successfulTools
+            );
+            if (missingResearch.length > 0) {
+              if (workflowContinuations >= MAX_WORKFLOW_CONTINUATIONS) {
+                incompleteWorkflow =
+                  "The assistant could not finish component research for the new IC. Nothing was applied.";
+                break;
+              }
+              workflowContinuations += 1;
+              const assistantMsg = assistantMsgFromTurn(turn);
+              if ((assistantMsg.content as unknown[]).length > 0) {
+                apiMessages.push(assistantMsg);
+              }
+              apiMessages.push({
+                role: "user",
+                content: researchContinuationPrompt(missingResearch),
+              });
+              forceToolNextTurn = true;
+              continue;
+            }
             const validation = await validateCandidateTsx({
               candidateTsx,
               manualEdits,
@@ -1077,7 +1158,7 @@ export const useChatStore = create<ChatStore>()(
               rejectedCandidate = validation;
               break;
             }
-            validatedCandidateTsx = candidateTsx;
+            validatedCandidate = validation;
           }
           break;
         }
@@ -1148,12 +1229,19 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
-      // edit_tsx and write_tsx are the ONLY paths that change the circuit. A ```tsx
-      // block in the answer text is illustrative prose now — never extracted, never
-      // applied — so the working copy is the sole source of an applied change.
+      if (incompleteWorkflow) {
+        set({ error: incompleteWorkflow });
+        toast.error("Circuit workflow incomplete", {
+          description: incompleteWorkflow,
+        });
+        return;
+      }
+
+      // Circuit-mutating tools update only the working draft. A ```tsx block in
+      // answer text is illustrative prose — never extracted or applied — so the
+      // validated working copy is the sole source of an applied change.
       let tsxCode: string | null = workingTsx.edited
-        ? validatedCandidateTsx ??
-          materializeCandidateTsx(workingTsx.tsx, importedDefs)
+        ? validatedCandidate?.candidateTsx ?? null
         : null;
 
       // Prepend the real imported component definitions. The model used the exact
@@ -1174,32 +1262,38 @@ export const useChatStore = create<ChatStore>()(
       }
 
       if (tsxCode) {
-        // `false` means the model re-emitted the current circuit unchanged — a
-        // no-op edit. Nothing changed, so there's nothing to validate; skip the
-        // cycle entirely. (Running it would hang: no fresh eval fires for an
-        // identical tsx, so the subscription never resolves before its backstop.)
-        const applied = useCircuitStore.getState().applyAiEdit(tsxCode);
-        if (applied) {
-          useCircuitStore.getState().setValidating(true);
-          const checkingId = crypto.randomUUID();
+        // `false` means the model re-emitted the current circuit unchanged.
+        const candidateCircuitJson = validatedCandidate?.circuitJson as
+          | AnyCircuitElement[]
+          | undefined;
+        const applied = useCircuitStore
+          .getState()
+          .applyAiEdit(tsxCode, candidateCircuitJson);
+        if (applied && validatedCandidate) {
+          // Pre-commit validation already evaluated this exact candidate and ran
+          // the full checks. applyAiEdit committed its render with the TSX, so
+          // the panels stay populated while the background refresh catches up.
+          const errors = validatedCandidate.issues.filter(
+            (issue) => issue.severity === "error"
+          ).length;
+          const warnings = validatedCandidate.issues.filter(
+            (issue) => issue.severity === "warning"
+          ).length;
+          const content =
+            errors === 0 && warnings === 0
+              ? "__ok__"
+              : `__issues__:${errors}:${warnings}`;
           set((s) => ({
             messages: [
               ...s.messages,
               {
-                id: checkingId,
+                id: crypto.randomUUID(),
                 role: "system" as const,
-                content: "__checking__",
+                content,
                 timestamp: Date.now(),
               },
             ],
           }));
-          // Hash the *post-applyAiEdit* tsx (which may have had keys
-          // re-injected) plus the current sidecar — this is the input the
-          // evaluator will see.
-          const expectedTsx = useCircuitStore.getState().tsxCode;
-          const expectedEdits = useEditorStore.getState().manualEdits;
-          const expectedHash = hashInput(expectedTsx, expectedEdits);
-          startValidationCycle(checkingId, set, expectedHash);
         }
       }
 

@@ -108,10 +108,17 @@ describe("OpenRouter mapping", () => {
   });
 
   it("defines every chat tool with the OpenRouter function schema", () => {
-    expect(CHAT_TOOLS).toHaveLength(6);
+    expect(CHAT_TOOLS).toHaveLength(13);
     expect(CHAT_TOOLS.map((tool) => tool.function.name)).toEqual([
       "edit_tsx",
       "write_tsx",
+      "inspect_circuit",
+      "add_component",
+      "update_component",
+      "remove_component",
+      "connect_pins",
+      "disconnect_pin",
+      "set_board",
       "search_jlcpcb",
       "import_component",
       "lookup_footprint",
@@ -132,6 +139,35 @@ describe("OpenRouter mapping", () => {
 });
 
 describe("OpenRouter streaming", () => {
+  it("can require the selected model to call a tool", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    await streamTurn({
+      auth: managedAuth,
+      model: "anthropic/claude-opus-4.8",
+      system: [],
+      messages: [{ role: "user", content: "build it" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "write_tsx",
+            description: "Write the circuit",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      toolChoice: "required",
+    });
+
+    expect(fetchBody()).toMatchObject({ tool_choice: "required" });
+  });
+
   it.each([
     ["stop", "stop"],
     ["length", "length"],

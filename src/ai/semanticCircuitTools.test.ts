@@ -52,6 +52,22 @@ describe("semanticCircuitTools", () => {
     expect(q1?.props.key).toMatch(/^q_/);
   });
 
+  it("supports documented testpoints with stable keys", () => {
+    const result = applySemanticCircuitTool(BASE, "add_component", {
+      tag: "testpoint",
+      name: "TP1",
+    });
+
+    expect(result.ok).toBe(true);
+    const testpoint = extractComponents(result.tsx).find(
+      (component) => component.name === "TP1"
+    );
+    expect(testpoint).toMatchObject({
+      elementTag: "testpoint",
+    });
+    expect(testpoint?.props.key).toMatch(/^tp_/);
+  });
+
   it("requires chip pin labels up front", () => {
     const rejected = applySemanticCircuitTool(BASE, "add_component", {
       tag: "chip",
@@ -109,6 +125,54 @@ describe("semanticCircuitTools", () => {
     );
     expect(disconnected.ok).toBe(true);
     expect(extractConnections(disconnected.tsx)).toHaveLength(0);
+  });
+
+  it("accepts numeric-leading pin aliases while keeping net names strict", () => {
+    const added = applySemanticCircuitTool(BASE, "add_component", {
+      tag: "chip",
+      name: "U1",
+      props: {
+        footprint: "soic8",
+        pinLabels: { pin1: "3V3", pin2: "GND" },
+      },
+    });
+    expect(added.ok).toBe(true);
+
+    const connectedToAlias = applySemanticCircuitTool(
+      added.tsx,
+      "connect_pins",
+      { owner: "R1", pin: "pin1", target: "U1.3V3" }
+    );
+    expect(connectedToAlias.ok).toBe(true);
+
+    const connectedFromAlias = applySemanticCircuitTool(
+      connectedToAlias.tsx,
+      "connect_pins",
+      { owner: "U1", pin: "3V3", target: "net.V3_3" }
+    );
+    expect(connectedFromAlias.ok).toBe(true);
+    expect(extractConnections(connectedFromAlias.tsx)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          owner: "R1",
+          pinLabel: "pin1",
+          target: "U1.3V3",
+        }),
+        expect.objectContaining({
+          owner: "U1",
+          pinLabel: "3V3",
+          target: "net.V3_3",
+        }),
+      ])
+    );
+
+    expect(
+      applySemanticCircuitTool(added.tsx, "connect_pins", {
+        owner: "U1",
+        pin: "3V3",
+        target: "net.3V3",
+      }).ok
+    ).toBe(false);
   });
 
   it("rejects references to missing components", () => {

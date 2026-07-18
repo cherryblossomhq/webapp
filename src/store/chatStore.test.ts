@@ -9,6 +9,10 @@ const mockInvoke = vi.fn();
 const candidateValidationHarness = vi.hoisted(() => ({
   validate: vi.fn(),
 }));
+const VALIDATED_CIRCUIT_JSON = [
+  { type: "schematic_component", schematic_component_id: "schematic_R1" },
+  { type: "source_component", name: "R1" },
+];
 
 interface CapturedCallbacks {
   onText?: (delta: string) => void;
@@ -382,6 +386,7 @@ describe("chatStore", () => {
       async ({ candidateTsx }: { candidateTsx: string }) => ({
         ok: true,
         candidateTsx,
+        circuitJson: VALIDATED_CIRCUIT_JSON,
         issues: [],
         newErrors: [],
         newWarnings: [],
@@ -810,6 +815,107 @@ describe("chatStore", () => {
   });
 
   describe("agentic tool loop", () => {
+    it("continues an explicit build after the model stops at a prose plan", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "";
+        const current = turn++;
+        if (current === 0) {
+          emitStream("Plan: add the divider, wire it, then validate it.");
+          return turnResult("Plan: add the divider, wire it, then validate it.");
+        }
+        if (current === 1) {
+          return toolUseTurn([
+            {
+              id: "s1",
+              name: "add_component",
+              input: {
+                tag: "resistor",
+                name: "R1",
+                props: { resistance: "10k", footprint: "0402" },
+              },
+            },
+          ]);
+        }
+        emitStream("Built the divider.");
+        return turnResult("Built the divider.");
+      });
+
+      await useChatStore.getState().sendMessage("Build a resistor divider");
+
+      const turns = mockInvoke.mock.calls.filter(
+        (call) => call[0] === "chat_stream_turn"
+      );
+      expect(turns).toHaveLength(3);
+      expect((turns[0][1] as { toolChoice?: string }).toolChoice).toBe("required");
+      expect((turns[1][1] as { toolChoice?: string }).toolChoice).toBe("required");
+      expect(useCircuitStore.getState().tsxCode).toContain('name="R1"');
+    });
+
+    it("researches and imports the 555 before applying a blinker draft", async () => {
+      const genericCandidate = `export default () => (
+  <board width="50mm" height="50mm">
+    <chip name="U1" footprint="dip8" pinLabels={{ pin1: "GND", pin2: "TRIG", pin3: "OUT", pin4: "RESET", pin5: "CTRL", pin6: "THRES", pin7: "DISCH", pin8: "VCC" }} />
+  </board>
+)`;
+      const importedCandidate = `export default () => (
+  <board width="50mm" height="50mm">
+    <NE555DR name="U1" />
+  </board>
+)`;
+      mockFetchDef.mockResolvedValue({
+        componentName: "NE555DR",
+        lcscId: "C7593",
+        rawTsx:
+          'export const NE555DR = (props: any) => (<chip {...props} footprint="soic8" />)',
+      });
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "Found 1 result(s) for NE555: C7593 | NE555DR";
+        if (cmd === "fetch_datasheet") return "Datasheet summary for C7593 (NE555DR)";
+        if (cmd === "lookup_footprint") {
+          return 'Best match: C7593 (NE555DR). Raw package: "SOIC-8". Canonical footprint: soic8';
+        }
+        if (cmd !== "chat_stream_turn") return "";
+        const current = turn++;
+        if (current === 0) {
+          return toolUseTurn([
+            { id: "w1", name: "write_tsx", input: { tsx: genericCandidate } },
+          ]);
+        }
+        if (current === 1) {
+          emitStream("Built the 555 blinker.");
+          return turnResult("Built the 555 blinker.");
+        }
+        if (current === 2) {
+          return toolUseTurn([
+            { id: "r1", name: "search_jlcpcb", input: { query: "NE555" } },
+            { id: "r2", name: "fetch_datasheet", input: { lcsc_id: "C7593", mpn: "NE555DR" } },
+            { id: "r3", name: "lookup_footprint", input: { lcsc_id: "C7593", mpn: "NE555DR" } },
+            { id: "r4", name: "import_component", input: { lcsc_id: "C7593" } },
+          ]);
+        }
+        if (current === 3) {
+          return toolUseTurn([
+            { id: "w2", name: "write_tsx", input: { tsx: importedCandidate } },
+          ]);
+        }
+        emitStream("Research complete and the imported 555 blinker is built.");
+        return turnResult("Research complete and the imported 555 blinker is built.");
+      });
+
+      await useChatStore.getState().sendMessage("Design a 555 timer led blinker");
+
+      expect(mockInvoke).toHaveBeenCalledWith("search_jlcpcb", expect.anything());
+      expect(mockInvoke).toHaveBeenCalledWith("fetch_datasheet", expect.anything());
+      expect(mockInvoke).toHaveBeenCalledWith("lookup_footprint", expect.anything());
+      expect(mockFetchDef).toHaveBeenCalledWith("C7593");
+      expect(useCircuitStore.getState().tsxCode).toContain("const NE555DR");
+      expect(useCircuitStore.getState().tsxCode).toMatch(
+        /<NE555DR\b[^>]*\bname="U1"/
+      );
+    });
+
     it("runs a tool call, feeds the result back, then finishes", async () => {
       let turn = 0;
       mockInvoke.mockImplementation(async (cmd: string) => {
@@ -1025,14 +1131,34 @@ describe("chatStore", () => {
       });
       let turn = 0;
       mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "Found 1 result(s) for TP4056: C16581";
+        if (cmd === "fetch_datasheet") return "Datasheet summary for C16581 (TP4056)";
+        if (cmd === "lookup_footprint") {
+          return 'Best match: C16581 (TP4056). Raw package: "SOIC-8". Canonical footprint: soic8';
+        }
         if (cmd !== "chat_stream_turn") return "";
         const t = turn++;
         if (t === 0) {
           return toolUseTurn([
-            { id: "i1", name: "import_component", input: { lcsc_id: "C16581" } },
+            { id: "s1", name: "search_jlcpcb", input: { query: "TP4056" } },
           ]);
         }
         if (t === 1) {
+          return toolUseTurn([
+            { id: "d1", name: "fetch_datasheet", input: { lcsc_id: "C16581", mpn: "TP4056" } },
+          ]);
+        }
+        if (t === 2) {
+          return toolUseTurn([
+            { id: "f1", name: "lookup_footprint", input: { lcsc_id: "C16581", mpn: "TP4056" } },
+          ]);
+        }
+        if (t === 3) {
+          return toolUseTurn([
+            { id: "i1", name: "import_component", input: { lcsc_id: "C16581" } },
+          ]);
+        }
+        if (t === 4) {
           // The model places the imported part with edit_tsx — its definition
           // block is prepended automatically.
           return toolUseTurn([
@@ -1102,6 +1228,9 @@ describe("chatStore", () => {
       const tsx = useCircuitStore.getState().tsxCode;
       expect(tsx).toContain('resistance="4.7k"');
       expect(tsx).not.toContain('resistance="10k"');
+      expect(useCircuitStore.getState().circuitJson).toEqual(
+        VALIDATED_CIRCUIT_JSON
+      );
 
       // The assistant trail carries an edit activity with the exact old/new
       // strings (no inline detail) — this is what the expandable UI renders.
@@ -1119,11 +1248,64 @@ describe("chatStore", () => {
         });
       }
 
-      // Drive the validation cycle to completion so it doesn't linger.
-      useCircuitStore.setState({ circuitJson: [], evalInputHash: null });
-      await vi.waitFor(() =>
-        expect(useCircuitStore.getState().isValidating).toBe(false)
+      // The successful pre-commit result is authoritative. Applying the exact
+      // validated candidate must not start a second render-bound validation.
+      expect(useCircuitStore.getState().isValidating).toBe(false);
+      expect(
+        useChatStore
+          .getState()
+          .messages.find((message) => message.role === "system")?.content
+      ).toBe("__ok__");
+    });
+
+    it("summarizes candidate warnings without waiting for a background render", async () => {
+      useCircuitStore.getState().setTsxCode(
+        `export default () => (\n  <board width="50mm" height="50mm">\n    <resistor name="R1" resistance="10k" footprint="0402" key="r1_aaa111" />\n  </board>\n)`
       );
+      const warning = {
+        id: "candidate-warning",
+        type: "test_warning",
+        message: "Candidate warning",
+        severity: "warning" as const,
+      };
+      candidateValidationHarness.validate.mockImplementation(
+        async ({ candidateTsx }: { candidateTsx: string }) => ({
+          ok: true,
+          candidateTsx,
+          issues: [warning],
+          newErrors: [],
+          newWarnings: [warning],
+          durationMs: 1,
+        })
+      );
+
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            {
+              id: "e1",
+              name: "edit_tsx",
+              input: {
+                old_string: 'resistance="10k"',
+                new_string: 'resistance="4.7k"',
+              },
+            },
+          ]);
+        }
+        emitStream("Changed R1 to 4.7k.");
+        return turnResult("Changed R1 to 4.7k.");
+      });
+
+      await useChatStore.getState().sendMessage("make R1 4.7k");
+
+      expect(useCircuitStore.getState().isValidating).toBe(false);
+      expect(
+        useChatStore
+          .getState()
+          .messages.find((message) => message.role === "system")?.content
+      ).toBe("__issues__:0:1");
     });
 
     it("applies semantic component and connectivity tools to the draft", async () => {

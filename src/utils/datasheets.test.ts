@@ -1,5 +1,20 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const dependencies = vi.hoisted(() => ({
+  completeText: vi.fn(),
+  proxyFetch: vi.fn(),
+}));
+
+vi.mock("./chatTransport", () => ({
+  completeText: dependencies.completeText,
+}));
+
+vi.mock("./proxy-fetch", () => ({
+  proxyFetch: dependencies.proxyFetch,
+}));
+
 import {
+  fetchAndSummarize,
   listCachedDatasheets,
   parseDatasheetExtraction,
   renderForModel,
@@ -46,7 +61,54 @@ const GROUNDED_JSON = JSON.stringify({
 });
 
 describe("datasheet evidence", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    dependencies.completeText.mockReset();
+    dependencies.proxyFetch.mockReset();
+  });
+
+  it("uses the plan-compatible extraction model supplied by the chat loop", async () => {
+    const auth = {
+      token: "workos-token",
+      url: "https://example.test/api/v1/chat/completions",
+    };
+    const model = "anthropic/claude-haiku-4.5";
+    dependencies.proxyFetch
+      .mockResolvedValueOnce(
+        Response.json({
+          result: {
+            lists: {
+              lcsc: [
+                {
+                  uuid: "part-uuid",
+                  dataStr: {
+                    head: {
+                      c_para: {
+                        "Supplier Part": "C16581",
+                        Datasheet: "https://datasheet.lcsc.com/tp4056.pdf",
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        })
+      );
+    dependencies.completeText.mockResolvedValue(GROUNDED_JSON);
+
+    await fetchAndSummarize(auth, model, "C16581", "TP4056");
+
+    expect(dependencies.completeText).toHaveBeenCalledWith(
+      expect.objectContaining({ auth, model })
+    );
+  });
 
   it("keeps only fields backed by valid document evidence", () => {
     const summary = parseDatasheetExtraction(

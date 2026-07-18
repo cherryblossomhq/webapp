@@ -89,6 +89,7 @@ describe("validateCandidateTsx", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.circuitJson).toEqual([]);
     expect(result.newWarnings).toEqual([warning]);
   });
 
@@ -119,6 +120,8 @@ describe("buildCandidateRepairPrompt", () => {
     });
 
     expect(prompt).toContain("Connectivity and pin mappings come before placement");
+    expect(prompt).toContain("semantic circuit tools");
+    expect(prompt).toContain("edit_tsx or write_tsx only for structures");
     expect(prompt).toContain("unconnected_power_pin_error");
     expect(prompt).toContain(VALID_TSX);
   });

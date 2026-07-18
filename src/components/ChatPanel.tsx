@@ -476,29 +476,11 @@ function SystemValidationMessage({
 }) {
   const { content } = message;
 
-  if (content === "__checking__") {
-    return (
-      <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md bg-muted/60 text-muted-foreground text-xs">
-        <Loader2 className="size-3.5 animate-spin shrink-0" />
-        <span>Validating circuit...</span>
-      </div>
-    );
-  }
-
   if (content === "__ok__") {
     return (
       <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 text-xs">
         <CheckCircle2 className="size-3.5 shrink-0" />
         <span>Circuit validated — no errors</span>
-      </div>
-    );
-  }
-
-  if (content === "__timeout__") {
-    return (
-      <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-400 text-xs">
-        <AlertCircle className="size-3.5 shrink-0" />
-        <span>Validation didn't finish — the render may be stuck</span>
       </div>
     );
   }
@@ -752,8 +734,7 @@ export function ChatPanel() {
             <button
               onClick={() => setClearConfirmOpen(true)}
               // Disabled mid-stream and mid-validation (same as restore) so a
-              // wipe never races those async writes — e.g. clearing the
-              // in-flight "__checking__" row out from under the validation cycle.
+              // wipe never races those async writes.
               disabled={isStreaming || isValidating || messages.length === 0}
               className="p-1 rounded-md text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
               aria-label="New chat"

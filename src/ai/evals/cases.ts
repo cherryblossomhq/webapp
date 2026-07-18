@@ -24,7 +24,7 @@ export const PCB_EVAL_CASES: PcbEvalCase[] = [
         { name: "R1", elementTag: "resistor", props: { resistance: "4.7k" } },
         { name: "LED1", elementTag: "led" },
       ],
-      requiredTools: ["edit_tsx"],
+      requiredTools: ["update_component"],
       maxErrors: 0,
       maxRepairAttempts: 2,
     },

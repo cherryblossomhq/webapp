@@ -30,6 +30,8 @@ export interface CandidateValidationOptions {
 export interface CandidateValidationResult {
   ok: boolean;
   candidateTsx: string;
+  /** Already-rendered candidate output, available when evaluation succeeded. */
+  circuitJson?: unknown[];
   issues: EvalIssue[];
   newErrors: EvalIssue[];
   newWarnings: EvalIssue[];
@@ -123,6 +125,7 @@ export async function validateCandidateTsx(
     return {
       ok: newErrors.length === 0,
       candidateTsx: options.candidateTsx,
+      circuitJson: snapshot.circuitJson,
       issues: snapshot.issues,
       newErrors,
       newWarnings,
@@ -158,7 +161,7 @@ export function buildCandidateRepairPrompt(
   }
   return [
     "The draft circuit failed pre-commit validation and has NOT been applied.",
-    "Fix the blocking errors below with edit_tsx or write_tsx. Connectivity and pin mappings come before placement or routing.",
+    "Fix the blocking errors below with semantic circuit tools when possible; use edit_tsx or write_tsx only for structures those tools cannot express. Connectivity and pin mappings come before placement or routing.",
     "Blocking errors:",
     ...conciseProblems.map((problem) => `- ${problem}`),
     "",

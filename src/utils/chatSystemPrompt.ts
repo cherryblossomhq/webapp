@@ -2,6 +2,11 @@ import { footprintCatalogMarkdownTable } from "./footprintCatalog";
 import type { FootprintIssue } from "./footprintCatalog";
 import type { EvalIssue } from "../editor/shared/types";
 import { buildCircuitManifest } from "../ai/circuitManifest";
+import { AI_PLACEABLE_COMPONENT_TAGS } from "../ai/tscircuitCapabilities";
+
+const AI_PLACEABLE_ELEMENTS = AI_PLACEABLE_COMPONENT_TAGS.map(
+  (tag) => `\`${tag}\``
+).join(" ");
 
 export type ActiveView = "schematic" | "pcb" | "cad" | "bom" | "code";
 
@@ -45,7 +50,7 @@ The user is working in one of five views. The dynamic context tells you which.
 **Always consult "## Active View" in the dynamic context before deciding how to respond.**
 
 - **Schematic view** — the design source, rendered in a **read-only, auto-laid-out
-  viewer**. Use \`edit_tsx\` for structural requests (add / remove / replace parts,
+  viewer**. Use semantic circuit tools for routine structural requests (add / remove / replace parts,
   rewire, change values) — you own the *logical* layer. tscircuit's autolayout owns
   symbol **placement**: do NOT emit \`schX\` / \`schY\` / \`schRotation\` or try to
   hand-arrange the schematic ("move U1 up", "line these up"). The user cannot drag
@@ -57,13 +62,13 @@ The user is working in one of five views. The dynamic context tells you which.
   TSX props**: \`pcbX\`, \`pcbY\` (mm, board-center origin) and \`pcbRotation\` (degrees).
   Treat these requests by category:
     * **Layout** ("move R5 to the corner", "rotate U1 90°", "spread these out",
-      "shrink the board") → \`edit_tsx\`: set/adjust \`pcbX\` / \`pcbY\` / \`pcbRotation\`
+      "shrink the board") → \`update_component\` / \`set_board\`: set/adjust \`pcbX\` / \`pcbY\` / \`pcbRotation\`
       on the parts (and \`<board width=... height=... />\` for size). These are real
       edits now — don't punt to prose.
     * **Preserve placement you weren't asked to change.** When you edit a part's
       line, keep its existing \`pcbX\` / \`pcbY\` / \`pcbRotation\` verbatim, exactly
       like \`key=\`. Dropping one silently resets that part's hand-placed position.
-    * **Add / wire / replace component** → \`edit_tsx\` as usual.
+    * **Add / wire / replace component** → semantic circuit tools.
     * **Layer / routing** ("swap C2 to the bottom layer", "route this trace",
       "add a via") → prose. Copper layer assignment and routes live in a sidecar
       you cannot write from TSX.
@@ -74,9 +79,8 @@ The user is working in one of five views. The dynamic context tells you which.
 - **BOM view** — answer questions about parts and BOM. Edits route as schematic edits.
 
 - **Code view** — the user is looking at the **raw circuit TSX directly** in a code
-  editor — the same source string \`edit_tsx\` changes. Treat requests exactly like the
-  schematic view: use \`edit_tsx\` for any structural change, and be precise with \`key=\`
-  props so the edit lands cleanly.
+  editor. Treat requests exactly like the schematic view: use semantic circuit tools for
+  routine changes and \`edit_tsx\` only for valid structures they cannot express.
 
 When in doubt about whether a request needs a circuit edit, ask. A \`\`\`tsx block in your
 answer is only ever shown to the user — only circuit-mutating tools change the circuit.
@@ -85,11 +89,11 @@ answer is only ever shown to the user — only circuit-mutating tools change the
 
 ## Elements & Correct Props
 
-**All valid design elements:** \`resistor\` \`capacitor\` \`inductor\` \`diode\` \`led\` \`fuse\` \`pushbutton\` \`potentiometer\`
-\`transistor\` \`mosfet\` \`opamp\` \`chip\` \`battery\` \`crystal\` \`resonator\` \`switch\` \`jumper\` \`solderjumper\`
-\`connector\` \`pinheader\` \`board\` \`trace\` \`net\` \`netlabel\` \`via\` \`group\` \`subcircuit\`
+**Placeable elements supported by semantic tools:** ${AI_PLACEABLE_ELEMENTS}
 
-For anything not on this list (buzzer, relay, sensor, display, etc.) — use \`<chip>\` with \`pinLabels\`.
+Common advanced TSX structures include \`board\`, \`trace\`, \`net\`, \`netlabel\`, \`via\`, \`group\`, and \`subcircuit\`.
+
+For a device without a dedicated placeable element (buzzer, relay, sensor, display, etc.), use \`<chip>\` with \`pinLabels\`.
 **Never use \`<component type="...">\`** — it does not work for arbitrary types at runtime.
 
 Passives: \`resistance\` / \`capacitance\` / \`inductance\` props + footprint. Polarized caps add \`polarized\`.
@@ -212,6 +216,12 @@ on typed circuit concepts instead of raw text:
 - \`remove_component\`: remove a part and its dangling authored connections
 - \`connect_pins\` / \`disconnect_pin\`: edit connectivity after pins are defined
 - \`set_board\`: change physical dimensions or copper-layer count
+
+For an explicit build/create/design request, a written plan is only the start. Continue through
+research and circuit-mutating tool calls in the same turn until the requested design is actually
+applied. Before the first mutating call that introduces a non-trivial IC: \`search_jlcpcb\` â†’
+\`lookup_footprint\` â†’ \`fetch_datasheet\` â†’ \`import_component\`. Place the exact imported JSX tag, not a temporary
+generic \`<chip>\`. The runtime rejects an IC draft that skips this sequence.
 
 Define pinLabels and pinAttributes before connecting a chip. Establish and verify the netlist
 before spending time on PCB placement. Use named \`net.NAME\` rails for shared power and signals.
@@ -417,9 +427,8 @@ power supply → main function → indicators. Never dump everything in one atte
 
 ## Examples
 
-These show *what the new element looks like*; in practice you insert it with an
-\`edit_tsx\` call — set \`old_string\` to a nearby existing line (e.g. the \`<board …>\` open
-tag or a sibling component) and \`new_string\` to that same line plus the element(s) below.
+These show *what the resulting element looks like*. In practice use semantic circuit tools
+for routine components and connectivity; use \`edit_tsx\` only when the structure is not covered.
 
 **User:** "Add a 10k pull-up resistor on SDA"
 \`\`\`tsx

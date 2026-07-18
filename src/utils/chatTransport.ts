@@ -85,6 +85,8 @@ export interface StreamTurnArgs {
   messages: unknown[];
   /** OpenRouter function definitions; omit / empty to force a tool-free turn. */
   tools?: ChatToolDefinition[];
+  /** Require at least one tool call for this turn instead of leaving it optional. */
+  toolChoice?: "auto" | "required";
   /** Adaptive-thinking effort (e.g. "high"); omit to disable thinking. */
   thinkingEffort?: string;
   /** Stable, non-sensitive conversation ID used for provider affinity. */
@@ -227,7 +229,7 @@ async function streamOpenRouterTurn(
   if (args.sessionId) body.session_id = args.sessionId;
   if (args.tools && args.tools.length > 0) {
     body.tools = args.tools;
-    body.tool_choice = "auto";
+    body.tool_choice = args.toolChoice ?? "auto";
   }
   if (args.thinkingEffort) {
     body.reasoning = { effort: args.thinkingEffort };

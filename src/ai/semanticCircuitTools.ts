@@ -16,6 +16,12 @@ import {
   validateTsx,
   type ComponentPropValue,
 } from "../utils/tsxTransform";
+import {
+  isAiPlaceableComponentTag,
+  isValidJsxPropName,
+  isValidNetName,
+  isValidPinLabel,
+} from "./tscircuitCapabilities";
 
 export const SEMANTIC_CIRCUIT_TOOL_NAMES = [
   "inspect_circuit",
@@ -38,103 +44,124 @@ const JSON_PROPS_SCHEMA = {
 };
 
 /** Model-facing definitions. These operate on the loop-local draft, not the live board. */
-export const SEMANTIC_CIRCUIT_TOOLS: unknown[] = [
+export const SEMANTIC_CIRCUIT_TOOLS = [
   {
-    name: "inspect_circuit",
-    description:
-      "Read a compact structured manifest of the working circuit: board settings, components, props, and connections. Use this when you need exact current state before targeted edits.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
+    type: "function" as const,
+    function: {
+      name: "inspect_circuit",
+      description:
+        "Read a compact structured manifest of the working circuit: board settings, components, props, and connections. Use this when you need exact current state before targeted edits.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
   },
   {
-    name: "add_component",
-    description:
-      "Add one component to the working circuit using a documented tscircuit tag and typed props. A stable key is generated automatically. For arbitrary devices use tag=chip with pinLabels; imported parts may use the exact uppercase tag returned by import_component.",
-    input_schema: {
-      type: "object",
-      properties: {
-        tag: {
-          type: "string",
-          description:
-            "A documented builtin such as resistor, capacitor, mosfet, connector, pinheader, or chip; or an imported uppercase tag.",
+    type: "function" as const,
+    function: {
+      name: "add_component",
+      description:
+        "Add one component to the working circuit using a documented tscircuit tag and typed props. A stable key is generated automatically. For arbitrary devices use tag=chip with pinLabels; imported parts may use the exact uppercase tag returned by import_component.",
+      parameters: {
+        type: "object",
+        properties: {
+          tag: {
+            type: "string",
+            description:
+              "A documented builtin such as resistor, capacitor, mosfet, connector, pinheader, or chip; or an imported uppercase tag.",
+          },
+          name: { type: "string", description: "Unique designator, e.g. R1, U2, J1." },
+          props: JSON_PROPS_SCHEMA,
         },
-        name: { type: "string", description: "Unique designator, e.g. R1, U2, J1." },
-        props: JSON_PROPS_SCHEMA,
+        required: ["tag", "name"],
+        additionalProperties: false,
       },
-      required: ["tag", "name"],
-      additionalProperties: false,
     },
   },
   {
-    name: "update_component",
-    description:
-      "Update typed props, remove props, or rename one existing component. Stable keys, placement, and connection references are preserved unless explicitly changed. Prefer this over raw TSX replacement for component edits.",
-    input_schema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Current component designator." },
-        new_name: { type: "string", description: "Optional new unique designator." },
-        props: JSON_PROPS_SCHEMA,
-        delete_props: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional prop names to remove.",
+    type: "function" as const,
+    function: {
+      name: "update_component",
+      description:
+        "Update typed props, remove props, or rename one existing component. Stable keys, placement, and connection references are preserved unless explicitly changed. Prefer this over raw TSX replacement for component edits.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Current component designator." },
+          new_name: { type: "string", description: "Optional new unique designator." },
+          props: JSON_PROPS_SCHEMA,
+          delete_props: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional prop names to remove.",
+          },
         },
+        required: ["name"],
+        additionalProperties: false,
       },
-      required: ["name"],
-      additionalProperties: false,
     },
   },
   {
-    name: "remove_component",
-    description:
-      "Remove one component by designator and prune authored connections that target it.",
-    input_schema: {
-      type: "object",
-      properties: { name: { type: "string", description: "Component designator." } },
-      required: ["name"],
-      additionalProperties: false,
+    type: "function" as const,
+    function: {
+      name: "remove_component",
+      description:
+        "Remove one component by designator and prune authored connections that target it.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "Component designator." } },
+        required: ["name"],
+        additionalProperties: false,
+      },
     },
   },
   {
-    name: "connect_pins",
-    description:
-      "Author one connection on a component. Define chip pinLabels first. Use Component.pin for a point-to-point connection or net.NAME for shared rails and multi-pin nets.",
-    input_schema: {
-      type: "object",
-      properties: {
-        owner: { type: "string", description: "Component carrying the connections prop." },
-        pin: { type: "string", description: "That component's documented pin label." },
-        target: { type: "string", description: "Another Component.pin or a named net.NAME." },
+    type: "function" as const,
+    function: {
+      name: "connect_pins",
+      description:
+        "Author one connection on a component. Define chip pinLabels first. Use Component.pin for a point-to-point connection or net.NAME for shared rails and multi-pin nets.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string", description: "Component carrying the connections prop." },
+          pin: { type: "string", description: "That component's documented pin label." },
+          target: { type: "string", description: "Another Component.pin or a named net.NAME." },
+        },
+        required: ["owner", "pin", "target"],
+        additionalProperties: false,
       },
-      required: ["owner", "pin", "target"],
-      additionalProperties: false,
     },
   },
   {
-    name: "disconnect_pin",
-    description: "Remove one authored connection from a component pin.",
-    input_schema: {
-      type: "object",
-      properties: {
-        owner: { type: "string", description: "Component carrying the connection." },
-        pin: { type: "string", description: "Pin label to disconnect." },
+    type: "function" as const,
+    function: {
+      name: "disconnect_pin",
+      description: "Remove one authored connection from a component pin.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string", description: "Component carrying the connection." },
+          pin: { type: "string", description: "Pin label to disconnect." },
+        },
+        required: ["owner", "pin"],
+        additionalProperties: false,
       },
-      required: ["owner", "pin"],
-      additionalProperties: false,
     },
   },
   {
-    name: "set_board",
-    description:
-      "Update board width, height, or copper-layer count without rewriting components.",
-    input_schema: {
-      type: "object",
-      properties: {
-        width: { type: "string", description: "Physical width with units, e.g. 50mm." },
-        height: { type: "string", description: "Physical height with units, e.g. 40mm." },
-        layers: { type: "integer", enum: [2, 4, 6, 8] },
+    type: "function" as const,
+    function: {
+      name: "set_board",
+      description:
+        "Update board width, height, or copper-layer count without rewriting components.",
+      parameters: {
+        type: "object",
+        properties: {
+          width: { type: "string", description: "Physical width with units, e.g. 50mm." },
+          height: { type: "string", description: "Physical height with units, e.g. 40mm." },
+          layers: { type: "integer", enum: [2, 4, 6, 8] },
+        },
+        additionalProperties: false,
       },
-      additionalProperties: false,
     },
   },
 ];
@@ -147,30 +174,6 @@ export interface SemanticCircuitToolResult {
   activity: string;
 }
 
-const BUILTIN_COMPONENT_TAGS = new Set([
-  "resistor",
-  "capacitor",
-  "inductor",
-  "diode",
-  "led",
-  "fuse",
-  "pushbutton",
-  "potentiometer",
-  "transistor",
-  "mosfet",
-  "opamp",
-  "chip",
-  "battery",
-  "crystal",
-  "resonator",
-  "switch",
-  "jumper",
-  "solderjumper",
-  "connector",
-  "pinheader",
-]);
-
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const COMPONENT_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const FORBIDDEN_DIRECT_PROPS = new Set(["name", "key", "connections"]);
 
@@ -212,7 +215,7 @@ function success(
 }
 
 function validComponentTag(tag: string): boolean {
-  return BUILTIN_COMPONENT_TAGS.has(tag) || /^[A-Z][A-Za-z0-9_]*$/.test(tag);
+  return isAiPlaceableComponentTag(tag) || /^[A-Z][A-Za-z0-9_]*$/.test(tag);
 }
 
 function validateProps(
@@ -222,7 +225,7 @@ function validateProps(
   if (!isRecord(props)) return { ok: false, error: "props must be an object" };
   const clean: Record<string, ComponentPropValue> = {};
   for (const [name, value] of Object.entries(props)) {
-    if (!IDENTIFIER.test(name)) {
+    if (!isValidJsxPropName(name)) {
       return { ok: false, error: `invalid JSX prop name: ${name}` };
     }
     if (FORBIDDEN_DIRECT_PROPS.has(name)) {
@@ -319,7 +322,7 @@ function updateComponent(
     ? input.delete_props.filter((value): value is string => typeof value === "string")
     : [];
   for (const prop of deleteProps) {
-    if (!IDENTIFIER.test(prop) || FORBIDDEN_DIRECT_PROPS.has(prop)) {
+    if (!isValidJsxPropName(prop) || FORBIDDEN_DIRECT_PROPS.has(prop)) {
       return fail(tsx, `cannot delete managed or invalid prop ${JSON.stringify(prop)}`);
     }
   }
@@ -371,11 +374,12 @@ function normalizeConnectionTarget(
   rawTarget: string
 ): { ok: true; target: string } | { ok: false; error: string } {
   const target = normalizeSelectorString(rawTarget);
-  if (/^net\.[A-Za-z_][A-Za-z0-9_]*$/.test(target)) {
+  const netMatch = /^net\.(.+)$/.exec(target);
+  if (netMatch && isValidNetName(netMatch[1])) {
     return { ok: true, target };
   }
-  const match = /^([A-Za-z][A-Za-z0-9_-]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(target);
-  if (!match) {
+  const match = /^([A-Za-z][A-Za-z0-9_-]*)\.(.+)$/.exec(target);
+  if (!match || !isValidPinLabel(match[2])) {
     return { ok: false, error: "target must be Component.pin or net.NAME" };
   }
   if (!extractComponentByName(tsx, match[1])) {
@@ -391,7 +395,7 @@ function connectPins(
   const owner = stringInput(input, "owner");
   const pin = stringInput(input, "pin");
   if (!extractComponentByName(tsx, owner)) return fail(tsx, `component ${owner} was not found`);
-  if (!IDENTIFIER.test(pin)) return fail(tsx, "pin must be a valid pin label");
+  if (!isValidPinLabel(pin)) return fail(tsx, "pin must be a valid pin label");
   const normalized = normalizeConnectionTarget(tsx, stringInput(input, "target"));
   if (!normalized.ok) return fail(tsx, normalized.error);
   const next = setComponentConnection(tsx, owner, pin, normalized.target);
@@ -411,7 +415,7 @@ function disconnectPin(
   const owner = stringInput(input, "owner");
   const pin = stringInput(input, "pin");
   if (!extractComponentByName(tsx, owner)) return fail(tsx, `component ${owner} was not found`);
-  if (!IDENTIFIER.test(pin)) return fail(tsx, "pin must be a valid pin label");
+  if (!isValidPinLabel(pin)) return fail(tsx, "pin must be a valid pin label");
   const next = removeComponentConnection(tsx, owner, pin);
   if (next === tsx) return fail(tsx, `${owner}.${pin} has no authored connection`);
   return success(

@@ -1,7 +1,14 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { toast } from "sonner";
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+} from "lucide-react";
 import { Toolbar } from "@/components/Toolbar";
 import { EditorShell } from "@/editor/EditorShell";
+import { IssuesPanel } from "@/editor/IssuesPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ShortcutsHelp } from "@/components/ShortcutsHelp";
 import { SettingsDialog } from "@/components/SettingsDialog";
@@ -14,6 +21,11 @@ import { useChatStore } from "@/store/chatStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { useEditorStore } from "@/editor/state/editorStore";
 import { DEFAULT_TSX } from "@/utils/tsxTransform";
+import {
+  buildEditorIssues,
+  countGroupedIssues,
+  groupEditorIssues,
+} from "@/editor/issues";
 import {
   clampChatWidth,
   snapChatWidth,
@@ -55,6 +67,7 @@ export function EditorView() {
   // (component positions + wire waypoints). Without this, sidecar-only edits
   // never reach localStorage and silently disappear on reload.
   const manualEdits = useEditorStore((s) => s.manualEdits);
+  const issuesOpen = useEditorStore((s) => s.issuesOpen);
 
   const chatOpen = useChatStore((s) => s.chatOpen);
   const toggleChat = useChatStore((s) => s.toggleChat);
@@ -327,6 +340,11 @@ export function EditorView() {
               <EditorShell />
             </PanelErrorBoundary>
           </div>
+          {issuesOpen && (
+            <PanelErrorBoundary label="Issues panel">
+              <IssuesPanel />
+            </PanelErrorBoundary>
+          )}
           <StatusBar />
         </main>
 
@@ -513,10 +531,30 @@ function StatusBar() {
   // prefer the editorStore count when populated and fall back to the legacy
   // single-name display otherwise.
   const editorSelected = useEditorStore((s) => s.selectedKeys);
+  const evalIssues = useCircuitStore((s) => s.evalIssues);
+  const evalError = useCircuitStore((s) => s.evalError);
+  const evalVersion = useCircuitStore((s) => s.evalVersion);
+  const evalIssuesVersion = useCircuitStore((s) => s.evalIssuesVersion);
+  const circuitJson = useCircuitStore((s) => s.circuitJson);
+  const drcViolations = useCircuitStore((s) => s.drcViolations);
+  const issuesOpen = useEditorStore((s) => s.issuesOpen);
+  const toggleIssues = useEditorStore((s) => s.toggleIssues);
 
   const componentCount = getComponents().length;
   const board = getBoardConfig();
   const editorSelectedSize = editorSelected.size;
+  const issueCounts = useMemo(
+    () =>
+      countGroupedIssues(
+        groupEditorIssues(
+          buildEditorIssues(evalIssues, drcViolations, evalError),
+        ),
+      ),
+    [evalIssues, drcViolations, evalError],
+  );
+  const checkingIssues =
+    evalError === null &&
+    (circuitJson === null || evalIssuesVersion !== evalVersion);
 
   return (
     <div className="flex items-center h-6 px-3 border-t border-border bg-sidebar text-xs text-muted-foreground shrink-0 gap-4 select-none relative z-50">
@@ -532,6 +570,36 @@ function StatusBar() {
           <span className="font-mono text-foreground">{selectedName}</span>
         )
       )}
+      <button
+        type="button"
+        onClick={toggleIssues}
+        aria-expanded={issuesOpen}
+        className="flex items-center gap-2 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+        title="Open circuit issues"
+      >
+        {checkingIssues ? (
+          <span className="flex items-center gap-1">
+            <Loader2 className="size-3.5 animate-spin" /> Checking issues
+          </span>
+        ) : issueCounts.errors === 0 && issueCounts.warnings === 0 ? (
+          <span className="flex items-center gap-1 text-emerald-500">
+            <CheckCircle2 className="size-3.5" /> No issues
+          </span>
+        ) : (
+          <>
+            {issueCounts.errors > 0 && (
+              <span className="flex items-center gap-1 text-red-500 tabular-nums">
+                <AlertCircle className="size-3.5" /> {issueCounts.errors}
+              </span>
+            )}
+            {issueCounts.warnings > 0 && (
+              <span className="flex items-center gap-1 text-amber-500 tabular-nums">
+                <AlertTriangle className="size-3.5" /> {issueCounts.warnings}
+              </span>
+            )}
+          </>
+        )}
+      </button>
     </div>
   );
 }

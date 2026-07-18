@@ -12,6 +12,7 @@
 // to defaultExecutor below.
 
 import type { EvaluatorError, EvaluatorResult, ManualEditsMap } from "../shared/types";
+import { collectEmbeddedEvalIssues } from "../issues";
 import { log } from "@/utils/logger";
 
 // Subset of CircuitRunner's API that we depend on. Keeping this narrow means
@@ -221,12 +222,14 @@ export class CircuitEvaluator {
       this.inflight = null;
 
       const errors = collectErrors(circuitJson);
+      const issues = collectEmbeddedEvalIssues(circuitJson);
       const durationMs = performance.now() - start;
       const result: EvaluatorResult = {
         version,
         inputHash,
         circuitJson,
         errors,
+        issues,
         durationMs,
       };
       this._emitResult(result);

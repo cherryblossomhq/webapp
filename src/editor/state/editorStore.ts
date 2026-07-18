@@ -51,6 +51,10 @@ interface EditorStore {
   // keyboard shortcuts / toolbar / properties panel can all coordinate.
   activeTab: EditorTab;
 
+  // ─── Shared Issues panel ─────────────────────────────────────────────────
+  issuesOpen: boolean;
+  requestedDrcFocusId: string | null;
+
   // ─── Modal tool ──────────────────────────────────────────────────────────
   toolMode: ToolMode;
 
@@ -107,6 +111,9 @@ interface EditorStore {
 
   // ─── Actions: tab ────────────────────────────────────────────────────────
   setActiveTab: (tab: EditorTab) => void;
+  setIssuesOpen: (open: boolean) => void;
+  toggleIssues: () => void;
+  requestDrcFocus: (id: string | null) => void;
 
   // ─── Actions: viewport ───────────────────────────────────────────────────
   setViewport: (which: keyof ViewportPair, transform: ViewportTransform) => void;
@@ -214,6 +221,8 @@ const INITIAL: Pick<
   | "manualEdits"
   | "localEditsSinceEval"
   | "activeTab"
+  | "issuesOpen"
+  | "requestedDrcFocusId"
   | "activeLayer"
   | "layerVisibility"
   | "traceWidth"
@@ -230,6 +239,8 @@ const INITIAL: Pick<
   manualEdits: {},
   localEditsSinceEval: 0,
   activeTab: "schematic",
+  issuesOpen: false,
+  requestedDrcFocusId: null,
   activeLayer: TOP_LAYER_ID,
   layerVisibility: defaultLayerVisibility(),
   traceWidth: DEFAULT_TRACE_WIDTH_MM,
@@ -314,6 +325,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (get().activeTab === tab) return;
     set({ activeTab: tab });
   },
+
+  setIssuesOpen: (open) => {
+    if (get().issuesOpen === open) return;
+    set({ issuesOpen: open });
+  },
+
+  toggleIssues: () => set((state) => ({ issuesOpen: !state.issuesOpen })),
+
+  requestDrcFocus: (id) => set({ requestedDrcFocusId: id }),
 
   // ─── Viewport ─────────────────────────────────────────────────────────────
 

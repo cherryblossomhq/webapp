@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type ReactNode } from "react";
 import { useChatStore, type ChatMessage, type ChatActivity, type ChatEvent } from "@/store/chatStore";
 import { useCircuitStore } from "@/store/circuitStore";
+import { useEditorStore } from "@/editor/state/editorStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import {
   Cpu,
@@ -455,100 +456,6 @@ function StreamingMessage({ events }: { events: ChatEvent[] }) {
   );
 }
 
-// A collapsible red error box: a destructive header (alert icon + title + a +/-
-// toggle) over a body revealed on click. Shared by the soft validation-error
-// block and the hard render-failure block.
-function CollapsibleErrorBox({
-  title,
-  children,
-}: {
-  title: ReactNode;
-  children: ReactNode;
-}) {
-  const [collapsed, setCollapsed] = useState(true);
-  return (
-    <div className="mx-4 my-2 rounded-md border border-destructive/30 bg-destructive/5 text-xs overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className={`flex w-full items-center gap-2 px-3 py-2 text-left ${
-          collapsed ? "" : "border-b border-destructive/20"
-        }`}
-        aria-expanded={!collapsed}
-      >
-        <AlertCircle className="size-3.5 text-destructive shrink-0" />
-        <span className="font-medium text-destructive">{title}</span>
-        <ExpandToggleIcon
-          open={!collapsed}
-          className="ml-auto size-3 shrink-0 text-destructive/60"
-        />
-      </button>
-      {!collapsed && children}
-    </div>
-  );
-}
-
-// Soft validation errors (the circuit rendered, but rules/DRC flagged problems).
-// Defaults to a readable, triaged summary — "underspecified" noise dropped, the
-// many "missing a trace" errors collapsed into one "unconnected pins" line — and
-// expands on demand to the full raw list for debugging.
-function ValidationErrorBlock({ rawErrors }: { rawErrors: string[] }) {
-  const [showAll, setShowAll] = useState(false);
-
-  const actionable = rawErrors.filter((e) => !e.includes("are underspecified"));
-  const missingTrace = actionable.filter((e) => e.includes("is missing a trace"));
-  const realErrors = actionable.filter((e) => !e.includes("is missing a trace"));
-
-  const unconnected = new Set(
-    missingTrace.flatMap((e) => {
-      const m = e.match(/on (\S+) is missing/);
-      return m ? [m[1]] : [];
-    })
-  );
-  const summary = [
-    ...realErrors,
-    ...(unconnected.size > 0
-      ? [`${unconnected.size} component${unconnected.size !== 1 ? "s" : ""} have unconnected pins — ask Claude to finish wiring them`]
-      : []),
-  ];
-
-  const display = showAll ? rawErrors : summary;
-  const hasMore = rawErrors.length > summary.length;
-
-  return (
-    <CollapsibleErrorBox
-      title={`${summary.length} issue${summary.length !== 1 ? "s" : ""} found`}
-    >
-      <ul className="px-3 py-2 space-y-1 max-h-48 overflow-y-auto">
-        {display.map((e, i) => (
-          <li key={i} className="text-muted-foreground leading-relaxed">• {e}</li>
-        ))}
-      </ul>
-      {hasMore && (
-        <button
-          type="button"
-          onClick={() => setShowAll((v) => !v)}
-          className="w-full border-t border-destructive/20 px-3 py-1.5 text-left text-muted-foreground/70 transition-colors hover:text-foreground"
-        >
-          {showAll ? "Show summary" : `Show all ${rawErrors.length} errors`}
-        </button>
-      )}
-    </CollapsibleErrorBox>
-  );
-}
-
-// Hard render failure shown as a collapsible red box (same pattern as the soft
-// error block). Only the latest one is rendered; stale ones are dropped upstream.
-function RenderFailedBlock({ message }: { message: string }) {
-  return (
-    <CollapsibleErrorBox title="Circuit failed to render">
-      <div className="px-3 py-2 font-mono leading-relaxed text-muted-foreground break-words max-h-48 overflow-y-auto">
-        {message}
-      </div>
-    </CollapsibleErrorBox>
-  );
-}
-
 function SystemValidationMessage({
   message,
   isLatest,
@@ -585,20 +492,32 @@ function SystemValidationMessage({
     );
   }
 
-  // Hard failure: the circuit didn't render at all (compile/runtime error or the
-  // evaluator's own timeout). Distinct from soft rule violations — nothing is
-  // showing — so it gets its own header and the raw message verbatim. Only the
-  // current turn's failure is useful; stale ones from earlier turns are dropped.
-  if (content.startsWith("__render_failed__:")) {
+  if (content.startsWith("__issues__:")) {
     if (!isLatest) return null;
-    const failMessage = content.slice("__render_failed__:".length).trim();
-    return <RenderFailedBlock message={failMessage} />;
-  }
-
-  if (content.startsWith("__errors__:")) {
-    if (!isLatest) return null;
-    const rawErrors = content.slice("__errors__:".length).split("\n").filter(Boolean);
-    return <ValidationErrorBlock rawErrors={rawErrors} />;
+    const [, rawErrors = "0", rawWarnings = "0"] = content.split(":");
+    const errors = Number(rawErrors) || 0;
+    const warnings = Number(rawWarnings) || 0;
+    return (
+      <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md border border-border bg-muted/40 text-xs">
+        <AlertCircle
+          className={`size-3.5 shrink-0 ${
+            errors > 0 ? "text-destructive" : "text-amber-500"
+          }`}
+        />
+        <span className="min-w-0 text-muted-foreground">
+          Circuit evaluated with {errors} {errors === 1 ? "error" : "errors"}
+          {warnings > 0 &&
+            ` and ${warnings} ${warnings === 1 ? "warning" : "warnings"}`}
+        </span>
+        <button
+          type="button"
+          onClick={() => useEditorStore.getState().setIssuesOpen(true)}
+          className="ml-auto shrink-0 font-medium text-foreground hover:text-primary"
+        >
+          Review issues
+        </button>
+      </div>
+    );
   }
 
   return null;

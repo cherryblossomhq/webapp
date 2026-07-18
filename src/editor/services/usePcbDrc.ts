@@ -57,7 +57,13 @@ export function usePcbDrc(): void {
         if (runId === runIdRef.current) setDrcViolations(violations);
       });
     }, DRC_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      // A run may already be awaiting the lazy checks import. Invalidate its
+      // token so it cannot republish violations after a dependency change or
+      // after the PCB tab unmounts.
+      if (runIdRef.current === runId) runIdRef.current += 1;
+    };
     // Re-run whenever the eval output or the manual-route sidecar changes. A
     // tsx edit produces a new circuitJson, so tsxCode isn't needed as a dep.
   }, [circuitJson, manualEdits, setDrcViolations]);

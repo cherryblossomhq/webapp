@@ -680,6 +680,7 @@ export function PcbCanvas() {
 
   // ─── DRC inspector (click a violation marker to pan/zoom + read it) ──────
   const [focusedDrcId, setFocusedDrcId] = useState<string | null>(null);
+  const requestedDrcFocusId = useEditorStore((s) => s.requestedDrcFocusId);
   // Whether DRC markers are drawn on the canvas. Off by default — toggled on
   // from the StatusBar eye button; the count + inspector stay available
   // regardless of marker visibility.
@@ -701,6 +702,21 @@ export function PcbCanvas() {
     },
     [canvasSize.width, viewport.scale, setViewport],
   );
+
+  // The shared Issues drawer can switch to PCB and request a particular DRC
+  // finding. Keep the request in the store until this tab mounts, then focus
+  // the existing inspector/viewport and consume it.
+  useEffect(() => {
+    if (!requestedDrcFocusId) return;
+    const violation = drcViolations.find((v) => v.id === requestedDrcFocusId);
+    if (!violation) return;
+    const frame = requestAnimationFrame(() => {
+      setDrcVisible(true);
+      focusViolation(violation);
+      useEditorStore.getState().requestDrcFocus(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [requestedDrcFocusId, drcViolations, focusViolation]);
 
   const focusedDrcIndex = focusedDrcId
     ? drcViolations.findIndex((v) => v.id === focusedDrcId)
@@ -1866,7 +1882,7 @@ export function PcbCanvas() {
           drcCount={drcViolations.length}
           onDrcClick={
             drcViolations.length > 0
-              ? () => stepViolation(1)
+              ? () => useEditorStore.getState().setIssuesOpen(true)
               : undefined
           }
           drcVisible={drcVisible}
@@ -2622,4 +2638,3 @@ function padToSelector(pad: PcbPadRecord, model: PcbModel): string | null {
   // pad has no port_id (rare: standalone pads from imported snippets).
   return model.selectorByPad.get(pad) ?? null;
 }
-

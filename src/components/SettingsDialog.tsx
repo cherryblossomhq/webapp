@@ -11,6 +11,7 @@
  */
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { useAiReady } from "@/hooks/useAiReady";
 import { useDialogReturnFocus } from "@/hooks/useDialogReturnFocus";
 import { useSettingsStore, type SettingsTab } from "@/store/settingsStore";
 import { useAuthStore } from "@/store/authStore";
@@ -105,6 +106,7 @@ function AiSection() {
   const authStatus = useAuthStore((s) => s.status);
   const user = useAuthStore((s) => s.user);
   const setActiveTab = useSettingsStore((s) => s.setActiveTab);
+  const { ready: aiReady, pending: aiPending, ctaMessage } = useAiReady();
   const authAvailable = isAuthAvailable();
 
   return (
@@ -126,8 +128,19 @@ function AiSection() {
 
       {authStatus === "signedIn" && user ? (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-          Signed in as {user.email} — the assistant is ready to use.
+          {aiPending ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+          ) : aiReady ? (
+            <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          ) : (
+            <AlertCircle className="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
+          )}
+          Signed in as {user.email}.{" "}
+          {aiPending
+            ? "Loading managed AI models…"
+            : aiReady
+              ? "The assistant is ready to use."
+              : ctaMessage}
         </p>
       ) : (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2.5">

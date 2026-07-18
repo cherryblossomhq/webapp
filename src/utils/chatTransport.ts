@@ -150,9 +150,7 @@ const MANAGED_MODEL_IDS: Record<string, string> = {
   "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
   "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
   "claude-sonnet-5": "anthropic/claude-sonnet-5",
-  // Temporary managed-mode override for local testing. BYOK still sends the
-  // native `claude-opus-4-8` ID directly to Anthropic.
-  "claude-opus-4-8": "tencent/hy3:free",
+  "claude-opus-4-8": "anthropic/claude-opus-4.8",
   "claude-fable-5": "anthropic/claude-fable-5",
 };
 

@@ -42,6 +42,8 @@ interface AuthState {
   signIn: () => Promise<void>;
   /** Abort an in-flight sign-in (the pending `signIn` settles it). */
   cancelSignIn: () => void;
+  /** Force a WorkOS token refresh, shared with startup and scheduled refreshes. */
+  refresh: () => Promise<AuthSession | null>;
   signOut: () => Promise<void>;
 }
 
@@ -52,6 +54,8 @@ let sessionEpoch = 0;
 /** Shared in-flight init, so a double-invoked launch effect (React StrictMode)
  *  can't fire two concurrent refreshes racing to rotate the same token. */
 let initPromise: Promise<void> | null = null;
+/** One rotating-refresh-token exchange at a time. Every caller shares it. */
+let refreshPromise: Promise<AuthSession | null> | null = null;
 
 function clearRefreshTimer() {
   if (refreshTimer) {
@@ -63,28 +67,45 @@ function clearRefreshTimer() {
 function scheduleRefresh(expiresAtMs: number) {
   clearRefreshTimer();
   const delay = Math.max(expiresAtMs - Date.now() - REFRESH_MARGIN_MS, MIN_REFRESH_DELAY_MS);
-  refreshTimer = setTimeout(() => void runRefresh(), delay);
+  refreshTimer = setTimeout(() => void runScheduledRefresh(), delay);
 }
 
-async function runRefresh() {
+function refreshSession(): Promise<AuthSession | null> {
+  if (refreshPromise) return refreshPromise;
+  const epoch = sessionEpoch;
+  refreshPromise = authRefresh()
+    .then((session) => {
+      if (epoch !== sessionEpoch) return session;
+      if (session) {
+        applySession(session);
+      } else {
+        // WorkOS rejected the refresh token — genuinely signed out.
+        clearRefreshTimer();
+        useAuthStore.setState({
+          status: "signedOut",
+          user: null,
+          accessToken: null,
+        });
+      }
+      return session;
+    })
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
+}
+
+async function runScheduledRefresh() {
   const epoch = sessionEpoch;
   try {
-    const session = await authRefresh();
-    if (epoch !== sessionEpoch) return;
-    if (session) {
-      applySession(session);
-    } else {
-      // WorkOS rejected the refresh token — genuinely signed out.
-      clearRefreshTimer();
-      useAuthStore.setState({ status: "signedOut", user: null, accessToken: null });
-    }
+    await refreshSession();
   } catch (err) {
     if (epoch !== sessionEpoch) return;
     // Transient (likely offline): the stored refresh token is still good, so keep
     // the session visible and retry rather than bouncing the user out.
     console.warn("[auth] refresh failed, retrying:", err);
     clearRefreshTimer();
-    refreshTimer = setTimeout(() => void runRefresh(), RETRY_DELAY_MS);
+    refreshTimer = setTimeout(() => void runScheduledRefresh(), RETRY_DELAY_MS);
   }
 }
 
@@ -111,9 +132,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     initPromise ??= (async () => {
       try {
-        const session = await authRefresh();
-        if (session) applySession(session);
-        else set({ status: "signedOut" });
+        await refreshSession();
       } catch (err) {
         // Offline at launch — can't prove the session either way. Show signed
         // out; the stored refresh token survives, so the next launch (or a
@@ -146,12 +165,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     });
   },
 
+  refresh: refreshSession,
+
   signOut: async () => {
     const token = get().accessToken;
+    const pendingRefresh = refreshPromise;
     sessionEpoch++;
     clearRefreshTimer();
     set({ status: "signedOut", user: null, accessToken: null, error: null });
     try {
+      // A refresh already in flight may rotate and persist a new refresh token.
+      // Let it settle first, then remove the current token so sign-out stays
+      // durable across reloads. The epoch guard above prevents UI resurrection.
+      await pendingRefresh?.catch(() => null);
       await authLogout(token ?? undefined);
     } catch (err) {
       // Token cleanup failed — worst case the next launch restores the

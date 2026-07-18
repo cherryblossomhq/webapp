@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import type { MeResponse } from "@/utils/accountApi";
 
 // Mock the chat transport before chatStore is imported. Test calls use a single
 // dispatcher-style spy: streamTurn maps to "chat_stream_turn", and tool
@@ -62,12 +63,28 @@ vi.mock("../utils/easyedaImport", () => ({
   fetchComponentDef: vi.fn(),
 }));
 
-import { useChatStore, applyTsxStringEdit, capSnapshots } from "./chatStore";
+import {
+  useChatStore,
+  applyTsxStringEdit,
+  capSnapshots,
+  isAiSetupError,
+} from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
+import { useAccountStore } from "./accountStore";
 import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
+
+describe("isAiSetupError", () => {
+  it("recognizes every composer setup sentinel", () => {
+    expect(isAiSetupError("no_api_key")).toBe(true);
+    expect(isAiSetupError("no_account")).toBe(true);
+    expect(isAiSetupError("no_managed_model")).toBe(true);
+    expect(isAiSetupError("Connection error")).toBe(false);
+    expect(isAiSetupError(null)).toBe(false);
+  });
+});
 
 // A turn that finishes on tool_calls with the given tool calls.
 function toolUseTurn(
@@ -123,6 +140,46 @@ function seedMessages(count: number) {
     content: `msg ${i}`,
     timestamp: 1000 + i,
   }));
+}
+
+function setManagedAccount(
+  selectedModel = "anthropic/claude-opus-4.8",
+  allowedModels = [
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-opus-4.8",
+  ],
+) {
+  const account: MeResponse = {
+    user: { id: "u1", email: "a@b.c", name: null },
+    plan: {
+      tier: "pro",
+      name: "Pro",
+      managedAi: true,
+      allowedModels,
+    },
+    limits: {
+      maxTokensPerRequest: 64_000,
+      requestsPerMinute: 10,
+      requestsPerDay: 200,
+      monthlyTokens: 2_000_000,
+    },
+    usage: {
+      requestsThisMinute: 0,
+      minuteResetsAt: null,
+      requestsThisDay: 0,
+      dayResetsAt: null,
+      monthlyTokens: 0,
+      monthResetsAt: null,
+    },
+    unlimitedCredits: false,
+  };
+  useAccountStore.setState({
+    account,
+    accountUserId: "u1",
+    status: "ready",
+    error: null,
+    selectedModel,
+  });
 }
 
 // The design/chat turn sends the tool catalog; the background fold sends no
@@ -283,6 +340,13 @@ describe("chatStore", () => {
       accessToken: null,
       error: null,
     });
+    useAccountStore.setState({
+      account: null,
+      accountUserId: null,
+      status: "ready",
+      error: null,
+      selectedModel: "anthropic/claude-opus-4.8",
+    });
     useCircuitStore.getState().resetCircuit();
   });
 
@@ -417,6 +481,53 @@ describe("chatStore", () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
+    it("requires an allowed model in account mode", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({ selectedModel: null });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      expect(useChatStore.getState().error).toBe("no_managed_model");
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
+    it("does not trust a persisted model before account access is resolved", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({
+        account: null,
+        accountUserId: null,
+        status: "loading",
+        selectedModel: "anthropic/claude-opus-4.8",
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      expect(useChatStore.getState().error).toBe("no_managed_model");
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
     it("truncates over-long user messages", async () => {
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
@@ -443,6 +554,7 @@ describe("chatStore", () => {
         kind: "apiKey",
         key: "test-key",
       });
+      expect((call![1] as { model: string }).model).toBe("claude-opus-4-8");
     });
 
     it("sends the WorkOS access token as managed auth in account mode", async () => {
@@ -458,6 +570,7 @@ describe("chatStore", () => {
           profile_picture_url: null,
         },
       });
+      setManagedAccount();
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
         return turnResult("ok");
@@ -471,6 +584,47 @@ describe("chatStore", () => {
         url: "https://www.trycherryblossom.com/api/v1/chat/completions",
       });
       expect(args.sessionId).toBe(useChatStore.getState().sessionId);
+    });
+
+    it("snapshots the selected managed model for every tool-loop round", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({ selectedModel: "anthropic/claude-sonnet-5" });
+      setManagedAccount("anthropic/claude-sonnet-5");
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "search_jlcpcb") return "C1 | part";
+        if (turn++ === 0) {
+          useAccountStore.setState({
+            selectedModel: "anthropic/claude-opus-4.8",
+          });
+          return toolUseTurn([
+            { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const models = mockInvoke.mock.calls
+        .filter(([command]) => command === "chat_stream_turn")
+        .map(([, args]) => (args as { model: string }).model);
+      expect(models).toEqual([
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-5",
+      ]);
     });
   });
 

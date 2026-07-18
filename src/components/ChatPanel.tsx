@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type ReactNode } from "react";
-import { useChatStore, type ChatMessage, type ChatActivity, type ChatEvent } from "@/store/chatStore";
+import {
+  isAiSetupError,
+  useChatStore,
+  type ChatMessage,
+  type ChatActivity,
+  type ChatEvent,
+} from "@/store/chatStore";
 import { useCircuitStore } from "@/store/circuitStore";
 import { useEditorStore } from "@/editor/state/editorStore";
 import { useSettingsStore } from "@/store/settingsStore";
@@ -32,6 +38,7 @@ import DOMPurify from "dompurify";
 import { DEFAULT_TSX } from "@/utils/tsxTransform";
 import { copyText, buildSuggestions } from "@/lib/chatMessageUtils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ManagedModelSelector } from "@/components/ManagedModelSelector";
 import { useAiReady } from "@/hooks/useAiReady";
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -730,10 +737,13 @@ export function ChatPanel() {
       <div className="flex flex-col h-full">
         {/* Header — title + chat actions */}
         <div className="flex items-center justify-between h-9 px-3 border-b border-border bg-sidebar shrink-0">
-          <span className="flex items-center gap-1.5 text-sm font-semibold">
-            <Sparkles className="size-3.5 text-primary" aria-hidden="true" />
-            AI Assistant
-          </span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="flex shrink-0 items-center gap-1.5 text-sm font-semibold">
+              <Sparkles className="size-3.5 text-primary" aria-hidden="true" />
+              AI Assistant
+            </span>
+            <ManagedModelSelector />
+          </div>
           <div className="flex items-center gap-0.5">
             <button
               onClick={() => setClearConfirmOpen(true)}
@@ -790,7 +800,7 @@ export function ChatPanel() {
         )}
 
         {/* Error banner */}
-        {error && error !== "no_api_key" && error !== "no_account" && (
+        {error && !isAiSetupError(error) && (
           <div className="flex items-center gap-2 mx-3 mb-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-xs">
             <AlertCircle className="size-3.5 shrink-0" />
             <span className="flex-1">{error}</span>

@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CHAT_TOOLS,
   ChatTransportError,
-  MANAGED_CHAT_COMPLETIONS_URL,
+  OPENROUTER_CHAT_COMPLETIONS_URL,
   completeText,
-  managedModelId,
   streamTurn,
   toOpenRouterMessages,
-  toOpenRouterTools,
 } from "./chatTransport";
 
 const managedAuth = {
-  kind: "managed" as const,
   token: "workos-token",
   url: "https://example.test/api/v1/chat/completions",
 };
@@ -40,24 +38,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("managed OpenRouter mapping", () => {
-  it("targets the current managed Chat Completions endpoint", () => {
-    expect(MANAGED_CHAT_COMPLETIONS_URL).toBe(
+describe("OpenRouter mapping", () => {
+  it("targets the current Chat Completions endpoint", () => {
+    expect(OPENROUTER_CHAT_COMPLETIONS_URL).toBe(
       "https://www.trycherryblossom.com/api/v1/chat/completions"
     );
   });
 
-  it("maps only managed model IDs to canonical OpenRouter IDs", () => {
-    expect(managedModelId("claude-haiku-4-5-20251001")).toBe(
-      "anthropic/claude-haiku-4.5"
-    );
-    expect(managedModelId("claude-opus-4-8")).toBe(
-      "anthropic/claude-opus-4.8"
-    );
-    expect(managedModelId("unmapped-model")).toBe("unmapped-model");
-  });
-
-  it("maps system, tools, tool calls, results, and PDFs", () => {
+  it("preserves native OpenRouter system, tool-call, result, and file messages", () => {
+    const assistant = {
+      role: "assistant",
+      content: null,
+      reasoning_details: [{ type: "reasoning.summary", summary: "checking" }],
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "lookup", arguments: '{"id":7}' },
+        },
+      ],
+    };
+    const toolResult = {
+      role: "tool",
+      tool_call_id: "call_1",
+      content: '{"ok":true}',
+    };
     const messages = toOpenRouterMessages(
       [{ type: "text", text: "system", cache_control: { type: "ephemeral" } }],
       [
@@ -65,38 +70,17 @@ describe("managed OpenRouter mapping", () => {
           role: "user",
           content: [
             {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: "YWJj",
+              type: "file",
+              file: {
+                filename: "datasheet.pdf",
+                file_data: "data:application/pdf;base64,YWJj",
               },
             },
             { type: "text", text: "read this" },
           ],
         },
-        {
-          role: "assistant",
-          content: [
-            { type: "text", text: "checking" },
-            {
-              type: "tool_use",
-              id: "call_1",
-              name: "lookup",
-              input: { id: 7 },
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "call_1",
-              content: { ok: true },
-            },
-          ],
-        },
+        assistant,
+        toolResult,
       ]
     ) as Array<Record<string, unknown>>;
 
@@ -119,45 +103,35 @@ describe("managed OpenRouter mapping", () => {
         { type: "text", text: "read this" },
       ],
     });
-    expect(messages[2]).toMatchObject({
-      role: "assistant",
-      tool_calls: [
-        {
-          id: "call_1",
-          type: "function",
-          function: { name: "lookup", arguments: '{"id":7}' },
-        },
-      ],
-    });
-    expect(messages[3]).toEqual({
-      role: "tool",
-      tool_call_id: "call_1",
-      content: '{"ok":true}',
-    });
+    expect(messages[2]).toBe(assistant);
+    expect(messages[3]).toBe(toolResult);
+  });
 
-    expect(
-      toOpenRouterTools([
-        {
-          name: "lookup",
-          description: "Look it up",
-          input_schema: { type: "object", required: ["id"] },
-          cache_control: { type: "ephemeral" },
-        },
-      ])
-    ).toEqual([
-      {
+  it("defines every chat tool with the OpenRouter function schema", () => {
+    expect(CHAT_TOOLS).toHaveLength(6);
+    expect(CHAT_TOOLS.map((tool) => tool.function.name)).toEqual([
+      "edit_tsx",
+      "write_tsx",
+      "search_jlcpcb",
+      "import_component",
+      "lookup_footprint",
+      "fetch_datasheet",
+    ]);
+    for (const tool of CHAT_TOOLS) {
+      expect(tool).toMatchObject({
         type: "function",
         function: {
-          name: "lookup",
-          description: "Look it up",
-          parameters: { type: "object", required: ["id"] },
+          name: expect.any(String),
+          description: expect.any(String),
+          parameters: { type: "object" },
         },
-      },
-    ]);
+      });
+      expect(tool).not.toHaveProperty("input_schema");
+    }
   });
 });
 
-describe("managed OpenRouter streaming", () => {
+describe("OpenRouter streaming", () => {
   it.each([
     ["stop", "stop"],
     ["length", "length"],
@@ -171,7 +145,7 @@ describe("managed OpenRouter streaming", () => {
 
     const turn = await streamTurn({
       auth: managedAuth,
-      model: "claude-opus-4-8",
+      model: "anthropic/claude-opus-4.8",
       system: [],
       messages: [{ role: "user", content: "go" }],
     });
@@ -195,12 +169,26 @@ describe("managed OpenRouter streaming", () => {
     const turn = await streamTurn(
       {
         auth: managedAuth,
-        model: "claude-opus-4-8",
+        model: "anthropic/claude-opus-4.8",
         system: [{ type: "text", text: "system" }],
         messages: [{ role: "user", content: "go" }],
         tools: [
-          { name: "first", input_schema: { type: "object" } },
-          { name: "second", input_schema: { type: "object" } },
+          {
+            type: "function",
+            function: {
+              name: "first",
+              description: "First tool",
+              parameters: { type: "object" },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "second",
+              description: "Second tool",
+              parameters: { type: "object" },
+            },
+          },
         ],
         thinkingEffort: "high",
         sessionId: "session-123",
@@ -255,16 +243,16 @@ describe("managed OpenRouter streaming", () => {
     const replayMessages = toOpenRouterMessages([], [
       {
         role: "assistant",
-        content: [
-          ...turn.reasoning.replay,
-          { type: "text", text: turn.text },
-          ...turn.toolCalls.map((call) => ({
-            type: "tool_use",
+        content: turn.text,
+        reasoning_details: turn.reasoning.details,
+        tool_calls: turn.toolCalls.map((call) => ({
+            type: "function",
             id: call.id,
-            name: call.name,
-            input: call.input,
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.input),
+            },
           })),
-        ],
       },
     ]) as Array<Record<string, unknown>>;
     expect(replayMessages[0].reasoning_details).toEqual([
@@ -291,7 +279,7 @@ describe("managed OpenRouter streaming", () => {
     await expect(
       streamTurn({
         auth: managedAuth,
-        model: "claude-opus-4-8",
+        model: "anthropic/claude-opus-4.8",
         system: [],
         messages: [{ role: "user", content: "go" }],
       })
@@ -312,7 +300,7 @@ describe("managed OpenRouter streaming", () => {
     try {
       await streamTurn({
         auth: managedAuth,
-        model: "claude-opus-4-8",
+        model: "anthropic/claude-opus-4.8",
         system: [],
         messages: [{ role: "user", content: "go" }],
       });
@@ -325,48 +313,8 @@ describe("managed OpenRouter streaming", () => {
   });
 });
 
-describe("native Anthropic BYOK", () => {
-  it("keeps the native endpoint, headers, model, request body, and parser", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      sseResponse([
-        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n',
-        'data: {"type":"content_block_delta","index":0,"delta":{"text":"native"}}\n\n',
-        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
-        "data: [DONE]\n\n",
-      ])
-    );
-
-    const turn = await streamTurn({
-      auth: { kind: "apiKey", key: "sk-user" },
-      model: "claude-opus-4-8",
-      system: [{ type: "text", text: "system" }],
-      messages: [{ role: "user", content: "go" }],
-      sessionId: "not-sent-to-anthropic",
-    });
-
-    expect(turn).toMatchObject({ text: "native", finishReason: "stop" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.anthropic.com/v1/messages",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          "x-api-key": "sk-user",
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        }),
-      })
-    );
-    expect(fetchBody()).toEqual({
-      model: "claude-opus-4-8",
-      max_tokens: 8192,
-      system: [{ type: "text", text: "system" }],
-      messages: [{ role: "user", content: "go" }],
-      stream: true,
-    });
-  });
-});
-
 describe("non-streaming completions", () => {
-  it("reads managed Chat Completions text", async () => {
+  it("reads OpenRouter Chat Completions text", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         choices: [{ message: { role: "assistant", content: '{"ok":true}' } }],
@@ -375,7 +323,7 @@ describe("non-streaming completions", () => {
     await expect(
       completeText({
         auth: managedAuth,
-        model: "claude-haiku-4-5-20251001",
+        model: "anthropic/claude-haiku-4.5",
         maxTokens: 1024,
         messages: [{ role: "user", content: "extract" }],
       })
@@ -387,21 +335,4 @@ describe("non-streaming completions", () => {
     });
   });
 
-  it("reads native Anthropic text without changing its model", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      Response.json({ content: [{ type: "text", text: "native result" }] })
-    );
-    await expect(
-      completeText({
-        auth: { kind: "apiKey", key: "sk-user" },
-        model: "claude-haiku-4-5-20251001",
-        maxTokens: 1024,
-        messages: [{ role: "user", content: "extract" }],
-      })
-    ).resolves.toBe("native result");
-    expect(fetchBody()).toMatchObject({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-    });
-  });
 });

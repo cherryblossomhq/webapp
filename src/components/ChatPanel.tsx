@@ -149,7 +149,7 @@ function RoleLabel({ isUser }: { isUser: boolean }) {
         </span>
       )}
       <span className="ui-label text-muted-foreground">
-        {isUser ? "You" : "Claude"}
+        {isUser ? "You" : "Assistant"}
       </span>
     </span>
   );
@@ -545,7 +545,7 @@ function EmptyState({
         </div>
         <p className="text-sm font-semibold text-foreground mb-1">AI Assistant</p>
         <p className="text-xs text-muted-foreground mb-4">
-          Describe what you want to build — Claude edits the circuit live.
+          Describe what you want to build — the Assistant edits the circuit live.
         </p>
         <div className="flex flex-col gap-2">
           {suggestions.map((s) => (
@@ -728,7 +728,7 @@ export function ChatPanel() {
   }, [messages]);
 
   const inputPlaceholder = isStreaming
-    ? "Claude is thinking..."
+    ? "Assistant is thinking..."
     : isEmptyBoard
     ? "Describe your board to get started..."
     : "Ask about your circuit...";

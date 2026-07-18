@@ -42,7 +42,7 @@ Switch environments with `doppler configure set config dev` (or `dev_personal`).
 
 **Hosting (Vercel):** the deployed build runs plain `npm run build` — env vars reach it through the **Doppler → Vercel sync integration** (Doppler dashboard → `webapp` → config → Integrations → Vercel), which mirrors the config into the Vercel project's environment. The `/api/proxy` relay (`server/proxy.mjs`) deploys as the `api/proxy.mjs` function with the SPA rewrite in `vercel.json`; the Vite dev/preview servers mount the same handler locally.
 
-Everything else runs in the browser — add your Anthropic API key in **Settings → AI** to use the design assistant without WorkOS sign-in.
+Everything else runs in the browser. Sign in with your Cherry Blossom account to use the design assistant through the managed OpenRouter proxy.
 
 > 💡 Before committing, run `npm run check` (typecheck + tests).
 

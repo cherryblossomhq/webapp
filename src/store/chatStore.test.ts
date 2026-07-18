@@ -14,17 +14,17 @@ interface CapturedCallbacks {
 let currentCallbacks: CapturedCallbacks | null = null;
 
 vi.mock("../utils/chatTransport", () => ({
-  MANAGED_CHAT_COMPLETIONS_URL:
+  OPENROUTER_CHAT_COMPLETIONS_URL:
     "https://www.trycherryblossom.com/api/v1/chat/completions",
   // The loop only reads tool names out of the catalog; a name-only stub keeps
   // the mock decoupled from the real schemas.
   CHAT_TOOLS: [
-    { name: "edit_tsx" },
-    { name: "write_tsx" },
-    { name: "search_jlcpcb" },
-    { name: "import_component" },
-    { name: "lookup_footprint" },
-    { name: "fetch_datasheet" },
+    { type: "function", function: { name: "edit_tsx" } },
+    { type: "function", function: { name: "write_tsx" } },
+    { type: "function", function: { name: "search_jlcpcb" } },
+    { type: "function", function: { name: "import_component" } },
+    { type: "function", function: { name: "lookup_footprint" } },
+    { type: "function", function: { name: "fetch_datasheet" } },
   ],
   streamTurn: (args: unknown, callbacks?: CapturedCallbacks) => {
     currentCallbacks = callbacks ?? null;
@@ -67,6 +67,7 @@ import {
   useChatStore,
   applyTsxStringEdit,
   capSnapshots,
+  clearLegacyByokStorage,
   isAiSetupError,
 } from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
@@ -78,11 +79,22 @@ const mockFetchDef = vi.mocked(fetchComponentDef);
 
 describe("isAiSetupError", () => {
   it("recognizes every composer setup sentinel", () => {
-    expect(isAiSetupError("no_api_key")).toBe(true);
     expect(isAiSetupError("no_account")).toBe(true);
     expect(isAiSetupError("no_managed_model")).toBe(true);
     expect(isAiSetupError("Connection error")).toBe(false);
     expect(isAiSetupError(null)).toBe(false);
+  });
+});
+
+describe("legacy BYOK cleanup", () => {
+  it("removes stored API keys and provider choices", () => {
+    localStorage.setItem("cherryblossom_api_key", "sk-old");
+    localStorage.setItem("cherryblossom_ai_provider", "apiKey");
+
+    clearLegacyByokStorage(localStorage);
+
+    expect(localStorage.getItem("cherryblossom_api_key")).toBeNull();
+    expect(localStorage.getItem("cherryblossom_ai_provider")).toBeNull();
   });
 });
 
@@ -93,7 +105,7 @@ function toolUseTurn(
   return {
     text: "",
     toolCalls,
-    reasoning: { text: "", details: [], replay: [] },
+    reasoning: { text: "", details: [] },
     finishReason: "tool_calls",
   };
 }
@@ -113,7 +125,7 @@ function turnResult(text = "") {
   return {
     text,
     toolCalls: [],
-    reasoning: { text: "", details: [], replay: [] },
+    reasoning: { text: "", details: [] },
     finishReason: "stop",
   };
 }
@@ -129,6 +141,13 @@ function msgText(m: { content: unknown }): string {
 // Concatenated text of the system blocks (static prompt + dynamic context).
 function systemText(args: { system: Array<{ text?: string }> }): string {
   return args.system.map((b) => b.text ?? "").join("\n");
+}
+
+function toolResultText(messages: Array<{ role: string; content: unknown }>): string {
+  return messages
+    .filter((message) => message.role === "tool")
+    .map((message) => String(message.content ?? ""))
+    .join("\n");
 }
 
 // Alternating user/assistant turns (even = user, starting with user) so the
@@ -327,26 +346,24 @@ describe("chatStore", () => {
       messages: [],
       isStreaming: false,
       streamingEvents: [],
-      apiKey: "test-key",
-      aiProvider: "apiKey",
       chatOpen: false,
       error: null,
       sessionNotes: null,
       summarizedCount: 0,
     });
     useAuthStore.setState({
-      status: "signedOut",
-      user: null,
-      accessToken: null,
+      status: "signedIn",
+      user: {
+        id: "u1",
+        email: "a@b.c",
+        first_name: null,
+        last_name: null,
+        profile_picture_url: null,
+      },
+      accessToken: "workos-token",
       error: null,
     });
-    useAccountStore.setState({
-      account: null,
-      accountUserId: null,
-      status: "ready",
-      error: null,
-      selectedModel: "anthropic/claude-opus-4.8",
-    });
+    setManagedAccount();
     useCircuitStore.getState().resetCircuit();
   });
 
@@ -428,7 +445,7 @@ describe("chatStore", () => {
   });
 
   describe("sendMessage — error paths", () => {
-    it("surfaces 401 as an invalid-API-key error and does not stream", async () => {
+    it("surfaces 401 as an expired-session error and does not stream", async () => {
       mockInvoke.mockImplementation(async () => {
         throw "401: bad key";
       });
@@ -437,7 +454,7 @@ describe("chatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.isStreaming).toBe(false);
-      expect(state.error).toMatch(/Invalid API key/);
+      expect(state.error).toMatch(/session has expired/i);
     });
 
     it("classifies 429 as a rate-limit error", async () => {
@@ -446,7 +463,7 @@ describe("chatStore", () => {
       });
 
       await useChatStore.getState().sendMessage("hi");
-      expect(useChatStore.getState().error).toMatch(/Rate limited/);
+      expect(useChatStore.getState().error).toMatch(/usage limit/i);
     });
 
     it("preserves a partial response with an interrupted marker on failure", async () => {
@@ -467,22 +484,14 @@ describe("chatStore", () => {
   });
 
   describe("sendMessage — guardrails", () => {
-    it("requires an API key", async () => {
-      useChatStore.setState({ apiKey: "" });
-      await useChatStore.getState().sendMessage("hi");
-      expect(useChatStore.getState().error).toBe("no_api_key");
-      expect(mockInvoke).not.toHaveBeenCalled();
-    });
-
-    it("requires a signed-in session in account mode", async () => {
-      useChatStore.setState({ aiProvider: "account" });
+    it("requires a signed-in session", async () => {
+      useAuthStore.setState({ status: "signedOut", user: null, accessToken: null });
       await useChatStore.getState().sendMessage("hi");
       expect(useChatStore.getState().error).toBe("no_account");
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
-    it("requires an allowed model in account mode", async () => {
-      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+    it("requires an allowed account model", async () => {
       useAuthStore.setState({
         status: "signedIn",
         accessToken: "workos-token",
@@ -503,7 +512,6 @@ describe("chatStore", () => {
     });
 
     it("does not trust a persisted model before account access is resolved", async () => {
-      useChatStore.setState({ aiProvider: "account", apiKey: "" });
       useAuthStore.setState({
         status: "signedIn",
         accessToken: "workos-token",
@@ -542,35 +550,8 @@ describe("chatStore", () => {
     });
   });
 
-  describe("AI provider credential", () => {
-    it("sends the user's key as apiKey auth in apiKey mode", async () => {
-      mockInvoke.mockImplementation(async () => {
-        emitStream("ok");
-        return turnResult("ok");
-      });
-      await useChatStore.getState().sendMessage("hi");
-      const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
-      expect((call![1] as { auth: unknown }).auth).toEqual({
-        kind: "apiKey",
-        key: "test-key",
-      });
-      expect((call![1] as { model: string }).model).toBe("claude-opus-4-8");
-    });
-
-    it("sends the WorkOS access token as managed auth in account mode", async () => {
-      useChatStore.setState({ aiProvider: "account", apiKey: "" });
-      useAuthStore.setState({
-        status: "signedIn",
-        accessToken: "workos-token",
-        user: {
-          id: "u1",
-          email: "a@b.c",
-          first_name: null,
-          last_name: null,
-          profile_picture_url: null,
-        },
-      });
-      setManagedAccount();
+  describe("OpenRouter credential", () => {
+    it("sends the WorkOS access token and selected model", async () => {
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
         return turnResult("ok");
@@ -579,7 +560,6 @@ describe("chatStore", () => {
       const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
       const args = call![1] as { auth: unknown; sessionId: string };
       expect(args.auth).toEqual({
-        kind: "managed",
         token: "workos-token",
         url: "https://www.trycherryblossom.com/api/v1/chat/completions",
       });
@@ -587,7 +567,6 @@ describe("chatStore", () => {
     });
 
     it("snapshots the selected managed model for every tool-loop round", async () => {
-      useChatStore.setState({ aiProvider: "account", apiKey: "" });
       useAuthStore.setState({
         status: "signedIn",
         accessToken: "workos-token",
@@ -625,30 +604,6 @@ describe("chatStore", () => {
         "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-5",
       ]);
-    });
-  });
-
-  describe("setAiProvider", () => {
-    it("persists the choice and clears any error", () => {
-      localStorage.removeItem("cherryblossom_ai_provider");
-      useChatStore.setState({ error: "no_account" });
-      useChatStore.getState().setAiProvider("account");
-      expect(useChatStore.getState().aiProvider).toBe("account");
-      expect(useChatStore.getState().error).toBeNull();
-      // Persisted so it survives a reload (loadAiProvider reads this on init).
-      expect(localStorage.getItem("cherryblossom_ai_provider")).toBe("account");
-    });
-  });
-
-  describe("setApiKey", () => {
-    it("stores the key, persists it, and clears any error", () => {
-      localStorage.removeItem("cherryblossom_api_key");
-      useChatStore.setState({ error: "no_api_key" });
-      useChatStore.getState().setApiKey("new-key");
-      expect(useChatStore.getState().apiKey).toBe("new-key");
-      expect(useChatStore.getState().error).toBeNull();
-      // Persisted so it survives a reload (loadApiKey reads this on init).
-      expect(localStorage.getItem("cherryblossom_api_key")).toBe("new-key");
     });
   });
 
@@ -786,7 +741,7 @@ describe("chatStore", () => {
       let turn = 0;
       mockInvoke.mockImplementation(async (cmd: string) => {
         if (cmd === "search_jlcpcb") return "C1 | TP4056 | charger";
-        // chat_stream_turn: first tool_use, then a plain answer.
+        // chat_stream_turn: first function call, then a plain answer.
         if (turn++ === 0) {
           return toolUseTurn([
             { id: "t1", name: "search_jlcpcb", input: { query: "TP4056" } },
@@ -805,14 +760,16 @@ describe("chatStore", () => {
         )
       ).toBe(true);
 
-      // The next turn carried the tool_result back to the model.
+      // The next turn carried the OpenRouter tool message back to the model.
       const turnCalls = mockInvoke.mock.calls.filter((c) => c[0] === "chat_stream_turn");
-      const lastMessages = (turnCalls.at(-1)![1] as { messages: Array<{ content: unknown }> })
-        .messages;
+      const lastMessages = (turnCalls.at(-1)![1] as {
+        messages: Array<{ role: string; content: unknown; tool_call_id?: string }>;
+      }).messages;
       const hasToolResult = lastMessages.some(
-        (m) =>
-          Array.isArray(m.content) &&
-          (m.content as Array<{ type?: string }>).some((b) => b.type === "tool_result")
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === "t1" &&
+          message.content === "C1 | TP4056 | charger"
       );
       expect(hasToolResult).toBe(true);
 
@@ -823,6 +780,133 @@ describe("chatStore", () => {
           (e) => e.kind === "activity" && e.activity.kind === "search"
         )
       ).toBe(true);
+    });
+
+    it("dispatches parallel catalog tools and returns one OpenRouter result per call", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "search_jlcpcb") return "search result";
+        if (command === "lookup_footprint") return "footprint result";
+        if (command === "fetch_datasheet") return "datasheet result";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            {
+              id: "search-1",
+              name: "search_jlcpcb",
+              input: { query: "TP4056", limit: 3 },
+            },
+            {
+              id: "footprint-1",
+              name: "lookup_footprint",
+              input: { lcsc_id: "C16581" },
+            },
+            {
+              id: "datasheet-1",
+              name: "fetch_datasheet",
+              input: { lcsc_id: "C16581", mpn: "TP4056" },
+            },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("research a charger");
+
+      expect(mockInvoke).toHaveBeenCalledWith("search_jlcpcb", {
+        query: "TP4056",
+        limit: 3,
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("lookup_footprint", {
+        lcscId: "C16581",
+        mpn: undefined,
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("fetch_datasheet", {
+        auth: {
+          token: "workos-token",
+          url: "https://www.trycherryblossom.com/api/v1/chat/completions",
+        },
+        lcscId: "C16581",
+        mpn: "TP4056",
+      });
+
+      const turnCalls = mockInvoke.mock.calls.filter(
+        ([command]) => command === "chat_stream_turn"
+      );
+      for (const [, args] of turnCalls) {
+        expect(
+          (args as {
+            tools: Array<{ function: { name: string } }>;
+          }).tools.map((tool) => tool.function.name)
+        ).toEqual([
+          "edit_tsx",
+          "write_tsx",
+          "search_jlcpcb",
+          "import_component",
+          "lookup_footprint",
+          "fetch_datasheet",
+        ]);
+      }
+      const messages = (turnCalls.at(-1)![1] as {
+        messages: Array<{
+          role: string;
+          content: unknown;
+          tool_call_id?: string;
+          tool_calls?: unknown[];
+        }>;
+      }).messages;
+      expect(messages.find((message) => message.role === "assistant")?.tool_calls)
+        .toHaveLength(3);
+      expect(
+        messages
+          .filter((message) => message.role === "tool")
+          .map((message) => [message.tool_call_id, message.content])
+      ).toEqual([
+        ["search-1", "search result"],
+        ["footprint-1", "footprint result"],
+        ["datasheet-1", "datasheet result"],
+      ]);
+    });
+
+    it("replays OpenRouter reasoning details unchanged with assistant tool calls", async () => {
+      const reasoningDetails = [
+        {
+          type: "reasoning.encrypted",
+          data: "opaque-provider-payload",
+          id: "reasoning-1",
+          format: "anthropic-claude-v1",
+          index: 0,
+        },
+      ];
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "search_jlcpcb") return "result";
+        if (turn++ === 0) {
+          return {
+            text: "",
+            toolCalls: [
+              { id: "call-1", name: "search_jlcpcb", input: { query: "part" } },
+            ],
+            reasoning: { text: "", details: reasoningDetails },
+            finishReason: "tool_calls",
+          };
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const turnCalls = mockInvoke.mock.calls.filter(
+        ([command]) => command === "chat_stream_turn"
+      );
+      const messages = (turnCalls.at(-1)![1] as {
+        messages: Array<{ role: string; reasoning_details?: unknown[] }>;
+      }).messages;
+      expect(
+        messages.find((message) => message.role === "assistant")
+          ?.reasoning_details
+      ).toBe(reasoningDetails);
     });
 
     it("resolves import_component inline and prepends the real definition", async () => {
@@ -870,13 +954,10 @@ describe("chatStore", () => {
       // The real component name was handed back to the model, not a guess.
       expect(mockFetchDef).toHaveBeenCalledWith("C16581");
       const turnCalls = mockInvoke.mock.calls.filter((c) => c[0] === "chat_stream_turn");
-      const lastMessages = (turnCalls.at(-1)![1] as { messages: Array<{ content: unknown }> })
-        .messages;
-      const toolResultText = lastMessages
-        .flatMap((m) => (Array.isArray(m.content) ? (m.content as Array<{ content?: string }>) : []))
-        .map((b) => b.content ?? "")
-        .join("");
-      expect(toolResultText).toContain("<TP4056");
+      const lastMessages = (turnCalls.at(-1)![1] as {
+        messages: Array<{ role: string; content: unknown }>;
+      }).messages;
+      expect(toolResultText(lastMessages)).toContain("<TP4056");
 
       // The applied circuit carries the prepended definition (no cryptic eval miss).
       const tsx = useCircuitStore.getState().tsxCode;
@@ -1005,13 +1086,10 @@ describe("chatStore", () => {
       await useChatStore.getState().sendMessage("build something");
 
       const turnCalls = mockInvoke.mock.calls.filter((c) => c[0] === "chat_stream_turn");
-      const lastMessages = (turnCalls.at(-1)![1] as { messages: Array<{ content: unknown }> })
-        .messages;
-      const toolResultText = lastMessages
-        .flatMap((m) => (Array.isArray(m.content) ? (m.content as Array<{ content?: string }>) : []))
-        .map((b) => b.content ?? "")
-        .join("");
-      expect(toolResultText).toMatch(/write_tsx failed.*empty/i);
+      const lastMessages = (turnCalls.at(-1)![1] as {
+        messages: Array<{ role: string; content: unknown }>;
+      }).messages;
+      expect(toolResultText(lastMessages)).toMatch(/write_tsx failed.*empty/i);
     });
 
     it("does not let an illustrative tsx snippet clobber the edited circuit", async () => {
@@ -1176,15 +1254,12 @@ describe("chatStore", () => {
 
       await useChatStore.getState().sendMessage("edit something");
 
-      // The failed-edit message was returned as a tool_result for the next turn.
+      // The failed-edit message was returned as a tool message for the next turn.
       const turnCalls = mockInvoke.mock.calls.filter((c) => c[0] === "chat_stream_turn");
-      const lastMessages = (turnCalls.at(-1)![1] as { messages: Array<{ content: unknown }> })
-        .messages;
-      const toolResultText = lastMessages
-        .flatMap((m) => (Array.isArray(m.content) ? (m.content as Array<{ content?: string }>) : []))
-        .map((b) => b.content ?? "")
-        .join("");
-      expect(toolResultText).toMatch(/Edit failed.*not found/i);
+      const lastMessages = (turnCalls.at(-1)![1] as {
+        messages: Array<{ role: string; content: unknown }>;
+      }).messages;
+      expect(toolResultText(lastMessages)).toMatch(/Edit failed.*not found/i);
     });
 
     it("stops with a clear error after the soft round backstop", async () => {

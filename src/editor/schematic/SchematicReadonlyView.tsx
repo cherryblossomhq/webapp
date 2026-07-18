@@ -336,9 +336,7 @@ function EmptySchematicPrompt() {
             onClick={() => openSettings(settingsTab)}
             className="mt-3 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
-            {settingsTab === "account"
-              ? "Sign in to start"
-              : "Add your Anthropic API key to start"}
+            Sign in to start
           </button>
         )}
       </div>

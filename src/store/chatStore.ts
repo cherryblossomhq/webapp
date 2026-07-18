@@ -21,14 +21,13 @@ import {
   lookupFootprint,
   fetchDatasheet,
   CHAT_TOOLS,
-  MANAGED_CHAT_COMPLETIONS_URL,
-  type ChatAuth,
+  OPENROUTER_CHAT_COMPLETIONS_URL,
+  type OpenRouterAuth,
   type ChatTurnResult,
   type ChatToolCall,
 } from "../utils/chatTransport";
 import { useAuthStore } from "./authStore";
 import { useAccountStore } from "./accountStore";
-import { isAuthAvailable } from "../utils/authTransport";
 import { listCachedDatasheets } from "../utils/datasheets";
 
 // Resolve current selection (single component) and active view for the AI.
@@ -86,11 +85,9 @@ async function fetchDatasheetSummariesForCircuit(
 }
 
 const MAX_USER_MESSAGE_LENGTH = 50_000;
-// Opus 4.8 drives every design turn — circuit reasoning quality matters
-// more here than per-message latency/cost. Haiku handles the cheap rolling
-// history distillation (foldHistoryIfNeeded).
-const MODEL_OPUS = "claude-opus-4-8";
-const MODEL_HAIKU = "claude-haiku-4-5-20251001";
+// Haiku handles the cheap rolling history distillation. Design turns use the
+// account's selected canonical OpenRouter model ID.
+const MODEL_HAIKU = "anthropic/claude-haiku-4.5";
 
 // History = a "breathing" raw tail + a rolling notes summary of everything older.
 // The non-system messages are [ summarized prefix ][ raw tail ]: the tail is sent
@@ -160,11 +157,6 @@ export interface ChatMessage {
   tsxSnapshot?: string;
 }
 
-// How AI calls are credentialed: `account` = managed AI through the signed-in
-// user's Cherry Blossom account (the server holds its OpenRouter key), `apiKey`
-// = the user's own Anthropic key, sent straight to Anthropic.
-export type AiProvider = "account" | "apiKey";
-
 interface ChatStore {
   messages: ChatMessage[];
   isStreaming: boolean;
@@ -173,8 +165,6 @@ interface ChatStore {
   // as it dispatches each tool, so the UI shows reasoning, tool actions, and answer
   // text interleaved roughly as they happen.
   streamingEvents: ChatEvent[];
-  apiKey: string;
-  aiProvider: AiProvider;
   chatOpen: boolean;
   error: string | null;
   // Rolling distillation of older turns (decisions/preferences/constraints) that
@@ -182,7 +172,7 @@ interface ChatStore {
   // messages it already covers. Together they form the "summarized prefix".
   sessionNotes: string | null;
   summarizedCount: number;
-  // Stable, random routing key for managed OpenRouter provider/cache affinity.
+  // Stable, random routing key for OpenRouter provider/cache affinity.
   // It contains no user data and rotates whenever chat history is cleared.
   sessionId: string;
 
@@ -204,13 +194,27 @@ interface ChatStore {
   setChatOpen: (open: boolean) => void;
   setChatWidth: (width: number) => void;
   setChatResizing: (resizing: boolean) => void;
-  setApiKey: (key: string) => void;
-  setAiProvider: (provider: AiProvider) => void;
   clearHistory: () => void;
   clearError: () => void;
 }
 
-const API_KEY_STORAGE_KEY = "cherryblossom_api_key";
+// Remove secrets and provider choices left by builds that supported direct
+// browser-to-Anthropic BYOK. These values are intentionally not migrated.
+export function clearLegacyByokStorage(storage: Pick<Storage, "removeItem">): void {
+  for (const key of ["cherryblossom_api_key", "cherryblossom_ai_provider"]) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+  }
+}
+try {
+  clearLegacyByokStorage(localStorage);
+} catch {
+  // The app can still load when the storage API itself is unavailable.
+}
+
 // Backstop for how long the chat waits on the post-edit render before giving up.
 // The evaluator has its own (shorter) internal timeout that surfaces eval
 // failures the validation cycle observes directly — so this only catches a
@@ -239,58 +243,21 @@ const RECOVERY_PROMPT =
   "or you're rewriting it wholesale), then add a one-line summary. " +
   "If it was a question, just answer it.";
 
-function loadApiKey(): string {
-  try {
-    return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-const AI_PROVIDER_STORAGE_KEY = "cherryblossom_ai_provider";
-
-const AI_SETUP_ERRORS = new Set([
-  "no_api_key",
-  "no_account",
-  "no_managed_model",
-]);
+const AI_SETUP_ERRORS = new Set(["no_account", "no_managed_model"]);
 
 export function isAiSetupError(error: string | null): boolean {
   return error !== null && AI_SETUP_ERRORS.has(error);
 }
 
-// An explicit choice wins. Otherwise: a user who already saved an API key keeps
-// using it, and everyone else defaults to managed AI through their account
-// (falling back to apiKey where sign-in isn't available, e.g. the web dev shell).
-function loadAiProvider(): AiProvider {
-  try {
-    const stored = localStorage.getItem(AI_PROVIDER_STORAGE_KEY);
-    if (stored === "account" || stored === "apiKey") return stored;
-  } catch {
-    /* fall through to the default */
-  }
-  if (loadApiKey().trim()) return "apiKey";
-  return isAuthAvailable() ? "account" : "apiKey";
-}
-
-// Resolve the credential for the next AI call, or null when the active provider
-// isn't usable yet (no key saved / not signed in). Read fresh at every call —
-// never captured across an await — so a mid-turn token refresh (or sign-out)
-// takes effect on the next request.
-export function resolveChatAuth(provider?: AiProvider): ChatAuth | null {
-  const { aiProvider, apiKey } = useChatStore.getState();
-  const activeProvider = provider ?? aiProvider;
-  if (activeProvider === "account") {
-    const { status, accessToken } = useAuthStore.getState();
-    if (status !== "signedIn" || !accessToken) return null;
-    return {
-      kind: "managed",
-      token: accessToken,
-      url: MANAGED_CHAT_COMPLETIONS_URL,
-    };
-  }
-  const key = apiKey.trim();
-  return key ? { kind: "apiKey", key } : null;
+// Resolve the credential for the next OpenRouter call. Read fresh at every call
+// so a mid-turn token refresh (or sign-out) takes effect on the next request.
+export function resolveChatAuth(): OpenRouterAuth | null {
+  const { status, accessToken } = useAuthStore.getState();
+  if (status !== "signedIn" || !accessToken) return null;
+  return {
+    token: accessToken,
+    url: OPENROUTER_CHAT_COMPLETIONS_URL,
+  };
 }
 
 // Keep `tsxSnapshot` only on the most recent `max` assistant turns that carry
@@ -327,7 +294,7 @@ export type TsxEditResult =
 // Pure string-replace edit backing the `edit_tsx` tool. Mirrors Claude Code's
 // file-edit semantics: `oldString` must be present, and unique unless
 // `replaceAll` is set. Returns the new TSX on success or a model-facing error
-// string the loop hands back as the tool_result so the model can retry.
+// string the loop hands back as a tool result so the model can retry.
 export function applyTsxStringEdit(
   tsx: string,
   oldString: string,
@@ -367,11 +334,9 @@ export function applyTsxStringEdit(
 // with "{status}:{body}" for HTTP errors and "api_error:{msg}" for mid-stream
 // SSE errors. Both proxy and upstream error shapes expose `error.message`;
 // proxy plan gates additionally expose `error.type`.
-function friendlyChatError(errorStr: string, provider: AiProvider): string {
+function friendlyChatError(errorStr: string): string {
   if (errorStr.includes("auth_lost")) {
-    return provider === "account"
-      ? "You were signed out before the response finished. Sign in again in Settings → Account."
-      : "The API key was removed before the response finished. Re-add it in Settings → AI.";
+    return "You were signed out before the response finished. Sign in again in Settings → Account.";
   }
   if (errorStr.includes("api_error:")) {
     return errorStr.replace(/.*api_error:/, "");
@@ -393,53 +358,69 @@ function friendlyChatError(errorStr: string, provider: AiProvider): string {
     /* non-JSON body — fall through to the status-based messages */
   }
   if (status === 401) {
-    return provider === "account"
-      ? "Your session has expired. Sign in again in Settings → Account."
-      : "Invalid API key. Please update your key in settings.";
+    return "Your session has expired. Sign in again in Settings → Account.";
   }
   // Managed-plan gates: the server's message names the plan and model — show it.
   if (type === "plan_required" || type === "model_not_allowed") {
     return message ?? "Your plan doesn't include this model. See Settings → Account.";
   }
   if (status === 429) {
-    return provider === "account"
-      ? "You've hit your plan's usage limit — wait a bit and try again."
-      : "Rate limited — wait a moment and try again.";
+    return "You've hit your plan's usage limit — wait a bit and try again.";
   }
   return message ?? "Connection error. Check your network and try again.";
 }
 
-// A tool_result content block fed back to the model as the next user message.
-function toolResult(toolUseId: string, content: string) {
-  return { type: "tool_result", tool_use_id: toolUseId, content };
+interface OpenRouterMessage {
+  role: string;
+  content: unknown;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+  reasoning?: string;
+  reasoning_details?: unknown[];
 }
 
-// Reassemble the assistant message from a streamed turn for replay on the next
-// loop iteration. The transport owns the provider-specific reasoning replay
-// payload; text and tool calls follow in the loop's internal message format.
-function assistantMsgFromTurn(turn: ChatTurnResult): {
-  role: "assistant";
-  content: unknown[];
-} {
-  const content: unknown[] = [...turn.reasoning.replay];
-  if (turn.text) content.push({ type: "text", text: turn.text });
-  for (const tc of turn.toolCalls) {
-    content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+// One tool result message fed back to OpenRouter after local execution.
+function toolResult(toolCallId: string, content: string): OpenRouterMessage {
+  return { role: "tool", tool_call_id: toolCallId, content };
+}
+
+// Reassemble the exact OpenRouter assistant message needed for the next tool
+// round, including ordered reasoning details and function-call arguments.
+function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
+  const message: OpenRouterMessage = {
+    role: "assistant",
+    content: turn.text || null,
+  };
+  if (turn.toolCalls.length > 0) {
+    message.tool_calls = turn.toolCalls.map((tc) => ({
+      id: tc.id,
+      type: "function",
+      function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+    }));
   }
-  return { role: "assistant", content };
+  if (turn.reasoning.details.length > 0) {
+    message.reasoning_details = turn.reasoning.details;
+  } else if (turn.reasoning.text !== "") {
+    message.reasoning = turn.reasoning.text;
+  }
+  return message;
 }
 
 const asString = (v: unknown): string =>
   typeof v === "string" ? v : v == null ? "" : String(v);
 
-// Run one tool call and return its tool_result block. `import_component`
+// Run one tool call and return its OpenRouter tool message. `import_component`
 // resolves the real component definition INLINE here (before the model's next
 // turn) — so the model learns the real tag name and any failure immediately,
 // instead of the old fake-synchronous predict-a-name-then-patch-after race.
 async function dispatchTool(
   tc: ChatToolCall,
   importedDefs: Map<string, { rawTsx: string }>,
-  auth: ChatAuth,
+  auth: OpenRouterAuth,
   pushActivity: (
     kind: ChatActivity["kind"],
     detail: string,
@@ -450,7 +431,7 @@ async function dispatchTool(
   // `.tsx` in place (each call sees the previous one's result) and flip `.edited`
   // so the caller commits the working copy when the turn ends.
   workingTsx: { tsx: string; edited: boolean }
-): Promise<{ type: string; tool_use_id: string; content: string }> {
+): Promise<OpenRouterMessage> {
   const input = tc.input ?? {};
   switch (tc.name) {
     case "edit_tsx": {
@@ -718,8 +699,6 @@ export const useChatStore = create<ChatStore>()(
   messages: [],
   isStreaming: false,
   streamingEvents: [],
-  apiKey: loadApiKey(),
-  aiProvider: loadAiProvider(),
   chatOpen: false,
   error: null,
   sessionNotes: null,
@@ -731,27 +710,23 @@ export const useChatStore = create<ChatStore>()(
   sendMessage: async (content: string) => {
     const state = get();
     if (state.isStreaming) return;
-    const provider = state.aiProvider;
     // Sentinel errors render as the setup CTA in the chat panel, not as an
     // error banner — keep them in lockstep with the useAiReady composer gate.
-    if (!resolveChatAuth(provider)) {
-      set({ error: provider === "account" ? "no_account" : "no_api_key" });
+    if (!resolveChatAuth()) {
+      set({ error: "no_account" });
       return;
     }
-    let designModel: string | null = MODEL_OPUS;
-    if (provider === "account") {
-      const authUserId = useAuthStore.getState().user?.id ?? null;
-      const { account, accountUserId, selectedModel } =
-        useAccountStore.getState();
-      designModel =
-        authUserId &&
-        accountUserId === authUserId &&
-        account?.plan.managedAi &&
-        selectedModel &&
-        account.plan.allowedModels.includes(selectedModel)
-          ? selectedModel
-          : null;
-    }
+    const authUserId = useAuthStore.getState().user?.id ?? null;
+    const { account, accountUserId, selectedModel } =
+      useAccountStore.getState();
+    const designModel =
+      authUserId &&
+      accountUserId === authUserId &&
+      account?.plan.managedAi &&
+      selectedModel &&
+      account.plan.allowedModels.includes(selectedModel)
+        ? selectedModel
+        : null;
     if (designModel === null) {
       set({ error: "no_managed_model" });
       return;
@@ -804,15 +779,15 @@ export const useChatStore = create<ChatStore>()(
     const tail = get()
       .messages.filter((m) => m.role !== "system")
       .slice(get().summarizedCount);
-    // The Messages API requires the first message to be from the user; if a fold
+    // Chat Completions expects the first conversational message to be from the user; if a fold
     // boundary or an error-truncated turn left an assistant message first, drop
     // leading non-user messages (doesn't touch the persisted boundary).
     while (tail.length > 0 && tail[0].role !== "user") tail.shift();
-    // apiMessages is mutated in place by the loop — each tool round appends an
-    // assistant turn (thinking+text+tool_use) and a user turn (tool_results).
-    // Content is a plain string for history turns, a content-block array for the
-    // cache-marked turn below and for the loop's tool turns.
-    const apiMessages: { role: string; content: unknown }[] = tail
+    // apiMessages is mutated in place by the loop — each tool round appends the
+    // assistant's `tool_calls`, then one `role: "tool"` result per call.
+    // Content is a plain string for history turns or a content-part array for
+    // the cache-marked turn below.
+    const apiMessages: OpenRouterMessage[] = tail
       // Defensively drop any empty-content turn (e.g. one persisted by an older
       // build before the stuck-path guard). Replaying an empty content block
       // 400s the API and would brick every following message in the session.
@@ -917,7 +892,7 @@ export const useChatStore = create<ChatStore>()(
       {
         // ─── Free-running agentic tool loop ─────────────────────────────────
         // Each iteration streams one model turn; if it finished on tool_calls we run
-        // every tool call, append the assistant + tool_result turns, and loop. A
+        // every tool call, append the assistant + tool-result turns, and loop. A
         // turn that stops WITHOUT a tool call ends the loop — except the one-time
         // recovery nudge below.
         let nudged = false;
@@ -926,10 +901,10 @@ export const useChatStore = create<ChatStore>()(
             stuck = true;
             break;
           }
-          // Re-resolved every round so the scheduled access-token refresh (or a
-          // key change) is picked up mid-loop; a credential lost mid-turn
-          // (signed out) aborts the turn cleanly instead of sending a dead token.
-          const auth = resolveChatAuth(provider);
+          // Re-resolved every round so the scheduled access-token refresh is
+          // picked up mid-loop; signing out aborts cleanly instead of sending a
+          // dead token.
+          const auth = resolveChatAuth();
           if (!auth) throw new Error("auth_lost");
           const turn = await streamTurn(
             {
@@ -945,9 +920,8 @@ export const useChatStore = create<ChatStore>()(
           );
           if (turn.finishReason === "tool_calls" && turn.toolCalls.length > 0) {
             apiMessages.push(assistantMsgFromTurn(turn));
-            // Every tool_use MUST get a matching tool_result or the next request
-            // 400s. dispatchTool catches internally today, but guard here too so a
-            // future tool whose invoke rejects still yields an error result block.
+            // Every tool call MUST get a matching result message or the next
+            // request 400s. Guard rejected backends so all IDs are answered.
             const results = await Promise.all(
               turn.toolCalls.map((tc) =>
                 dispatchTool(tc, importedDefs, auth, pushActivity, workingTsx).catch((e) =>
@@ -955,7 +929,7 @@ export const useChatStore = create<ChatStore>()(
                 )
               )
             );
-            apiMessages.push({ role: "user", content: results });
+            apiMessages.push(...results);
             continue;
           }
 
@@ -967,9 +941,12 @@ export const useChatStore = create<ChatStore>()(
             nudged = true;
             // Keep any thinking blocks the turn produced so the nudge reads as a
             // continuation; never push a truly empty assistant turn (it would 400).
-            const assistantMsg = assistantMsgFromTurn(turn);
-            if ((assistantMsg.content as unknown[]).length > 0) {
-              apiMessages.push(assistantMsg);
+            if (
+              turn.text !== "" ||
+              turn.reasoning.text !== "" ||
+              turn.reasoning.details.length > 0
+            ) {
+              apiMessages.push(assistantMsgFromTurn(turn));
             }
             apiMessages.push({ role: "user", content: RECOVERY_PROMPT });
             continue;
@@ -1129,7 +1106,7 @@ export const useChatStore = create<ChatStore>()(
         set((s) => ({ messages: [...s.messages, partialMessage] }));
       }
 
-      const errorMessage = friendlyChatError(errorStr, provider);
+      const errorMessage = friendlyChatError(errorStr);
 
       toast.error("Chat error", { description: errorMessage });
 
@@ -1183,27 +1160,6 @@ export const useChatStore = create<ChatStore>()(
   setChatOpen: (open) => set({ chatOpen: open }),
   setChatWidth: (width) => set({ chatWidth: width }),
   setChatResizing: (resizing) => set({ chatResizing: resizing }),
-
-  setApiKey: (key) => {
-    try {
-      localStorage.setItem(API_KEY_STORAGE_KEY, key);
-    } catch (err) {
-      console.error("[chat] failed to persist API key:", err);
-      toast.error("Couldn't save API key", {
-        description: "Your browser's storage may be full. The key will work this session only.",
-      });
-    }
-    set({ apiKey: key, error: null });
-  },
-
-  setAiProvider: (provider) => {
-    try {
-      localStorage.setItem(AI_PROVIDER_STORAGE_KEY, provider);
-    } catch (err) {
-      console.error("[chat] failed to persist AI provider choice:", err);
-    }
-    set({ aiProvider: provider, error: null });
-  },
 
   clearHistory: () =>
     set({

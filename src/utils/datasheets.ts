@@ -14,10 +14,10 @@
 // main chat model via listCachedDatasheets → buildDynamicContext.
 
 import { proxyFetch } from "./proxy-fetch";
-import { completeText, type ChatAuth } from "./chatTransport";
+import { completeText, type OpenRouterAuth } from "./chatTransport";
 
 const MAX_PDF_BYTES = 12 * 1024 * 1024; // 12 MiB hard cap
-const HAIKU_MODEL = "claude-haiku-4-5-20251001";
+const HAIKU_MODEL = "anthropic/claude-haiku-4.5";
 const CACHE_PREFIX = "cherryblossom:datasheet:";
 
 export interface DatasheetSummary {
@@ -152,7 +152,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 async function extractViaHaiku(
-  auth: ChatAuth,
+  auth: OpenRouterAuth,
   pdfBytes: Uint8Array | null,
   lcscId: string,
   mpn?: string
@@ -177,11 +177,10 @@ async function extractViaHaiku(
   const content: unknown[] = [];
   if (pdfBytes) {
     content.push({
-      type: "document",
-      source: {
-        type: "base64",
-        media_type: "application/pdf",
-        data: bytesToBase64(pdfBytes),
+      type: "file",
+      file: {
+        filename: `${lcscId}-datasheet.pdf`,
+        file_data: `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`,
       },
     });
   }
@@ -272,7 +271,7 @@ export function renderForModel(summary: DatasheetSummary): string {
 }
 
 export async function fetchAndSummarize(
-  auth: ChatAuth,
+  auth: OpenRouterAuth,
   lcscIdRaw: string,
   mpn?: string
 ): Promise<DatasheetSummary> {

@@ -56,10 +56,10 @@ The app deploys like any static SPA + one serverless function (`vercel.json` car
 
 ### Key Modules
 - **`src/store/circuitStore.ts`** — Zustand store owning all circuit state; all mutations go through here.
-- **`src/store/chatStore.ts`** — Chat history + streaming state, and the free-running multi-turn AI tool loop (dispatches each tool call, feeds tool_results back, applies the final TSX).
-- **`src/utils/chatTransport.ts`** — The single seam for every external call the chat loop makes: `streamTurn` (one Claude turn, browser fetch + SSE parsing), the per-tool HTTP backends, and the model-facing tool definitions (`CHAT_TOOLS`).
+- **`src/store/chatStore.ts`** — Chat history + streaming state, and the free-running multi-turn AI tool loop (dispatches each tool call, feeds `role: "tool"` results back, applies the final TSX).
+- **`src/utils/chatTransport.ts`** — The single seam for every external call the chat loop makes: `streamTurn` (one model turn, browser fetch + SSE parsing), the per-tool HTTP backends, and the model-facing tool definitions (`CHAT_TOOLS`).
 - **`src/utils/tsxTransform.ts`** — AST-based TSX read/write using Babel + recast, regex fallback if Babel parse fails; every edit produces a new TSX string.
-- **`src/utils/chatSystemPrompt.ts`** — Builds the static system prompt + dynamic circuit context sent to Claude.
+- **`src/utils/chatSystemPrompt.ts`** — Builds the static system prompt + dynamic circuit context sent to the selected model.
 - **`src/utils/easyedaImport.ts`** — Two-stage EasyEDA fetch (search → detail) backing the AI `import_component` tool, routed through `/api/proxy`. No tests.
 - **`src/utils/datasheets.ts`** — `fetch_datasheet` backend: discovers the datasheet URL via EasyEDA, downloads the PDF through `/api/proxy`, has Claude Haiku extract a structured summary, and caches summaries in localStorage (`listCachedDatasheets` seeds the chat's dynamic context).
 - **`src/utils/proxy-fetch.ts`** — Installs a global fetch shim that re-targets `easyeda.com` / `modelcdn.tscircuit.com` requests to `/api/proxy`, plus a direct `proxyFetch(url)` helper for datasheet PDFs.
@@ -68,7 +68,7 @@ The app deploys like any static SPA + one serverless function (`vercel.json` car
 
 ### Transport layer (`src/utils/chatTransport.ts`)
 Every external call the AI loop makes is a browser fetch behind one seam. The multi-turn tool loop is **not** here — it runs in `src/store/chatStore.ts`. The transport only does single per-call work:
-- `streamTurn({auth, model, system, messages, tools?, thinkingEffort?, sessionId?}, callbacks?)` — streams **one** model turn over SSE and returns the assembled result using OpenRouter Chat Completions semantics (`text`, tool calls, `reasoning.text` / `reasoning.details` / opaque replay payload, and `finishReason: "stop" | "length" | "tool_calls" | …`). Live non-empty text/thinking deltas fire `onText`/`onThinking`; empty provider deltas are ignored so they cannot split a continuous UI trace. The JS loop calls it repeatedly. `auth` is `{kind:"managed", token, url}` (WorkOS access token → the OpenAI-compatible OpenRouter proxy at `/api/v1/chat/completions`) or the legacy `{kind:"apiKey", key}` BYOK route (user's own key → Anthropic's native Messages API). Managed requests move system blocks into the messages array, translate tool calls/results, and preserve `reasoning_details` unchanged through tool rounds. The Anthropic adapter retains native IDs/headers/body/SSE but maps its stop reasons and signed thinking blocks into the OpenRouter-first turn contract. The managed origin is baked in from `VITE_MANAGED_AI_URL`; the client forces the current completions path. HTTP errors reject with `"{status}:{body}"`, mid-stream errors with `"api_error:{msg}"`, and safe diagnostics retain `Retry-After` / `x-generation-id`.
+- `streamTurn({auth, model, system, messages, tools?, thinkingEffort?, sessionId?}, callbacks?)` — streams **one** model turn over SSE and returns the assembled result using OpenRouter Chat Completions semantics (`text`, tool calls, `reasoning.text` / `reasoning.details`, and `finishReason: "stop" | "length" | "tool_calls" | …`). Live non-empty text/thinking deltas fire `onText`/`onThinking`; empty provider deltas are ignored so they cannot split a continuous UI trace. The JS loop calls it repeatedly. `auth` is `{token, url}` (WorkOS access token → the OpenAI-compatible OpenRouter proxy at `/api/v1/chat/completions`). Messages, function definitions, assistant `tool_calls`, and `role: "tool"` results use OpenRouter's OpenAI-compatible schema directly; `reasoning_details` is preserved unchanged and in order through tool rounds. The managed origin is baked in from `VITE_MANAGED_AI_URL`; the client forces the current completions path. HTTP errors reject with `"{status}:{body}"`, mid-stream errors with `"api_error:{msg}"`, and safe diagnostics retain `Retry-After` / `x-generation-id`.
 - `searchJlcpcb(query, limit?)` / `lookupFootprint(lcscId?, mpn?)` — direct fetches to `jlcsearch.tscircuit.com` (CORS-enabled), formatted for the model.
 - `fetchDatasheet(auth, lcscId, mpn?)` — delegates to `src/utils/datasheets.ts` (same `auth` shape as `streamTurn`).
 - `import_component` has no HTTP backend of its own — it resolves inline via `easyedaImport.fetchComponentDef`.
@@ -80,9 +80,9 @@ Tool-action rows (search / footprint / datasheet / import) are pushed directly b
 User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
   repeat: streamTurn (one turn) → if finishReason == tool_calls,
           dispatch each tool in JS (search_jlcpcb / lookup_footprint /
-          fetch_datasheet / import_component) → feed tool_results
+          fetch_datasheet / import_component / edit_tsx / write_tsx) → feed
+          one role:"tool" result per tool_call_id
           back → loop, until the model emits answer text (or MAX_TOOL_ROUNDS)
-  → extract full TSX from the final response text
   → prepend any inline-imported component definitions
   → extractComponents(tsx) — structural parse check
   → circuitStore.applyAiEdit(tsx) → setTsxCode → re-extract → UI re-renders
@@ -98,8 +98,8 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 - The flow lives in **`src/utils/authTransport.ts`**: PKCE verifier + CSRF state in sessionStorage → full-page redirect to the AuthKit authorize URL → WorkOS redirects back to `{origin}/callback?code=…` → `authRefresh` (from authStore's launch-time `init`) exchanges the code and cleans the URL. Register `{origin}/callback` (dev: `http://localhost:5173/callback`) on the WorkOS environment's Redirects page.
 - The **rotating refresh token** persists in localStorage (scoped per client id). JS holds the short-lived access token in memory only — `src/store/authStore.ts` (session state + scheduled refresh).
 
-### Managed AI (the "account" provider)
-- Signed-in users can use Cherry Blossom's managed AI instead of their own Anthropic key (`aiProvider`: `"account"` vs `"apiKey"`). The website repo exposes `POST /api/v1/chat/completions`, an **OpenAI Chat Completions-compatible OpenRouter proxy** authenticated with the WorkOS access token as `Authorization: Bearer`. It enforces plan/model/rate limits via Convex and passes OpenRouter JSON/SSE through unchanged. The browser client builds the Chat Completions payload and parses OpenRouter's stream; the proxy must allow this app's origin in its CORS policy. Direct BYOK remains a separate native Anthropic Messages call and never uses OpenRouter model IDs.
+### Managed AI
+- Signed-in users access AI exclusively through `POST /api/v1/chat/completions`, the website repo's **OpenAI Chat Completions-compatible OpenRouter proxy**, authenticated with the WorkOS access token as `Authorization: Bearer`. It enforces plan/model/rate limits via Convex and passes OpenRouter JSON/SSE through unchanged. The browser client builds the Chat Completions payload and parses OpenRouter's stream; the proxy must allow this app's origin in its CORS policy. Model IDs are canonical OpenRouter IDs from the account plan's `allowedModels` list.
 - **Error contract:** proxy errors are `{ "error": { "type", "message" } }`: `401 not_authenticated`, `403 plan_required | model_not_allowed` (surface the server's message — it names the plan/model), `429 rate_limited` (+ `Retry-After`), `400 invalid_request`, or `502 upstream_error`. OpenRouter-originated non-2xx responses pass through and may only provide `error.message` / `error.code`; mid-stream errors can arrive in an HTTP-200 SSE chunk. User-facing mapping lives in `friendlyChatError` (`chatStore.ts`).
 - Plans (`free`/`pro`/`enterprise`) and their per-minute/per-day rates + monthly token quotas are defined in the **website repo** (`convex/plans.ts`) — this repo never sees plan logic, only the error types above.
 

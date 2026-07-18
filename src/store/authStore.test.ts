@@ -96,7 +96,7 @@ describe("authStore refresh", () => {
     });
   });
 
-  it("does not apply a refresh that completes after sign-out", async () => {
+  it("waits for an in-flight rotation before removing the stored session", async () => {
     const pending = deferred<{
       user: typeof user;
       accessToken: string;
@@ -110,19 +110,23 @@ describe("authStore refresh", () => {
     });
 
     const refreshing = useAuthStore.getState().refresh();
-    await useAuthStore.getState().signOut();
+    const signingOut = useAuthStore.getState().signOut();
+    expect(useAuthStore.getState().status).toBe("signedOut");
+    expect(authLogout).not.toHaveBeenCalled();
+
     pending.resolve({
       user,
       accessToken: "late-token",
       expiresAtMs: Date.now() + 300_000,
     });
-    await refreshing;
+    await Promise.all([refreshing, signingOut]);
 
     expect(useAuthStore.getState()).toMatchObject({
       status: "signedOut",
       user: null,
       accessToken: null,
     });
+    expect(authLogout).toHaveBeenCalledTimes(1);
   });
 
   it("moves to signed out when WorkOS rejects the refresh token", async () => {

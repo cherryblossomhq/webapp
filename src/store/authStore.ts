@@ -169,10 +169,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async () => {
     const token = get().accessToken;
+    const pendingRefresh = refreshPromise;
     sessionEpoch++;
     clearRefreshTimer();
     set({ status: "signedOut", user: null, accessToken: null, error: null });
     try {
+      // A refresh already in flight may rotate and persist a new refresh token.
+      // Let it settle first, then remove the current token so sign-out stays
+      // durable across reloads. The epoch guard above prevents UI resurrection.
+      await pendingRefresh?.catch(() => null);
       await authLogout(token ?? undefined);
     } catch (err) {
       // Token cleanup failed — worst case the next launch restores the

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import type { MeResponse } from "@/utils/accountApi";
 
 // Mock the chat transport before chatStore is imported. Test calls use a single
 // dispatcher-style spy: streamTurn maps to "chat_stream_turn", and tool
@@ -139,6 +140,46 @@ function seedMessages(count: number) {
     content: `msg ${i}`,
     timestamp: 1000 + i,
   }));
+}
+
+function setManagedAccount(
+  selectedModel = "anthropic/claude-opus-4.8",
+  allowedModels = [
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-opus-4.8",
+  ],
+) {
+  const account: MeResponse = {
+    user: { id: "u1", email: "a@b.c", name: null },
+    plan: {
+      tier: "pro",
+      name: "Pro",
+      managedAi: true,
+      allowedModels,
+    },
+    limits: {
+      maxTokensPerRequest: 64_000,
+      requestsPerMinute: 10,
+      requestsPerDay: 200,
+      monthlyTokens: 2_000_000,
+    },
+    usage: {
+      requestsThisMinute: 0,
+      minuteResetsAt: null,
+      requestsThisDay: 0,
+      dayResetsAt: null,
+      monthlyTokens: 0,
+      monthResetsAt: null,
+    },
+    unlimitedCredits: false,
+  };
+  useAccountStore.setState({
+    account,
+    accountUserId: "u1",
+    status: "ready",
+    error: null,
+    selectedModel,
+  });
 }
 
 // The design/chat turn sends the tool catalog; the background fold sends no
@@ -461,6 +502,32 @@ describe("chatStore", () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
+    it("does not trust a persisted model before account access is resolved", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({
+        account: null,
+        accountUserId: null,
+        status: "loading",
+        selectedModel: "anthropic/claude-opus-4.8",
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      expect(useChatStore.getState().error).toBe("no_managed_model");
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
     it("truncates over-long user messages", async () => {
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
@@ -503,6 +570,7 @@ describe("chatStore", () => {
           profile_picture_url: null,
         },
       });
+      setManagedAccount();
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
         return turnResult("ok");
@@ -532,6 +600,7 @@ describe("chatStore", () => {
         },
       });
       useAccountStore.setState({ selectedModel: "anthropic/claude-sonnet-5" });
+      setManagedAccount("anthropic/claude-sonnet-5");
       let turn = 0;
       mockInvoke.mockImplementation(async (command: string) => {
         if (command === "search_jlcpcb") return "C1 | part";

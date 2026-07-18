@@ -738,11 +738,21 @@ export const useChatStore = create<ChatStore>()(
       set({ error: provider === "account" ? "no_account" : "no_api_key" });
       return;
     }
-    const designModel =
-      provider === "account"
-        ? useAccountStore.getState().selectedModel
-        : MODEL_OPUS;
-    if (!designModel) {
+    let designModel: string | null = MODEL_OPUS;
+    if (provider === "account") {
+      const authUserId = useAuthStore.getState().user?.id ?? null;
+      const { account, accountUserId, selectedModel } =
+        useAccountStore.getState();
+      designModel =
+        authUserId &&
+        accountUserId === authUserId &&
+        account?.plan.managedAi &&
+        selectedModel &&
+        account.plan.allowedModels.includes(selectedModel)
+          ? selectedModel
+          : null;
+    }
+    if (designModel === null) {
       set({ error: "no_managed_model" });
       return;
     }

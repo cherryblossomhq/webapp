@@ -3,7 +3,6 @@ import { act, renderHook } from "@testing-library/react";
 import type { MeResponse } from "@/utils/accountApi";
 import { useAccountStore } from "@/store/accountStore";
 import { useAuthStore } from "@/store/authStore";
-import { useChatStore } from "@/store/chatStore";
 import { useAiReady } from "./useAiReady";
 
 const user = {
@@ -46,7 +45,6 @@ function account(
 
 describe("useAiReady", () => {
   beforeEach(() => {
-    useChatStore.setState({ aiProvider: "account", apiKey: "" });
     useAuthStore.setState({
       status: "unknown",
       user: null,
@@ -173,18 +171,5 @@ describe("useAiReady", () => {
     const { result } = renderHook(() => useAiReady());
 
     expect(result.current).toMatchObject({ ready: false, pending: true });
-  });
-
-  it("preserves API-key readiness behavior", () => {
-    useChatStore.setState({ aiProvider: "apiKey", apiKey: " sk-user " });
-
-    const { result } = renderHook(() => useAiReady());
-
-    expect(result.current).toMatchObject({
-      ready: true,
-      pending: false,
-      provider: "apiKey",
-      settingsTab: "ai",
-    });
   });
 });

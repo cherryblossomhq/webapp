@@ -5,16 +5,13 @@
  * shortcut, and the chat's "Open Settings" CTA can all drive it.
  *
  * Sections:
- *  - AI       — how the assistant connects: managed AI via the signed-in
- *               account, or the user's own Anthropic API key
+ *  - AI       — managed AI status for the signed-in account
  *  - Account  — WorkOS sign-in / signed-in card
  *  - Advanced — power-user toggles
  */
-import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useDialogReturnFocus } from "@/hooks/useDialogReturnFocus";
-import { useChatStore } from "@/store/chatStore";
 import { useSettingsStore, type SettingsTab } from "@/store/settingsStore";
 import { useAuthStore } from "@/store/authStore";
 import { isAuthAvailable, type AuthUser } from "@/utils/authTransport";
@@ -23,19 +20,14 @@ import { cn } from "@/lib/utils";
 import {
   Sparkles,
   User,
-  Eye,
-  EyeOff,
   Check,
   ExternalLink,
-  Lock,
   Loader2,
   AlertCircle,
   SlidersHorizontal,
 } from "lucide-react";
 
-const ANTHROPIC_KEYS_URL = "https://console.anthropic.com/settings/keys";
 const MANAGE_ACCOUNT_URL = "https://www.trycherryblossom.com/account";
-const SAVED_RESET_MS = 1500;
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Sparkles }[] = [
   { id: "ai", label: "AI", icon: Sparkles },
@@ -109,196 +101,43 @@ function SectionHeader({ title, description }: { title: string; description?: st
   );
 }
 
-// One selectable card in the provider radio group.
-function ProviderCard({
-  title,
-  description,
-  selected,
-  disabled,
-  badge,
-  onSelect,
-}: {
-  title: string;
-  description: string;
-  selected: boolean;
-  disabled?: boolean;
-  badge?: string;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      disabled={disabled}
-      onClick={onSelect}
-      className={cn(
-        "flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-        selected ? "border-primary/60 bg-primary/5" : "border-border hover:bg-muted/40",
-        disabled && "cursor-not-allowed opacity-60 hover:bg-transparent"
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-          selected ? "border-primary" : "border-muted-foreground/40"
-        )}
-      >
-        {selected && <span className="size-2 rounded-full bg-primary" />}
-      </span>
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="flex items-center gap-2 text-sm font-medium">
-          {title}
-          {badge && (
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-              {badge}
-            </span>
-          )}
-        </span>
-        <span className="text-xs text-muted-foreground">{description}</span>
-      </span>
-    </button>
-  );
-}
-
 function AiSection() {
-  const apiKey = useChatStore((s) => s.apiKey);
-  const setApiKey = useChatStore((s) => s.setApiKey);
-  const provider = useChatStore((s) => s.aiProvider);
-  const setAiProvider = useChatStore((s) => s.setAiProvider);
   const authStatus = useAuthStore((s) => s.status);
   const user = useAuthStore((s) => s.user);
   const setActiveTab = useSettingsStore((s) => s.setActiveTab);
   const authAvailable = isAuthAvailable();
 
-  const [value, setValue] = useState(apiKey);
-  const [showKey, setShowKey] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-    },
-    []
-  );
-
-  const trimmed = value.trim();
-  // Saving an empty value would just clear the key with no signal — and there's
-  // nothing to save when the field already matches what's stored.
-  const canSave = trimmed.length > 0 && trimmed !== apiKey;
-
-  const handleSave = () => {
-    if (!canSave) return;
-    setApiKey(trimmed);
-    setSaved(true);
-    if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSaved(false), SAVED_RESET_MS);
-  };
-
   return (
     <div className="flex flex-col gap-5">
       <SectionHeader
         title="AI"
-        description="Cherry Blossom uses Claude to design and edit your circuit. Choose how the assistant connects."
+        description="Cherry Blossom securely routes assistant requests through your account using OpenRouter."
       />
 
-      <div role="radiogroup" aria-label="AI provider" className="flex flex-col gap-2">
-        <ProviderCard
-          title="Cherry Blossom account"
-          description="Managed AI through your account — no API key needed."
-          selected={provider === "account"}
-          disabled={!authAvailable}
-          badge={!authAvailable ? "Coming soon" : undefined}
-          onSelect={() => setAiProvider("account")}
-        />
-        <ProviderCard
-          title="Your Anthropic API key"
-          description="Bring your own key — calls go straight to Anthropic."
-          selected={provider === "apiKey"}
-          onSelect={() => setAiProvider("apiKey")}
-        />
+      <div className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
+        <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-sm font-medium">Managed AI</span>
+          <span className="text-xs text-muted-foreground">
+            Choose any model included with your plan from the chat header.
+          </span>
+        </div>
       </div>
 
-      {provider === "account" &&
-        (authStatus === "signedIn" && user ? (
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-            Signed in as {user.email} — the assistant is ready to use.
+      {authStatus === "signedIn" && user ? (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          Signed in as {user.email} — the assistant is ready to use.
+        </p>
+      ) : (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2.5">
+          <p className="text-xs text-muted-foreground">
+            Sign in to your account to use managed AI.
           </p>
-        ) : (
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2.5">
-            <p className="text-xs text-muted-foreground">
-              Sign in to your account to use managed AI.
-            </p>
-            <Button size="sm" onClick={() => setActiveTab("account")}>
-              Sign in
-            </Button>
-          </div>
-        ))}
-
-      {provider === "apiKey" && (
-        <>
-          <div className="flex flex-col gap-2">
-            <label htmlFor="settings-api-key" className="ui-label text-muted-foreground">
-              Anthropic API key
-            </label>
-            <div className="relative">
-              <input
-                id="settings-api-key"
-                type={showKey ? "text" : "password"}
-                value={value}
-                onChange={(e) => {
-                  setValue(e.target.value);
-                  setSaved(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSave();
-                }}
-                placeholder="sk-ant-..."
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/50"
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? "Hide API key" : "Show API key"}
-                aria-pressed={showKey}
-                className="absolute right-1 top-1/2 -translate-y-1/2 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => openExternal(ANTHROPIC_KEYS_URL)}
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                Get a key from the Anthropic Console
-                <ExternalLink className="size-3" aria-hidden="true" />
-              </button>
-              <Button size="sm" onClick={handleSave} disabled={!canSave}>
-                {saved ? (
-                  <>
-                    <Check className="size-3.5" aria-hidden="true" />
-                    Saved
-                  </>
-                ) : (
-                  "Save"
-                )}
-              </Button>
-            </div>
-          </div>
-
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Lock className="size-3 shrink-0" aria-hidden="true" />
-            Stored locally on this device — only ever sent to Anthropic.
-          </p>
-        </>
+          <Button size="sm" disabled={!authAvailable} onClick={() => setActiveTab("account")}>
+            {authAvailable ? "Sign in" : "Coming soon"}
+          </Button>
+        </div>
       )}
     </div>
   );
@@ -325,7 +164,7 @@ function AdvancedSection() {
 }
 
 const PREMIUM_PERKS = [
-  "Built-in AI — chat without bringing your own API key",
+  "Built-in AI through your Cherry Blossom account",
   "Access premium models and higher limits",
   "Priority access to new AI features",
 ];
@@ -400,7 +239,7 @@ function AccountSection() {
       <div className="flex flex-col gap-5">
         <SectionHeader
           title="Account"
-          description="You're signed in — managed AI is available in the AI tab, no API key needed."
+          description="You're signed in — managed AI is available in the AI tab."
         />
         <SignedInCard user={user} />
 
@@ -439,7 +278,7 @@ function AccountSection() {
           )}
         </div>
         <p className="text-sm text-muted-foreground">
-          Sign in to unlock managed AI — no API key required.
+          Sign in to unlock managed AI.
         </p>
       </div>
 

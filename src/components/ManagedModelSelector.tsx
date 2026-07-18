@@ -26,7 +26,6 @@ function managedModelLabel(model: string): string {
 }
 
 export function ManagedModelSelector() {
-  const provider = useChatStore((state) => state.aiProvider);
   const isStreaming = useChatStore((state) => state.isStreaming);
   const authStatus = useAuthStore((state) => state.status);
   const authUserId = useAuthStore((state) => state.user?.id ?? null);
@@ -37,8 +36,6 @@ export function ManagedModelSelector() {
   const selectedModel = useAccountStore((state) => state.selectedModel);
   const refresh = useAccountStore((state) => state.refresh);
   const setSelectedModel = useAccountStore((state) => state.setSelectedModel);
-
-  if (provider !== "account") return null;
 
   const currentAccount =
     authStatus === "signedIn" &&

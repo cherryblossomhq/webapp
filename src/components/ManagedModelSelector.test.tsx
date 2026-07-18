@@ -52,7 +52,7 @@ describe("ManagedModelSelector", () => {
 
   beforeEach(() => {
     refresh.mockClear();
-    useChatStore.setState({ aiProvider: "account", isStreaming: false });
+    useChatStore.setState({ isStreaming: false });
     useAuthStore.setState({
       status: "signedIn",
       user,
@@ -67,14 +67,6 @@ describe("ManagedModelSelector", () => {
       selectedModel: null,
       refresh,
     });
-  });
-
-  it("renders only for the account provider", () => {
-    useChatStore.setState({ aiProvider: "apiKey" });
-
-    render(<ManagedModelSelector />);
-
-    expect(screen.queryByRole("button", { name: /managed model/i })).toBeNull();
   });
 
   it("shows a compact loading trigger before the first response", () => {

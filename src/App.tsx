@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { EditorView } from "@/views/EditorView";
 import { useAuthStore } from "@/store/authStore";
+import { useManagedAccountLifecycle } from "@/hooks/useManagedAccountLifecycle";
 
 // Top-level error boundary to catch render crashes
 class ErrorBoundary extends Component<
@@ -35,6 +36,8 @@ class ErrorBoundary extends Component<
 }
 
 export default function App() {
+  useManagedAccountLifecycle();
+
   // Restore the WorkOS session (if any) once on launch.
   useEffect(() => {
     void useAuthStore.getState().init();

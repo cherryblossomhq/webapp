@@ -249,6 +249,16 @@ function loadApiKey(): string {
 
 const AI_PROVIDER_STORAGE_KEY = "cherryblossom_ai_provider";
 
+const AI_SETUP_ERRORS = new Set([
+  "no_api_key",
+  "no_account",
+  "no_managed_model",
+]);
+
+export function isAiSetupError(error: string | null): boolean {
+  return error !== null && AI_SETUP_ERRORS.has(error);
+}
+
 // An explicit choice wins. Otherwise: a user who already saved an API key keeps
 // using it, and everyone else defaults to managed AI through their account
 // (falling back to apiKey where sign-in isn't available, e.g. the web dev shell).

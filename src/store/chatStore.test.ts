@@ -62,13 +62,28 @@ vi.mock("../utils/easyedaImport", () => ({
   fetchComponentDef: vi.fn(),
 }));
 
-import { useChatStore, applyTsxStringEdit, capSnapshots } from "./chatStore";
+import {
+  useChatStore,
+  applyTsxStringEdit,
+  capSnapshots,
+  isAiSetupError,
+} from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
 import { useAccountStore } from "./accountStore";
 import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
+
+describe("isAiSetupError", () => {
+  it("recognizes every composer setup sentinel", () => {
+    expect(isAiSetupError("no_api_key")).toBe(true);
+    expect(isAiSetupError("no_account")).toBe(true);
+    expect(isAiSetupError("no_managed_model")).toBe(true);
+    expect(isAiSetupError("Connection error")).toBe(false);
+    expect(isAiSetupError(null)).toBe(false);
+  });
+});
 
 // A turn that finishes on tool_calls with the given tool calls.
 function toolUseTurn(

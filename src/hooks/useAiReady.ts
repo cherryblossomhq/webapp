@@ -1,4 +1,5 @@
 import { useAuthStore } from "@/store/authStore";
+import { useAccountStore } from "@/store/accountStore";
 import { useChatStore, type AiProvider } from "@/store/chatStore";
 import type { SettingsTab } from "@/store/settingsStore";
 
@@ -26,14 +27,69 @@ export function useAiReady(): AiReady {
   const provider = useChatStore((s) => s.aiProvider);
   const apiKey = useChatStore((s) => s.apiKey);
   const authStatus = useAuthStore((s) => s.status);
+  const authUserId = useAuthStore((s) => s.user?.id ?? null);
+  const account = useAccountStore((s) => s.account);
+  const accountUserId = useAccountStore((s) => s.accountUserId);
+  const accountStatus = useAccountStore((s) => s.status);
+  const selectedModel = useAccountStore((s) => s.selectedModel);
 
   if (provider === "account") {
+    const authPending = authStatus === "unknown" || authStatus === "signingIn";
+    const currentAccount =
+      authStatus === "signedIn" &&
+      authUserId !== null &&
+      accountUserId === authUserId
+        ? account
+        : null;
+    const selectedModelAllowed =
+      currentAccount?.plan.managedAi === true &&
+      selectedModel !== null &&
+      currentAccount.plan.allowedModels.includes(selectedModel);
+    const accountPending =
+      authStatus === "signedIn" &&
+      currentAccount === null &&
+      (accountStatus === "idle" || accountStatus === "loading");
+
+    if (authPending || accountPending) {
+      return {
+        ready: false,
+        pending: true,
+        provider,
+        settingsTab: "account",
+        ctaMessage: "Loading managed AI models…",
+      };
+    }
+
+    if (selectedModelAllowed) {
+      return {
+        ready: true,
+        pending: false,
+        provider,
+        settingsTab: "account",
+        ctaMessage: "",
+      };
+    }
+
+    if (currentAccount) {
+      return {
+        ready: false,
+        pending: false,
+        provider,
+        settingsTab: "account",
+        ctaMessage:
+          "Your account plan doesn't include a managed AI model. See Settings → Account.",
+      };
+    }
+
     return {
-      ready: authStatus === "signedIn",
-      pending: authStatus === "unknown",
+      ready: false,
+      pending: false,
       provider,
       settingsTab: "account",
-      ctaMessage: "Sign in to your Cherry Blossom account to start chatting.",
+      ctaMessage:
+        authStatus === "signedIn"
+          ? "Managed AI is unavailable right now. Retry from the model selector."
+          : "Sign in to your Cherry Blossom account to start chatting.",
     };
   }
   return {

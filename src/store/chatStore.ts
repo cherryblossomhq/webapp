@@ -27,6 +27,7 @@ import {
   type ChatToolCall,
 } from "../utils/chatTransport";
 import { useAuthStore } from "./authStore";
+import { useAccountStore } from "./accountStore";
 import { isAuthAvailable } from "../utils/authTransport";
 import { listCachedDatasheets } from "../utils/datasheets";
 
@@ -266,9 +267,10 @@ function loadAiProvider(): AiProvider {
 // isn't usable yet (no key saved / not signed in). Read fresh at every call —
 // never captured across an await — so a mid-turn token refresh (or sign-out)
 // takes effect on the next request.
-export function resolveChatAuth(): ChatAuth | null {
+export function resolveChatAuth(provider?: AiProvider): ChatAuth | null {
   const { aiProvider, apiKey } = useChatStore.getState();
-  if (aiProvider === "account") {
+  const activeProvider = provider ?? aiProvider;
+  if (activeProvider === "account") {
     const { status, accessToken } = useAuthStore.getState();
     if (status !== "signedIn" || !accessToken) return null;
     return {
@@ -719,11 +721,19 @@ export const useChatStore = create<ChatStore>()(
   sendMessage: async (content: string) => {
     const state = get();
     if (state.isStreaming) return;
-    // Sentinel errors ("no_api_key" / "no_account") render as the setup CTA in
-    // the chat panel, not as an error banner — keep them in lockstep with the
-    // useAiReady gate the composers use.
-    if (!resolveChatAuth()) {
-      set({ error: state.aiProvider === "account" ? "no_account" : "no_api_key" });
+    const provider = state.aiProvider;
+    // Sentinel errors render as the setup CTA in the chat panel, not as an
+    // error banner — keep them in lockstep with the useAiReady composer gate.
+    if (!resolveChatAuth(provider)) {
+      set({ error: provider === "account" ? "no_account" : "no_api_key" });
+      return;
+    }
+    const designModel =
+      provider === "account"
+        ? useAccountStore.getState().selectedModel
+        : MODEL_OPUS;
+    if (!designModel) {
+      set({ error: "no_managed_model" });
       return;
     }
 
@@ -899,12 +909,12 @@ export const useChatStore = create<ChatStore>()(
           // Re-resolved every round so the scheduled access-token refresh (or a
           // key change) is picked up mid-loop; a credential lost mid-turn
           // (signed out) aborts the turn cleanly instead of sending a dead token.
-          const auth = resolveChatAuth();
+          const auth = resolveChatAuth(provider);
           if (!auth) throw new Error("auth_lost");
           const turn = await streamTurn(
             {
               auth,
-              model: MODEL_OPUS,
+              model: designModel,
               system: systemBlocks,
               messages: apiMessages,
               tools: CHAT_TOOLS,
@@ -1099,7 +1109,7 @@ export const useChatStore = create<ChatStore>()(
         set((s) => ({ messages: [...s.messages, partialMessage] }));
       }
 
-      const errorMessage = friendlyChatError(errorStr, state.aiProvider);
+      const errorMessage = friendlyChatError(errorStr, provider);
 
       toast.error("Chat error", { description: errorMessage });
 

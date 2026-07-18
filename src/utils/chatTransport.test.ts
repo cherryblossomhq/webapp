@@ -52,7 +52,7 @@ describe("managed OpenRouter mapping", () => {
       "anthropic/claude-haiku-4.5"
     );
     expect(managedModelId("claude-opus-4-8")).toBe(
-      "tencent/hy3:free"
+      "anthropic/claude-opus-4.8"
     );
     expect(managedModelId("unmapped-model")).toBe("unmapped-model");
   });
@@ -242,7 +242,7 @@ describe("managed OpenRouter streaming", () => {
     );
     const body = fetchBody();
     expect(body).toMatchObject({
-      model: "tencent/hy3:free",
+      model: "anthropic/claude-opus-4.8",
       max_tokens: 64000,
       stream: true,
       tool_choice: "auto",

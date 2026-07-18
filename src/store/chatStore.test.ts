@@ -65,6 +65,7 @@ vi.mock("../utils/easyedaImport", () => ({
 import { useChatStore, applyTsxStringEdit, capSnapshots } from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
+import { useAccountStore } from "./accountStore";
 import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
@@ -283,6 +284,13 @@ describe("chatStore", () => {
       accessToken: null,
       error: null,
     });
+    useAccountStore.setState({
+      account: null,
+      accountUserId: null,
+      status: "ready",
+      error: null,
+      selectedModel: "anthropic/claude-opus-4.8",
+    });
     useCircuitStore.getState().resetCircuit();
   });
 
@@ -417,6 +425,27 @@ describe("chatStore", () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
+    it("requires an allowed model in account mode", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({ selectedModel: null });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      expect(useChatStore.getState().error).toBe("no_managed_model");
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
     it("truncates over-long user messages", async () => {
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
@@ -443,6 +472,7 @@ describe("chatStore", () => {
         kind: "apiKey",
         key: "test-key",
       });
+      expect((call![1] as { model: string }).model).toBe("claude-opus-4-8");
     });
 
     it("sends the WorkOS access token as managed auth in account mode", async () => {
@@ -471,6 +501,46 @@ describe("chatStore", () => {
         url: "https://www.trycherryblossom.com/api/v1/chat/completions",
       });
       expect(args.sessionId).toBe(useChatStore.getState().sessionId);
+    });
+
+    it("snapshots the selected managed model for every tool-loop round", async () => {
+      useChatStore.setState({ aiProvider: "account", apiKey: "" });
+      useAuthStore.setState({
+        status: "signedIn",
+        accessToken: "workos-token",
+        user: {
+          id: "u1",
+          email: "a@b.c",
+          first_name: null,
+          last_name: null,
+          profile_picture_url: null,
+        },
+      });
+      useAccountStore.setState({ selectedModel: "anthropic/claude-sonnet-5" });
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "search_jlcpcb") return "C1 | part";
+        if (turn++ === 0) {
+          useAccountStore.setState({
+            selectedModel: "anthropic/claude-opus-4.8",
+          });
+          return toolUseTurn([
+            { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const models = mockInvoke.mock.calls
+        .filter(([command]) => command === "chat_stream_turn")
+        .map(([, args]) => (args as { model: string }).model);
+      expect(models).toEqual([
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-5",
+      ]);
     });
   });
 

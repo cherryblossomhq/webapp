@@ -121,9 +121,6 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 
 `skills-lock.json` is managed by `npx skills` — a small CLI that pins agent skill files (markdown guides for specific libraries) from GitHub by content hash, so every agent that runs in this repo gets the same version.
 
-Currently locked:
-- `tscircuit/skill` → `SKILL.md` — guide for working with tscircuit components, footprints, traces, fabrication output.
-
 To refresh or add skills: `npx skills add <owner>/<repo>` / `npx skills update`. Commit the updated `skills-lock.json`. Don't hand-edit it.
 
 ---

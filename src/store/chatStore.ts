@@ -837,7 +837,8 @@ export const useChatStore = create<ChatStore>()(
       resolveSelection(),
       circuitState.footprintIssues,
       datasheetSummaries,
-      get().sessionNotes
+      get().sessionNotes,
+      circuitState.evalIssues
     );
     const runtimeSkillContext = buildRuntimePcbSkillContext({
       prompt: trimmedContent,

@@ -1,5 +1,7 @@
 import { footprintCatalogMarkdownTable } from "./footprintCatalog";
 import type { FootprintIssue } from "./footprintCatalog";
+import type { EvalIssue } from "../editor/shared/types";
+import { buildCircuitManifest } from "../ai/circuitManifest";
 
 export type ActiveView = "schematic" | "pcb" | "cad" | "bom" | "code";
 
@@ -11,6 +13,8 @@ export interface ViewSelection {
 export interface DatasheetSummary {
   name: string;
   summary: string;
+  evidence?: string[];
+  sourceUrl?: string;
 }
 
 export function buildSystemPrompt(): string {
@@ -465,12 +469,15 @@ export function buildDynamicContext(
   selection?: ViewSelection | null,
   footprintIssues?: FootprintIssue[],
   datasheetSummaries?: DatasheetSummary[],
-  sessionNotes?: string | null
+  sessionNotes?: string | null,
+  evalIssues?: readonly EvalIssue[]
 ): string {
   const editsBlock = manualEditsSummary
     ? `\n\n## Manual Edits Summary (read-only)\n\n${manualEditsSummary}`
     : "";
-  let ctx = `## Current Circuit
+  let ctx = `${buildCircuitManifest(tsxCode, evalIssues)}
+
+## Current Circuit TSX
 
 Components: ${componentCount} | Board: ${boardWidth} × ${boardHeight}
 
@@ -496,6 +503,10 @@ ${tsxCode}
     ctx += `\n\n## Datasheet Summaries (parts already in this circuit)\n`;
     for (const d of datasheetSummaries) {
       ctx += `- ${d.name}: ${d.summary}\n`;
+      if (d.evidence && d.evidence.length > 0) {
+        ctx += `  Evidence: ${d.evidence.join("; ")}\n`;
+      }
+      if (d.sourceUrl) ctx += `  Source: ${d.sourceUrl}\n`;
     }
   }
 

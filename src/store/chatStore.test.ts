@@ -790,6 +790,25 @@ describe("chatStore", () => {
     });
   });
 
+  describe("adaptive PCB guidance", () => {
+    it("injects only the procedures selected for the current request", async () => {
+      mockInvoke.mockImplementation(async () => {
+        emitStream("answer");
+        return turnResult("answer");
+      });
+
+      await useChatStore.getState().sendMessage(
+        "Fix the broken PCB placement and DRC clearance"
+      );
+
+      const context = systemText(lastDesignCall()!);
+      expect(context).toContain("## Adapted PCB Guidance");
+      expect(context).toContain("### PCB layout");
+      expect(context).toContain("### validation repair");
+      expect(context).not.toContain("### analog signal chain");
+    });
+  });
+
   describe("agentic tool loop", () => {
     it("runs a tool call, feeds the result back, then finishes", async () => {
       let turn = 0;

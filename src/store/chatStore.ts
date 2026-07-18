@@ -38,6 +38,7 @@ import {
   applySemanticCircuitTool,
   isSemanticCircuitTool,
 } from "../ai/semanticCircuitTools";
+import { buildRuntimePcbSkillContext } from "../ai/runtimePcbSkills";
 
 // Resolve current selection (single component) and active view for the AI.
 // We snapshot from the editor + circuit stores so the AI sees the same context
@@ -822,6 +823,7 @@ export const useChatStore = create<ChatStore>()(
     const components = circuitState.getComponents();
     const board = circuitState.getBoardConfig();
     const manualEdits = useEditorStore.getState().manualEdits;
+    const activeView = resolveActiveView();
 
     const systemPrompt = buildSystemPrompt();
     const datasheetSummaries = await fetchDatasheetSummariesForCircuit(currentTsx);
@@ -831,12 +833,17 @@ export const useChatStore = create<ChatStore>()(
       board.width,
       board.height,
       summarizeManualEdits(manualEdits),
-      resolveActiveView(),
+      activeView,
       resolveSelection(),
       circuitState.footprintIssues,
       datasheetSummaries,
       get().sessionNotes
     );
+    const runtimeSkillContext = buildRuntimePcbSkillContext({
+      prompt: trimmedContent,
+      activeView,
+      componentTags: components.map((component) => component.elementTag),
+    });
 
     // Raw tail: the full chat stays in the store (and UI scrollback), but only the
     // un-summarized tail goes to the model verbatim — everything before
@@ -886,6 +893,9 @@ export const useChatStore = create<ChatStore>()(
     if (dynamicContext) {
       systemBlocks.push({ type: "text", text: dynamicContext });
     }
+    if (runtimeSkillContext) {
+      systemBlocks.push({ type: "text", text: runtimeSkillContext });
+    }
 
     let fullResponse = "";
     // The in-flight turn's chronological trail. Stream events append here in the
@@ -896,11 +906,10 @@ export const useChatStore = create<ChatStore>()(
     // Real component definitions resolved inline during the loop, keyed by the
     // exact tag name the model now uses. Prepended into the final TSX below.
     const importedDefs = new Map<string, { rawTsx: string }>();
-    // Working copy of the circuit TSX for the `edit_tsx` tool — the ONLY path that
-    // changes the circuit. The model edits this incrementally via string-replace; we
-    // commit this copy when the turn ends. Starts as the exact TSX the model sees in
-    // the dynamic context, so its old_string snippets match. A ```tsx block in the
-    // answer text is illustrative prose and is never applied.
+    // Working copy of the circuit TSX for semantic and raw editing tools. They
+    // mutate this draft only; we validate and commit it once the turn ends. It
+    // starts as the exact TSX shown in dynamic context, so raw edit anchors match.
+    // A ```tsx block in answer text remains illustrative and is never applied.
     const workingTsx = { tsx: currentTsx, edited: false };
     // Tripped when the soft round backstop fires (see MAX_TOOL_ROUNDS).
     let stuck = false;
@@ -1012,8 +1021,8 @@ export const useChatStore = create<ChatStore>()(
 
           // Turn ended without a tool call. If it neither edited the circuit nor
           // said anything (model gathered info but never finished), nudge once —
-          // tools stay on so it can finish via edit_tsx. Skip when edit_tsx
-          // already produced a working circuit: there's nothing to recover.
+          // tools stay on so it can finish the requested work. Skip when a
+          // mutating tool already produced a working circuit: nothing to recover.
           if (!nudged && fullResponse.trim() === "" && !workingTsx.edited) {
             nudged = true;
             // Keep any thinking blocks the turn produced so the nudge reads as a

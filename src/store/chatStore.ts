@@ -22,7 +22,7 @@ import {
   lookupFootprint,
   fetchDatasheet,
   CHAT_TOOLS,
-  MANAGED_MESSAGES_URL,
+  MANAGED_CHAT_COMPLETIONS_URL,
   type ChatAuth,
   type ChatTurnResult,
   type ChatToolCall,
@@ -161,8 +161,8 @@ export interface ChatMessage {
 }
 
 // How AI calls are credentialed: `account` = managed AI through the signed-in
-// user's Cherry Blossom account (our proxy holds the Anthropic key), `apiKey` =
-// the user's own Anthropic key, straight to the API.
+// user's Cherry Blossom account (the server holds its OpenRouter key), `apiKey`
+// = the user's own Anthropic key, sent straight to Anthropic.
 export type AiProvider = "account" | "apiKey";
 
 interface ChatStore {
@@ -182,6 +182,9 @@ interface ChatStore {
   // messages it already covers. Together they form the "summarized prefix".
   sessionNotes: string | null;
   summarizedCount: number;
+  // Stable, random routing key for managed OpenRouter provider/cache affinity.
+  // It contains no user data and rotates whenever chat history is cleared.
+  sessionId: string;
 
   // ─── Resizable chat rail ─────────────────────────────────────────────────
   // Chat replaces the right rail while open (to see Properties, close chat).
@@ -269,7 +272,11 @@ export function resolveChatAuth(): ChatAuth | null {
   if (aiProvider === "account") {
     const { status, accessToken } = useAuthStore.getState();
     if (status !== "signedIn" || !accessToken) return null;
-    return { kind: "managed", token: accessToken, url: MANAGED_MESSAGES_URL };
+    return {
+      kind: "managed",
+      token: accessToken,
+      url: MANAGED_CHAT_COMPLETIONS_URL,
+    };
   }
   const key = apiKey.trim();
   return key ? { kind: "apiKey", key } : null;
@@ -345,10 +352,10 @@ export function applyTsxStringEdit(
   return { ok: true, tsx: next, replacements: replaceAll ? occurrences : 1 };
 }
 
-// Map a failed turn to a user-facing message. Rust rejects with "{status}:{body}"
-// for HTTP errors and "api_error:{msg}" for mid-stream SSE errors; both the
-// managed proxy and Anthropic put `{error: {type, message}}` in the body, so one
-// parse covers both — the provider only changes whose credential the fix is.
+// Map a failed browser turn to a user-facing message. The transport rejects
+// with "{status}:{body}" for HTTP errors and "api_error:{msg}" for mid-stream
+// SSE errors. Both proxy and upstream error shapes expose `error.message`;
+// proxy plan gates additionally expose `error.type`.
 function friendlyChatError(errorStr: string, provider: AiProvider): string {
   if (errorStr.includes("auth_lost")) {
     return provider === "account"
@@ -761,6 +768,7 @@ async function foldHistoryIfNeeded(): Promise<void> {
       model: MODEL_HAIKU,
       system: [{ type: "text", text: SUMMARY_SYSTEM_PROMPT }],
       messages: [{ role: "user", content: prompt }],
+      sessionId: useChatStore.getState().sessionId,
     });
     const notes = turn.text;
 
@@ -794,6 +802,7 @@ export const useChatStore = create<ChatStore>()(
   error: null,
   sessionNotes: null,
   summarizedCount: 0,
+  sessionId: crypto.randomUUID(),
   chatWidth: CHAT_DEFAULT_WIDTH,
   chatResizing: false,
 
@@ -988,6 +997,7 @@ export const useChatStore = create<ChatStore>()(
               messages: apiMessages,
               tools: CHAT_TOOLS,
               thinkingEffort: DESIGN_EFFORT,
+              sessionId: get().sessionId,
             },
             streamCallbacks
           );
@@ -1260,6 +1270,7 @@ export const useChatStore = create<ChatStore>()(
       error: null,
       sessionNotes: null,
       summarizedCount: 0,
+      sessionId: crypto.randomUUID(),
     }),
   clearError: () => set({ error: null }),
     }),
@@ -1273,6 +1284,7 @@ export const useChatStore = create<ChatStore>()(
         messages: capSnapshots(state.messages, MAX_SNAPSHOTS),
         sessionNotes: state.sessionNotes,
         summarizedCount: state.summarizedCount,
+        sessionId: state.sessionId,
         chatWidth: state.chatWidth,
       }),
     }

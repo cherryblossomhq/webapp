@@ -1,40 +1,49 @@
 // ─── Chat transport ──────────────────────────────────────────────────────────
 //
-// Single swappable seam for every external call the chat loop makes. Each is a
-// plain browser fetch: Anthropic's API allows direct browser calls when the
-// `anthropic-dangerous-direct-browser-access` header is set (the key is the
-// user's own, entered in Settings), the managed proxy is CORS-enabled, and
-// jlcsearch.tscircuit.com serves `access-control-allow-origin: *`. The
-// `ChatAuth` passed with every model call picks the upstream: the user's own
-// Anthropic key, or the managed proxy with their account's access token. Keep
-// all chat HTTP in this file.
+// Single swappable seam for every external call the chat loop makes. Direct
+// BYOK calls use Anthropic's native Messages API. Managed account calls use the
+// Cherry Blossom OpenRouter proxy's OpenAI-compatible Chat Completions API.
+// Both protocols are normalized into ChatTurnResult so the tool loop stays
+// provider-agnostic. Keep all chat HTTP in this file.
 
 import { fetchAndSummarize, renderForModel } from "./datasheets";
 
-// Credential + routing for one Claude Messages call. `apiKey` goes straight to
-// api.anthropic.com with the user's own key; `managed` routes through Cherry
-// Blossom's proxy at `url`, authenticated by the signed-in user's WorkOS
-// access token.
+// Credential + routing for one model call. `apiKey` goes straight to Anthropic
+// with the user's own key; `managed` routes through Cherry Blossom's OpenRouter
+// proxy, authenticated by the signed-in user's WorkOS access token.
 export type ChatAuth =
   | { kind: "apiKey"; key: string }
   | { kind: "managed"; token: string; url: string };
 
-// Managed proxy endpoint, baked in at build time (env supplies it: dev → a
-// local website checkout, prd → production). The fallback must be the
-// canonical `www` host: the apex 308-redirects to it, and fetch drops the
-// Authorization header on cross-origin redirects, turning every call into a 401.
-export const MANAGED_MESSAGES_URL: string =
-  import.meta.env.VITE_MANAGED_AI_URL ??
-  "https://www.trycherryblossom.com/api/v1/messages";
+// Managed proxy endpoint, baked in at build time (env supplies the website
+// origin/endpoint: dev → a local checkout, prd → production). Always force
+// the current path so an older Doppler value cannot call the removed Messages
+// endpoint. The fallback uses `www` because the apex redirects cross-origin and
+// browsers drop Authorization on that redirect.
+function managedCompletionsUrl(configured?: string): string {
+  const base = configured ?? "https://www.trycherryblossom.com";
+  return new URL("/api/v1/chat/completions", base).toString();
+}
+
+export const MANAGED_CHAT_COMPLETIONS_URL = managedCompletionsUrl(
+  import.meta.env.VITE_MANAGED_AI_URL
+);
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
-/**
- * POST a Messages-API body, routed and authenticated per auth mode. Shared by
- * the streaming design loop below and the non-streaming Haiku datasheet
- * extraction in datasheets.ts.
- */
-export function messagesPost(
+export class ChatTransportError extends Error {
+  readonly generationId?: string;
+  readonly retryAfter?: string;
+
+  constructor(message: string, response?: Response) {
+    super(message);
+    this.name = "ChatTransportError";
+    this.generationId = response?.headers.get("x-generation-id") ?? undefined;
+    this.retryAfter = response?.headers.get("retry-after") ?? undefined;
+  }
+}
+
+function postJson(
   auth: ChatAuth,
   body: unknown,
   signal?: AbortSignal
@@ -63,9 +72,9 @@ export function messagesPost(
 }
 
 // One assistant turn returned by `streamTurn`. `thinkingBlocks` are opaque
-// `{type:"thinking"|"redacted_thinking", …}` objects (carrying signatures) that
-// MUST be replayed verbatim at the head of the next assistant message, or the
-// API rejects the following turn.
+// replay objects. Native Anthropic returns signed thinking/redacted-thinking
+// blocks; managed OpenRouter returns one internal wrapper carrying its complete
+// `reasoning_details` sequence. The caller must replay them unchanged.
 export interface ChatToolCall {
   id: string;
   name: string;
@@ -90,6 +99,9 @@ export interface StreamTurnArgs {
   tools?: unknown[];
   /** Adaptive-thinking effort (e.g. "high"); omit to disable thinking. */
   thinkingEffort?: string;
+  /** Stable, non-sensitive conversation ID used for managed provider affinity. */
+  sessionId?: string;
+  signal?: AbortSignal;
 }
 
 export interface StreamCallbacks {
@@ -107,6 +119,173 @@ interface ToolCallAccum {
   input: string;
 }
 
+const OPENROUTER_REASONING_REPLAY = "openrouter_reasoning_replay";
+
+interface OpenRouterReasoningReplay {
+  type: typeof OPENROUTER_REASONING_REPLAY;
+  reasoning?: string;
+  reasoning_details: unknown[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isOpenRouterReasoningReplay(
+  value: unknown
+): value is OpenRouterReasoningReplay {
+  return (
+    isRecord(value) &&
+    value.type === OPENROUTER_REASONING_REPLAY &&
+    Array.isArray(value.reasoning_details)
+  );
+}
+
+const MANAGED_MODEL_IDS: Record<string, string> = {
+  "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+  "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
+  "claude-sonnet-5": "anthropic/claude-sonnet-5",
+  "claude-opus-4-8": "anthropic/claude-opus-4.8",
+  "claude-fable-5": "anthropic/claude-fable-5",
+};
+
+export function managedModelId(nativeModelId: string): string {
+  return MANAGED_MODEL_IDS[nativeModelId] ?? nativeModelId;
+}
+
+function openRouterContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.flatMap((part): unknown[] => {
+    if (!isRecord(part)) return [part];
+    if (part.type === "document" && isRecord(part.source)) {
+      const source = part.source;
+      if (
+        source.type === "base64" &&
+        typeof source.media_type === "string" &&
+        typeof source.data === "string"
+      ) {
+        return [
+          {
+            type: "file",
+            file: {
+              filename: "datasheet.pdf",
+              file_data: `data:${source.media_type};base64,${source.data}`,
+            },
+          },
+        ];
+      }
+    }
+    return [part];
+  });
+}
+
+function toolResultContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}
+
+/** Convert the loop's Anthropic-shaped canonical history to Chat Completions. */
+export function toOpenRouterMessages(
+  system: unknown[],
+  messages: unknown[]
+): unknown[] {
+  const out: unknown[] = [];
+  if (system.length > 0) {
+    out.push({ role: "system", content: openRouterContent(system) });
+  }
+
+  for (const raw of messages) {
+    if (!isRecord(raw) || typeof raw.role !== "string") continue;
+    const role = raw.role;
+    const content = raw.content;
+
+    if (role === "user" && Array.isArray(content)) {
+      const normalParts = content.filter(
+        (part) => !isRecord(part) || part.type !== "tool_result"
+      );
+      for (const part of content) {
+        if (!isRecord(part) || part.type !== "tool_result") continue;
+        out.push({
+          role: "tool",
+          tool_call_id:
+            typeof part.tool_use_id === "string" ? part.tool_use_id : "",
+          content: toolResultContent(part.content),
+        });
+      }
+      if (normalParts.length > 0) {
+        out.push({ role: "user", content: openRouterContent(normalParts) });
+      }
+      continue;
+    }
+
+    if (role === "assistant" && Array.isArray(content)) {
+      const textParts: unknown[] = [];
+      const toolCalls: unknown[] = [];
+      let reasoning: string | undefined;
+      let reasoningDetails: unknown[] | undefined;
+      for (const part of content) {
+        if (isOpenRouterReasoningReplay(part)) {
+          reasoning = part.reasoning;
+          reasoningDetails = part.reasoning_details;
+        } else if (isRecord(part) && part.type === "tool_use") {
+          toolCalls.push({
+            id: typeof part.id === "string" ? part.id : "",
+            type: "function",
+            function: {
+              name: typeof part.name === "string" ? part.name : "",
+              arguments: JSON.stringify(
+                isRecord(part.input) ? part.input : (part.input ?? {})
+              ),
+            },
+          });
+        } else if (isRecord(part) && part.type === "text") {
+          textParts.push(part);
+        }
+      }
+      const assistant: Record<string, unknown> = {
+        role: "assistant",
+        content:
+          textParts.length === 0 ? null : openRouterContent(textParts),
+      };
+      if (toolCalls.length > 0) assistant.tool_calls = toolCalls;
+      if (reasoningDetails !== undefined && reasoningDetails.length > 0) {
+        assistant.reasoning_details = reasoningDetails;
+      } else if (reasoning !== undefined) {
+        assistant.reasoning = reasoning;
+      }
+      out.push(assistant);
+      continue;
+    }
+
+    out.push({ role, content: openRouterContent(content) });
+  }
+  return out;
+}
+
+export function toOpenRouterTools(tools: unknown[]): unknown[] {
+  return tools.flatMap((tool): unknown[] => {
+    if (!isRecord(tool) || typeof tool.name !== "string") return [];
+    return [
+      {
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(typeof tool.description === "string"
+            ? { description: tool.description }
+            : {}),
+          parameters: isRecord(tool.input_schema)
+            ? tool.input_schema
+            : { type: "object" },
+        },
+      },
+    ];
+  });
+}
+
 type SseEvent = {
   type?: string;
   index?: number;
@@ -121,24 +300,85 @@ type SseEvent = {
   error?: { message?: string };
 };
 
-/**
- * Stream a single model turn. Live text/thinking reach the UI through the
- * callbacks; the promise resolves with the assembled turn (text, tool calls,
- * thinking blocks, stop reason). The multi-turn loop lives in the caller
- * (chatStore), not here.
- *
- * Failure contract (matched by chatStore's friendlyChatError): HTTP errors
- * reject with "{status}:{body}", mid-stream SSE errors with "api_error:{msg}".
- */
-export async function streamTurn(
-  args: StreamTurnArgs,
-  callbacks?: StreamCallbacks
-): Promise<ChatTurnResult> {
-  // With adaptive thinking, reasoning tokens count against max_tokens, so give
-  // a generous ceiling (we stream, so a large cap can't trip an HTTP timeout).
-  // It's a cap, not a spend — only actual tokens are billed.
-  const maxTokens = args.thinkingEffort ? 64000 : 8192;
+type OpenRouterChunk = {
+  choices?: Array<{
+    delta?: {
+      content?: string | null;
+      reasoning?: string | null;
+      reasoning_details?: unknown[];
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
+  error?: { message?: string; code?: string | number };
+};
 
+async function readSse(
+  response: Response,
+  onData: (payload: unknown) => void
+): Promise<void> {
+  if (!response.body) {
+    throw new ChatTransportError("api_error:Response had no body", response);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+
+  const handleLine = (rawLine: string): void => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "" || line.startsWith(":")) return;
+    if (!line.startsWith("data:")) return;
+    const data = line.slice("data:".length).trimStart();
+    if (data === "") return;
+    if (data === "[DONE]") {
+      finished = true;
+      return;
+    }
+    try {
+      onData(JSON.parse(data) as unknown);
+    } catch (error) {
+      if (error instanceof ChatTransportError) throw error;
+      throw new ChatTransportError("api_error:Invalid SSE payload", response);
+    }
+  };
+
+  try {
+    while (!finished) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline: number;
+      while (!finished && (newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        handleLine(line);
+      }
+    }
+    if (!finished) {
+      buffer += decoder.decode();
+      if (buffer !== "") handleLine(buffer);
+    } else {
+      await reader.cancel().catch(() => undefined);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function httpError(response: Response, body: string): ChatTransportError {
+  return new ChatTransportError(`${response.status}:${body}`, response);
+}
+
+async function streamAnthropicTurn(
+  args: StreamTurnArgs,
+  callbacks: StreamCallbacks | undefined,
+  maxTokens: number
+): Promise<ChatTurnResult> {
   const body: Record<string, unknown> = {
     model: args.model,
     max_tokens: maxTokens,
@@ -146,27 +386,20 @@ export async function streamTurn(
     messages: args.messages,
     stream: true,
   };
-  if (args.tools && args.tools.length > 0) {
-    body.tools = args.tools;
-  }
-  // Opus 4.8 uses adaptive thinking + an effort level — not budget_tokens.
-  // Sampling params (temperature/top_p/top_k) are removed on this model and
-  // would 400, so we set none. "display": "summarized" streams a readable
-  // reasoning summary (default is "omitted" → empty) so the UI can show it.
+  if (args.tools && args.tools.length > 0) body.tools = args.tools;
   if (args.thinkingEffort) {
     body.thinking = { type: "adaptive", display: "summarized" };
     body.output_config = { effort: args.thinkingEffort };
   }
 
-  const response = await messagesPost(args.auth, body);
+  const response = await postJson(args.auth, body, args.signal);
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
-    throw new Error(`${response.status}:${errorBody}`);
-  }
-  if (!response.body) {
-    throw new Error("api_error:Response had no body");
+    throw httpError(response, await response.text().catch(() => ""));
   }
 
+  if (!response.body) {
+    throw new ChatTransportError("api_error:Response had no body", response);
+  }
   let fullText = "";
   let stopReason = "";
 
@@ -271,42 +504,11 @@ export async function streamTurn(
 
       case "error": {
         const msg = parsed.error?.message ?? "Unknown API error";
-        throw new Error(`api_error:${msg}`);
+        throw new ChatTransportError(`api_error:${msg}`, response);
       }
     }
   };
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let pos: number;
-      while ((pos = buffer.indexOf("\n\n")) !== -1) {
-        const eventBlock = buffer.slice(0, pos);
-        buffer = buffer.slice(pos + 2);
-
-        for (const line of eventBlock.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice("data: ".length);
-          if (data === "[DONE]") continue;
-          let parsed: SseEvent;
-          try {
-            parsed = JSON.parse(data) as SseEvent;
-          } catch {
-            continue;
-          }
-          handleEvent(parsed);
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+  await readSse(response, (payload) => handleEvent(payload as SseEvent));
 
   completedTools.sort((a, b) => a[0] - b[0]);
   completedThinking.sort((a, b) => a[0] - b[0]);
@@ -325,6 +527,209 @@ export async function streamTurn(
     thinkingBlocks: completedThinking.map(([, block]) => block),
     stopReason,
   };
+}
+
+function normalizeOpenRouterFinishReason(reason: string): string {
+  switch (reason) {
+    case "tool_calls":
+      return "tool_use";
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    default:
+      return reason;
+  }
+}
+
+function reasoningText(details: unknown[]): string {
+  let text = "";
+  for (const detail of details) {
+    if (!isRecord(detail)) continue;
+    if (typeof detail.summary === "string") text += detail.summary;
+    else if (typeof detail.text === "string") text += detail.text;
+  }
+  return text;
+}
+
+async function streamOpenRouterTurn(
+  args: StreamTurnArgs,
+  callbacks: StreamCallbacks | undefined,
+  maxTokens: number
+): Promise<ChatTurnResult> {
+  const body: Record<string, unknown> = {
+    model: managedModelId(args.model),
+    messages: toOpenRouterMessages(args.system, args.messages),
+    max_tokens: maxTokens,
+    stream: true,
+    cache_control: { type: "ephemeral" },
+  };
+  if (args.sessionId) body.session_id = args.sessionId;
+  if (args.tools && args.tools.length > 0) {
+    body.tools = toOpenRouterTools(args.tools);
+    body.tool_choice = "auto";
+  }
+  if (args.thinkingEffort) {
+    body.reasoning = { effort: args.thinkingEffort };
+  }
+
+  const response = await postJson(args.auth, body, args.signal);
+  if (!response.ok) {
+    throw httpError(response, await response.text().catch(() => ""));
+  }
+
+  let fullText = "";
+  let fullReasoning = "";
+  let stopReason = "";
+  const reasoningDetails: unknown[] = [];
+  const toolAccums = new Map<number, ToolCallAccum>();
+
+  await readSse(response, (payload) => {
+    const chunk = payload as OpenRouterChunk;
+    if (chunk.error) {
+      throw new ChatTransportError(
+        `api_error:${chunk.error.message ?? "Unknown API error"}`,
+        response
+      );
+    }
+    const choice = chunk.choices?.[0];
+    if (!choice) return; // Usage-only final chunk.
+    const delta = choice.delta;
+    if (typeof delta?.content === "string") {
+      fullText += delta.content;
+      callbacks?.onText?.(delta.content);
+    }
+
+    const details = Array.isArray(delta?.reasoning_details)
+      ? delta.reasoning_details
+      : [];
+    if (details.length > 0) reasoningDetails.push(...details);
+    const visibleReasoning =
+      typeof delta?.reasoning === "string"
+        ? delta.reasoning
+        : reasoningText(details);
+    if (visibleReasoning) {
+      fullReasoning += visibleReasoning;
+      callbacks?.onThinking?.(visibleReasoning);
+    }
+
+    for (const fragment of delta?.tool_calls ?? []) {
+      const index = fragment.index ?? 0;
+      const accum = toolAccums.get(index) ?? { id: "", name: "", input: "" };
+      if (typeof fragment.id === "string" && fragment.id !== "") {
+        accum.id = fragment.id;
+      }
+      if (
+        typeof fragment.function?.name === "string" &&
+        fragment.function.name !== ""
+      ) {
+        accum.name = fragment.function.name;
+      }
+      if (typeof fragment.function?.arguments === "string") {
+        accum.input += fragment.function.arguments;
+      }
+      toolAccums.set(index, accum);
+    }
+    if (typeof choice.finish_reason === "string") {
+      stopReason = normalizeOpenRouterFinishReason(choice.finish_reason);
+    }
+  });
+
+  const thinkingBlocks: unknown[] = [];
+  if (reasoningDetails.length > 0 || fullReasoning !== "") {
+    thinkingBlocks.push({
+      type: OPENROUTER_REASONING_REPLAY,
+      ...(fullReasoning !== "" ? { reasoning: fullReasoning } : {}),
+      reasoning_details: reasoningDetails,
+    } satisfies OpenRouterReasoningReplay);
+  }
+
+  return {
+    text: fullText,
+    toolCalls: [...toolAccums.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => {
+        let input: Record<string, unknown>;
+        try {
+          const parsed = JSON.parse(tc.input || "{}") as unknown;
+          input = isRecord(parsed) ? parsed : {};
+        } catch {
+          input = {};
+        }
+        return { id: tc.id, name: tc.name, input };
+      }),
+    thinkingBlocks,
+    stopReason,
+  };
+}
+
+/**
+ * Stream one provider-specific turn and normalize it for the shared JS loop.
+ * HTTP failures reject with "{status}:{body}" and mid-stream provider failures
+ * with "api_error:{msg}"; ChatTransportError also retains safe response
+ * diagnostics such as Retry-After and x-generation-id.
+ */
+export async function streamTurn(
+  args: StreamTurnArgs,
+  callbacks?: StreamCallbacks
+): Promise<ChatTurnResult> {
+  const maxTokens = args.thinkingEffort ? 64000 : 8192;
+  return args.auth.kind === "managed"
+    ? streamOpenRouterTurn(args, callbacks, maxTokens)
+    : streamAnthropicTurn(args, callbacks, maxTokens);
+}
+
+export interface CompleteTextArgs {
+  auth: ChatAuth;
+  model: string;
+  messages: unknown[];
+  system?: unknown[];
+  maxTokens: number;
+  signal?: AbortSignal;
+}
+
+function responseText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      isRecord(part) && typeof part.text === "string" ? part.text : ""
+    )
+    .join("")
+    .trim();
+}
+
+/** Non-streaming text completion used by the datasheet summarizer. */
+export async function completeText(args: CompleteTextArgs): Promise<string> {
+  const system = args.system ?? [];
+  const managed = args.auth.kind === "managed";
+  const body = managed
+    ? {
+        model: managedModelId(args.model),
+        max_tokens: args.maxTokens,
+        messages: toOpenRouterMessages(system, args.messages),
+        stream: false,
+      }
+    : {
+        model: args.model,
+        max_tokens: args.maxTokens,
+        ...(system.length > 0 ? { system } : {}),
+        messages: args.messages,
+      };
+  const response = await postJson(args.auth, body, args.signal);
+  if (!response.ok) {
+    throw httpError(response, await response.text().catch(() => ""));
+  }
+  const json = (await response.json()) as unknown;
+  if (!isRecord(json)) return "";
+  if (managed) {
+    const choices = json.choices;
+    if (!Array.isArray(choices) || !isRecord(choices[0])) return "";
+    const message = choices[0].message;
+    return isRecord(message) ? responseText(message.content) : "";
+  }
+  const content = json.content;
+  return responseText(content);
 }
 
 // ─── Tool backends ───────────────────────────────────────────────────────────

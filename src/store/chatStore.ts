@@ -404,14 +404,13 @@ function toolResult(toolUseId: string, content: string) {
 }
 
 // Reassemble the assistant message from a streamed turn for replay on the next
-// loop iteration. Order is load-bearing: the thinking blocks (with their
-// signatures) MUST lead, then any answer text, then the tool_use blocks — any
-// other order makes the next request 400.
+// loop iteration. The transport owns the provider-specific reasoning replay
+// payload; text and tool calls follow in the loop's internal message format.
 function assistantMsgFromTurn(turn: ChatTurnResult): {
   role: "assistant";
   content: unknown[];
 } {
-  const content: unknown[] = [...turn.thinkingBlocks];
+  const content: unknown[] = [...turn.reasoning.replay];
   if (turn.text) content.push({ type: "text", text: turn.text });
   for (const tc of turn.toolCalls) {
     content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
@@ -929,6 +928,7 @@ export const useChatStore = create<ChatStore>()(
       // Append a text delta, coalescing into the trailing text segment so a run
       // of chunks renders as one bubble; a non-text event in between splits it.
       const appendText = (delta: string) => {
+        if (delta === "") return;
         fullResponse += delta;
         const last = events[events.length - 1];
         if (last?.kind === "text") {
@@ -942,6 +942,7 @@ export const useChatStore = create<ChatStore>()(
       // Same coalescing for reasoning deltas — a contiguous run of thinking stays
       // one collapsible block until text or a tool call interrupts it.
       const appendThinking = (delta: string) => {
+        if (delta === "") return;
         const last = events[events.length - 1];
         if (last?.kind === "thinking") {
           events[events.length - 1] = { kind: "thinking", text: last.text + delta };
@@ -974,7 +975,7 @@ export const useChatStore = create<ChatStore>()(
 
       {
         // ─── Free-running agentic tool loop ─────────────────────────────────
-        // Each iteration streams one model turn; if it stopped on tool_use we run
+        // Each iteration streams one model turn; if it finished on tool_calls we run
         // every tool call, append the assistant + tool_result turns, and loop. A
         // turn that stops WITHOUT a tool call ends the loop — except the one-time
         // recovery nudge below.
@@ -1001,7 +1002,7 @@ export const useChatStore = create<ChatStore>()(
             },
             streamCallbacks
           );
-          if (turn.stopReason === "tool_use" && turn.toolCalls.length > 0) {
+          if (turn.finishReason === "tool_calls" && turn.toolCalls.length > 0) {
             apiMessages.push(assistantMsgFromTurn(turn));
             // Every tool_use MUST get a matching tool_result or the next request
             // 400s. dispatchTool catches internally today, but guard here too so a

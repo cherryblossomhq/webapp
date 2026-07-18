@@ -52,7 +52,7 @@ describe("managed OpenRouter mapping", () => {
       "anthropic/claude-haiku-4.5"
     );
     expect(managedModelId("claude-opus-4-8")).toBe(
-      "anthropic/claude-opus-4.8"
+      "tencent/hy3:free"
     );
     expect(managedModelId("unmapped-model")).toBe("unmapped-model");
   });
@@ -159,9 +159,9 @@ describe("managed OpenRouter mapping", () => {
 
 describe("managed OpenRouter streaming", () => {
   it.each([
-    ["stop", "end_turn"],
-    ["length", "max_tokens"],
-  ])("normalizes %s finish reasons to %s", async (finishReason, expected) => {
+    ["stop", "stop"],
+    ["length", "length"],
+  ])("preserves the %s finish reason as %s", async (finishReason, expected) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse([
         `data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"${finishReason}"}]}\n\n`,
@@ -175,14 +175,14 @@ describe("managed OpenRouter streaming", () => {
       system: [],
       messages: [{ role: "user", content: "go" }],
     });
-    expect(turn.stopReason).toBe(expected);
+    expect(turn.finishReason).toBe(expected);
   });
 
   it("handles arbitrary boundaries, comments, usage-only chunks, parallel tools, and reasoning replay", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse([
         ": OPENROUTER PRO",
-        "CESSING\r\n\r\ndata: {\"choices\":[{\"delta\":{\"reasoning\":\"Plan\",\"reasoning_details\":[{\"type\":\"reasoning.summary\",\"summary\":\"Plan\",\"id\":\"r1\"}]}}]}\r\n",
+        "CESSING\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"Plan\",\"reasoning_details\":[{\"type\":\"reasoning.summary\",\"summary\":\"Plan\",\"id\":\"r1\"}]}}]}\r\n",
         "\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"Done\",\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"second\",\"arguments\":\"{\\\"b\\\":\"}},{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"first\",\"arguments\":\"{\\\"a\\\":\"}}]}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}},{\"index\":1,\"function\":{\"arguments\":\"2}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
@@ -213,7 +213,7 @@ describe("managed OpenRouter streaming", () => {
 
     expect(turn).toMatchObject({
       text: "Done",
-      stopReason: "tool_use",
+      finishReason: "tool_calls",
       toolCalls: [
         { id: "call_a", name: "first", input: { a: 1 } },
         { id: "call_b", name: "second", input: { b: 2 } },
@@ -221,6 +221,14 @@ describe("managed OpenRouter streaming", () => {
     });
     expect(textDeltas).toEqual(["Done"]);
     expect(thinkingDeltas).toEqual(["Plan"]);
+    expect(turn.reasoning.text).toBe("Plan");
+    expect(turn.reasoning.details).toEqual([
+      {
+        type: "reasoning.summary",
+        summary: "Plan",
+        id: "r1",
+      },
+    ]);
 
     expect(fetchMock).toHaveBeenCalledWith(
       managedAuth.url,
@@ -234,7 +242,7 @@ describe("managed OpenRouter streaming", () => {
     );
     const body = fetchBody();
     expect(body).toMatchObject({
-      model: "anthropic/claude-opus-4.8",
+      model: "tencent/hy3:free",
       max_tokens: 64000,
       stream: true,
       tool_choice: "auto",
@@ -248,7 +256,7 @@ describe("managed OpenRouter streaming", () => {
       {
         role: "assistant",
         content: [
-          ...turn.thinkingBlocks,
+          ...turn.reasoning.replay,
           { type: "text", text: turn.text },
           ...turn.toolCalls.map((call) => ({
             type: "tool_use",
@@ -336,7 +344,7 @@ describe("native Anthropic BYOK", () => {
       sessionId: "not-sent-to-anthropic",
     });
 
-    expect(turn).toMatchObject({ text: "native", stopReason: "end_turn" });
+    expect(turn).toMatchObject({ text: "native", finishReason: "stop" });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/messages",
       expect.objectContaining({

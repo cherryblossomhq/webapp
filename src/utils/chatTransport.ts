@@ -71,10 +71,11 @@ function postJson(
   });
 }
 
-// One assistant turn returned by `streamTurn`. `thinkingBlocks` are opaque
-// replay objects. Native Anthropic returns signed thinking/redacted-thinking
-// blocks; managed OpenRouter returns one internal wrapper carrying its complete
-// `reasoning_details` sequence. The caller must replay them unchanged.
+// One assistant turn returned by `streamTurn`. Chat Completions semantics are
+// canonical: `finishReason` uses OpenRouter values and reasoning exposes the
+// normalized text/details fields. `reasoning.replay` is the opaque provider
+// payload the caller must return unchanged on the next tool round; native
+// Anthropic is adapted into this contract for the legacy BYOK path.
 export interface ChatToolCall {
   id: string;
   name: string;
@@ -84,8 +85,12 @@ export interface ChatToolCall {
 export interface ChatTurnResult {
   text: string;
   toolCalls: ChatToolCall[];
-  thinkingBlocks: unknown[];
-  stopReason: string;
+  reasoning: {
+    text: string;
+    details: unknown[];
+    replay: unknown[];
+  };
+  finishReason: string;
 }
 
 export interface StreamTurnArgs {
@@ -145,7 +150,9 @@ const MANAGED_MODEL_IDS: Record<string, string> = {
   "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
   "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
   "claude-sonnet-5": "anthropic/claude-sonnet-5",
-  "claude-opus-4-8": "anthropic/claude-opus-4.8",
+  // Temporary managed-mode override for local testing. BYOK still sends the
+  // native `claude-opus-4-8` ID directly to Anthropic.
+  "claude-opus-4-8": "tencent/hy3:free",
   "claude-fable-5": "anthropic/claude-fable-5",
 };
 
@@ -401,7 +408,7 @@ async function streamAnthropicTurn(
     throw new ChatTransportError("api_error:Response had no body", response);
   }
   let fullText = "";
-  let stopReason = "";
+  let nativeStopReason = "";
 
   const blockKind = new Map<number, string>();
   const toolAccums = new Map<number, ToolCallAccum>();
@@ -498,7 +505,7 @@ async function streamAnthropicTurn(
 
       case "message_delta": {
         const reason = parsed.delta?.stop_reason;
-        if (typeof reason === "string") stopReason = reason;
+        if (typeof reason === "string") nativeStopReason = reason;
         break;
       }
 
@@ -513,6 +520,15 @@ async function streamAnthropicTurn(
   completedTools.sort((a, b) => a[0] - b[0]);
   completedThinking.sort((a, b) => a[0] - b[0]);
 
+  const replay = completedThinking.map(([, block]) => block);
+  const reasoningText = replay
+    .map((block) =>
+      isRecord(block) && typeof block.thinking === "string"
+        ? block.thinking
+        : ""
+    )
+    .join("");
+
   return {
     text: fullText,
     toolCalls: completedTools.map(([, tc]) => {
@@ -524,19 +540,20 @@ async function streamAnthropicTurn(
       }
       return { id: tc.id, name: tc.name, input };
     }),
-    thinkingBlocks: completedThinking.map(([, block]) => block),
-    stopReason,
+    reasoning: { text: reasoningText, details: [], replay },
+    finishReason: normalizeAnthropicFinishReason(nativeStopReason),
   };
 }
 
-function normalizeOpenRouterFinishReason(reason: string): string {
+function normalizeAnthropicFinishReason(reason: string): string {
   switch (reason) {
-    case "tool_calls":
-      return "tool_use";
-    case "stop":
-      return "end_turn";
-    case "length":
-      return "max_tokens";
+    case "tool_use":
+      return "tool_calls";
+    case "end_turn":
+    case "stop_sequence":
+      return "stop";
+    case "max_tokens":
+      return "length";
     default:
       return reason;
   }
@@ -580,7 +597,7 @@ async function streamOpenRouterTurn(
 
   let fullText = "";
   let fullReasoning = "";
-  let stopReason = "";
+  let finishReason = "";
   const reasoningDetails: unknown[] = [];
   const toolAccums = new Map<number, ToolCallAccum>();
 
@@ -595,7 +612,10 @@ async function streamOpenRouterTurn(
     const choice = chunk.choices?.[0];
     if (!choice) return; // Usage-only final chunk.
     const delta = choice.delta;
-    if (typeof delta?.content === "string") {
+    // Some OpenRouter providers include `content: ""` on reasoning-only
+    // chunks. Do not emit those as text events: an empty text event between
+    // reasoning tokens splits one trace into many separate Thinking rows.
+    if (typeof delta?.content === "string" && delta.content !== "") {
       fullText += delta.content;
       callbacks?.onText?.(delta.content);
     }
@@ -631,13 +651,13 @@ async function streamOpenRouterTurn(
       toolAccums.set(index, accum);
     }
     if (typeof choice.finish_reason === "string") {
-      stopReason = normalizeOpenRouterFinishReason(choice.finish_reason);
+      finishReason = choice.finish_reason;
     }
   });
 
-  const thinkingBlocks: unknown[] = [];
+  const replay: unknown[] = [];
   if (reasoningDetails.length > 0 || fullReasoning !== "") {
-    thinkingBlocks.push({
+    replay.push({
       type: OPENROUTER_REASONING_REPLAY,
       ...(fullReasoning !== "" ? { reasoning: fullReasoning } : {}),
       reasoning_details: reasoningDetails,
@@ -658,8 +678,12 @@ async function streamOpenRouterTurn(
         }
         return { id: tc.id, name: tc.name, input };
       }),
-    thinkingBlocks,
-    stopReason,
+    reasoning: {
+      text: fullReasoning,
+      details: reasoningDetails,
+      replay,
+    },
+    finishReason,
   };
 }
 

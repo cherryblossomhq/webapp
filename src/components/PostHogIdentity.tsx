@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import posthog from "posthog-js";
 import { useAuthStore } from "@/store/authStore";
+import { initPostHog } from "@/utils/analytics";
 
 /** Keep PostHog's persisted browser identity aligned with the WorkOS session. */
 export function PostHogIdentity() {
@@ -8,24 +8,26 @@ export function PostHogIdentity() {
   const user = useAuthStore((state) => state.user);
 
   useEffect(() => {
-    // __loaded stays false when analytics initialization was skipped because
-    // no project token was available at build time.
-    if (status === "unknown" || !posthog.__loaded) return;
+    const signedInUser = status === "signedIn" ? user : null;
+    if (status !== "signedOut" && !signedInUser) return;
 
-    // Comparing ids also handles a different WorkOS user signing in on a
-    // browser where PostHog still has the previous user's persisted identity.
-    if (status === "signedIn" && user) {
-      if (posthog.get_distinct_id() !== user.id) {
-        posthog.identify(user.id, {
-          email: user.email,
-          first_name: user.first_name ?? undefined,
-          last_name: user.last_name ?? undefined,
-        });
+    initPostHog((posthog) => {
+      if (!signedInUser) {
+        if (posthog.get_property("$user_id")) posthog.reset();
+        return;
       }
-    } else if (status === "signedOut" && posthog._isIdentified()) {
-      // Prevent the next visitor on a shared browser from inheriting this user.
-      posthog.reset();
-    }
+
+      const identifiedUserId = posthog.get_property("$user_id");
+      if (identifiedUserId && identifiedUserId !== signedInUser.id) {
+        posthog.reset();
+      }
+
+      posthog.identify(signedInUser.id, {
+        email: signedInUser.email,
+        first_name: signedInUser.first_name ?? undefined,
+        last_name: signedInUser.last_name ?? undefined,
+      });
+    });
   }, [status, user]);
 
   return null;

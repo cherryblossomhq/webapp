@@ -84,6 +84,10 @@ describe("SettingsDialog account usage", () => {
     expect(screen.getByText("Monthly usage")).toBeInTheDocument();
     expect(screen.getByText("6.2% used")).toBeInTheDocument();
     expect(screen.getByText("124,500 of 2,000,000 tokens")).toBeInTheDocument();
+    expect(screen.getByText(/^Resets /)).toBeInTheDocument();
+    expect(screen.getAllByText(user.email)).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "AI" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Managed AI")).not.toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Monthly token usage" })).toHaveAttribute(
       "aria-valuenow",
       "124500",
@@ -92,6 +96,61 @@ describe("SettingsDialog account usage", () => {
       "aria-valuemax",
       "2000000",
     );
+  });
+
+  it("shows unlimited usage without a bounded progress bar", () => {
+    const currentAccount = account(["anthropic/claude-opus-4.8"]);
+    currentAccount.unlimitedCredits = true;
+    currentAccount.usage.monthlyTokens = 131_513;
+    useAccountStore.setState({
+      account: currentAccount,
+      accountUserId: user.id,
+      status: "ready",
+    });
+
+    render(<SettingsDialog />);
+
+    expect(screen.getByText("Unlimited")).toBeInTheDocument();
+    expect(screen.getByText("131,513 tokens used")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("shows plans without a monthly allowance", () => {
+    const currentAccount = account([]);
+    currentAccount.limits.monthlyTokens = 0;
+    useAccountStore.setState({
+      account: currentAccount,
+      accountUserId: user.id,
+      status: "ready",
+    });
+
+    render(<SettingsDialog />);
+
+    expect(screen.getByText("No allowance")).toBeInTheDocument();
+    expect(screen.getByText("No monthly tokens included")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("clamps an over-limit progress bar while reporting actual usage", () => {
+    const currentAccount = account(["anthropic/claude-opus-4.8"]);
+    currentAccount.usage.monthlyTokens = 2_500_000;
+    useAccountStore.setState({
+      account: currentAccount,
+      accountUserId: user.id,
+      status: "ready",
+    });
+
+    render(<SettingsDialog />);
+
+    const progress = screen.getByRole("progressbar", {
+      name: "Monthly token usage",
+    });
+    expect(progress).toHaveAttribute("aria-valuenow", "2000000");
+    expect(progress).toHaveAttribute(
+      "aria-valuetext",
+      "2,500,000 of 2,000,000 tokens used",
+    );
+    expect(progress.firstElementChild).toHaveStyle({ width: "100%" });
   });
 
   it("does not expose usage cached for a different signed-in user", () => {
@@ -122,6 +181,36 @@ describe("SettingsDialog account usage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
 
+    expect(refreshAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns when cached usage could not be refreshed", () => {
+    useAccountStore.setState({
+      account: account(["anthropic/claude-opus-4.8"]),
+      accountUserId: user.id,
+      status: "error",
+      error: "Account request failed.",
+    });
+
+    render(<SettingsDialog />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Usage may be out of date. Account request failed.",
+    );
+  });
+
+  it("shows a retryable error when usage has not loaded", async () => {
+    useAccountStore.setState({
+      status: "error",
+      error: "Account request failed.",
+    });
+
+    render(<SettingsDialog />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Account request failed.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(refreshAccount).toHaveBeenCalledTimes(2);
   });
 });

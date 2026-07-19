@@ -53,8 +53,8 @@ describe("settingsStore", () => {
 
   it("setActiveTab() switches sections while open", () => {
     useSettingsStore.getState().openSettings();
-    useSettingsStore.getState().setActiveTab("account");
-    expect(useSettingsStore.getState().activeTab).toBe("account");
+    useSettingsStore.getState().setActiveTab("advanced");
+    expect(useSettingsStore.getState().activeTab).toBe("advanced");
     expect(useSettingsStore.getState().open).toBe(true);
   });
 

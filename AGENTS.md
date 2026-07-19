@@ -133,23 +133,9 @@ To refresh or add skills: `npx skills add <owner>/<repo>` / `npx skills update`.
 
 ---
 
-## Skill Routing (Claude Code / gstack)
+## Skill Routing
 
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
-
-- Product ideas/brainstorming → `/office-hours`
-- Strategy/scope → `/plan-ceo-review`
-- Architecture → `/plan-eng-review`
-- Design system/plan review → `/design-consultation` or `/plan-design-review`
-- Full review pipeline → `/autoplan`
-- Bugs/errors → `/investigate`
-- QA/testing site behavior → `/qa` or `/qa-only`
-- Code review/diff check → `/review`
-- Visual polish → `/design-review`
-- Ship/deploy/PR → `/ship` or `/land-and-deploy`
-- Save progress → `/context-save`
-- Resume context → `/context-restore`
-- tscircuit work → `/tscircuit`
+Only invoke a skill when the user explicitly requests it. If an available skill could be helpful, you may recommend it to the user, but do not invoke it without their approval.
 
 ---
 

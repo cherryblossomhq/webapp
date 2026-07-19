@@ -505,6 +505,7 @@ export async function lookupFootprint(lcscId?: string, mpn?: string): Promise<st
 
 export async function fetchDatasheet(
   auth: OpenRouterAuth,
+  model: string,
   lcscId: string,
   mpn?: string
 ): Promise<string> {
@@ -512,7 +513,7 @@ export async function fetchDatasheet(
   if (id === "") return "Error: fetch_datasheet requires lcsc_id";
   const part = mpn?.trim() || undefined;
   try {
-    const summary = await fetchAndSummarize(auth, id, part);
+    const summary = await fetchAndSummarize(auth, model, id, part);
     return renderForModel(summary);
   } catch (e) {
     return `Datasheet fetch failed: ${e instanceof Error ? e.message : String(e)}`;

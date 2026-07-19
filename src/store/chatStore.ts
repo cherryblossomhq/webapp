@@ -85,9 +85,18 @@ async function fetchDatasheetSummariesForCircuit(
 }
 
 const MAX_USER_MESSAGE_LENGTH = 50_000;
-// Haiku handles the cheap rolling history distillation. Design turns use the
-// account's selected canonical OpenRouter model ID.
-const MODEL_HAIKU = "anthropic/claude-haiku-4.5";
+// Prefer Haiku for cheap helper work when the account permits it. Plans that do
+// not include Haiku fall back to the already-authorized selected design model.
+export const PREFERRED_HELPER_MODEL = "anthropic/claude-haiku-4.5";
+
+export function resolveHelperModel(
+  allowedModels: string[],
+  selectedModel: string,
+): string {
+  return allowedModels.includes(PREFERRED_HELPER_MODEL)
+    ? PREFERRED_HELPER_MODEL
+    : selectedModel;
+}
 
 // History = a "breathing" raw tail + a rolling notes summary of everything older.
 // The non-system messages are [ summarized prefix ][ raw tail ]: the tail is sent
@@ -421,6 +430,7 @@ async function dispatchTool(
   tc: ChatToolCall,
   importedDefs: Map<string, { rawTsx: string }>,
   auth: OpenRouterAuth,
+  helperModel: string,
   pushActivity: (
     kind: ChatActivity["kind"],
     detail: string,
@@ -498,7 +508,10 @@ async function dispatchTool(
       const lcsc = asString(input.lcsc_id);
       const mpn = asString(input.mpn);
       pushActivity("datasheet", lcsc || mpn);
-      return toolResult(tc.id, await fetchDatasheet(auth, lcsc, mpn || undefined));
+      return toolResult(
+        tc.id,
+        await fetchDatasheet(auth, helperModel, lcsc, mpn || undefined),
+      );
     }
     case "import_component": {
       const lcsc = asString(input.lcsc_id);
@@ -641,7 +654,7 @@ let isFolding = false;
 // SUMMARY_BATCH of them into `sessionNotes` and advance `summarizedCount`, so the
 // tail drops back to HISTORY_WINDOW. Incremental (old notes + new turns), never a
 // full re-summary, which keeps cost flat and drift low.
-async function foldHistoryIfNeeded(): Promise<void> {
+async function foldHistoryIfNeeded(helperModel: string): Promise<void> {
   if (isFolding) return;
   const auth = resolveChatAuth();
   if (!auth) return;
@@ -665,10 +678,10 @@ async function foldHistoryIfNeeded(): Promise<void> {
       ? `Existing notes:\n${sessionNotes}\n\nFold these older turns into the notes, keeping it concise:\n${cappedTurns}`
       : `Distill these PCB design conversation turns into concise design notes:\n${cappedTurns}`;
 
-    // Single-turn, no tools, no thinking — Haiku just distills the notes.
+    // Single-turn, no tools, no thinking — use the plan-safe helper model.
     const turn = await streamTurn({
       auth,
-      model: MODEL_HAIKU,
+      model: helperModel,
       system: [{ type: "text", text: SUMMARY_SYSTEM_PROMPT }],
       messages: [{ role: "user", content: prompt }],
       sessionId: useChatStore.getState().sessionId,
@@ -731,6 +744,10 @@ export const useChatStore = create<ChatStore>()(
       set({ error: "no_managed_model" });
       return;
     }
+    const helperModel = resolveHelperModel(
+      account?.plan.allowedModels ?? [],
+      designModel,
+    );
 
     const trimmedContent =
       content.length > MAX_USER_MESSAGE_LENGTH
@@ -924,9 +941,16 @@ export const useChatStore = create<ChatStore>()(
             // request 400s. Guard rejected backends so all IDs are answered.
             const results = await Promise.all(
               turn.toolCalls.map((tc) =>
-                dispatchTool(tc, importedDefs, auth, pushActivity, workingTsx).catch((e) =>
+                dispatchTool(
+                  tc,
+                  importedDefs,
+                  auth,
+                  helperModel,
+                  pushActivity,
+                  workingTsx,
+                ).catch((e) =>
                   toolResult(tc.id, `Tool ${tc.name} failed: ${String(e)}`)
-                )
+                ),
               )
             );
             apiMessages.push(...results);
@@ -994,7 +1018,7 @@ export const useChatStore = create<ChatStore>()(
 
       // Fire-and-forget: once the raw tail overflows the window, distill its
       // oldest turns into the rolling notes. Doesn't block the next message.
-      void foldHistoryIfNeeded();
+      void foldHistoryIfNeeded(helperModel);
 
       // Soft backstop tripped — surface that the assistant got stuck rather than
       // apply a half-finished circuit.

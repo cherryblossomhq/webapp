@@ -34,8 +34,12 @@ vi.mock("../utils/chatTransport", () => ({
     mockInvoke("search_jlcpcb", { query, limit }),
   lookupFootprint: (lcscId?: string, mpn?: string) =>
     mockInvoke("lookup_footprint", { lcscId, mpn }),
-  fetchDatasheet: (auth: unknown, lcscId: string, mpn?: string) =>
-    mockInvoke("fetch_datasheet", { auth, lcscId, mpn }),
+  fetchDatasheet: (
+    auth: unknown,
+    model: string,
+    lcscId: string,
+    mpn?: string,
+  ) => mockInvoke("fetch_datasheet", { auth, model, lcscId, mpn }),
 }));
 
 // Datasheet summaries live in localStorage; no cache entries in tests.
@@ -69,6 +73,8 @@ import {
   capSnapshots,
   clearLegacyByokStorage,
   isAiSetupError,
+  PREFERRED_HELPER_MODEL,
+  resolveHelperModel,
 } from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
@@ -83,6 +89,26 @@ describe("isAiSetupError", () => {
     expect(isAiSetupError("no_managed_model")).toBe(true);
     expect(isAiSetupError("Connection error")).toBe(false);
     expect(isAiSetupError(null)).toBe(false);
+  });
+});
+
+describe("helper model routing", () => {
+  it("prefers Haiku when the plan allows it", () => {
+    expect(
+      resolveHelperModel(
+        ["anthropic/claude-opus-4.8", PREFERRED_HELPER_MODEL],
+        "anthropic/claude-opus-4.8",
+      ),
+    ).toBe(PREFERRED_HELPER_MODEL);
+  });
+
+  it("falls back to the selected model when Haiku is unavailable", () => {
+    expect(
+      resolveHelperModel(
+        ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.8"],
+        "anthropic/claude-opus-4.8",
+      ),
+    ).toBe("anthropic/claude-opus-4.8");
   });
 });
 
@@ -692,6 +718,14 @@ describe("chatStore", () => {
         expect(useChatStore.getState().summarizedCount).toBeGreaterThan(0)
       );
       expect(useChatStore.getState().sessionNotes).toBe("distilled notes");
+      const foldCall = mockInvoke.mock.calls.find(
+        ([command, args]) =>
+          command === "chat_stream_turn" &&
+          !(args as { tools?: unknown[] }).tools,
+      );
+      expect((foldCall?.[1] as { model: string }).model).toBe(
+        "anthropic/claude-opus-4.8",
+      );
     });
 
     it("does not desync the boundary when history is cleared mid-fold", async () => {
@@ -826,6 +860,7 @@ describe("chatStore", () => {
           token: "workos-token",
           url: "https://www.trycherryblossom.com/api/v1/chat/completions",
         },
+        model: "anthropic/claude-opus-4.8",
         lcscId: "C16581",
         mpn: "TP4056",
       });
@@ -866,6 +901,35 @@ describe("chatStore", () => {
         ["footprint-1", "footprint result"],
         ["datasheet-1", "datasheet result"],
       ]);
+    });
+
+    it("uses Haiku for datasheet extraction when the plan allows it", async () => {
+      setManagedAccount("anthropic/claude-opus-4.8", [
+        "anthropic/claude-opus-4.8",
+        PREFERRED_HELPER_MODEL,
+      ]);
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "fetch_datasheet") return "datasheet result";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            {
+              id: "datasheet-1",
+              name: "fetch_datasheet",
+              input: { lcsc_id: "C16581" },
+            },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("research a charger");
+
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "fetch_datasheet",
+        expect.objectContaining({ model: PREFERRED_HELPER_MODEL }),
+      );
     });
 
     it("replays OpenRouter reasoning details unchanged with assistant tool calls", async () => {

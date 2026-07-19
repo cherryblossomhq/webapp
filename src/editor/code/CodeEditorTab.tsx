@@ -19,10 +19,12 @@
 //   • Dirty buffer  → sticky; a non-destructive banner lets the user reload
 //     from the circuit or keep editing. No silent data loss either direction.
 
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Download, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { useCircuitStore } from "@/store/circuitStore";
 import { openInEditor } from "@/utils/externalEditor";
+import { onBeforeAppReload } from "@/utils/appReload";
 import { validateTsx, type TsxValidation } from "@/utils/tsxTransform";
 import { useTheme } from "@/hooks/useTheme";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,34 @@ const CodeMirrorLazy = lazy(async () => {
   return { default: Editor };
 });
 
+const CODE_DRAFT_RECOVERY_KEY = "cherryblossom:codeDraftRecovery";
+
+interface CodeDraftRecovery {
+  draft: string;
+  baseline: string;
+}
+
+function readCodeDraftRecovery(): CodeDraftRecovery | null {
+  try {
+    const raw = sessionStorage.getItem(CODE_DRAFT_RECOVERY_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as Partial<CodeDraftRecovery>;
+    return typeof saved.draft === "string" && typeof saved.baseline === "string"
+      ? { draft: saved.draft, baseline: saved.baseline }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearCodeDraftRecovery(): void {
+  try {
+    sessionStorage.removeItem(CODE_DRAFT_RECOVERY_KEY);
+  } catch {
+    // The live editor state is already clean, so a stale backup is harmless.
+  }
+}
+
 export function CodeEditorTab() {
   const tsxCode = useCircuitStore((s) => s.tsxCode);
   const setTsxCode = useCircuitStore((s) => s.setTsxCode);
@@ -70,6 +100,7 @@ export function CodeEditorTab() {
   // (no sync-back).
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [recovery] = useState(readCodeDraftRecovery);
 
   const handleOpenInEditor = async () => {
     setOpening(true);
@@ -83,16 +114,42 @@ export function CodeEditorTab() {
     }
   };
 
-  const [draft, setDraft] = useState(tsxCode);
+  const [draft, setDraft] = useState(recovery?.draft ?? tsxCode);
   // The store value the draft was seeded from. Drives both dirty-detection
   // (draft !== baseline) and external-change detection (tsxCode !== baseline).
-  const [baseline, setBaseline] = useState(tsxCode);
+  const [baseline, setBaseline] = useState(recovery?.baseline ?? tsxCode);
   const [parseError, setParseError] = useState<TsxValidation & { ok: false } | null>(
     null
   );
-  const [conflict, setConflict] = useState(false);
+  const [conflict, setConflict] = useState(
+    recovery !== null && recovery.baseline !== tsxCode,
+  );
 
   const isDirty = draft !== baseline;
+  const recoveryStateRef = useRef({ draft, baseline });
+
+  useEffect(() => {
+    recoveryStateRef.current = { draft, baseline };
+  }, [draft, baseline]);
+
+  useEffect(() => {
+    clearCodeDraftRecovery();
+    return onBeforeAppReload((event) => {
+      const current = recoveryStateRef.current;
+      if (current.draft === current.baseline) {
+        clearCodeDraftRecovery();
+        return;
+      }
+      try {
+        sessionStorage.setItem(CODE_DRAFT_RECOVERY_KEY, JSON.stringify(current));
+      } catch {
+        event.preventDefault();
+        toast.error("Reload paused to protect Code edits", {
+          description: "Apply or copy the unsaved TSX, then reload the app.",
+        });
+      }
+    });
+  }, []);
 
   // React to external store writes (AI edits, drag bakes, undo/redo, file load)
   // using the "adjust state during render" pattern React recommends over a sync
@@ -130,6 +187,7 @@ export function CodeEditorTab() {
     setDraft(stored);
     setBaseline(stored);
     setConflict(false);
+    clearCodeDraftRecovery();
   };
 
   const handleReload = () => {
@@ -137,6 +195,7 @@ export function CodeEditorTab() {
     setBaseline(tsxCode);
     setConflict(false);
     setParseError(null);
+    clearCodeDraftRecovery();
   };
 
   const handleKeepEditing = () => {

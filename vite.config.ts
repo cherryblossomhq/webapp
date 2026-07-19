@@ -1,6 +1,6 @@
 import path from "path";
 import { readFileSync } from "fs";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, type Plugin, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // The same handler Vercel mounts as the /api/proxy function in production —
@@ -25,9 +25,32 @@ function proxyEndpoint(): Plugin {
   };
 }
 
+// Match the marketing site's first-party PostHog proxy. Specific asset routes
+// must precede the catch-all ingest route because Vite uses the first match.
+const posthogProxy: Record<string, ProxyOptions> = {
+  "/ingest/static": {
+    target: "https://us-assets.i.posthog.com",
+    changeOrigin: true,
+    rewrite: (requestPath) => requestPath.replace(/^\/ingest/, ""),
+  },
+  "/ingest/array": {
+    target: "https://us-assets.i.posthog.com",
+    changeOrigin: true,
+    rewrite: (requestPath) => requestPath.replace(/^\/ingest/, ""),
+  },
+  "/ingest": {
+    target: "https://us.i.posthog.com",
+    changeOrigin: true,
+    rewrite: (requestPath) => requestPath.replace(/^\/ingest/, ""),
+  },
+};
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss(), proxyEndpoint()],
+
+  // preview.proxy inherits server.proxy, so this covers both local servers.
+  server: { proxy: posthogProxy },
 
   resolve: {
     alias: {

@@ -40,7 +40,8 @@ npm run lint             # eslint .
 - **Doppler** manages all env vars — no `.env` files, ever. One-time setup: install the [Doppler CLI](https://docs.doppler.com/docs/install-cli), `doppler login`, then `doppler setup` (reads `doppler.yaml` → project **`webapp`**, config `prd` by default).
 - **Injection paths:** local `npm run dev` / `npm run build:local` are `doppler run --` wrapped, so `VITE_*` vars flow from the active Doppler config and are **baked into the bundle at build time**. Deployed builds on Vercel run plain `npm run build` — env arrives via the **Doppler → Vercel sync integration** (configured in the Doppler dashboard on the `webapp` project), which mirrors the config into the Vercel project env.
 - **Configs** (Doppler project `webapp`): `dev` — staging WorkOS client id + `VITE_MANAGED_AI_URL` pointing at a localhost website checkout; `dev_personal` — per-developer config; `prd` — production values. `doppler.yaml` selects `prd`, so a fresh checkout runs against the live API. Switch with `doppler configure set config dev`.
-- The two build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
+- The two auth build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
+- Analytics uses `VITE_POSTHOG_PROJECT_TOKEN` and `VITE_POSTHOG_HOST`, copied from the website project's corresponding `NEXT_PUBLIC_POSTHOG_*` values so both surfaces report to one PostHog project.
 - There are no server-side secrets in this repo: the WorkOS client id is a public identifier, and the `/api/proxy` endpoint holds no credentials.
 
 ### Deployment / Versioning
@@ -104,6 +105,11 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 - Signed-in users access AI exclusively through `POST /api/v1/chat/completions`, the website repo's **OpenAI Chat Completions-compatible OpenRouter proxy**, authenticated with the WorkOS access token as `Authorization: Bearer`. It enforces plan/model/rate limits via Convex and passes OpenRouter JSON/SSE through unchanged. The browser client builds the Chat Completions payload and parses OpenRouter's stream; the proxy must allow this app's origin in its CORS policy. Model IDs are canonical OpenRouter IDs from the account plan's `allowedModels` list.
 - **Error contract:** proxy errors are `{ "error": { "type", "message" } }`: `401 not_authenticated`, `403 plan_required | model_not_allowed` (surface the server's message — it names the plan/model), `429 rate_limited` (+ `Retry-After`), `400 invalid_request`, or `502 upstream_error`. OpenRouter-originated non-2xx responses pass through and may only provide `error.message` / `error.code`; mid-stream errors can arrive in an HTTP-200 SSE chunk. User-facing mapping lives in `friendlyChatError` (`chatStore.ts`).
 - Plans (`free`/`pro`/`enterprise`) and their per-minute/per-day rates + monthly token quotas are defined in the **website repo** (`convex/plans.ts`) — this repo never sees plan logic, only the error types above.
+
+### Analytics (PostHog)
+- `src/utils/analytics.ts` initializes the browser SDK when `VITE_POSTHOG_PROJECT_TOKEN` is available. The current defaults capture pageviews, autocapture, web vitals, and exceptions.
+- `src/components/PostHogIdentity.tsx` identifies a restored WorkOS user by id/email/name and resets PostHog on sign-out so a shared browser cannot leak identity between users.
+- SDK traffic stays first-party at `/ingest`: Vite proxies it during dev/preview, while `vercel.json` supplies equivalent production rewrites. There is no server-side capture.
 
 ---
 

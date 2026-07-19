@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
+import "./utils/analytics";
 import App from "./App";
 import { installProxyFetch } from "./utils/proxy-fetch";
 

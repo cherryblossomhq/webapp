@@ -12,6 +12,10 @@ interface ImportMetaEnv {
    * running staging). Unset → production proxy.
    */
   readonly VITE_MANAGED_AI_URL?: string;
+  /** PostHog project token (public) shared with the marketing site. */
+  readonly VITE_POSTHOG_PROJECT_TOKEN?: string;
+  /** PostHog app host used for links from SDK features; defaults to US cloud. */
+  readonly VITE_POSTHOG_HOST?: string;
 }
 
 interface ImportMeta {

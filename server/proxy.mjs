@@ -27,6 +27,7 @@ const ALLOWED_PROXY_DOMAINS = [
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024; // datasheet PDFs cap at 12 MiB
 const PROXY_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 // Request headers never forwarded upstream — identity/security-sensitive, or
 // hop-by-hop headers the fetch layer manages itself.
@@ -106,7 +107,7 @@ async function fetchAllowed(target, init) {
       // first URL and could escape the allowlist through an upstream redirect.
       redirect: "manual",
     });
-    if (response.status < 300 || response.status >= 400) return response;
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get("location");
     if (!location) return response;

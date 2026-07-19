@@ -174,6 +174,24 @@ describe("proxy allowlist", () => {
     expect(res.text()).toContain("Proxy redirect left allowlist");
   });
 
+  it.each([300, 304, 305, 306])(
+    "forwards non-redirect HTTP %s responses even when Location is present",
+    async (status) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status,
+          headers: { location: "https://easyeda.com/not-a-redirect" },
+        })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await invoke({ url: requestUrl("https://easyeda.com/result") });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res.statusCode).toBe(status);
+    }
+  );
+
   it("follows a same-allowlist redirect and applies POST-to-GET semantics", async () => {
     const fetchMock = vi
       .fn()

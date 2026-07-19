@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
-/** The Settings dialog's nav sections. `ai` is the default landing tab. */
-export type SettingsTab = "ai" | "advanced" | "account";
+/** The Settings dialog's nav sections. `account` is the default landing tab. */
+export type SettingsTab = "advanced" | "account";
 
 // Persisted across sessions on this device (like the API key). The Code tab is
 // power-user surface, so it's hidden by default and opted into here.
@@ -25,7 +25,7 @@ interface SettingsState {
   showCodeTab: boolean;
 
   /**
-   * Open the dialog to a specific tab (defaults to `ai`). Every open resets the
+   * Open the dialog to a specific tab (defaults to `account`). Every open resets the
    * active tab to the requested one rather than remembering the last view, so
    * callers — the toolbar gear, the Cmd/Ctrl+, shortcut, the chat's "Open
    * Settings" CTA — land the user exactly where they expect.
@@ -38,10 +38,10 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   open: false,
-  activeTab: "ai",
+  activeTab: "account",
   showCodeTab: loadShowCodeTab(),
 
-  openSettings: (tab = "ai") => set({ open: true, activeTab: tab }),
+  openSettings: (tab = "account") => set({ open: true, activeTab: tab }),
   closeSettings: () => set({ open: false }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setShowCodeTab: (value) => {

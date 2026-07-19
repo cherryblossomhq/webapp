@@ -5,33 +5,33 @@
  * shortcut, and the chat's "Open Settings" CTA can all drive it.
  *
  * Sections:
- *  - AI       — managed AI status for the signed-in account
  *  - Account  — WorkOS sign-in / signed-in card
  *  - Advanced — power-user toggles
  */
+import { useEffect } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { useAiReady } from "@/hooks/useAiReady";
 import { useDialogReturnFocus } from "@/hooks/useDialogReturnFocus";
 import { useSettingsStore, type SettingsTab } from "@/store/settingsStore";
 import { useAuthStore } from "@/store/authStore";
+import { useAccountStore } from "@/store/accountStore";
+import type { MeResponse } from "@/utils/accountApi";
 import { isAuthAvailable, type AuthUser } from "@/utils/authTransport";
 import { openExternal } from "@/utils/openExternal";
 import { cn } from "@/lib/utils";
 import {
   Sparkles,
   User,
-  Check,
   ExternalLink,
   Loader2,
   AlertCircle,
   SlidersHorizontal,
+  RefreshCw,
 } from "lucide-react";
 
 const MANAGE_ACCOUNT_URL = "https://www.trycherryblossom.com/account";
 
-const TABS: { id: SettingsTab; label: string; icon: typeof Sparkles }[] = [
-  { id: "ai", label: "AI", icon: Sparkles },
+const TABS: { id: SettingsTab; label: string; icon: typeof User }[] = [
   { id: "account", label: "Account", icon: User },
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
 ];
@@ -97,60 +97,6 @@ function SectionHeader({ title, description }: { title: string; description?: st
       <h3 className="font-heading text-base font-medium leading-none">{title}</h3>
       {description && (
         <p className="text-sm text-muted-foreground">{description}</p>
-      )}
-    </div>
-  );
-}
-
-function AiSection() {
-  const authStatus = useAuthStore((s) => s.status);
-  const user = useAuthStore((s) => s.user);
-  const setActiveTab = useSettingsStore((s) => s.setActiveTab);
-  const { ready: aiReady, pending: aiPending, ctaMessage } = useAiReady();
-  const authAvailable = isAuthAvailable();
-
-  return (
-    <div className="flex flex-col gap-5">
-      <SectionHeader
-        title="AI"
-        description="Cherry Blossom securely routes assistant requests through your account using OpenRouter."
-      />
-
-      <div className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
-        <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm font-medium">Managed AI</span>
-          <span className="text-xs text-muted-foreground">
-            Choose any model included with your plan from the chat header.
-          </span>
-        </div>
-      </div>
-
-      {authStatus === "signedIn" && user ? (
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {aiPending ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
-          ) : aiReady ? (
-            <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-          ) : (
-            <AlertCircle className="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
-          )}
-          Signed in as {user.email}.{" "}
-          {aiPending
-            ? "Loading managed AI models…"
-            : aiReady
-              ? "The assistant is ready to use."
-              : ctaMessage}
-        </p>
-      ) : (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2.5">
-          <p className="text-xs text-muted-foreground">
-            Sign in to your account to use managed AI.
-          </p>
-          <Button size="sm" disabled={!authAvailable} onClick={() => setActiveTab("account")}>
-            {authAvailable ? "Sign in" : "Coming soon"}
-          </Button>
-        </div>
       )}
     </div>
   );
@@ -227,12 +173,138 @@ function SignedInCard({ user }: { user: AuthUser }) {
   );
 }
 
-// One labeled key/value row in the account details block.
-function DetailRow({ label, value }: { label: string; value: string }) {
+const TOKEN_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 0,
+});
+
+const RESET_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+function MonthlyUsage({
+  account,
+  refreshing,
+  refreshError,
+  onRefresh,
+}: {
+  account: MeResponse;
+  refreshing: boolean;
+  refreshError: string | null;
+  onRefresh: () => void;
+}) {
+  const used = Math.max(0, account.usage.monthlyTokens);
+  const limit = Math.max(0, account.limits.monthlyTokens);
+  const hasLimit = !account.unlimitedCredits && limit > 0;
+  const rawPercent = hasLimit ? (used / limit) * 100 : 0;
+  const percent = Math.min(100, Math.max(0, rawPercent));
+  const percentLabel = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 1,
+  }).format(rawPercent);
+  const resetDate = account.usage.monthResetsAt
+    ? RESET_DATE_FORMATTER.format(new Date(account.usage.monthResetsAt))
+    : null;
+
   return (
-    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate text-sm font-medium">{value}</span>
+    <div className="flex flex-col gap-2.5 rounded-lg border border-border px-3 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">Monthly usage</span>
+          <span className="text-xs text-muted-foreground">
+            {account.plan.name} plan
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium tabular-nums">
+            {account.unlimitedCredits
+              ? "Unlimited"
+              : hasLimit
+                ? `${percentLabel}% used`
+                : "No allowance"}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Refresh usage"
+            title="Refresh usage"
+            disabled={refreshing}
+            onClick={onRefresh}
+          >
+            <RefreshCw
+              className={cn("size-3", refreshing && "animate-spin")}
+              aria-hidden="true"
+            />
+          </Button>
+        </div>
+      </div>
+
+      {hasLimit && (
+        <div
+          role="progressbar"
+          aria-label="Monthly token usage"
+          aria-valuemin={0}
+          aria-valuemax={limit}
+          aria-valuenow={Math.min(used, limit)}
+          aria-valuetext={`${TOKEN_FORMATTER.format(used)} of ${TOKEN_FORMATTER.format(limit)} tokens used`}
+          className="h-2 overflow-hidden rounded-full bg-muted"
+        >
+          <div
+            className="h-full rounded-full bg-primary transition-[width]"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="tabular-nums">
+          {account.unlimitedCredits
+            ? `${TOKEN_FORMATTER.format(used)} tokens used`
+            : hasLimit
+              ? `${TOKEN_FORMATTER.format(used)} of ${TOKEN_FORMATTER.format(limit)} tokens`
+              : "No monthly tokens included"}
+        </span>
+        {resetDate && <span className="shrink-0">Resets {resetDate}</span>}
+      </div>
+
+      {refreshError && (
+        <p className="flex items-center gap-1.5 text-xs text-destructive">
+          <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
+          Usage may be out of date. {refreshError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PendingMonthlyUsage({
+  error,
+  refreshing,
+  onRefresh,
+}: {
+  error: string | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        {error ? (
+          <AlertCircle
+            className="size-3.5 shrink-0 text-destructive"
+            aria-hidden="true"
+          />
+        ) : (
+          <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+        )}
+        <span className={cn("truncate", error && "text-destructive")}>
+          {error ?? "Loading current usage…"}
+        </span>
+      </div>
+      {error && (
+        <Button variant="outline" size="sm" disabled={refreshing} onClick={onRefresh}>
+          Retry
+        </Button>
+      )}
     </div>
   );
 }
@@ -243,24 +315,52 @@ function AccountSection() {
   const error = useAuthStore((s) => s.error);
   const signIn = useAuthStore((s) => s.signIn);
   const cancelSignIn = useAuthStore((s) => s.cancelSignIn);
+  const account = useAccountStore((s) => s.account);
+  const accountUserId = useAccountStore((s) => s.accountUserId);
+  const accountStatus = useAccountStore((s) => s.status);
+  const accountError = useAccountStore((s) => s.error);
+  const refreshAccount = useAccountStore((s) => s.refresh);
 
   const available = isAuthAvailable();
+  const authUserId = user?.id ?? null;
+
+  useEffect(() => {
+    if (!available || status !== "signedIn" || !authUserId) return;
+    void refreshAccount().catch(() => {
+      // The account store keeps the visible retry/error state.
+    });
+  }, [authUserId, available, refreshAccount, status]);
 
   if (available && status === "signedIn" && user) {
-    const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
+    const currentAccount = accountUserId === user.id ? account : null;
+    const refreshUsage = () => {
+      void refreshAccount().catch(() => {
+        // The account store keeps the visible retry/error state.
+      });
+    };
+
     return (
       <div className="flex flex-col gap-5">
         <SectionHeader
           title="Account"
-          description="You're signed in — managed AI is available in the AI tab."
+          description="You're signed in to your Cherry Blossom account."
         />
         <SignedInCard user={user} />
 
-        <div className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border">
-          {fullName && <DetailRow label="Name" value={fullName} />}
-          <DetailRow label="Email" value={user.email} />
-          <DetailRow label="Managed AI" value="Enabled" />
-        </div>
+        {currentAccount ? (
+          <MonthlyUsage
+            account={currentAccount}
+            refreshing={accountStatus === "loading"}
+            refreshError={accountError}
+            onRefresh={refreshUsage}
+          />
+        ) : (
+          <PendingMonthlyUsage
+            error={accountStatus === "error" ? accountError : null}
+            refreshing={accountStatus === "loading"}
+            onRefresh={refreshUsage}
+          />
+        )}
 
         <div className="flex flex-col gap-2">
           <Button
@@ -388,7 +488,6 @@ export function SettingsDialog() {
           </nav>
 
           <div className="flex-1 overflow-y-auto p-6">
-            {activeTab === "ai" && <AiSection />}
             {activeTab === "account" && <AccountSection />}
             {activeTab === "advanced" && <AdvancedSection />}
           </div>

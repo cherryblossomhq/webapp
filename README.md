@@ -24,7 +24,7 @@ Describe a circuit in plain English, drag components onto the board, or do both.
 
 ## Getting started
 
-Env vars (the WorkOS client id + managed AI URL) come from [Doppler](https://docs.doppler.com/docs/install-cli) — no `.env` files to pass around. Install the CLI, log in, then run `doppler setup` once; it reads the committed `doppler.yaml` and points this repo at the `webapp` project's `prd` config automatically.
+Env vars (WorkOS, managed AI, and PostHog) come from [Doppler](https://docs.doppler.com/docs/install-cli) — no `.env` files to pass around. Install the CLI, log in, then run `doppler setup` once; it reads the committed `doppler.yaml` and points this repo at the `webapp` project's `prd` config automatically.
 
 ```bash
 doppler login          # once per machine

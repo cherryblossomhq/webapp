@@ -8,9 +8,11 @@ Vendor-neutral guide for any coding agent (Claude Code, Codex, Cursor, Aider, et
 ## Product Context
 
 - **What this is:** A modern, AI-first PCB design tool with a UI that rivals Figma's aesthetic while delivering Altium-level feature power.
-- **Source:** Closed source. Code lives in the **private** repo [`cherryblossomhq/webapp`](https://github.com/cherryblossomhq/webapp) under the `cherryblossomhq` GitHub org. (The app started as a Tauri desktop app in `cherryblossomhq/cherryblossom`; it has since been ported to this web app, and there are no downloadable releases anymore.)
 - **Who it's for:** Hobbyists building at home + professional hardware engineers.
 - **Space:** EDA (Electronic Design Automation) / PCB design.
+- **Primary app:** This **private** [`cherryblossomhq/webapp`](https://github.com/cherryblossomhq/webapp) repo contains the current product, hosted at [app.trycherryblossom.com](https://app.trycherryblossom.com). It supersedes the original desktop app.
+- **Marketing site & managed API:** The **private** [`cherryblossomhq/website`](https://github.com/cherryblossomhq/website) repo powers [trycherryblossom.com](https://www.trycherryblossom.com): the marketing site, account and billing flows, and the managed API this app calls for authentication-backed account data and AI completions. Plan definitions, model access, quotas, rate limits, and the OpenRouter proxy live there, not in this repo.
+- **Legacy desktop app:** The older Tauri v2 app lives in the **private** [`cherryblossomhq/cherryblossom`](https://github.com/cherryblossomhq/cherryblossom) repo. Historical release binaries live in the **public** [`cherryblossomhq/releases`](https://github.com/cherryblossomhq/releases) repo, but the product is now web-only and no downloads are offered.
 - **Project type:** Web app — React 19 + TypeScript SPA built with Vite. Fully client-side except one tiny same-origin endpoint, `/api/proxy` (`server/proxy.mjs`), which replays requests to a fixed allowlist of CORS-less upstreams (EasyEDA, the tscircuit model CDN, the LCSC datasheet hosts). In dev/preview the endpoint is a Vite middleware; deployed, it's the Vercel function `api/proxy.mjs`. There is no other backend in this repo.
 - **Stage:** Early-stage startup, **not launched yet** — there are no production users. Backward compatibility is **not** a concern: don't add migration shims, compatibility layers, or deprecation cycles to preserve old behavior. Prefer clean, decisive changes. Large breaking changes (data model, file formats, APIs) are welcome when they make the design better.
 
@@ -38,7 +40,8 @@ npm run lint             # eslint .
 - **Doppler** manages all env vars — no `.env` files, ever. One-time setup: install the [Doppler CLI](https://docs.doppler.com/docs/install-cli), `doppler login`, then `doppler setup` (reads `doppler.yaml` → project **`webapp`**, config `prd` by default).
 - **Injection paths:** local `npm run dev` / `npm run build:local` are `doppler run --` wrapped, so `VITE_*` vars flow from the active Doppler config and are **baked into the bundle at build time**. Deployed builds on Vercel run plain `npm run build` — env arrives via the **Doppler → Vercel sync integration** (configured in the Doppler dashboard on the `webapp` project), which mirrors the config into the Vercel project env.
 - **Configs** (Doppler project `webapp`): `dev` — staging WorkOS client id + `VITE_MANAGED_AI_URL` pointing at a localhost website checkout; `dev_personal` — per-developer config; `prd` — production values. `doppler.yaml` selects `prd`, so a fresh checkout runs against the live API. Switch with `doppler configure set config dev`.
-- The two build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
+- The two auth build-time vars travel as a pair: `VITE_WORKOS_CLIENT_ID` (public web-app client id) and `VITE_MANAGED_AI_URL` (managed AI proxy endpoint). A token minted by a staging WorkOS client only validates against a backend running staging — never mix one config's client id with another's proxy URL.
+- Analytics uses `VITE_POSTHOG_PROJECT_TOKEN` and `VITE_POSTHOG_HOST`, copied from the website project's corresponding `NEXT_PUBLIC_POSTHOG_*` values so both surfaces report to one PostHog project.
 - There are no server-side secrets in this repo: the WorkOS client id is a public identifier, and the `/api/proxy` endpoint holds no credentials.
 
 ### Deployment / Versioning
@@ -103,6 +106,11 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 - **Error contract:** proxy errors are `{ "error": { "type", "message" } }`: `401 not_authenticated`, `403 plan_required | model_not_allowed` (surface the server's message — it names the plan/model), `429 rate_limited` (+ `Retry-After`), `400 invalid_request`, or `502 upstream_error`. OpenRouter-originated non-2xx responses pass through and may only provide `error.message` / `error.code`; mid-stream errors can arrive in an HTTP-200 SSE chunk. User-facing mapping lives in `friendlyChatError` (`chatStore.ts`).
 - Plans (`free`/`pro`/`enterprise`) and their per-minute/per-day rates + monthly token quotas are defined in the **website repo** (`convex/plans.ts`) — this repo never sees plan logic, only the error types above.
 
+### Analytics (PostHog)
+- `src/utils/analytics.ts` initializes the browser SDK when `VITE_POSTHOG_PROJECT_TOKEN` is available. The current defaults capture pageviews, autocapture, web vitals, and exceptions.
+- `src/components/PostHogIdentity.tsx` identifies a restored WorkOS user by id/email/name and resets PostHog on sign-out so a shared browser cannot leak identity between users.
+- SDK traffic stays first-party at `/ingest`: Vite proxies it during dev/preview, while `vercel.json` supplies equivalent production rewrites. There is no server-side capture.
+
 ---
 
 ## Conventions & Gotchas
@@ -125,23 +133,9 @@ To refresh or add skills: `npx skills add <owner>/<repo>` / `npx skills update`.
 
 ---
 
-## Skill Routing (Claude Code / gstack)
+## Skill Routing
 
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
-
-- Product ideas/brainstorming → `/office-hours`
-- Strategy/scope → `/plan-ceo-review`
-- Architecture → `/plan-eng-review`
-- Design system/plan review → `/design-consultation` or `/plan-design-review`
-- Full review pipeline → `/autoplan`
-- Bugs/errors → `/investigate`
-- QA/testing site behavior → `/qa` or `/qa-only`
-- Code review/diff check → `/review`
-- Visual polish → `/design-review`
-- Ship/deploy/PR → `/ship` or `/land-and-deploy`
-- Save progress → `/context-save`
-- Resume context → `/context-restore`
-- tscircuit work → `/tscircuit`
+Only invoke a skill when the user explicitly requests it. If an available skill could be helpful, you may recommend it to the user, but do not invoke it without their approval.
 
 ---
 

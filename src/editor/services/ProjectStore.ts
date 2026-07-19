@@ -58,6 +58,12 @@ export function loadProject(data: unknown): ProjectLoadResult {
   }
   const obj = data as Record<string, unknown>;
 
+  if (obj.version !== CURRENT_PROJECT_VERSION) {
+    throw new ProjectParseError(
+      `Unsupported project version: ${String(obj.version)}`
+    );
+  }
+
   if (typeof obj.tsxCode !== "string") {
     throw new ProjectParseError("Missing required field: tsxCode (string)");
   }
@@ -155,7 +161,6 @@ function sanitizeSchematic(o: object) {
 interface SanitizedPcb {
   x?: number;
   y?: number;
-  rotation?: number;
   layer?: string;
   mirror_x?: boolean;
   route?: PcbRoutePoint[];
@@ -167,8 +172,6 @@ function sanitizePcb(o: object): SanitizedPcb {
   const out: SanitizedPcb = {};
   if (typeof r.x === "number" && Number.isFinite(r.x)) out.x = r.x;
   if (typeof r.y === "number" && Number.isFinite(r.y)) out.y = r.y;
-  if (typeof r.rotation === "number" && Number.isFinite(r.rotation))
-    out.rotation = r.rotation;
   if (typeof r.layer === "string") out.layer = r.layer;
   if (typeof r.mirror_x === "boolean") out.mirror_x = r.mirror_x;
   // Routed-trace geometry. Dropping this on round-trip is what made manual
@@ -305,9 +308,8 @@ export function summarizeManualEdits(m: ManualEditsMap): string {
     if (e.pcb) {
       const px = e.pcb.x?.toFixed(1) ?? "?";
       const py = e.pcb.y?.toFixed(1) ?? "?";
-      const pr = e.pcb.rotation ?? 0;
       const layer = e.pcb.layer ?? "top";
-      parts.push(`pcb(${px}, ${py}, ${pr}deg, ${layer})`);
+      parts.push(`pcb(${px}, ${py}, ${layer})`);
     }
     if (parts.length > 0) lines.push(`- ${k}: ${parts.join(", ")}`);
   }

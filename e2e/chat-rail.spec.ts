@@ -5,9 +5,8 @@ import { test, expect } from "@playwright/test";
 // assertion can be sensitive to row width.
 test.use({ viewport: { width: 1280, height: 800 } });
 
-// Regression coverage for the resizable chat rail and the collapsible left
-// components column. Width assertions use expect.poll so they settle past the
-// open/close width transition.
+// Regression coverage for the resizable chat rail. Width assertions use
+// expect.poll so they settle past the open/close width transition.
 test("chat rail opens, drag-resizes, and closes back to properties", async ({
   page,
 }) => {
@@ -15,14 +14,15 @@ test("chat rail opens, drag-resizes, and closes back to properties", async ({
 
   // Open chat — it replaces the right rail (no Properties/Chat tabs).
   await page.getByRole("button", { name: /Open AI chat/i }).click();
-  await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+  const closeButton = page.getByRole("button", { name: "Close chat" });
+  await expect(closeButton).toBeVisible();
 
   const handle = page.getByRole("separator", { name: /Resize chat panel/i });
   await expect(handle).toBeVisible();
 
   const aside = page
     .locator("aside")
-    .filter({ has: page.getByRole("button", { name: "Send message" }) });
+    .filter({ has: closeButton });
   const widthOf = async () => (await aside.boundingBox())!.width;
   await expect.poll(widthOf).toBeGreaterThan(400);
   const opened = await widthOf();
@@ -36,21 +36,7 @@ test("chat rail opens, drag-resizes, and closes back to properties", async ({
   await expect.poll(widthOf).toBeGreaterThan(opened + 100);
 
   // Closing chat returns the rail to the Properties panel.
-  await page.getByRole("button", { name: "Close chat" }).click();
-  await expect(page.getByRole("button", { name: "Send message" })).toBeHidden();
-});
-
-test("left components column collapses and expands", async ({ page }) => {
-  await page.goto("/");
-
-  // Library is visible by default.
-  await expect(page.getByPlaceholder("Search components...")).toBeVisible();
-
-  // Collapse it.
-  await page.getByRole("button", { name: "Collapse components panel" }).click();
-  await expect(page.getByPlaceholder("Search components...")).toBeHidden();
-
-  // Expand it again.
-  await page.getByRole("button", { name: "Expand components panel" }).click();
-  await expect(page.getByPlaceholder("Search components...")).toBeVisible();
+  await closeButton.click();
+  await expect(closeButton).toBeHidden();
+  await expect(page.getByText("Properties", { exact: true })).toBeVisible();
 });

@@ -16,7 +16,7 @@ const ROUTE_KEY = connectionId("R1.pin2", "R2.pin1");
 // The selector pairing relies on source_component.name + source_port.port_hints
 // matching the tsx trace's `path` selectors.
 function fixture() {
-  const tsx = `circuit.add(
+  const tsx = `export default () => (
   <board width="40mm" height="30mm">
     <resistor key="t_r1" name="R1" resistance="1k" footprint="0805" pcbX="-10mm" pcbY="0mm" />
     <resistor key="t_r2" name="R2" resistance="1k" footprint="0805" pcbX="10mm" pcbY="0mm" />

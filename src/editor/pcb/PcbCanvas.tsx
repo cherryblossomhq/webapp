@@ -1209,14 +1209,13 @@ export function PcbCanvas() {
             const startPos = drag.startPositions.get(key);
             if (!startPos) continue;
             const orig = drag.origEdits.get(key);
-            const { rotation: _dropRotation, ...restOrig } = orig ?? {};
             const snapped = snapToGrid(
               { x: startPos.x + dx, y: startPos.y + dy },
               GRID_FINE_MM
             );
             entries.push([
               key,
-              { ...restOrig, x: snapped.x, y: snapped.y },
+              { ...orig, x: snapped.x, y: snapped.y },
             ] as const);
           }
           setPcbEdits(entries);

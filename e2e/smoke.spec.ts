@@ -1,10 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-// Phase 0 smoke: prove the editor mounts in a browser and the foundational
-// stores wire up cleanly. Anything richer is a Phase 1+ E2E concern (those
-// tests live in this file's siblings).
-
-test.describe("Phase 0 smoke", () => {
+test.describe("editor smoke", () => {
   test("editor loads and shows the empty board placeholder", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("pageerror", (err) => consoleErrors.push(err.message));
@@ -33,7 +29,7 @@ test.describe("Phase 0 smoke", () => {
     expect(realErrors, `unexpected page errors: ${realErrors.join("\n")}`).toEqual([]);
   });
 
-  test("empty-schematic composer routes to Settings when no API key is set", async ({
+  test("empty-schematic composer routes signed-out users to managed AI settings", async ({
     page,
   }) => {
     await page.goto("/");
@@ -41,14 +37,13 @@ test.describe("Phase 0 smoke", () => {
     const composer = page.getByPlaceholder(/add an ESP32/i);
     await expect(composer).toBeVisible({ timeout: 15_000 });
 
-    // With no API key configured, sending must not fire a doomed request — it
-    // routes the first-timer to Settings → AI to add their key instead.
+    // Sending while signed out must not fire a doomed model request. It routes
+    // the user to Settings → AI, where managed AI sign-in is explained.
     await composer.fill("add an ESP32 with a 3V3 regulator");
     await page.getByRole("button", { name: /send to ai/i }).click();
 
-    // Settings → AI is now open (unique to that tab: the console key button).
-    await expect(
-      page.getByRole("button", { name: /anthropic console/i })
-    ).toBeVisible();
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    await expect(settings.getByRole("heading", { name: "Premium" })).toBeVisible();
+    await expect(settings.getByText(/sign in to unlock managed AI/i)).toBeVisible();
   });
 });

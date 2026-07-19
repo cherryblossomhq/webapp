@@ -286,7 +286,7 @@ describe("circuitStore", () => {
     });
 
     it("loads a v1 project, preserving keyed tsx and manual edits", () => {
-      const tsxCode = `circuit.add(
+      const tsxCode = `export default () => (
   <board width="60mm" height="40mm" autorouter="sequential-trace">
     <resistor key="r_abc123" name="R1" resistance="10k" footprint="0402" />
   </board>
@@ -312,7 +312,7 @@ describe("circuitStore", () => {
     it("coerces loaded metadata, dropping stale fields like author", () => {
       getState().loadProject({
         version: 1,
-        tsxCode: `circuit.add(\n  <board width="50mm" height="50mm" />\n)\n`,
+        tsxCode: `export default () => (\n  <board width="50mm" height="50mm" />\n)\n`,
         // A file from before `author` was removed still carries it.
         metadata: { title: "Kept", author: "Dropped" } as { title: string },
       });
@@ -383,7 +383,7 @@ describe("circuitStore", () => {
   describe("AI edits", () => {
     it("applies AI TSX and re-injects keys defensively", () => {
       // The model often forgets `key` props on regen; applyAiEdit re-injects.
-      const aiTsx = `circuit.add(
+      const aiTsx = `export default () => (
   <board width="50mm" height="50mm" autorouter="sequential-trace">
     <resistor name="R1" resistance="100k" footprint="0805" />
     <capacitor name="C1" capacitance="1uF" footprint="0603" />
@@ -399,7 +399,7 @@ describe("circuitStore", () => {
     });
 
     it("preserves keys an AI emits explicitly across applyAiEdit", () => {
-      const aiTsx = `circuit.add(
+      const aiTsx = `export default () => (
   <board width="50mm" height="50mm" autorouter="sequential-trace">
     <resistor key="r_alpha1" name="R1" resistance="10k" />
   </board>

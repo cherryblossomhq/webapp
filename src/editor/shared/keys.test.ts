@@ -61,7 +61,7 @@ describe("validateKey", () => {
 
 describe("injectKeysIntoTsx", () => {
   it("adds key props to every component missing one", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board width="50mm" height="50mm">
     <resistor name="R1" resistance="10k" />
     <capacitor name="C1" capacitance="100nF" />
@@ -74,7 +74,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("preserves keys that are already valid", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board width="50mm" height="50mm">
     <resistor key="r_alpha1" name="R1" resistance="10k" />
   </board>
@@ -88,7 +88,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("is idempotent — running twice produces identical output", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor name="R1" resistance="10k" />
   </board>
@@ -100,12 +100,12 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("returns the input unchanged when nothing parses", () => {
-    const broken = "circuit.add( <not really tsx ;;;;";
+    const broken = "export default () => ( <not really tsx ;;;;";
     expect(injectKeysIntoTsx(broken)).toBe(broken);
   });
 
   it("ignores the <board> element itself", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board width="50mm" height="50mm">
   </board>
 )
@@ -118,7 +118,7 @@ describe("injectKeysIntoTsx", () => {
     // AI-generated tsx often omits key= on these. If injectKeysIntoTsx skips
     // them they never get a stable key, so their live-drag override can't be
     // matched and they lag ~2s on every move — the bug this set expansion fixes.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <connector name="J1" standard="usb_c" />
     <crystal name="Y1" frequencyHz={16e6} />
@@ -133,7 +133,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("keys traces, vias, and nets too", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <net name="GND" isGroundNet />
     <trace path={[".R1 > .pin1", ".C1 > .pin1"]} />
@@ -146,7 +146,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("replaces a malformed key prop rather than producing duplicates", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="123" name="R1" />
   </board>
@@ -159,7 +159,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("CRITICAL: dedupes valid-but-duplicate keys (regenerates the second occurrence)", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_dupkey" name="R1" />
     <resistor key="r_dupkey" name="R2" />
@@ -178,7 +178,7 @@ describe("injectKeysIntoTsx", () => {
   });
 
   it("CRITICAL: dedupe across many duplicates produces N unique keys", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_xxxxxx" name="R1" />
     <resistor key="r_xxxxxx" name="R2" />
@@ -196,7 +196,7 @@ describe("injectKeysIntoTsx", () => {
 
 describe("collectKeys", () => {
   it("extracts all valid keys from tsx", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_aaa111" name="R1" />
     <capacitor key="c_bbb222" name="C1" />
@@ -219,7 +219,7 @@ describe("collectKeys", () => {
   });
 
   it("returns an empty set for parseable tsx with no keyable elements", () => {
-    const keys = collectKeys("circuit.add(<board />)");
+    const keys = collectKeys("export default () => (<board />)");
     expect(keys).not.toBeNull();
     expect(keys!.size).toBe(0);
   });
@@ -227,7 +227,7 @@ describe("collectKeys", () => {
 
 describe("collectKeysOrEmpty", () => {
   it("returns the live key set when parsing succeeds", () => {
-    const tsx = `circuit.add(<board><resistor key="r_aaa111" name="R1"/></board>)`;
+    const tsx = `export default () => (<board><resistor key="r_aaa111" name="R1"/></board>)`;
     expect(collectKeysOrEmpty(tsx).size).toBe(1);
   });
 

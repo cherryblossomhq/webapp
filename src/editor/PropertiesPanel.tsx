@@ -231,9 +231,8 @@ export function PropertiesPanel() {
         (patch.x !== undefined || patch.y !== undefined)
       ) {
         const cur = manualEdits[key]?.pcb;
-        const { rotation: _dropRotation, ...rest } = cur ?? {};
         setPcbEdit(key, {
-          ...rest,
+          ...cur,
           ...(patch.x !== undefined ? { x: patch.x } : {}),
           ...(patch.y !== undefined ? { y: patch.y } : {}),
         });

@@ -206,7 +206,10 @@ function MonthlyUsage({
     : null;
 
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-border px-3 py-2.5">
+    <div
+      className="flex flex-col gap-2.5 rounded-lg border border-border px-3 py-2.5"
+      aria-busy={refreshing}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium">Monthly usage</span>
@@ -267,7 +270,10 @@ function MonthlyUsage({
       </div>
 
       {refreshError && (
-        <p className="flex items-center gap-1.5 text-xs text-destructive">
+        <p
+          role="alert"
+          className="flex items-center gap-1.5 text-xs text-destructive"
+        >
           <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
           Usage may be out of date. {refreshError}
         </p>
@@ -287,7 +293,11 @@ function PendingMonthlyUsage({
 }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
-      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <div
+        role={error ? "alert" : "status"}
+        aria-live={error ? "assertive" : "polite"}
+        className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"
+      >
         {error ? (
           <AlertCircle
             className="size-3.5 shrink-0 text-destructive"

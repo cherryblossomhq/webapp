@@ -7,23 +7,23 @@ function reset() {
   } catch {
     // ignore — jsdom always provides localStorage
   }
-  useSettingsStore.setState({ open: false, activeTab: "ai", showCodeTab: false });
+  useSettingsStore.setState({ open: false, activeTab: "account", showCodeTab: false });
 }
 
 describe("settingsStore", () => {
   beforeEach(reset);
 
-  it("starts closed on the AI tab", () => {
+  it("starts closed on the Account tab", () => {
     const s = useSettingsStore.getState();
     expect(s.open).toBe(false);
-    expect(s.activeTab).toBe("ai");
+    expect(s.activeTab).toBe("account");
   });
 
-  it("openSettings() opens to the AI tab by default", () => {
+  it("openSettings() opens to the Account tab by default", () => {
     useSettingsStore.getState().openSettings();
     const s = useSettingsStore.getState();
     expect(s.open).toBe(true);
-    expect(s.activeTab).toBe("ai");
+    expect(s.activeTab).toBe("account");
   });
 
   it("openSettings(tab) opens directly to the requested tab", () => {
@@ -38,9 +38,9 @@ describe("settingsStore", () => {
     useSettingsStore.getState().closeSettings();
     expect(useSettingsStore.getState().activeTab).toBe("advanced"); // retained while closed
 
-    // ...reopening with the default lands back on AI, not the last view.
+    // ...reopening with the default lands back on Account, not the last view.
     useSettingsStore.getState().openSettings();
-    expect(useSettingsStore.getState().activeTab).toBe("ai");
+    expect(useSettingsStore.getState().activeTab).toBe("account");
   });
 
   it("closeSettings() closes without changing the active tab", () => {

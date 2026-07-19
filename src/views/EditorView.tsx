@@ -277,7 +277,7 @@ export function EditorView() {
       if (ctrl && e.key === "," && !e.shiftKey) {
         e.preventDefault();
         // No-op if Settings (or another modal) is already open: re-firing would
-        // snap the active tab back to "ai", and we don't want to stack dialogs.
+        // snap the active tab back to "account", and we don't want to stack dialogs.
         if (
           useSettingsStore.getState().open ||
           showHelp ||

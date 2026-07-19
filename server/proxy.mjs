@@ -26,6 +26,7 @@ const ALLOWED_PROXY_DOMAINS = [
 
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024; // datasheet PDFs cap at 12 MiB
 const PROXY_TIMEOUT_MS = 30_000;
+const MAX_REDIRECTS = 5;
 
 // Request headers never forwarded upstream — identity/security-sensitive, or
 // hop-by-hop headers the fetch layer manages itself.
@@ -89,6 +90,51 @@ function readBody(req) {
   });
 }
 
+async function fetchAllowed(target, init) {
+  let url = target;
+  let method = init.method;
+  let body = init.body;
+  let headers = init.headers;
+
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(url, {
+      ...init,
+      method,
+      headers,
+      body,
+      // Validate every hop ourselves. Native `follow` would only validate the
+      // first URL and could escape the allowlist through an upstream redirect.
+      redirect: "manual",
+    });
+    if (response.status < 300 || response.status >= 400) return response;
+
+    const location = response.headers.get("location");
+    if (!location) return response;
+    if (redirects >= MAX_REDIRECTS) {
+      if (response.body) await response.body.cancel().catch(() => undefined);
+      throw new Error(`Proxy redirect limit exceeded (${MAX_REDIRECTS})`);
+    }
+
+    const next = new URL(location, url).toString();
+    if (!isUrlAllowed(next)) {
+      if (response.body) await response.body.cancel().catch(() => undefined);
+      throw new Error(`Proxy redirect left allowlist: ${next}`);
+    }
+
+    if (
+      (response.status === 303 && method !== "GET" && method !== "HEAD") ||
+      ((response.status === 301 || response.status === 302) && method === "POST")
+    ) {
+      method = "GET";
+      body = undefined;
+      headers = { ...headers };
+      delete headers["content-type"];
+    }
+    if (response.body) await response.body.cancel().catch(() => undefined);
+    url = next;
+  }
+}
+
 export default async function handleProxyRequest(req, res) {
   const query = new URL(req.url ?? "/", "http://localhost").searchParams;
   const target = query.get("url") ?? "";
@@ -112,11 +158,10 @@ export default async function handleProxyRequest(req, res) {
 
   let upstream;
   try {
-    upstream = await fetch(target, {
+    upstream = await fetchAllowed(target, {
       method,
       headers,
       body,
-      redirect: "follow",
       signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
     });
   } catch (err) {

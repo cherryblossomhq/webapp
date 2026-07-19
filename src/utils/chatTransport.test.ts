@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const datasheetMocks = vi.hoisted(() => ({
+  fetchAndSummarize: vi.fn(),
+  renderForModel: vi.fn((summary: { lcsc_id: string }) => `rendered:${summary.lcsc_id}`),
+}));
+
+vi.mock("./datasheets", () => datasheetMocks);
+
 import {
   CHAT_TOOLS,
   ChatTransportError,
   OPENROUTER_CHAT_COMPLETIONS_URL,
   completeText,
+  fetchDatasheet,
+  lookupFootprint,
+  normalizePackageToCatalog,
+  searchJlcpcb,
   streamTurn,
   toOpenRouterMessages,
 } from "./chatTransport";
@@ -36,6 +48,8 @@ function fetchBody(call = 0): Record<string, unknown> {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  datasheetMocks.fetchAndSummarize.mockReset();
+  datasheetMocks.renderForModel.mockClear();
 });
 
 describe("OpenRouter mapping", () => {
@@ -311,6 +325,30 @@ describe("OpenRouter streaming", () => {
       expect(String(error)).toContain("slow down");
     }
   });
+
+  it("rejects malformed SSE and a response with no body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      sseResponse(["data: {not-json}\n\n"])
+    );
+    await expect(
+      streamTurn({
+        auth: managedAuth,
+        model: "model",
+        system: [],
+        messages: [],
+      })
+    ).rejects.toThrow("api_error:Invalid SSE payload");
+
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await expect(
+      streamTurn({
+        auth: managedAuth,
+        model: "model",
+        system: [],
+        messages: [],
+      })
+    ).rejects.toThrow("api_error:Response had no body");
+  });
 });
 
 describe("non-streaming completions", () => {
@@ -335,4 +373,116 @@ describe("non-streaming completions", () => {
     });
   });
 
+  it("joins text blocks and preserves diagnostics on HTTP errors", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: [{ type: "text", text: " first " }, { text: "second" }],
+              },
+            },
+          ],
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response("upstream broke", {
+          status: 502,
+          headers: { "x-generation-id": "gen_failure" },
+        })
+      );
+
+    const args = {
+      auth: managedAuth,
+      model: "helper",
+      maxTokens: 50,
+      messages: [],
+    };
+    await expect(completeText(args)).resolves.toBe("first second");
+    await expect(completeText(args)).rejects.toMatchObject({
+      message: "502:upstream broke",
+      generationId: "gen_failure",
+    });
+  });
+});
+
+describe("catalog and datasheet tool backends", () => {
+  it("normalizes common JLCPCB package spellings", () => {
+    expect(normalizePackageToCatalog("SOT-23-5")).toBe("sot23_5");
+    expect(normalizePackageToCatalog("SOIC-8")).toBe("soic8");
+    expect(normalizePackageToCatalog("0402_1005Metric")).toBe("0402");
+    expect(normalizePackageToCatalog("unknown-package")).toBeNull();
+  });
+
+  it("caps search results and formats catalog metadata for the model", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        components: [
+          {
+            lcsc: 123,
+            mfr: "REG123",
+            description: "3.3V regulator",
+            package: "SOT-23-5",
+            stock: 42,
+            is_basic: true,
+            price: 0.0123,
+          },
+        ],
+      })
+    );
+
+    const result = await searchJlcpcb(" 3.3V regulator ", 99);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://jlcsearch.tscircuit.com/api/search?q=3.3V%20regulator&limit=8"
+    );
+    expect(result).toContain("C123 | REG123 | 3.3V regulator");
+    expect(result).toContain("[JLCPCB Basic]");
+    await expect(searchJlcpcb("   ")).resolves.toBe(
+      "Error: search query is required"
+    );
+  });
+
+  it("returns canonical footprint matches and graceful lookup errors", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          components: [{ lcsc: 123, mfr: "REG123", package: "SOT-23-5" }],
+        })
+      )
+      .mockResolvedValueOnce(new Response("", { status: 503 }));
+
+    await expect(lookupFootprint("C123")).resolves.toContain(
+      "Canonical footprint: sot23_5"
+    );
+    await expect(lookupFootprint(undefined, "REG123")).resolves.toBe(
+      "Footprint lookup error: Search API error: 503"
+    );
+    await expect(lookupFootprint()).resolves.toBe(
+      "Error: lookup_footprint requires lcsc_id or mpn"
+    );
+  });
+
+  it("delegates datasheet extraction and converts failures into tool results", async () => {
+    datasheetMocks.fetchAndSummarize
+      .mockResolvedValueOnce({ lcsc_id: "C123" })
+      .mockRejectedValueOnce(new Error("helper unavailable"));
+
+    await expect(
+      fetchDatasheet(managedAuth, "helper", " C123 ", " REG123 ")
+    ).resolves.toBe("rendered:C123");
+    expect(datasheetMocks.fetchAndSummarize).toHaveBeenCalledWith(
+      managedAuth,
+      "helper",
+      "C123",
+      "REG123"
+    );
+    await expect(
+      fetchDatasheet(managedAuth, "helper", "C456")
+    ).resolves.toBe("Datasheet fetch failed: helper unavailable");
+    await expect(fetchDatasheet(managedAuth, "helper", " ")).resolves.toBe(
+      "Error: fetch_datasheet requires lcsc_id"
+    );
+  });
 });

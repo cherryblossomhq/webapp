@@ -154,8 +154,13 @@ async function authenticate(payload: Record<string, unknown>): Promise<TokenResp
     refresh_token?: string;
     user?: AuthUser;
   };
-  if (!json.access_token || !json.refresh_token) {
-    throw new Error("response missing tokens");
+  if (
+    !json.access_token ||
+    !json.refresh_token ||
+    !json.user ||
+    typeof json.user !== "object"
+  ) {
+    throw new Error("response missing tokens or user");
   }
   return {
     accessToken: json.access_token,

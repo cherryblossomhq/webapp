@@ -25,6 +25,7 @@ import { usePcbDrc } from "@/editor/services/usePcbDrc";
 import { PropertiesPanel } from "@/editor/PropertiesPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
 import { cn } from "@/lib/utils";
+import { reloadApp } from "@/utils/appReload";
 import { Loader2 } from "lucide-react";
 
 // The Properties drawer slides in from the left when a component is selected;
@@ -40,6 +41,10 @@ const PROPERTIES_DRAWER_WIDTH = 280;
 // same key, so a user who flips to Manifold has that choice persist.
 const CAD_ENGINE_SEED_KEY = "cherryblossom:cadEngineSeeded";
 const CAD_ENGINE_SEED_VERSION = "1";
+const CAD_IMPORT_RELOAD_KEY = "cherryblossom:cadImportReloaded";
+const CAD_TAB_RESTORE_KEY = "cherryblossom:restoreCadTab";
+const CAD_FAILED_IMPORT_URLS_KEY = "cherryblossom:failedCadImportUrls";
+let cadImportInProgress = false;
 if (typeof window !== "undefined") {
   try {
     if (
@@ -54,9 +59,146 @@ if (typeof window !== "undefined") {
   }
 }
 
+function rememberFailedCadImport(event: Event): void {
+  if (!cadImportInProgress || !(event.target instanceof HTMLLinkElement)) return;
+  if (event.target.rel !== "modulepreload" || !event.target.href) return;
+  try {
+    const saved = JSON.parse(
+      window.sessionStorage.getItem(CAD_FAILED_IMPORT_URLS_KEY) ?? "[]",
+    ) as unknown;
+    const urls = Array.isArray(saved)
+      ? saved.filter((url): url is string => typeof url === "string")
+      : [];
+    if (!urls.includes(event.target.href)) urls.push(event.target.href);
+    window.sessionStorage.setItem(
+      CAD_FAILED_IMPORT_URLS_KEY,
+      JSON.stringify(urls.slice(-8)),
+    );
+  } catch {
+    // The normal reload recovery still works when storage is unavailable.
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("error", rememberFailedCadImport, true);
+}
+
+function restoreCadTabAfterReload(): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.sessionStorage.getItem(CAD_TAB_RESTORE_KEY) !== "1") return;
+    window.sessionStorage.removeItem(CAD_TAB_RESTORE_KEY);
+    useEditorStore.getState().setActiveTab("cad");
+  } catch {
+    // Recovery is best-effort when storage is unavailable.
+  }
+}
+
+function prepareCadImportReload(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.sessionStorage.getItem(CAD_IMPORT_RELOAD_KEY) === "1") {
+      return false;
+    }
+    window.sessionStorage.setItem(CAD_IMPORT_RELOAD_KEY, "1");
+    window.sessionStorage.setItem(CAD_TAB_RESTORE_KEY, "1");
+    return true;
+  } catch {
+    // Without sessionStorage we cannot prevent a reload loop.
+    return false;
+  }
+}
+
+function clearCadImportReloadMarker(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(CAD_IMPORT_RELOAD_KEY);
+    window.sessionStorage.removeItem(CAD_FAILED_IMPORT_URLS_KEY);
+  } catch {
+    // The viewer loaded, so a stale recovery marker is harmless.
+  }
+}
+
+function cancelCadImportReload(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(CAD_IMPORT_RELOAD_KEY);
+    window.sessionStorage.removeItem(CAD_TAB_RESTORE_KEY);
+  } catch {
+    // The preservation listener already surfaced why the reload was paused.
+  }
+}
+
+async function refreshFailedCadImports(): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.sessionStorage.getItem(CAD_IMPORT_RELOAD_KEY) !== "1") return;
+    const saved = JSON.parse(
+      window.sessionStorage.getItem(CAD_FAILED_IMPORT_URLS_KEY) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(saved)) return;
+    await Promise.all(
+      saved
+        .filter((url): url is string => typeof url === "string")
+        .map(async (url) => {
+          const resolved = new URL(url, window.location.href);
+          if (resolved.origin !== window.location.origin) return;
+          try {
+            await window.fetch(resolved, {
+              cache: "reload",
+              credentials: "same-origin",
+            });
+          } catch {
+            // The real module import below owns the user-facing error.
+          }
+        }),
+    );
+  } catch {
+    // A malformed or inaccessible recovery cache should not block the import.
+  }
+}
+
+function reloadCadTab(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(CAD_IMPORT_RELOAD_KEY, "1");
+    window.sessionStorage.setItem(CAD_TAB_RESTORE_KEY, "1");
+  } catch {
+    // Reloading still gives the module graph a clean retry.
+  }
+  if (!reloadApp()) cancelCadImportReload();
+}
+
+restoreCadTabAfterReload();
+
 const CadViewerLazy = lazy(async () => {
-  const m = await import("@tscircuit/3d-viewer");
-  return { default: m.CadViewer };
+  cadImportInProgress = true;
+  try {
+    // Safari can retain a failed module response across a normal reload. Force
+    // any failed Vite preload URLs through the HTTP cache before importing.
+    await refreshFailedCadImports();
+    const m = await import("@tscircuit/3d-viewer");
+    clearCadImportReloadMarker();
+    return { default: m.CadViewer };
+  } catch (cause) {
+    // A failed ESM import is cached for the lifetime of the page, so resetting
+    // a React error boundary cannot retry it. One reload gets a fresh module
+    // graph and also replaces stale Vite chunk hashes after a deployment.
+    if (prepareCadImportReload()) {
+      if (reloadApp()) return await new Promise<never>(() => {});
+      cancelCadImportReload();
+      throw new Error(
+        "The 3D viewer needs an app reload, but reload was paused to protect work in progress. Finish or save that work, then reload the app.",
+        { cause },
+      );
+    }
+    throw new Error(
+      "The 3D viewer could not be loaded after refreshing. Check your connection, then reload the app.",
+      { cause },
+    );
+  } finally {
+    cadImportInProgress = false;
+  }
 });
 
 type TabDef = { key: EditorTab; label: string };
@@ -295,9 +437,15 @@ function CadTabContent() {
   );
   if (!circuitJson || circuitJson.length === 0) return <NoCircuitYet tab="3D model" />;
   return (
-    <Suspense fallback={<ViewerLoading label="Loading 3D viewer…" />}>
-      <CadViewerLazy circuitJson={circuitJson} />
-    </Suspense>
+    <PanelErrorBoundary
+      label="3D viewer"
+      onRetry={reloadCadTab}
+      retryLabel="Reload app"
+    >
+      <Suspense fallback={<ViewerLoading label="Loading 3D viewer…" />}>
+        <CadViewerLazy circuitJson={circuitJson} />
+      </Suspense>
+    </PanelErrorBoundary>
   );
 }
 

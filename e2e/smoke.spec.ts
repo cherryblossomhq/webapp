@@ -51,4 +51,144 @@ test.describe("Phase 0 smoke", () => {
       page.getByRole("button", { name: /anthropic console/i })
     ).toBeVisible();
   });
+
+  test("3D viewer recovers when its lazy module fails to load once", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("cherryblossom:showCodeTab", "1");
+    });
+    let blockViewerModule = false;
+    let blockedRequests = 0;
+
+    await page.route("**/*3d-viewer*", async (route) => {
+      if (blockViewerModule && blockedRequests === 0) {
+        blockedRequests += 1;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await expect(page.getByText(/your schematic is empty/i)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByText("Code", { exact: true }).click();
+    const editor = page.locator(".cm-content");
+    await editor.waitFor({ state: "visible", timeout: 15_000 });
+    const source = await editor.innerText();
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.insertText(source.replace('width="50mm"', 'width="51mm"'));
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page.getByText("In sync", { exact: true })).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => localStorage.getItem("cherryblossom_autosave")?.includes("51mm") ?? false,
+      ),
+    ).toBe(false);
+
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.insertText("\n// recovery-draft");
+    await expect(page.getByText("Unsaved edits", { exact: true })).toBeVisible();
+
+    blockViewerModule = true;
+    await page.getByText("3D", { exact: true }).click();
+
+    await expect.poll(() => blockedRequests).toBe(1);
+    await expect(page.getByText("Engine: JSCAD", { exact: true })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByText(/viewer crashed/i)).toHaveCount(0);
+
+    await page.getByText("Code", { exact: true }).click();
+    await expect(page.locator(".cm-content")).toContainText("51mm");
+    await expect(page.locator(".cm-content")).toContainText("recovery-draft");
+    await expect(page.getByText("Unsaved edits", { exact: true })).toBeVisible();
+  });
+
+  test("paused 3D recovery resumes after transient work is cleared", async ({
+    page,
+  }) => {
+    let blockedRequests = 0;
+    await page.route("**/*3d-viewer*", async (route) => {
+      if (blockedRequests === 0) {
+        blockedRequests += 1;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await expect(page.getByText(/your schematic is empty/i)).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.evaluate(() => {
+      const draft = document.createElement("textarea");
+      draft.id = "reload-guard-draft";
+      draft.value = "work in progress";
+      document.body.appendChild(draft);
+    });
+
+    await page.getByText("3D", { exact: true }).click();
+    await expect(page.getByText(/reload was paused to protect/i)).toBeVisible({
+      timeout: 15_000,
+    });
+    expect(blockedRequests).toBe(1);
+
+    await page.locator("#reload-guard-draft").evaluate((draft) => draft.remove());
+    await page.addInitScript(() => {
+      if (
+        sessionStorage.getItem("cherryblossom:cadImportReloaded") === "1"
+      ) {
+        sessionStorage.setItem("test:observedCadImportReload", "1");
+      }
+    });
+    await page.getByRole("button", { name: "Reload app" }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          sessionStorage.getItem("test:observedCadImportReload"),
+        ),
+      )
+      .toBe("1");
+    await expect(page.getByText("Engine: JSCAD", { exact: true })).toBeVisible({
+      timeout: 20_000,
+    });
+  });
+
+  test("3D viewer contains a repeated module failure without a reload loop", async ({
+    page,
+  }) => {
+    let blockedRequests = 0;
+    await page.route("**/*3d-viewer*", async (route) => {
+      if (blockedRequests < 2) {
+        blockedRequests += 1;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await expect(page.getByText(/your schematic is empty/i)).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByText("3D", { exact: true }).click();
+
+    await expect.poll(() => blockedRequests).toBe(2);
+    await expect(page.getByText(/could not be loaded after refreshing/i)).toBeVisible({
+      timeout: 20_000,
+    });
+    await page.waitForTimeout(500);
+    expect(blockedRequests).toBe(2);
+
+    await page.getByText("Schematic", { exact: true }).click();
+    await expect(page.getByText(/your schematic is empty/i)).toBeVisible();
+  });
 });

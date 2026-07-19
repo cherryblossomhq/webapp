@@ -54,13 +54,13 @@ function makeMockExecutor() {
 
 describe("hashInput", () => {
   it("produces an 8-char lowercase hex digest", () => {
-    const h = hashInput("circuit.add(<board />)", {});
+    const h = hashInput("export default () => (<board />)", {});
     expect(h).toMatch(/^[0-9a-f]{8}$/);
   });
 
   it("changes when tsx changes", () => {
-    const a = hashInput("circuit.add(<board />)", {});
-    const b = hashInput("circuit.add(<board width='10mm' />)", {});
+    const a = hashInput("export default () => (<board />)", {});
+    const b = hashInput("export default () => (<board width='10mm' />)", {});
     expect(a).not.toBe(b);
   });
 
@@ -99,15 +99,15 @@ describe("hashInput", () => {
     expect(hashInput("x", a)).not.toBe(hashInput("x", b));
   });
 
-  it("CRITICAL: rotation, layer, mirror_x, route all contribute to the hash", () => {
+  it("CRITICAL: layer, mirror_x, route, and noAutoroute contribute to the hash", () => {
     const base: ManualEditsMap = {
-      r_aaa111: { pcb: { x: 0, y: 0, rotation: 0, layer: "top", mirror_x: false } },
+      r_aaa111: { pcb: { x: 0, y: 0, layer: "top", mirror_x: false } },
     };
     const variants: ManualEditsMap[] = [
-      { r_aaa111: { pcb: { x: 0, y: 0, rotation: 90, layer: "top", mirror_x: false } } },
-      { r_aaa111: { pcb: { x: 0, y: 0, rotation: 0, layer: "bottom", mirror_x: false } } },
-      { r_aaa111: { pcb: { x: 0, y: 0, rotation: 0, layer: "top", mirror_x: true } } },
-      { r_aaa111: { pcb: { x: 0, y: 0, rotation: 0, layer: "top", mirror_x: false, route: [{ x: 1, y: 2, layer: "top" }] } } },
+      { r_aaa111: { pcb: { x: 0, y: 0, layer: "bottom", mirror_x: false } } },
+      { r_aaa111: { pcb: { x: 0, y: 0, layer: "top", mirror_x: true } } },
+      { r_aaa111: { pcb: { x: 0, y: 0, layer: "top", mirror_x: false, route: [{ x: 1, y: 2, layer: "top" }, { x: 3, y: 4, layer: "top" }] } } },
+      { r_aaa111: { pcb: { x: 0, y: 0, layer: "top", mirror_x: false, noAutoroute: true } } },
     ];
     const baseHash = hashInput("x", base);
     for (const v of variants) {
@@ -145,7 +145,7 @@ describe("CircuitEvaluator — versioning + result delivery", () => {
       executorFactory: () => mock.executor,
       onResult,
     });
-    const promise = evaluator.evaluateNow("circuit.add(<board/>)", {});
+    const promise = evaluator.evaluateNow("export default () => (<board/>)", {});
     // Allow the executor to complete its (synchronous mock) flow.
     mock.finishExecute();
     const result = await promise;
@@ -165,7 +165,7 @@ describe("CircuitEvaluator — versioning + result delivery", () => {
     evaluator = new CircuitEvaluator({
       executorFactory: () => mock.executor,
     });
-    const promise = evaluator.evaluateNow("circuit.add(<board/>)", {});
+    const promise = evaluator.evaluateNow("export default () => (<board/>)", {});
     mock.finishExecute();
     const result = await promise;
     expect(result?.errors).toEqual([

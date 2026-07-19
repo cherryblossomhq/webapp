@@ -347,11 +347,11 @@ describe("editorStore setPcbEdit (sidecar write)", () => {
     useEditorStore.getState().setPcbEdit("r_abc123", {
       x: 5,
       y: 6,
-      rotation: 90,
+      layer: "bottom",
     });
     const edit =
       useEditorStore.getState().manualEdits["r_abc123"]?.pcb;
-    expect(edit).toMatchObject({ x: 5, y: 6, rotation: 90 });
+    expect(edit).toMatchObject({ x: 5, y: 6, layer: "bottom" });
   });
 
   it("setPcbEdit(null) removes the pcb sub-entry", () => {

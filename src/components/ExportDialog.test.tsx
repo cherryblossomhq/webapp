@@ -46,6 +46,7 @@ const rejectKicad = (e: Error) => h.deferred.reject(e);
 beforeEach(() => {
   URL.createObjectURL = vi.fn(() => "blob:mock");
   URL.revokeObjectURL = vi.fn();
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 });
 
 import { ExportDialog } from "./ExportDialog";
@@ -81,6 +82,7 @@ describe("ExportDialog — KiCad async export + guards", () => {
 
   afterEach(() => {
     resetStore();
+    vi.restoreAllMocks();
   });
 
   it("renders a KiCad Project export row when the circuit is evaluated", () => {

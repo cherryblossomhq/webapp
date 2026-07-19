@@ -28,7 +28,9 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 5173",
+    // E2E runs against the signed-out app and does not need Doppler secrets.
+    // Starting Vite directly keeps the suite runnable in fresh workspaces + CI.
+    command: "npm exec vite -- --host 127.0.0.1 --port 5173",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

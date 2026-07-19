@@ -63,7 +63,7 @@ The app deploys like any static SPA + one serverless function (`vercel.json` car
 - **`src/utils/chatTransport.ts`** — The single seam for every external call the chat loop makes: `streamTurn` (one model turn, browser fetch + SSE parsing), the per-tool HTTP backends, and the model-facing tool definitions (`CHAT_TOOLS`).
 - **`src/utils/tsxTransform.ts`** — AST-based TSX read/write using Babel + recast, regex fallback if Babel parse fails; every edit produces a new TSX string.
 - **`src/utils/chatSystemPrompt.ts`** — Builds the static system prompt + dynamic circuit context sent to the selected model.
-- **`src/utils/easyedaImport.ts`** — Two-stage EasyEDA fetch (search → detail) backing the AI `import_component` tool, routed through `/api/proxy`. No tests.
+- **`src/utils/easyedaImport.ts`** — Two-stage EasyEDA fetch (search → detail) backing the AI `import_component` tool, routed through `/api/proxy`.
 - **`src/utils/datasheets.ts`** — `fetch_datasheet` backend: discovers the datasheet URL via EasyEDA, downloads the PDF through `/api/proxy`, has a plan-allowed helper model (preferring Claude Haiku) extract a structured summary, and caches summaries in localStorage (`listCachedDatasheets` seeds the chat's dynamic context).
 - **`src/utils/proxy-fetch.ts`** — Installs a global fetch shim that re-targets `easyeda.com` / `modelcdn.tscircuit.com` requests to `/api/proxy`, plus a direct `proxyFetch(url)` helper for datasheet PDFs.
 - **`server/proxy.mjs`** — The `/api/proxy` handler (plain Node `(req, res)` style): https-only, exact-host allowlist, blocked identity headers, 16 MiB response cap. Mounted by a Vite middleware in dev/preview (`vite.config.ts`) and re-exported as the Vercel function `api/proxy.mjs` in production.
@@ -116,7 +116,7 @@ User prompt → chatStore.sendMessage (JS) runs a free-running tool loop:
 ## Conventions & Gotchas
 
 - tscircuit packages update frequently and can introduce breaking changes — check release notes when upgrading.
-- `easyedaImport.ts` has no tests; it's a two-stage network call that fails silently on partial API responses.
+- `easyedaImport.ts` is a two-stage network call that fails silently on partial API responses; keep its search/detail and partial-response tests current when changing it.
 - Drag-and-drop positions stream live via `pendingEditEvents` (preview only) and are baked into TSX props on drop completion — don't read position from live circuit JSON during a drag.
 - Chunk size limit is raised to 10 MB in `vite.config.ts` because tscircuit bundles are large.
 - Prompt caching requires the static system prompt to stay ≥ 4,096 tokens to activate on Sonnet 4.6.

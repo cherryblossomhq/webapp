@@ -60,6 +60,18 @@ describe("rotation matrix (live eval)", () => {
       expect(
         padExtentsContainDisplay(m.pads, "c_abc123", display, c1!.x, c1!.y)
       ).toBe(true);
+
+      const pads = m.pads.filter((p) => p.componentKey === "c_abc123");
+      if (rot === 45) {
+        expect(c1!.originRotationDeg).toBe(45);
+        expect(display.rotationDeg).toBeGreaterThan(40);
+        expect(display.rotationDeg).toBeLessThan(50);
+        for (const pad of pads) expect(pad.rotationDeg).toBe(45);
+      } else if (rot === 90) {
+        // Cardinal eval geometry is already baked into world-space pad
+        // coordinates, so the SVG must not rotate those pads a second time.
+        for (const pad of pads) expect(pad.rotationDeg).toBe(0);
+      }
     }, 60_000);
 
     it(`DIP-14 at ${rot}°: pad-derived bounds match render + hit-test`, async () => {
@@ -81,19 +93,24 @@ describe("rotation matrix (live eval)", () => {
     }, 60_000);
   }
 
-  it("ignores legacy sidecar rotation in pcbModel", async () => {
+  it("renders rotated chip silkscreen including the designator", async () => {
+    const tsx = `export default () => (
+  <board width="50mm" height="50mm">
+    <chip name="U1" footprint="dip14" pcbX={0} pcbY={0} pcbRotation={20} />
+  </board>
+)`;
     const ev = new CircuitEvaluator({ debounceMs: 0, timeoutMs: 30_000 });
-    const tsx = capTsx(0).replace(
-      'name="C1"',
-      'name="C1" key="c_abc123"'
-    );
     const result = await ev.evaluateNow(tsx, {});
     expect(result).not.toBeNull();
 
-    const m = buildPcbModel(result!.circuitJson as never, tsx, {
-      c_abc123: { pcb: { rotation: 90 } },
-    });
-    const c1 = m.components.find((c) => c.name === "C1");
-    expect(c1!.rotationDeg).toBe(0);
+    const m = buildPcbModel(result!.circuitJson as never, tsx, {});
+    expect(m.silkscreenLines.length).toBeGreaterThan(0);
+    for (const line of m.silkscreenLines) {
+      expect(line.layer).toBe("silkscreen_top");
+    }
+    expect(m.components.find((c) => c.name === "U1")?.hasSilkscreenOutline).toBe(
+      true
+    );
+    expect(m.silkscreenTexts.map((text) => text.text)).toContain("U1");
   }, 60_000);
 });

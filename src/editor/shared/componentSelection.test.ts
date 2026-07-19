@@ -5,7 +5,7 @@ import {
   selectionIsSingleComponent,
 } from "./componentSelection";
 
-const TSX = `circuit.add(
+const TSX = `export default () => (
   <board width="10mm" height="10mm">
     <resistor key="r_abc123" name="R1" resistance="1k" footprint="0402" />
     <resistor key="r_xyz789" name="R2" resistance="1k" footprint="0402" />

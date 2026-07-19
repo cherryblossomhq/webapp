@@ -23,7 +23,7 @@ import {
   DEFAULT_TSX,
 } from "./tsxTransform";
 
-const SAMPLE_TSX = `circuit.add(
+const SAMPLE_TSX = `export default () => (
   <board width="50mm" height="50mm" autorouter="sequential-trace">
     <resistor name="R1" resistance="10k" footprint="0402" />
     <capacitor name="C1" capacitance="100nF" footprint="0603" />
@@ -54,7 +54,7 @@ describe("tsxTransform — extraction", () => {
     // it isn't recognized as a component, buildPcbModel never wires its stable
     // `key`, the optimistic drag override is ignored, and the part only moves
     // after the next eval — the "J1 lags, U1 doesn't" bug.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="50mm" height="50mm">
         <connector key="j1_u3k9pq" name="J1" standard="usb_c"
           pcbX={9.6} pcbY={-8.7} />
@@ -70,7 +70,7 @@ describe("tsxTransform — extraction", () => {
   });
 
   it("recognizes the other placeable built-in lowercase parts", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="50mm" height="50mm">
         <crystal name="Y1" frequencyHz={16e6} />
         <pushbutton name="SW1" />
@@ -101,7 +101,7 @@ describe("tsxTransform — extraction", () => {
   });
 
   it("extracts connections (raw strings, sel.X.Y, nets, arrays)", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="50mm" height="50mm">
         <chip name="U1" pinLabels={{ pin1: "VCC", pin2: "SDA" }}
           connections={{ VCC: "net.V3_3", SDA: sel.U2.SDA }} />
@@ -135,10 +135,10 @@ describe("tsxTransform — extraction", () => {
   it("connId is shared by both endpoints of a pin→pin connection", () => {
     // Same logical link authored from either side yields the same connId.
     const a = extractConnections(
-      `circuit.add(<board><resistor name="R1" connections={{ pin1: "C1.pin1" }} /></board>)`
+      `export default () => (<board><resistor name="R1" connections={{ pin1: "C1.pin1" }} /></board>)`
     )[0];
     const b = extractConnections(
-      `circuit.add(<board><capacitor name="C1" connections={{ pin1: "R1.pin1" }} /></board>)`
+      `export default () => (<board><capacitor name="C1" connections={{ pin1: "R1.pin1" }} /></board>)`
     )[0];
     expect(a.connId).toBe(b.connId);
   });
@@ -155,7 +155,7 @@ describe("tsxTransform — extraction", () => {
     // fallback path. It must still recover connections from self-closing tags,
     // including the sel.X.Y member form. (Contract: degrade, don't drop
     // everything, on a mid-keystroke parse error.)
-    const broken = `circuit.add(
+    const broken = `export default () => (
       <board>
         <chip name="U1" pinLabels={{ pin1: "VCC", pin2: "SDA" }}
           connections={{ VCC: "net.V3_3", SDA: sel.U2.SDA }} />
@@ -172,7 +172,7 @@ describe("tsxTransform — extraction", () => {
   it("extractBoardConfig falls back to regex for the board layer count", () => {
     // Trailing garbage forces the Babel parse to throw, exercising the regex
     // fallback in extractBoardConfigFallback (which has its own layers regex).
-    const four = `circuit.add(
+    const four = `export default () => (
       <board width="50mm" height="50mm" layers={4}>
         <resistor name="R1" resistance="10k" />
       </board>
@@ -182,7 +182,7 @@ describe("tsxTransform — extraction", () => {
     expect(cfg.width).toBe("50mm");
 
     // No layers prop ⇒ defaults to 2, still through the fallback.
-    const none = `circuit.add(
+    const none = `export default () => (
       <board width="50mm" height="50mm">
         <resistor name="R1" resistance="10k" />
       </board>
@@ -271,7 +271,7 @@ describe("tsxTransform — round-trip mutations", () => {
 });
 
 describe("tsxTransform — connections write machinery", () => {
-  const BASE = `circuit.add(
+  const BASE = `export default () => (
     <board width="50mm" height="50mm">
       <chip name="U1" pinLabels={{ pin1: "VCC", pin2: "SDA" }} />
       <resistor name="R1" resistance="10k" />
@@ -399,7 +399,7 @@ describe("tsxTransform — board, sequencing", () => {
 
 describe("tsxTransform — edge cases", () => {
   it("handles JSX with expression-container values", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="50mm" height="50mm">
         <chip name="U1" pinCount={8} />
       </board>
@@ -410,7 +410,7 @@ describe("tsxTransform — edge cases", () => {
   });
 
   it("handles boolean JSX attributes (no value)", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="50mm" height="50mm">
         <net name="GND" isGroundNet />
       </board>
@@ -433,7 +433,7 @@ describe("tsxTransform — edge cases", () => {
 });
 
 describe("tsxTransform — pin editing helpers", () => {
-  const CHIP_TSX = `circuit.add(
+  const CHIP_TSX = `export default () => (
     <board>
       <chip name="U1" pinCount={4} pinLabels={{"1": "VCC", "2": "GND"}} />
     </board>
@@ -448,7 +448,7 @@ describe("tsxTransform — pin editing helpers", () => {
   });
 
   it("updateComponentNumericProp adds the prop when missing", () => {
-    const tsx = `circuit.add(<board><chip name="U2" /></board>)`;
+    const tsx = `export default () => (<board><chip name="U2" /></board>)`;
     const updated = updateComponentNumericProp(tsx, "U2", "pinCount", 16);
     expect(updated).toContain("pinCount={16}");
   });
@@ -489,7 +489,7 @@ describe("tsxTransform — pin editing helpers", () => {
   });
 
   it("updateComponentPinLabels adds the prop when missing", () => {
-    const tsx = `circuit.add(<board><chip name="U3" pinCount={2} /></board>)`;
+    const tsx = `export default () => (<board><chip name="U3" pinCount={2} /></board>)`;
     const updated = updateComponentPinLabels(tsx, "U3", ["A", "B"]);
     const u3 = extractComponentByName(updated, "U3");
     expect(u3?.props.pinLabels).toContain('"1": "A"');
@@ -507,17 +507,17 @@ describe("tsxTransform — validateTsx (Code tab parse gate)", () => {
     expect(validateTsx(DEFAULT_TSX).ok).toBe(true);
   });
 
-  it("default TSX is a component-export module, not a circuit.add() entrypoint", () => {
+  it("default TSX uses the component-export module entrypoint", () => {
     // The editor renders tsxCode verbatim and the 'Export → tscircuit TSX'
     // button dumps it straight to a .tsx file, so the canonical form must be a
-    // standalone, importable component module — never the imperative
-    // circuit.add() entrypoint. The evaluator runs it via mainComponentPath.
+    // standalone, importable component module. The evaluator loads the exported
+    // component via mainComponentPath.
     expect(DEFAULT_TSX).toContain("export default");
     expect(DEFAULT_TSX).not.toContain("circuit.add");
   });
 
   it("rejects syntactically broken TSX with an error", () => {
-    const broken = `circuit.add(
+    const broken = `export default () => (
       <board width="50mm" height="50mm">
         <resistor name="R1" resistance="10k"
       </board>
@@ -530,7 +530,7 @@ describe("tsxTransform — validateTsx (Code tab parse gate)", () => {
   });
 
   it("reports a line number for the syntax error when available", () => {
-    const broken = `circuit.add(\n  <board>\n    <resistor name=="R1" />\n  </board>\n)`;
+    const broken = `export default () => (\n  <board>\n    <resistor name=="R1" />\n  </board>\n)`;
     const result = validateTsx(broken);
     expect(result.ok).toBe(false);
     if (!result.ok) {

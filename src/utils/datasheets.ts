@@ -1,23 +1,22 @@
 // Datasheet fetch + extraction. Hits EasyEDA to find the canonical datasheet
-// URL for a JLCPCB part, downloads the PDF, then asks Claude Haiku to extract
-// the structured fields the design AI actually cares about (V_in range, output
-// current, topology, pinout, key features, gotchas).
+// URL for a JLCPCB part, downloads the PDF, then asks a plan-safe helper model
+// to extract the structured fields the design AI actually cares about (V_in
+// range, output current, topology, pinout, key features, gotchas).
 //
 // EasyEDA and the LCSC datasheet CDNs don't send CORS headers, so both fetches
 // go through the same-origin `/api/proxy` endpoint (see proxy-fetch.ts). A PDF
 // whose host falls outside the proxy allowlist simply fails the download and
-// we fall back to a metadata-only Haiku summary — same graceful degradation as
+// we fall back to a metadata-only model summary — same graceful degradation as
 // a missing datasheet.
 //
-// Summaries are cached in localStorage so we only invoke Haiku once per part —
-// subsequent calls just read the JSON. The summary is also surfaced to the
-// main chat model via listCachedDatasheets → buildDynamicContext.
+// Summaries are cached in localStorage so we only invoke the helper once per
+// part — subsequent calls just read the JSON. The summary is also surfaced to
+// the main chat model via listCachedDatasheets → buildDynamicContext.
 
 import { proxyFetch } from "./proxy-fetch";
 import { completeText, type OpenRouterAuth } from "./chatTransport";
 
 const MAX_PDF_BYTES = 12 * 1024 * 1024; // 12 MiB hard cap
-const HAIKU_MODEL = "anthropic/claude-haiku-4.5";
 const CACHE_PREFIX = "cherryblossom:datasheet:";
 
 export interface DatasheetSummary {
@@ -151,8 +150,9 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-async function extractViaHaiku(
+async function extractViaModel(
   auth: OpenRouterAuth,
+  model: string,
   pdfBytes: Uint8Array | null,
   lcscId: string,
   mpn?: string
@@ -188,26 +188,27 @@ async function extractViaHaiku(
 
   const answer = await completeText({
     auth,
-    model: HAIKU_MODEL,
+    model,
     maxTokens: 1024,
     messages: [{ role: "user", content }],
   });
-  if (!answer) throw new Error("Haiku returned no text");
+  if (!answer) throw new Error("Datasheet helper returned no text");
 
-  // Haiku sometimes adds a leading "Here's the JSON:" preamble despite the
+  // Models sometimes add a leading "Here's the JSON:" preamble despite the
   // instruction. Slice from the first { to the last }.
   const start = answer.indexOf("{");
   const end = answer.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) {
-    throw new Error(`Haiku returned no JSON object -- raw: ${answer}`);
+    throw new Error(`Datasheet helper returned no JSON object -- raw: ${answer}`);
   }
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(answer.slice(start, end + 1)) as Record<string, unknown>;
   } catch (e) {
-    throw new Error(`Haiku JSON parse failed: ${e} -- raw: ${answer}`, {
-      cause: e,
-    });
+    throw new Error(
+      `Datasheet helper JSON parse failed: ${e} -- raw: ${answer}`,
+      { cause: e },
+    );
   }
 
   const s = (key: string): string | undefined => {
@@ -272,6 +273,7 @@ export function renderForModel(summary: DatasheetSummary): string {
 
 export async function fetchAndSummarize(
   auth: OpenRouterAuth,
+  model: string,
   lcscIdRaw: string,
   mpn?: string
 ): Promise<DatasheetSummary> {
@@ -281,7 +283,7 @@ export async function fetchAndSummarize(
   if (cached) return cached;
 
   // Discover the datasheet URL. Failure here is non-fatal — we fall back to a
-  // metadata-only Haiku call.
+  // metadata-only helper-model call.
   let datasheetUrl: string | null = null;
   try {
     datasheetUrl = await findDatasheetUrl(lcscId);
@@ -291,7 +293,7 @@ export async function fetchAndSummarize(
 
   const pdfBytes = datasheetUrl ? await downloadPdf(datasheetUrl) : null;
 
-  const summary = await extractViaHaiku(auth, pdfBytes, lcscId, mpn);
+  const summary = await extractViaModel(auth, model, pdfBytes, lcscId, mpn);
   summary.source_url = datasheetUrl ?? undefined;
 
   writeCache(summary);

@@ -1348,12 +1348,36 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
+      // Stuck-build salvage: the model hit the round backstop mid-work. Rather
+      // than discard everything and show the user an error, validate what it
+      // built so far — if it renders, apply it (with the usual issues badge) and
+      // tell the user it finished partway. Only fail closed (the stuck error
+      // below) when there is nothing renderable to keep. Safe because it commits
+      // only a candidate that actually produced circuit JSON.
+      let stuckSalvaged = false;
+      if (stuck && workingTsx.edited && !validatedCandidate) {
+        const candidateTsx = materializeCandidateTsx(workingTsx.tsx, importedDefs);
+        try {
+          const validation = await validateCandidateTsx({
+            candidateTsx,
+            manualEdits,
+            baselineIssues: circuitState.evalIssues,
+          });
+          if (validation.circuitJson !== undefined) {
+            validatedCandidate = validation;
+            stuckSalvaged = true;
+          }
+        } catch {
+          // No salvage possible — the stuck error below still fires.
+        }
+      }
+
       // Historical assistant turns with activities render their event trail, not
       // message.content. Move an already-streamed identical summary to the end or
       // append it once so the completion is visible without creating another
       // assistant message or duplicate text event.
       if (
-        !stuck &&
+        (!stuck || stuckSalvaged) &&
         !incompleteWorkflow &&
         validatedCandidate &&
         completionSummary
@@ -1382,10 +1406,12 @@ export const useChatStore = create<ChatStore>()(
       // in history — synthesize a short summary so it persists. Gated on !stuck so
       // the unfinished-backstop path (which doesn't apply anything) stays empty.
       const turnText =
-        !stuck && workingTsx.edited && completionSummary
+        (!stuck || stuckSalvaged) && workingTsx.edited && completionSummary
           ? completionSummary
           : fullResponse.trim() !== ""
             ? fullResponse
+          : stuckSalvaged
+            ? "Reached the step limit before finishing — applied the circuit built so far. Review the issues."
           : !stuck && workingTsx.edited
             ? "Updated the circuit."
             : "";
@@ -1415,9 +1441,10 @@ export const useChatStore = create<ChatStore>()(
       // oldest turns into the rolling notes. Doesn't block the next message.
       void foldHistoryIfNeeded(helperModel);
 
-      // Soft backstop tripped — surface that the assistant got stuck rather than
-      // apply a half-finished circuit.
-      if (stuck) {
+      // Soft backstop tripped and nothing renderable was salvaged above — only
+      // now surface the stuck error. A salvaged stuck build falls through to the
+      // normal commit path so the user gets the partial circuit + issues badge.
+      if (stuck && !stuckSalvaged) {
         const stuckMsg = `The assistant kept calling tools without finishing (stopped after ${MAX_TOOL_ROUNDS} rounds). Nothing was applied — try a more specific or smaller request.`;
         set({ error: stuckMsg });
         toast.error("Chat got stuck", { description: stuckMsg });

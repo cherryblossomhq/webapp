@@ -39,7 +39,8 @@ vi.mock("../utils/chatTransport", () => ({
     model: string,
     lcscId: string,
     mpn?: string,
-  ) => mockInvoke("fetch_datasheet", { auth, model, lcscId, mpn }),
+    traceId?: string,
+  ) => mockInvoke("fetch_datasheet", { auth, model, lcscId, mpn, traceId }),
 }));
 
 // Datasheet summaries live in localStorage; no cache entries in tests.
@@ -72,6 +73,7 @@ import {
   applyTsxStringEdit,
   capSnapshots,
   clearLegacyByokStorage,
+  ensureTraceId,
   isAiSetupError,
   PREFERRED_HELPER_MODEL,
   resolveHelperModel,
@@ -584,12 +586,41 @@ describe("chatStore", () => {
       });
       await useChatStore.getState().sendMessage("hi");
       const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
-      const args = call![1] as { auth: unknown; sessionId: string };
+      const args = call![1] as {
+        auth: unknown;
+        sessionId: string;
+        traceId: string;
+      };
       expect(args.auth).toEqual({
         token: "workos-token",
         url: "https://www.trycherryblossom.com/api/v1/chat/completions",
       });
       expect(args.sessionId).toBe(useChatStore.getState().sessionId);
+      expect(args.traceId).toBe(useChatStore.getState().traceId);
+    });
+
+    it("keeps one trace id across every round of a tool loop and across turns", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "search_jlcpcb") return "C1 | part";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+      await useChatStore.getState().sendMessage("thanks");
+
+      const traceIds = mockInvoke.mock.calls
+        .filter(([command]) => command === "chat_stream_turn")
+        .map(([, args]) => (args as { traceId: string }).traceId);
+      expect(traceIds).toHaveLength(3);
+      expect(new Set(traceIds).size).toBe(1);
+      expect(traceIds[0]).toBe(useChatStore.getState().traceId);
     });
 
     it("snapshots the selected managed model for every tool-loop round", async () => {
@@ -657,6 +688,41 @@ describe("chatStore", () => {
       const previous = useChatStore.getState().sessionId;
       useChatStore.getState().clearHistory();
       expect(useChatStore.getState().sessionId).not.toBe(previous);
+    });
+
+    it("rotates the PostHog trace id so a new conversation gets a new trace", () => {
+      const previous = useChatStore.getState().traceId;
+      useChatStore.getState().clearHistory();
+      expect(useChatStore.getState().traceId).not.toBe(previous);
+    });
+  });
+
+  describe("ensureTraceId", () => {
+    const UUID_SHAPE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    it("returns the stored trace id unchanged when it is a plain UUID", () => {
+      const current = useChatStore.getState().traceId;
+      expect(UUID_SHAPE.test(current)).toBe(true);
+      expect(ensureTraceId()).toBe(current);
+      expect(useChatStore.getState().traceId).toBe(current);
+    });
+
+    it("lazily mints and persists a UUID when the stored id is missing or malformed", () => {
+      // A conversation persisted before trace grouping existed has no traceId.
+      useChatStore.setState({ traceId: undefined as unknown as string });
+      const minted = ensureTraceId();
+      expect(minted).toMatch(UUID_SHAPE);
+      expect(useChatStore.getState().traceId).toBe(minted);
+      // Stable on subsequent requests.
+      expect(ensureTraceId()).toBe(minted);
+
+      // A corrupted value is replaced rather than sent (the proxy would ignore it).
+      useChatStore.setState({ traceId: "not-a-uuid" });
+      const replaced = ensureTraceId();
+      expect(replaced).toMatch(UUID_SHAPE);
+      expect(replaced).not.toBe("not-a-uuid");
+      expect(useChatStore.getState().traceId).toBe(replaced);
     });
   });
 
@@ -863,6 +929,7 @@ describe("chatStore", () => {
         model: "anthropic/claude-opus-4.8",
         lcscId: "C16581",
         mpn: "TP4056",
+        traceId: useChatStore.getState().traceId,
       });
 
       const turnCalls = mockInvoke.mock.calls.filter(

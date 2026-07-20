@@ -279,6 +279,29 @@ describe("OpenRouter streaming", () => {
     expect(replayMessages[0]).not.toHaveProperty("reasoning");
   });
 
+  it("sends the conversation trace id as X-Trace-Id and omits the header when absent", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+    const base = {
+      auth: managedAuth,
+      model: "anthropic/claude-opus-4.8",
+      system: [],
+      messages: [{ role: "user", content: "go" }],
+    };
+
+    await streamTurn({ ...base, traceId: "3e9f2b1c-8a4d-4f6e-9b0a-1c2d3e4f5a6b" });
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      "x-trace-id": "3e9f2b1c-8a4d-4f6e-9b0a-1c2d3e4f5a6b",
+    });
+
+    await streamTurn(base);
+    expect(fetchMock.mock.calls[1][1]?.headers).not.toHaveProperty("x-trace-id");
+  });
+
   it("surfaces mid-stream OpenRouter errors and keeps generation diagnostics", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse(
@@ -353,7 +376,7 @@ describe("OpenRouter streaming", () => {
 
 describe("non-streaming completions", () => {
   it("reads OpenRouter Chat Completions text", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         choices: [{ message: { role: "assistant", content: '{"ok":true}' } }],
       })
@@ -364,12 +387,16 @@ describe("non-streaming completions", () => {
         model: "anthropic/claude-haiku-4.5",
         maxTokens: 1024,
         messages: [{ role: "user", content: "extract" }],
+        traceId: "3e9f2b1c-8a4d-4f6e-9b0a-1c2d3e4f5a6b",
       })
     ).resolves.toBe('{"ok":true}');
     expect(fetchBody()).toMatchObject({
       model: "anthropic/claude-haiku-4.5",
       max_tokens: 1024,
       stream: false,
+    });
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      "x-trace-id": "3e9f2b1c-8a4d-4f6e-9b0a-1c2d3e4f5a6b",
     });
   });
 
@@ -470,13 +497,14 @@ describe("catalog and datasheet tool backends", () => {
       .mockRejectedValueOnce(new Error("helper unavailable"));
 
     await expect(
-      fetchDatasheet(managedAuth, "helper", " C123 ", " REG123 ")
+      fetchDatasheet(managedAuth, "helper", " C123 ", " REG123 ", "trace-uuid")
     ).resolves.toBe("rendered:C123");
     expect(datasheetMocks.fetchAndSummarize).toHaveBeenCalledWith(
       managedAuth,
       "helper",
       "C123",
-      "REG123"
+      "REG123",
+      "trace-uuid"
     );
     await expect(
       fetchDatasheet(managedAuth, "helper", "C456")

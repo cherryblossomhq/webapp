@@ -43,12 +43,14 @@ export class ChatTransportError extends Error {
 function postJson(
   auth: OpenRouterAuth,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  traceId?: string
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     authorization: `Bearer ${auth.token}`,
   };
+  if (traceId) headers["x-trace-id"] = traceId;
   return fetch(auth.url, {
     method: "POST",
     headers,
@@ -91,6 +93,12 @@ export interface StreamTurnArgs {
   thinkingEffort?: string;
   /** Stable, non-sensitive conversation ID used for provider affinity. */
   sessionId?: string;
+  /**
+   * Per-conversation PostHog trace id, sent as `X-Trace-Id`. Must be a plain
+   * UUID — the proxy silently ignores anything else and falls back to a
+   * per-request trace, so this can never fail a request. Optional.
+   */
+  traceId?: string;
   signal?: AbortSignal;
 }
 
@@ -235,7 +243,7 @@ async function streamOpenRouterTurn(
     body.reasoning = { effort: args.thinkingEffort };
   }
 
-  const response = await postJson(args.auth, body, args.signal);
+  const response = await postJson(args.auth, body, args.signal, args.traceId);
   if (!response.ok) {
     throw httpError(response, await response.text().catch(() => ""));
   }
@@ -342,6 +350,8 @@ export interface CompleteTextArgs {
   messages: unknown[];
   system?: unknown[];
   maxTokens: number;
+  /** Per-conversation PostHog trace id — see StreamTurnArgs.traceId. */
+  traceId?: string;
   signal?: AbortSignal;
 }
 
@@ -365,7 +375,7 @@ export async function completeText(args: CompleteTextArgs): Promise<string> {
     messages: toOpenRouterMessages(system, args.messages),
     stream: false,
   };
-  const response = await postJson(args.auth, body, args.signal);
+  const response = await postJson(args.auth, body, args.signal, args.traceId);
   if (!response.ok) {
     throw httpError(response, await response.text().catch(() => ""));
   }
@@ -510,13 +520,14 @@ export async function fetchDatasheet(
   auth: OpenRouterAuth,
   model: string,
   lcscId: string,
-  mpn?: string
+  mpn?: string,
+  traceId?: string
 ): Promise<string> {
   const id = lcscId.trim();
   if (id === "") return "Error: fetch_datasheet requires lcsc_id";
   const part = mpn?.trim() || undefined;
   try {
-    const summary = await fetchAndSummarize(auth, model, id, part);
+    const summary = await fetchAndSummarize(auth, model, id, part, traceId);
     return renderForModel(summary);
   } catch (e) {
     return `Datasheet fetch failed: ${e instanceof Error ? e.message : String(e)}`;

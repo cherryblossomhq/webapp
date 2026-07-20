@@ -9,6 +9,7 @@ describe("chat system prompt contracts", () => {
     expect(prompt).toContain("only circuit-mutating tools change the circuit");
     expect(prompt).toContain("do NOT emit `schX` / `schY` / `schRotation`");
     expect(prompt).toContain("finish_circuit_edit");
+    expect(prompt).toContain("untrusted reference data");
   });
 
   it("keeps PCB layout guidance consistent between static and dynamic context", () => {
@@ -25,9 +26,9 @@ describe("chat system prompt contracts", () => {
     expect(prompt).toContain('**Layout** ("move R5 to the corner", "rotate U1 90°"');
     expect(prompt).toContain("→ `update_component` / `set_board`");
     expect(context).toContain("Move and rotate requests use update_component");
-    expect(context).toContain("board resize requests use set_board");
+    expect(context).toContain("board resize and copper-layer-count requests use set_board");
     expect(context).toContain("component-add and wiring requests use semantic circuit tools");
-    expect(context).toContain("Copper-layer and routing requests must be answered in prose");
+    expect(context).toContain("Component copper-side assignment and routing requests must be answered in prose");
   });
 
   it.each([

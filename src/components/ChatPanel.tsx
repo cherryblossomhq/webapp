@@ -549,10 +549,9 @@ function EmptyState({
   );
 }
 
-// Shown in place of the composer when the active AI provider isn't set up yet
-// (no API key saved, or account mode while signed out). Rather than ambushing
-// the user with an auto-opening modal on their first send, we present a calm
-// inline CTA that takes them to the right Settings section.
+// Shown in place of the composer when the managed account/model is unavailable.
+// Rather than ambushing the user with an auto-opening modal on their first send,
+// present a calm inline CTA that takes them to the account settings section.
 function AiSetupCta({
   message,
   onOpenSettings,

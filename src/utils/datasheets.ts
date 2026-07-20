@@ -175,7 +175,8 @@ async function extractViaModel(
   model: string,
   pdfBytes: Uint8Array,
   lcscId: string,
-  mpn?: string
+  mpn?: string,
+  traceId?: string
 ): Promise<DatasheetSummary> {
   const extractionPrompt =
     `Extract a structured summary of the datasheet for JLCPCB part ${lcscId} ` +
@@ -211,6 +212,7 @@ async function extractViaModel(
     model,
     maxTokens: 1800,
     messages: [{ role: "user", content }],
+    traceId,
   });
   if (!answer) throw new Error("Datasheet helper returned no text");
   return parseDatasheetExtraction(
@@ -400,7 +402,8 @@ export async function fetchAndSummarize(
   auth: OpenRouterAuth,
   model: string,
   lcscIdRaw: string,
-  mpn?: string
+  mpn?: string,
+  traceId?: string
 ): Promise<DatasheetSummary> {
   const lcscId = normalizeLcsc(lcscIdRaw);
 
@@ -419,7 +422,7 @@ export async function fetchAndSummarize(
   const pdfBytes = datasheetUrl ? await downloadPdf(datasheetUrl) : null;
 
   const summary = pdfBytes
-    ? await extractViaModel(auth, model, pdfBytes, lcscId, mpn)
+    ? await extractViaModel(auth, model, pdfBytes, lcscId, mpn, traceId)
     : unavailableSummary(lcscId, mpn);
   summary.source_url = datasheetUrl ?? undefined;
 

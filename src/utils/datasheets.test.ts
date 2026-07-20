@@ -331,7 +331,13 @@ describe("datasheet summaries", () => {
       ],
     }));
 
-    const summary = await fetchAndSummarize(auth, "helper-model", "c123", "REG123");
+    const summary = await fetchAndSummarize(
+      auth,
+      "helper-model",
+      "c123",
+      "REG123",
+      "trace-uuid"
+    );
 
     expect(summary).toMatchObject({
       lcsc_id: "C123",
@@ -350,6 +356,7 @@ describe("datasheet summaries", () => {
       auth,
       model: "helper-model",
       maxTokens: 1800,
+      traceId: "trace-uuid",
     });
     expect(completionArgs.messages[0].content[0]).toMatchObject({
       type: "file",

@@ -53,7 +53,7 @@ const GROUNDED_JSON = JSON.stringify({
     },
     {
       field: "pinout",
-      value: "Pin configuration table",
+      value: "1 TEMP, 2 PROG, 3 GND",
       page: 2,
       confidence: "high",
     },
@@ -128,6 +128,66 @@ describe("datasheet evidence", () => {
     expect(summary.iout_max).toBeUndefined();
     expect(summary.gotchas).toBeUndefined();
     expect(summary.evidence).toHaveLength(4);
+  });
+
+  it("rejects a claim when same-field evidence contradicts its value", () => {
+    const summary = parseDatasheetExtraction(
+      JSON.stringify({
+        vin_max: "5.5 V",
+        topology: "linear charger",
+        evidence: [
+          {
+            field: "vin_max",
+            value: "12 V",
+            page: 3,
+            confidence: "high",
+          },
+          {
+            field: "topology",
+            value: "switching regulator",
+            page: 1,
+            confidence: "high",
+          },
+        ],
+      }),
+      "C16581",
+      "TP4056",
+      "datasheet_pdf"
+    );
+
+    expect(summary.vin_max).toBeUndefined();
+    expect(summary.topology).toBeUndefined();
+    expect(summary.summary_line).toBe("datasheet summary cached");
+  });
+
+  it("retains the cited evidence value when normalized values agree", () => {
+    const summary = parseDatasheetExtraction(
+      JSON.stringify({
+        vin_max: " 5.5V ",
+        topology: "LINEAR   CHARGER",
+        evidence: [
+          {
+            field: "vin_max",
+            value: "5.5 V",
+            page: 3,
+            confidence: "high",
+          },
+          {
+            field: "topology",
+            value: "linear charger",
+            section: "Features",
+            confidence: "medium",
+          },
+        ],
+      }),
+      "C16581",
+      "TP4056",
+      "datasheet_pdf"
+    );
+
+    expect(summary.vin_max).toBe("5.5 V");
+    expect(summary.topology).toBe("linear charger");
+    expect(summary.summary_line).toBe("linear charger · V_in up to 5.5 V");
   });
 
   it("discards every claimed specification when no PDF was available", () => {

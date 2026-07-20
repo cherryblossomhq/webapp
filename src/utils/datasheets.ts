@@ -269,7 +269,11 @@ export function parseDatasheetExtraction(
 
   const s = (key: string): string | undefined => {
     const v = parsed[key];
-    return typeof v === "string" && v !== "" && v !== "null" ? v : undefined;
+    if (typeof v !== "string") return undefined;
+    const trimmed = v.trim();
+    return trimmed !== "" && trimmed.toLowerCase() !== "null"
+      ? trimmed
+      : undefined;
   };
 
   const evidence: DatasheetEvidence[] = [];
@@ -302,8 +306,25 @@ export function parseDatasheetExtraction(
     }
   }
 
-  const grounded = (key: string): string | undefined =>
-    evidence.some((item) => item.field === key) ? s(key) : undefined;
+  const normalizeEvidenceValue = (value: string): string =>
+    value
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[µμ]/g, "u")
+      .replace(/[‐‑‒–—−]/g, "-")
+      .replace(/\s+/g, "");
+
+  const grounded = (key: string): string | undefined => {
+    const claim = s(key);
+    if (!claim) return undefined;
+    const normalizedClaim = normalizeEvidenceValue(claim);
+    const matchingEvidence = evidence.find(
+      (item) =>
+        item.field === key &&
+        normalizeEvidenceValue(item.value) === normalizedClaim
+    );
+    return matchingEvidence?.value;
+  };
 
   const topology = grounded("topology");
   const vinMin = grounded("vin_min");

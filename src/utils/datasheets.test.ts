@@ -82,7 +82,13 @@ describe("datasheet summaries", () => {
       'Here is the result: {"vin_min":"2.7 V","vin_max":"5.5 V","iout_max":"1 A","topology":"LDO","pinout":"1=IN, 2=GND, 3=OUT","gotchas":null}'
     );
 
-    const summary = await fetchAndSummarize(auth, "helper-model", "c123", "REG123");
+    const summary = await fetchAndSummarize(
+      auth,
+      "helper-model",
+      "c123",
+      "REG123",
+      "trace-uuid"
+    );
 
     expect(summary).toMatchObject({
       lcsc_id: "C123",
@@ -99,6 +105,7 @@ describe("datasheet summaries", () => {
       auth,
       model: "helper-model",
       maxTokens: 1024,
+      traceId: "trace-uuid",
     });
     expect(completionArgs.messages[0].content[0]).toMatchObject({
       type: "file",

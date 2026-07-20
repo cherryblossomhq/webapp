@@ -184,6 +184,12 @@ interface ChatStore {
   // Stable, random routing key for OpenRouter provider/cache affinity.
   // It contains no user data and rotates whenever chat history is cleared.
   sessionId: string;
+  // Per-conversation PostHog trace id, sent as `X-Trace-Id` on every managed
+  // completions request so the whole conversation (tool rounds, history folds,
+  // datasheet helper calls) groups into one trace. Persisted with the history
+  // and rotated on clearHistory, same lifecycle as sessionId — but kept
+  // separate so observability grouping never couples to provider routing.
+  traceId: string;
 
   // ─── Resizable chat rail ─────────────────────────────────────────────────
   // Chat replaces the right rail while open (to see Properties, close chat).
@@ -256,6 +262,23 @@ const AI_SETUP_ERRORS = new Set(["no_account", "no_managed_model"]);
 
 export function isAiSetupError(error: string | null): boolean {
   return error !== null && AI_SETUP_ERRORS.has(error);
+}
+
+// Plain 8-4-4-4-12 UUID — the only X-Trace-Id shape the proxy accepts. Anything
+// else is silently ignored server-side, so a malformed persisted value is
+// replaced rather than sent.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Resolve the conversation's trace id, lazily minting (and persisting, via the
+// setState → persist write) one for conversations saved before trace grouping
+// existed or whose stored value isn't a plain UUID.
+export function ensureTraceId(): string {
+  const { traceId } = useChatStore.getState();
+  if (typeof traceId === "string" && UUID_RE.test(traceId)) return traceId;
+  const fresh = crypto.randomUUID();
+  useChatStore.setState({ traceId: fresh });
+  return fresh;
 }
 
 // Resolve the credential for the next OpenRouter call. Read fresh at every call
@@ -431,6 +454,7 @@ async function dispatchTool(
   importedDefs: Map<string, { rawTsx: string }>,
   auth: OpenRouterAuth,
   helperModel: string,
+  traceId: string,
   pushActivity: (
     kind: ChatActivity["kind"],
     detail: string,
@@ -510,7 +534,7 @@ async function dispatchTool(
       pushActivity("datasheet", lcsc || mpn);
       return toolResult(
         tc.id,
-        await fetchDatasheet(auth, helperModel, lcsc, mpn || undefined),
+        await fetchDatasheet(auth, helperModel, lcsc, mpn || undefined, traceId),
       );
     }
     case "import_component": {
@@ -685,6 +709,7 @@ async function foldHistoryIfNeeded(helperModel: string): Promise<void> {
       system: [{ type: "text", text: SUMMARY_SYSTEM_PROMPT }],
       messages: [{ role: "user", content: prompt }],
       sessionId: useChatStore.getState().sessionId,
+      traceId: ensureTraceId(),
     });
     const notes = turn.text;
 
@@ -717,6 +742,7 @@ export const useChatStore = create<ChatStore>()(
   sessionNotes: null,
   summarizedCount: 0,
   sessionId: crypto.randomUUID(),
+  traceId: crypto.randomUUID(),
   chatWidth: CHAT_DEFAULT_WIDTH,
   chatResizing: false,
 
@@ -748,6 +774,10 @@ export const useChatStore = create<ChatStore>()(
       account?.plan.allowedModels ?? [],
       designModel,
     );
+    // Resolved once per send so every request this turn makes — each tool
+    // round, plus any datasheet helper call — lands in the same trace, even if
+    // the conversation is cleared mid-flight.
+    const traceId = ensureTraceId();
 
     const trimmedContent =
       content.length > MAX_USER_MESSAGE_LENGTH
@@ -932,6 +962,7 @@ export const useChatStore = create<ChatStore>()(
               tools: CHAT_TOOLS,
               thinkingEffort: DESIGN_EFFORT,
               sessionId: get().sessionId,
+              traceId,
             },
             streamCallbacks
           );
@@ -946,6 +977,7 @@ export const useChatStore = create<ChatStore>()(
                   importedDefs,
                   auth,
                   helperModel,
+                  traceId,
                   pushActivity,
                   workingTsx,
                 ).catch((e) =>
@@ -1193,6 +1225,7 @@ export const useChatStore = create<ChatStore>()(
       sessionNotes: null,
       summarizedCount: 0,
       sessionId: crypto.randomUUID(),
+      traceId: crypto.randomUUID(),
     }),
   clearError: () => set({ error: null }),
     }),
@@ -1207,6 +1240,7 @@ export const useChatStore = create<ChatStore>()(
         sessionNotes: state.sessionNotes,
         summarizedCount: state.summarizedCount,
         sessionId: state.sessionId,
+        traceId: state.traceId,
         chatWidth: state.chatWidth,
       }),
     }

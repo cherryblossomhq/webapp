@@ -6,6 +6,10 @@ interface Props {
   children: ReactNode;
   // Human label for the panel — shown in the fallback UI ("Properties panel crashed")
   label: string;
+  // Most render errors can retry in place. Failed module imports are cached by
+  // the browser, so callers can replace that no-op reset with a full reload.
+  onRetry?: () => void;
+  retryLabel?: string;
 }
 
 interface State {
@@ -13,7 +17,7 @@ interface State {
 }
 
 // Scoped error boundary so a render error in one panel doesn't blank the whole
-// app. The user sees a small inline crash card and can retry without reloading.
+// app. The user sees a small inline crash card with the appropriate recovery.
 export class PanelErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
 
@@ -27,6 +31,14 @@ export class PanelErrorBoundary extends Component<Props, State> {
 
   reset = (): void => {
     this.setState({ error: null });
+  };
+
+  retry = (): void => {
+    if (this.props.onRetry) {
+      this.props.onRetry();
+      return;
+    }
+    this.reset();
   };
 
   render() {
@@ -45,10 +57,10 @@ export class PanelErrorBoundary extends Component<Props, State> {
             </p>
             <button
               type="button"
-              onClick={this.reset}
+              onClick={this.retry}
               className="px-3 py-1 text-[11px] font-medium rounded-md border border-border bg-background hover:bg-accent transition-colors"
             >
-              Retry
+              {this.props.retryLabel ?? "Retry"}
             </button>
           </div>
         </div>

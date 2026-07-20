@@ -10,7 +10,7 @@ import {
 } from "./ProjectStore";
 import { connectionId } from "../shared/connectionId";
 
-const SAMPLE_TSX = `circuit.add(
+const SAMPLE_TSX = `export default () => (
   <board width="50mm" height="50mm">
     <resistor name="R1" resistance="10k" />
     <capacitor name="C1" capacitance="100nF" />
@@ -66,10 +66,11 @@ describe("loadProject", () => {
     expect(r.project.metadata).toEqual({ title: "Untitled Circuit" });
   });
 
-  it("normalizes a version-less object with tsxCode to v1", () => {
-    const r = loadProject({ tsxCode: SAMPLE_TSX });
-    expect(r.project.version).toBe(1);
-    expect(r.project.tsxCode).toBe(SAMPLE_TSX);
+  it("rejects missing and unsupported project versions", () => {
+    expect(() => loadProject({ tsxCode: SAMPLE_TSX })).toThrow(ProjectParseError);
+    expect(() =>
+      loadProject({ version: 2, tsxCode: SAMPLE_TSX })
+    ).toThrow("Unsupported project version: 2");
   });
 
   it("drops manualEdits entries with malformed keys + records a warning", () => {
@@ -220,7 +221,7 @@ describe("parseProjectJson", () => {
 
 describe("pruneOrphanEdits", () => {
   it("CRITICAL: drops entries whose key is no longer in the live tsx", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" />
   </board>
@@ -236,7 +237,7 @@ describe("pruneOrphanEdits", () => {
   });
 
   it("returns an empty pruned[] when nothing changes", () => {
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" />
   </board>
@@ -250,7 +251,7 @@ describe("pruneOrphanEdits", () => {
   it("keeps connection waypoints whose connId is live, prunes dead ones", () => {
     // A pin→pin connection authored on R1 → its content-derived connId must be
     // treated as live even though it isn't a tsx element key.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" connections={{ pin1: "C1.pin1" }} />
     <capacitor key="c_keep22" name="C1" />
@@ -283,7 +284,7 @@ describe("pruneOrphanEdits", () => {
     // and no element key — liveness comes solely from the caller's co-netted-pad
     // set, derived from the circuit-json. If the route's key is in that set, the
     // copper survives save/reload.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" connections={{ pin1: "net.VCC" }} />
     <resistor key="r_keep22" name="R2" connections={{ pin1: "net.VCC" }} />
@@ -307,7 +308,7 @@ describe("pruneOrphanEdits", () => {
     // neither liveKeys, liveConnIds, nor the co-netted-pad set — dead copper
     // that would otherwise persist and export to fab.
     const orphanKey = connectionId("R1.pin1", "R2.pin1");
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" />
     <resistor key="r_keep22" name="R2" />
@@ -329,7 +330,7 @@ describe("pruneOrphanEdits", () => {
   it("keeps a PCB route for a direct pin→pin connection via liveConnIds alone", () => {
     // A direct pin→pin connection's id equals the route key, so liveConnIds
     // keeps it even with an empty co-netted-pad set.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" connections={{ pin1: "C1.pin1" }} />
     <capacitor key="c_keep22" name="C1" />
@@ -351,7 +352,7 @@ describe("pruneOrphanEdits", () => {
     // `pcbtrace_<pcb_trace_id>` (evalTraceEndpoints). liveRouteConnIds includes
     // that key while the trace exists in the circuit-json, so the deletion
     // survives save/reload; once the trace is gone, the marker is orphaned.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" />
   </board>
@@ -369,7 +370,7 @@ describe("pruneOrphanEdits", () => {
   it("keeps every route when liveRouteConnIds is null/omitted (no eval — never guess)", () => {
     // Before the first eval the caller has no circuit-json, so route liveness is
     // unknown. We must keep all routes rather than risk deleting drawn copper.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
   <board>
     <resistor key="r_keep11" name="R1" />
     <resistor key="r_keep22" name="R2" />
@@ -390,7 +391,7 @@ describe("pruneOrphanEdits", () => {
     const orphanKey = connectionId("R1.pin1", "R2.pin1");
     const edits = { [orphanKey]: ROUTE };
     const { manualEdits, pruned } = pruneOrphanEdits(
-      "circuit.add( <not really tsx ;;;;",
+      "export default () => ( <not really tsx ;;;;",
       edits,
       new Set()
     );
@@ -404,7 +405,7 @@ describe("pruneOrphanEdits", () => {
     // (or autosaving) while the user was mid-keystroke would silently nuke
     // the entire manualEdits map. Fix: collectKeys returns null on parse
     // failure; pruneOrphanEdits returns the input unchanged with pruned=[].
-    const brokenTsx = "circuit.add( <not really tsx ;;;;";
+    const brokenTsx = "export default () => ( <not really tsx ;;;;";
     const edits = {
       r_keep11: { schematic: { x: 1 } },
       c_keep22: { pcb: { x: 10, y: 20 } },
@@ -429,7 +430,7 @@ describe("summarizeManualEdits", () => {
     });
     expect(summary).toContain("r_aaa111");
     expect(summary).toContain("schematic(12.7, -5.0, 90deg)");
-    expect(summary).toContain("pcb(10.0, 4.0, 0deg, top)");
+    expect(summary).toContain("pcb(10.0, 4.0, top)");
   });
 });
 

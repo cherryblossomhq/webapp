@@ -421,20 +421,20 @@ export function normalizePackageToCatalog(pkg: string): string | null {
   if (p === "") return null;
   if (CANONICAL_FOOTPRINTS.includes(p)) return p;
 
+  const passive = p.match(/^(0402|0603|0805|1206)(?:[_\s-]|$)/)?.[1];
+  if (passive) return passive;
+
   // Common JLCPCB → catalog rewrites.
   const normalized = p
-    .replace("0402_", "0402")
-    .replace("0603_", "0603")
-    .replace("0805_", "0805")
-    .replace("1206_", "1206")
     .replace(/ /g, "")
     .replace(/-/g, "_");
   if (CANONICAL_FOOTPRINTS.includes(normalized)) return normalized;
 
   // SOT-23-5, SOT-23-6 variants.
-  if (normalized.startsWith("sot23")) {
+  const compact = normalized.replace(/_/g, "");
+  if (compact.startsWith("sot23")) {
     for (const variant of ["sot23_5", "sot23_6", "sot23"]) {
-      if (normalized.includes(variant) || normalized.includes(variant.replace(/_/g, ""))) {
+      if (compact.includes(variant.replace(/_/g, ""))) {
         return variant;
       }
     }

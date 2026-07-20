@@ -134,8 +134,8 @@ interface EditorStore {
   // evaluator once an eval lands: the position is baked into the tsx (the real
   // source of truth), so the sidecar override has done its job as a drag preview
   // and is dropped to avoid masking later tsx changes (AI edits, undo, code tab).
-  // Rotation is tsx-only (pcbRotation) — any legacy sidecar rotation field is
-  // stripped on reconcile. Route / width / layer / mirror_x are left alone.
+  // Rotation is tsx-only (pcbRotation). Route / width / layer / mirror_x are
+  // left alone when the optimistic x/y placement is reconciled.
   reconcilePcbPlacements: (
     evalById: ReadonlyMap<StableKey, { x: number; y: number; rotation: number }>
   ) => void;
@@ -407,15 +407,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
 
       const target = evalById.get(key);
-      let workingPcb: PcbEdit = pcb;
-      if (pcb.rotation !== undefined) {
-        changed = true;
-        workingPcb = { ...pcb };
-        delete workingPcb.rotation;
-      }
-
-      const hasXY =
-        workingPcb.x !== undefined || workingPcb.y !== undefined;
+      const hasXY = pcb.x !== undefined || pcb.y !== undefined;
 
       const commitEntry = (pcbOut: PcbEdit | undefined) => {
         const nextEntry: ManualEditEntry = { ...entry };
@@ -425,28 +417,23 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       };
 
       if (!hasXY || !target) {
-        if (workingPcb !== pcb) commitEntry(workingPcb);
-        else next[key] = entry;
+        next[key] = entry;
         continue;
       }
 
       const xMatch =
-        workingPcb.x === undefined || Math.abs(workingPcb.x - target.x) < EPS;
+        pcb.x === undefined || Math.abs(pcb.x - target.x) < EPS;
       const yMatch =
-        workingPcb.y === undefined || Math.abs(workingPcb.y - target.y) < EPS;
+        pcb.y === undefined || Math.abs(pcb.y - target.y) < EPS;
       if (!xMatch || !yMatch) {
-        if (workingPcb !== pcb) {
-          changed = true;
-          commitEntry(workingPcb);
-        } else next[key] = entry;
+        next[key] = entry;
         continue;
       }
 
       changed = true;
-      const restPcb: PcbEdit = { ...workingPcb };
+      const restPcb: PcbEdit = { ...pcb };
       delete restPcb.x;
       delete restPcb.y;
-      delete restPcb.rotation;
       commitEntry(Object.keys(restPcb).length > 0 ? restPcb : undefined);
     }
     if (changed) set({ manualEdits: next });

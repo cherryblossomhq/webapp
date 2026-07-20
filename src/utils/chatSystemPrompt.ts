@@ -466,7 +466,7 @@ function describeView(view: ActiveView): string {
     case "schematic":
       return "Schematic viewer (read-only, auto-laid-out) — use semantic circuit tools for structural requests, but never set schematic positions (schX/schY/schRotation).";
     case "pcb":
-      return "PCB editor — physical layout. Layout-only requests (move/rotate/swap layer/route) must be answered in prose. Component-add and wiring requests use semantic circuit tools.";
+      return "PCB editor — physical layout. Move and rotate requests use update_component; board resize requests use set_board; component-add and wiring requests use semantic circuit tools. Copper-layer and routing requests must be answered in prose because that geometry lives in the editor sidecar.";
     case "cad":
       return "3D / CAD view — read-only. Treat requests as questions unless the user explicitly asks to edit the design.";
     case "bom":

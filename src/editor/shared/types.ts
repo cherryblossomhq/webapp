@@ -44,8 +44,6 @@ export interface PcbEdit {
   // ─── Component placement ────────────────────────────────────────────────
   x?: number;
   y?: number;
-  /** @deprecated Rotation lives in tsx `pcbRotation` only — not read by pcbModel. */
-  rotation?: number;
   layer?: LayerId;
   mirror_x?: boolean;
 

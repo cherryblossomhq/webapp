@@ -14,7 +14,7 @@ import type { ManualEditsMap } from "@/editor/shared/types";
 // source_trace connecting R1.pin1 ↔ R2.pin1. There is no <trace> in the tsx —
 // PCB route geometry lives only in the sidecar, keyed by the connection id of
 // its endpoint pads (see PcbCanvas.commitRoute / pcbModel Phase 5).
-const TSX_FIXTURE = `circuit.add(
+const TSX_FIXTURE = `export default () => (
   <board width="10mm" height="10mm">
     <resistor key="r_abc123" name="R1" resistance="1k" footprint="0402" pcbX={0} pcbY={0} />
     <resistor key="r_xyz789" name="R2" resistance="1k" footprint="0402" pcbX={3} pcbY={0} />
@@ -302,7 +302,7 @@ describe("buildPcbModel", () => {
 
   it("treats a component WITHOUT pcbX/pcbY as auto-placed (not manuallyPlaced)", () => {
     // No pcbX/pcbY → the part is auto-laid-out, so it renders faded.
-    const tsx = `circuit.add(
+    const tsx = `export default () => (
       <board width="10mm" height="10mm">
         <resistor key="r_abc123" name="R1" resistance="1k" footprint="0402" />
       </board>
@@ -337,19 +337,6 @@ describe("buildPcbModel", () => {
     expect(r1!.rotationDeg).toBe(0);
     expect(r1!.originRotationDeg).toBe(0);
     expect(r1!.manuallyPlaced).toBe(true);
-  });
-
-  it("ignores sidecar rotation — rotation comes from circuit-json only", () => {
-    const edits: ManualEditsMap = {
-      r_abc123: { pcb: { rotation: 90 } },
-    };
-    const m = buildPcbModel(fakePcbJson() as never, TSX_FIXTURE, edits);
-    const r1 = m.components.find((c) => c.name === "R1");
-    expect(r1!.rotationDeg).toBe(0);
-    const r1Pads = m.pads.filter((p) => p.pcbComponentId === "pc_r1");
-    for (const p of r1Pads) {
-      expect(p.rotationDeg).toBe(0);
-    }
   });
 
   it("does not double-rotate pads once eval lands the same rotation", () => {
@@ -716,7 +703,7 @@ describe("buildPcbModel", () => {
   // A power/ground net: each pad is wired pad→net (never pad→pad), so there's
   // no 2-port source_trace. The ratsnest must still group the pads by net and
   // draw the MST. Three single-pad parts (R1/R2/R3) joined to one net "GND".
-  const NET_TSX = `circuit.add(
+  const NET_TSX = `export default () => (
     <board width="20mm" height="10mm">
       <resistor key="r_a" name="R1" resistance="1k" footprint="0402" pcbX={0} pcbY={0} />
       <resistor key="r_b" name="R2" resistance="1k" footprint="0402" pcbX={3} pcbY={0} />
@@ -917,19 +904,6 @@ describe("buildPcbModel", () => {
     expect(r2Pads[0].x).toBeCloseTo(2.6, 4);
   });
 
-  it("does not rotate pads via sidecar rotation override", () => {
-    const edits: ManualEditsMap = {
-      r_abc123: { pcb: { rotation: 90 } },
-    };
-    const m = buildPcbModel(fakePcbJson() as never, TSX_FIXTURE, edits);
-    const baseline = buildPcbModel(fakePcbJson() as never, TSX_FIXTURE, {});
-    const r1Pads = m.pads.filter((p) => p.componentKey === "r_abc123");
-    const basePads = baseline.pads.filter((p) => p.componentKey === "r_abc123");
-    expect(r1Pads.map((p) => ({ x: p.x, y: p.y, r: p.rotationDeg }))).toEqual(
-      basePads.map((p) => ({ x: p.x, y: p.y, r: p.rotationDeg }))
-    );
-  });
-
   it("translates pads with sidecar x/y only", () => {
     const edits: ManualEditsMap = {
       r_abc123: { pcb: { x: 10, y: 0 } },
@@ -957,7 +931,7 @@ describe("buildPcbModel", () => {
   });
 
   it("returns silently when tsx parse fails (kept rendering)", () => {
-    const badTsx = "circuit.add( <board <<<INVALID";
+    const badTsx = "export default () => ( <board <<<INVALID";
     const m = buildPcbModel(fakePcbJson() as never, badTsx, {});
     // The model still produces components — just keyed by their
     // pcb_component_id since the tsx name resolution failed.

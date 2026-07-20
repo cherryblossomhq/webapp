@@ -31,6 +31,7 @@ import {
   snapChatWidth,
   CHAT_DEFAULT_WIDTH,
 } from "@/lib/clampChatWidth";
+import { onBeforeAppReload } from "@/utils/appReload";
 
 const AUTOSAVE_KEY = "cherryblossom_autosave";
 const MAX_FILENAME_LENGTH = 80;
@@ -78,6 +79,35 @@ export function EditorView() {
   const [showConfirmNew, setShowConfirmNew] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
 
+  // Notify the user only once per session about background autosave failures so
+  // we don't spam them every keystroke when storage is genuinely full.
+  const autosaveFailedRef = useRef(false);
+
+  const persistProject = useCallback(
+    (forReload: boolean): boolean => {
+      try {
+        const data = getProjectData();
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
+        autosaveFailedRef.current = false;
+        return true;
+      } catch (err) {
+        console.error("[autosave] write failed:", err);
+        if (forReload) {
+          toast.error("Reload paused to protect your work", {
+            description: "Save the project to a file, then reload the app.",
+          });
+        } else if (!autosaveFailedRef.current) {
+          autosaveFailedRef.current = true;
+          toast.error("Autosave failed", {
+            description: "Storage is unavailable or full. Save the file with Ctrl+S.",
+          });
+        }
+        return false;
+      }
+    },
+    [getProjectData],
+  );
+
   useEffect(() => {
     let saved: string | null;
     try {
@@ -109,31 +139,35 @@ export function EditorView() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Notify the user only once per session about autosave failures so we don't
-  // spam them every keystroke when storage is genuinely full.
-  const autosaveFailedRef = useRef(false);
-
   useEffect(() => {
     const timer = setTimeout(() => {
-      try {
-        const data = getProjectData();
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
-        autosaveFailedRef.current = false;
-      } catch (err) {
-        console.error("[autosave] write failed:", err);
-        if (!autosaveFailedRef.current) {
-          autosaveFailedRef.current = true;
-          toast.error("Autosave failed", {
-            description:
-              err instanceof DOMException && err.name === "QuotaExceededError"
-                ? "Storage is full. Save the file with Ctrl+S to keep your work."
-                : "Save the file with Ctrl+S to keep your work.",
-          });
-        }
-      }
+      persistProject(false);
     }, 1000);
     return () => clearTimeout(timer);
-  }, [tsxCode, metadata, manualEdits, getProjectData]);
+  }, [tsxCode, metadata, manualEdits, persistProject]);
+
+  useEffect(() =>
+    onBeforeAppReload((event) => {
+      const projectSaved = persistProject(true);
+      const chatStreaming = useChatStore.getState().isStreaming;
+      const routeInProgress = useEditorStore.getState().pcbRouteDraft !== null;
+      const composerHasDraft = Array.from(
+        document.querySelectorAll<HTMLTextAreaElement>("textarea"),
+      ).some((textarea) => textarea.value.trim().length > 0);
+
+      if (!projectSaved || chatStreaming || routeInProgress || composerHasDraft) {
+        event.preventDefault();
+      }
+      if (chatStreaming || routeInProgress || composerHasDraft) {
+        const description = chatStreaming
+          ? "Wait for the current AI edit to finish, then reload the app."
+          : routeInProgress
+            ? "Finish or cancel the PCB route, then reload the app."
+            : "Send or clear the message draft, then reload the app.";
+        toast.info("Reload paused to protect work in progress", { description });
+      }
+    }),
+  [persistProject]);
 
   // Sync the WebView + native window title bar with the open project's name.
   useWindowTitle(metadata.title);
@@ -243,7 +277,7 @@ export function EditorView() {
       if (ctrl && e.key === "," && !e.shiftKey) {
         e.preventDefault();
         // No-op if Settings (or another modal) is already open: re-firing would
-        // snap the active tab back to "ai", and we don't want to stack dialogs.
+        // snap the active tab back to "account", and we don't want to stack dialogs.
         if (
           useSettingsStore.getState().open ||
           showHelp ||

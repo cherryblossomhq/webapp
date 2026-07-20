@@ -5,6 +5,7 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { EditorView } from "@/views/EditorView";
 import { useAuthStore } from "@/store/authStore";
 import { useManagedAccountLifecycle } from "@/hooks/useManagedAccountLifecycle";
+import { PostHogIdentity } from "@/components/PostHogIdentity";
 
 // Top-level error boundary to catch render crashes
 class ErrorBoundary extends Component<
@@ -45,6 +46,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      <PostHogIdentity />
       <ThemeProvider>
         <TooltipProvider>
           <EditorView />

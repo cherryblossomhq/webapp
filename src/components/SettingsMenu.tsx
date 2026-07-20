@@ -4,8 +4,8 @@ import { useSettingsStore } from "@/store/settingsStore";
 import { Settings } from "lucide-react";
 
 /**
- * Settings gear in the toolbar. Opens the full Settings dialog (AI / Account /
- * Updates) — see SettingsDialog. Open state lives in settingsStore so the gear,
+ * Settings gear in the toolbar. Opens the full Settings dialog (Account /
+ * Advanced) — see SettingsDialog. Open state lives in settingsStore so the gear,
  * the Cmd/Ctrl+, shortcut, and the chat's "Open Settings" CTA share one source.
  */
 export function SettingsMenu() {

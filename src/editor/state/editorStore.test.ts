@@ -195,16 +195,9 @@ describe("editorStore — reconcilePcbPlacements", () => {
     expect(pcb?.width).toBe(0.25);
   });
 
-  it("strips legacy sidecar-only rotation on reconcile", () => {
-    get().setPcbEdit("r_aaa111", { rotation: 360 });
-    get().reconcilePcbPlacements(evalMap({ r_aaa111: { x: 0, y: 0, rotation: 0 } }));
-    expect(get().manualEdits.r_aaa111).toBeUndefined();
-  });
-
   it("ignores keys with no eval entry (component errored out of the build)", () => {
     get().setPcbEdit("r_aaa111", { x: 10, y: 20 });
     get().reconcilePcbPlacements(evalMap({}));
     expect(get().manualEdits.r_aaa111?.pcb).toEqual({ x: 10, y: 20 });
   });
 });
-

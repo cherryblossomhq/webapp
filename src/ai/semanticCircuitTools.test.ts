@@ -107,6 +107,46 @@ describe("semanticCircuitTools", () => {
     expect(r2?.props.footprint).toBeUndefined();
   });
 
+  it("renames component selectors in member expressions without renaming nets", () => {
+    const tsx = `export default () => (
+      <board width="50mm" height="40mm">
+        <chip key="u_keep01" name="U2" pinLabels={{ pin1: "SDA", pin2: "RESET" }} />
+        <chip
+          key="u_keep02"
+          name="U1"
+          pinLabels={{ pin1: "SDA", pin2: "RESET", pin3: "IRQ" }}
+          connections={{
+            SDA: sel.U2.SDA,
+            RESET: "U2.RESET",
+            IRQ: [sel.U2.IRQ, "U2.GPIO", "net.U2"],
+          }}
+        />
+      </board>
+    )`;
+
+    const result = applySemanticCircuitTool(tsx, "update_component", {
+      name: "U2",
+      new_name: "U3",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      extractComponents(result.tsx).find((component) => component.name === "U3")
+        ?.props.key
+    ).toBe("u_keep01");
+    expect(extractConnections(result.tsx)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ owner: "U1", pinLabel: "SDA", target: "U3.SDA" }),
+        expect.objectContaining({ owner: "U1", pinLabel: "RESET", target: "U3.RESET" }),
+        expect.objectContaining({ owner: "U1", pinLabel: "IRQ", target: "U3.IRQ" }),
+        expect.objectContaining({ owner: "U1", pinLabel: "IRQ", target: "U3.GPIO" }),
+        expect.objectContaining({ owner: "U1", pinLabel: "IRQ", target: "net.U2" }),
+      ])
+    );
+    expect(result.tsx).toContain("sel.U3.SDA");
+    expect(result.tsx).not.toContain("sel.U2.SDA");
+  });
+
   it("authors and removes normalized connectivity", () => {
     const connected = applySemanticCircuitTool(BASE, "connect_pins", {
       owner: "R1",
@@ -197,6 +237,42 @@ describe("semanticCircuitTools", () => {
     expect(removed.ok).toBe(true);
     expect(extractComponents(removed.tsx).map((component) => component.name)).toEqual(["R1"]);
     expect(extractConnections(removed.tsx)).toHaveLength(0);
+  });
+
+  it("prunes removed components from fan-out arrays and preserves other targets", () => {
+    const tsx = `export default () => (
+      <board width="50mm" height="40mm">
+        <chip key="u_keep01" name="U2" pinLabels={{ pin1: "A", pin2: "B" }} />
+        <resistor
+          key="r_keep01"
+          name="R1"
+          connections={{
+            pin1: ["C1.pin1", sel.U2.A, "net.VCC"],
+            pin2: [sel.U2.B],
+          }}
+        />
+        <resistor key="r_keep02" name="R2" connections={{ pin1: ["U2.A"] }} />
+        <capacitor key="c_keep01" name="C1" />
+      </board>
+    )`;
+
+    const result = applySemanticCircuitTool(tsx, "remove_component", {
+      name: "U2",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(extractConnections(result.tsx)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ owner: "R1", pinLabel: "pin1", target: "C1.pin1" }),
+        expect.objectContaining({ owner: "R1", pinLabel: "pin1", target: "net.VCC" }),
+      ])
+    );
+    expect(extractConnections(result.tsx).some(({ target }) => target.startsWith("U2."))).toBe(false);
+    const resistorOpenings = result.tsx.match(/<resistor\b[^>]*\/>/g) ?? [];
+    const r1Opening = resistorOpenings.find((opening) => opening.includes('name="R1"'));
+    const r2Opening = resistorOpenings.find((opening) => opening.includes('name="R2"'));
+    expect(r1Opening).toContain("connections=");
+    expect(r2Opening).not.toContain("connections=");
   });
 
   it("changes board geometry with bounded layer choices", () => {

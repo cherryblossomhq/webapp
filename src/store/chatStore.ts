@@ -344,9 +344,17 @@ function recordResearchToolResult(
   }
   if (
     toolCall.name === "fetch_datasheet" &&
-    content.startsWith("Datasheet summary for ") &&
-    !content.includes("Evidence: unavailable")
+    content.startsWith("Datasheet summary for ")
   ) {
+    // A returned summary satisfies the research gate even when the datasheet
+    // was "Evidence: unavailable". EasyEDA surfaces no datasheet URL for many
+    // common parts (e.g. TP4056/NE555/LIS3DH), so requiring VERIFIED evidence
+    // made the gate unsatisfiable for those ICs: the model looped on
+    // fetch_datasheet until the workflow-continuation budget ran out and the
+    // fully-built circuit was discarded. The model has done its due diligence
+    // by fetching; it cannot verify specs the source doesn't host. The
+    // unverified summary still reaches the model's context — only the commit
+    // gate is relaxed, not the evidence grounding.
     evidence.datasheet = true;
     return;
   }
@@ -1187,7 +1195,20 @@ export const useChatStore = create<ChatStore>()(
               mutationCalls.every(({ toolCall, content }) =>
                 successfulCircuitMutation(toolCall.name, content)
               );
-            if (!finishCall || !batchMutationsSucceeded) {
+            // Commit when the model signals completion AND the circuit has
+            // actually changed — either by a mutation in THIS batch (the
+            // one-turn fast path) or by edits accumulated over prior rounds.
+            // Weaker models (e.g. the free-plan model) reliably call
+            // finish_circuit_edit as a standalone final turn rather than
+            // batching it with their last mutation; requiring same-batch left
+            // their fully-built circuit uncommitted, so they spiralled into
+            // redundant tool calls until the MAX_TOOL_ROUNDS backstop and
+            // nothing was applied. Falling through to validation whenever edits
+            // exist rescues that circuit; missing component research is still
+            // enforced by the validation block below.
+            const readyToCommit =
+              !!finishCall && (batchMutationsSucceeded || workingTsx.edited);
+            if (!readyToCommit) {
               if (finishCall) completionSummary = null;
               continue;
             }

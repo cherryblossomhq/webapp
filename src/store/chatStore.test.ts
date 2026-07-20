@@ -363,6 +363,20 @@ describe("capSnapshots", () => {
     // Two assistant snapshots under a cap of 2 → nothing stripped.
     expect(capSnapshots(msgs, 2)).toBe(msgs);
   });
+
+  it("caps toolTranscript on the same window as tsxSnapshot", () => {
+    const transcript = [{ role: "tool", tool_call_id: "t1", content: "r" }];
+    const msgs = [
+      { ...mk("a0", "assistant", "s0"), toolTranscript: transcript },
+      mk("u", "user"),
+      { ...mk("a1", "assistant", "s1"), toolTranscript: transcript },
+      { ...mk("a2", "assistant", "s2"), toolTranscript: transcript },
+    ];
+    const out = capSnapshots(msgs, 2);
+    expect(out.find((m) => m.id === "a0")?.toolTranscript).toBeUndefined();
+    expect(out.find((m) => m.id === "a1")?.toolTranscript).toBe(transcript);
+    expect(out.find((m) => m.id === "a2")?.toolTranscript).toBe(transcript);
+  });
 });
 
 describe("chatStore", () => {
@@ -880,6 +894,169 @@ describe("chatStore", () => {
           (e) => e.kind === "activity" && e.activity.kind === "search"
         )
       ).toBe(true);
+    });
+
+    it("persists the tool transcript and replays it to the model on later turns", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "C1 | TP4056 | charger";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            { id: "t1", name: "search_jlcpcb", input: { query: "TP4056" } },
+          ]);
+        }
+        emitStream("answer");
+        return turnResult("answer");
+      });
+
+      await useChatStore.getState().sendMessage("find a charger");
+
+      // The turn's tool rounds are persisted on the assistant message.
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      expect(assistant?.toolTranscript).toEqual([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "t1",
+              type: "function",
+              function: {
+                name: "search_jlcpcb",
+                arguments: JSON.stringify({ query: "TP4056" }),
+              },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "t1", content: "C1 | TP4056 | charger" },
+      ]);
+
+      // A later turn replays those rounds ahead of the persisted answer text,
+      // so the model still sees its own past tool calls and their results.
+      await useChatStore.getState().sendMessage("now add it to the board");
+
+      const call = lastDesignCall()!;
+      const roles = call.messages.map((m) => m.role);
+      const toolIdx = roles.indexOf("tool");
+      expect(toolIdx).toBeGreaterThan(0);
+      expect(roles[toolIdx - 1]).toBe("assistant"); // the tool_calls turn
+      expect(
+        (call.messages[toolIdx - 1] as { tool_calls?: Array<{ id: string }> })
+          .tool_calls?.[0]?.id
+      ).toBe("t1");
+      expect(call.messages[toolIdx].content).toBe("C1 | TP4056 | charger");
+      // The final answer text follows the replayed rounds. (Skip the replayed
+      // tool_calls turn — its content is null, which msgText can't read.)
+      const answerIdx = call.messages.findIndex(
+        (m) => m.content != null && msgText(m) === "answer"
+      );
+      expect(answerIdx).toBeGreaterThan(toolIdx);
+    });
+
+    it("strips reasoning from the persisted transcript but not the live loop", async () => {
+      const reasoningDetails = [
+        { type: "reasoning.encrypted", data: "opaque", id: "r1", index: 0 },
+      ];
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "result";
+        if (turn++ === 0) {
+          return {
+            text: "",
+            toolCalls: [
+              { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+            ],
+            reasoning: { text: "", details: reasoningDetails },
+            finishReason: "tool_calls",
+          };
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      const persisted = assistant?.toolTranscript?.find(
+        (m) => m.role === "assistant"
+      );
+      expect(persisted?.tool_calls?.[0]?.id).toBe("t1");
+      expect(persisted?.reasoning_details).toBeUndefined();
+      expect(persisted?.reasoning).toBeUndefined();
+    });
+
+    it("does not duplicate a tool round's streamed text in the transcript", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "result";
+        if (turn++ === 0) {
+          emitStream("Let me check. ");
+          return {
+            text: "Let me check. ",
+            toolCalls: [
+              { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+            ],
+            reasoning: { text: "", details: [] },
+            finishReason: "tool_calls",
+          };
+        }
+        emitStream("Done.");
+        return turnResult("Done.");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      // The streamed text lives once, in the final content…
+      expect(assistant?.content).toBe("Let me check. Done.");
+      // …so the transcript's tool_calls entry must not carry it again.
+      const toolCallEntry = assistant?.toolTranscript?.find(
+        (m) => m.role === "assistant"
+      );
+      expect(toolCallEntry?.tool_calls?.[0]?.id).toBe("t1");
+      expect(toolCallEntry?.content).toBeNull();
+    });
+
+    it("drops a reasoning-only nudge turn from the transcript instead of persisting an empty assistant message", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "unused";
+        if (turn++ === 0) {
+          // Reasoning-only stop: no text, no tool calls → triggers the nudge,
+          // which pushes this turn (reasoning and all) plus the recovery prompt.
+          return {
+            text: "",
+            toolCalls: [],
+            reasoning: {
+              text: "",
+              details: [{ type: "reasoning.encrypted", data: "opaque" }],
+            },
+            finishReason: "stop",
+          };
+        }
+        emitStream("recovered");
+        return turnResult("recovered");
+      });
+
+      await useChatStore.getState().sendMessage("do something");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      expect(assistant?.content).toBe("recovered");
+      // Stripped of its reasoning the nudged turn is empty — it must be dropped,
+      // leaving only the recovery prompt; replaying `content: null` would 400.
+      expect(
+        assistant?.toolTranscript?.some((m) => m.role === "assistant")
+      ).toBe(false);
+      expect(assistant?.toolTranscript).toHaveLength(1);
+      expect(assistant?.toolTranscript?.[0]?.role).toBe("user");
     });
 
     it("dispatches parallel catalog tools and returns one OpenRouter result per call", async () => {

@@ -167,7 +167,9 @@ export interface ChatMessage {
   /**
    * The OpenRouter messages this turn's tool loop appended — assistant
    * `tool_calls` turns, their `role: "tool"` results, and any recovery nudge —
-   * in stream order, reasoning stripped (it's only meaningful intra-turn).
+   * in stream order, reduced to their replayable core: reasoning and per-round
+   * streamed text are stripped (reasoning is intra-turn only; the text is
+   * already concatenated into `content`) — see `toPersistedTranscript`.
    * Replayed verbatim ahead of `content` when history is rebuilt, so on later
    * turns the model still sees its own past tool calls and their results
    * instead of just the answer prose. Capped alongside `tsxSnapshot` (see
@@ -464,18 +466,36 @@ function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
   return message;
 }
 
-// Reasoning only matters within the turn that produced it (OpenRouter wants it
-// replayed unchanged between tool rounds, and providers ignore it on later
-// turns) — strip it before persisting a turn's tool transcript so localStorage
-// doesn't accumulate per-round reasoning blobs replayed forever as dead weight.
-function stripReasoning(message: OpenRouterMessage): OpenRouterMessage {
-  if (message.reasoning === undefined && message.reasoning_details === undefined) {
-    return message;
+// Shape the loop-appended messages for persistence as a turn's tool transcript.
+// Tool results and the recovery-nudge user prompt pass through unchanged, but
+// assistant entries keep ONLY their tool_calls:
+// - reasoning goes — it's only meaningful within the turn that produced it
+//   (OpenRouter wants it replayed unchanged between tool rounds; providers
+//   ignore it on later turns), and persisting per-round blobs is dead weight;
+// - per-round streamed text goes — it's already concatenated into the final
+//   persisted `content`, so carrying it here would replay it twice;
+// - an entry left with nothing (e.g. a reasoning-only turn kept for the
+//   recovery nudge) is dropped outright — replaying an empty assistant message
+//   400s the API and would brick the session.
+function toPersistedTranscript(
+  loopMessages: OpenRouterMessage[]
+): OpenRouterMessage[] {
+  const out: OpenRouterMessage[] = [];
+  for (const m of loopMessages) {
+    if (m.role !== "assistant") {
+      out.push(m);
+      continue;
+    }
+    if (m.tool_calls !== undefined) {
+      out.push({ role: "assistant", content: null, tool_calls: m.tool_calls });
+    } else if (typeof m.content === "string" && m.content.trim() !== "") {
+      // A tool-less assistant entry only reaches the loop via the nudge path,
+      // where fullResponse was empty — so any real text here is NOT in the
+      // final `content` and is safe (and worth) keeping.
+      out.push({ role: "assistant", content: m.content });
+    }
   }
-  const { reasoning: _r, reasoning_details: _rd, ...rest } = message;
-  void _r;
-  void _rd;
-  return rest;
+  return out;
 }
 
 const asString = (v: unknown): string =>
@@ -1079,10 +1099,13 @@ export const useChatStore = create<ChatStore>()(
       // (stuck / no-output) paths where no assistant message is persisted.
       let assistantMessageId: string | null = null;
       if (turnText !== "") {
-        // The rounds this turn's loop appended, reasoning stripped — persisted
-        // so the next sendMessage replays them and the model remembers what it
-        // searched, imported, and edited (not just its answer prose).
-        const toolTranscript = apiMessages.slice(historyLength).map(stripReasoning);
+        // The rounds this turn's loop appended, reduced to their replayable
+        // core (see toPersistedTranscript) — persisted so the next sendMessage
+        // replays them and the model remembers what it searched, imported, and
+        // edited (not just its answer prose).
+        const toolTranscript = toPersistedTranscript(
+          apiMessages.slice(historyLength)
+        );
         assistantMessageId = crypto.randomUUID();
         const assistantMessage: ChatMessage = {
           id: assistantMessageId,
@@ -1208,7 +1231,9 @@ export const useChatStore = create<ChatStore>()(
         // Rounds are appended atomically (assistant tool_calls + all results
         // together), so even on a mid-turn failure the recorded transcript is
         // complete and safe to replay.
-        const toolTranscript = apiMessages.slice(historyLength).map(stripReasoning);
+        const toolTranscript = toPersistedTranscript(
+          apiMessages.slice(historyLength)
+        );
         const partialMessage: ChatMessage = {
           id: crypto.randomUUID(),
           role: "assistant",

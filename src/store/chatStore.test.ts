@@ -989,6 +989,76 @@ describe("chatStore", () => {
       expect(persisted?.reasoning).toBeUndefined();
     });
 
+    it("does not duplicate a tool round's streamed text in the transcript", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "search_jlcpcb") return "result";
+        if (turn++ === 0) {
+          emitStream("Let me check. ");
+          return {
+            text: "Let me check. ",
+            toolCalls: [
+              { id: "t1", name: "search_jlcpcb", input: { query: "part" } },
+            ],
+            reasoning: { text: "", details: [] },
+            finishReason: "tool_calls",
+          };
+        }
+        emitStream("Done.");
+        return turnResult("Done.");
+      });
+
+      await useChatStore.getState().sendMessage("find a part");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      // The streamed text lives once, in the final content…
+      expect(assistant?.content).toBe("Let me check. Done.");
+      // …so the transcript's tool_calls entry must not carry it again.
+      const toolCallEntry = assistant?.toolTranscript?.find(
+        (m) => m.role === "assistant"
+      );
+      expect(toolCallEntry?.tool_calls?.[0]?.id).toBe("t1");
+      expect(toolCallEntry?.content).toBeNull();
+    });
+
+    it("drops a reasoning-only nudge turn from the transcript instead of persisting an empty assistant message", async () => {
+      let turn = 0;
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd !== "chat_stream_turn") return "unused";
+        if (turn++ === 0) {
+          // Reasoning-only stop: no text, no tool calls → triggers the nudge,
+          // which pushes this turn (reasoning and all) plus the recovery prompt.
+          return {
+            text: "",
+            toolCalls: [],
+            reasoning: {
+              text: "",
+              details: [{ type: "reasoning.encrypted", data: "opaque" }],
+            },
+            finishReason: "stop",
+          };
+        }
+        emitStream("recovered");
+        return turnResult("recovered");
+      });
+
+      await useChatStore.getState().sendMessage("do something");
+
+      const assistant = useChatStore
+        .getState()
+        .messages.find((m) => m.role === "assistant");
+      expect(assistant?.content).toBe("recovered");
+      // Stripped of its reasoning the nudged turn is empty — it must be dropped,
+      // leaving only the recovery prompt; replaying `content: null` would 400.
+      expect(
+        assistant?.toolTranscript?.some((m) => m.role === "assistant")
+      ).toBe(false);
+      expect(assistant?.toolTranscript).toHaveLength(1);
+      expect(assistant?.toolTranscript?.[0]?.role).toBe("user");
+    });
+
     it("dispatches parallel catalog tools and returns one OpenRouter result per call", async () => {
       let turn = 0;
       mockInvoke.mockImplementation(async (command: string) => {

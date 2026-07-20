@@ -7,6 +7,14 @@ const datasheetMocks = vi.hoisted(() => ({
 
 vi.mock("./datasheets", () => datasheetMocks);
 
+// PostHog is unavailable by default (mirrors a blocked/uninitialized SDK);
+// individual tests override the return value to assert the header.
+const analyticsMocks = vi.hoisted(() => ({
+  getPostHogDistinctId: vi.fn((): string | undefined => undefined),
+}));
+
+vi.mock("./analytics", () => analyticsMocks);
+
 import {
   CHAT_TOOLS,
   ChatTransportError,
@@ -300,6 +308,54 @@ describe("OpenRouter streaming", () => {
 
     await streamTurn(base);
     expect(fetchMock.mock.calls[1][1]?.headers).not.toHaveProperty("x-trace-id");
+  });
+
+  it("omits the Authorization header entirely on anonymous (token-less) auth", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+    const base = {
+      model: "tencent/hy3:free",
+      system: [],
+      messages: [{ role: "user", content: "go" }],
+    };
+
+    await streamTurn({ ...base, auth: { token: null, url: managedAuth.url } });
+    expect(fetchMock.mock.calls[0][1]?.headers).not.toHaveProperty("authorization");
+
+    await streamTurn({ ...base, auth: managedAuth });
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({
+      authorization: "Bearer workos-token",
+    });
+  });
+
+  it("sends the PostHog distinct id header only when PostHog has one", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+    const base = {
+      auth: managedAuth,
+      model: "anthropic/claude-opus-4.8",
+      system: [],
+      messages: [{ role: "user", content: "go" }],
+    };
+
+    analyticsMocks.getPostHogDistinctId.mockReturnValueOnce("ph-distinct-1");
+    await streamTurn(base);
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      "x-posthog-distinct-id": "ph-distinct-1",
+    });
+
+    await streamTurn(base);
+    expect(fetchMock.mock.calls[1][1]?.headers).not.toHaveProperty(
+      "x-posthog-distinct-id"
+    );
   });
 
   it("surfaces mid-stream OpenRouter errors and keeps generation diagnostics", async () => {

@@ -74,13 +74,14 @@ import {
   capSnapshots,
   clearLegacyByokStorage,
   ensureTraceId,
+  friendlyChatError,
   isAiSetupError,
   PREFERRED_HELPER_MODEL,
   resolveHelperModel,
 } from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
-import { useAccountStore } from "./accountStore";
+import { ANONYMOUS_MODEL, useAccountStore } from "./accountStore";
 import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
@@ -91,6 +92,50 @@ describe("isAiSetupError", () => {
     expect(isAiSetupError("no_managed_model")).toBe(true);
     expect(isAiSetupError("Connection error")).toBe(false);
     expect(isAiSetupError(null)).toBe(false);
+  });
+});
+
+describe("friendlyChatError", () => {
+  const limitBody = JSON.stringify({
+    error: { type: "rate_limited", message: "Sign in for higher limits." },
+  });
+  const modelBody = JSON.stringify({
+    error: { type: "model_not_allowed", message: "Model requires an account." },
+  });
+
+  it("frames an anonymous 429 as a sign-in prompt with the Retry-After hint", () => {
+    const result = friendlyChatError(`429:${limitBody}`, true, "42");
+    expect(result.signInCta).toBe(true);
+    expect(result.message).toContain("Sign in for higher limits.");
+    expect(result.message).toContain("Try again in 42s.");
+  });
+
+  it("omits the wait hint when Retry-After is absent or malformed", () => {
+    expect(friendlyChatError(`429:${limitBody}`, true).message).toBe(
+      "Sign in for higher limits."
+    );
+    expect(friendlyChatError(`429:${limitBody}`, true, "soon").message).toBe(
+      "Sign in for higher limits."
+    );
+  });
+
+  it("frames an anonymous model_not_allowed as a sign-in prompt", () => {
+    const result = friendlyChatError(`403:${modelBody}`, true);
+    expect(result).toEqual({
+      message: "Model requires an account.",
+      signInCta: true,
+    });
+  });
+
+  it("keeps the plain plan messaging for signed-in requests", () => {
+    expect(friendlyChatError(`429:${limitBody}`, false)).toEqual({
+      message: "You've hit your plan's usage limit — wait a bit and try again.",
+      signInCta: false,
+    });
+    expect(friendlyChatError(`403:${modelBody}`, false)).toEqual({
+      message: "Model requires an account.",
+      signInCta: false,
+    });
   });
 });
 
@@ -525,9 +570,96 @@ describe("chatStore", () => {
     });
   });
 
-  describe("sendMessage — guardrails", () => {
-    it("requires a signed-in session", async () => {
+  describe("sendMessage — anonymous access", () => {
+    function signOut() {
       useAuthStore.setState({ status: "signedOut", user: null, accessToken: null });
+      useAccountStore.setState({
+        account: null,
+        accountUserId: null,
+        status: "idle",
+        selectedModel: null,
+      });
+    }
+
+    it("sends token-less requests on the anonymous model when signed out", async () => {
+      signOut();
+      mockInvoke.mockImplementation(async () => {
+        emitStream("ok");
+        return turnResult("ok");
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
+      const args = call![1] as { auth: { token: string | null }; model: string };
+      expect(args.auth.token).toBeNull();
+      expect(args.model).toBe(ANONYMOUS_MODEL);
+      expect(useChatStore.getState().error).toBeNull();
+    });
+
+    it("uses the anonymous model for helper work too", async () => {
+      signOut();
+      let turn = 0;
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "fetch_datasheet") return "summary";
+        if (turn++ === 0) {
+          return toolUseTurn([
+            { id: "t1", name: "fetch_datasheet", input: { lcsc_id: "C16581" } },
+          ]);
+        }
+        emitStream("done");
+        return turnResult("done");
+      });
+
+      await useChatStore.getState().sendMessage("check the datasheet");
+
+      const datasheetCall = mockInvoke.mock.calls.find(
+        (c) => c[0] === "fetch_datasheet"
+      );
+      expect((datasheetCall![1] as { model: string }).model).toBe(ANONYMOUS_MODEL);
+    });
+
+    it("turns an anonymous 429 into a sign-in prompt with the Retry-After hint", async () => {
+      signOut();
+      mockInvoke.mockImplementation(async () => {
+        const err = new Error(
+          '429:{"error":{"type":"rate_limited","message":"Sign in for higher limits."}}'
+        );
+        Object.assign(err, { retryAfter: "30" });
+        throw err;
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      const state = useChatStore.getState();
+      expect(state.errorSignInCta).toBe(true);
+      expect(state.error).toContain("Sign in for higher limits.");
+      expect(state.error).toContain("Try again in 30s.");
+    });
+
+    it("keeps the plain rate-limit error (no CTA) for signed-in requests", async () => {
+      mockInvoke.mockImplementation(async () => {
+        throw "429: rate limited";
+      });
+
+      await useChatStore.getState().sendMessage("hi");
+
+      const state = useChatStore.getState();
+      expect(state.errorSignInCta).toBe(false);
+      expect(state.error).toMatch(/usage limit/i);
+    });
+
+    it("clears the sign-in prompt when the error is dismissed", async () => {
+      useChatStore.setState({ error: "limit", errorSignInCta: true });
+      useChatStore.getState().clearError();
+      expect(useChatStore.getState().error).toBeNull();
+      expect(useChatStore.getState().errorSignInCta).toBe(false);
+    });
+  });
+
+  describe("sendMessage — guardrails", () => {
+    it("blocks sends while the session is still being resolved", async () => {
+      useAuthStore.setState({ status: "unknown", user: null, accessToken: null });
       await useChatStore.getState().sendMessage("hi");
       expect(useChatStore.getState().error).toBe("no_account");
       expect(mockInvoke).not.toHaveBeenCalled();

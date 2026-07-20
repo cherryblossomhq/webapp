@@ -3,7 +3,11 @@ import { useAccountStore } from "@/store/accountStore";
 import type { SettingsTab } from "@/store/settingsStore";
 
 export interface AiReady {
-  /** True when the signed-in account can make an AI call right now. */
+  /**
+   * True when an AI call can be made right now — either the signed-in account
+   * has an allowed model selected, or the visitor is signed out and chats
+   * anonymously on the free model.
+   */
   ready: boolean;
   /**
    * True while readiness is still being resolved (session restore or account
@@ -61,6 +65,17 @@ export function useAiReady(): AiReady {
     };
   }
 
+  // Signed-out visitors chat anonymously on the free model — the composer
+  // stays active and the proxy enforces the anonymous limits server-side.
+  if (authStatus === "signedOut") {
+    return {
+      ready: true,
+      pending: false,
+      settingsTab: "account",
+      ctaMessage: "",
+    };
+  }
+
   if (selectedModelAllowed) {
     return {
       ready: true,
@@ -84,9 +99,6 @@ export function useAiReady(): AiReady {
     ready: false,
     pending: false,
     settingsTab: "account",
-    ctaMessage:
-      authStatus === "signedIn"
-        ? "Managed AI is unavailable right now. Retry from the model selector."
-        : "Sign in to your Cherry Blossom account to start chatting.",
+    ctaMessage: "Managed AI is unavailable right now. Retry from the model selector.",
   };
 }

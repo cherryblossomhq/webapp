@@ -5,11 +5,16 @@
 // Keep all chat HTTP in this file.
 
 import { fetchAndSummarize, renderForModel } from "./datasheets";
+import { getPostHogDistinctId } from "./analytics";
 
 // Credential + routing for one model call through Cherry Blossom's OpenRouter
-// proxy, authenticated by the signed-in user's WorkOS access token.
+// proxy. `token` is the signed-in user's WorkOS access token, or null for
+// anonymous (token-less) access — the proxy then rate-limits per client IP and
+// only allows the free anonymous model. An invalid token does NOT fall back to
+// anonymous server-side, so callers must send null only when genuinely signed
+// out, never as a retry for a failed token.
 export interface OpenRouterAuth {
-  token: string;
+  token: string | null;
   url: string;
 }
 
@@ -47,9 +52,14 @@ function postJson(
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    authorization: `Bearer ${auth.token}`,
   };
+  if (auth.token !== null) headers.authorization = `Bearer ${auth.token}`;
   if (traceId) headers["x-trace-id"] = traceId;
+  // Lets the server's $ai_generation events join this browser's PostHog person
+  // profile (it ignores the header for signed-in requests). Omitted entirely
+  // when PostHog is unavailable — never sent empty.
+  const distinctId = getPostHogDistinctId();
+  if (distinctId) headers["x-posthog-distinct-id"] = distinctId;
   return fetch(auth.url, {
     method: "POST",
     headers,

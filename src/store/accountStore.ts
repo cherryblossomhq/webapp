@@ -8,6 +8,8 @@ import { useAuthStore } from "./authStore";
 
 export const DEFAULT_MANAGED_MODEL = "anthropic/claude-opus-4.8";
 export const MANAGED_MODEL_STORAGE_KEY = "cherryblossom:managed-model";
+/** The only model the managed proxy accepts on anonymous (token-less) requests. */
+export const ANONYMOUS_MODEL = "tencent/hy3:free";
 
 export type AccountStatus = "idle" | "loading" | "ready" | "error";
 

@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useAccountStore } from "@/store/accountStore";
+import { ANONYMOUS_MODEL, useAccountStore } from "@/store/accountStore";
 import { useAuthStore } from "@/store/authStore";
 import { useChatStore } from "@/store/chatStore";
 
@@ -36,6 +36,7 @@ export function ManagedModelSelector() {
   const selectedModel = useAccountStore((state) => state.selectedModel);
   const refresh = useAccountStore((state) => state.refresh);
   const setSelectedModel = useAccountStore((state) => state.setSelectedModel);
+  const signIn = useAuthStore((state) => state.signIn);
 
   const currentAccount =
     authStatus === "signedIn" &&
@@ -43,9 +44,14 @@ export function ManagedModelSelector() {
     accountUserId === authUserId
       ? account
       : null;
-  const models = currentAccount?.plan.managedAi
-    ? currentAccount.plan.allowedModels
-    : [];
+  // Signed-out visitors chat anonymously: the proxy only accepts the free
+  // model on token-less requests, so that's the whole selection.
+  const anonymous = authStatus === "signedOut";
+  const models = anonymous
+    ? [ANONYMOUS_MODEL]
+    : currentAccount?.plan.managedAi
+      ? currentAccount.plan.allowedModels
+      : [];
   const currentModel =
     selectedModel && models.includes(selectedModel)
       ? selectedModel
@@ -76,7 +82,7 @@ export function ManagedModelSelector() {
   return (
     <DropdownMenu
       onOpenChange={(open) => {
-        if (open && !isStreaming) retry();
+        if (open && !isStreaming && !anonymous) retry();
       }}
     >
       <DropdownMenuTrigger asChild>
@@ -106,6 +112,15 @@ export function ManagedModelSelector() {
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
+        )}
+
+        {anonymous && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void signIn()}>
+              Sign in for more models
+            </DropdownMenuItem>
+          </>
         )}
 
         {models.length === 0 && firstLoad && (

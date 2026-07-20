@@ -1,4 +1,4 @@
-import { ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,6 +12,9 @@ import {
 import { useAccountStore } from "@/store/accountStore";
 import { useAuthStore } from "@/store/authStore";
 import { useChatStore } from "@/store/chatStore";
+import { openExternal } from "@/utils/openExternal";
+
+const UPGRADE_URL = "https://www.trycherryblossom.com/pricing";
 
 const MODEL_LABELS: Record<string, string> = {
   "anthropic/claude-haiku-4.5": "Claude Haiku 4.5",
@@ -51,6 +54,8 @@ export function ManagedModelSelector() {
   const models = currentAccount?.plan.managedAi
     ? currentAccount.plan.allowedModels
     : [];
+  // Free-plan users see a nudge to unlock the fuller model roster.
+  const isFreePlan = currentAccount?.plan.tier === "free";
   const currentModel =
     selectedModel && models.includes(selectedModel)
       ? selectedModel
@@ -143,9 +148,22 @@ export function ManagedModelSelector() {
               <DropdownMenuItem disabled>Sign in to load models.</DropdownMenuItem>
             )}
 
+            {isFreePlan && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => openExternal(UPGRADE_URL)}
+                  className="text-primary focus:text-primary"
+                >
+                  <Sparkles aria-hidden="true" />
+                  Upgrade for more models
+                </DropdownMenuItem>
+              </>
+            )}
+
             {error && (
               <>
-                {models.length > 0 && <DropdownMenuSeparator />}
+                {(models.length > 0 || isFreePlan) && <DropdownMenuSeparator />}
                 <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-destructive">
                   {error}
                 </DropdownMenuLabel>

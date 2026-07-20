@@ -5,7 +5,12 @@ import type { MeResponse } from "@/utils/accountApi";
 import { useAccountStore } from "@/store/accountStore";
 import { useAuthStore } from "@/store/authStore";
 import { useChatStore } from "@/store/chatStore";
+import { openExternal } from "@/utils/openExternal";
 import { ManagedModelSelector } from "./ManagedModelSelector";
+
+vi.mock("@/utils/openExternal", () => ({
+  openExternal: vi.fn(),
+}));
 
 const user = {
   id: "user_123",
@@ -20,12 +25,13 @@ const opus = "anthropic/claude-opus-4.8";
 function account(
   allowedModels: string[],
   managedAi = true,
+  tier: MeResponse["plan"]["tier"] = "pro",
 ): MeResponse {
   return {
     user: { id: user.id, email: user.email, name: null },
     plan: {
-      tier: "pro",
-      name: "Pro",
+      tier,
+      name: tier === "free" ? "Free" : "Pro",
       managedAi,
       allowedModels,
     },
@@ -52,6 +58,7 @@ describe("ManagedModelSelector", () => {
 
   beforeEach(() => {
     refresh.mockClear();
+    vi.mocked(openExternal).mockClear();
     useChatStore.setState({ isStreaming: false });
     useAuthStore.setState({
       status: "signedIn",
@@ -211,6 +218,47 @@ describe("ManagedModelSelector", () => {
 
     expect(screen.getByText("Account lookup failed.")).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("nudges free-plan users to upgrade for more models", async () => {
+    useAccountStore.setState({
+      account: account([sonnet], true, "free"),
+      accountUserId: user.id,
+      status: "ready",
+      selectedModel: sonnet,
+    });
+    const userEventApi = userEvent.setup();
+    render(<ManagedModelSelector />);
+
+    await userEventApi.click(
+      screen.getByRole("button", { name: /managed model: claude sonnet/i }),
+    );
+
+    await userEventApi.click(
+      screen.getByRole("menuitem", { name: /upgrade for more models/i }),
+    );
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://www.trycherryblossom.com/pricing",
+    );
+  });
+
+  it("does not nudge paid plans to upgrade", async () => {
+    useAccountStore.setState({
+      account: account([sonnet, opus], true, "pro"),
+      accountUserId: user.id,
+      status: "ready",
+      selectedModel: opus,
+    });
+    const userEventApi = userEvent.setup();
+    render(<ManagedModelSelector />);
+
+    await userEventApi.click(
+      screen.getByRole("button", { name: /managed model: claude opus/i }),
+    );
+
+    expect(
+      screen.queryByRole("menuitem", { name: /upgrade for more models/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows an unavailable state for a plan without managed models", async () => {

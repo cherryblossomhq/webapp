@@ -188,6 +188,11 @@ interface ChatStore {
   streamingEvents: ChatEvent[];
   chatOpen: boolean;
   error: string | null;
+  // True when `error` came from an anonymous (token-less) request hitting a
+  // server limit (429 rate_limited / 403 model_not_allowed). The chat panel
+  // then renders a "sign in for higher limits" prompt instead of the plain
+  // error banner. Always false while `error` is null.
+  errorSignInCta: boolean;
   // Rolling distillation of older turns (decisions/preferences/constraints) that
   // have scrolled out of the raw window, plus a count of how many non-system
   // messages it already covers. Together they form the "summarized prefix".
@@ -295,13 +300,19 @@ export function ensureTraceId(): string {
 
 // Resolve the credential for the next OpenRouter call. Read fresh at every call
 // so a mid-turn token refresh (or sign-out) takes effect on the next request.
+// Signed-out visitors get a token-less (anonymous) credential — the proxy
+// rate-limits those per client IP and picks the model itself. While the
+// session is still being resolved (launch restore or sign-in in flight) this
+// returns null so no request is ever sent with the wrong identity.
 export function resolveChatAuth(): OpenRouterAuth | null {
   const { status, accessToken } = useAuthStore.getState();
-  if (status !== "signedIn" || !accessToken) return null;
-  return {
-    token: accessToken,
-    url: OPENROUTER_CHAT_COMPLETIONS_URL,
-  };
+  if (status === "signedIn" && accessToken) {
+    return { token: accessToken, url: OPENROUTER_CHAT_COMPLETIONS_URL };
+  }
+  if (status === "signedOut") {
+    return { token: null, url: OPENROUTER_CHAT_COMPLETIONS_URL };
+  }
+  return null;
 }
 
 // Keep `tsxSnapshot` and `toolTranscript` only on the most recent `max`
@@ -389,17 +400,27 @@ export function applyTsxStringEdit(
 // Map a failed browser turn to a user-facing message. The transport rejects
 // with "{status}:{body}" for HTTP errors and "api_error:{msg}" for mid-stream
 // SSE errors. Both proxy and upstream error shapes expose `error.message`;
-// proxy plan gates additionally expose `error.type`.
-function friendlyChatError(errorStr: string): string {
+// proxy plan gates additionally expose `error.type`. When `signInCta` is true
+// the error came from an anonymous (token-less) request hitting a server gate,
+// and the UI renders it as a "sign in for higher limits" prompt instead of a
+// plain error.
+export function friendlyChatError(
+  errorStr: string,
+  anonymous: boolean,
+  retryAfter?: string
+): { message: string; signInCta: boolean } {
+  const plain = (message: string) => ({ message, signInCta: false });
   if (errorStr.includes("auth_lost")) {
-    return "You were signed out before the response finished. Sign in again in Settings → Account.";
+    return plain(
+      "You were signed out before the response finished. Sign in again in Settings → Account."
+    );
   }
   if (errorStr.includes("api_error:")) {
-    return errorStr.replace(/.*api_error:/, "");
+    return plain(errorStr.replace(/.*api_error:/, ""));
   }
   const httpMatch = errorStr.match(/(\d{3}):([\s\S]*)/);
   if (!httpMatch) {
-    return "Connection error. Check your network and try again.";
+    return plain("Connection error. Check your network and try again.");
   }
   const status = Number(httpMatch[1]);
   let type: string | undefined;
@@ -414,16 +435,37 @@ function friendlyChatError(errorStr: string): string {
     /* non-JSON body — fall through to the status-based messages */
   }
   if (status === 401) {
-    return "Your session has expired. Sign in again in Settings → Account.";
+    return plain("Your session has expired. Sign in again in Settings → Account.");
   }
   // Managed-plan gates: the server's message names the plan and model — show it.
+  // On a token-less request this means the anonymous tier doesn't cover the
+  // model, so the fix is signing in, not switching plans.
   if (type === "plan_required" || type === "model_not_allowed") {
-    return message ?? "Your plan doesn't include this model. See Settings → Account.";
+    if (anonymous) {
+      return {
+        message: message ?? "This model needs an account. Sign in to use it.",
+        signInCta: true,
+      };
+    }
+    return plain(message ?? "Your plan doesn't include this model. See Settings → Account.");
   }
   if (status === 429) {
-    return "You've hit your plan's usage limit — wait a bit and try again.";
+    if (anonymous) {
+      // The server's message already says to sign in for higher limits; add the
+      // Retry-After hint when the header made it through.
+      const seconds = Number(retryAfter);
+      const waitNote =
+        Number.isFinite(seconds) && seconds > 0
+          ? ` Try again in ${Math.ceil(seconds)}s.`
+          : "";
+      return {
+        message: (message ?? "You've hit the free usage limit.") + waitNote,
+        signInCta: true,
+      };
+    }
+    return plain("You've hit your plan's usage limit — wait a bit and try again.");
   }
-  return message ?? "Connection error. Check your network and try again.";
+  return plain(message ?? "Connection error. Check your network and try again.");
 }
 
 interface OpenRouterMessage {
@@ -509,7 +551,9 @@ async function dispatchTool(
   tc: ChatToolCall,
   importedDefs: Map<string, { rawTsx: string }>,
   auth: OpenRouterAuth,
-  helperModel: string,
+  // undefined on anonymous turns — the helper request then also omits `model`
+  // and the proxy picks the anonymous default.
+  helperModel: string | undefined,
   traceId: string,
   pushActivity: (
     kind: ChatActivity["kind"],
@@ -734,7 +778,7 @@ let isFolding = false;
 // SUMMARY_BATCH of them into `sessionNotes` and advance `summarizedCount`, so the
 // tail drops back to HISTORY_WINDOW. Incremental (old notes + new turns), never a
 // full re-summary, which keeps cost flat and drift low.
-async function foldHistoryIfNeeded(helperModel: string): Promise<void> {
+async function foldHistoryIfNeeded(helperModel: string | undefined): Promise<void> {
   if (isFolding) return;
   const auth = resolveChatAuth();
   if (!auth) return;
@@ -795,6 +839,7 @@ export const useChatStore = create<ChatStore>()(
   streamingEvents: [],
   chatOpen: false,
   error: null,
+  errorSignInCta: false,
   sessionNotes: null,
   summarizedCount: 0,
   sessionId: crypto.randomUUID(),
@@ -807,29 +852,36 @@ export const useChatStore = create<ChatStore>()(
     if (state.isStreaming) return;
     // Sentinel errors render as the setup CTA in the chat panel, not as an
     // error banner — keep them in lockstep with the useAiReady composer gate.
-    if (!resolveChatAuth()) {
-      set({ error: "no_account" });
+    const initialAuth = resolveChatAuth();
+    if (!initialAuth) {
+      set({ error: "no_account", errorSignInCta: false });
       return;
     }
-    const authUserId = useAuthStore.getState().user?.id ?? null;
-    const { account, accountUserId, selectedModel } =
-      useAccountStore.getState();
-    const designModel =
-      authUserId &&
-      accountUserId === authUserId &&
-      account?.plan.managedAi &&
-      selectedModel &&
-      account.plan.allowedModels.includes(selectedModel)
-        ? selectedModel
-        : null;
-    if (designModel === null) {
-      set({ error: "no_managed_model" });
-      return;
+    // Anonymous (signed-out) turns skip the account/plan gates entirely and
+    // send NO model at all — the proxy picks the first model from its ordered
+    // anonymous allow-list server-side and enforces its own per-IP limits.
+    const anonymous = initialAuth.token === null;
+    let designModel: string | undefined;
+    let helperModel: string | undefined;
+    if (!anonymous) {
+      const authUserId = useAuthStore.getState().user?.id ?? null;
+      const { account, accountUserId, selectedModel } =
+        useAccountStore.getState();
+      const allowed =
+        authUserId &&
+        accountUserId === authUserId &&
+        account?.plan.managedAi &&
+        selectedModel &&
+        account.plan.allowedModels.includes(selectedModel)
+          ? selectedModel
+          : null;
+      if (allowed === null) {
+        set({ error: "no_managed_model", errorSignInCta: false });
+        return;
+      }
+      designModel = allowed;
+      helperModel = resolveHelperModel(account?.plan.allowedModels ?? [], allowed);
     }
-    const helperModel = resolveHelperModel(
-      account?.plan.allowedModels ?? [],
-      designModel,
-    );
     // Resolved once per send so every request this turn makes — each tool
     // round, plus any datasheet helper call — lands in the same trace, even if
     // the conversation is cleared mid-flight.
@@ -851,7 +903,7 @@ export const useChatStore = create<ChatStore>()(
       content: trimmedContent,
       timestamp: Date.now(),
     };
-    set((s) => ({ messages: [...s.messages, userMessage], isStreaming: true, streamingEvents: [], error: null }));
+    set((s) => ({ messages: [...s.messages, userMessage], isStreaming: true, streamingEvents: [], error: null, errorSignInCta: false }));
 
     const circuitState = useCircuitStore.getState();
     const currentTsx = circuitState.tsxCode;
@@ -1018,9 +1070,13 @@ export const useChatStore = create<ChatStore>()(
           }
           // Re-resolved every round so the scheduled access-token refresh is
           // picked up mid-loop; signing out aborts cleanly instead of sending a
-          // dead token.
+          // dead token. A turn also never flips between token-bearing and
+          // anonymous mid-flight — a signed-in turn must not degrade to a
+          // token-less request (and vice versa), so any transition aborts.
           const auth = resolveChatAuth();
-          if (!auth) throw new Error("auth_lost");
+          if (!auth || (auth.token === null) !== anonymous) {
+            throw new Error("auth_lost");
+          }
           const turn = await streamTurn(
             {
               auth,
@@ -1245,14 +1301,31 @@ export const useChatStore = create<ChatStore>()(
         set((s) => ({ messages: [...s.messages, partialMessage] }));
       }
 
-      const errorMessage = friendlyChatError(errorStr);
+      // ChatTransportError keeps Retry-After; read it structurally so this
+      // works whether or not the transport class itself crossed the mock/seam.
+      const retryAfter =
+        typeof err === "object" &&
+        err !== null &&
+        typeof (err as { retryAfter?: unknown }).retryAfter === "string"
+          ? (err as { retryAfter: string }).retryAfter
+          : undefined;
+      const { message: errorMessage, signInCta } = friendlyChatError(
+        errorStr,
+        anonymous,
+        retryAfter
+      );
 
-      toast.error("Chat error", { description: errorMessage });
+      // Anonymous limit errors render as a sign-in prompt in the panel — a
+      // plain error toast on top would bury the CTA.
+      if (!signInCta) {
+        toast.error("Chat error", { description: errorMessage });
+      }
 
       set({
         isStreaming: false,
         streamingEvents: [],
         error: errorMessage,
+        errorSignInCta: signInCta,
       });
     }
   },
@@ -1305,12 +1378,13 @@ export const useChatStore = create<ChatStore>()(
       messages: [],
       streamingEvents: [],
       error: null,
+      errorSignInCta: false,
       sessionNotes: null,
       summarizedCount: 0,
       sessionId: crypto.randomUUID(),
       traceId: crypto.randomUUID(),
     }),
-  clearError: () => set({ error: null }),
+  clearError: () => set({ error: null, errorSignInCta: false }),
     }),
     {
       name: "cherryblossom_chat_history",

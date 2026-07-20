@@ -9,6 +9,7 @@ import {
 import { useCircuitStore } from "@/store/circuitStore";
 import { useEditorStore } from "@/editor/state/editorStore";
 import { useSettingsStore } from "@/store/settingsStore";
+import { useAuthStore } from "@/store/authStore";
 import {
   Cpu,
   X,
@@ -593,6 +594,8 @@ export function ChatPanel() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const streamingEvents = useChatStore((s) => s.streamingEvents);
   const error = useChatStore((s) => s.error);
+  const errorSignInCta = useChatStore((s) => s.errorSignInCta);
+  const signIn = useAuthStore((s) => s.signIn);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const restoreToMessage = useChatStore((s) => s.restoreToMessage);
   const clearHistory = useChatStore((s) => s.clearHistory);
@@ -799,8 +802,32 @@ export function ChatPanel() {
           </div>
         )}
 
+        {/* Sign-in prompt — an anonymous request hit a server limit; the fix
+            is signing in, so frame it as a CTA rather than an error. */}
+        {error && errorSignInCta && (
+          <div className="mx-3 mb-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs">
+            <div className="flex items-start gap-2">
+              <KeyRound className="size-3.5 shrink-0 mt-px text-primary" aria-hidden="true" />
+              <span className="flex-1">{error}</span>
+              <button
+                onClick={clearError}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Dismiss"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+            <button
+              onClick={() => void signIn()}
+              className="mt-2 w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              Sign in for higher limits
+            </button>
+          </div>
+        )}
+
         {/* Error banner */}
-        {error && !isAiSetupError(error) && (
+        {error && !errorSignInCta && !isAiSetupError(error) && (
           <div className="flex items-center gap-2 mx-3 mb-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-xs">
             <AlertCircle className="size-3.5 shrink-0" />
             <span className="flex-1">{error}</span>

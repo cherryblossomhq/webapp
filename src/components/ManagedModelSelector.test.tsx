@@ -116,6 +116,33 @@ describe("ManagedModelSelector", () => {
     expect(useAccountStore.getState().selectedModel).toBe(sonnet);
   });
 
+  it("hides model selection behind a sign-in CTA when signed out", async () => {
+    const signIn = vi.fn(async () => undefined);
+    useAuthStore.setState({
+      status: "signedOut",
+      user: null,
+      accessToken: null,
+      signIn,
+    });
+    useAccountStore.setState({ status: "idle" });
+    const userEventApi = userEvent.setup();
+    render(<ManagedModelSelector />);
+
+    // No concrete model is shown — the API picks one server-side.
+    await userEventApi.click(
+      screen.getByRole("button", { name: /managed model: auto model/i }),
+    );
+
+    // No account fetch for anonymous visitors — /me requires auth.
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
+
+    await userEventApi.click(
+      screen.getByRole("menuitem", { name: /sign in to choose a model/i }),
+    );
+    expect(signIn).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the canonical ID for unknown future models", () => {
     const future = "provider/future-model";
     useAccountStore.setState({

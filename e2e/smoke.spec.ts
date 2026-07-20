@@ -29,7 +29,7 @@ test.describe("editor smoke", () => {
     expect(realErrors, `unexpected page errors: ${realErrors.join("\n")}`).toEqual([]);
   });
 
-  test("empty-schematic composer routes signed-out users to managed AI settings", async ({
+  test("empty-schematic composer opens anonymous managed AI chat", async ({
     page,
   }) => {
     await page.goto("/");
@@ -37,14 +37,15 @@ test.describe("editor smoke", () => {
     const composer = page.getByPlaceholder(/add an ESP32/i);
     await expect(composer).toBeVisible({ timeout: 15_000 });
 
-    // Sending while signed out must not fire a doomed model request. It routes
-    // the user to Settings → AI, where managed AI sign-in is explained.
+    // Signed-out visitors can use the anonymous managed AI tier. Sending opens
+    // the chat rail immediately; the server enforces the anonymous limits.
     await composer.fill("add an ESP32 with a 3V3 regulator");
     await page.getByRole("button", { name: /send to ai/i }).click();
 
-    const settings = page.getByRole("dialog", { name: "Settings" });
-    await expect(settings.getByRole("heading", { name: "Premium" })).toBeVisible();
-    await expect(settings.getByText(/sign in to unlock managed AI/i)).toBeVisible();
+    await expect(page.getByText("AI Assistant", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /managed model: auto model/i }),
+    ).toBeVisible();
   });
 
   test("3D viewer recovers when its lazy module fails to load once", async ({

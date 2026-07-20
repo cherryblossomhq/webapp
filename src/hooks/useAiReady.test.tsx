@@ -76,6 +76,18 @@ describe("useAiReady", () => {
     expect(result.current).toMatchObject({ ready: false, pending: true });
   });
 
+  it("is ready for anonymous chat when signed out", () => {
+    useAuthStore.setState({ status: "signedOut", user: null, accessToken: null });
+
+    const { result } = renderHook(() => useAiReady());
+
+    expect(result.current).toMatchObject({
+      ready: true,
+      pending: false,
+      ctaMessage: "",
+    });
+  });
+
   it("is ready only when the selected model is in the cached allowed list", () => {
     const models = ["anthropic/claude-sonnet-5"];
     useAuthStore.setState({

@@ -36,6 +36,7 @@ export function ManagedModelSelector() {
   const selectedModel = useAccountStore((state) => state.selectedModel);
   const refresh = useAccountStore((state) => state.refresh);
   const setSelectedModel = useAccountStore((state) => state.setSelectedModel);
+  const signIn = useAuthStore((state) => state.signIn);
 
   const currentAccount =
     authStatus === "signedIn" &&
@@ -43,6 +44,10 @@ export function ManagedModelSelector() {
     accountUserId === authUserId
       ? account
       : null;
+  // Signed-out visitors chat anonymously: requests carry no model at all and
+  // the proxy picks one server-side, so there is nothing to select (or show
+  // as current) — only a sign-in CTA.
+  const anonymous = authStatus === "signedOut";
   const models = currentAccount?.plan.managedAi
     ? currentAccount.plan.allowedModels
     : [];
@@ -59,13 +64,15 @@ export function ManagedModelSelector() {
     authStatus === "signedIn" &&
     currentAccount === null &&
     (accountUserMismatch || status === "idle" || status === "loading");
-  const triggerText = firstLoad
-    ? "Loading models…"
-    : currentModel
-      ? managedModelLabel(currentModel)
-      : currentAccount
-        ? "No managed models"
-        : "Models unavailable";
+  const triggerText = anonymous
+    ? "Auto model"
+    : firstLoad
+      ? "Loading models…"
+      : currentModel
+        ? managedModelLabel(currentModel)
+        : currentAccount
+          ? "No managed models"
+          : "Models unavailable";
 
   const retry = () => {
     void refresh().catch(() => {
@@ -76,7 +83,7 @@ export function ManagedModelSelector() {
   return (
     <DropdownMenu
       onOpenChange={(open) => {
-        if (open && !isStreaming) retry();
+        if (open && !isStreaming && !anonymous) retry();
       }}
     >
       <DropdownMenuTrigger asChild>
@@ -95,46 +102,59 @@ export function ManagedModelSelector() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-52">
-        {models.length > 0 && (
-          <DropdownMenuRadioGroup
-            value={currentModel ?? undefined}
-            onValueChange={setSelectedModel}
-          >
-            {models.map((model) => (
-              <DropdownMenuRadioItem key={model} value={model}>
-                {managedModelLabel(model)}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        )}
-
-        {models.length === 0 && firstLoad && (
-          <DropdownMenuItem disabled>
-            <Loader2 className="animate-spin" aria-hidden="true" />
-            Loading models…
-          </DropdownMenuItem>
-        )}
-
-        {models.length === 0 && currentAccount && (
-          <DropdownMenuItem disabled>
-            No managed models on this plan.
-          </DropdownMenuItem>
-        )}
-
-        {models.length === 0 && !currentAccount && !firstLoad && !error && (
-          <DropdownMenuItem disabled>Sign in to load models.</DropdownMenuItem>
-        )}
-
-        {error && (
+        {anonymous ? (
           <>
-            {models.length > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-destructive">
-              {error}
+            <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-muted-foreground">
+              A model is picked for you automatically.
             </DropdownMenuLabel>
-            <DropdownMenuItem onSelect={retry}>
-              <RefreshCw aria-hidden="true" />
-              Retry
+            <DropdownMenuItem onSelect={() => void signIn()}>
+              Sign in to choose a model
             </DropdownMenuItem>
+          </>
+        ) : (
+          <>
+            {models.length > 0 && (
+              <DropdownMenuRadioGroup
+                value={currentModel ?? undefined}
+                onValueChange={setSelectedModel}
+              >
+                {models.map((model) => (
+                  <DropdownMenuRadioItem key={model} value={model}>
+                    {managedModelLabel(model)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            )}
+
+            {models.length === 0 && firstLoad && (
+              <DropdownMenuItem disabled>
+                <Loader2 className="animate-spin" aria-hidden="true" />
+                Loading models…
+              </DropdownMenuItem>
+            )}
+
+            {models.length === 0 && currentAccount && (
+              <DropdownMenuItem disabled>
+                No managed models on this plan.
+              </DropdownMenuItem>
+            )}
+
+            {models.length === 0 && !currentAccount && !firstLoad && !error && (
+              <DropdownMenuItem disabled>Sign in to load models.</DropdownMenuItem>
+            )}
+
+            {error && (
+              <>
+                {models.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal text-destructive">
+                  {error}
+                </DropdownMenuLabel>
+                <DropdownMenuItem onSelect={retry}>
+                  <RefreshCw aria-hidden="true" />
+                  Retry
+                </DropdownMenuItem>
+              </>
+            )}
           </>
         )}
       </DropdownMenuContent>

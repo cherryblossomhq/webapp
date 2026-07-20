@@ -223,6 +223,11 @@ applied. Before the first mutating call that introduces a non-trivial IC: \`sear
 \`lookup_footprint\` â†’ \`fetch_datasheet\` â†’ \`import_component\`. Place the exact imported JSX tag, not a temporary
 generic \`<chip>\`. The runtime rejects an IC draft that skips this sequence.
 
+When one response contains every remaining mutation needed to complete the request, include
+\`finish_circuit_edit\` in that same response with a one-sentence past-tense summary. This lets the
+client validate and commit immediately instead of asking you for a redundant final-summary turn.
+Do not call it while research, imports, wiring, or requested edits remain unfinished.
+
 Define pinLabels and pinAttributes before connecting a chip. Establish and verify the netlist
 before spending time on PCB placement. Use named \`net.NAME\` rails for shared power and signals.
 
@@ -331,6 +336,9 @@ When using \`write_tsx\`, briefly explain the design (1–3 sentences), then pas
 **complete** new module as \`tsx\`.
 
 When answering a question, respond normally without editing the circuit.
+
+After the final circuit-mutating calls, call \`finish_circuit_edit\` in the same response. Do not
+spend a separate turn merely restating completed work.
 
 ---
 

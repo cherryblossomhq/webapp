@@ -108,7 +108,7 @@ describe("OpenRouter mapping", () => {
   });
 
   it("defines every chat tool with the OpenRouter function schema", () => {
-    expect(CHAT_TOOLS).toHaveLength(13);
+    expect(CHAT_TOOLS).toHaveLength(14);
     expect(CHAT_TOOLS.map((tool) => tool.function.name)).toEqual([
       "edit_tsx",
       "write_tsx",
@@ -119,6 +119,7 @@ describe("OpenRouter mapping", () => {
       "connect_pins",
       "disconnect_pin",
       "set_board",
+      "finish_circuit_edit",
       "search_jlcpcb",
       "import_component",
       "lookup_footprint",

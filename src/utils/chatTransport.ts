@@ -602,6 +602,26 @@ export const CHAT_TOOLS: ChatToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "finish_circuit_edit",
+      description:
+        "Signals that every requested circuit mutation is included in this same assistant response. Call it once, alongside and after the final circuit-mutating tool calls, so Cherry Blossom can validate and commit immediately without another model round. Do not call it when research, imports, wiring, or other requested changes still remain. Calling it without a successful mutation does not commit anything.",
+      parameters: {
+        type: "object",
+        properties: {
+          summary: {
+            type: "string",
+            description:
+              "A concise past-tense summary of the completed circuit change, suitable to show directly to the user.",
+          },
+        },
+        required: ["summary"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "search_jlcpcb",
       description:
         "Search the JLCPCB/LCSC component library for real electronic parts. Returns LCSC part numbers, manufacturer part numbers, descriptions, packages, stock, and price. Use this to find real orderable components when the user needs a specific IC.",

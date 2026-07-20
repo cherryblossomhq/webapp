@@ -263,6 +263,18 @@ const INFORMATIONAL_PREFIX = /^(how|why|what|where|when)\b/i;
 const HOW_TO_REQUEST = /\b(tell|show|explain)\s+me\s+how\b/i;
 const RESEARCH_REQUIRED_TAGS = new Set(["chip", "opamp"]);
 
+interface ImportedComponentDef {
+  rawTsx: string;
+  lcscId: string;
+}
+
+interface ComponentResearchEvidence {
+  searched: boolean;
+  datasheet: boolean;
+  footprint: boolean;
+  importedTags: Set<string>;
+}
+
 function isDirectCircuitEditRequest(prompt: string): boolean {
   const trimmed = prompt.trim();
   if (INFORMATIONAL_PREFIX.test(trimmed) || HOW_TO_REQUEST.test(trimmed)) {
@@ -288,29 +300,92 @@ function isResearchRequiredTag(tag: string): boolean {
   );
 }
 
-function successfulResearchTool(name: string, content: string): boolean {
-  switch (name) {
-    case "search_jlcpcb":
-      return content.startsWith("Found ");
-    case "lookup_footprint":
-      return content.startsWith("Best match:");
-    case "fetch_datasheet":
-      return content.startsWith("Datasheet summary for ");
-    case "import_component":
-      return content.startsWith("Imported ");
-    default:
-      return false;
+function normalizeLcscId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase();
+  return /^C\d+$/.test(normalized) ? normalized : null;
+}
+
+function researchEvidenceFor(
+  researchByLcsc: Map<string, ComponentResearchEvidence>,
+  lcscId: string,
+): ComponentResearchEvidence {
+  const existing = researchByLcsc.get(lcscId);
+  if (existing) return existing;
+  const created: ComponentResearchEvidence = {
+    searched: false,
+    datasheet: false,
+    footprint: false,
+    importedTags: new Set<string>(),
+  };
+  researchByLcsc.set(lcscId, created);
+  return created;
+}
+
+function recordResearchToolResult(
+  toolCall: ChatToolCall,
+  content: string,
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
+  researchByLcsc: Map<string, ComponentResearchEvidence>,
+): void {
+  if (toolCall.name === "search_jlcpcb" && content.startsWith("Found ")) {
+    for (const match of content.matchAll(/\bC\d+\b/gi)) {
+      researchEvidenceFor(researchByLcsc, match[0].toUpperCase()).searched = true;
+    }
+    return;
   }
+
+  const lcscId = normalizeLcscId(toolCall.input?.lcsc_id);
+  if (!lcscId) return;
+  const evidence = researchEvidenceFor(researchByLcsc, lcscId);
+  if (toolCall.name === "lookup_footprint" && content.startsWith("Best match:")) {
+    evidence.footprint = true;
+    return;
+  }
+  if (
+    toolCall.name === "fetch_datasheet" &&
+    content.startsWith("Datasheet summary for ") &&
+    !content.includes("Evidence: unavailable")
+  ) {
+    evidence.datasheet = true;
+    return;
+  }
+  if (toolCall.name === "import_component" && content.startsWith("Imported ")) {
+    for (const [tag, imported] of importedDefs) {
+      if (imported.lcscId === lcscId) evidence.importedTags.add(tag);
+    }
+  }
+}
+
+function isCircuitMutatingTool(name: string): boolean {
+  return (
+    name === "edit_tsx" ||
+    name === "write_tsx" ||
+    (isSemanticCircuitTool(name) && name !== "inspect_circuit")
+  );
+}
+
+function successfulCircuitMutation(name: string, content: string): boolean {
+  if (name === "edit_tsx") return content.startsWith("Edit applied");
+  if (name === "write_tsx") return content.startsWith("Circuit rewritten.");
+  if (isSemanticCircuitTool(name) && name !== "inspect_circuit") {
+    return !content.startsWith("Error:");
+  }
+  return false;
 }
 
 function missingComponentResearch(
   baselineTsx: string,
   candidateTsx: string,
-  attemptedTools: ReadonlySet<string>,
-  successfulTools: ReadonlySet<string>
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
+  researchByLcsc: ReadonlyMap<string, ComponentResearchEvidence>,
 ): string[] {
+  const baselineComponents = extractComponents(baselineTsx);
   const baselineByName = new Map(
-    extractComponents(baselineTsx).map((component) => [component.name, component])
+    baselineComponents.map((component) => [component.name, component])
+  );
+  const baselineTags = new Set(
+    baselineComponents.map((component) => component.elementTag),
   );
   const newComplexComponents = extractComponents(candidateTsx).filter(
     (component) => {
@@ -324,25 +399,41 @@ function missingComponentResearch(
   if (newComplexComponents.length === 0) return [];
 
   const missing: string[] = [];
-  if (!successfulTools.has("search_jlcpcb")) {
-    missing.push("search_jlcpcb must return a real orderable match");
-  }
-  if (!attemptedTools.has("fetch_datasheet")) {
-    missing.push("fetch_datasheet must be attempted for the selected LCSC part");
-  }
-  if (!successfulTools.has("lookup_footprint")) {
-    missing.push("lookup_footprint must confirm the selected package family");
-  }
-  if (!successfulTools.has("import_component")) {
-    missing.push("import_component must successfully import the selected IC and its footprint");
-  }
-  if (
-    successfulTools.has("import_component") &&
-    newComplexComponents.some((component) =>
-      RESEARCH_REQUIRED_TAGS.has(component.elementTag)
-    )
-  ) {
-    missing.push("replace the generic chip/opamp with the exact imported JSX tag");
+  for (const component of newComplexComponents) {
+    const { name, elementTag } = component;
+    if (
+      !RESEARCH_REQUIRED_TAGS.has(elementTag) &&
+      baselineTags.has(elementTag)
+    ) {
+      continue;
+    }
+    if (RESEARCH_REQUIRED_TAGS.has(elementTag)) {
+      missing.push(
+        `${name}: replace the generic ${elementTag} with the exact imported JSX tag`,
+      );
+      continue;
+    }
+    const imported = importedDefs.get(elementTag);
+    if (!imported) {
+      missing.push(
+        `${name} (${elementTag}): import_component must import this exact IC tag`,
+      );
+      continue;
+    }
+    const evidence = researchByLcsc.get(imported.lcscId);
+    const label = `${name} (${elementTag}, ${imported.lcscId})`;
+    if (!evidence?.searched) {
+      missing.push(`${label}: search_jlcpcb must return this LCSC part`);
+    }
+    if (!evidence?.datasheet) {
+      missing.push(`${label}: fetch_datasheet must return verified datasheet evidence`);
+    }
+    if (!evidence?.footprint) {
+      missing.push(`${label}: lookup_footprint must confirm this package family`);
+    }
+    if (!evidence?.importedTags.has(elementTag)) {
+      missing.push(`${label}: import_component must successfully import this exact tag`);
+    }
   }
   return missing;
 }
@@ -366,7 +457,8 @@ const EXECUTION_CONTINUATION_PROMPT =
   "The user requested an actual circuit change, so a prose plan is not completion. Continue now with " +
   "the available tools and finish the circuit. For every new non-trivial IC, first call search_jlcpcb, " +
   "then lookup_footprint, fetch_datasheet, and import_component, and place the exact returned JSX tag. Use semantic " +
-  "circuit tools for the remaining parts and wiring. Only stop without an edit if one indispensable " +
+  "circuit tools for the remaining parts and wiring. Include finish_circuit_edit alongside the final mutation " +
+  "once every requested change is complete. Only stop without an edit if one indispensable " +
   "user decision is missing; in that case ask exactly one concrete question.";
 
 function researchContinuationPrompt(missing: readonly string[]): string {
@@ -541,7 +633,7 @@ function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
 
 function materializeCandidateTsx(
   draftTsx: string,
-  importedDefs: ReadonlyMap<string, { rawTsx: string }>,
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
 ): string {
   let candidate = draftTsx;
   for (const [componentName, { rawTsx }] of importedDefs) {
@@ -569,7 +661,7 @@ const asString = (v: unknown): string =>
 // instead of the old fake-synchronous predict-a-name-then-patch-after race.
 async function dispatchTool(
   tc: ChatToolCall,
-  importedDefs: Map<string, { rawTsx: string }>,
+  importedDefs: Map<string, ImportedComponentDef>,
   auth: OpenRouterAuth,
   helperModel: string,
   pushActivity: (
@@ -644,6 +736,11 @@ async function dispatchTool(
           `then finish your turn with a short summary.`
       );
     }
+    case "finish_circuit_edit":
+      return toolResult(
+        tc.id,
+        "Completion marker received. The client will commit only if this batch changed the circuit, satisfied required component research, and passes validation.",
+      );
     case "search_jlcpcb": {
       const query = asString(input.query);
       pushActivity("search", query);
@@ -673,7 +770,10 @@ async function dispatchTool(
       }
       try {
         const def = await fetchComponentDef(lcsc);
-        importedDefs.set(def.componentName, { rawTsx: def.rawTsx });
+        importedDefs.set(def.componentName, {
+          rawTsx: def.rawTsx,
+          lcscId: lcsc.toUpperCase(),
+        });
         // Stamp the imported part's real footprint into componentMeta keyed by
         // the tag name. The validator looks up by elementTag when no per-name
         // override exists, so every <Name /> instance inherits it.
@@ -926,15 +1026,14 @@ export const useChatStore = create<ChatStore>()(
     const events: ChatEvent[] = [];
     // Real component definitions resolved inline during the loop, keyed by the
     // exact tag name the model now uses. Prepended into the final TSX below.
-    const importedDefs = new Map<string, { rawTsx: string }>();
+    const importedDefs = new Map<string, ImportedComponentDef>();
     // Working copy of the circuit TSX for semantic and raw editing tools. They
     // mutate this draft only; we validate and commit it once the turn ends. It
     // starts as the exact TSX shown in dynamic context, so raw edit anchors match.
     // A ```tsx block in answer text remains illustrative and is never applied.
     const workingTsx = { tsx: currentTsx, edited: false };
     const directEditRequest = isDirectCircuitEditRequest(trimmedContent);
-    const attemptedTools = new Set<string>();
-    const successfulTools = new Set<string>();
+    const researchByLcsc = new Map<string, ComponentResearchEvidence>();
     // Tripped when the soft round backstop fires (see MAX_TOOL_ROUNDS).
     let stuck = false;
     let validatedCandidate: CandidateValidationResult | null = null;
@@ -943,6 +1042,7 @@ export const useChatStore = create<ChatStore>()(
     let workflowContinuations = 0;
     let forceToolNextTurn = directEditRequest;
     let incompleteWorkflow: string | null = null;
+    let completionSummary: string | null = null;
 
     try {
       const flushEvents = () => set({ streamingEvents: [...events] });
@@ -1027,8 +1127,21 @@ export const useChatStore = create<ChatStore>()(
             },
             streamCallbacks
           );
+          let assistantTurnRecorded = false;
+          const recordAssistantTurn = () => {
+            if (assistantTurnRecorded) return;
+            if (
+              turn.text !== "" ||
+              turn.toolCalls.length > 0 ||
+              turn.reasoning.text !== "" ||
+              turn.reasoning.details.length > 0
+            ) {
+              apiMessages.push(assistantMsgFromTurn(turn));
+              assistantTurnRecorded = true;
+            }
+          };
           if (turn.finishReason === "tool_calls" && turn.toolCalls.length > 0) {
-            apiMessages.push(assistantMsgFromTurn(turn));
+            recordAssistantTurn();
             // Every tool call MUST get a matching result message or the next
             // request 400s. Guard rejected backends so all IDs are answered.
             const results = await Promise.all(
@@ -1046,15 +1159,40 @@ export const useChatStore = create<ChatStore>()(
               )
             );
             turn.toolCalls.forEach((toolCall, index) => {
-              attemptedTools.add(toolCall.name);
               const resultContent = results[index]?.content;
               const content = typeof resultContent === "string" ? resultContent : "";
-              if (successfulResearchTool(toolCall.name, content)) {
-                successfulTools.add(toolCall.name);
-              }
+              recordResearchToolResult(
+                toolCall,
+                content,
+                importedDefs,
+                researchByLcsc,
+              );
             });
             apiMessages.push(...results);
-            continue;
+            const finishCall = turn.toolCalls.find(
+              (toolCall) => toolCall.name === "finish_circuit_edit",
+            );
+            const mutationCalls = turn.toolCalls
+              .map((toolCall, index) => {
+                const resultContent = results[index]?.content;
+                return {
+                  toolCall,
+                  content:
+                    typeof resultContent === "string" ? resultContent : "",
+                };
+              })
+              .filter(({ toolCall }) => isCircuitMutatingTool(toolCall.name));
+            const batchMutationsSucceeded =
+              mutationCalls.length > 0 &&
+              mutationCalls.every(({ toolCall, content }) =>
+                successfulCircuitMutation(toolCall.name, content)
+              );
+            if (!finishCall || !batchMutationsSucceeded) {
+              if (finishCall) completionSummary = null;
+              continue;
+            }
+            const requestedSummary = asString(finishCall.input?.summary).trim();
+            if (requestedSummary !== "") completionSummary = requestedSummary;
           }
 
           if (
@@ -1068,10 +1206,7 @@ export const useChatStore = create<ChatStore>()(
               break;
             }
             workflowContinuations += 1;
-            const assistantMsg = assistantMsgFromTurn(turn);
-            if ((assistantMsg.content as unknown[]).length > 0) {
-              apiMessages.push(assistantMsg);
-            }
+            recordAssistantTurn();
             apiMessages.push({ role: "user", content: EXECUTION_CONTINUATION_PROMPT });
             forceToolNextTurn = true;
             continue;
@@ -1085,13 +1220,7 @@ export const useChatStore = create<ChatStore>()(
             nudged = true;
             // Keep any thinking blocks the turn produced so the nudge reads as a
             // continuation; never push a truly empty assistant turn (it would 400).
-            if (
-              turn.text !== "" ||
-              turn.reasoning.text !== "" ||
-              turn.reasoning.details.length > 0
-            ) {
-              apiMessages.push(assistantMsgFromTurn(turn));
-            }
+            recordAssistantTurn();
             apiMessages.push({ role: "user", content: RECOVERY_PROMPT });
             continue;
           }
@@ -1104,20 +1233,18 @@ export const useChatStore = create<ChatStore>()(
             const missingResearch = missingComponentResearch(
               currentTsx,
               candidateTsx,
-              attemptedTools,
-              successfulTools
+              importedDefs,
+              researchByLcsc,
             );
             if (missingResearch.length > 0) {
+              completionSummary = null;
               if (workflowContinuations >= MAX_WORKFLOW_CONTINUATIONS) {
                 incompleteWorkflow =
                   "The assistant could not finish component research for the new IC. Nothing was applied.";
                 break;
               }
               workflowContinuations += 1;
-              const assistantMsg = assistantMsgFromTurn(turn);
-              if ((assistantMsg.content as unknown[]).length > 0) {
-                apiMessages.push(assistantMsg);
-              }
+              recordAssistantTurn();
               apiMessages.push({
                 role: "user",
                 content: researchContinuationPrompt(missingResearch),
@@ -1134,12 +1261,10 @@ export const useChatStore = create<ChatStore>()(
               if (
                 candidateRepairAttempts < MAX_CANDIDATE_REPAIR_ATTEMPTS
               ) {
+                completionSummary = null;
                 candidateRepairAttempts += 1;
                 workingTsx.tsx = candidateTsx;
-                const assistantMsg = assistantMsgFromTurn(turn);
-                if ((assistantMsg.content as unknown[]).length > 0) {
-                  apiMessages.push(assistantMsg);
-                }
+                recordAssistantTurn();
                 events.push({
                   kind: "activity",
                   activity: {
@@ -1155,7 +1280,15 @@ export const useChatStore = create<ChatStore>()(
                 });
                 continue;
               }
-              rejectedCandidate = validation;
+              // A candidate with circuitJson rendered successfully. Preserve it
+              // after repairs are exhausted so DRC/layout issues remain visible
+              // in the editor; syntax/runtime evaluation failures have no render
+              // and remain fail-closed.
+              if (validation.circuitJson !== undefined) {
+                validatedCandidate = validation;
+              } else {
+                rejectedCandidate = validation;
+              }
               break;
             }
             validatedCandidate = validation;
@@ -1179,6 +1312,45 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
+      // The draft was produced from currentTsx. If the user, undo/redo, or
+      // another editor action changed the live circuit while the model or
+      // validator was running, applying this stale draft would overwrite newer
+      // work. Compare immediately before the synchronous commit path.
+      if (
+        workingTsx.edited &&
+        useCircuitStore.getState().tsxCode !== currentTsx
+      ) {
+        const message =
+          "The circuit changed while the assistant was working. The draft was not applied. Review the latest circuit and try again.";
+        set({ isStreaming: false, streamingEvents: [], error: message });
+        toast.error("Circuit changed during edit", { description: message });
+        return;
+      }
+
+      // Historical assistant turns with activities render their event trail, not
+      // message.content. Move an already-streamed identical summary to the end or
+      // append it once so the completion is visible without creating another
+      // assistant message or duplicate text event.
+      if (
+        !stuck &&
+        !incompleteWorkflow &&
+        validatedCandidate &&
+        completionSummary
+      ) {
+        const summary = completionSummary;
+        const responseIsSummary = fullResponse.trim() === summary;
+        for (let index = events.length - 1; index >= 0; index--) {
+          const event = events[index];
+          if (
+            event.kind === "text" &&
+            (responseIsSummary || event.text.trim() === summary)
+          ) {
+            events.splice(index, 1);
+          }
+        }
+        events.push({ kind: "text", text: summary });
+      }
+
       // Only persist a non-empty assistant turn. On the stuck / empty-recovery
       // paths fullResponse is "", and a persisted empty-content assistant message
       // would be replayed next turn as an empty text block and 400 the API,
@@ -1189,8 +1361,10 @@ export const useChatStore = create<ChatStore>()(
       // in history — synthesize a short summary so it persists. Gated on !stuck so
       // the unfinished-backstop path (which doesn't apply anything) stays empty.
       const turnText =
-        fullResponse.trim() !== ""
-          ? fullResponse
+        !stuck && workingTsx.edited && completionSummary
+          ? completionSummary
+          : fullResponse.trim() !== ""
+            ? fullResponse
           : !stuck && workingTsx.edited
             ? "Updated the circuit."
             : "";

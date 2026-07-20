@@ -164,6 +164,16 @@ export interface ChatMessage {
    * user/system rows and on assistant messages persisted before this existed.
    */
   tsxSnapshot?: string;
+  /**
+   * The OpenRouter messages this turn's tool loop appended — assistant
+   * `tool_calls` turns, their `role: "tool"` results, and any recovery nudge —
+   * in stream order, reasoning stripped (it's only meaningful intra-turn).
+   * Replayed verbatim ahead of `content` when history is rebuilt, so on later
+   * turns the model still sees its own past tool calls and their results
+   * instead of just the answer prose. Capped alongside `tsxSnapshot` (see
+   * `capSnapshots`); absent on turns that ran no tools.
+   */
+  toolTranscript?: OpenRouterMessage[];
 }
 
 interface ChatStore {
@@ -292,28 +302,40 @@ export function resolveChatAuth(): OpenRouterAuth | null {
   };
 }
 
-// Keep `tsxSnapshot` only on the most recent `max` assistant turns that carry
-// one; strip it from any older turn so memory and persistence stay bounded.
-// Pure, and returns the SAME array reference when nothing needs stripping — safe
-// to call on every snapshot write and inside the persist partializer.
+// Keep `tsxSnapshot` and `toolTranscript` only on the most recent `max`
+// assistant turns that carry them; strip them from any older turn so memory and
+// persistence stay bounded. The cap comfortably exceeds the raw history tail
+// (HISTORY_WINDOW + SUMMARY_BATCH non-system messages ≈ half that in assistant
+// turns), so a transcript is never stripped while the next turn would still
+// replay it. Pure, and returns the SAME array reference when nothing needs
+// stripping — safe to call on every snapshot write and inside the persist
+// partializer.
 export function capSnapshots(
   messages: ChatMessage[],
   max: number
 ): ChatMessage[] {
-  // Walk newest→oldest, collecting the indices that currently hold a snapshot.
-  const snapshotIdxNewestFirst: number[] = [];
+  return capExtra(capExtra(messages, max, "tsxSnapshot"), max, "toolTranscript");
+}
+
+function capExtra(
+  messages: ChatMessage[],
+  max: number,
+  field: "tsxSnapshot" | "toolTranscript"
+): ChatMessage[] {
+  // Walk newest→oldest, collecting the indices that currently hold the field.
+  const idxNewestFirst: number[] = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === "assistant" && m.tsxSnapshot !== undefined) {
-      snapshotIdxNewestFirst.push(i);
+    if (m.role === "assistant" && m[field] !== undefined) {
+      idxNewestFirst.push(i);
     }
   }
-  if (snapshotIdxNewestFirst.length <= max) return messages;
-  // Everything past the newest `max` is stale and loses its snapshot.
-  const stale = new Set(snapshotIdxNewestFirst.slice(max));
+  if (idxNewestFirst.length <= max) return messages;
+  // Everything past the newest `max` is stale and loses the field.
+  const stale = new Set(idxNewestFirst.slice(max));
   return messages.map((m, i) => {
     if (!stale.has(i)) return m;
-    const { tsxSnapshot: _drop, ...rest } = m;
+    const { [field]: _drop, ...rest } = m;
     void _drop;
     return rest;
   });
@@ -440,6 +462,20 @@ function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
     message.reasoning = turn.reasoning.text;
   }
   return message;
+}
+
+// Reasoning only matters within the turn that produced it (OpenRouter wants it
+// replayed unchanged between tool rounds, and providers ignore it on later
+// turns) — strip it before persisting a turn's tool transcript so localStorage
+// doesn't accumulate per-round reasoning blobs replayed forever as dead weight.
+function stripReasoning(message: OpenRouterMessage): OpenRouterMessage {
+  if (message.reasoning === undefined && message.reasoning_details === undefined) {
+    return message;
+  }
+  const { reasoning: _r, reasoning_details: _rd, ...rest } = message;
+  void _r;
+  void _rd;
+  return rest;
 }
 
 const asString = (v: unknown): string =>
@@ -833,13 +869,20 @@ export const useChatStore = create<ChatStore>()(
     // apiMessages is mutated in place by the loop — each tool round appends the
     // assistant's `tool_calls`, then one `role: "tool"` result per call.
     // Content is a plain string for history turns or a content-part array for
-    // the cache-marked turn below.
-    const apiMessages: OpenRouterMessage[] = tail
+    // the cache-marked turn below. An assistant turn that ran tools replays its
+    // persisted transcript (tool_calls + role:"tool" results) ahead of its
+    // answer text, so the model keeps seeing its own past tool use.
+    const apiMessages: OpenRouterMessage[] = [];
+    for (const m of tail) {
       // Defensively drop any empty-content turn (e.g. one persisted by an older
       // build before the stuck-path guard). Replaying an empty content block
       // 400s the API and would brick every following message in the session.
-      .filter((m) => !(typeof m.content === "string" && m.content.trim() === ""))
-      .map((m) => ({ role: m.role, content: m.content }));
+      if (typeof m.content === "string" && m.content.trim() === "") continue;
+      if (m.role === "assistant" && m.toolTranscript !== undefined) {
+        apiMessages.push(...m.toolTranscript);
+      }
+      apiMessages.push({ role: m.role, content: m.content });
+    }
     // Cache the conversation-history prefix: mark the last assistant message so
     // everything up to it is served from cache next turn instead of re-tokenized.
     // (The static system prompt carries its own breakpoint below.)
@@ -856,6 +899,11 @@ export const useChatStore = create<ChatStore>()(
         ],
       };
     }
+
+    // Everything the loop appends past this point — assistant tool_calls turns,
+    // their role:"tool" results, and any recovery nudge — is this turn's tool
+    // transcript, persisted below so future turns replay it.
+    const historyLength = apiMessages.length;
 
     // System blocks: the large static prompt carries the prompt-cache breakpoint
     // (must stay ≥4096 tokens — see CLAUDE.md gotcha). The dynamic per-turn
@@ -1031,6 +1079,10 @@ export const useChatStore = create<ChatStore>()(
       // (stuck / no-output) paths where no assistant message is persisted.
       let assistantMessageId: string | null = null;
       if (turnText !== "") {
+        // The rounds this turn's loop appended, reasoning stripped — persisted
+        // so the next sendMessage replays them and the model remembers what it
+        // searched, imported, and edited (not just its answer prose).
+        const toolTranscript = apiMessages.slice(historyLength).map(stripReasoning);
         assistantMessageId = crypto.randomUUID();
         const assistantMessage: ChatMessage = {
           id: assistantMessageId,
@@ -1038,6 +1090,7 @@ export const useChatStore = create<ChatStore>()(
           content: turnText,
           timestamp: Date.now(),
           events: events.length > 0 ? events : undefined,
+          toolTranscript: toolTranscript.length > 0 ? toolTranscript : undefined,
         };
         set((s) => ({
           messages: [...s.messages, assistantMessage],
@@ -1152,12 +1205,17 @@ export const useChatStore = create<ChatStore>()(
       if (fullResponse) {
         const interruptNote =
           "\n\n---\n*[Response interrupted — connection or API error]*";
+        // Rounds are appended atomically (assistant tool_calls + all results
+        // together), so even on a mid-turn failure the recorded transcript is
+        // complete and safe to replay.
+        const toolTranscript = apiMessages.slice(historyLength).map(stripReasoning);
         const partialMessage: ChatMessage = {
           id: crypto.randomUUID(),
           role: "assistant",
           content: fullResponse + interruptNote,
           timestamp: Date.now(),
           events: [...events, { kind: "text", text: interruptNote }],
+          toolTranscript: toolTranscript.length > 0 ? toolTranscript : undefined,
         };
         set((s) => ({ messages: [...s.messages, partialMessage] }));
       }

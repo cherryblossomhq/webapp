@@ -59,7 +59,7 @@ The app deploys like any static SPA + one serverless function (`vercel.json` car
 
 ### Key Modules
 - **`src/store/circuitStore.ts`** — Zustand store owning all circuit state; all mutations go through here.
-- **`src/store/chatStore.ts`** — Chat history + streaming state, and the free-running multi-turn AI tool loop (dispatches each tool call, feeds `role: "tool"` results back, applies the final TSX).
+- **`src/store/chatStore.ts`** — Chat history + streaming state, and the free-running multi-turn AI tool loop (dispatches each tool call, feeds `role: "tool"` results back, applies the final TSX). Each turn's tool rounds persist as a `toolTranscript` on the assistant message and are replayed in later turns' history, so the model keeps seeing its own past tool calls.
 - **`src/utils/chatTransport.ts`** — The single seam for every external call the chat loop makes: `streamTurn` (one model turn, browser fetch + SSE parsing), the per-tool HTTP backends, and the model-facing tool definitions (`CHAT_TOOLS`).
 - **`src/utils/tsxTransform.ts`** — AST-based TSX read/write using Babel + recast, regex fallback if Babel parse fails; every edit produces a new TSX string.
 - **`src/utils/chatSystemPrompt.ts`** — Builds the static system prompt + dynamic circuit context sent to the selected model.

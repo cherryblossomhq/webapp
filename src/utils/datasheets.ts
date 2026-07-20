@@ -152,7 +152,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 async function extractViaModel(
   auth: OpenRouterAuth,
-  model: string,
+  model: string | undefined,
   pdfBytes: Uint8Array | null,
   lcscId: string,
   mpn?: string,
@@ -275,7 +275,7 @@ export function renderForModel(summary: DatasheetSummary): string {
 
 export async function fetchAndSummarize(
   auth: OpenRouterAuth,
-  model: string,
+  model: string | undefined,
   lcscIdRaw: string,
   mpn?: string,
   traceId?: string

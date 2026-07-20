@@ -27,7 +27,7 @@ import {
   type ChatToolCall,
 } from "../utils/chatTransport";
 import { useAuthStore } from "./authStore";
-import { ANONYMOUS_MODEL, useAccountStore } from "./accountStore";
+import { useAccountStore } from "./accountStore";
 import { listCachedDatasheets } from "../utils/datasheets";
 
 // Resolve current selection (single component) and active view for the AI.
@@ -301,7 +301,7 @@ export function ensureTraceId(): string {
 // Resolve the credential for the next OpenRouter call. Read fresh at every call
 // so a mid-turn token refresh (or sign-out) takes effect on the next request.
 // Signed-out visitors get a token-less (anonymous) credential — the proxy
-// rate-limits those per client IP and only allows ANONYMOUS_MODEL. While the
+// rate-limits those per client IP and picks the model itself. While the
 // session is still being resolved (launch restore or sign-in in flight) this
 // returns null so no request is ever sent with the wrong identity.
 export function resolveChatAuth(): OpenRouterAuth | null {
@@ -551,7 +551,9 @@ async function dispatchTool(
   tc: ChatToolCall,
   importedDefs: Map<string, { rawTsx: string }>,
   auth: OpenRouterAuth,
-  helperModel: string,
+  // undefined on anonymous turns — the helper request then also omits `model`
+  // and the proxy picks the anonymous default.
+  helperModel: string | undefined,
   traceId: string,
   pushActivity: (
     kind: ChatActivity["kind"],
@@ -776,7 +778,7 @@ let isFolding = false;
 // SUMMARY_BATCH of them into `sessionNotes` and advance `summarizedCount`, so the
 // tail drops back to HISTORY_WINDOW. Incremental (old notes + new turns), never a
 // full re-summary, which keeps cost flat and drift low.
-async function foldHistoryIfNeeded(helperModel: string): Promise<void> {
+async function foldHistoryIfNeeded(helperModel: string | undefined): Promise<void> {
   if (isFolding) return;
   const auth = resolveChatAuth();
   if (!auth) return;
@@ -855,29 +857,31 @@ export const useChatStore = create<ChatStore>()(
       set({ error: "no_account", errorSignInCta: false });
       return;
     }
-    // Anonymous (signed-out) turns skip the account/plan gates entirely: the
-    // proxy only accepts the free anonymous model on token-less requests and
-    // enforces its own per-IP limits.
+    // Anonymous (signed-out) turns skip the account/plan gates entirely and
+    // send NO model at all — the proxy picks the first model from its ordered
+    // anonymous allow-list server-side and enforces its own per-IP limits.
     const anonymous = initialAuth.token === null;
-    const authUserId = useAuthStore.getState().user?.id ?? null;
-    const { account, accountUserId, selectedModel } =
-      useAccountStore.getState();
-    const designModel = anonymous
-      ? ANONYMOUS_MODEL
-      : authUserId &&
-          accountUserId === authUserId &&
-          account?.plan.managedAi &&
-          selectedModel &&
-          account.plan.allowedModels.includes(selectedModel)
-        ? selectedModel
-        : null;
-    if (designModel === null) {
-      set({ error: "no_managed_model", errorSignInCta: false });
-      return;
+    let designModel: string | undefined;
+    let helperModel: string | undefined;
+    if (!anonymous) {
+      const authUserId = useAuthStore.getState().user?.id ?? null;
+      const { account, accountUserId, selectedModel } =
+        useAccountStore.getState();
+      const allowed =
+        authUserId &&
+        accountUserId === authUserId &&
+        account?.plan.managedAi &&
+        selectedModel &&
+        account.plan.allowedModels.includes(selectedModel)
+          ? selectedModel
+          : null;
+      if (allowed === null) {
+        set({ error: "no_managed_model", errorSignInCta: false });
+        return;
+      }
+      designModel = allowed;
+      helperModel = resolveHelperModel(account?.plan.allowedModels ?? [], allowed);
     }
-    const helperModel = anonymous
-      ? ANONYMOUS_MODEL
-      : resolveHelperModel(account?.plan.allowedModels ?? [], designModel);
     // Resolved once per send so every request this turn makes — each tool
     // round, plus any datasheet helper call — lands in the same trace, even if
     // the conversation is cleared mid-flight.

@@ -81,7 +81,7 @@ import {
 } from "./chatStore";
 import { useCircuitStore } from "./circuitStore";
 import { useAuthStore } from "./authStore";
-import { ANONYMOUS_MODEL, useAccountStore } from "./accountStore";
+import { useAccountStore } from "./accountStore";
 import { fetchComponentDef } from "../utils/easyedaImport";
 
 const mockFetchDef = vi.mocked(fetchComponentDef);
@@ -581,7 +581,7 @@ describe("chatStore", () => {
       });
     }
 
-    it("sends token-less requests on the anonymous model when signed out", async () => {
+    it("sends token-less requests with no model when signed out", async () => {
       signOut();
       mockInvoke.mockImplementation(async () => {
         emitStream("ok");
@@ -591,13 +591,14 @@ describe("chatStore", () => {
       await useChatStore.getState().sendMessage("hi");
 
       const call = mockInvoke.mock.calls.find((c) => c[0] === "chat_stream_turn");
-      const args = call![1] as { auth: { token: string | null }; model: string };
+      const args = call![1] as { auth: { token: string | null }; model?: string };
       expect(args.auth.token).toBeNull();
-      expect(args.model).toBe(ANONYMOUS_MODEL);
+      // The API picks from its ordered anonymous allow-list server-side.
+      expect(args.model).toBeUndefined();
       expect(useChatStore.getState().error).toBeNull();
     });
 
-    it("uses the anonymous model for helper work too", async () => {
+    it("omits the model for helper work too", async () => {
       signOut();
       let turn = 0;
       mockInvoke.mockImplementation(async (command: string) => {
@@ -616,7 +617,7 @@ describe("chatStore", () => {
       const datasheetCall = mockInvoke.mock.calls.find(
         (c) => c[0] === "fetch_datasheet"
       );
-      expect((datasheetCall![1] as { model: string }).model).toBe(ANONYMOUS_MODEL);
+      expect((datasheetCall![1] as { model?: string }).model).toBeUndefined();
     });
 
     it("turns an anonymous 429 into a sign-in prompt with the Retry-After hint", async () => {

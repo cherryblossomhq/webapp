@@ -310,7 +310,7 @@ describe("OpenRouter streaming", () => {
     expect(fetchMock.mock.calls[1][1]?.headers).not.toHaveProperty("x-trace-id");
   });
 
-  it("omits the Authorization header entirely on anonymous (token-less) auth", async () => {
+  it("omits the Authorization header and model field entirely on anonymous requests", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       sseResponse([
         'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
@@ -318,18 +318,22 @@ describe("OpenRouter streaming", () => {
       ])
     );
     const base = {
-      model: "tencent/hy3:free",
       system: [],
       messages: [{ role: "user", content: "go" }],
     };
 
+    // Anonymous: no token, no model — the proxy picks from its anonymous
+    // allow-list server-side.
     await streamTurn({ ...base, auth: { token: null, url: managedAuth.url } });
     expect(fetchMock.mock.calls[0][1]?.headers).not.toHaveProperty("authorization");
+    expect(fetchBody(0)).not.toHaveProperty("model");
 
-    await streamTurn({ ...base, auth: managedAuth });
+    // Signed-in: bearer token and the selected model, as before.
+    await streamTurn({ ...base, auth: managedAuth, model: "anthropic/claude-opus-4.8" });
     expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({
       authorization: "Bearer workos-token",
     });
+    expect(fetchBody(1)).toMatchObject({ model: "anthropic/claude-opus-4.8" });
   });
 
   it("sends the PostHog distinct id header only when PostHog has one", async () => {

@@ -89,7 +89,12 @@ export interface ChatTurnResult {
 
 export interface StreamTurnArgs {
   auth: OpenRouterAuth;
-  model: string;
+  /**
+   * Canonical OpenRouter model id. Omit on anonymous (token-less) requests —
+   * the `model` field is then left out of the payload entirely and the proxy
+   * picks the first model from its ordered anonymous allow-list server-side.
+   */
+  model?: string;
   /** Already-shaped system blocks (caller owns the `cache_control` breakpoint). */
   system: unknown[];
   /** Already-shaped messages array (strings or content-block arrays). */
@@ -235,12 +240,12 @@ async function streamOpenRouterTurn(
   maxTokens: number
 ): Promise<ChatTurnResult> {
   const body: Record<string, unknown> = {
-    model: args.model,
     messages: toOpenRouterMessages(args.system, args.messages),
     max_tokens: maxTokens,
     stream: true,
     cache_control: { type: "ephemeral" },
   };
+  if (args.model) body.model = args.model;
   if (args.sessionId) body.session_id = args.sessionId;
   if (args.tools && args.tools.length > 0) {
     body.tools = args.tools;
@@ -353,7 +358,8 @@ export async function streamTurn(
 
 export interface CompleteTextArgs {
   auth: OpenRouterAuth;
-  model: string;
+  /** Omit on anonymous requests — see StreamTurnArgs.model. */
+  model?: string;
   messages: unknown[];
   system?: unknown[];
   maxTokens: number;
@@ -376,12 +382,12 @@ function responseText(content: unknown): string {
 /** Non-streaming text completion used by the datasheet summarizer. */
 export async function completeText(args: CompleteTextArgs): Promise<string> {
   const system = args.system ?? [];
-  const body = {
-    model: args.model,
+  const body: Record<string, unknown> = {
     max_tokens: args.maxTokens,
     messages: toOpenRouterMessages(system, args.messages),
     stream: false,
   };
+  if (args.model) body.model = args.model;
   const response = await postJson(args.auth, body, args.signal, args.traceId);
   if (!response.ok) {
     throw httpError(response, await response.text().catch(() => ""));
@@ -525,7 +531,7 @@ export async function lookupFootprint(lcscId?: string, mpn?: string): Promise<st
 
 export async function fetchDatasheet(
   auth: OpenRouterAuth,
-  model: string,
+  model: string | undefined,
   lcscId: string,
   mpn?: string,
   traceId?: string

@@ -116,7 +116,7 @@ describe("ManagedModelSelector", () => {
     expect(useAccountStore.getState().selectedModel).toBe(sonnet);
   });
 
-  it("offers only the free anonymous model plus a sign-in entry when signed out", async () => {
+  it("hides model selection behind a sign-in CTA when signed out", async () => {
     const signIn = vi.fn(async () => undefined);
     useAuthStore.setState({
       status: "signedOut",
@@ -128,19 +128,17 @@ describe("ManagedModelSelector", () => {
     const userEventApi = userEvent.setup();
     render(<ManagedModelSelector />);
 
+    // No concrete model is shown — the API picks one server-side.
     await userEventApi.click(
-      screen.getByRole("button", { name: /managed model: hy 3 free/i }),
+      screen.getByRole("button", { name: /managed model: auto model/i }),
     );
 
     // No account fetch for anonymous visitors — /me requires auth.
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getAllByRole("menuitemradio")).toHaveLength(1);
-    expect(
-      screen.getByRole("menuitemradio", { name: "HY 3 Free" }),
-    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
 
     await userEventApi.click(
-      screen.getByRole("menuitem", { name: /sign in for more models/i }),
+      screen.getByRole("menuitem", { name: /sign in to choose a model/i }),
     );
     expect(signIn).toHaveBeenCalledTimes(1);
   });

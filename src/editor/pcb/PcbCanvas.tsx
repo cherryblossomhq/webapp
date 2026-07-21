@@ -95,7 +95,7 @@ import type {
 import { extractComponentsCached } from "@/utils/tsxTransform";
 import { isChipLike } from "@/editor/schematic/symbols";
 import { connectionId } from "@/editor/shared/connectionId";
-import { Loader2 } from "lucide-react";
+import { CircuitLoading } from "@/components/CircuitLoading";
 import { toast } from "sonner";
 
 // ─── Visual constants ─────────────────────────────────────────────────────────
@@ -1659,10 +1659,7 @@ export function PcbCanvas() {
         className="absolute inset-0 flex flex-col bg-background"
       >
         <div className="flex-1 flex items-center justify-center">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            Building PCB…
-          </div>
+          <CircuitLoading label="Building PCB…" />
         </div>
       </div>
     );

@@ -886,7 +886,6 @@ export function ChatPanel() {
           title="Start a new chat?"
           message="This clears the entire conversation so you can start fresh. Your circuit is untouched, but the chat history can't be recovered."
           confirmLabel="New chat"
-          destructive
           onConfirm={handleConfirmClear}
         />
       </div>

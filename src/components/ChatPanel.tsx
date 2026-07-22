@@ -433,7 +433,7 @@ function StreamingMessage({ events }: { events: ChatEvent[] }) {
         <RoleLabel isUser={false} />
       </div>
       {events.length > 0 && <MessageTrail events={events} streaming />}
-      <TurnFidget className={events.length > 0 ? "mt-2" : undefined} />
+      <TurnFidget className={events.length > 0 ? "mt-4" : "mt-2"} />
     </div>
   );
 }

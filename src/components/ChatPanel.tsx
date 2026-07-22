@@ -30,6 +30,7 @@ import {
   Package,
   Pencil,
   UndoDot,
+  Square,
   SquarePen,
   FileCode2,
 } from "lucide-react";
@@ -571,6 +572,7 @@ export function ChatPanel() {
   const errorSignInCta = useChatStore((s) => s.errorSignInCta);
   const signIn = useAuthStore((s) => s.signIn);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const stopStreaming = useChatStore((s) => s.stopStreaming);
   const restoreToMessage = useChatStore((s) => s.restoreToMessage);
   const clearHistory = useChatStore((s) => s.clearHistory);
   const setChatOpen = useChatStore((s) => s.setChatOpen);
@@ -830,14 +832,25 @@ export function ChatPanel() {
                 className="flex-1 resize-none text-sm bg-background border border-input rounded-md px-3 py-2 outline-none focus:border-ring focus:ring-2 focus:ring-ring/50 disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-muted-foreground"
                 style={{ maxHeight: "144px", fieldSizing: "content" } as React.CSSProperties}
               />
-              <button
-                onClick={handleSend}
-                disabled={isStreaming || aiPending || !input.trim()}
-                className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
-                aria-label="Send message"
-              >
-                <Send className="size-4" />
-              </button>
+              {isStreaming ? (
+                <button
+                  onClick={stopStreaming}
+                  className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  aria-label="Stop response"
+                  title="Stop response"
+                >
+                  <Square className="size-3" fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={aiPending || !input.trim()}
+                  className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
+                  aria-label="Send message"
+                >
+                  <Send className="size-4" />
+                </button>
+              )}
             </div>
           )}
         </div>

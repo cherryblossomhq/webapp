@@ -570,6 +570,74 @@ describe("chatStore", () => {
     });
   });
 
+  describe("sendMessage — user stop", () => {
+    // streamTurn honoring the abort signal: stays pending until the signal
+    // fires, then rejects the way an aborted fetch would.
+    function pendingUntilAborted(streamed?: string) {
+      mockInvoke.mockImplementation((_cmd: string, args: unknown) => {
+        if (streamed) emitStream(streamed);
+        const { signal } = args as { signal: AbortSignal };
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError"))
+          );
+        });
+      });
+    }
+
+    it("keeps partial prose with a stopped marker and surfaces no error", async () => {
+      pendingUntilAborted("Partial reply before stop");
+
+      const promise = useChatStore.getState().sendMessage("hi");
+      // Drain microtasks so the loop reaches streamTurn before stopping.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      useChatStore.getState().stopStreaming();
+      await promise;
+
+      const state = useChatStore.getState();
+      expect(state.isStreaming).toBe(false);
+      expect(state.error).toBeNull();
+      const assistant = state.messages.filter((m) => m.role === "assistant");
+      expect(assistant).toHaveLength(1);
+      expect(assistant[0].content).toContain("Partial reply before stop");
+      expect(assistant[0].content).toMatch(/stopped/i);
+    });
+
+    it("persists nothing when stopped before any prose streamed", async () => {
+      pendingUntilAborted();
+
+      const promise = useChatStore.getState().sendMessage("hi");
+      await new Promise<void>((r) => setTimeout(r, 0));
+      useChatStore.getState().stopStreaming();
+      await promise;
+
+      const state = useChatStore.getState();
+      expect(state.isStreaming).toBe(false);
+      expect(state.error).toBeNull();
+      expect(state.messages.filter((m) => m.role === "assistant")).toHaveLength(0);
+    });
+
+    it("allows a fresh send after stopping", async () => {
+      pendingUntilAborted();
+      const first = useChatStore.getState().sendMessage("first");
+      await new Promise<void>((r) => setTimeout(r, 0));
+      useChatStore.getState().stopStreaming();
+      await first;
+
+      mockInvoke.mockImplementation(async () => {
+        emitStream("second answer");
+        return turnResult("second answer");
+      });
+      await useChatStore.getState().sendMessage("second");
+
+      const state = useChatStore.getState();
+      expect(state.messages.filter((m) => m.role === "user")).toHaveLength(2);
+      const assistant = state.messages.filter((m) => m.role === "assistant");
+      expect(assistant).toHaveLength(1);
+      expect(assistant[0].content).toBe("second answer");
+    });
+  });
+
   describe("sendMessage — anonymous access", () => {
     function signOut() {
       useAuthStore.setState({ status: "signedOut", user: null, accessToken: null });

@@ -24,9 +24,9 @@ import { useBackgroundEvaluator } from "@/editor/services/useBackgroundEvaluator
 import { usePcbDrc } from "@/editor/services/usePcbDrc";
 import { PropertiesPanel } from "@/editor/PropertiesPanel";
 import { PanelErrorBoundary } from "@/components/PanelErrorBoundary";
+import { CircuitLoading } from "@/components/CircuitLoading";
 import { cn } from "@/lib/utils";
 import { reloadApp } from "@/utils/appReload";
-import { Loader2 } from "lucide-react";
 
 // The Properties drawer slides in from the left when a component is selected;
 // 280px matches the old fixed rail width.
@@ -392,11 +392,13 @@ function EditorTabBar({
 
 // ─── PCB / 3D / BOM tab content ────────────────────────────────────────────────
 
+// absolute inset-0 (not flex-1): the code-editor fallback renders inside a
+// plain positioned div and the CAD fallback inside a non-flex block, so
+// flex-1 would collapse to content height and pin the animation to the top.
 function ViewerLoading({ label }: { label: string }) {
   return (
-    <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground gap-2">
-      <Loader2 className="size-4 animate-spin" />
-      {label}
+    <div className="absolute inset-0 flex items-center justify-center">
+      <CircuitLoading label={label} />
     </div>
   );
 }

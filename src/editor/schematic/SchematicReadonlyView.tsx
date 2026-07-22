@@ -25,6 +25,7 @@ import { useAiReady } from "@/hooks/useAiReady";
 import { hashInput } from "@/editor/services/CircuitEvaluator";
 import { extractComponents } from "@/utils/tsxTransform";
 import { getSchematicColorOverrides } from "./schematicColors";
+import { CircuitLoading } from "@/components/CircuitLoading";
 
 // Map a clicked schematic_component_id back to its source designator (e.g. "R1").
 // The tsx stable `key` does NOT survive into circuitJson, so the source `name`
@@ -196,10 +197,7 @@ export function SchematicReadonlyView() {
             </p>
           </>
         ) : (
-          <>
-            <Loader2 className="size-5 mb-2 animate-spin opacity-60" />
-            <p className="text-sm font-medium">Building schematic…</p>
-          </>
+          <CircuitLoading label="Building schematic…" />
         )}
       </Centered>
     );

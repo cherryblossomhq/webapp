@@ -217,6 +217,11 @@ interface ChatStore {
   chatResizing: boolean;
 
   sendMessage: (content: string) => Promise<void>;
+  // Abort the in-flight turn (the stop button). The loop unwinds quietly:
+  // partial prose is kept with a stopped marker, no error surfaces, and no
+  // circuit edit applies. `isStreaming` flips false only once the loop has
+  // actually unwound, so a stopped turn can never race a fresh send.
+  stopStreaming: () => void;
   // Rewind the conversation to a previous assistant turn: restore the circuit to
   // that turn's `tsxSnapshot` and drop every later message. No-op while streaming
   // or validating — those mutate circuit + chat state asynchronously and would
@@ -540,6 +545,35 @@ function toPersistedTranscript(
   return out;
 }
 
+// Tools whose effects live in per-turn state (workingTsx, importedDefs) that
+// an abandoned turn throws away. Their recorded results claim success, so a
+// stopped/interrupted turn's transcript must overwrite them before persisting
+// — otherwise the next turn replays "edit applied" / "component imported"
+// against a circuit that never changed. Read-only tools (search, footprint,
+// datasheet) stay: their results remain true and useful.
+const DISCARDED_TOOLS = new Set(["edit_tsx", "write_tsx", "import_component"]);
+const DISCARDED_NOTE =
+  "[Discarded — this response was cut short, so this tool call's changes were never applied to the circuit.]";
+
+function markDiscardedMutations(
+  loopMessages: OpenRouterMessage[]
+): OpenRouterMessage[] {
+  const discardedIds = new Set<string>();
+  for (const m of loopMessages) {
+    for (const tc of m.tool_calls ?? []) {
+      if (DISCARDED_TOOLS.has(tc.function.name)) discardedIds.add(tc.id);
+    }
+  }
+  if (discardedIds.size === 0) return loopMessages;
+  return loopMessages.map((m) =>
+    m.role === "tool" &&
+    m.tool_call_id !== undefined &&
+    discardedIds.has(m.tool_call_id)
+      ? { ...m, content: DISCARDED_NOTE }
+      : m
+  );
+}
+
 const asString = (v: unknown): string =>
   typeof v === "string" ? v : v == null ? "" : String(v);
 
@@ -773,6 +807,11 @@ function stripCodeBlocks(text: string): string {
 // Module-level guard: only one background fold in flight at a time.
 let isFolding = false;
 
+// Abort handle for the in-flight sendMessage turn (only one runs at a time —
+// see the isStreaming guard). Held outside the store: an AbortController isn't
+// serializable state, it's a control channel for the running loop.
+let turnAbort: AbortController | null = null;
+
 // Rolling history distillation. When the raw tail overflows
 // HISTORY_WINDOW + SUMMARY_BATCH non-system messages, fold the oldest
 // SUMMARY_BATCH of them into `sessionNotes` and advance `summarizedCount`, so the
@@ -903,6 +942,8 @@ export const useChatStore = create<ChatStore>()(
       content: trimmedContent,
       timestamp: Date.now(),
     };
+    turnAbort = new AbortController();
+    const stopSignal = turnAbort.signal;
     set((s) => ({ messages: [...s.messages, userMessage], isStreaming: true, streamingEvents: [], error: null, errorSignInCta: false }));
 
     const circuitState = useCircuitStore.getState();
@@ -1064,6 +1105,12 @@ export const useChatStore = create<ChatStore>()(
         // recovery nudge below.
         let nudged = false;
         for (let round = 0; ; round++) {
+          // A stop mid-tool-dispatch can't cut the tool short, but it must not
+          // start another round. (A stop mid-stream aborts the fetch itself via
+          // the signal below and lands in the catch directly.)
+          if (stopSignal.aborted) {
+            throw new DOMException("Stopped by user", "AbortError");
+          }
           if (round >= MAX_TOOL_ROUNDS) {
             stuck = true;
             break;
@@ -1087,6 +1134,7 @@ export const useChatStore = create<ChatStore>()(
               thinkingEffort: DESIGN_EFFORT,
               sessionId: get().sessionId,
               traceId,
+              signal: stopSignal,
             },
             streamCallbacks
           );
@@ -1278,6 +1326,30 @@ export const useChatStore = create<ChatStore>()(
         }));
       }
     } catch (err) {
+      // User-initiated stop: unwind quietly. Keep whatever prose already
+      // streamed (marked as stopped), surface no error, and apply nothing —
+      // the circuit-edit path lives in the try block that was just abandoned.
+      if (stopSignal.aborted) {
+        if (fullResponse) {
+          const stoppedNote = "\n\n---\n*[Stopped by user]*";
+          const toolTranscript = toPersistedTranscript(
+            markDiscardedMutations(apiMessages.slice(historyLength))
+          );
+          const partialMessage: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: fullResponse + stoppedNote,
+            timestamp: Date.now(),
+            events: [...events, { kind: "text", text: stoppedNote }],
+            toolTranscript:
+              toolTranscript.length > 0 ? toolTranscript : undefined,
+          };
+          set((s) => ({ messages: [...s.messages, partialMessage] }));
+        }
+        set({ isStreaming: false, streamingEvents: [] });
+        return;
+      }
+
       console.error("[chat] sendMessage failed:", err);
       const errorStr = String(err);
 
@@ -1286,9 +1358,10 @@ export const useChatStore = create<ChatStore>()(
           "\n\n---\n*[Response interrupted — connection or API error]*";
         // Rounds are appended atomically (assistant tool_calls + all results
         // together), so even on a mid-turn failure the recorded transcript is
-        // complete and safe to replay.
+        // complete and safe to replay. Mutating-tool results are overwritten
+        // first: this turn's working TSX and imports die with the error.
         const toolTranscript = toPersistedTranscript(
-          apiMessages.slice(historyLength)
+          markDiscardedMutations(apiMessages.slice(historyLength))
         );
         const partialMessage: ChatMessage = {
           id: crypto.randomUUID(),
@@ -1327,7 +1400,13 @@ export const useChatStore = create<ChatStore>()(
         error: errorMessage,
         errorSignInCta: signInCta,
       });
+    } finally {
+      turnAbort = null;
     }
+  },
+
+  stopStreaming: () => {
+    turnAbort?.abort();
   },
 
   restoreToMessage: (messageId) => {

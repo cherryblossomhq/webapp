@@ -30,6 +30,7 @@ import {
   Package,
   Pencil,
   UndoDot,
+  Square,
   SquarePen,
   FileCode2,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import { DEFAULT_TSX } from "@/utils/tsxTransform";
 import { copyText, buildSuggestions } from "@/lib/chatMessageUtils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ManagedModelSelector } from "@/components/ManagedModelSelector";
+import { TurnFidget } from "@/components/TurnFidget";
 import { useAiReady } from "@/hooks/useAiReady";
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -342,28 +344,9 @@ function ActivityRow({ activity }: { activity: ChatActivity }) {
   );
 }
 
-// A contiguous run of answer text — one "bubble" in the trail. The streaming
-// cursor trails the last segment of the in-flight turn.
-function TextSegment({
-  content,
-  streaming = false,
-}: {
-  content: string;
-  streaming?: boolean;
-}) {
-  return (
-    <div>
-      <MessageContent content={content} />
-      {streaming && (
-        <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom rounded-sm" />
-      )}
-    </div>
-  );
-}
-
 // The chronological trail of an assistant turn: reasoning, tool actions, and
 // answer text rendered top-to-bottom in the exact order they streamed. When
-// `streaming`, the final entry carries the live spinner/cursor. Index keys are
+// `streaming`, the final entry renders in its live state. Index keys are
 // safe — the list only ever grows append-only and only its last entry mutates.
 function MessageTrail({
   events,
@@ -382,7 +365,7 @@ function MessageTrail({
         if (ev.kind === "activity") {
           return <ActivityRow key={i} activity={ev.activity} />;
         }
-        return <TextSegment key={i} content={ev.text} streaming={live} />;
+        return <MessageContent key={i} content={ev.text} />;
       })}
     </div>
   );
@@ -442,24 +425,16 @@ const ChatMessageItem = memo(function ChatMessageItem({
   );
 });
 
+// The fidget stays mounted for the entire turn — beneath the trail once events
+// arrive — so the "running" signal never blinks out between tool rounds.
 function StreamingMessage({ events }: { events: ChatEvent[] }) {
   return (
     <div className="px-4 py-3">
       <div className="flex items-center gap-2 mb-1.5">
         <RoleLabel isUser={false} />
       </div>
-      {events.length === 0 ? (
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <span className="flex gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "300ms" }} />
-          </span>
-          Thinking...
-        </div>
-      ) : (
-        <MessageTrail events={events} streaming />
-      )}
+      {events.length > 0 && <MessageTrail events={events} streaming />}
+      <TurnFidget className={events.length > 0 ? "mt-4" : "mt-2"} />
     </div>
   );
 }
@@ -597,6 +572,7 @@ export function ChatPanel() {
   const errorSignInCta = useChatStore((s) => s.errorSignInCta);
   const signIn = useAuthStore((s) => s.signIn);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const stopStreaming = useChatStore((s) => s.stopStreaming);
   const restoreToMessage = useChatStore((s) => s.restoreToMessage);
   const clearHistory = useChatStore((s) => s.clearHistory);
   const setChatOpen = useChatStore((s) => s.setChatOpen);
@@ -615,7 +591,6 @@ export function ChatPanel() {
   // Open while the "start a new chat" confirm is showing — clearing wipes the
   // whole conversation, so it goes through a confirm like restore does.
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Tracks whether the user has scrolled up to read earlier turns. When true,
@@ -629,8 +604,12 @@ export function ChatPanel() {
     textareaRef.current?.focus();
   }, []);
 
+  // Scroll ONLY the message list. scrollIntoView would walk every scrollable
+  // ancestor, so any slightly-overflowed shell container got scrolled too —
+  // visibly dragging the whole panel (input area included) upward.
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = messagesContainerRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
   const handleMessagesScroll = useCallback(() => {
@@ -798,7 +777,6 @@ export function ChatPanel() {
               )
             )}
             {isStreaming && <StreamingMessage events={streamingEvents} />}
-            <div ref={messagesEndRef} />
           </div>
         )}
 
@@ -856,14 +834,25 @@ export function ChatPanel() {
                 className="flex-1 resize-none text-sm bg-background border border-input rounded-md px-3 py-2 outline-none focus:border-ring focus:ring-2 focus:ring-ring/50 disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-muted-foreground"
                 style={{ maxHeight: "144px", fieldSizing: "content" } as React.CSSProperties}
               />
-              <button
-                onClick={handleSend}
-                disabled={isStreaming || aiPending || !input.trim()}
-                className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
-                aria-label="Send message"
-              >
-                <Send className="size-4" />
-              </button>
+              {isStreaming ? (
+                <button
+                  onClick={stopStreaming}
+                  className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  aria-label="Stop response"
+                  title="Stop response"
+                >
+                  <Square className="size-3" fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={aiPending || !input.trim()}
+                  className="size-8 shrink-0 flex items-center justify-center rounded-md bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
+                  aria-label="Send message"
+                >
+                  <Send className="size-4" />
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -886,7 +875,6 @@ export function ChatPanel() {
           title="Start a new chat?"
           message="This clears the entire conversation so you can start fresh. Your circuit is untouched, but the chat history can't be recovered."
           confirmLabel="New chat"
-          destructive
           onConfirm={handleConfirmClear}
         />
       </div>

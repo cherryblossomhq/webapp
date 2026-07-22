@@ -343,28 +343,9 @@ function ActivityRow({ activity }: { activity: ChatActivity }) {
   );
 }
 
-// A contiguous run of answer text — one "bubble" in the trail. The streaming
-// cursor trails the last segment of the in-flight turn.
-function TextSegment({
-  content,
-  streaming = false,
-}: {
-  content: string;
-  streaming?: boolean;
-}) {
-  return (
-    <div>
-      <MessageContent content={content} />
-      {streaming && (
-        <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom rounded-sm" />
-      )}
-    </div>
-  );
-}
-
 // The chronological trail of an assistant turn: reasoning, tool actions, and
 // answer text rendered top-to-bottom in the exact order they streamed. When
-// `streaming`, the final entry carries the live spinner/cursor. Index keys are
+// `streaming`, the final entry renders in its live state. Index keys are
 // safe — the list only ever grows append-only and only its last entry mutates.
 function MessageTrail({
   events,
@@ -383,7 +364,7 @@ function MessageTrail({
         if (ev.kind === "activity") {
           return <ActivityRow key={i} activity={ev.activity} />;
         }
-        return <TextSegment key={i} content={ev.text} streaming={live} />;
+        return <MessageContent key={i} content={ev.text} />;
       })}
     </div>
   );

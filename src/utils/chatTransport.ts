@@ -226,10 +226,11 @@ function httpError(response: Response, body: string): ChatTransportError {
 
 // String payload fields that stream in fragments and must be concatenated when
 // merging one reasoning block, keyed by OpenRouter reasoning detail type.
+// `reasoning.encrypted` is deliberately absent: each encrypted entry is a
+// discrete opaque ciphertext, never a fragment of a larger one.
 const REASONING_CONCAT_FIELDS: Record<string, readonly string[]> = {
   "reasoning.text": ["text", "signature"],
   "reasoning.summary": ["summary"],
-  "reasoning.encrypted": ["data"],
 };
 
 /**
@@ -238,17 +239,21 @@ const REASONING_CONCAT_FIELDS: Record<string, readonly string[]> = {
  * several `reasoning.text` text fragments plus a trailing signature-only
  * fragment, all sharing an `index`); replaying those partial fragments fails
  * Anthropic's thinking-signature validation, which expects each block exactly
- * as the model emitted it. Fragments group by (`index`, `type`, `format`) and
- * merge in arrival order: string payload fields concatenate, every other field
- * keeps the first non-null value. Block order follows first appearance;
- * unknown types and fragments without an integer `index` pass through as-is.
+ * as the model emitted it. Only ADJACENT fragments with the same (`index`,
+ * `type`, `format`) merge — `index` alone is not block identity, since
+ * providers may reuse it across distinct logical blocks — with string payload
+ * fields concatenated and every other field keeping the first non-null value.
+ * Encrypted entries, unknown types, and fragments without an integer `index`
+ * pass through unchanged (and break adjacency for their neighbors).
  */
 export function coalesceReasoningDetails(details: unknown[]): unknown[] {
   const out: unknown[] = [];
-  const blocks = new Map<string, Record<string, unknown>>();
+  // Merge key of the trailing `out` entry, when that entry is mergeable.
+  let lastKey: string | null = null;
   for (const detail of details) {
     if (!isRecord(detail)) {
       out.push(detail);
+      lastKey = null;
       continue;
     }
     const concatFields =
@@ -257,16 +262,16 @@ export function coalesceReasoningDetails(details: unknown[]): unknown[] {
         : undefined;
     if (concatFields === undefined || !Number.isInteger(detail.index)) {
       out.push(detail);
+      lastKey = null;
       continue;
     }
     const key = `${detail.index}|${detail.type}|${String(detail.format)}`;
-    const block = blocks.get(key);
-    if (block === undefined) {
-      const first = { ...detail };
-      blocks.set(key, first);
-      out.push(first);
+    if (key !== lastKey) {
+      out.push({ ...detail });
+      lastKey = key;
       continue;
     }
+    const block = out[out.length - 1] as Record<string, unknown>;
     for (const [field, value] of Object.entries(detail)) {
       if (concatFields.includes(field)) {
         if (typeof value === "string") {

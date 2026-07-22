@@ -323,23 +323,28 @@ describe("OpenRouter streaming", () => {
     expect(turn.reasoning.text).toBe("Let me check the LDO pinout.");
   });
 
-  it("keeps distinct blocks, unknown types, and index-less fragments separate", () => {
+  it("merges only adjacent fragments and passes encrypted blocks through unchanged", () => {
     const merged = coalesceReasoningDetails([
       { type: "reasoning.text", text: "first ", index: 0, format: "anthropic-claude-v1" },
-      { type: "reasoning.encrypted", data: "abc", index: 1, format: "anthropic-claude-v1" },
-      { type: "reasoning.future", text: "un", index: 2 },
-      { type: "reasoning.summary", summary: "no index" },
       { type: "reasoning.text", text: "block", index: 0, format: "anthropic-claude-v1" },
-      { type: "reasoning.encrypted", data: "def", index: 1, format: "anthropic-claude-v1" },
-      { type: "reasoning.future", text: "touched", index: 2 },
+      // Discrete opaque ciphertexts — never concatenated, even when adjacent
+      // with the same index.
+      { type: "reasoning.encrypted", data: "abc", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.encrypted", data: "def", index: 0, format: "anthropic-claude-v1" },
+      // Same index as the first block, but a distinct logical block — index
+      // reuse across nonadjacent fragments must NOT merge.
+      { type: "reasoning.text", text: "second block", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.future", text: "untouched", index: 2 },
+      { type: "reasoning.summary", summary: "no index" },
     ]);
 
     expect(merged).toEqual([
       { type: "reasoning.text", text: "first block", index: 0, format: "anthropic-claude-v1" },
-      { type: "reasoning.encrypted", data: "abcdef", index: 1, format: "anthropic-claude-v1" },
-      { type: "reasoning.future", text: "un", index: 2 },
+      { type: "reasoning.encrypted", data: "abc", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.encrypted", data: "def", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.text", text: "second block", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.future", text: "untouched", index: 2 },
       { type: "reasoning.summary", summary: "no index" },
-      { type: "reasoning.future", text: "touched", index: 2 },
     ]);
   });
 

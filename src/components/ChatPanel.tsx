@@ -591,7 +591,6 @@ export function ChatPanel() {
   // Open while the "start a new chat" confirm is showing — clearing wipes the
   // whole conversation, so it goes through a confirm like restore does.
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Tracks whether the user has scrolled up to read earlier turns. When true,
@@ -605,8 +604,12 @@ export function ChatPanel() {
     textareaRef.current?.focus();
   }, []);
 
+  // Scroll ONLY the message list. scrollIntoView would walk every scrollable
+  // ancestor, so any slightly-overflowed shell container got scrolled too —
+  // visibly dragging the whole panel (input area included) upward.
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = messagesContainerRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
   const handleMessagesScroll = useCallback(() => {
@@ -774,7 +777,6 @@ export function ChatPanel() {
               )
             )}
             {isStreaming && <StreamingMessage events={streamingEvents} />}
-            <div ref={messagesEndRef} />
           </div>
         )}
 

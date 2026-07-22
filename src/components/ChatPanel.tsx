@@ -40,6 +40,7 @@ import { DEFAULT_TSX } from "@/utils/tsxTransform";
 import { copyText, buildSuggestions } from "@/lib/chatMessageUtils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ManagedModelSelector } from "@/components/ManagedModelSelector";
+import { TurnFidget } from "@/components/TurnFidget";
 import { useAiReady } from "@/hooks/useAiReady";
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -442,24 +443,16 @@ const ChatMessageItem = memo(function ChatMessageItem({
   );
 });
 
+// The fidget stays mounted for the entire turn — beneath the trail once events
+// arrive — so the "running" signal never blinks out between tool rounds.
 function StreamingMessage({ events }: { events: ChatEvent[] }) {
   return (
     <div className="px-4 py-3">
       <div className="flex items-center gap-2 mb-1.5">
         <RoleLabel isUser={false} />
       </div>
-      {events.length === 0 ? (
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <span className="flex gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: "300ms" }} />
-          </span>
-          Thinking...
-        </div>
-      ) : (
-        <MessageTrail events={events} streaming />
-      )}
+      {events.length > 0 && <MessageTrail events={events} streaming />}
+      <TurnFidget className={events.length > 0 ? "mt-2" : undefined} />
     </div>
   );
 }

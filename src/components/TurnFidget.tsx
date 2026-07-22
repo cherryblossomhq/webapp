@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import styles from "./TurnFidget.module.css";
 
@@ -7,10 +7,10 @@ const DOTS = Array.from({ length: 9 }, (_, i) => i);
 // Isolated so the 100ms tick only re-renders this tiny readout, never the
 // streaming message trail above it.
 function ElapsedTime() {
-  const start = useRef(Date.now());
-  const [now, setNow] = useState(start.current);
+  const [elapsedMs, setElapsedMs] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 100);
+    const start = Date.now();
+    const id = setInterval(() => setElapsedMs(Date.now() - start), 100);
     return () => clearInterval(id);
   }, []);
   // aria-hidden: this text mutates every 100ms and sits inside the chat's
@@ -18,7 +18,7 @@ function ElapsedTime() {
   // sr-only status below carries the accessible signal instead.
   return (
     <span className="text-xs tabular-nums" aria-hidden="true">
-      {((now - start.current) / 1000).toFixed(1)}s
+      {(elapsedMs / 1000).toFixed(1)}s
     </span>
   );
 }

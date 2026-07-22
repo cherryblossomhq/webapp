@@ -13,8 +13,11 @@ function ElapsedTime() {
     const id = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(id);
   }, []);
+  // aria-hidden: this text mutates every 100ms and sits inside the chat's
+  // live region — announcing it would drown screen readers. The static
+  // sr-only status below carries the accessible signal instead.
   return (
-    <span className="text-xs tabular-nums">
+    <span className="text-xs tabular-nums" aria-hidden="true">
       {((now - start.current) / 1000).toFixed(1)}s
     </span>
   );
@@ -26,17 +29,17 @@ function ElapsedTime() {
 // tool round-trips — so it stays mounted from send until the turn settles.
 export function TurnFidget({ className }: { className?: string }) {
   return (
-    <div
-      role="status"
-      aria-label="Assistant is working"
-      className={cn("flex items-center gap-2 text-muted-foreground", className)}
-    >
+    <div className={cn("flex items-center gap-2 text-muted-foreground", className)}>
       <span className={styles.matrix} aria-hidden="true">
         {DOTS.map((i) => (
           <span key={i} className={styles.dot} />
         ))}
       </span>
       <ElapsedTime />
+      {/* Static text so the status announces once, not on every timer tick. */}
+      <span role="status" className="sr-only">
+        Assistant is working
+      </span>
     </div>
   );
 }

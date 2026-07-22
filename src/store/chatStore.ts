@@ -545,6 +545,35 @@ function toPersistedTranscript(
   return out;
 }
 
+// Tools whose effects live in per-turn state (workingTsx, importedDefs) that
+// an abandoned turn throws away. Their recorded results claim success, so a
+// stopped/interrupted turn's transcript must overwrite them before persisting
+// — otherwise the next turn replays "edit applied" / "component imported"
+// against a circuit that never changed. Read-only tools (search, footprint,
+// datasheet) stay: their results remain true and useful.
+const DISCARDED_TOOLS = new Set(["edit_tsx", "write_tsx", "import_component"]);
+const DISCARDED_NOTE =
+  "[Discarded — this response was cut short, so this tool call's changes were never applied to the circuit.]";
+
+function markDiscardedMutations(
+  loopMessages: OpenRouterMessage[]
+): OpenRouterMessage[] {
+  const discardedIds = new Set<string>();
+  for (const m of loopMessages) {
+    for (const tc of m.tool_calls ?? []) {
+      if (DISCARDED_TOOLS.has(tc.function.name)) discardedIds.add(tc.id);
+    }
+  }
+  if (discardedIds.size === 0) return loopMessages;
+  return loopMessages.map((m) =>
+    m.role === "tool" &&
+    m.tool_call_id !== undefined &&
+    discardedIds.has(m.tool_call_id)
+      ? { ...m, content: DISCARDED_NOTE }
+      : m
+  );
+}
+
 const asString = (v: unknown): string =>
   typeof v === "string" ? v : v == null ? "" : String(v);
 
@@ -1304,7 +1333,7 @@ export const useChatStore = create<ChatStore>()(
         if (fullResponse) {
           const stoppedNote = "\n\n---\n*[Stopped by user]*";
           const toolTranscript = toPersistedTranscript(
-            apiMessages.slice(historyLength)
+            markDiscardedMutations(apiMessages.slice(historyLength))
           );
           const partialMessage: ChatMessage = {
             id: crypto.randomUUID(),
@@ -1329,9 +1358,10 @@ export const useChatStore = create<ChatStore>()(
           "\n\n---\n*[Response interrupted — connection or API error]*";
         // Rounds are appended atomically (assistant tool_calls + all results
         // together), so even on a mid-turn failure the recorded transcript is
-        // complete and safe to replay.
+        // complete and safe to replay. Mutating-tool results are overwritten
+        // first: this turn's working TSX and imports die with the error.
         const toolTranscript = toPersistedTranscript(
-          apiMessages.slice(historyLength)
+          markDiscardedMutations(apiMessages.slice(historyLength))
         );
         const partialMessage: ChatMessage = {
           id: crypto.randomUUID(),

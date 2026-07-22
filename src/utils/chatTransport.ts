@@ -224,6 +224,63 @@ function httpError(response: Response, body: string): ChatTransportError {
   return new ChatTransportError(`${response.status}:${body}`, response);
 }
 
+// String payload fields that stream in fragments and must be concatenated when
+// merging one reasoning block, keyed by OpenRouter reasoning detail type.
+const REASONING_CONCAT_FIELDS: Record<string, readonly string[]> = {
+  "reasoning.text": ["text", "signature"],
+  "reasoning.summary": ["summary"],
+  "reasoning.encrypted": ["data"],
+};
+
+/**
+ * Merge streamed `reasoning_details` fragments into one complete entry per
+ * reasoning block. Providers split a block across SSE chunks (for Claude:
+ * several `reasoning.text` text fragments plus a trailing signature-only
+ * fragment, all sharing an `index`); replaying those partial fragments fails
+ * Anthropic's thinking-signature validation, which expects each block exactly
+ * as the model emitted it. Fragments group by (`index`, `type`, `format`) and
+ * merge in arrival order: string payload fields concatenate, every other field
+ * keeps the first non-null value. Block order follows first appearance;
+ * unknown types and fragments without an integer `index` pass through as-is.
+ */
+export function coalesceReasoningDetails(details: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  const blocks = new Map<string, Record<string, unknown>>();
+  for (const detail of details) {
+    if (!isRecord(detail)) {
+      out.push(detail);
+      continue;
+    }
+    const concatFields =
+      typeof detail.type === "string"
+        ? REASONING_CONCAT_FIELDS[detail.type]
+        : undefined;
+    if (concatFields === undefined || !Number.isInteger(detail.index)) {
+      out.push(detail);
+      continue;
+    }
+    const key = `${detail.index}|${detail.type}|${String(detail.format)}`;
+    const block = blocks.get(key);
+    if (block === undefined) {
+      const first = { ...detail };
+      blocks.set(key, first);
+      out.push(first);
+      continue;
+    }
+    for (const [field, value] of Object.entries(detail)) {
+      if (concatFields.includes(field)) {
+        if (typeof value === "string") {
+          const prev = block[field];
+          block[field] = typeof prev === "string" ? prev + value : value;
+        }
+      } else if (block[field] === undefined || block[field] === null) {
+        block[field] = value;
+      }
+    }
+  }
+  return out;
+}
+
 function reasoningText(details: unknown[]): string {
   let text = "";
   for (const detail of details) {
@@ -336,7 +393,7 @@ async function streamOpenRouterTurn(
       }),
     reasoning: {
       text: fullReasoning,
-      details: reasoningDetails,
+      details: coalesceReasoningDetails(reasoningDetails),
     },
     finishReason,
   };

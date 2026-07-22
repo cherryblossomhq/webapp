@@ -19,6 +19,7 @@ import {
   CHAT_TOOLS,
   ChatTransportError,
   OPENROUTER_CHAT_COMPLETIONS_URL,
+  coalesceReasoningDetails,
   completeText,
   fetchDatasheet,
   lookupFootprint,
@@ -285,6 +286,61 @@ describe("OpenRouter streaming", () => {
       },
     ]);
     expect(replayMessages[0]).not.toHaveProperty("reasoning");
+  });
+
+  it("merges a Claude stream's reasoning fragments into one block per index", async () => {
+    // Recorded shape of an Anthropic response through OpenRouter: the thinking
+    // text streams as several reasoning.text fragments, then the block's
+    // signature arrives in a final text-less fragment — all with index 0.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"Let me check ","format":"anthropic-claude-v1","index":0,"id":null}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"the LDO pinout.","format":"anthropic-claude-v1","index":0,"id":null}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"EqQBCkYIBRgC","format":"anthropic-claude-v1","index":0,"id":"rs_1"}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const turn = await streamTurn({
+      auth: managedAuth,
+      model: "anthropic/claude-opus-4.8",
+      system: [],
+      messages: [{ role: "user", content: "go" }],
+      thinkingEffort: "high",
+    });
+
+    expect(turn.reasoning.details).toEqual([
+      {
+        type: "reasoning.text",
+        text: "Let me check the LDO pinout.",
+        signature: "EqQBCkYIBRgC",
+        format: "anthropic-claude-v1",
+        index: 0,
+        id: "rs_1",
+      },
+    ]);
+    expect(turn.reasoning.text).toBe("Let me check the LDO pinout.");
+  });
+
+  it("keeps distinct blocks, unknown types, and index-less fragments separate", () => {
+    const merged = coalesceReasoningDetails([
+      { type: "reasoning.text", text: "first ", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.encrypted", data: "abc", index: 1, format: "anthropic-claude-v1" },
+      { type: "reasoning.future", text: "un", index: 2 },
+      { type: "reasoning.summary", summary: "no index" },
+      { type: "reasoning.text", text: "block", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.encrypted", data: "def", index: 1, format: "anthropic-claude-v1" },
+      { type: "reasoning.future", text: "touched", index: 2 },
+    ]);
+
+    expect(merged).toEqual([
+      { type: "reasoning.text", text: "first block", index: 0, format: "anthropic-claude-v1" },
+      { type: "reasoning.encrypted", data: "abcdef", index: 1, format: "anthropic-claude-v1" },
+      { type: "reasoning.future", text: "un", index: 2 },
+      { type: "reasoning.summary", summary: "no index" },
+      { type: "reasoning.future", text: "touched", index: 2 },
+    ]);
   });
 
   it("sends the conversation trace id as X-Trace-Id and omits the header when absent", async () => {

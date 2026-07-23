@@ -35,7 +35,6 @@ const meResponse: MeResponse = {
     monthlyTokens: 124_500,
     monthResetsAt: 1_786_982_400_000,
   },
-  unlimitedCredits: false,
 };
 
 afterEach(() => {

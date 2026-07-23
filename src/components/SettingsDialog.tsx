@@ -195,7 +195,7 @@ function MonthlyUsage({
 }) {
   const used = Math.max(0, account.usage.monthlyTokens);
   const limit = Math.max(0, account.limits.monthlyTokens);
-  const hasLimit = !account.unlimitedCredits && limit > 0;
+  const hasLimit = limit > 0;
   const rawPercent = hasLimit ? (used / limit) * 100 : 0;
   const percent = Math.min(100, Math.max(0, rawPercent));
   const percentLabel = new Intl.NumberFormat(undefined, {
@@ -219,11 +219,7 @@ function MonthlyUsage({
         </div>
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-medium tabular-nums">
-            {account.unlimitedCredits
-              ? "Unlimited"
-              : hasLimit
-                ? `${percentLabel}% used`
-                : "No allowance"}
+            {hasLimit ? `${percentLabel}% used` : "No allowance"}
           </span>
           <Button
             variant="ghost"
@@ -260,11 +256,9 @@ function MonthlyUsage({
 
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span className="tabular-nums">
-          {account.unlimitedCredits
-            ? `${TOKEN_FORMATTER.format(used)} tokens used`
-            : hasLimit
-              ? `${TOKEN_FORMATTER.format(used)} of ${TOKEN_FORMATTER.format(limit)} tokens`
-              : "No monthly tokens included"}
+          {hasLimit
+            ? `${TOKEN_FORMATTER.format(used)} of ${TOKEN_FORMATTER.format(limit)} tokens`
+            : "No monthly tokens included"}
         </span>
         {resetDate && <span className="shrink-0">Resets {resetDate}</span>}
       </div>

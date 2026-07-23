@@ -26,7 +26,6 @@ export interface MeResponse {
     monthlyTokens: number;
     monthResetsAt: number | null;
   };
-  unlimitedCredits: boolean;
 }
 
 interface ApiErrorResponse {
@@ -88,7 +87,7 @@ function isApiErrorResponse(value: unknown): value is ApiErrorResponse {
 
 function isMeResponse(value: unknown): value is MeResponse {
   if (!isRecord(value)) return false;
-  const { user, plan, limits, usage, unlimitedCredits } = value;
+  const { user, plan, limits, usage } = value;
   return (
     isRecord(user) &&
     typeof user.id === "string" &&
@@ -111,8 +110,7 @@ function isMeResponse(value: unknown): value is MeResponse {
     isFiniteNumber(usage.requestsThisDay) &&
     isNullableNumber(usage.dayResetsAt) &&
     isFiniteNumber(usage.monthlyTokens) &&
-    isNullableNumber(usage.monthResetsAt) &&
-    typeof unlimitedCredits === "boolean"
+    isNullableNumber(usage.monthResetsAt)
   );
 }
 

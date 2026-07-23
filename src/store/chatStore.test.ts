@@ -263,7 +263,6 @@ function setManagedAccount(
       monthlyTokens: 0,
       monthResetsAt: null,
     },
-    unlimitedCredits: false,
   };
   useAccountStore.setState({
     account,

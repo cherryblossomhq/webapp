@@ -49,7 +49,6 @@ function account(
       monthlyTokens: 0,
       monthResetsAt: null,
     },
-    unlimitedCredits: false,
   };
 }
 

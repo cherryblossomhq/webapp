@@ -43,7 +43,6 @@ function account(allowedModels: string[]): MeResponse {
       monthlyTokens: 0,
       monthResetsAt: null,
     },
-    unlimitedCredits: false,
   };
 }
 
@@ -96,23 +95,6 @@ describe("SettingsDialog account usage", () => {
       "aria-valuemax",
       "2000000",
     );
-  });
-
-  it("shows unlimited usage without a bounded progress bar", () => {
-    const currentAccount = account(["anthropic/claude-opus-4.8"]);
-    currentAccount.unlimitedCredits = true;
-    currentAccount.usage.monthlyTokens = 131_513;
-    useAccountStore.setState({
-      account: currentAccount,
-      accountUserId: user.id,
-      status: "ready",
-    });
-
-    render(<SettingsDialog />);
-
-    expect(screen.getByText("Unlimited")).toBeInTheDocument();
-    expect(screen.getByText("131,513 tokens used")).toBeInTheDocument();
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("shows plans without a monthly allowance", () => {

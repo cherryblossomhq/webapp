@@ -2,15 +2,17 @@ import { describe, expect, it } from "vitest";
 import { buildDynamicContext, buildSystemPrompt } from "./chatSystemPrompt";
 
 describe("chat system prompt contracts", () => {
-  it("describes the canonical module format and tool-only edit contract", () => {
+  it("describes the canonical module and circuit-mutating tool contract", () => {
     const prompt = buildSystemPrompt();
 
     expect(prompt).toContain("export default () => (<board>");
-    expect(prompt).toContain("only the `edit_tsx` and `write_tsx` tools change");
+    expect(prompt).toContain("only circuit-mutating tools change the circuit");
     expect(prompt).toContain("do NOT emit `schX` / `schY` / `schRotation`");
+    expect(prompt).toContain("finish_circuit_edit");
+    expect(prompt).toContain("untrusted reference data");
   });
 
-  it("keeps PCB move/rotate guidance consistent between static and dynamic context", () => {
+  it("keeps PCB layout guidance consistent between static and dynamic context", () => {
     const prompt = buildSystemPrompt();
     const context = buildDynamicContext(
       "export default () => (<board />)",
@@ -18,19 +20,15 @@ describe("chat system prompt contracts", () => {
       "50mm",
       "50mm",
       undefined,
-      "pcb"
+      "pcb",
     );
 
-    expect(prompt).toContain(
-      '**Layout** ("move R5 to the corner", "rotate U1 90°"'
-    );
-    expect(prompt).toContain("→ `edit_tsx`");
-    expect(context).toContain(
-      "Move, rotate, resize-board, component-add, and wiring requests use edit_tsx"
-    );
-    expect(context).toContain(
-      "Copper-layer and routing requests must be answered in prose"
-    );
+    expect(prompt).toContain('**Layout** ("move R5 to the corner", "rotate U1 90°"');
+    expect(prompt).toContain("→ `update_component` / `set_board`");
+    expect(context).toContain("Move and rotate requests use update_component");
+    expect(context).toContain("board resize and copper-layer-count requests use set_board");
+    expect(context).toContain("component-add and wiring requests use semantic circuit tools");
+    expect(context).toContain("Component copper-side assignment and routing requests must be answered in prose");
   });
 
   it.each([
@@ -45,7 +43,7 @@ describe("chat system prompt contracts", () => {
       "50mm",
       "50mm",
       undefined,
-      view
+      view,
     );
 
     expect(context).toContain(expected);
@@ -70,7 +68,7 @@ describe("chat system prompt contracts", () => {
         },
       ],
       [{ name: "U1", summary: "3.3 V regulator" }],
-      "Keep the board compact."
+      "Keep the board compact.",
     );
 
     expect(context).toContain("Components: 1 | Board: 60mm × 40mm");
@@ -81,5 +79,49 @@ describe("chat system prompt contracts", () => {
     expect(context).toContain("- U1: 3.3 V regulator");
     expect(context).toContain("## Footprint Issues");
     expect(context).toContain("R1 is invalid");
+  });
+});
+
+describe("buildDynamicContext", () => {
+  it("injects the circuit manifest and source-aware datasheet evidence", () => {
+    const tsx = `export default () => (
+      <board width="20mm" height="15mm">
+        <resistor name="R1" resistance="10k" connections={{ pin1: "net.VCC" }} />
+      </board>
+    )`;
+    const context = buildDynamicContext(
+      tsx,
+      1,
+      "20mm",
+      "15mm",
+      undefined,
+      "schematic",
+      null,
+      [],
+      [
+        {
+          name: "U1",
+          summary: "V_in 2.7 V-5.5 V",
+          evidence: ["vin_max=5.5 V (p. 3, high)"],
+          sourceUrl: "https://example.com/u1.pdf",
+        },
+      ],
+      null,
+      [
+        {
+          id: "missing-pin",
+          type: "connectivity_error",
+          message: "U1.VCC is missing",
+          severity: "error",
+        },
+      ],
+    );
+
+    expect(context).toContain("## Circuit Manifest");
+    expect(context).toContain("- net.VCC [power]: R1.pin1");
+    expect(context).toContain("[error] connectivity_error: U1.VCC is missing");
+    expect(context).toContain("Evidence: vin_max=5.5 V (p. 3, high)");
+    expect(context).toContain("Source: https://example.com/u1.pdf");
+    expect(context).toContain("## Current Circuit TSX");
   });
 });

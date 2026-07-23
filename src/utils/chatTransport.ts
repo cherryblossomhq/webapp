@@ -257,7 +257,8 @@ export function coalesceReasoningDetails(details: unknown[]): unknown[] {
       continue;
     }
     const concatFields =
-      typeof detail.type === "string"
+      typeof detail.type === "string" &&
+      Object.hasOwn(REASONING_CONCAT_FIELDS, detail.type)
         ? REASONING_CONCAT_FIELDS[detail.type]
         : undefined;
     if (concatFields === undefined || !Number.isInteger(detail.index)) {

@@ -5,16 +5,12 @@
 // Keep all chat HTTP in this file.
 
 import { fetchAndSummarize, renderForModel } from "./datasheets";
-import { getPostHogDistinctId } from "./analytics";
+import { SEMANTIC_CIRCUIT_TOOLS } from "../ai/semanticCircuitTools";
 
 // Credential + routing for one model call through Cherry Blossom's OpenRouter
-// proxy. `token` is the signed-in user's WorkOS access token, or null for
-// anonymous (token-less) access — the proxy then rate-limits per client IP and
-// only allows the free anonymous model. An invalid token does NOT fall back to
-// anonymous server-side, so callers must send null only when genuinely signed
-// out, never as a retry for a failed token.
+// proxy, authenticated by the signed-in user's WorkOS access token.
 export interface OpenRouterAuth {
-  token: string | null;
+  token: string;
   url: string;
 }
 
@@ -52,14 +48,9 @@ function postJson(
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
+    authorization: `Bearer ${auth.token}`,
   };
-  if (auth.token !== null) headers.authorization = `Bearer ${auth.token}`;
   if (traceId) headers["x-trace-id"] = traceId;
-  // Lets the server's $ai_generation events join this browser's PostHog person
-  // profile (it ignores the header for signed-in requests). Omitted entirely
-  // when PostHog is unavailable — never sent empty.
-  const distinctId = getPostHogDistinctId();
-  if (distinctId) headers["x-posthog-distinct-id"] = distinctId;
   return fetch(auth.url, {
     method: "POST",
     headers,
@@ -89,18 +80,15 @@ export interface ChatTurnResult {
 
 export interface StreamTurnArgs {
   auth: OpenRouterAuth;
-  /**
-   * Canonical OpenRouter model id. Omit on anonymous (token-less) requests —
-   * the `model` field is then left out of the payload entirely and the proxy
-   * picks the first model from its ordered anonymous allow-list server-side.
-   */
-  model?: string;
+  model: string;
   /** Already-shaped system blocks (caller owns the `cache_control` breakpoint). */
   system: unknown[];
   /** Already-shaped messages array (strings or content-block arrays). */
   messages: unknown[];
   /** OpenRouter function definitions; omit / empty to force a tool-free turn. */
   tools?: ChatToolDefinition[];
+  /** Require at least one tool call for this turn instead of leaving it optional. */
+  toolChoice?: "auto" | "required";
   /** Adaptive-thinking effort (e.g. "high"); omit to disable thinking. */
   thinkingEffort?: string;
   /** Stable, non-sensitive conversation ID used for provider affinity. */
@@ -240,16 +228,16 @@ async function streamOpenRouterTurn(
   maxTokens: number
 ): Promise<ChatTurnResult> {
   const body: Record<string, unknown> = {
+    model: args.model,
     messages: toOpenRouterMessages(args.system, args.messages),
     max_tokens: maxTokens,
     stream: true,
     cache_control: { type: "ephemeral" },
   };
-  if (args.model) body.model = args.model;
   if (args.sessionId) body.session_id = args.sessionId;
   if (args.tools && args.tools.length > 0) {
     body.tools = args.tools;
-    body.tool_choice = "auto";
+    body.tool_choice = args.toolChoice ?? "auto";
   }
   if (args.thinkingEffort) {
     body.reasoning = { effort: args.thinkingEffort };
@@ -358,8 +346,7 @@ export async function streamTurn(
 
 export interface CompleteTextArgs {
   auth: OpenRouterAuth;
-  /** Omit on anonymous requests — see StreamTurnArgs.model. */
-  model?: string;
+  model: string;
   messages: unknown[];
   system?: unknown[];
   maxTokens: number;
@@ -382,12 +369,12 @@ function responseText(content: unknown): string {
 /** Non-streaming text completion used by the datasheet summarizer. */
 export async function completeText(args: CompleteTextArgs): Promise<string> {
   const system = args.system ?? [];
-  const body: Record<string, unknown> = {
+  const body = {
+    model: args.model,
     max_tokens: args.maxTokens,
     messages: toOpenRouterMessages(system, args.messages),
     stream: false,
   };
-  if (args.model) body.model = args.model;
   const response = await postJson(args.auth, body, args.signal, args.traceId);
   if (!response.ok) {
     throw httpError(response, await response.text().catch(() => ""));
@@ -531,7 +518,7 @@ export async function lookupFootprint(lcscId?: string, mpn?: string): Promise<st
 
 export async function fetchDatasheet(
   auth: OpenRouterAuth,
-  model: string | undefined,
+  model: string,
   lcscId: string,
   mpn?: string,
   traceId?: string
@@ -619,6 +606,27 @@ export const CHAT_TOOLS: ChatToolDefinition[] = [
           },
         },
         required: ["tsx"],
+      },
+    },
+  },
+  ...SEMANTIC_CIRCUIT_TOOLS,
+  {
+    type: "function",
+    function: {
+      name: "finish_circuit_edit",
+      description:
+        "Signals that every requested circuit mutation is included in this same assistant response. Call it once, alongside and after the final circuit-mutating tool calls, so Cherry Blossom can validate and commit immediately without another model round. Do not call it when research, imports, wiring, or other requested changes still remain. Calling it without a successful mutation does not commit anything.",
+      parameters: {
+        type: "object",
+        properties: {
+          summary: {
+            type: "string",
+            description:
+              "A concise past-tense summary of the completed circuit change, suitable to show directly to the user.",
+          },
+        },
+        required: ["summary"],
+        additionalProperties: false,
       },
     },
   },

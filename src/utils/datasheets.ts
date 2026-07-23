@@ -6,8 +6,8 @@
 // EasyEDA and the LCSC datasheet CDNs don't send CORS headers, so both fetches
 // go through the same-origin `/api/proxy` endpoint (see proxy-fetch.ts). A PDF
 // whose host falls outside the proxy allowlist simply fails the download and
-// we fall back to a metadata-only model summary — same graceful degradation as
-// a missing datasheet.
+// we return an explicitly unverified summary rather than guessing from the part
+// number.
 //
 // Summaries are cached in localStorage so we only invoke the helper once per
 // part — subsequent calls just read the JSON. The summary is also surfaced to
@@ -17,9 +17,21 @@ import { proxyFetch } from "./proxy-fetch";
 import { completeText, type OpenRouterAuth } from "./chatTransport";
 
 const MAX_PDF_BYTES = 12 * 1024 * 1024; // 12 MiB hard cap
-const CACHE_PREFIX = "cherryblossom:datasheet:";
+const CACHE_PREFIX = "cherryblossom:datasheet:v2:";
+
+export type DatasheetEvidenceConfidence = "high" | "medium" | "low";
+export type DatasheetSourceKind = "datasheet_pdf" | "identifier_only";
+
+export interface DatasheetEvidence {
+  field: string;
+  value: string;
+  page?: number;
+  section?: string;
+  confidence: DatasheetEvidenceConfidence;
+}
 
 export interface DatasheetSummary {
+  schema_version: 2;
   lcsc_id: string;
   mpn?: string;
   vin_min?: string;
@@ -31,6 +43,8 @@ export interface DatasheetSummary {
   typical_apps?: string;
   gotchas?: string;
   source_url?: string;
+  source_kind: DatasheetSourceKind;
+  evidence: DatasheetEvidence[];
   /** One-line condensation suitable for the design AI's dynamic context. */
   summary_line: string;
 }
@@ -38,6 +52,8 @@ export interface DatasheetSummary {
 export interface NamedSummary {
   name: string;
   summary: string;
+  evidence?: string[];
+  sourceUrl?: string;
 }
 
 function normalizeLcsc(raw: string): string {
@@ -50,7 +66,11 @@ function readCache(lcscId: string): DatasheetSummary | null {
     const raw = localStorage.getItem(CACHE_PREFIX + lcscId);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as DatasheetSummary;
-    return typeof parsed.summary_line === "string" ? parsed : null;
+    return parsed.schema_version === 2 &&
+      typeof parsed.summary_line === "string" &&
+      Array.isArray(parsed.evidence)
+      ? parsed
+      : null;
   } catch {
     return null;
   }
@@ -152,8 +172,8 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 async function extractViaModel(
   auth: OpenRouterAuth,
-  model: string | undefined,
-  pdfBytes: Uint8Array | null,
+  model: string,
+  pdfBytes: Uint8Array,
   lcscId: string,
   mpn?: string,
   traceId?: string
@@ -170,31 +190,67 @@ async function extractViaModel(
     '  "pinout": "compact pin map, one line per pin",\n' +
     '  "key_features": "3-5 bullet points",\n' +
     '  "typical_apps": "one short sentence",\n' +
-    '  "gotchas": "any non-obvious application caveats (e.g. needs bootstrap cap, max V_in absolute, polarity)"\n' +
+    '  "gotchas": "any non-obvious application caveats (e.g. needs bootstrap cap, max V_in absolute, polarity)",\n' +
+    '  "evidence": [{ "field": "vin_max", "value": "5.5 V", "page": 3, "section": "Recommended operating conditions", "confidence": "high" }]\n' +
     "}\n" +
     "If the datasheet contradicts the JLCPCB metadata, trust the datasheet.\n" +
+    "Every non-null field MUST have at least one matching evidence item. Page is the printed PDF page when visible; otherwise omit it and include the section. " +
+    "A datasheet PDF is attached. Ground every claim in that document.\n" +
     "Do NOT include markdown fences or commentary — JSON only.";
 
-  const content: unknown[] = [];
-  if (pdfBytes) {
-    content.push({
-      type: "file",
-      file: {
-        filename: `${lcscId}-datasheet.pdf`,
-        file_data: `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`,
-      },
-    });
-  }
+  const content: unknown[] = [{
+    type: "file",
+    file: {
+      filename: `${lcscId}-datasheet.pdf`,
+      file_data: `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`,
+    },
+  }];
   content.push({ type: "text", text: extractionPrompt });
 
   const answer = await completeText({
     auth,
     model,
-    maxTokens: 1024,
+    maxTokens: 1800,
     messages: [{ role: "user", content }],
     traceId,
   });
   if (!answer) throw new Error("Datasheet helper returned no text");
+  return parseDatasheetExtraction(
+    answer,
+    lcscId,
+    mpn,
+    "datasheet_pdf"
+  );
+}
+
+function unavailableSummary(lcscId: string, mpn?: string): DatasheetSummary {
+  return {
+    schema_version: 2,
+    lcsc_id: lcscId,
+    mpn,
+    source_kind: "identifier_only",
+    evidence: [],
+    summary_line: "datasheet unavailable; electrical limits are unverified",
+  };
+}
+
+const EVIDENCE_FIELDS = new Set([
+  "vin_min",
+  "vin_max",
+  "iout_max",
+  "topology",
+  "pinout",
+  "key_features",
+  "typical_apps",
+  "gotchas",
+]);
+
+export function parseDatasheetExtraction(
+  answer: string,
+  lcscId: string,
+  mpn: string | undefined,
+  sourceKind: DatasheetSourceKind
+): DatasheetSummary {
 
   // Models sometimes add a leading "Here's the JSON:" preamble despite the
   // instruction. Slice from the first { to the last }.
@@ -215,25 +271,82 @@ async function extractViaModel(
 
   const s = (key: string): string | undefined => {
     const v = parsed[key];
-    return typeof v === "string" && v !== "" && v !== "null" ? v : undefined;
+    if (typeof v !== "string") return undefined;
+    const trimmed = v.trim();
+    return trimmed !== "" && trimmed.toLowerCase() !== "null"
+      ? trimmed
+      : undefined;
   };
 
-  const topology = s("topology");
-  const vinMin = s("vin_min");
-  const vinMax = s("vin_max");
-  const ioutMax = s("iout_max");
+  const evidence: DatasheetEvidence[] = [];
+  if (sourceKind === "datasheet_pdf" && Array.isArray(parsed.evidence)) {
+    for (const item of parsed.evidence) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const record = item as Record<string, unknown>;
+      const field = typeof record.field === "string" ? record.field.trim() : "";
+      const value = typeof record.value === "string" ? record.value.trim() : "";
+      const confidence = record.confidence;
+      if (
+        !EVIDENCE_FIELDS.has(field) ||
+        !value ||
+        (confidence !== "high" && confidence !== "medium" && confidence !== "low")
+      ) {
+        continue;
+      }
+      const page =
+        typeof record.page === "number" &&
+        Number.isInteger(record.page) &&
+        record.page > 0
+          ? record.page
+          : undefined;
+      const section =
+        typeof record.section === "string" && record.section.trim()
+          ? record.section.trim()
+          : undefined;
+      if (page === undefined && section === undefined) continue;
+      evidence.push({ field, value, page, section, confidence });
+    }
+  }
+
+  const normalizeEvidenceValue = (value: string): string =>
+    value
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[µμ]/g, "u")
+      .replace(/[‐‑‒–—−]/g, "-")
+      .replace(/\s+/g, "");
+
+  const grounded = (key: string): string | undefined => {
+    const claim = s(key);
+    if (!claim) return undefined;
+    const normalizedClaim = normalizeEvidenceValue(claim);
+    const matchingEvidence = evidence.find(
+      (item) =>
+        item.field === key &&
+        normalizeEvidenceValue(item.value) === normalizedClaim
+    );
+    return matchingEvidence?.value;
+  };
+
+  const topology = grounded("topology");
+  const vinMin = grounded("vin_min");
+  const vinMax = grounded("vin_max");
+  const ioutMax = grounded("iout_max");
 
   return {
+    schema_version: 2,
     lcsc_id: lcscId,
     mpn,
     vin_min: vinMin,
     vin_max: vinMax,
     iout_max: ioutMax,
     topology,
-    pinout: s("pinout"),
-    key_features: s("key_features"),
-    typical_apps: s("typical_apps"),
-    gotchas: s("gotchas"),
+    pinout: grounded("pinout"),
+    key_features: grounded("key_features"),
+    typical_apps: grounded("typical_apps"),
+    gotchas: grounded("gotchas"),
+    source_kind: sourceKind,
+    evidence,
     summary_line: buildSummaryLine(topology, vinMin, vinMax, ioutMax),
   };
 }
@@ -269,13 +382,25 @@ export function renderForModel(summary: DatasheetSummary): string {
   for (const [label, val] of pairs) {
     if (val) out += `- ${label}: ${val}\n`;
   }
+  if (summary.evidence.length > 0) {
+    out += "Evidence:\n";
+    for (const evidence of summary.evidence) {
+      const location = [
+        evidence.page ? `p. ${evidence.page}` : "",
+        evidence.section ?? "",
+      ].filter(Boolean).join(", ");
+      out += `- ${evidence.field}: ${evidence.value} (${location}; ${evidence.confidence} confidence)\n`;
+    }
+  } else {
+    out += "Evidence: unavailable; do not treat unspecified limits as verified.\n";
+  }
   if (summary.source_url) out += `Source: ${summary.source_url}\n`;
   return out;
 }
 
 export async function fetchAndSummarize(
   auth: OpenRouterAuth,
-  model: string | undefined,
+  model: string,
   lcscIdRaw: string,
   mpn?: string,
   traceId?: string
@@ -285,18 +410,20 @@ export async function fetchAndSummarize(
   const cached = readCache(lcscId);
   if (cached) return cached;
 
-  // Discover the datasheet URL. Failure here is non-fatal — we fall back to a
-  // metadata-only helper-model call.
+  // Discover the datasheet URL. Failure here is non-fatal, but the identifier-
+  // only fallback is forbidden from inventing electrical specifications.
   let datasheetUrl: string | null = null;
   try {
     datasheetUrl = await findDatasheetUrl(lcscId);
   } catch {
-    // No datasheet URL — the metadata-only path below still works.
+    // No datasheet URL — the identifier-only path below still returns safely.
   }
 
   const pdfBytes = datasheetUrl ? await downloadPdf(datasheetUrl) : null;
 
-  const summary = await extractViaModel(auth, model, pdfBytes, lcscId, mpn, traceId);
+  const summary = pdfBytes
+    ? await extractViaModel(auth, model, pdfBytes, lcscId, mpn, traceId)
+    : unavailableSummary(lcscId, mpn);
   summary.source_url = datasheetUrl ?? undefined;
 
   writeCache(summary);
@@ -329,7 +456,18 @@ export function listCachedDatasheets(names: string[]): NamedSummary[] {
         !!mpnUpper && (upper.includes(mpnUpper) || mpnUpper.includes(upper));
       const matchesLcsc = upper === s.lcsc_id.toUpperCase();
       if (matchesMpn || matchesLcsc) {
-        out.push({ name, summary: s.summary_line });
+        out.push({
+          name,
+          summary: s.summary_line,
+          evidence: s.evidence.slice(0, 6).map((item) => {
+            const location = [
+              item.page ? `p. ${item.page}` : "",
+              item.section ?? "",
+            ].filter(Boolean).join(", ");
+            return `${item.field}=${item.value} (${location}, ${item.confidence})`;
+          }),
+          sourceUrl: s.source_url,
+        });
         break;
       }
     }

@@ -234,7 +234,10 @@ interface CircuitStore {
   // Applies an AI-authored TSX edit. Returns `true` if it changed the circuit,
   // `false` if the (key-injected) TSX is byte-identical to the current code — a
   // no-op echo the caller should not run a validation cycle on.
-  applyAiEdit: (tsxCode: string) => boolean;
+  applyAiEdit: (
+    tsxCode: string,
+    validatedCircuitJson?: AnyCircuitElement[]
+  ) => boolean;
   circuitJson: AnyCircuitElement[] | null;
   setCircuitJson: (json: AnyCircuitElement[]) => void;
   isValidating: boolean;
@@ -1016,7 +1019,7 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
 
   // ─── AI ───────────────────────────────────────────────────────────────────
 
-  applyAiEdit: (tsxCode) => {
+  applyAiEdit: (tsxCode, validatedCircuitJson) => {
     // The AI is supposed to preserve key="..." props on existing components
     // and emit them on new ones, but we defensively re-inject so a forgetful
     // model doesn't strand the sidecar. Existing valid keys are preserved.
@@ -1033,7 +1036,10 @@ export const useCircuitStore = create<CircuitStore>((set, get) => ({
     if (keyed === get().tsxCode) return false;
     set((state) => ({
       tsxCode: keyed,
-      circuitJson: null,
+      // Candidate validation may already have rendered this exact edit. Commit
+      // both values atomically so schematic, PCB, and 3D never observe a null
+      // render between validation and the background evaluator refresh.
+      circuitJson: validatedCircuitJson ?? null,
       drcViolations: [],
       evalError: null,
       evalIssues: [],

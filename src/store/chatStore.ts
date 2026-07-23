@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { toast } from "sonner";
+import type { AnyCircuitElement } from "circuit-json";
 import { useCircuitStore, cleanImportedTsx } from "./circuitStore";
 import { useEditorStore } from "../editor/state/editorStore";
-import { hashInput } from "../editor/services/CircuitEvaluator";
 import { summarizeManualEdits } from "../editor/services/ProjectStore";
 import {
   buildSystemPrompt,
@@ -29,6 +29,16 @@ import {
 import { useAuthStore } from "./authStore";
 import { useAccountStore } from "./accountStore";
 import { listCachedDatasheets } from "../utils/datasheets";
+import {
+  buildCandidateRepairPrompt,
+  validateCandidateTsx,
+  type CandidateValidationResult,
+} from "../ai/candidateValidation";
+import {
+  applySemanticCircuitTool,
+  isSemanticCircuitTool,
+} from "../ai/semanticCircuitTools";
+import { buildRuntimePcbSkillContext } from "../ai/runtimePcbSkills";
 
 // Resolve current selection (single component) and active view for the AI.
 // We snapshot from the editor + circuit stores so the AI sees the same context
@@ -124,7 +134,15 @@ const MAX_SNAPSHOTS = 20;
 // datasheet read / part import), surfaced as an icon+label row in the chat.
 export interface ChatActivity {
   id: string;
-  kind: "search" | "footprint" | "datasheet" | "import" | "edit" | "write";
+  kind:
+    | "search"
+    | "footprint"
+    | "datasheet"
+    | "import"
+    | "edit"
+    | "write"
+    | "semantic"
+    | "validation";
   detail: string;
   // `edit` actions carry the exact string-replace tool call. The chat trail
   // shows these in a click-to-expand panel (like the Thinking trace) rather than
@@ -188,11 +206,6 @@ interface ChatStore {
   streamingEvents: ChatEvent[];
   chatOpen: boolean;
   error: string | null;
-  // True when `error` came from an anonymous (token-less) request hitting a
-  // server limit (429 rate_limited / 403 model_not_allowed). The chat panel
-  // then renders a "sign in for higher limits" prompt instead of the plain
-  // error banner. Always false while `error` is null.
-  errorSignInCta: boolean;
   // Rolling distillation of older turns (decisions/preferences/constraints) that
   // have scrolled out of the raw window, plus a count of how many non-system
   // messages it already covers. Together they form the "summarized prefix".
@@ -247,12 +260,6 @@ try {
   // The app can still load when the storage API itself is unavailable.
 }
 
-// Backstop for how long the chat waits on the post-edit render before giving up.
-// The evaluator has its own (shorter) internal timeout that surfaces eval
-// failures the validation cycle observes directly — so this only catches a
-// render that neither completes nor errors. Kept generous so a heavy Opus circuit
-// that legitimately takes a while to settle isn't cut off mid-render.
-const VALIDATION_RENDER_TIMEOUT_MS = 120_000;
 // Opus 4.8 uses adaptive thinking — the model decides how much to reason — with
 // an effort level (low | medium | high | xhigh | max) controlling the depth.
 // "high" is the recommended floor for intelligence-sensitive work; design turns
@@ -265,20 +272,223 @@ const DESIGN_EFFORT = "high";
 // stuck in a loop, so we break and tell the user rather than apply a
 // half-finished circuit. Bump it if legitimate large designs hit the ceiling.
 const MAX_TOOL_ROUNDS = 25;
+const MAX_CANDIDATE_REPAIR_ATTEMPTS = 2;
+const MAX_WORKFLOW_CONTINUATIONS = 3;
 
-// One-time nudge when a turn ends having neither edited the circuit (via edit_tsx)
+const DIRECT_EDIT_INTENT =
+  /\b(add|build|create|design|make|implement|edit|change|update|replace|remove|delete|connect|wire|fix|repair|rewrite)\b/i;
+const INFORMATIONAL_PREFIX = /^(how|why|what|where|when)\b/i;
+const HOW_TO_REQUEST = /\b(tell|show|explain)\s+me\s+how\b/i;
+const RESEARCH_REQUIRED_TAGS = new Set(["chip", "opamp"]);
+
+interface ImportedComponentDef {
+  rawTsx: string;
+  lcscId: string;
+}
+
+interface ComponentResearchEvidence {
+  searched: boolean;
+  datasheet: boolean;
+  footprint: boolean;
+  importedTags: Set<string>;
+}
+
+function isDirectCircuitEditRequest(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (INFORMATIONAL_PREFIX.test(trimmed) || HOW_TO_REQUEST.test(trimmed)) {
+    return false;
+  }
+  return DIRECT_EDIT_INTENT.test(trimmed);
+}
+
+function isClarifyingQuestion(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.endsWith("?") &&
+    /\b(which|what|where|how many|voltage|current|package|size|frequency|speed|interface)\b/i.test(
+      trimmed
+    )
+  );
+}
+
+function isResearchRequiredTag(tag: string): boolean {
+  return (
+    RESEARCH_REQUIRED_TAGS.has(tag) ||
+    (tag.length > 0 && tag[0] === tag[0].toUpperCase())
+  );
+}
+
+function normalizeLcscId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase();
+  return /^C\d+$/.test(normalized) ? normalized : null;
+}
+
+function researchEvidenceFor(
+  researchByLcsc: Map<string, ComponentResearchEvidence>,
+  lcscId: string,
+): ComponentResearchEvidence {
+  const existing = researchByLcsc.get(lcscId);
+  if (existing) return existing;
+  const created: ComponentResearchEvidence = {
+    searched: false,
+    datasheet: false,
+    footprint: false,
+    importedTags: new Set<string>(),
+  };
+  researchByLcsc.set(lcscId, created);
+  return created;
+}
+
+function recordResearchToolResult(
+  toolCall: ChatToolCall,
+  content: string,
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
+  researchByLcsc: Map<string, ComponentResearchEvidence>,
+): void {
+  if (toolCall.name === "search_jlcpcb" && content.startsWith("Found ")) {
+    for (const match of content.matchAll(/\bC\d+\b/gi)) {
+      researchEvidenceFor(researchByLcsc, match[0].toUpperCase()).searched = true;
+    }
+    return;
+  }
+
+  const lcscId = normalizeLcscId(toolCall.input?.lcsc_id);
+  if (!lcscId) return;
+  const evidence = researchEvidenceFor(researchByLcsc, lcscId);
+  if (toolCall.name === "lookup_footprint" && content.startsWith("Best match:")) {
+    evidence.footprint = true;
+    return;
+  }
+  if (
+    toolCall.name === "fetch_datasheet" &&
+    content.startsWith("Datasheet summary for ")
+  ) {
+    // A completed lookup satisfies the workflow gate even when the upstream
+    // catalog has no PDF. The returned summary still labels that case as
+    // unavailable/unverified, so the model cannot treat missing evidence as a
+    // verified electrical claim, but retrying the same lookup cannot improve it.
+    evidence.datasheet = true;
+    return;
+  }
+  if (toolCall.name === "import_component" && content.startsWith("Imported ")) {
+    for (const [tag, imported] of importedDefs) {
+      if (imported.lcscId === lcscId) evidence.importedTags.add(tag);
+    }
+  }
+}
+
+function isCircuitMutatingTool(name: string): boolean {
+  return (
+    name === "edit_tsx" ||
+    name === "write_tsx" ||
+    (isSemanticCircuitTool(name) && name !== "inspect_circuit")
+  );
+}
+
+function successfulCircuitMutation(name: string, content: string): boolean {
+  if (name === "edit_tsx") return content.startsWith("Edit applied");
+  if (name === "write_tsx") return content.startsWith("Circuit rewritten.");
+  if (isSemanticCircuitTool(name) && name !== "inspect_circuit") {
+    return !content.startsWith("Error:");
+  }
+  return false;
+}
+
+function missingComponentResearch(
+  baselineTsx: string,
+  candidateTsx: string,
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
+  researchByLcsc: ReadonlyMap<string, ComponentResearchEvidence>,
+): string[] {
+  const baselineComponents = extractComponents(baselineTsx);
+  const baselineByName = new Map(
+    baselineComponents.map((component) => [component.name, component])
+  );
+  const baselineTags = new Set(
+    baselineComponents.map((component) => component.elementTag),
+  );
+  const newComplexComponents = extractComponents(candidateTsx).filter(
+    (component) => {
+      const baseline = baselineByName.get(component.name);
+      return (
+        isResearchRequiredTag(component.elementTag) &&
+        (!baseline || baseline.elementTag !== component.elementTag)
+      );
+    }
+  );
+  if (newComplexComponents.length === 0) return [];
+
+  const missing: string[] = [];
+  for (const component of newComplexComponents) {
+    const { name, elementTag } = component;
+    if (
+      !RESEARCH_REQUIRED_TAGS.has(elementTag) &&
+      baselineTags.has(elementTag)
+    ) {
+      continue;
+    }
+    if (RESEARCH_REQUIRED_TAGS.has(elementTag)) {
+      missing.push(
+        `${name}: replace the generic ${elementTag} with the exact imported JSX tag`,
+      );
+      continue;
+    }
+    const imported = importedDefs.get(elementTag);
+    if (!imported) {
+      missing.push(
+        `${name} (${elementTag}): import_component must import this exact IC tag`,
+      );
+      continue;
+    }
+    const evidence = researchByLcsc.get(imported.lcscId);
+    const label = `${name} (${elementTag}, ${imported.lcscId})`;
+    if (!evidence?.searched) {
+      missing.push(`${label}: search_jlcpcb must return this LCSC part`);
+    }
+    if (!evidence?.datasheet) {
+      missing.push(`${label}: fetch_datasheet must complete the datasheet lookup`);
+    }
+    if (!evidence?.footprint) {
+      missing.push(`${label}: lookup_footprint must confirm this package family`);
+    }
+    if (!evidence?.importedTags.has(elementTag)) {
+      missing.push(`${label}: import_component must successfully import this exact tag`);
+    }
+  }
+  return missing;
+}
+
+// One-time nudge when a turn ends having neither edited the circuit
 // nor produced any answer text — almost always the model stopping mid-task after
 // some tool calls. Re-prompted with tools still on so it can actually finish.
 const RECOVERY_PROMPT =
   "You ended your turn without changing the circuit or answering. If the request needs a " +
-  "circuit change, make it now with the edit_tsx tool (or write_tsx if the circuit is empty " +
-  "or you're rewriting it wholesale), then add a one-line summary. " +
+  "circuit change, make it now with semantic circuit tools when possible (use edit_tsx for " +
+  "advanced structures or write_tsx for an empty/wholesale rewrite), then add a one-line summary. " +
   "If it was a question, just answer it.";
 
 const AI_SETUP_ERRORS = new Set(["no_account", "no_managed_model"]);
 
 export function isAiSetupError(error: string | null): boolean {
   return error !== null && AI_SETUP_ERRORS.has(error);
+}
+
+const EXECUTION_CONTINUATION_PROMPT =
+  "The user requested an actual circuit change, so a prose plan is not completion. Continue now with " +
+  "the available tools and finish the circuit. For every new non-trivial IC, first call search_jlcpcb, " +
+  "then lookup_footprint, fetch_datasheet, and import_component, and place the exact returned JSX tag. Use semantic " +
+  "circuit tools for the remaining parts and wiring. Include finish_circuit_edit alongside the final mutation " +
+  "once every requested change is complete. Only stop without an edit if one indispensable " +
+  "user decision is missing; in that case ask exactly one concrete question.";
+
+function researchContinuationPrompt(missing: readonly string[]): string {
+  return (
+    "The draft adds a non-trivial IC but its component-research workflow is incomplete, so it cannot " +
+    "be applied yet. Continue using tools now. Missing requirements:\n- " +
+    missing.join("\n- ") +
+    "\nDo not merely describe these steps. Execute them, update the draft to use the imported part, then finish."
+  );
 }
 
 // Plain 8-4-4-4-12 UUID — the only X-Trace-Id shape the proxy accepts. Anything
@@ -300,19 +510,13 @@ export function ensureTraceId(): string {
 
 // Resolve the credential for the next OpenRouter call. Read fresh at every call
 // so a mid-turn token refresh (or sign-out) takes effect on the next request.
-// Signed-out visitors get a token-less (anonymous) credential — the proxy
-// rate-limits those per client IP and picks the model itself. While the
-// session is still being resolved (launch restore or sign-in in flight) this
-// returns null so no request is ever sent with the wrong identity.
 export function resolveChatAuth(): OpenRouterAuth | null {
   const { status, accessToken } = useAuthStore.getState();
-  if (status === "signedIn" && accessToken) {
-    return { token: accessToken, url: OPENROUTER_CHAT_COMPLETIONS_URL };
-  }
-  if (status === "signedOut") {
-    return { token: null, url: OPENROUTER_CHAT_COMPLETIONS_URL };
-  }
-  return null;
+  if (status !== "signedIn" || !accessToken) return null;
+  return {
+    token: accessToken,
+    url: OPENROUTER_CHAT_COMPLETIONS_URL,
+  };
 }
 
 // Keep `tsxSnapshot` and `toolTranscript` only on the most recent `max`
@@ -400,27 +604,17 @@ export function applyTsxStringEdit(
 // Map a failed browser turn to a user-facing message. The transport rejects
 // with "{status}:{body}" for HTTP errors and "api_error:{msg}" for mid-stream
 // SSE errors. Both proxy and upstream error shapes expose `error.message`;
-// proxy plan gates additionally expose `error.type`. When `signInCta` is true
-// the error came from an anonymous (token-less) request hitting a server gate,
-// and the UI renders it as a "sign in for higher limits" prompt instead of a
-// plain error.
-export function friendlyChatError(
-  errorStr: string,
-  anonymous: boolean,
-  retryAfter?: string
-): { message: string; signInCta: boolean } {
-  const plain = (message: string) => ({ message, signInCta: false });
+// proxy plan gates additionally expose `error.type`.
+function friendlyChatError(errorStr: string): string {
   if (errorStr.includes("auth_lost")) {
-    return plain(
-      "You were signed out before the response finished. Sign in again in Settings → Account."
-    );
+    return "You were signed out before the response finished. Sign in again in Settings → Account.";
   }
   if (errorStr.includes("api_error:")) {
-    return plain(errorStr.replace(/.*api_error:/, ""));
+    return errorStr.replace(/.*api_error:/, "");
   }
   const httpMatch = errorStr.match(/(\d{3}):([\s\S]*)/);
   if (!httpMatch) {
-    return plain("Connection error. Check your network and try again.");
+    return "Connection error. Check your network and try again.";
   }
   const status = Number(httpMatch[1]);
   let type: string | undefined;
@@ -435,37 +629,16 @@ export function friendlyChatError(
     /* non-JSON body — fall through to the status-based messages */
   }
   if (status === 401) {
-    return plain("Your session has expired. Sign in again in Settings → Account.");
+    return "Your session has expired. Sign in again in Settings → Account.";
   }
   // Managed-plan gates: the server's message names the plan and model — show it.
-  // On a token-less request this means the anonymous tier doesn't cover the
-  // model, so the fix is signing in, not switching plans.
   if (type === "plan_required" || type === "model_not_allowed") {
-    if (anonymous) {
-      return {
-        message: message ?? "This model needs an account. Sign in to use it.",
-        signInCta: true,
-      };
-    }
-    return plain(message ?? "Your plan doesn't include this model. See Settings → Account.");
+    return message ?? "Your plan doesn't include this model. See Settings → Account.";
   }
   if (status === 429) {
-    if (anonymous) {
-      // The server's message already says to sign in for higher limits; add the
-      // Retry-After hint when the header made it through.
-      const seconds = Number(retryAfter);
-      const waitNote =
-        Number.isFinite(seconds) && seconds > 0
-          ? ` Try again in ${Math.ceil(seconds)}s.`
-          : "";
-      return {
-        message: (message ?? "You've hit the free usage limit.") + waitNote,
-        signInCta: true,
-      };
-    }
-    return plain("You've hit your plan's usage limit — wait a bit and try again.");
+    return "You've hit your plan's usage limit — wait a bit and try again.";
   }
-  return plain(message ?? "Connection error. Check your network and try again.");
+  return message ?? "Connection error. Check your network and try again.";
 }
 
 interface OpenRouterMessage {
@@ -506,6 +679,27 @@ function assistantMsgFromTurn(turn: ChatTurnResult): OpenRouterMessage {
     message.reasoning = turn.reasoning.text;
   }
   return message;
+}
+
+function materializeCandidateTsx(
+  draftTsx: string,
+  importedDefs: ReadonlyMap<string, ImportedComponentDef>,
+): string {
+  let candidate = draftTsx;
+  for (const [componentName, { rawTsx }] of importedDefs) {
+    if (!candidate.includes(`<${componentName}`)) continue;
+    const alreadyDefined =
+      candidate.includes(`const ${componentName}`) ||
+      candidate.includes(`function ${componentName}`);
+    if (alreadyDefined) continue;
+    const cleaned = cleanImportedTsx(rawTsx);
+    const idx = candidate.indexOf("export default");
+    if (idx >= 0) {
+      candidate =
+        candidate.slice(0, idx) + cleaned + "\n\n" + candidate.slice(idx);
+    }
+  }
+  return candidate;
 }
 
 // Shape the loop-appended messages for persistence as a turn's tool transcript.
@@ -549,11 +743,9 @@ const asString = (v: unknown): string =>
 // instead of the old fake-synchronous predict-a-name-then-patch-after race.
 async function dispatchTool(
   tc: ChatToolCall,
-  importedDefs: Map<string, { rawTsx: string }>,
+  importedDefs: Map<string, ImportedComponentDef>,
   auth: OpenRouterAuth,
-  // undefined on anonymous turns — the helper request then also omits `model`
-  // and the proxy picks the anonymous default.
-  helperModel: string | undefined,
+  helperModel: string,
   traceId: string,
   pushActivity: (
     kind: ChatActivity["kind"],
@@ -567,6 +759,17 @@ async function dispatchTool(
   workingTsx: { tsx: string; edited: boolean }
 ): Promise<OpenRouterMessage> {
   const input = tc.input ?? {};
+  if (isSemanticCircuitTool(tc.name)) {
+    const result = applySemanticCircuitTool(workingTsx.tsx, tc.name, input);
+    if (result.ok) {
+      if (result.edited) {
+        workingTsx.tsx = result.tsx;
+        workingTsx.edited = true;
+      }
+      pushActivity("semantic", result.activity);
+    }
+    return toolResult(tc.id, result.content);
+  }
   switch (tc.name) {
     case "edit_tsx": {
       const oldString = asString(input.old_string);
@@ -616,6 +819,11 @@ async function dispatchTool(
           `then finish your turn with a short summary.`
       );
     }
+    case "finish_circuit_edit":
+      return toolResult(
+        tc.id,
+        "Completion marker received. The client will commit only if this batch changed the circuit, satisfied required component research, and passes validation.",
+      );
     case "search_jlcpcb": {
       const query = asString(input.query);
       pushActivity("search", query);
@@ -645,7 +853,10 @@ async function dispatchTool(
       }
       try {
         const def = await fetchComponentDef(lcsc);
-        importedDefs.set(def.componentName, { rawTsx: def.rawTsx });
+        importedDefs.set(def.componentName, {
+          rawTsx: def.rawTsx,
+          lcscId: lcsc.toUpperCase(),
+        });
         // Stamp the imported part's real footprint into componentMeta keyed by
         // the tag name. The validator looks up by elementTag when no per-name
         // override exists, so every <Name /> instance inherits it.
@@ -675,87 +886,6 @@ async function dispatchTool(
   }
 }
 
-type SetFn = (updater: ((s: ChatStore) => Partial<ChatStore>) | Partial<ChatStore>) => void;
-
-// After an AI edit applies, watch the background evaluator for the render of the
-// exact tsx we sent (matched by input hash) and surface the outcome as a compact
-// system message — clean (__ok__), issue counts (__issues__:), or a stuck render
-// (__timeout__). Details live in the shared Issues drawer rather than flooding
-// chat. It deliberately does NOT auto-fix, so an automatic full-TSX rewrite
-// never silently clobbers manual PCB routing work.
-function startValidationCycle(
-  checkingId: string,
-  set: SetFn,
-  expectedInputHash: string
-): void {
-  // Ref-cell pattern: ensures `done` and `unsub` are visible to both the timeout
-  // and subscription callbacks, no matter which fires first.
-  const ctx: { unsub?: () => void; done: boolean } = { done: false };
-
-  const cleanup = () => {
-    if (ctx.done) return;
-    ctx.done = true;
-    ctx.unsub?.();
-    clearTimeout(timeoutId);
-  };
-
-  // Every terminal outcome clears the validating flag and rewrites the checking
-  // placeholder to its final state.
-  const resolve = (content: string) => {
-    useCircuitStore.getState().setValidating(false);
-    set((s) => ({
-      messages: s.messages.map((m) =>
-        m.id === checkingId ? { ...m, content } : m
-      ),
-    }));
-  };
-
-  const timeoutId = setTimeout(() => {
-    if (ctx.done) return;
-    cleanup();
-    resolve("__timeout__");
-    toast.error("Validation didn't finish", {
-      description: "The render may be stuck.",
-    });
-  }, VALIDATION_RENDER_TIMEOUT_MS);
-
-  ctx.unsub = useCircuitStore.subscribe((state) => {
-    if (ctx.done) return;
-
-    // The exact tsx we applied FAILED to evaluate (compile/runtime error, or the
-    // evaluator's own internal timeout). Surface the real message as a hard render
-    // failure instead of waiting out the backstop and mislabeling it as a timeout.
-    if (state.evalErrorHash === expectedInputHash) {
-      cleanup();
-      resolve("__issues__:1:0");
-      return;
-    }
-
-    if (state.circuitJson === null) return;
-    // Codex finding #6: don't act on a circuitJson that was produced from a
-    // tsx the chat didn't see. The evaluator stamps every output with the
-    // input hash; we wait for one that matches the snapshot we just sent.
-    // Older render paths (RunFrame's onRenderFinished) won't set
-    // evalInputHash — those paths are still trusted, so a null hash is
-    // treated as "matches by default" to preserve Phase 0 behavior.
-    if (state.evalInputHash !== null && state.evalInputHash !== expectedInputHash) {
-      return;
-    }
-    // The full check pass is asynchronous and stamped with the eval version.
-    // Wait for it so the compact chat summary and Issues drawer agree.
-    if (state.evalIssuesVersion !== state.evalVersion) return;
-    cleanup();
-
-    const errors = state.evalIssues.filter((issue) => issue.severity === "error").length;
-    const warnings = state.evalIssues.filter((issue) => issue.severity === "warning").length;
-    resolve(
-      errors === 0 && warnings === 0
-        ? "__ok__"
-        : `__issues__:${errors}:${warnings}`,
-    );
-  });
-}
-
 const SUMMARY_SYSTEM_PROMPT =
   "You maintain concise running notes for an in-progress PCB design session. " +
   "Capture only durable context: user preferences, design decisions and their " +
@@ -778,7 +908,7 @@ let isFolding = false;
 // SUMMARY_BATCH of them into `sessionNotes` and advance `summarizedCount`, so the
 // tail drops back to HISTORY_WINDOW. Incremental (old notes + new turns), never a
 // full re-summary, which keeps cost flat and drift low.
-async function foldHistoryIfNeeded(helperModel: string | undefined): Promise<void> {
+async function foldHistoryIfNeeded(helperModel: string): Promise<void> {
   if (isFolding) return;
   const auth = resolveChatAuth();
   if (!auth) return;
@@ -839,7 +969,6 @@ export const useChatStore = create<ChatStore>()(
   streamingEvents: [],
   chatOpen: false,
   error: null,
-  errorSignInCta: false,
   sessionNotes: null,
   summarizedCount: 0,
   sessionId: crypto.randomUUID(),
@@ -852,36 +981,29 @@ export const useChatStore = create<ChatStore>()(
     if (state.isStreaming) return;
     // Sentinel errors render as the setup CTA in the chat panel, not as an
     // error banner — keep them in lockstep with the useAiReady composer gate.
-    const initialAuth = resolveChatAuth();
-    if (!initialAuth) {
-      set({ error: "no_account", errorSignInCta: false });
+    if (!resolveChatAuth()) {
+      set({ error: "no_account" });
       return;
     }
-    // Anonymous (signed-out) turns skip the account/plan gates entirely and
-    // send NO model at all — the proxy picks the first model from its ordered
-    // anonymous allow-list server-side and enforces its own per-IP limits.
-    const anonymous = initialAuth.token === null;
-    let designModel: string | undefined;
-    let helperModel: string | undefined;
-    if (!anonymous) {
-      const authUserId = useAuthStore.getState().user?.id ?? null;
-      const { account, accountUserId, selectedModel } =
-        useAccountStore.getState();
-      const allowed =
-        authUserId &&
-        accountUserId === authUserId &&
-        account?.plan.managedAi &&
-        selectedModel &&
-        account.plan.allowedModels.includes(selectedModel)
-          ? selectedModel
-          : null;
-      if (allowed === null) {
-        set({ error: "no_managed_model", errorSignInCta: false });
-        return;
-      }
-      designModel = allowed;
-      helperModel = resolveHelperModel(account?.plan.allowedModels ?? [], allowed);
+    const authUserId = useAuthStore.getState().user?.id ?? null;
+    const { account, accountUserId, selectedModel } =
+      useAccountStore.getState();
+    const designModel =
+      authUserId &&
+      accountUserId === authUserId &&
+      account?.plan.managedAi &&
+      selectedModel &&
+      account.plan.allowedModels.includes(selectedModel)
+        ? selectedModel
+        : null;
+    if (designModel === null) {
+      set({ error: "no_managed_model" });
+      return;
     }
+    const helperModel = resolveHelperModel(
+      account?.plan.allowedModels ?? [],
+      designModel,
+    );
     // Resolved once per send so every request this turn makes — each tool
     // round, plus any datasheet helper call — lands in the same trace, even if
     // the conversation is cleared mid-flight.
@@ -903,13 +1025,14 @@ export const useChatStore = create<ChatStore>()(
       content: trimmedContent,
       timestamp: Date.now(),
     };
-    set((s) => ({ messages: [...s.messages, userMessage], isStreaming: true, streamingEvents: [], error: null, errorSignInCta: false }));
+    set((s) => ({ messages: [...s.messages, userMessage], isStreaming: true, streamingEvents: [], error: null }));
 
     const circuitState = useCircuitStore.getState();
     const currentTsx = circuitState.tsxCode;
     const components = circuitState.getComponents();
     const board = circuitState.getBoardConfig();
     const manualEdits = useEditorStore.getState().manualEdits;
+    const activeView = resolveActiveView();
 
     const systemPrompt = buildSystemPrompt();
     const datasheetSummaries = await fetchDatasheetSummariesForCircuit(currentTsx);
@@ -919,12 +1042,18 @@ export const useChatStore = create<ChatStore>()(
       board.width,
       board.height,
       summarizeManualEdits(manualEdits),
-      resolveActiveView(),
+      activeView,
       resolveSelection(),
       circuitState.footprintIssues,
       datasheetSummaries,
-      get().sessionNotes
+      get().sessionNotes,
+      circuitState.evalIssues
     );
+    const runtimeSkillContext = buildRuntimePcbSkillContext({
+      prompt: trimmedContent,
+      activeView,
+      componentTags: components.map((component) => component.elementTag),
+    });
 
     // Raw tail: the full chat stays in the store (and UI scrollback), but only the
     // un-summarized tail goes to the model verbatim — everything before
@@ -986,6 +1115,9 @@ export const useChatStore = create<ChatStore>()(
     if (dynamicContext) {
       systemBlocks.push({ type: "text", text: dynamicContext });
     }
+    if (runtimeSkillContext) {
+      systemBlocks.push({ type: "text", text: runtimeSkillContext });
+    }
 
     let fullResponse = "";
     // The in-flight turn's chronological trail. Stream events append here in the
@@ -995,15 +1127,23 @@ export const useChatStore = create<ChatStore>()(
     const events: ChatEvent[] = [];
     // Real component definitions resolved inline during the loop, keyed by the
     // exact tag name the model now uses. Prepended into the final TSX below.
-    const importedDefs = new Map<string, { rawTsx: string }>();
-    // Working copy of the circuit TSX for the `edit_tsx` tool — the ONLY path that
-    // changes the circuit. The model edits this incrementally via string-replace; we
-    // commit this copy when the turn ends. Starts as the exact TSX the model sees in
-    // the dynamic context, so its old_string snippets match. A ```tsx block in the
-    // answer text is illustrative prose and is never applied.
+    const importedDefs = new Map<string, ImportedComponentDef>();
+    // Working copy of the circuit TSX for semantic and raw editing tools. They
+    // mutate this draft only; we validate and commit it once the turn ends. It
+    // starts as the exact TSX shown in dynamic context, so raw edit anchors match.
+    // A ```tsx block in answer text remains illustrative and is never applied.
     const workingTsx = { tsx: currentTsx, edited: false };
+    const directEditRequest = isDirectCircuitEditRequest(trimmedContent);
+    const researchByLcsc = new Map<string, ComponentResearchEvidence>();
     // Tripped when the soft round backstop fires (see MAX_TOOL_ROUNDS).
     let stuck = false;
+    let validatedCandidate: CandidateValidationResult | null = null;
+    let rejectedCandidate: CandidateValidationResult | null = null;
+    let candidateRepairAttempts = 0;
+    let workflowContinuations = 0;
+    let forceToolNextTurn = directEditRequest;
+    let incompleteWorkflow: string | null = null;
+    let completionSummary: string | null = null;
 
     try {
       const flushEvents = () => set({ streamingEvents: [...events] });
@@ -1070,13 +1210,11 @@ export const useChatStore = create<ChatStore>()(
           }
           // Re-resolved every round so the scheduled access-token refresh is
           // picked up mid-loop; signing out aborts cleanly instead of sending a
-          // dead token. A turn also never flips between token-bearing and
-          // anonymous mid-flight — a signed-in turn must not degrade to a
-          // token-less request (and vice versa), so any transition aborts.
+          // dead token.
           const auth = resolveChatAuth();
-          if (!auth || (auth.token === null) !== anonymous) {
-            throw new Error("auth_lost");
-          }
+          if (!auth) throw new Error("auth_lost");
+          const toolChoice = forceToolNextTurn ? "required" : undefined;
+          forceToolNextTurn = false;
           const turn = await streamTurn(
             {
               auth,
@@ -1084,14 +1222,28 @@ export const useChatStore = create<ChatStore>()(
               system: systemBlocks,
               messages: apiMessages,
               tools: CHAT_TOOLS,
+              toolChoice,
               thinkingEffort: DESIGN_EFFORT,
               sessionId: get().sessionId,
               traceId,
             },
             streamCallbacks
           );
+          let assistantTurnRecorded = false;
+          const recordAssistantTurn = () => {
+            if (assistantTurnRecorded) return;
+            if (
+              turn.text !== "" ||
+              turn.toolCalls.length > 0 ||
+              turn.reasoning.text !== "" ||
+              turn.reasoning.details.length > 0
+            ) {
+              apiMessages.push(assistantMsgFromTurn(turn));
+              assistantTurnRecorded = true;
+            }
+          };
           if (turn.finishReason === "tool_calls" && turn.toolCalls.length > 0) {
-            apiMessages.push(assistantMsgFromTurn(turn));
+            recordAssistantTurn();
             // Every tool call MUST get a matching result message or the next
             // request 400s. Guard rejected backends so all IDs are answered.
             const results = await Promise.all(
@@ -1109,30 +1261,213 @@ export const useChatStore = create<ChatStore>()(
                 ),
               )
             );
+            turn.toolCalls.forEach((toolCall, index) => {
+              const resultContent = results[index]?.content;
+              const content = typeof resultContent === "string" ? resultContent : "";
+              recordResearchToolResult(
+                toolCall,
+                content,
+                importedDefs,
+                researchByLcsc,
+              );
+            });
             apiMessages.push(...results);
+            const finishCall = turn.toolCalls.find(
+              (toolCall) => toolCall.name === "finish_circuit_edit",
+            );
+            const mutationCalls = turn.toolCalls
+              .map((toolCall, index) => {
+                const resultContent = results[index]?.content;
+                return {
+                  toolCall,
+                  content:
+                    typeof resultContent === "string" ? resultContent : "",
+                };
+              })
+              .filter(({ toolCall }) => isCircuitMutatingTool(toolCall.name));
+            const batchMutationsSucceeded =
+              mutationCalls.length > 0 &&
+              mutationCalls.every(({ toolCall, content }) =>
+                successfulCircuitMutation(toolCall.name, content)
+              );
+            // Commit when the model signals completion AND the circuit has
+            // actually changed — either by a mutation in THIS batch (the
+            // one-turn fast path) or by edits accumulated over prior rounds.
+            // Weaker models (e.g. the free-plan model) reliably call
+            // finish_circuit_edit as a standalone final turn rather than
+            // batching it with their last mutation; requiring same-batch left
+            // their fully-built circuit uncommitted, so they spiralled into
+            // redundant tool calls until the MAX_TOOL_ROUNDS backstop and
+            // nothing was applied. Falling through to validation whenever edits
+            // exist rescues that circuit; missing component research is still
+            // enforced by the validation block below.
+            const standaloneFinishAfterPriorEdits =
+              mutationCalls.length === 0 && workingTsx.edited;
+            const readyToCommit =
+              !!finishCall &&
+              (batchMutationsSucceeded || standaloneFinishAfterPriorEdits);
+            if (!readyToCommit) {
+              if (finishCall) completionSummary = null;
+              continue;
+            }
+            const requestedSummary = asString(finishCall.input?.summary).trim();
+            if (requestedSummary !== "") completionSummary = requestedSummary;
+          }
+
+          if (
+            directEditRequest &&
+            !workingTsx.edited &&
+            !isClarifyingQuestion(turn.text)
+          ) {
+            if (workflowContinuations >= MAX_WORKFLOW_CONTINUATIONS) {
+              incompleteWorkflow =
+                "The assistant stopped before making the requested circuit change. Nothing was applied.";
+              break;
+            }
+            workflowContinuations += 1;
+            recordAssistantTurn();
+            apiMessages.push({ role: "user", content: EXECUTION_CONTINUATION_PROMPT });
+            forceToolNextTurn = true;
             continue;
           }
 
           // Turn ended without a tool call. If it neither edited the circuit nor
           // said anything (model gathered info but never finished), nudge once —
-          // tools stay on so it can finish via edit_tsx. Skip when edit_tsx
-          // already produced a working circuit: there's nothing to recover.
+          // tools stay on so it can finish the requested work. Skip when a
+          // mutating tool already produced a working circuit: nothing to recover.
           if (!nudged && fullResponse.trim() === "" && !workingTsx.edited) {
             nudged = true;
             // Keep any thinking blocks the turn produced so the nudge reads as a
             // continuation; never push a truly empty assistant turn (it would 400).
-            if (
-              turn.text !== "" ||
-              turn.reasoning.text !== "" ||
-              turn.reasoning.details.length > 0
-            ) {
-              apiMessages.push(assistantMsgFromTurn(turn));
-            }
+            recordAssistantTurn();
             apiMessages.push({ role: "user", content: RECOVERY_PROMPT });
             continue;
           }
+
+          if (workingTsx.edited) {
+            const candidateTsx = materializeCandidateTsx(
+              workingTsx.tsx,
+              importedDefs,
+            );
+            const missingResearch = missingComponentResearch(
+              currentTsx,
+              candidateTsx,
+              importedDefs,
+              researchByLcsc,
+            );
+            if (missingResearch.length > 0) {
+              completionSummary = null;
+              if (workflowContinuations >= MAX_WORKFLOW_CONTINUATIONS) {
+                incompleteWorkflow =
+                  "The assistant could not finish component research for the new IC. Nothing was applied.";
+                break;
+              }
+              workflowContinuations += 1;
+              recordAssistantTurn();
+              apiMessages.push({
+                role: "user",
+                content: researchContinuationPrompt(missingResearch),
+              });
+              forceToolNextTurn = true;
+              continue;
+            }
+            const validation = await validateCandidateTsx({
+              candidateTsx,
+              manualEdits,
+              baselineIssues: circuitState.evalIssues,
+            });
+            if (!validation.ok) {
+              if (
+                candidateRepairAttempts < MAX_CANDIDATE_REPAIR_ATTEMPTS
+              ) {
+                completionSummary = null;
+                candidateRepairAttempts += 1;
+                workingTsx.tsx = candidateTsx;
+                recordAssistantTurn();
+                events.push({
+                  kind: "activity",
+                  activity: {
+                    id: crypto.randomUUID(),
+                    kind: "validation",
+                    detail: `Repair ${candidateRepairAttempts}/${MAX_CANDIDATE_REPAIR_ATTEMPTS}`,
+                  },
+                });
+                flushEvents();
+                apiMessages.push({
+                  role: "user",
+                  content: buildCandidateRepairPrompt(validation),
+                });
+                continue;
+              }
+              // A candidate with circuitJson rendered successfully. Preserve it
+              // after repairs are exhausted so DRC/layout issues remain visible
+              // in the editor; syntax/runtime evaluation failures have no render
+              // and remain fail-closed.
+              if (validation.circuitJson !== undefined) {
+                validatedCandidate = validation;
+              } else {
+                rejectedCandidate = validation;
+              }
+              break;
+            }
+            validatedCandidate = validation;
+          }
           break;
         }
+      }
+
+      if (rejectedCandidate) {
+        const details =
+          rejectedCandidate.evaluationError ??
+          rejectedCandidate.newErrors
+            .slice(0, 2)
+            .map((issue) => issue.message)
+            .join(" ");
+        const message =
+          `The draft still failed validation after ${MAX_CANDIDATE_REPAIR_ATTEMPTS} repair attempts. ` +
+          `Nothing was applied.${details ? ` ${details}` : ""}`;
+        set({ isStreaming: false, streamingEvents: [], error: message });
+        toast.error("Draft was not applied", { description: message });
+        return;
+      }
+
+      // The draft was produced from currentTsx. If the user, undo/redo, or
+      // another editor action changed the live circuit while the model or
+      // validator was running, applying this stale draft would overwrite newer
+      // work. Compare immediately before the synchronous commit path.
+      if (
+        workingTsx.edited &&
+        useCircuitStore.getState().tsxCode !== currentTsx
+      ) {
+        const message =
+          "The circuit changed while the assistant was working. The draft was not applied. Review the latest circuit and try again.";
+        set({ isStreaming: false, streamingEvents: [], error: message });
+        toast.error("Circuit changed during edit", { description: message });
+        return;
+      }
+
+      // Historical assistant turns with activities render their event trail, not
+      // message.content. Move an already-streamed identical summary to the end or
+      // append it once so the completion is visible without creating another
+      // assistant message or duplicate text event.
+      if (
+        !stuck &&
+        !incompleteWorkflow &&
+        validatedCandidate &&
+        completionSummary
+      ) {
+        const summary = completionSummary;
+        const responseIsSummary = fullResponse.trim() === summary;
+        for (let index = events.length - 1; index >= 0; index--) {
+          const event = events[index];
+          if (
+            event.kind === "text" &&
+            (responseIsSummary || event.text.trim() === summary)
+          ) {
+            events.splice(index, 1);
+          }
+        }
+        events.push({ kind: "text", text: summary });
       }
 
       // Only persist a non-empty assistant turn. On the stuck / empty-recovery
@@ -1145,8 +1480,10 @@ export const useChatStore = create<ChatStore>()(
       // in history — synthesize a short summary so it persists. Gated on !stuck so
       // the unfinished-backstop path (which doesn't apply anything) stays empty.
       const turnText =
-        fullResponse.trim() !== ""
-          ? fullResponse
+        !stuck && workingTsx.edited && completionSummary
+          ? completionSummary
+          : fullResponse.trim() !== ""
+            ? fullResponse
           : !stuck && workingTsx.edited
             ? "Updated the circuit."
             : "";
@@ -1193,29 +1530,27 @@ export const useChatStore = create<ChatStore>()(
         return;
       }
 
-      // edit_tsx and write_tsx are the ONLY paths that change the circuit. A ```tsx
-      // block in the answer text is illustrative prose now — never extracted, never
-      // applied — so the working copy is the sole source of an applied change.
-      let tsxCode: string | null = workingTsx.edited ? workingTsx.tsx : null;
+      if (incompleteWorkflow) {
+        set({ error: incompleteWorkflow });
+        toast.error("Circuit workflow incomplete", {
+          description: incompleteWorkflow,
+        });
+        return;
+      }
+
+      // Circuit-mutating tools update only the working draft. A ```tsx block in
+      // answer text is illustrative prose — never extracted or applied — so the
+      // validated working copy is the sole source of an applied change.
+      let tsxCode: string | null = workingTsx.edited
+        ? validatedCandidate?.candidateTsx ?? null
+        : null;
 
       // Prepend the real imported component definitions. The model used the exact
       // tag name import_component returned, so the key matches directly — no
       // rename dance and no post-turn race. Footprint meta was already stamped at
       // import time; only inject defs the final TSX actually references.
-      if (tsxCode && importedDefs.size > 0) {
-        for (const [componentName, { rawTsx }] of importedDefs) {
-          if (!tsxCode.includes(`<${componentName}`)) continue;
-          const alreadyDefined =
-            tsxCode.includes(`const ${componentName}`) ||
-            tsxCode.includes(`function ${componentName}`);
-          if (alreadyDefined) continue;
-          const cleaned = cleanImportedTsx(rawTsx);
-          const idx = tsxCode.indexOf("export default");
-          if (idx >= 0) {
-            tsxCode = tsxCode.slice(0, idx) + cleaned + "\n\n" + tsxCode.slice(idx);
-          }
-        }
-      }
+      // Imported definitions were included in the pre-commit candidate so the
+      // exact TSX that passed validation is the TSX committed here.
 
       if (tsxCode) {
         // Structural parse check before applying — surfaces malformed TSX immediately
@@ -1228,32 +1563,38 @@ export const useChatStore = create<ChatStore>()(
       }
 
       if (tsxCode) {
-        // `false` means the model re-emitted the current circuit unchanged — a
-        // no-op edit. Nothing changed, so there's nothing to validate; skip the
-        // cycle entirely. (Running it would hang: no fresh eval fires for an
-        // identical tsx, so the subscription never resolves before its backstop.)
-        const applied = useCircuitStore.getState().applyAiEdit(tsxCode);
-        if (applied) {
-          useCircuitStore.getState().setValidating(true);
-          const checkingId = crypto.randomUUID();
+        // `false` means the model re-emitted the current circuit unchanged.
+        const candidateCircuitJson = validatedCandidate?.circuitJson as
+          | AnyCircuitElement[]
+          | undefined;
+        const applied = useCircuitStore
+          .getState()
+          .applyAiEdit(tsxCode, candidateCircuitJson);
+        if (applied && validatedCandidate) {
+          // Pre-commit validation already evaluated this exact candidate and ran
+          // the full checks. applyAiEdit committed its render with the TSX, so
+          // the panels stay populated while the background refresh catches up.
+          const errors = validatedCandidate.issues.filter(
+            (issue) => issue.severity === "error"
+          ).length;
+          const warnings = validatedCandidate.issues.filter(
+            (issue) => issue.severity === "warning"
+          ).length;
+          const content =
+            errors === 0 && warnings === 0
+              ? "__ok__"
+              : `__issues__:${errors}:${warnings}`;
           set((s) => ({
             messages: [
               ...s.messages,
               {
-                id: checkingId,
+                id: crypto.randomUUID(),
                 role: "system" as const,
-                content: "__checking__",
+                content,
                 timestamp: Date.now(),
               },
             ],
           }));
-          // Hash the *post-applyAiEdit* tsx (which may have had keys
-          // re-injected) plus the current sidecar — this is the input the
-          // evaluator will see.
-          const expectedTsx = useCircuitStore.getState().tsxCode;
-          const expectedEdits = useEditorStore.getState().manualEdits;
-          const expectedHash = hashInput(expectedTsx, expectedEdits);
-          startValidationCycle(checkingId, set, expectedHash);
         }
       }
 
@@ -1301,31 +1642,14 @@ export const useChatStore = create<ChatStore>()(
         set((s) => ({ messages: [...s.messages, partialMessage] }));
       }
 
-      // ChatTransportError keeps Retry-After; read it structurally so this
-      // works whether or not the transport class itself crossed the mock/seam.
-      const retryAfter =
-        typeof err === "object" &&
-        err !== null &&
-        typeof (err as { retryAfter?: unknown }).retryAfter === "string"
-          ? (err as { retryAfter: string }).retryAfter
-          : undefined;
-      const { message: errorMessage, signInCta } = friendlyChatError(
-        errorStr,
-        anonymous,
-        retryAfter
-      );
+      const errorMessage = friendlyChatError(errorStr);
 
-      // Anonymous limit errors render as a sign-in prompt in the panel — a
-      // plain error toast on top would bury the CTA.
-      if (!signInCta) {
-        toast.error("Chat error", { description: errorMessage });
-      }
+      toast.error("Chat error", { description: errorMessage });
 
       set({
         isStreaming: false,
         streamingEvents: [],
         error: errorMessage,
-        errorSignInCta: signInCta,
       });
     }
   },
@@ -1378,13 +1702,12 @@ export const useChatStore = create<ChatStore>()(
       messages: [],
       streamingEvents: [],
       error: null,
-      errorSignInCta: false,
       sessionNotes: null,
       summarizedCount: 0,
       sessionId: crypto.randomUUID(),
       traceId: crypto.randomUUID(),
     }),
-  clearError: () => set({ error: null, errorSignInCta: false }),
+  clearError: () => set({ error: null }),
     }),
     {
       name: "cherryblossom_chat_history",
@@ -1403,3 +1726,33 @@ export const useChatStore = create<ChatStore>()(
     }
   )
 );
+
+// ─── Agentic-loop core, exposed read-only for the headless harness ───────────
+// These are pure helpers/constants/prompts the sendMessage loop above already
+// uses. They are exported (not moved) so an out-of-tree harness can import the
+// REAL loop internals instead of hand-mirroring them — no behavior change here.
+// Keep this list in sync when the loop's helpers change; nothing else consumes it.
+export {
+  DESIGN_EFFORT,
+  MAX_TOOL_ROUNDS,
+  MAX_CANDIDATE_REPAIR_ATTEMPTS,
+  MAX_WORKFLOW_CONTINUATIONS,
+  RECOVERY_PROMPT,
+  EXECUTION_CONTINUATION_PROMPT,
+  researchContinuationPrompt,
+  isDirectCircuitEditRequest,
+  isClarifyingQuestion,
+  isCircuitMutatingTool,
+  successfulCircuitMutation,
+  recordResearchToolResult,
+  missingComponentResearch,
+  materializeCandidateTsx,
+  assistantMsgFromTurn,
+  asString,
+  toolResult,
+};
+export type {
+  OpenRouterMessage,
+  ImportedComponentDef,
+  ComponentResearchEvidence,
+};

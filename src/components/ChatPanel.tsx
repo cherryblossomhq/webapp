@@ -9,7 +9,6 @@ import {
 import { useCircuitStore } from "@/store/circuitStore";
 import { useEditorStore } from "@/editor/state/editorStore";
 import { useSettingsStore } from "@/store/settingsStore";
-import { useAuthStore } from "@/store/authStore";
 import {
   Cpu,
   X,
@@ -32,6 +31,8 @@ import {
   UndoDot,
   SquarePen,
   FileCode2,
+  ShieldCheck,
+  CircuitBoard,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { marked } from "marked";
@@ -257,6 +258,8 @@ const ACTIVITY_META: Record<
   footprint: { icon: Ruler, label: "Looking up footprint" },
   datasheet: { icon: FileText, label: "Reading datasheet" },
   import: { icon: Package, label: "Importing" },
+  semantic: { icon: CircuitBoard, label: "Updating circuit" },
+  validation: { icon: ShieldCheck, label: "Repairing validation errors" },
 };
 
 // Click-to-expand `edit_tsx` row: collapsed it's just the icon + label (no inline
@@ -473,29 +476,11 @@ function SystemValidationMessage({
 }) {
   const { content } = message;
 
-  if (content === "__checking__") {
-    return (
-      <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md bg-muted/60 text-muted-foreground text-xs">
-        <Loader2 className="size-3.5 animate-spin shrink-0" />
-        <span>Validating circuit...</span>
-      </div>
-    );
-  }
-
   if (content === "__ok__") {
     return (
       <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 text-xs">
         <CheckCircle2 className="size-3.5 shrink-0" />
         <span>Circuit validated — no errors</span>
-      </div>
-    );
-  }
-
-  if (content === "__timeout__") {
-    return (
-      <div className="flex items-center gap-2 mx-4 my-2 px-3 py-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-400 text-xs">
-        <AlertCircle className="size-3.5 shrink-0" />
-        <span>Validation didn't finish — the render may be stuck</span>
       </div>
     );
   }
@@ -564,10 +549,9 @@ function EmptyState({
   );
 }
 
-// Shown in place of the composer when the active AI provider isn't set up yet
-// (no API key saved, or account mode while signed out). Rather than ambushing
-// the user with an auto-opening modal on their first send, we present a calm
-// inline CTA that takes them to the right Settings section.
+// Shown in place of the composer when the managed account/model is unavailable.
+// Rather than ambushing the user with an auto-opening modal on their first send,
+// present a calm inline CTA that takes them to the account settings section.
 function AiSetupCta({
   message,
   onOpenSettings,
@@ -594,8 +578,6 @@ export function ChatPanel() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const streamingEvents = useChatStore((s) => s.streamingEvents);
   const error = useChatStore((s) => s.error);
-  const errorSignInCta = useChatStore((s) => s.errorSignInCta);
-  const signIn = useAuthStore((s) => s.signIn);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const restoreToMessage = useChatStore((s) => s.restoreToMessage);
   const clearHistory = useChatStore((s) => s.clearHistory);
@@ -751,8 +733,7 @@ export function ChatPanel() {
             <button
               onClick={() => setClearConfirmOpen(true)}
               // Disabled mid-stream and mid-validation (same as restore) so a
-              // wipe never races those async writes — e.g. clearing the
-              // in-flight "__checking__" row out from under the validation cycle.
+              // wipe never races those async writes.
               disabled={isStreaming || isValidating || messages.length === 0}
               className="p-1 rounded-md text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
               aria-label="New chat"
@@ -802,32 +783,8 @@ export function ChatPanel() {
           </div>
         )}
 
-        {/* Sign-in prompt — an anonymous request hit a server limit; the fix
-            is signing in, so frame it as a CTA rather than an error. */}
-        {error && errorSignInCta && (
-          <div className="mx-3 mb-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs">
-            <div className="flex items-start gap-2">
-              <KeyRound className="size-3.5 shrink-0 mt-px text-primary" aria-hidden="true" />
-              <span className="flex-1">{error}</span>
-              <button
-                onClick={clearError}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label="Dismiss"
-              >
-                <X className="size-3" />
-              </button>
-            </div>
-            <button
-              onClick={() => void signIn()}
-              className="mt-2 w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              Sign in for higher limits
-            </button>
-          </div>
-        )}
-
         {/* Error banner */}
-        {error && !errorSignInCta && !isAiSetupError(error) && (
+        {error && !isAiSetupError(error) && (
           <div className="flex items-center gap-2 mx-3 mb-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-xs">
             <AlertCircle className="size-3.5 shrink-0" />
             <span className="flex-1">{error}</span>

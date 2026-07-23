@@ -474,6 +474,76 @@ export function updateComponentNumericProp(
   }
 }
 
+export type ComponentPropValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ComponentPropValue[]
+  | { [key: string]: ComponentPropValue };
+
+function componentPropValueToExpression(value: ComponentPropValue): t.Expression {
+  if (typeof value === "string") return t.stringLiteral(value);
+  if (typeof value === "number") return t.numericLiteral(value);
+  if (typeof value === "boolean") return t.booleanLiteral(value);
+  if (value === null) return t.nullLiteral();
+  if (Array.isArray(value)) {
+    return t.arrayExpression(value.map(componentPropValueToExpression));
+  }
+  return t.objectExpression(
+    Object.entries(value).map(([key, item]) =>
+      t.objectProperty(t.stringLiteral(key), componentPropValueToExpression(item))
+    )
+  );
+}
+
+/**
+ * Write a JSON-safe JSX prop while preserving its actual runtime type. This is
+ * used by the semantic AI tools for values such as numeric placement, boolean
+ * flags, pinLabels, and pinAttributes. Strings retain the compact quoted form.
+ */
+export function updateComponentValueProp(
+  tsx: string,
+  componentName: string,
+  propName: string,
+  value: ComponentPropValue
+): string {
+  if (typeof value === "number" && !Number.isFinite(value)) return tsx;
+  try {
+    const ast = parse(tsx);
+    let modified = false;
+    const attrValue =
+      typeof value === "string"
+        ? jsxAttrString(value)
+        : t.jsxExpressionContainer(componentPropValueToExpression(value));
+
+    traverse(ast, {
+      JSXOpeningElement(path) {
+        if (modified) return;
+        if (getStringAttr(path.node, "name") !== componentName) return;
+        const existing = path.node.attributes.find(
+          (attr): attr is t.JSXAttribute =>
+            t.isJSXAttribute(attr) &&
+            t.isJSXIdentifier(attr.name) &&
+            attr.name.name === propName
+        );
+        if (existing) existing.value = attrValue;
+        else {
+          path.node.attributes.push(
+            t.jsxAttribute(t.jsxIdentifier(propName), attrValue)
+          );
+        }
+        modified = true;
+        path.stop();
+      },
+    });
+
+    return modified ? print(ast) : tsx;
+  } catch {
+    return tsx;
+  }
+}
+
 // Write `pinLabels={{"1": "VCC", "2": "GND", ...}}` from a label array. The
 // label at index i is written under key `"i+1"`. Empty/whitespace labels are
 // skipped so the schematic falls back to numeric labels for un-named pins.

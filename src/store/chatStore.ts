@@ -260,9 +260,11 @@ try {
 const VALIDATION_RENDER_TIMEOUT_MS = 120_000;
 // Opus 4.8 uses adaptive thinking — the model decides how much to reason — with
 // an effort level (low | medium | high | xhigh | max) controlling the depth.
-// "high" is the recommended floor for intelligence-sensitive work; design turns
-// run there.
-const DESIGN_EFFORT = "high";
+// "medium" keeps the derived thinking budget small enough that a turn finishes
+// inside the managed proxy's 300s execution window: at "high" the free-tier
+// reasoning models could think past the window, so Vercel killed the stream
+// mid-thought and the turn ended silently with no answer.
+const DESIGN_EFFORT = "medium";
 
 // The agentic tool loop is free-running — no hard cap that strips tools to force
 // output (that mangles responses). MAX_TOOL_ROUNDS is a SOFT backstop only: if

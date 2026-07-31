@@ -1,0 +1,348 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    /* Named UI label size — the only sanctioned sub-12px text role. */
+    --text-label: 0.625rem; /* 10px */
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    /* Brand: cherry (≈ #e0335e, the app icon color). */
+    --primary: oklch(0.6 0.206 12.4);
+    --primary-foreground: oklch(0.985 0.01 17);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.6 0.206 12.4);
+    --sidebar-primary-foreground: oklch(0.985 0.01 17);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+
+    /* Schematic hover glow (dark-on-paper). The schematic viewer now owns its
+       full palette in schematicColors.ts; this is the only canvas token still
+       consumed (by the [data-element-key]:hover rule below). Authored as a
+       concrete color since it's threaded into an SVG drop-shadow filter. */
+    --schematic-hover: rgba(43, 49, 64, 0.5);
+}
+
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.63 0.205 13);
+    --primary-foreground: oklch(0.985 0.01 17);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.63 0.205 13);
+    --sidebar-primary-foreground: oklch(0.985 0.01 17);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+
+    /* Schematic hover glow (light-on-dark) — see the :root note. */
+    --schematic-hover: rgba(238, 241, 247, 0.42);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body, #root {
+    @apply w-full m-0 p-0;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  /* Touch: kill the grey flash overlay and the 300ms double-tap-to-zoom delay
+     that makes every button feel laggy on a phone. */
+  button, [role="button"], [role="tab"], a, summary, label {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+}
+
+/* ─── Touch & mobile affordances ─────────────────────────────────────────────
+   The editor is a fixed, non-scrolling shell, which means every desktop-only
+   assumption below fails silently on a phone rather than degrading. These are
+   the global ones; per-component compact layouts key off `useIsCompact()`. */
+
+:root {
+  /* Notch / home-indicator insets. Zero on every non-inset device, so panels
+     can pad with them unconditionally. Needs viewport-fit=cover (index.html). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+@media (pointer: coarse) {
+  /* iOS zooms the page in whenever a focused field's text is under 16px, and
+     never zooms back out — leaving the user stranded at 1.3x with the shell
+     cropped. Enforced globally so no individual control has to remember; the
+     dense 11-12px fields in the PCB properties drawer are the main offenders. */
+  input, textarea, select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* ─── Typography scale ──────────────────────────────────────────────────────
+   Four allowed UI text roles, no ad-hoc sizes:
+     .ui-label  — 10px / 600 / uppercase / tracking-wide  (panel overlines)
+     text-xs    — 12px                                     (dense UI / meta)
+     text-sm    — 14px                                     (body)
+     text-base  — 16px / 600                               (headings)            */
+@layer components {
+  .ui-label {
+    font-size: var(--text-label);
+    font-weight: 600;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+}
+
+/* ─── Schematic canvas hover affordance ─────────────────────────────────────
+   Subtle theme-aware glow on component hover. Pure CSS so it's GPU-composited
+   with zero React re-renders; the selection halo (inline style, green) wins by
+   specificity so selected parts stay green even while hovered. */
+[data-element-key] {
+  transition: filter 120ms ease;
+}
+[data-element-key]:hover {
+  filter: drop-shadow(0 0 2px var(--schematic-hover));
+}
+
+/* ─── Schematic viewer chrome ───────────────────────────────────────────────
+   @tscircuit/schematic-viewer floats a ⋮ "view menu" button (Grid / Groups
+   toggles) styled with hardcoded inline light colors (#fff bg, #000 icon) and
+   no theme prop or class hook — so colorOverrides can't reach it and it reads
+   as a white wart on the dark canvas. Those toggles are marginal for a
+   read-only viewer, so hide the button; its dropdown only opens on click, so
+   hiding the button suppresses the dropdown too. The button's `title` attribute
+   ("Show/Hide view menu") is its only stable selector. The button sets
+   `display: flex` inline, so the override needs !important to win. */
+.schematic-readonly [title$="view menu" i] {
+  display: none !important;
+}
+
+/* Kill the viewer's blue component-hover outline. @tscircuit/schematic-viewer
+   renders an absolutely-positioned overlay div with a hardcoded inline border
+   ("1.5px solid rgba(51, 153, 255, 0.9)") whenever the pointer is over a
+   component — there's no prop or class to disable it. The overlay is purely
+   visual (pointer-events: none) and clicks are tracked at the window level, so
+   hiding it leaves selection working. Its zIndexMap.schematicComponentHoverOutline
+   value (47) is unique to this overlay and serializes stably across webviews,
+   making it the safest hook; we keep the subtle CSS hover glow on the symbols.
+   The trailing ";" pins the match to exactly 47 (React serializes the last
+   inline prop with a trailing ";"), so a future z-index in the 470-479 range
+   can't be hidden by accident. Re-verify the 47 value when bumping the viewer. */
+.schematic-readonly div[style*="z-index: 47;"] {
+  display: none !important;
+}
+
+/* ─── RunFrame native integration overrides ─────────────────────────────────── */
+
+.circuit-viewer-wrapper {
+  font-family: var(--font-sans);
+}
+
+/* Color token overrides — these use [class*=] which matches substring within
+   the class attribute, reliable regardless of compiled Tailwind output. */
+
+.circuit-viewer-wrapper [class*="rf-bg-gray-100"] {
+  background: var(--muted) !important;
+}
+.circuit-viewer-wrapper [class*="rf-bg-gray-200"] {
+  background: var(--accent) !important;
+}
+.dark .circuit-viewer-wrapper [class*="rf-bg-gray-700"],
+.dark .circuit-viewer-wrapper [class*="rf-bg-gray-800"],
+.dark .circuit-viewer-wrapper [class*="rf-bg-gray-900"] {
+  background: var(--muted) !important;
+}
+.circuit-viewer-wrapper [class*="rf-text-gray-400"],
+.circuit-viewer-wrapper [class*="rf-text-gray-500"],
+.circuit-viewer-wrapper [class*="rf-text-gray-600"],
+.circuit-viewer-wrapper [class*="rf-text-slate-500"],
+.circuit-viewer-wrapper [class*="rf-text-slate-600"] {
+  color: var(--muted-foreground) !important;
+}
+.circuit-viewer-wrapper [class*="rf-text-gray-800"],
+.circuit-viewer-wrapper [class*="rf-text-gray-900"],
+.circuit-viewer-wrapper [class*="rf-text-slate-800"],
+.circuit-viewer-wrapper [class*="rf-text-slate-900"] {
+  color: var(--foreground) !important;
+}
+.dark .circuit-viewer-wrapper [class*="rf-text-gray-400"],
+.dark .circuit-viewer-wrapper [class*="rf-text-gray-500"] {
+  color: var(--muted-foreground) !important;
+}
+.circuit-viewer-wrapper [class*="rf-border-gray-200"],
+.circuit-viewer-wrapper [class*="rf-border-gray-300"] {
+  border-color: var(--border) !important;
+}
+.dark .circuit-viewer-wrapper [class*="rf-border-gray-600"],
+.dark .circuit-viewer-wrapper [class*="rf-border-gray-700"] {
+  border-color: var(--border) !important;
+}
+.circuit-viewer-wrapper [class*="rf-bg-zinc-100"] {
+  background: transparent !important;
+}
+.dark .circuit-viewer-wrapper [class*="rf-bg-zinc-800"] {
+  background: transparent !important;
+}
+.circuit-viewer-wrapper [class*="rf-text-red-500"],
+.circuit-viewer-wrapper [class*="rf-text-red-600"] {
+  color: var(--destructive) !important;
+}
+.circuit-viewer-wrapper [class*="rf-animate-pulse"] {
+  background: var(--muted) !important;
+}
+
+/* BOM table */
+.circuit-viewer-wrapper table {
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+}
+.circuit-viewer-wrapper th {
+  background: var(--muted) !important;
+  color: var(--foreground) !important;
+  font-weight: 600;
+  border-color: var(--border) !important;
+}
+.circuit-viewer-wrapper td {
+  border-color: var(--border) !important;
+  color: var(--foreground) !important;
+}
+.circuit-viewer-wrapper tr:hover td {
+  background: var(--accent) !important;
+}
+
+.circuit-viewer-wrapper canvas {
+  border-radius: 0 !important;
+}
+
+/* ─── Shield against tscircuit Tailwind v3 global injection ─────────────────
+   tscircuit's RunFrame injects a full Tailwind v3 stylesheet (~55KB) into
+   <head> as an unlayered <style> tag. Unlayered CSS always beats Tailwind v4's
+   @layer-based utilities. These rules counteract the most damaging overrides:
+   - html { font-family: ui-sans-serif, system-ui… } → kills Geist font
+   - input,button,… { padding:0 }                    → wipes all input padding
+   ────────────────────────────────────────────────────────────────────────────── */
+
+html {
+  font-family: var(--font-sans) !important;
+  line-height: 1.5 !important;
+}
+
+body {
+  font-family: var(--font-sans) !important;
+  color: var(--foreground) !important;
+  background: var(--background) !important;
+}
+
+/* Shell sizing lives here, unlayered, for the same reason as the rules above:
+   an injected unlayered `html {}` height/overflow rule would beat a layered
+   utility and collapse the app to zero height.
+
+   `dvh` (with a `%` fallback) is what makes the shell mobile-correct — `100%`
+   resolves against the *layout* viewport, which mobile Safari does not shrink
+   when its URL bar is showing, so the bottom status bar would sit permanently
+   under the browser chrome with no scroll to recover it. */
+html, body, #root {
+  height: 100% !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+  /* The shell never scrolls, so any document-level scroll chaining is pure
+     nuisance: pull-to-refresh would fire mid canvas-drag and the iOS bounce
+     would expose a blank strip under the status bar. */
+  overscroll-behavior: none;
+}
+

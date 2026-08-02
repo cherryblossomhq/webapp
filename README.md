@@ -4,12 +4,12 @@
   <img src="public/seo/og.png" alt="Cherry Blossom — Design PCBs with AI" width="640" />
 </a>
 
-### Plain English in. Editable board out.
+### From Prompt to PCB.
 
-Cherry Blossom is a PCB design tool that pairs a Figma-style interface with the
-depth hardware engineers actually need. Describe a circuit in plain English,
-drag components onto the board, or do both — it runs in your browser, with no
-install and no account.
+Cherry Blossom is an AI-first PCB design tool that pairs a Figma-style
+interface with the depth hardware engineers actually need. Describe a circuit
+in plain English, drag components onto the board, or do both — it runs in your
+browser, with no install and no account.
 
 [**Open the app →**](https://app.trycherryblossom.com) &nbsp;·&nbsp; [trycherryblossom.com](https://www.trycherryblossom.com)
 
@@ -25,30 +25,6 @@ install and no account.
 > rough edges and breaking changes.
 
 ---
-
-## What you can do
-
-- **Sketch a circuit and watch it become a board.** Place parts, wire them up,
-  and the schematic lays itself out as you go.
-- **Route the PCB by hand or let it route itself.** Pan, zoom, toggle layers,
-  drag parts into place, and pull 45° traces with live clearance checking.
-- **Catch mistakes before the fab does.** Clearance and geometry checks run
-  continuously and collect in an issues drawer.
-- **Spin the board in 3D.** See the real components on the real outline.
-- **Drop to code any time.** Every board is also editable as text — change the
-  code and every view updates, change a view and the code follows.
-- **Take your design anywhere.** Export to KiCad, BOM and pick-and-place CSVs,
-  SPICE, STL, or a portable project file.
-
-Nothing is uploaded. Your work autosaves in the browser and saves to a
-`.cherryblossom.json` file you own.
-
-## About this repository
-
-This is the **editor** — the schematic and PCB workspace, open source under the
-AGPL. The AI assistant that turns a prompt into a board is part of the hosted
-app at [app.trycherryblossom.com](https://app.trycherryblossom.com) and isn't in
-this repo.
 
 ## Run it locally
 

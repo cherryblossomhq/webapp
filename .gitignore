@@ -30,3 +30,6 @@ playwright-report
 .gstack/
 .agents/
 .claude
+.context/
+.cursor/
+.aider*

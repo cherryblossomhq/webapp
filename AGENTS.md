@@ -89,8 +89,9 @@ Compact behaviour has **no browser coverage** — the e2e suite is desktop-only
 - **`src/editor/pcb/route*.ts`** — the interactive 45° manual router: graph,
   solver, live preview, clearance, overlay drawing.
 - **`src/editor/pcb/drc.ts`** — design-rule checks, run by `usePcbDrc`.
-- **`src/utils/proxy-fetch.ts`** — global fetch shim re-targeting
-  `easyeda.com` / `modelcdn.tscircuit.com` at `/api/proxy`.
+- **`src/utils/proxy-fetch.ts`** — global fetch shim re-targeting the 3D model
+  CDN and EasyEDA/LCSC hosts at `/api/proxy`. The allowlist is the one in
+  `server/proxy.mjs`; keep the two in sync.
 - **`server/proxy.mjs`** — the `/api/proxy` handler: https-only, exact-host
   allowlist, blocked identity headers, 16 MiB response cap. Mounted as Vite
   middleware in dev and preview.
@@ -103,15 +104,21 @@ Compact behaviour has **no browser coverage** — the e2e suite is desktop-only
 - `vite.config.ts` resolves `react` / `react-dom` through `createRequire` rather
   than a hardcoded `./node_modules` path, so a hoisted install resolves one copy.
   Keep it that way.
-- The chunk size limit is raised to 10 MB in `vite.config.ts` because tscircuit
-  bundles are large. That warning is expected, not a regression.
-- `.npmrc` sets `legacy-peer-deps=true` because the tscircuit tree has a
-  conflicting `typescript` peer range. Side effect: npm no longer auto-installs
-  peers, so **any peer needed at runtime must be declared explicitly**. Several
-  dependencies in `package.json` are not imported directly by `src/` for exactly
-  this reason — don't "prune" them without checking the tscircuit tree first.
-- tscircuit packages update frequently and can introduce breaking changes. Check
-  release notes when upgrading, and re-run the PCB integration tests.
+- The chunk size limit is raised to 10 MB in `vite.config.ts` because the
+  circuit-evaluation and 3D bundles are large. That warning is expected, not a
+  regression.
+- `.npmrc` sets `legacy-peer-deps=true` because the circuit dependency tree
+  carries a conflicting `typescript` peer range. Side effect: npm no longer
+  auto-installs peers, so **any peer needed at runtime must be declared
+  explicitly**. Several dependencies in `package.json` are not imported directly
+  by `src/` for exactly this reason — don't "prune" them without checking the
+  transitive tree first.
+- React is pinned through `overrides` so the whole tree resolves one copy;
+  nested dependencies will otherwise pull a second React and hooks break at
+  runtime.
+- The upstream circuit/EDA packages release frequently and can introduce
+  breaking changes. Check their release notes when upgrading, and re-run the PCB
+  integration tests.
 
 ## Conventions
 

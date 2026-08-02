@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in the editor behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing. If this is a security vulnerability, please **don't**
+        report it here — contact a maintainer directly instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+      placeholder: |
+        I dragged a resistor onto the board and…
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a new schematic
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: circuit
+    attributes:
+      label: Circuit
+      description: >
+        If the bug depends on a specific circuit, paste the TSX from the Code
+        tab or attach the `.cherryblossom.json` project file. This is usually
+        the difference between a fix today and a fix next month.
+      render: tsx
+
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and OS
+      placeholder: "Chrome 141 on macOS 15"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The app version, or the commit you're running if building from source.
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Any errors from the browser devtools console.
+      render: shell

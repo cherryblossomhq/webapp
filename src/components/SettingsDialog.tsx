@@ -182,3 +182,4 @@ export function SettingsDialog() {
     </Dialog>
   );
 }
+

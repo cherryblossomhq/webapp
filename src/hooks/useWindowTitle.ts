@@ -6,3 +6,4 @@ export function useWindowTitle(projectTitle: string) {
     document.title = `${projectTitle} — Cherry Blossom`;
   }, [projectTitle]);
 }
+

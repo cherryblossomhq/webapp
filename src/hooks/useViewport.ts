@@ -44,3 +44,4 @@ export function useIsCompact(): boolean {
 export function useIsTouch(): boolean {
   return useMediaQuery("(pointer: coarse)");
 }
+

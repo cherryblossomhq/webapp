@@ -72,3 +72,4 @@ export function clearanceHaloWidthMm(
 ): number {
   return traceWidthMm + 2 * c.traceToPadMm;
 }
+

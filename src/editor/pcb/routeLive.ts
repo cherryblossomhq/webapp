@@ -339,3 +339,4 @@ export function __resetHudClock(): void {
   cancelHudTail();
   lastHudAt = 0;
 }
+

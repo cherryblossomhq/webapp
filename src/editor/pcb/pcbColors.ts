@@ -53,3 +53,4 @@ export const GRID_FINE_MM = 0.1;
 export const GRID_COARSE_MM = 1.0;
 
 export const DIMMED_OPACITY = 0.22;
+

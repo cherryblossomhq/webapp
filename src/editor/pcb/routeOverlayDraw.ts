@@ -320,3 +320,4 @@ function polylineInView(
     maxX >= view.minX && minX <= view.maxX && maxY >= view.minY && minY <= view.maxY
   );
 }
+

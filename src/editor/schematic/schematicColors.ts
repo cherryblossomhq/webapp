@@ -100,3 +100,4 @@ export function getSchematicColorOverrides(
 ): ColorOverrides | undefined {
   return theme === "dark" ? DARK_OVERRIDES : undefined;
 }
+

@@ -42,3 +42,4 @@ export async function buildKicadProjectZip(
 
   return zip.generateAsync({ type: "blob" });
 }
+

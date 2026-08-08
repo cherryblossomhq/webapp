@@ -744,4 +744,3 @@ export function readWalkaround(
   const path = store.path.slice(1, store.hugEndIndex + 1);
   return { path, hugEnd: path[path.length - 1] ?? null, blocked };
 }
-

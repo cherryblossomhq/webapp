@@ -407,4 +407,3 @@ function IssueRow({
     </button>
   );
 }
-

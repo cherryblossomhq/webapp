@@ -1294,4 +1294,3 @@ export const DEFAULT_TSX = `export default () => (
   </board>
 )
 `;
-

@@ -868,4 +868,3 @@ function MultiSelectPanel({ names }: { names: string[] }) {
     </>
   );
 }
-

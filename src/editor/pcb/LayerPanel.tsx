@@ -213,4 +213,3 @@ export function LayerPanel({
     </div>
   );
 }
-

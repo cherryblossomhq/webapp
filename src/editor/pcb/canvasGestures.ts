@@ -202,4 +202,3 @@ export const TOUCH_TOLERANCES: CanvasTolerances = {
 export function tolerancesFor(isTouch: boolean): CanvasTolerances {
   return isTouch ? TOUCH_TOLERANCES : MOUSE_TOLERANCES;
 }
-

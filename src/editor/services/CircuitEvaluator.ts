@@ -311,4 +311,3 @@ function collectErrors(circuitJson: unknown[]): string[] {
   }
   return out;
 }
-

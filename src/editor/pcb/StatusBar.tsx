@@ -265,4 +265,3 @@ function formatMm(v: number): string {
   const s = n.toFixed(2);
   return n >= 0 ? `+${s}` : s;
 }
-

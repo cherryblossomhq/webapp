@@ -95,4 +95,3 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     </div>
   );
 }
-

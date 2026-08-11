@@ -460,4 +460,3 @@ function StatusBar() {
     </div>
   );
 }
-

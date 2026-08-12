@@ -168,4 +168,3 @@ export function ShortcutsHelp({ open, onOpenChange }: ShortcutsHelpProps) {
     </Dialog>
   );
 }
-

@@ -249,4 +249,3 @@ export function routingModeLabel(mode: PcbRoutingMode): string {
 // (0.3mm drill / 0.6mm pad) which is what nearly every hobbyist board uses.
 export const DEFAULT_VIA_DRILL_MM = 0.3;
 export const DEFAULT_VIA_PAD_MM = 0.6;
-

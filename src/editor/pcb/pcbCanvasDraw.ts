@@ -757,4 +757,3 @@ export function pickNotch(
   const radius = Math.max(0.18, Math.min(1.2, Math.min(renderW, renderH) * 0.18));
   return { side, radius };
 }
-

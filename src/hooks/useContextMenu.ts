@@ -32,4 +32,3 @@ export function useContextMenu() {
 
   return { menu, openMenu, closeMenu };
 }
-

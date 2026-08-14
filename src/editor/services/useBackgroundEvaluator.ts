@@ -114,4 +114,3 @@ export function useBackgroundEvaluator(): void {
     ev.schedule(tsxCode, manualEdits);
   }, [tsxCode, manualEdits]);
 }
-

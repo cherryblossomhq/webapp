@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { useDialogReturnFocus } from "@/hooks/useDialogReturnFocus";
 import { useIsTouch } from "@/hooks/useViewport";
+import { modKeyLabel } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
 interface ShortcutsHelpProps {
@@ -85,6 +86,14 @@ const SECTIONS = [
   },
 ];
 
+// The table above is written with "Ctrl" because that is what the handlers
+// match on (ctrlKey OR metaKey). What the reader has on their keyboard is a
+// different question — on a Mac the row said Ctrl+S while the working chord was
+// ⌘S, so every entry read as wrong.
+function keyLabel(key: string): string {
+  return key === "Ctrl" ? modKeyLabel() : key;
+}
+
 function Kbd({ children }: { children: string }) {
   return (
     <kbd className={cn(
@@ -140,11 +149,11 @@ export function ShortcutsHelp({ open, onOpenChange }: ShortcutsHelpProps) {
                         `Shift A` and `, .` render identically and the reader has
                         to already know which is a chord and which is a choice. */}
                     <div className="flex items-center gap-1 shrink-0">
-                      {s.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
+                      {s.keys.map((k) => <Kbd key={k}>{keyLabel(k)}</Kbd>)}
                       {s.alt && (
                         <>
                           <span className="text-[10px] text-muted-foreground/70">or</span>
-                          {s.alt.map((k) => <Kbd key={k}>{k}</Kbd>)}
+                          {s.alt.map((k) => <Kbd key={k}>{keyLabel(k)}</Kbd>)}
                         </>
                       )}
                     </div>

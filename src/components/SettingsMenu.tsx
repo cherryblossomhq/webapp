@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSettingsStore } from "@/store/settingsStore";
+import { modKeyPrefix } from "@/lib/platform";
 import { Settings } from "lucide-react";
 
 /**
@@ -25,7 +26,7 @@ export function SettingsMenu() {
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">
-        Settings ({navigator.platform?.includes("Mac") ? "⌘" : "Ctrl+"},)
+        Settings ({modKeyPrefix()},)
       </TooltipContent>
     </Tooltip>
   );

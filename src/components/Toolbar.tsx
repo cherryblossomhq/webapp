@@ -17,6 +17,7 @@ import { useIsCompact, useIsTouch } from "@/hooks/useViewport";
 import { useCircuitStore } from "@/store/circuitStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { modKeyPrefix } from "@/lib/platform";
 import {
   Check,
   Download,
@@ -41,8 +42,6 @@ interface ToolbarProps {
   onHelp?: () => void;
   savedFlash?: boolean;
 }
-
-const modKey = () => (navigator.platform?.includes("Mac") ? "⌘" : "Ctrl+");
 
 /**
  * Toolbar icon button. Wraps the tooltip + aria-label pairing every one of these
@@ -155,17 +154,17 @@ export function Toolbar({
               <DropdownMenuItem onSelect={onNew}>
                 <FilePlus2 aria-hidden="true" />
                 New
-                {!isTouch && <DropdownMenuShortcut>{modKey()}N</DropdownMenuShortcut>}
+                {!isTouch && <DropdownMenuShortcut>{modKeyPrefix()}N</DropdownMenuShortcut>}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onOpen}>
                 <FolderOpen aria-hidden="true" />
                 Open…
-                {!isTouch && <DropdownMenuShortcut>{modKey()}O</DropdownMenuShortcut>}
+                {!isTouch && <DropdownMenuShortcut>{modKeyPrefix()}O</DropdownMenuShortcut>}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onSave}>
                 <Save aria-hidden="true" />
                 Save
-                {!isTouch && <DropdownMenuShortcut>{modKey()}S</DropdownMenuShortcut>}
+                {!isTouch && <DropdownMenuShortcut>{modKeyPrefix()}S</DropdownMenuShortcut>}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onExport}>
                 <Download aria-hidden="true" />
@@ -255,7 +254,7 @@ export function Toolbar({
             <DropdownMenuItem onSelect={() => openSettings()}>
               <Settings aria-hidden="true" />
               Settings
-              {!isTouch && <DropdownMenuShortcut>{modKey()},</DropdownMenuShortcut>}
+              {!isTouch && <DropdownMenuShortcut>{modKeyPrefix()},</DropdownMenuShortcut>}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

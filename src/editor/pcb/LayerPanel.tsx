@@ -17,6 +17,7 @@
 // phone's canvas, so it becomes a dismissable overlay driven from the toolbar's
 // Layers button instead of a dock.
 
+import { useEffect } from "react";
 import { isCopperLayer, type LayerConfig } from "./layers";
 import { useIsCompact, useIsTouch } from "@/hooks/useViewport";
 import type { LayerId } from "@/editor/shared/types";
@@ -55,6 +56,20 @@ export function LayerPanel({
 }: LayerPanelProps) {
   const isCompact = useIsCompact();
   const isTouch = useIsTouch();
+  // Only the compact panel is dismissable; docked it is always on screen and
+  // has nothing to close. Escape is the one dismissal a keyboard user has —
+  // the scrim needs a pointer and the × is compact-only.
+  const isOverlay = isCompact && open;
+
+  useEffect(() => {
+    if (!isOverlay) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOverlay, onClose]);
+
   if (isCompact && !open) return null;
 
   // Copper layers appear in display order (top → bottom), so the running

@@ -199,7 +199,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
           <DialogDescription>
             <span className="font-mono text-foreground">{metadata.title}</span>
             {" · "}
-            {components.length} components
+            {components.length} {components.length === 1 ? "component" : "components"}
           </DialogDescription>
         </DialogHeader>
 

@@ -47,11 +47,20 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    // The menu is anchored to a point that was measured once, so anything that
+    // moves the world under it leaves it pointing at nothing: a resize (or a
+    // phone rotating) shifts the target, and a blur means the next click lands
+    // in another window entirely and never reaches handleClickOutside.
+    const handleDismiss = () => onClose();
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleDismiss);
+    window.addEventListener("blur", handleDismiss);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleDismiss);
+      window.removeEventListener("blur", handleDismiss);
     };
   }, [onClose]);
 

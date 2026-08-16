@@ -17,7 +17,7 @@ import { useIsCompact, useIsTouch } from "@/hooks/useViewport";
 import { useCircuitStore } from "@/store/circuitStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
-import { modKeyPrefix } from "@/lib/platform";
+import { isApplePlatform, modKeyPrefix } from "@/lib/platform";
 import {
   Check,
   Download,
@@ -113,6 +113,11 @@ export function Toolbar({
   const canRedo = historyIndex < historyLength - 1;
 
   const themeLabel = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  // Hints only — the accessible name stays the plain verb, so a screen reader
+  // announces "Undo" rather than spelling out a modifier glyph it can't render.
+  const isMac = isApplePlatform();
+  const undoHint = isMac ? "⌘Z" : "Ctrl+Z";
+  const redoHint = isMac ? "⇧⌘Z" : "Ctrl+Shift+Z";
 
   return (
     <header
@@ -201,14 +206,16 @@ export function Toolbar({
       <div className="flex items-center gap-0.5">
         <ToolbarIconButton
           icon={Undo2}
-          label="Undo (Ctrl+Z)"
+          label="Undo"
+          tooltip={`Undo (${undoHint})`}
           onClick={undo}
           disabled={!canUndo}
           large={isTouch}
         />
         <ToolbarIconButton
           icon={Redo2}
-          label="Redo (Ctrl+Shift+Z)"
+          label="Redo"
+          tooltip={`Redo (${redoHint})`}
           onClick={redo}
           disabled={!canRedo}
           large={isTouch}

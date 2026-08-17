@@ -68,9 +68,20 @@ function heightBounds(): { min: number; max: number; preferred: number } {
   return { min: Math.min(MIN_HEIGHT, max), max, preferred: DEFAULT_HEIGHT };
 }
 
+/** Pixels per arrow-key press on the resize handle. */
+const RESIZE_STEP = 24;
+
 function clampHeight(height: number): number {
   const { min, max } = heightBounds();
   return Math.min(Math.max(height, min), max);
+}
+
+function persistHeight(height: number): void {
+  try {
+    localStorage.setItem(HEIGHT_KEY, String(height));
+  } catch {
+    // The panel remains usable when storage is unavailable.
+  }
 }
 
 function loadHeight(): number {
@@ -160,20 +171,32 @@ export function IssuesPanel() {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onEnd);
         window.removeEventListener("pointercancel", onEnd);
-        try {
-          localStorage.setItem(
-            HEIGHT_KEY,
-            String(finalHeight),
-          );
-        } catch {
-          // The panel remains usable when storage is unavailable.
-        }
+        persistHeight(finalHeight);
       };
 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onEnd);
       window.addEventListener("pointercancel", onEnd);
       dragCleanupRef.current = onEnd;
+    },
+    [height],
+  );
+
+  // The drag handle was pointer-only, so a keyboard user could shrink the
+  // canvas by opening the panel and had no way to give the space back.
+  const onResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const step =
+        event.key === "ArrowUp"
+          ? RESIZE_STEP
+          : event.key === "ArrowDown"
+            ? -RESIZE_STEP
+            : 0;
+      if (step === 0) return;
+      event.preventDefault();
+      const next = clampHeight(height + step);
+      setHeight(next);
+      persistHeight(next);
     },
     [height],
   );
@@ -195,6 +218,10 @@ export function IssuesPanel() {
     [requestDrcFocus, setActiveTab],
   );
 
+  // A focusable separator is a window splitter, and a splitter without a
+  // reported range announces as "0 percent" at every height.
+  const resizeBounds = heightBounds();
+
   return (
     <section
       className="relative shrink-0 border-t border-border bg-sidebar flex flex-col min-w-0"
@@ -205,7 +232,12 @@ export function IssuesPanel() {
         role="separator"
         aria-orientation="horizontal"
         aria-label="Resize Issues panel"
+        tabIndex={0}
+        aria-valuenow={height}
+        aria-valuemin={resizeBounds.min}
+        aria-valuemax={resizeBounds.max}
         onPointerDown={onResizeStart}
+        onKeyDown={onResizeKeyDown}
         className={cn(
           // The visual affordance is a 1px line; the hit zone is a transparent
           // band centred on it. 8px is fine for a cursor with a visible hotspot
@@ -213,6 +245,7 @@ export function IssuesPanel() {
           // coarse pointer. touch-none keeps the browser from claiming the drag
           // as a scroll and firing pointercancel mid-resize.
           "group absolute inset-x-0 top-0 z-10 -translate-y-1/2 cursor-row-resize touch-none",
+          "outline-none",
           isTouch ? "h-6" : "h-2"
         )}
       >
@@ -220,7 +253,9 @@ export function IssuesPanel() {
           className={cn(
             // Hover reveals the line on a mouse. There is no hover on touch, so
             // an invisible-until-hovered grip would simply never exist there.
-            "absolute inset-x-0 top-1/2 h-px",
+            // Focus lights the same line hover does — otherwise tabbing to the
+            // handle looks identical to nothing having happened.
+            "absolute inset-x-0 top-1/2 h-px group-focus-visible:bg-primary",
             isTouch ? "bg-border" : "bg-transparent group-hover:bg-primary"
           )}
         />

@@ -412,33 +412,37 @@ function IssueRow({
     !!group.drcViolationId ||
     /pcb|schematic/i.test(`${group.types.join(" ")} ${group.message}`);
 
+  // role="listitem" belongs on a wrapper, not on the button: overriding the
+  // button's own role is what dropped every row out of the tab-and-activate
+  // story a screen reader gets, while the list still needed listitem children.
   return (
-    <button
-      type="button"
-      role="listitem"
-      onClick={() => onOpen(group)}
-      className={cn(
-        "w-full flex items-start gap-2 border-b border-border/50 px-3 py-2 text-left",
-        isNavigable && "hover:bg-muted/50",
-      )}
-    >
-      <Icon
+    <div role="listitem">
+      <button
+        type="button"
+        onClick={() => onOpen(group)}
         className={cn(
-          "mt-0.5 size-3.5 shrink-0",
-          group.severity === "error" ? "text-red-500" : "text-amber-500",
+          "w-full flex items-start gap-2 border-b border-border/50 px-3 py-2 text-left",
+          isNavigable && "hover:bg-muted/50",
         )}
-      />
-      <span className="min-w-0 flex-1 text-xs leading-relaxed text-foreground break-words">
-        {group.message}
-      </span>
-      {group.count > 1 && (
-        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-          ×{group.count}
+      >
+        <Icon
+          className={cn(
+            "mt-0.5 size-3.5 shrink-0",
+            group.severity === "error" ? "text-red-500" : "text-amber-500",
+          )}
+        />
+        <span className="min-w-0 flex-1 text-xs leading-relaxed text-foreground break-words">
+          {group.message}
         </span>
-      )}
-      <span className="shrink-0 text-[10px] uppercase text-muted-foreground/70">
-        {group.sources.join(" + ")}
-      </span>
-    </button>
+        {group.count > 1 && (
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+            ×{group.count}
+          </span>
+        )}
+        <span className="shrink-0 text-[10px] uppercase text-muted-foreground/70">
+          {group.sources.join(" + ")}
+        </span>
+      </button>
+    </div>
   );
 }

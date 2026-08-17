@@ -11,16 +11,22 @@ import {
 } from "@/components/ui/dialog";
 import { useCircuitStore } from "@/store/circuitStore";
 
+// `htmlFor` is required, not optional: without it the label is decorative text,
+// so the input has no accessible name and clicking the label doesn't focus it.
 function Field({
   label,
+  htmlFor,
   children,
 }: {
   label: string;
+  htmlFor: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <Label className="ui-label text-muted-foreground">{label}</Label>
+      <Label htmlFor={htmlFor} className="ui-label text-muted-foreground">
+        {label}
+      </Label>
       {children}
     </div>
   );
@@ -51,8 +57,9 @@ export function ProjectDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          <Field label="Title">
+          <Field label="Title" htmlFor="project-title">
             <Input
+              id="project-title"
               value={metadata.title}
               onChange={(e) => setMetadata(e.target.value)}
               className="h-8 text-xs"

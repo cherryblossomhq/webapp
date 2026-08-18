@@ -129,8 +129,10 @@ export function StatusBar({
         onClick={onCycleTraceWidth}
         disabled={!onCycleTraceWidth}
         className={`flex items-center gap-1.5 rounded pointer-events-auto hover:text-foreground disabled:pointer-events-none ${tapTarget}`}
-        title="Trace width — tap to cycle profile (T)"
-        aria-label={`Trace width ${traceWidthMm.toFixed(2)} millimetres. Activate to cycle.`}
+        // The hint said "tap" everywhere, including on the desktop layout that
+        // also spells out the T shortcut next to it.
+        title={`Trace width — ${isTouch ? "tap" : "click"} to cycle profile (T)`}
+        aria-label={`Trace width ${widthProfileLabel ? `${widthProfileLabel}, ` : ""}${traceWidthMm.toFixed(2)} millimetres. Activate to cycle.`}
       >
         <span className="opacity-60">w:</span>
         <span className="text-foreground tabular-nums">

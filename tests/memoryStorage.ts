@@ -29,6 +29,8 @@ export function memoryStorage() {
   let loseNextAnswer = false
   /** Don't tell watchers about pushes, as a subscription that dropped with the connection wouldn't hear. */
   let quiet = false
+  /** Refuse the next push with this reason. */
+  let refuseNext: "too_large" | "invalid" | null = null
   const watchers = new Set<{ id: string; cursor: number; role: ProjectRole | null; listener: (e: ChangesEvent) => void }>()
 
   const deliver = (w: { id: string; cursor: number; role: ProjectRole | null; listener: (e: ChangesEvent) => void }) => {
@@ -75,6 +77,11 @@ export function memoryStorage() {
       if (row.role === "viewer") return { ok: false, reason: "forbidden" }
       if (batch.formatVersion < row.formatVersion) return { ok: false, reason: "outdated" }
       if (batch.formatVersion > row.formatVersion) return { ok: false, reason: "conflict" }
+      if (refuseNext) {
+        const reason = refuseNext
+        refuseNext = null
+        return { ok: false, reason }
+      }
       const file = JSON.parse(row.content)
       // Through JSON, as the wire carries it.
       file.project = applyChanges(file.project, JSON.parse(JSON.stringify(batch.changes)))
@@ -136,6 +143,7 @@ export function memoryStorage() {
       }
     },
     loseNextAnswer: () => (loseNextAnswer = true),
+    refuseNext: (reason: "too_large" | "invalid") => (refuseNext = reason),
     /** Stop (or start again) telling watchers; starting again tells them what they missed. */
     setQuiet(id: string, on: boolean) {
       quiet = on

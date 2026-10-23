@@ -6,6 +6,12 @@ import { openStoredProject, projectRecord, type ChangesEvent, type ProjectRole, 
 
 /** Quiet time after an edit before it is sent, so the edits of one gesture travel as one batch. */
 const SEND_DELAY_MS = 40
+/**
+ * How much one batch may gather while the one before it is on its way (all of it, offline). A
+ * refused batch is undone whole, so it should hold the last few edits, not an hour of them.
+ */
+const MAX_BATCH_STEPS = 8
+const MAX_BATCH_CHANGES = 2_000
 /** Waits before sending again a batch that didn't arrive (offline, a server error). */
 const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
 
@@ -40,6 +46,8 @@ export interface SyncHost {
 interface Pending {
   batch: number
   changes: Change[]
+  /** Edits gathered in it. */
+  steps: number
   /** Sent at least once: never added to again, since a send that seemed to fail may have landed. */
   sent: boolean
   /** The revision storage gave it; it is part of `confirmed` once the log shows it. */
@@ -114,8 +122,12 @@ export class ProjectSync {
     if (!changes.length || this.stopped) return
     this.notice = null
     const last = this.pending[this.pending.length - 1]
-    if (last && !last.sent) last.changes.push(...changes)
-    else this.pending.push({ batch: this.nextBatch++, changes: [...changes], sent: false })
+    if (last && !last.sent && last.steps < MAX_BATCH_STEPS && last.changes.length + changes.length <= MAX_BATCH_CHANGES) {
+      last.changes.push(...changes)
+      last.steps++
+    } else {
+      this.pending.push({ batch: this.nextBatch++, changes: [...changes], steps: 1, sent: false })
+    }
     this.report()
     if (!this.inFlight && !this.reloading) this.wait(SEND_DELAY_MS)
   }
@@ -296,7 +308,8 @@ export class ProjectSync {
         return
       case "too_large":
       case "invalid":
-        // That edit can't be kept. Undo it on screen rather than show a project that isn't saved.
+        // Those edits (the last few, at most a batch) can't be kept. Undo them on screen rather than
+        // show a project that isn't saved.
         this.pending = this.pending.filter((p) => p !== batch)
         this.notice = "too_large"
         this.host.rebase(this.view(), [])

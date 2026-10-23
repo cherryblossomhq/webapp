@@ -30,6 +30,9 @@ export function TopBar() {
   // Someone else's rename shows at once, except over a name the user is typing: theirs lands, then
   // the user's when they press Enter, as with any other value two people edit at once.
   const typing = useRef(false)
+  // Whether a key was pressed in the field: a click in and out commits nothing, or the name it
+  // showed when it was focused would land over someone else's rename made meanwhile.
+  const typed = useRef(false)
   useEffect(() => {
     if (!typing.current) setDraft(name)
   }, [name])
@@ -52,12 +55,18 @@ export function TopBar() {
           readOnly={viewer}
           className={`h-8 min-w-0 max-w-[260px] flex-1 truncate rounded-[6px] border border-transparent bg-transparent px-2 font-[600] text-ink outline-none ${viewer ? "" : "hover:border-line focus:border-select focus:bg-surface"}`}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => (typing.current = true)}
+          onChange={(e) => {
+            typed.current = true
+            setDraft(e.target.value)
+          }}
+          onFocus={() => {
+            typing.current = true
+            typed.current = false
+          }}
           onBlur={() => {
             typing.current = false
             const v = draft.trim()
-            if (v && v !== name) projectApi().commit((p) => ({ ...p, name: v, updatedAt: Date.now() }))
+            if (typed.current && v && v !== name) projectApi().commit((p) => ({ ...p, name: v, updatedAt: Date.now() }))
             else setDraft(name)
           }}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}

@@ -28,7 +28,7 @@ export function SaveNotice() {
   } else if (save.reason === "forbidden") {
     text = "This project is now shared with you to view, so your last changes weren't saved."
   } else {
-    text = "That change would make the project too large to save, so it was undone."
+    text = "Your latest change would make the project too large to save, so it was undone."
   }
   return (
     <div

@@ -165,6 +165,22 @@ describe("live editing", () => {
     expect(api().save.state).toBe("saved")
   })
 
+  it("splits a long run of queued edits into batches, so a refusal undoes only the last few", async () => {
+    const { memory, id } = await opened()
+    memory.setFailure(new Error("offline"))
+    for (let i = 1; i <= 20; i++) api().commit((p) => addLabel(p, `N${i}`, { x: i, y: 0 }).project)
+    await settle()
+    memory.setFailure(null)
+    // The batch that lands first is refused; the edits after it are kept.
+    memory.refuseNext("too_large")
+    await vi.advanceTimersByTimeAsync(5_000)
+    const stored = memory.project(id).labels.length
+    expect(stored).toBeGreaterThanOrEqual(12)
+    expect(stored).toBeLessThan(20)
+    expect(api().project!.labels).toHaveLength(stored)
+    expect(api().save).toEqual<SaveStatus>({ state: "refused", reason: "too_large" })
+  })
+
   it("refuses a viewer's edits before they happen, and says so", async () => {
     const { memory, id } = await opened()
     memory.setRole(id, "viewer")

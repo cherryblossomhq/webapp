@@ -294,19 +294,32 @@ export function browserProjectStorage(): ProjectStorage {
       if (batch.formatVersion > version || !file.project || typeof file.project !== "object") return { ok: false, reason: "conflict" }
       const project = applyChanges(file.project as Record<string, unknown>, batch.changes)
       const revision = (entry.revision ?? 0) + 1
-      // The log entry before the index that numbers it, so a watcher never sees a revision it can't read.
+      // The log entry before the index that numbers it, so a watcher never sees a revision it can't
+      // read; and taken back if the project doesn't store, or a resend would read it as landed.
+      const before = localStorage.getItem(logKey(id))
       appendLog(id, { revision, clientId: batch.clientId, batch: batch.batch, changes: JSON.stringify(batch.changes) })
-      put(
-        {
-          ...entry,
-          name: typeof project.name === "string" ? project.name : entry.name,
-          description: typeof project.description === "string" ? project.description : (entry.description ?? ""),
-          componentCount: batch.componentCount,
-          updatedAt: Date.now(),
-          revision,
-        },
-        JSON.stringify({ ...file, project }),
-      )
+      try {
+        put(
+          {
+            ...entry,
+            name: typeof project.name === "string" ? project.name : entry.name,
+            description: typeof project.description === "string" ? project.description : (entry.description ?? ""),
+            componentCount: batch.componentCount,
+            updatedAt: Date.now(),
+            revision,
+          },
+          JSON.stringify({ ...file, project }),
+        )
+      } catch (error) {
+        try {
+          if (before === null) localStorage.removeItem(logKey(id))
+          else localStorage.setItem(logKey(id), before)
+        } catch {
+          // Too full even for the old log: without one, other tabs load the project again.
+          localStorage.removeItem(logKey(id))
+        }
+        throw error
+      }
       return { ok: true, revision }
     },
     async replace(id, baseRevision, record) {

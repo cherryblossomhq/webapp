@@ -383,7 +383,7 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                   subtitle={<span className={i.expired || i.emailStatus === "failed" ? "text-warn" : undefined}>{inviteLine(i)}</span>}
                 >
                   <span className="px-1 text-[12.5px] text-ink-2">{ROLE_LABEL[i.role]}</span>
-                  <CopyLink url={source.inviteUrl(i.token)} />
+                  {i.token && <CopyLink url={source.inviteUrl(i.token)} />}
                   {(state.canManage || i.mine) && (
                     <>
                       <IconButton label="Send again" hint="A new email with a new link; the old link stops working" onClick={() => act(() => source.resend(i.id).then((r) => (r.ok ? undefined : setSent({ tone: "error", text: r.message }))))}>

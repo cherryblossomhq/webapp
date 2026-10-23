@@ -25,8 +25,11 @@ export interface ShareInvite {
   /** The address it was sent to. */
   email: string
   role: MemberRole
-  /** The link's secret: `SharingSource.inviteUrl` makes the link to copy. */
-  token: string
+  /**
+   * The link's secret, which `SharingSource.inviteUrl` makes the link to copy. Only for the owner
+   * and whoever sent it: a link is a way into the project.
+   */
+  token?: string
   /** `not_configured`: the host sends no email, and the link is the inviter's to send. */
   emailStatus: "sending" | "sent" | "failed" | "not_configured"
   expired: boolean

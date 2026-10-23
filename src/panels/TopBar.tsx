@@ -1,5 +1,5 @@
 import { ChevronLeft, Eye, Redo2, Settings, Undo2 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
 import { usePresence } from "../store/presence"
 import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
@@ -27,7 +27,12 @@ export function TopBar() {
   const viewer = useProjectStore((s) => s.role === "viewer")
   const together = usePresence((s) => s.peers.length > 0)
   const [draft, setDraft] = useState(name)
-  useEffect(() => setDraft(name), [name])
+  // Someone else's rename shows at once, except over a name the user is typing: theirs lands, then
+  // the user's when they press Enter, as with any other value two people edit at once.
+  const typing = useRef(false)
+  useEffect(() => {
+    if (!typing.current) setDraft(name)
+  }, [name])
   const [sharing, setSharing] = useState(false)
   const canShare = !!projectStorage()?.sharing
 
@@ -48,7 +53,9 @@ export function TopBar() {
           className={`h-8 min-w-0 max-w-[260px] flex-1 truncate rounded-[6px] border border-transparent bg-transparent px-2 font-[600] text-ink outline-none ${viewer ? "" : "hover:border-line focus:border-select focus:bg-surface"}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => (typing.current = true)}
           onBlur={() => {
+            typing.current = false
             const v = draft.trim()
             if (v && v !== name) projectApi().commit((p) => ({ ...p, name: v, updatedAt: Date.now() }))
             else setDraft(name)

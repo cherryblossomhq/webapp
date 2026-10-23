@@ -9,6 +9,7 @@ import { AccountContext, type EditorAccount } from "./store/account"
 import { useCopilot } from "./store/copilotStore"
 import { browserModelFiles, connectModelFiles, type ModelFileStore } from "./store/modelFiles"
 import { browserPresence } from "./store/presence"
+import { localSharing } from "./store/sharing"
 import { connectProjectStorage, settleSaves, useProjectStore } from "./store/projectStore"
 import { browserProjectStorage, movedProjectId, moveBrowserProjects, openStoredProject, projectRecord, type ProjectStorage } from "./store/storage"
 import { useUi } from "./store/uiStore"
@@ -127,8 +128,15 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
     connectedParts = supplierParts
     connectSupplierParts(supplierParts)
   }
-  // This browser's tabs see each other on a project, as people on an account's project do.
-  const storage = given ?? (defaultStorage ??= { ...browserProjectStorage(), presence: browserPresence() })
+  // This browser's tabs see each other on a project, as people on an account's project do; with a
+  // stand-in account (the harness's `?account`), the Share dialog works on invitations kept in memory.
+  const storage =
+    given ??
+    (defaultStorage ??= {
+      ...browserProjectStorage(),
+      presence: browserPresence(),
+      ...(account?.user && { sharing: localSharing({ userId: account.user.id ?? "local", name: account.user.name, email: account.user.email, pictureUrl: account.user.pictureUrl ?? undefined }) }),
+    })
   connectProjectStorage(storage)
   connectModelFiles(modelFiles ?? (defaultModelFiles ??= browserModelFiles()))
   projectsUrl = account?.projectsUrl

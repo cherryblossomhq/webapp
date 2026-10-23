@@ -49,25 +49,45 @@ function RoleSelect({ value, onChange, disabled, label }: { value: MemberRole; o
   )
 }
 
-/** Addresses typed into the invite field, as chips: comma, space, Enter or a paste ends one. */
-function EmailField({ emails, setEmails, onSubmit, disabled }: { emails: string[]; setEmails: (e: string[]) => void; onSubmit: () => void; disabled: boolean }) {
-  const [draft, setDraft] = useState("")
+/** Addresses in some text: split on commas, semicolons and spaces, `<angle brackets>` dropped, lowercased. */
+const addressesIn = (text: string) =>
+  text
+    .split(/[\s,;]+/)
+    .map((e) => e.trim().replace(/^<|>$/g, "").toLowerCase())
+    .filter(Boolean)
+
+/**
+ * Addresses typed into the invite field, as chips: a comma, space, Enter or paste ends one. The one
+ * still being typed (`draft`) is the parent's too, so Invite takes it without it being ended first.
+ */
+function EmailField({
+  emails,
+  setEmails,
+  draft,
+  setDraft,
+  onSubmit,
+  disabled,
+}: {
+  emails: string[]
+  setEmails: (e: string[]) => void
+  draft: string
+  setDraft: (d: string) => void
+  onSubmit: () => void
+  disabled: boolean
+}) {
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
   const take = (text: string) => {
-    const found = text
-      .split(/[\s,;]+/)
-      .map((e) => e.trim().replace(/^<|>$/g, ""))
-      .filter(Boolean)
+    const found = addressesIn(text)
     if (!found.length) return false
-    setEmails([...new Set([...emails, ...found.map((e) => e.toLowerCase())])])
+    setEmails([...new Set([...emails, ...found])])
     setDraft("")
     return true
   }
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault()
-      if (!take(draft) && emails.length) onSubmit()
+      onSubmit()
     } else if ((e.key === "," || e.key === " " || e.key === ";") && draft.trim()) {
       e.preventDefault()
       take(draft)
@@ -107,12 +127,21 @@ function EmailField({ emails, setEmails, onSubmit, disabled }: { emails: string[
       <input
         ref={input}
         aria-label="Email addresses to invite"
-        type="email"
-        multiple
+        // Text, not email: an email field rewrites what is typed (it strips spaces around commas).
+        type="text"
+        inputMode="email"
+        autoComplete="off"
+        spellCheck={false}
         disabled={disabled}
         value={draft}
         placeholder={emails.length ? "" : "Add people by email"}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          // A separator typed, pasted or filled in ends the addresses before it; the rest is still being typed.
+          const parts = e.target.value.split(/[\s,;]+/)
+          const rest = parts.pop() ?? ""
+          if (parts.some(Boolean)) take(parts.join(","))
+          setDraft(rest)
+        }}
         onKeyDown={onKey}
         onPaste={onPaste}
         onBlur={() => take(draft)}
@@ -215,18 +244,22 @@ type Sent = { tone: "ok" | "error"; text: string }
 function ShareBody({ source, projectId, projectName, onClose }: { source: SharingSource; projectId: string; projectName: string; onClose: () => void }) {
   const { state, error } = useSharing(source, projectId)
   const [emails, setEmails] = useState<string[]>([])
+  const [draft, setDraft] = useState("")
   const [role, setRole] = useState<MemberRole>("editor")
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState<Sent | null>(null)
 
   const invalid = emails.filter((e) => !EMAIL.test(e))
+  const typed = addressesIn(draft)
+  const all = [...new Set([...emails, ...typed])]
+  const ready = all.length > 0 && !invalid.length && typed.every((e) => EMAIL.test(e))
   const invite = async () => {
-    if (!emails.length || invalid.length || busy) return
+    if (!ready || busy) return
     setBusy(true)
     setSent(null)
     try {
-      const result = await source.invite(projectId, emails, role, message.trim() || undefined)
+      const result = await source.invite(projectId, all, role, message.trim() || undefined)
       if (!result.ok) {
         setSent({ tone: "error", text: result.message })
         return
@@ -242,6 +275,7 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
       ].filter(Boolean)
       setSent({ tone: "ok", text: parts.join(" ") })
       setEmails([])
+      setDraft("")
       setMessage("")
     } catch {
       setSent({ tone: "error", text: "Couldn't send the invitation. Check your connection and try again." })
@@ -280,13 +314,13 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 }}
               >
                 <div className="flex items-start gap-2">
-                  <EmailField emails={emails} setEmails={setEmails} onSubmit={() => void invite()} disabled={busy} />
+                  <EmailField emails={emails} setEmails={setEmails} draft={draft} setDraft={setDraft} onSubmit={() => void invite()} disabled={busy} />
                   <RoleSelect value={role} onChange={setRole} label="What they may do" />
-                  <Button type="submit" variant="primary" disabled={!emails.length || !!invalid.length || busy} className="h-9">
+                  <Button type="submit" variant="primary" disabled={!ready || busy} className="h-9">
                     {busy ? "Inviting…" : "Invite"}
                   </Button>
                 </div>
-                {emails.length > 0 && (
+                {all.length > 0 && (
                   <textarea
                     aria-label="A note for the email"
                     value={message}

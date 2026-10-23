@@ -23,6 +23,8 @@ if (process.env.NODE_ENV === "development") {
     Object.assign(window, {
       __cherryblossom: {
         projectApi: projectStore.projectApi,
+        // The store itself, so a browser test can put the editor in a state (a viewer's, say) the harness can't reach.
+        projectStore: projectStore.useProjectStore,
         uiApi: uiStore.uiApi,
         getConnectivity: analysis.getConnectivity,
         getPcbAnalysis: analysis.getPcbAnalysis,

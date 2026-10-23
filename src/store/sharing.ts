@@ -64,3 +64,56 @@ export interface SharingSource {
   /** The link an invitation opens, to copy and send by hand. */
   inviteUrl(token: string): string
 }
+
+/**
+ * Sharing for the development harness, which has no accounts: invitations kept in this tab's
+ * memory and never sent, so the Share dialog can be seen and driven (`/editor-harness?account`)
+ * without a backend. Nobody can accept one.
+ */
+export function localSharing(owner: SharePerson): SharingSource {
+  let state: SharingState = { role: "owner", you: owner.userId, canInvite: true, canManage: true, owner, members: [], invites: [] }
+  const listeners = new Set<(s: SharingState) => void>()
+  const set = (next: SharingState) => {
+    state = next
+    for (const listener of listeners) listener(state)
+  }
+  const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("").slice(0, 43)
+  return {
+    watch(_projectId, listener) {
+      listeners.add(listener)
+      listener(state)
+      return () => listeners.delete(listener)
+    },
+    async invite(_projectId, emails, role) {
+      const outcomes: { email: string; status: "invited" | "renewed" | "member" }[] = []
+      let invites = state.invites
+      for (const raw of emails) {
+        const email = raw.trim().toLowerCase()
+        if (email === owner.email.toLowerCase()) outcomes.push({ email, status: "member" })
+        else if (invites.some((i) => i.email === email)) {
+          invites = invites.map((i) => (i.email === email ? { ...i, role, token: token() } : i))
+          outcomes.push({ email, status: "renewed" })
+        } else {
+          invites = [...invites, { id: `inv_${token().slice(0, 8)}`, email, role, token: token(), emailStatus: "not_configured", expired: false, mine: true, createdAt: Date.now() }]
+          outcomes.push({ email, status: "invited" })
+        }
+      }
+      set({ ...state, invites })
+      return { ok: true, outcomes, emailConfigured: false }
+    },
+    async resend(inviteId) {
+      set({ ...state, invites: state.invites.map((i) => (i.id === inviteId ? { ...i, token: token() } : i)) })
+      return { ok: true }
+    },
+    async revoke(inviteId) {
+      set({ ...state, invites: state.invites.filter((i) => i.id !== inviteId) })
+    },
+    async setRole(_projectId, userId, role) {
+      set({ ...state, members: state.members.map((m) => (m.userId === userId ? { ...m, role } : m)) })
+    },
+    async removeMember(_projectId, userId) {
+      set({ ...state, members: state.members.filter((m) => m.userId !== userId) })
+    },
+    inviteUrl: (t) => `${window.location.origin}/invite/${t}`,
+  }
+}

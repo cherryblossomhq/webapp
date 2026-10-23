@@ -87,6 +87,7 @@ export function Editor() {
   const libraryOpen = useUi((s) => s.libraryOpen)
   const panelOpen = useUi((s) => s.panelOpen)
   const copilotOpen = useUi((s) => s.copilotOpen)
+  const viewer = useProjectStore((s) => s.role === "viewer")
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -207,7 +208,10 @@ export function Editor() {
             />
           </div>
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-            {sidePanel === "inspector" && <Inspector />}
+            {/* A viewer reads every value and changes none: the fieldset disables every control in it. */}
+            <fieldset disabled={viewer} className="contents">
+              {sidePanel === "inspector" && <Inspector />}
+            </fieldset>
             {sidePanel === "checks" && <ChecksPanel />}
           </div>
         </aside>

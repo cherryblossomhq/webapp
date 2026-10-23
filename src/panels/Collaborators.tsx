@@ -89,7 +89,7 @@ export function FollowFrame() {
   return (
     <>
       <div className="pointer-events-none absolute inset-0 z-20 border-2" style={{ borderColor: leader.color }} />
-      <div className="absolute left-1/2 top-2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full py-1 pl-1 pr-1 text-[12px] font-[600] text-white shadow-float" style={{ backgroundColor: leader.color }}>
+      <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full py-1 pl-1 pr-1 text-[12px] font-[600] text-white shadow-float" style={{ backgroundColor: leader.color }}>
         <Avatar person={leader} size="xs" />
         <span>Following {leader.name || "Guest"}</span>
         <button className="rounded-full bg-white/20 px-2 py-0.5 hover:bg-white/30" onClick={() => usePresence.getState().unfollow()}>

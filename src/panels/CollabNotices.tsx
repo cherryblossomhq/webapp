@@ -124,7 +124,7 @@ export function CollabNotices() {
 
   return (
     <>
-      <div aria-live="polite" className="pointer-events-none absolute bottom-12 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center gap-1.5">
+      <div aria-live="polite" className="pointer-events-none absolute bottom-14 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center gap-1.5">
         {toasts.map((t) => (
           <div key={t.id} role="status" className="pointer-events-auto flex max-w-[460px] animate-pop-in items-center gap-2 rounded-[9px] bg-ink py-1.5 pl-3 pr-1.5 text-[12.5px] text-surface shadow-menu">
             {t.color && <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: t.color }} />}

@@ -42,4 +42,19 @@ export type { ManagedAiHost } from "./ai/managedAi"
 export type { AccountUser, EditorAccount } from "./store/account"
 export type { PartsIndexSource, SupplierPartsSource } from "./ai/supplierParts"
 export type { ModelFileStore } from "./store/modelFiles"
-export type { ProjectRecord, ProjectStorage, SaveOutcome, SaveRefusal, StoredProject, StoredProjectSummary } from "./store/storage"
+export type {
+  ChangesEvent,
+  OutgoingBatch,
+  ProjectRecord,
+  ProjectRole,
+  ProjectStorage,
+  PushOutcome,
+  PushRefusal,
+  RemoteBatch,
+  SaveOutcome,
+  SaveRefusal,
+  StoredProject,
+  StoredProjectSummary,
+} from "./store/storage"
+export type { PresenceMe, PresencePeer, PresenceSource } from "./store/presence"
+export type { InviteResult, MemberRole, ShareInvite, ShareMember, SharePerson, SharingSource, SharingState } from "./store/sharing"

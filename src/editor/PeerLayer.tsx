@@ -1,7 +1,7 @@
 import { Sparkles } from "lucide-react"
 import { useRef } from "react"
 import type { Box } from "../lib/geometry"
-import { blockFrames } from "../model/blocks"
+import { blockFrames, componentTextBoxes } from "../model/blocks"
 import { pcbCourtyard, pcbPads, schematicBounds } from "../model/instances"
 import { labelBox } from "../model/labels"
 import type { Project, Vec2 } from "../model/types"
@@ -46,8 +46,9 @@ export function selectionBoxes(view: View, project: Project, selection: string[]
     let box: Box | null = null
     if (view === "schematic") {
       if (kind === "c") {
+        // With its designator and value, so a name tag above it never covers them.
         const c = components.get(id)
-        box = c ? schematicBounds(c) : null
+        box = c ? union([schematicBounds(c), ...componentTextBoxes(c)]) : null
       } else if (kind === "w") box = pointsBox(project.wires.find((w) => w.id === id)?.points ?? [], 0.05)
       else if (kind === "l") {
         const l = project.labels.find((x) => x.id === id)
@@ -134,7 +135,12 @@ export function PeerCursors({ view, project, t }: { view: View; project: Project
   )
 }
 
-const firstName = (name: string) => name.trim().split(/\s+/)[0] || "Guest"
+/** What a cursor is labelled: a first name, or a short name whole ("Guest 4F2A"). */
+const firstName = (name: string) => {
+  const trimmed = name.trim()
+  if (!trimmed) return "Guest"
+  return trimmed.length <= 14 ? trimmed : trimmed.split(/\s+/)[0]
+}
 
 function Cursor({ peer, at, transition }: { peer: Collaborator; at: Vec2; transition: string }) {
   return (

@@ -4,6 +4,7 @@ import { supplierParts } from "../../../ai/supplierParts"
 import { modelFileKey } from "../../../model/models3d"
 import type { Model3D, Model3DFormat } from "../../../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFiles } from "../../../store/modelFiles"
+import { projectApi } from "../../../store/projectStore"
 
 // The model files the 3D view has read, for the page: a file is fetched and read once however many
 // parts, boards and views use it, and every part is a cheap copy sharing its geometry. A part
@@ -28,8 +29,8 @@ export async function fetchModelBytes(m: Model3D, format: Model3DFormat = drawnF
   } else {
     const store = modelFiles()
     if (!store) throw new Error("Model files aren't available here.")
-    bytes = await store.get(m.id, signal)
-    if (!bytes) throw new Error(`${m.name} isn't in this account. Add the file again.`)
+    bytes = await store.get(m.id, signal, projectApi().project?.id)
+    if (!bytes) throw new Error(`${m.name} isn't in this account, or in the account of anyone this project is shared with. Add the file again.`)
   }
   if (bytes.byteLength > MAX_MODEL_FILE_BYTES) throw new Error(`${m.name} is over ${MAX_MODEL_FILE_BYTES / 1024 / 1024} MB.`)
   return bytes

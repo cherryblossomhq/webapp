@@ -10,8 +10,11 @@
 export interface ModelFileStore {
   /** Keep a file. Resolves to its id, the SHA-256 of its bytes as lowercase hex. */
   put(file: { name: string; bytes: ArrayBuffer }, signal?: AbortSignal): Promise<string>
-  /** A kept file's bytes, or null when there is none with that id here. */
-  get(id: string, signal?: AbortSignal): Promise<ArrayBuffer | null>
+  /**
+   * A kept file's bytes, or null when there is none with that id here. `projectId` is the project
+   * that names it: on a shared project the file is often a collaborator's, kept in their account.
+   */
+  get(id: string, signal?: AbortSignal, projectId?: string): Promise<ArrayBuffer | null>
 }
 
 /** The largest model file the editor accepts (bytes). */

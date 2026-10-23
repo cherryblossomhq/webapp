@@ -58,6 +58,12 @@ interface ViewportProps {
   onContextMenu?: (e: ViewportPointerEvent) => void
   onLeave?: () => void
   onDrop?: (world: Vec2, data: DataTransfer) => void
+  /** The pointer in world units on every move over the canvas, and null when it leaves: what collaborators see. */
+  onWorldPointer?: (world: Vec2 | null) => void
+  /** What the canvas shows, in world units, whenever that changes. */
+  onVisible?: (box: Box) => void
+  /** The user panned, zoomed or pressed on the canvas: whatever was steering the view should stop. */
+  onUserMove?: () => void
   className?: string
 }
 
@@ -134,12 +140,24 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     else setT({ scale: initialScale, tx: size.w / 2, ty: size.h / 2 })
   }, [size, fitBox, fit, initialScale])
 
+  const onVisible = props.onVisible
+  useEffect(() => {
+    if (!onVisible || !size.w || !size.h) return
+    const a = toWorld(t, { x: 0, y: 0 })
+    const b = toWorld(t, { x: size.w, y: size.h })
+    onVisible({ minX: a.x, minY: b.y, maxX: b.x, maxY: a.y })
+  }, [t, size, onVisible])
+
+  const userMove = useRef(props.onUserMove)
+  userMove.current = props.onUserMove
+
   // Wheel must be non-passive to prevent page zoom.
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      userMove.current?.()
       const rect = el.getBoundingClientRect()
       const sp = { x: e.clientX - rect.left, y: e.clientY - rect.top }
       const cur = tRef.current
@@ -213,6 +231,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       className={`absolute inset-0 overflow-hidden select-none touch-none ${props.className ?? ""}`}
       style={{ ...gridStyle, cursor: panning.current ? "grabbing" : spaceHeld ? "grab" : props.cursor }}
       onPointerDown={(e) => {
+        props.onUserMove?.()
         if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
           e.preventDefault()
           ;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -234,7 +253,9 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
           setT({ ...pan.t, tx: pan.t.tx + e.clientX - pan.start.x, ty: pan.t.ty + e.clientY - pan.start.y })
           return
         }
-        props.onPointerMove?.(toEvent(e))
+        const ev = toEvent(e)
+        props.onWorldPointer?.(ev.world)
+        props.onPointerMove?.(ev)
       }}
       onPointerUp={(e) => {
         if (panning.current) {
@@ -250,7 +271,10 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         }
         props.onPointerUp?.(toEvent(e))
       }}
-      onPointerLeave={() => props.onLeave?.()}
+      onPointerLeave={() => {
+        props.onWorldPointer?.(null)
+        props.onLeave?.()
+      }}
       onDoubleClick={(e) => props.onDoubleClick?.(toEvent(e))}
       onContextMenu={(e) => {
         e.preventDefault()

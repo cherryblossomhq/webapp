@@ -215,11 +215,13 @@ describe("the tool loop with lookups in flight", () => {
     // Both: the user's resistor and the copilot's part.
     expect(project.components.map((c) => c.partId)).toEqual(["resistor"])
     expect(project.parts?.map((s) => s.name)).toEqual(["TPS61023DRLR"])
-    // Two undo steps, in the order they happened.
-    const past = useProjectStore.getState().past
-    expect(past).toHaveLength(2)
-    expect(past[1].components).toHaveLength(1)
-    expect(past[1].parts).toBeUndefined()
+    // Two undo steps, in the order they happened: the copilot's comes off first and leaves the resistor.
+    expect(useProjectStore.getState().past).toHaveLength(2)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project!.components).toHaveLength(1)
+    expect(useProjectStore.getState().project!.parts ?? []).toHaveLength(0)
+    useProjectStore.getState().undo()
+    expect(useProjectStore.getState().project!.components).toHaveLength(0)
   })
 
   it("answers every tool call even when a lookup fails", async () => {

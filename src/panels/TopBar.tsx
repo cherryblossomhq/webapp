@@ -1,14 +1,17 @@
-import { ChevronLeft, Redo2, Settings, Undo2 } from "lucide-react"
+import { ChevronLeft, Eye, Redo2, Settings, Undo2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { goHome } from "../App"
-import { projectApi, useProjectStore } from "../store/projectStore"
+import { usePresence } from "../store/presence"
+import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
 import { useUi, type View } from "../store/uiStore"
 import { IconButton, Segmented } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 import { AccountMenu } from "./AccountMenu"
+import { Collaborators, OfflinePill } from "./Collaborators"
 import { ExportMenu } from "./ExportMenu"
 import { ThemeButton } from "./ThemeButton"
 import { checkTotals, useChecks } from "./ChecksPanel"
+import { ShareButton, ShareDialog } from "./ShareDialog"
 
 export function TopBar() {
   const name = useProjectStore((s) => s.project?.name ?? "")
@@ -21,8 +24,12 @@ export function TopBar() {
   const setSidePanel = useUi((s) => s.setSidePanel)
   const checksShown = panelOpen && sidePanel === "checks"
   const { errors, warnings } = checkTotals(useChecks())
+  const viewer = useProjectStore((s) => s.role === "viewer")
+  const together = usePresence((s) => s.peers.length > 0)
   const [draft, setDraft] = useState(name)
   useEffect(() => setDraft(name), [name])
+  const [sharing, setSharing] = useState(false)
+  const canShare = !!projectStorage()?.sharing
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-2.5">
@@ -37,7 +44,8 @@ export function TopBar() {
         <span className="mx-1 hidden h-4 w-px bg-line lg:inline" />
         <input
           aria-label="Project name"
-          className="h-8 min-w-0 max-w-[260px] flex-1 truncate rounded-[6px] border border-transparent bg-transparent px-2 font-[600] text-ink outline-none hover:border-line focus:border-select focus:bg-surface"
+          readOnly={viewer}
+          className={`h-8 min-w-0 max-w-[260px] flex-1 truncate rounded-[6px] border border-transparent bg-transparent px-2 font-[600] text-ink outline-none ${viewer ? "" : "hover:border-line focus:border-select focus:bg-surface"}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => {
@@ -47,6 +55,14 @@ export function TopBar() {
           }}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
         />
+        {viewer && (
+          <Tooltip label="View only" hint="You can look around, select, run checks and export. Ask the owner for edit access to change it.">
+            <span className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-chrome-2 px-2 text-[11.5px] font-[600] text-ink-2">
+              <Eye size={12} />
+              View only
+            </span>
+          </Tooltip>
+        )}
       </div>
 
       <Segmented<View>
@@ -60,10 +76,14 @@ export function TopBar() {
       />
 
       <div className="flex flex-1 items-center justify-end gap-1.5">
-        <IconButton label="Undo" shortcut="⌘Z" disabled={!canUndo} onClick={() => projectApi().undo()}>
+        <OfflinePill />
+        <Collaborators />
+        {canShare && <ShareButton onClick={() => setSharing(true)} />}
+        {(canShare || viewer) && <span className="mx-1 h-4 w-px bg-line" />}
+        <IconButton label="Undo" shortcut="⌘Z" hint={together ? "Undoes your own changes, not other people's" : undefined} disabled={!canUndo || viewer} onClick={() => projectApi().undo()}>
           <Undo2 size={17} />
         </IconButton>
-        <IconButton label="Redo" shortcut="⇧⌘Z" disabled={!canRedo} onClick={() => projectApi().redo()}>
+        <IconButton label="Redo" shortcut="⇧⌘Z" disabled={!canRedo || viewer} onClick={() => projectApi().redo()}>
           <Redo2 size={17} />
         </IconButton>
         <span className="mx-1 h-4 w-px bg-line" />
@@ -84,6 +104,7 @@ export function TopBar() {
         </IconButton>
         <AccountMenu />
       </div>
+      {sharing && <ShareDialog onClose={() => setSharing(false)} />}
     </header>
   )
 }

@@ -74,8 +74,11 @@ interface UiState {
   /** The copilot (Sakura), a column of its own between the parts library and the canvas. */
   copilotOpen: boolean
   cursor: { x: number; y: number } | null
-  /** Where a view should go when it next draws: a point at the current zoom, or a box to frame. */
-  focusRequest: { x: number; y: number; box?: Box; view: View; n: number } | null
+  /**
+   * Where a view should go when it next draws: a point at the current zoom, or a box to frame with
+   * room around it, or (`fit`) to fill the view exactly, as following a collaborator does.
+   */
+  focusRequest: { x: number; y: number; box?: Box; fit?: boolean; view: View; n: number } | null
   settings: Settings
   settingsOpen: boolean
   /** Inspector sections folded away, by id, for the session. */
@@ -103,7 +106,7 @@ interface UiState {
   setCopilotOpen: (open: boolean) => void
   toggleCopilot: () => void
   setCursor: (c: { x: number; y: number } | null) => void
-  focus: (view: View, x: number, y: number, box?: Box) => void
+  focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
   updateSettings: (s: Partial<Settings>) => void
   setSettingsOpen: (open: boolean) => void
   toggleFolded: (id: string) => void
@@ -161,7 +164,8 @@ export const useUi = create<UiState>((set, get) => ({
   setCopilotOpen: (copilotOpen) => set({ copilotOpen }),
   toggleCopilot: () => set({ copilotOpen: !get().copilotOpen }),
   setCursor: (cursor) => set({ cursor }),
-  focus: (view, x, y, box) => set({ view, ...(view !== get().view && { selection: [] }), focusRequest: { view, x, y, box, n: (get().focusRequest?.n ?? 0) + 1 } }),
+  focus: (view, x, y, box, fit) =>
+    set({ view, ...(view !== get().view && { selection: [] }), focusRequest: { view, x, y, box, ...(fit && { fit }), n: (get().focusRequest?.n ?? 0) + 1 } }),
   updateSettings: (s) => {
     const settings = { ...get().settings, ...s }
     saveSettings(settings)

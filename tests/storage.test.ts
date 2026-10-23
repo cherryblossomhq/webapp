@@ -1,19 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { addComponent, createProject } from "../src/model/ops"
 import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
-import type { Project } from "../src/model/types"
-import { connectProjectStorage, settleSaves, useProjectStore } from "../src/store/projectStore"
+import { projectChanges } from "../src/store/changes"
 import {
   browserProjectStorage,
   movedProjectId,
   moveBrowserProjects,
   openStoredProject,
   projectRecord,
+  type ChangesEvent,
   type ProjectRecord,
-  type ProjectStorage,
-  type SaveOutcome,
   type StoredProjectSummary,
 } from "../src/store/storage"
+import { memoryStorage } from "./memoryStorage"
 
 /** The browser globals the stores reach for, in a node test: a Map-backed Storage and a window to dispatch on. */
 function installBrowser() {
@@ -56,13 +55,37 @@ describe("this browser's project storage", () => {
     expect(project.name).toBe("One")
   })
 
-  it("saves on top of the revision it was loaded at, and refuses a stale one", async () => {
+  it("applies a batch of changes to the stored file, once, and logs it for other tabs", async () => {
     const storage = browserProjectStorage()
     const { id } = await storage.create(record("One"))
-    expect(await storage.save(id, 1, record("Two"))).toEqual({ ok: true, revision: 2 })
-    expect(await storage.save(id, 1, record("Three"))).toEqual({ ok: false, reason: "conflict" })
+    const before = openStoredProject((await storage.load(id))!)
+    const changes = projectChanges(before, { ...before, name: "Two" })
+    const batch = { clientId: "s1", batch: 1, changes, formatVersion: PROJECT_FILE_VERSION, componentCount: 1 }
+    expect(await storage.push(id, batch)).toEqual({ ok: true, revision: 2 })
+    // A resend of the same batch is answered, not applied again.
+    expect(await storage.push(id, batch)).toEqual({ ok: true, revision: 2 })
     expect(openStoredProject((await storage.load(id))!).name).toBe("Two")
-    expect(await storage.save("missing", 0, record("x"))).toEqual({ ok: false, reason: "not_found" })
+    const events: ChangesEvent[] = []
+    const stop = storage.watchChanges(id, 1, (e) => events.push(e), () => {})
+    await Promise.resolve()
+    expect(events).toEqual([{ type: "batches", role: "owner", revision: 2, batches: [{ revision: 2, clientId: "s1", batch: 1, userId: "", changes }] }])
+    stop()
+    expect(await storage.push("missing", batch)).toEqual({ ok: false, reason: "not_found" })
+    expect(await storage.push(id, { ...batch, batch: 2, formatVersion: PROJECT_FILE_VERSION - 1 })).toEqual({ ok: false, reason: "outdated" })
+  })
+
+  it("replaces a project whole on top of the revision it was read at, and refuses a stale one", async () => {
+    const storage = browserProjectStorage()
+    const { id } = await storage.create(record("One"))
+    expect(await storage.replace(id, 1, record("Two"))).toEqual({ ok: true, revision: 2 })
+    expect(await storage.replace(id, 1, record("Three"))).toEqual({ ok: false, reason: "conflict" })
+    expect(openStoredProject((await storage.load(id))!).name).toBe("Two")
+    expect(await storage.replace("missing", 0, record("x"))).toEqual({ ok: false, reason: "not_found" })
+    // A tab following from before the replacement loads the project again.
+    const events: ChangesEvent[] = []
+    storage.watchChanges(id, 1, (e) => events.push(e), () => {})
+    await Promise.resolve()
+    expect(events).toEqual([{ type: "batches", role: "owner", revision: 2, batches: [{ revision: 2, clientId: "", batch: 0, userId: "", changes: null }] }])
   })
 
   it("tells a watcher about every change, and forgets a removed project", async () => {
@@ -84,47 +107,16 @@ describe("this browser's project storage", () => {
     const storage = browserProjectStorage()
     const stored = (await storage.load("p_legacy"))!
     expect(stored.revision).toBe(0)
+    expect(stored.formatVersion).toBe(0)
     expect(openStoredProject(stored).name).toBe("Legacy")
-    expect(await storage.save("p_legacy", 0, record("Renamed"))).toEqual({ ok: true, revision: 1 })
+    expect(await storage.replace("p_legacy", 0, record("Renamed"))).toEqual({ ok: true, revision: 1 })
   })
 })
 
-/** An account's storage, in memory, recording what it was asked. */
+/** An account's storage, in memory, with a failure to switch on. */
 function accountStorage() {
-  const rows = new Map<string, { content: string; revision: number; createdAt: number; updatedAt: number; name: string }>()
-  let next = 0
-  const calls: { op: string; id?: string; baseRevision?: number; name?: string }[] = []
-  let fail: Error | null = null
-  const storage: ProjectStorage = {
-    location: "account",
-    watchList: () => () => {},
-    async load(id) {
-      const row = rows.get(id)
-      return row ? { id, ...row } : null
-    },
-    async create(r, dates) {
-      calls.push({ op: "create", name: r.name })
-      if (fail) throw fail
-      const id = `d${next++}`
-      rows.set(id, { content: r.content, revision: 1, createdAt: dates?.createdAt ?? 0, updatedAt: dates?.updatedAt ?? 0, name: r.name })
-      return { id, revision: 1 }
-    },
-    async save(id, baseRevision, r): Promise<SaveOutcome> {
-      calls.push({ op: "save", id, baseRevision, name: r.name })
-      if (fail) throw fail
-      const row = rows.get(id)
-      if (!row) return { ok: false, reason: "not_found" }
-      if (row.revision !== baseRevision) return { ok: false, reason: "conflict" }
-      row.revision++
-      row.content = r.content
-      row.name = r.name
-      return { ok: true, revision: row.revision }
-    },
-    async remove(id) {
-      rows.delete(id)
-    },
-  }
-  return { storage, rows, calls, setFailure: (e: Error | null) => (fail = e) }
+  const memory = memoryStorage()
+  return { storage: memory.storage, rows: memory.rows, calls: memory.calls, setFailure: memory.setFailure }
 }
 
 describe("moving this browser's projects into the account", () => {
@@ -185,97 +177,5 @@ describe("moving this browser's projects into the account", () => {
     const account = accountStorage()
     expect(await moveBrowserProjects(account.storage)).toBe(0)
     expect(items.has("cherryblossom:editor:project:p_bad")).toBe(true)
-  })
-})
-
-describe("autosave", () => {
-  const api = () => useProjectStore.getState()
-  const rename = (name: string) => api().commit((p: Project) => ({ ...p, name }))
-
-  beforeEach(() => vi.useFakeTimers())
-  afterEach(() => {
-    api().close()
-    connectProjectStorage(null)
-    vi.useRealTimers()
-  })
-
-  async function opened() {
-    const account = accountStorage()
-    connectProjectStorage(account.storage)
-    const { id } = await account.storage.create(record("Start"))
-    api().open(openStoredProject((await account.storage.load(id))!), 1)
-    account.calls.length = 0
-    return { account, id }
-  }
-
-  it("saves once edits pause, as one save, on top of the revision it opened", async () => {
-    const { account, id } = await opened()
-    rename("A")
-    rename("B")
-    expect(api().save.state).toBe("saving")
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(account.calls).toEqual([{ op: "save", id, baseRevision: 1, name: "B" }])
-    expect(api().save.state).toBe("saved")
-    rename("C")
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(account.calls.at(-1)).toMatchObject({ baseRevision: 2, name: "C" })
-  })
-
-  it("stops on a conflict, and saves over it only when the user keeps their copy", async () => {
-    const { account, id } = await opened()
-    account.rows.get(id)!.revision = 5
-    rename("Mine")
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(api().save).toEqual({ state: "refused", reason: "conflict" })
-    rename("Mine again")
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(account.calls.filter((c) => c.op === "save")).toHaveLength(1)
-    await api().keepMine()
-    expect(account.calls.at(-1)).toMatchObject({ baseRevision: 5, name: "Mine again" })
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("keeps trying a save that didn't arrive, and sends the newest edit when it does", async () => {
-    const { account } = await opened()
-    account.setFailure(new Error("offline"))
-    rename("A")
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(api().save.state).toBe("retrying")
-    rename("B")
-    account.setFailure(null)
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(account.calls.at(-1)).toMatchObject({ op: "save", name: "B" })
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("lands the last edit's save after the project is closed", async () => {
-    const { account } = await opened()
-    rename("Last")
-    api().close()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(account.calls.at(-1)).toMatchObject({ op: "save", name: "Last" })
-  })
-
-  it("sends an edit at once when the editor is left, without waiting for edits to pause", async () => {
-    const { account } = await opened()
-    rename("Leaving")
-    let settled = false
-    void settleSaves().then(() => (settled = true))
-    await vi.advanceTimersByTimeAsync(0)
-    expect(account.calls).toEqual([expect.objectContaining({ op: "save", name: "Leaving" })])
-    expect(settled).toBe(true)
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("leaves anyway when a save never lands", async () => {
-    const { account } = await opened()
-    account.storage.save = () => new Promise(() => {})
-    rename("Offline")
-    let settled = false
-    void settleSaves().then(() => (settled = true))
-    await vi.advanceTimersByTimeAsync(2_000)
-    expect(settled).toBe(false)
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(settled).toBe(true)
   })
 })

@@ -1,35 +1,23 @@
 import { AlertTriangle, Loader2 } from "lucide-react"
 import type { ReactNode } from "react"
-import { projectApi, useProjectStore } from "../store/projectStore"
+import { useProjectStore } from "../store/projectStore"
 
 const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-danger/10"
 
 /**
  * Saving is silent while it works. This is the strip under the top bar for when it doesn't:
- * what happened to the user's edits, and the way forward when there is one.
+ * what happened to the user's edits, and the way forward when there is one. A project deleted or
+ * unshared while open is `CollabNotices`'s dialog instead.
  */
 export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
   if (save.state === "saved" || save.state === "saving") return null
+  if (save.state === "refused" && save.reason === "not_found") return null
   const reload = () => window.location.reload()
   let text: string
   let actions: ReactNode = null
   if (save.state === "retrying") {
     text = "Your latest changes aren't saved yet. Trying again…"
-  } else if (save.reason === "conflict") {
-    text = "This project was changed in another tab or on another computer, so your latest changes aren't saved."
-    actions = (
-      <>
-        <button className={ACTION} onClick={() => void projectApi().keepMine()}>
-          Keep mine
-        </button>
-        <button className={ACTION} onClick={reload}>
-          Load theirs
-        </button>
-      </>
-    )
-  } else if (save.reason === "not_found") {
-    text = "This project was deleted elsewhere, so your changes aren't saved. Download it from Export to keep it."
   } else if (save.reason === "outdated") {
     text = "A newer version of Cherry Blossom saved this project. Reload to update before editing it here."
     actions = (
@@ -37,8 +25,10 @@ export function SaveNotice() {
         Reload
       </button>
     )
+  } else if (save.reason === "forbidden") {
+    text = "This project is now shared with you to view, so your last changes weren't saved."
   } else {
-    text = "This project is too large to save. Download it from Export to keep your changes."
+    text = "That change would make the project too large to save, so it was undone."
   }
   return (
     <div

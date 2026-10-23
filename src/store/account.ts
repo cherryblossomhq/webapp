@@ -2,6 +2,8 @@ import { createContext, useContext } from "react"
 
 /** Who is signed in, as the top bar's account menu shows them. */
 export interface AccountUser {
+  /** Their id with the host (the WorkOS user id): what tells their own other tabs apart from other people's. */
+  id?: string
   /** Their name, or "" when the host has none. */
   name: string
   email: string

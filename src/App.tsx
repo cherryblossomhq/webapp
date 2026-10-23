@@ -8,6 +8,7 @@ import { Editor } from "./pages/Editor"
 import { AccountContext, type EditorAccount } from "./store/account"
 import { useCopilot } from "./store/copilotStore"
 import { browserModelFiles, connectModelFiles, type ModelFileStore } from "./store/modelFiles"
+import { browserPresence } from "./store/presence"
 import { connectProjectStorage, settleSaves, useProjectStore } from "./store/projectStore"
 import { browserProjectStorage, movedProjectId, moveBrowserProjects, openStoredProject, projectRecord, type ProjectStorage } from "./store/storage"
 import { useUi } from "./store/uiStore"
@@ -126,7 +127,8 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
     connectedParts = supplierParts
     connectSupplierParts(supplierParts)
   }
-  const storage = given ?? (defaultStorage ??= browserProjectStorage())
+  // This browser's tabs see each other on a project, as people on an account's project do.
+  const storage = given ?? (defaultStorage ??= { ...browserProjectStorage(), presence: browserPresence() })
   connectProjectStorage(storage)
   connectModelFiles(modelFiles ?? (defaultModelFiles ??= browserModelFiles()))
   projectsUrl = account?.projectsUrl
@@ -200,7 +202,7 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
         const moved = stored ? undefined : movedProjectId(route.id)
         if (moved) return navigate(projectPath(moved), { replace: true })
         if (!stored) return setLoad({ state: "missing" })
-        useProjectStore.getState().open(openStoredProject(stored), stored.revision)
+        useProjectStore.getState().open(openStoredProject(stored), { revision: stored.revision, formatVersion: stored.formatVersion, role: stored.role })
         setLoad({ state: "ready" })
       })
       .catch((error: unknown) => {
@@ -221,7 +223,7 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
     if (load.state === "missing") {
       return (
         <Notice>
-          {storage.location === "account" ? "This project doesn't exist, or it belongs to another account." : "This project isn't saved in this browser."}
+          {storage.location === "account" ? "This project doesn't exist, or it isn't shared with you." : "This project isn't saved in this browser."}
         </Notice>
       )
     }

@@ -22,8 +22,10 @@ import { designatorStrokes, getDesignators, SILK_WIDTH, type Designator } from "
 import type { ZoneFill } from "../../model/pour"
 import type { ComponentInstance, CopperLayer, Project, Rotation, Vec2 } from "../../model/types"
 import { getConnectivity, getPcbAnalysis } from "../../store/analysis"
+import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
 import { projectApi, useProjectStore } from "../../store/projectStore"
 import { selectionIds, uiApi, useUi } from "../../store/uiStore"
+import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { CanvasHint } from "../schematic/SchematicEditor"
 import { PCB } from "../theme"
 import { Tooltip } from "../../ui/Tooltip"
@@ -104,6 +106,9 @@ export function splitLocked(project: Project, ids: string[]): { free: string[]; 
 const lockedNote = (refs: string[]) =>
   `${refs.join(", ")} ${refs.length > 1 ? "are" : "is"} locked; turn off Locked in the Inspector to move ${refs.length > 1 ? "them" : "it"}`
 
+const reportPcbPointer = (p: Vec2 | null) => reportPointer("pcb", p)
+const reportPcbViewport = (b: Box) => reportViewport("pcb", b)
+
 export function PcbEditor() {
   const project = useProjectStore((s) => s.project)!
   const selection = useUi((s) => s.selection)
@@ -135,10 +140,10 @@ export function PcbEditor() {
   const pinNames = usePinNames(project.components)
   const designators = getDesignators(project)
 
-  // Place parts that were added in the schematic since the last visit.
+  // Place parts that were added in the schematic since the last visit. Not for a viewer, who can't.
   useEffect(() => {
     const p = projectApi().project
-    if (p && p.components.some((c) => !c.pcb.placed && isPhysical(findPart(c.partId)))) {
+    if (p && projectApi().role !== "viewer" && p.components.some((c) => !c.pcb.placed && isPhysical(findPart(c.partId)))) {
       projectApi().commit((x) => autoPlacePcb(x))
     }
   }, [])
@@ -146,7 +151,8 @@ export function PcbEditor() {
   useEffect(() => {
     const vp = vpRef.current
     if (focusRequest?.view !== "pcb" || !vp) return
-    if (focusRequest.box) vp.frame(focusRequest.box, 15)
+    if (focusRequest.box && focusRequest.fit) vp.fit(focusRequest.box, 0)
+    else if (focusRequest.box) vp.frame(focusRequest.box, 15)
     else vp.centerOn(focusRequest, Math.max(vp.transform().scale, 30))
   }, [focusRequest])
 
@@ -464,6 +470,9 @@ export function PcbEditor() {
           setHover(null)
           uiApi().setCursor(null)
         }}
+        onWorldPointer={reportPcbPointer}
+        onVisible={reportPcbViewport}
+        onUserMove={stopFollowing}
         overlay={(t) => (
           <>
             {mode.kind === "marquee" && (
@@ -478,6 +487,7 @@ export function PcbEditor() {
               />
             )}
             {barComponent && <SelectionBar c={barComponent} t={t} />}
+            <PeerCursors view="pcb" project={project} t={t} />
           </>
         )}
       >
@@ -692,6 +702,8 @@ export function PcbEditor() {
               {tool === "via" && cursor && mode.kind === "idle" && (
                 <circle cx={cursor.x} cy={cursor.y} r={project.rules.viaDiameter / 2} fill={PCB.via} opacity={0.6} />
               )}
+
+              <PeerSelections view="pcb" project={project} px={px} />
             </>
           )
         }}

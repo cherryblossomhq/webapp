@@ -19,6 +19,7 @@ const RENAME_REFUSED: Record<SaveRefusal, string> = {
   not_found: "it was deleted elsewhere.",
   too_large: "it is too large to save.",
   outdated: "a newer version of Cherry Blossom saved it. Reload the page, then try again.",
+  forbidden: "it is shared with you to view, not to change.",
 }
 
 /** A project as it will be stored, new: its own id and dates come from storage. Resolves to its id. */
@@ -58,7 +59,7 @@ export async function downloadStoredProject(storage: ProjectStorage, m: StoredPr
 
 export async function renameStoredProject(storage: ProjectStorage, m: StoredProjectSummary, name: string) {
   const { project, revision } = await read(storage, m)
-  const outcome = await storage.save(m.id, revision, projectRecord({ ...project, name }))
+  const outcome = await storage.replace(m.id, revision, projectRecord({ ...project, name }))
   if (!outcome.ok) throw new Error(`Couldn't rename “${m.name}”: ${RENAME_REFUSED[outcome.reason]}`)
 }
 

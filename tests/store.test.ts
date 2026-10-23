@@ -35,7 +35,15 @@ describe("project history", () => {
     api().setTransient(nudge(1))
     api().undo()
     api().endTransient()
-    expect(api().past.map((p) => p.name)).toEqual(["x", "A", "B"])
+    expect(api().project!.name).toBe("B")
+    expect(api().past).toHaveLength(3)
+    // The drag comes off first, then each rename.
+    api().undo()
+    expect(api().project!.components[0].sch.x).toBe(0)
+    api().undo()
+    expect(api().project!.name).toBe("A")
+    api().undo()
+    expect(api().project!.name).toBe("x")
   })
 
   it("patches the project without a step of its own, as a background check does", () => {

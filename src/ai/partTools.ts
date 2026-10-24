@@ -712,6 +712,7 @@ From memory (no supplier record):
 /** How a part was made, in a phrase: "from LCSC C1852149, 2 supplier drawings agree". */
 export function describeSource(spec: Pick<CustomPartSpec, "source">): string {
   const s = spec.source
+  if (s?.file) return `imported from the user's own KiCad files (${s.file.symbol ? `symbol ${s.file.symbol}, ` : "a footprint alone, a pin for each pad, "}footprint ${s.file.footprint}), pins and land from them`
   const d = s?.database
   if (s?.pins === "import") return `from the KiCad schematic ${s.imported?.file ?? "the user brought in"} (${s.imported?.libId ?? "its own symbol"}), drawn and pinned as that file has it`
   if (d?.origin === "kicad") return `from the KiCad library part ${d.key}${d.release ? ` (release ${d.release})` : ""}, pins and land from the library`

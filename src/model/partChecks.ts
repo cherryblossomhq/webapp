@@ -9,6 +9,8 @@ import type { CustomPartSpec, Project } from "./types"
 // A part built from a single supplier drawing is not reported: it was built from data, and the
 // copilot says how many drawings agreed when it makes the part. Nor is a part placed from the parts
 // index (KiCad's libraries): its symbol and footprint were paired pin for pad when it was stored.
+// Nor one imported from the user's own KiCad files: those were paired the same way, and they are
+// the user's word for the part.
 
 export interface PartFinding {
   partId: string
@@ -86,7 +88,7 @@ export function partFindings(project: Project): PartFinding[] {
           out.push({
             partId: spec.id,
             severity: "warning",
-            message: `${c.ref} (${spec.name}): footprint changed to ${c.footprint}, which wasn't checked against ${src.database ? "its stored land" : "the supplier's land"}`,
+            message: `${c.ref} (${spec.name}): footprint changed to ${c.footprint}, which wasn't checked against ${src.file ? "its imported land" : src.database ? "its stored land" : "the supplier's land"}`,
             componentIds: [c.id],
           })
         }

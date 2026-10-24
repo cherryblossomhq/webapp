@@ -4,10 +4,10 @@ import type { CustomPartSpec, PartSource } from "./types"
 // provenance the copilot reads (`describeSource` in `ai/partTools.ts`), in words for the person
 // using the part, with the credit its data asks for: KiCad's libraries are CC BY-SA 4.0 and ask to
 // be credited wherever their data is shown, and the supplier records the database kept (EasyEDA's)
-// ask for their own credit.
+// ask for their own credit. A part imported from the user's own files asks for none.
 
 export interface SourceLine {
-  /** The short name of the source: "KiCad library", "LCSC C6186", "From memory". */
+  /** The short name of the source: "KiCad library", "LCSC C6186", "Imported KiCad files", "From memory". */
   label: string
   /** What else is known: the library part and release, how many drawings agree. */
   detail: string
@@ -43,8 +43,11 @@ export function partSourceLine(spec: CustomPartSpec | undefined): SourceLine | n
   return line
 }
 
-/** The source of a part built from data: the database's KiCad or supplier record, or a supplier's own. */
+/** The source of a part built from data: the user's own files, the database's KiCad or supplier record, or a supplier's own. */
 function builtLine(s: PartSource): SourceLine | null {
+  if (s.file) {
+    return { label: "Imported KiCad files", detail: s.file.symbol ? `${s.file.symbol} on ${s.file.footprint}` : `Footprint ${s.file.footprint}, a pin for each pad` }
+  }
   const d = s.database
   if (d) {
     const credit = [d.attribution, d.licence && `Licence: ${d.licence}.`].filter(Boolean).join(" ") || undefined

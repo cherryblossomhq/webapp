@@ -1,6 +1,7 @@
 import { Check, Link2, Mail, RotateCw, Users, X } from "lucide-react"
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react"
 import { goHome } from "../App"
+import { isTyping } from "../editor/viewport"
 import { projectStorage, useProjectStore } from "../store/projectStore"
 import type { MemberRole, ShareInvite, ShareMember, SharingSource, SharingState } from "../store/sharing"
 import { Avatar } from "../ui/Avatar"
@@ -76,7 +77,10 @@ function EmailField({
   disabled: boolean
 }) {
   const input = useRef<HTMLInputElement>(null)
-  useEffect(() => input.current?.focus(), [])
+  // On opening, and back after inviting (the field is disabled meanwhile, which drops the focus).
+  useEffect(() => {
+    if (!disabled) input.current?.focus()
+  }, [disabled])
   const take = (text: string) => {
     const found = addressesIn(text)
     if (!found.length) return false
@@ -219,6 +223,11 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       if (e.key === "Escape") {
         e.stopPropagation()
         onClose()
+      } else if (!isTyping(e)) {
+        // The canvas's shortcuts listen on the window, and none is for the dialog: Delete would
+        // delete the selection behind it. A field's own keys still reach it, and a button's Enter or
+        // Space still presses it.
+        e.stopPropagation()
       }
     }
     window.addEventListener("keydown", onKey, true)
@@ -250,12 +259,21 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState<Sent | null>(null)
 
-  const invalid = emails.filter((e) => !EMAIL.test(e))
+  /** Invite was pressed with something that isn't an address still being typed: say so, until it changes. */
+  const [tried, setTried] = useState(false)
+
   const typed = addressesIn(draft)
   const all = [...new Set([...emails, ...typed])]
-  const ready = all.length > 0 && !invalid.length && typed.every((e) => EMAIL.test(e))
+  const badChips = emails.filter((e) => !EMAIL.test(e))
+  const invalid = tried ? all.filter((e) => !EMAIL.test(e)) : badChips
+  const ready = all.length > 0 && all.every((e) => EMAIL.test(e))
+  const typing = (d: string) => {
+    setTried(false)
+    setDraft(d)
+  }
   const invite = async () => {
-    if (!ready || busy) return
+    if (busy) return
+    if (!ready) return setTried(true)
     setBusy(true)
     setSent(null)
     try {
@@ -264,13 +282,15 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
         setSent({ tone: "error", text: result.message })
         return
       }
-      const invited = result.outcomes.filter((o) => o.status !== "member").map((o) => o.email)
+      const invited = result.outcomes.filter((o) => o.status === "invited" || o.status === "renewed").map((o) => o.email)
+      const pending = result.outcomes.filter((o) => o.status === "pending").map((o) => o.email)
       const members = result.outcomes.filter((o) => o.status === "member").map((o) => o.email)
       const parts = [
         invited.length &&
           (result.emailConfigured
             ? `Invited ${listOf(invited)}. ${invited.length === 1 ? "They'll" : "They'll each"} get an email with a link.`
             : `Invited ${listOf(invited)}. Email isn't set up here, so copy ${invited.length === 1 ? "their link" : "each link"} below and send it.`),
+        pending.length && `${listOf(pending)} ${pending.length === 1 ? "has an invitation" : "have invitations"} from someone else already.`,
         members.length && `${listOf(members)} ${members.length === 1 ? "has" : "have"} access already.`,
       ].filter(Boolean)
       setSent({ tone: "ok", text: parts.join(" ") })
@@ -314,9 +334,9 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 }}
               >
                 <div className="flex items-start gap-2">
-                  <EmailField emails={emails} setEmails={setEmails} draft={draft} setDraft={setDraft} onSubmit={() => void invite()} disabled={busy} />
+                  <EmailField emails={emails} setEmails={setEmails} draft={draft} setDraft={typing} onSubmit={() => void invite()} disabled={busy} />
                   <RoleSelect value={role} onChange={setRole} label="What they may do" />
-                  <Button type="submit" variant="primary" disabled={!ready || busy} className="h-9">
+                  <Button type="submit" variant="primary" disabled={!all.length || badChips.length > 0 || busy} className="h-9">
                     {busy ? "Inviting…" : "Invite"}
                   </Button>
                 </div>

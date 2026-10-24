@@ -110,10 +110,12 @@ const uncheckedParts = (project: Project | null) =>
 /** Check the project's unverified parts against supplier data and record the results, as one undoable edit. */
 function VerifyParts() {
   const project = useProjectStore((s) => s.project)
+  // A viewer can't record what a check finds, and each check spends their own lookups.
+  const viewer = useProjectStore((s) => s.role === "viewer")
   const [state, setState] = useState<{ busy: boolean; note: string | null }>({ busy: false, note: null })
   const source = supplierParts()
   const pending = uncheckedParts(project)
-  if (!source || !project || !pending.length) return state.note ? <p className="border-b border-line px-4 py-2 text-[12px] text-ink-2">{state.note}</p> : null
+  if (!source || !project || !pending.length || viewer) return state.note ? <p className="border-b border-line px-4 py-2 text-[12px] text-ink-2">{state.note}</p> : null
   const run = async () => {
     setState({ busy: true, note: null })
     try {

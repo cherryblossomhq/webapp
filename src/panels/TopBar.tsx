@@ -1,7 +1,7 @@
 import { ChevronLeft, Eye, Redo2, Settings, Undo2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
-import { usePresence } from "../store/presence"
+import { stopFollowing, usePresence } from "../store/presence"
 import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
 import { useUi, type View } from "../store/uiStore"
 import { IconButton, Segmented } from "../ui/controls"
@@ -83,7 +83,11 @@ export function TopBar() {
 
       <Segmented<View>
         value={view}
-        onChange={setView}
+        onChange={(v) => {
+          // Taking another view is taking the view back from whoever this tab follows.
+          stopFollowing()
+          setView(v)
+        }}
         options={[
           { value: "schematic", label: "Schematic" },
           { value: "pcb", label: "PCB" },

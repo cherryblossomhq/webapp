@@ -137,7 +137,8 @@ const unchanged = (project: TidyResult["project"], message: string, problems: st
  * it runs here, after the busy state is drawn.
  */
 export function startTidy(timeoutMs = TIDY_TIMEOUT_MS): void {
-  if (busy) return
+  // A viewer's tidy could only be refused, after the worker had done it all.
+  if (busy || projectApi().role === "viewer") return
   setBusy(true)
   const w = tidyWorker()
   const before = projectApi().project

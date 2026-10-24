@@ -22,13 +22,14 @@ const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
  * - `retrying`: a batch didn't arrive; it is sent again until it does, and edits keep queueing.
  * - `refused`: storage turned a batch away, and the top bar says what that means:
  *   `outdated` (a newer editor saved it: reload), `not_found` (deleted or unshared),
- *   `forbidden` (made read-only: the edit was undone), `too_large` (the edit was undone).
+ *   `forbidden` (made read-only: the edit was undone), `too_large` (the edit was undone),
+ *   `unupgradable` (stored in an older format, and too large to write in this editor's).
  */
 export type SaveStatus =
   | { state: "saved" }
   | { state: "saving" }
   | { state: "retrying"; message: string }
-  | { state: "refused"; reason: "outdated" | "not_found" | "forbidden" | "too_large" }
+  | { state: "refused"; reason: "outdated" | "not_found" | "forbidden" | "too_large" | "unupgradable" }
 
 /** What the sync tells the open project's store. */
 export interface SyncHost {
@@ -41,6 +42,12 @@ export interface SyncHost {
   role(role: ProjectRole): void
   /** Deleted, or no longer shared with this user. */
   gone(): void
+  /**
+   * Edits were refused and taken off the screen. The undo history held them, and its steps are
+   * changes worked out against them: undoing one would write back values over other people's
+   * edits for a step that never landed, so the history goes.
+   */
+  refused(): void
 }
 
 interface Pending {
@@ -85,9 +92,11 @@ export class ProjectSync {
   private inFlight: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private failures = 0
-  private stopped: "outdated" | "not_found" | null = null
+  private stopped: "outdated" | "not_found" | "unupgradable" | null = null
   private notice: "forbidden" | "too_large" | null = null
   private unwatch: (() => void) | null = null
+  /** Reads of the log that failed in a row, for the wait before reading it again. */
+  private watchFailures = 0
   private reloading = false
   private retired = false
   private role: ProjectRole
@@ -155,8 +164,13 @@ export class ProjectSync {
           this.failures = 0
           if (!outcome.ok) return this.refused(next, outcome.reason)
           next.landed = outcome.revision
-          // Already in `confirmed`: a resend of a batch that landed before a reload.
-          if (outcome.revision <= this.revision) this.pending = this.pending.filter((p) => p !== next)
+          // Already in `confirmed`: a resend of a batch that landed before a reload. If it was still
+          // pending, the copy read since held it already and the screen showed it twice over (on top of
+          // anything others did after it), so the screen is put right.
+          if (outcome.revision <= this.revision && this.pending.includes(next)) {
+            this.pending = this.pending.filter((p) => p !== next)
+            this.host.rebase(this.view(), [])
+          }
         },
         (error: unknown) => {
           this.host.status({ state: "retrying", message: error instanceof Error ? error.message : String(error) })
@@ -169,6 +183,13 @@ export class ProjectSync {
         else this.report()
       })
     return this.inFlight
+  }
+
+  /** Take down the strip saying the last edits were refused. */
+  dismiss() {
+    if (!this.notice) return
+    this.notice = null
+    this.report()
   }
 
   /** The project is off screen: stop following it, and let what is queued land. */
@@ -189,7 +210,13 @@ export class ProjectSync {
       this.revision,
       (event) => this.onEvent(event),
       () => {
-        // A subscription that failed (signed out mid-session) is followed again on the next reload.
+        // The log couldn't be read (the query failed). Following it again from a fresh copy, after a
+        // wait, rather than not at all: this tab's own edits would still land and say "saved" while it
+        // never saw anyone else's again.
+        if (this.retired || this.stopped) return
+        this.unwatch?.()
+        this.unwatch = null
+        setTimeout(() => void this.reload(), RETRY_DELAYS_MS[Math.min(this.watchFailures++, RETRY_DELAYS_MS.length - 1)])
       },
     )
   }
@@ -197,13 +224,19 @@ export class ProjectSync {
   private onEvent(event: ChangesEvent) {
     if (this.retired) return
     if (event.type === "gone") return this.lose()
+    this.watchFailures = 0
     this.setRole(event.role)
     if (event.type === "reset") return void this.reload()
     const theirs: RemoteBatch[] = []
     let moved = false
+    let gap = false
     for (const b of event.batches) {
       if (b.revision <= this.revision) continue
-      if (b.revision !== this.revision + 1) return void this.reload()
+      // A gap, or a whole write: load it again, after saying what landed before it.
+      if (b.revision !== this.revision + 1) {
+        gap = true
+        break
+      }
       const mine = b.clientId === this.clientId ? this.pending.findIndex((p) => p.batch === b.batch) : -1
       if (mine >= 0) {
         this.confirmed = applyChanges(this.confirmed, this.pending[mine].changes)
@@ -213,11 +246,13 @@ export class ProjectSync {
         if (b.clientId !== this.clientId) theirs.push(b)
         moved = true
       } else {
-        return void this.reload()
+        gap = true
+        break
       }
       this.revision = b.revision
     }
     if (moved) this.host.rebase(this.view(), theirs)
+    if (gap) return void this.reload()
     this.report()
   }
 
@@ -279,8 +314,16 @@ export class ProjectSync {
       if (outcome.reason === "conflict" && attempt < 3) return void this.reload(attempt + 1)
       if (outcome.reason === "not_found") return this.lose()
       if (outcome.reason === "outdated") return this.stop("outdated")
-      // A viewer, or a document that can't take the upgrade: follow it as it is.
+      // Changes can't be sent to a document in an older format, and this one can't take the newer:
+      // say so, rather than queue edits that are refused, reloaded and refused again.
+      if (outcome.reason === "too_large") {
+        this.stop("unupgradable")
+        this.host.refused()
+        return
+      }
+      // A viewer meanwhile, or still in conflict: follow it as it is.
       this.watch()
+      this.report()
     } catch {
       this.reloading = false
       setTimeout(() => void this.upgrade(attempt + 1), RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)])
@@ -301,10 +344,12 @@ export class ProjectSync {
         return this.lose()
       case "forbidden":
         // Made a viewer meanwhile: nothing queued can land, and what is on screen goes back to storage's.
+        // Batches that landed but aren't in `confirmed` yet arrive through the log like anyone's.
         this.pending = []
-        this.notice = "forbidden"
         this.setRole("viewer")
+        this.notice = "forbidden"
         this.host.rebase(this.view(), [])
+        this.host.refused()
         return
       case "too_large":
       case "invalid":
@@ -313,6 +358,7 @@ export class ProjectSync {
         this.pending = this.pending.filter((p) => p !== batch)
         this.notice = "too_large"
         this.host.rebase(this.view(), [])
+        this.host.refused()
         return
     }
   }
@@ -320,6 +366,11 @@ export class ProjectSync {
   private setRole(role: ProjectRole) {
     if (role === this.role) return
     this.role = role
+    // "Made a viewer, so your edits weren't saved" is stale once they may edit again.
+    if (role !== "viewer" && this.notice === "forbidden") {
+      this.notice = null
+      this.report()
+    }
     this.host.role(role)
   }
 
@@ -328,7 +379,7 @@ export class ProjectSync {
     this.host.gone()
   }
 
-  private stop(reason: "outdated" | "not_found") {
+  private stop(reason: "outdated" | "not_found" | "unupgradable") {
     this.stopped = reason
     this.unwatch?.()
     this.unwatch = null

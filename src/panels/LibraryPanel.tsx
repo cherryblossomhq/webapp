@@ -64,9 +64,13 @@ export function LibraryPanel() {
     listRef.current?.querySelector(`[data-hit="${active}"]`)?.scrollIntoView({ block: "nearest" })
   }, [active])
 
-  const place = (hit: PartHit) => startPlacing(hit.part.id, { props: hit.props, footprint: hit.footprint })
+  // A viewer browses the library but places nothing, and reads no part it could only fail to place.
+  const place = (hit: PartHit) => {
+    if (!viewer) startPlacing(hit.part.id, { props: hit.props, footprint: hit.footprint })
+  }
   /** The result at a keyboard position: the library's first, then the database's, then LCSC's. */
   const pick = (i: number) => {
+    if (viewer) return
     if (i < hits.length) place(hits[i])
     else if (i < hits.length + storedHits.length) void indexPlace.place(storedHits[i - hits.length])
     else if (supplier.candidates[i - hits.length - storedHits.length]) void supplierPlace.place(supplier.candidates[i - hits.length - storedHits.length])
@@ -119,7 +123,7 @@ export function LibraryPanel() {
       {viewer && (
         <p className="mx-3 mb-2 rounded-[8px] bg-chrome px-2.5 py-2 text-[12px] text-ink-2">You can view this project, not add to it. Ask its owner for edit access.</p>
       )}
-      <div ref={listRef} aria-disabled={viewer} className={`scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-4 ${viewer ? "pointer-events-none opacity-50" : ""}`}>
+      <div ref={listRef} aria-disabled={viewer} className={`scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-4 ${viewer ? "opacity-60" : ""}`}>
         {searching ? (
           <>
             {hits.length > 0 && (
@@ -150,7 +154,9 @@ export function LibraryPanel() {
                 busy={indexPlace.busy}
                 error={indexPlace.error}
                 onHover={setActive}
-                onPlace={(h) => void indexPlace.place(h)}
+                onPlace={(h) => {
+                  if (!viewer) void indexPlace.place(h)
+                }}
               />
             )}
             {index.failure && <IndexNotice line={index.failure} />}
@@ -163,7 +169,9 @@ export function LibraryPanel() {
                 busy={supplierPlace.busy}
                 error={supplierPlace.error}
                 onHover={setActive}
-                onPlace={(c) => void supplierPlace.place(c)}
+                onPlace={(c) => {
+                  if (!viewer) void supplierPlace.place(c)
+                }}
               />
             )}
             <CreateWithCopilot query={query.trim()} prominent={(!hits.length || !!hits[0].partial) && !storedHits.length && !supplier.candidates.length} />
@@ -187,7 +195,14 @@ export function LibraryPanel() {
                 {open && (
                   <ul>
                     {g.parts.map((p) => (
-                      <PartRow key={p.id} part={p} active={placing?.partId === p.id} onPlace={() => startPlacing(p.id)} />
+                      <PartRow
+                        key={p.id}
+                        part={p}
+                        active={placing?.partId === p.id}
+                        onPlace={() => {
+                          if (!viewer) startPlacing(p.id)
+                        }}
+                      />
                     ))}
                   </ul>
                 )}

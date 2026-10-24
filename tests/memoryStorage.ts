@@ -5,7 +5,8 @@ import type { ChangesEvent, OutgoingBatch, ProjectRole, ProjectStorage, PushOutc
  * An account's storage in memory, behaving as the hosted app's storage does: it applies each batch
  * to the stored file, numbers it, logs it and tells every watcher, answers a resent batch with the
  * revision it landed at, and refuses what a viewer, an older editor or a newer format sends. Tests
- * can make a push fail, hold pushes until released, change the user's role and drop the log.
+ * can make a push fail, hold pushes (or their answers) until released, change the user's role and
+ * drop the log.
  */
 export interface MemoryRow {
   content: string
@@ -27,6 +28,8 @@ export function memoryStorage() {
   let gate: Promise<void> | null = null
   /** Apply the next push, then throw as if its answer was lost. */
   let loseNextAnswer = false
+  /** Apply the next push, then wait for this before answering it. */
+  let answerGate: Promise<void> | null = null
   /** Don't tell watchers about pushes, as a subscription that dropped with the connection wouldn't hear. */
   let quiet = false
   /** Refuse the next push with this reason. */
@@ -90,6 +93,11 @@ export function memoryStorage() {
       row.revision++
       row.log.push({ revision: row.revision, clientId: batch.clientId, batch: batch.batch, userId: batch.clientId, changes: JSON.parse(JSON.stringify(batch.changes)) })
       if (!quiet) notify(id)
+      if (answerGate) {
+        const held = answerGate
+        answerGate = null
+        await held
+      }
       if (loseNextAnswer) {
         loseNextAnswer = false
         throw new Error("The connection dropped before the answer came")
@@ -143,6 +151,12 @@ export function memoryStorage() {
       }
     },
     loseNextAnswer: () => (loseNextAnswer = true),
+    /** Apply the next push at once and hold back its answer until released. */
+    holdAnswer() {
+      let release!: () => void
+      answerGate = new Promise((resolve) => (release = resolve))
+      return release
+    },
     refuseNext: (reason: "too_large" | "invalid") => (refuseNext = reason),
     /** Stop (or start again) telling watchers; starting again tells them what they missed. */
     setQuiet(id: string, on: boolean) {

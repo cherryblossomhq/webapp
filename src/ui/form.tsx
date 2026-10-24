@@ -1,5 +1,5 @@
 import { ChevronDown, RotateCcw } from "lucide-react"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { formatLength, fromUnit, type LengthUnit } from "../model/rules"
 import { uiApi, useUi } from "../store/uiStore"
 import { Tooltip } from "./Tooltip"
@@ -207,6 +207,13 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
   )
 }
 
+/**
+ * True where the user may read the project but not change it (a viewer's Inspector): every
+ * `Section` then disables its controls, and only its fold stays, so a folded section can still be
+ * opened to read.
+ */
+export const ReadOnly = createContext(false)
+
 /** A titled Inspector section that folds away from its heading; the fold is kept for the session. */
 export function Section({
   title,
@@ -222,6 +229,7 @@ export function Section({
   collapsible?: boolean
 }) {
   const folded = useUi((s) => (id ? !!s.folded[id] : false))
+  const readOnly = useContext(ReadOnly)
   return (
     <section className="border-b border-line px-4 py-3.5">
       <div className={`flex items-center justify-between gap-2 ${folded ? "" : "mb-2.5"}`}>
@@ -233,9 +241,17 @@ export function Section({
         ) : (
           <h3 className="text-[12.5px] font-[650] text-ink">{title}</h3>
         )}
-        {!folded && action}
+        {!folded && action && (
+          <fieldset disabled={readOnly} className="contents">
+            {action}
+          </fieldset>
+        )}
       </div>
-      {!folded && <div className="space-y-2.5">{children}</div>}
+      {!folded && (
+        <fieldset disabled={readOnly} className="min-w-0 space-y-2.5">
+          {children}
+        </fieldset>
+      )}
     </section>
   )
 }

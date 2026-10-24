@@ -125,8 +125,12 @@ export function parsePeerState(text: string): PeerState {
 interface PresenceStore {
   /** Everyone else on the open project, one per tab, in the order they arrived. */
   peers: Collaborator[]
+  /** The host has answered once for the open project: `peers` is who was there, not a list still loading. */
+  loaded: boolean
   /** The user's own id, as the host knows it: their other tabs aren't company. */
   selfUserId: string | null
+  /** This tab's session on the open project. */
+  selfSessionId: string | null
   /** The tab this one is following: its view and what it is looking at. */
   following: string | null
   follow: (sessionId: string) => void
@@ -135,7 +139,9 @@ interface PresenceStore {
 
 export const usePresence = create<PresenceStore>((set) => ({
   peers: [],
+  loaded: false,
   selfUserId: null,
+  selfSessionId: null,
   following: null,
   follow: (following) => set({ following }),
   unfollow: () => set({ following: null }),
@@ -147,13 +153,36 @@ export function stopFollowing() {
 }
 
 /**
+ * The tabs in a ring of following that comes back to this one (A follows B follows A), or null.
+ * Each would frame the next one's framing, a little wider every time, for ever.
+ */
+function followRing(s: PresenceStore): string[] | null {
+  const self = s.selfSessionId
+  if (!self || !s.following) return null
+  const ring = [self]
+  for (let at: string | undefined = s.following; at && ring.length <= s.peers.length + 1; ) {
+    if (at === self) return ring
+    if (ring.includes(at)) return null
+    ring.push(at)
+    at = s.peers.find((p) => p.sessionId === at)?.state.following
+  }
+  return null
+}
+
+/**
  * Mirror the followed tab: its view, and what it shows, framed to fill this canvas. Following
  * someone who follows this tab would chase each other's framing outward for ever, so the second
- * of the two is refused (`canFollow`).
+ * of the two is refused (`canFollow`); two who clicked each other at once (or a longer ring) are
+ * parted here, by the tab of the ring with the greatest id letting go, which every tab in it agrees on.
  */
 export function followLeader(): () => void {
   let applied = ""
   const apply = (s: PresenceStore) => {
+    const ring = followRing(s)
+    if (ring && ring.reduce((a, b) => (b > a ? b : a)) === s.selfSessionId) {
+      applied = ""
+      return s.unfollow()
+    }
     const leader = s.following ? s.peers.find((p) => p.sessionId === s.following) : undefined
     if (!leader) {
       applied = ""
@@ -222,10 +251,12 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
   let timer: ReturnType<typeof setTimeout> | null = null
   let lastSent = 0
   let rows: PresencePeer[] = []
+  /** The source has said who is here at least once. */
+  let answered = false
   /** When each tab's row last changed, by this tab's clock: a row that stops changing has gone. */
   const heard = new Map<string, { updatedAt: number; at: number }>()
 
-  usePresence.setState({ peers: [], following: null, selfUserId })
+  usePresence.setState({ peers: [], loaded: false, following: null, selfUserId, selfSessionId: sessionId })
 
   const company = () => usePresence.getState().peers.some((p) => p.userId !== selfUserId)
 
@@ -261,7 +292,7 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
       .map((r) => ({ sessionId: r.sessionId, userId: r.userId, name: r.name, pictureUrl: r.pictureUrl, color: colors.get(r.userId)!, state: parsePeerState(r.state) }))
       .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
     const hadCompany = company()
-    usePresence.setState({ peers, ...(before.following && !peers.some((p) => p.sessionId === before.following) && { following: null }) })
+    usePresence.setState({ peers, loaded: answered, ...(before.following && !peers.some((p) => p.sessionId === before.following) && { following: null }) })
     // Someone arrived: they should see this tab's pointer and selection now, not at the next heartbeat.
     if (!hadCompany && company()) schedule("state")
   }
@@ -270,6 +301,7 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
     projectId,
     (next) => {
       rows = next
+      answered = true
       refresh()
     },
     () => {},
@@ -302,7 +334,7 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
     unsubscribeCopilot()
     unsubscribeFollow()
     source.leave(sessionId)
-    usePresence.setState({ peers: [], following: null })
+    usePresence.setState({ peers: [], loaded: false, following: null })
   }
 }
 

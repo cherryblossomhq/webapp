@@ -4,7 +4,7 @@ import { supplierParts } from "../../../ai/supplierParts"
 import { modelFileKey } from "../../../model/models3d"
 import type { Model3D, Model3DFormat } from "../../../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFiles } from "../../../store/modelFiles"
-import { projectApi } from "../../../store/projectStore"
+import { projectApi, useProjectStore } from "../../../store/projectStore"
 
 // The model files the 3D view has read, for the page: a file is fetched and read once however many
 // parts, boards and views use it, and every part is a cheap copy sharing its geometry. A part
@@ -169,6 +169,12 @@ export class ModelLibrary {
 }
 
 export const modelLibrary = new ModelLibrary()
+
+// A user's file is read through the open project (a collaborator's is found through it), so one that
+// failed on one project may read on the next: open another, and failures are tried again.
+useProjectStore.subscribe((s, prev) => {
+  if (s.project?.id !== prev.project?.id) modelLibrary.retryFailed()
+})
 
 /** A model file's state, kept current as it loads. */
 export function useModelState(m: Model3D | null): { state: ReturnType<ModelLibrary["state"]>; error: string | null } {

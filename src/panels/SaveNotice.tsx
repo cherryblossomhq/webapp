@@ -11,6 +11,7 @@ const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-
  */
 export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
+  const dismiss = useProjectStore((s) => s.dismissSaveNotice)
   if (save.state === "saved" || save.state === "saving") return null
   if (save.state === "refused" && save.reason === "not_found") return null
   const reload = () => window.location.reload()
@@ -25,10 +26,19 @@ export function SaveNotice() {
         Reload
       </button>
     )
-  } else if (save.reason === "forbidden") {
-    text = "This project is now shared with you to view, so your last changes weren't saved."
+  } else if (save.reason === "unupgradable") {
+    text = "This project is too large to update to this version of Cherry Blossom, so changes to it can't be saved."
   } else {
-    text = "Your latest change would make the project too large to save, so it was undone."
+    text =
+      save.reason === "forbidden"
+        ? "This project is now shared with you to view, so your last changes weren't saved."
+        : "Your latest change would make the project too large to save, so it was undone."
+    // Said once: the edits are already off the screen, and nothing is waiting on the user.
+    actions = (
+      <button className={ACTION} onClick={dismiss}>
+        Dismiss
+      </button>
+    )
   }
   return (
     <div

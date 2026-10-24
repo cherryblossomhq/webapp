@@ -394,8 +394,10 @@ export function PcbEditor() {
         }
         return
       }
-      if (key === "x") uiApi().setPcbTool("route")
-      else if (key === "v") uiApi().setPcbTool(tool === "select" ? "via" : "select")
+      // A viewer's drawing tools are off, as their buttons are.
+      const viewer = projectApi().role === "viewer"
+      if (key === "x" && !viewer) uiApi().setPcbTool("route")
+      else if (key === "v") uiApi().setPcbTool(tool === "select" && !viewer ? "via" : "select")
       else if (key === "s") uiApi().setPcbTool("select")
       else if (key === "l") uiApi().setActiveLayer(uiApi().activeLayer === "top" ? "bottom" : "top")
       else if (key === "f" && !e.shiftKey) {

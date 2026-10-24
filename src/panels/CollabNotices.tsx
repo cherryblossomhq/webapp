@@ -108,14 +108,19 @@ export function CollabNotices() {
 
   // Someone arrived.
   useEffect(() => {
-    const seen = new Set<string>()
+    let seen = new Set<string>()
     let ready = false
     return usePresence.subscribe((s) => {
+      // Another project, or its list not in yet: those there when it comes are in the top bar already.
+      if (!s.loaded) {
+        seen = new Set()
+        ready = false
+        return
+      }
       const self = s.selfUserId
       for (const p of s.peers) {
         if (p.userId === self || seen.has(p.userId)) continue
         seen.add(p.userId)
-        // Those here when the project opened are in the top bar already.
         if (ready) say(`${p.name || "A guest"} joined.`, p.color)
       }
       ready = true

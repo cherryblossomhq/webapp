@@ -13,10 +13,14 @@ import { projectApi } from "../store/projectStore"
 import { Button, useDismiss } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 
-/** Exports need every part on the board; place stragglers first so nothing lands at the origin. */
+/**
+ * Exports need every part on the board; place stragglers first so nothing lands at the origin. A
+ * viewer can't place them in the project, so their export places them in the copy it writes.
+ */
 function placedProject() {
   const p = projectApi().project!
   if (p.components.some((c) => !c.pcb.placed && isPhysical(findPart(c.partId)))) {
+    if (projectApi().role === "viewer") return autoPlacePcb(p)
     projectApi().commit((x) => autoPlacePcb(x))
   }
   return projectApi().project!

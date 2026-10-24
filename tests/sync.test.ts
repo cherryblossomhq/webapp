@@ -4,7 +4,7 @@ import { addComponent, addLabel, createProject } from "../src/model/ops"
 import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
 import { projectChanges } from "../src/store/changes"
-import { connectProjectStorage, onRemoteChanges, settleSaves, useProjectStore } from "../src/store/projectStore"
+import { connectProjectStorage, isCreatedHere, onRemoteChanges, settleSaves, useProjectStore } from "../src/store/projectStore"
 import { openStoredProject, projectRecord, type RemoteBatch } from "../src/store/storage"
 import { ProjectSync, type SaveStatus, type SyncHost } from "../src/store/sync"
 import { memoryStorage } from "./memoryStorage"
@@ -179,6 +179,10 @@ describe("live editing", () => {
     expect(stored).toBeLessThan(20)
     expect(api().project!.labels).toHaveLength(stored)
     expect(api().save).toEqual<SaveStatus>({ state: "refused", reason: "too_large" })
+    // Steps worked out against edits that never landed can't be undone over other people's work.
+    expect(api().past).toEqual([])
+    api().dismissSaveNotice()
+    expect(api().save).toEqual<SaveStatus>({ state: "saved" })
   })
 
   it("refuses a viewer's edits before they happen, and says so", async () => {
@@ -187,9 +191,14 @@ describe("live editing", () => {
     await settle()
     expect(api().role).toBe("viewer")
     const before = api().project
+    // A press is how a viewer selects: it says nothing until the pointer moves.
+    api().beginTransient()
+    api().endTransient()
+    expect(api().refusedEdits).toBe(0)
     rename("Nope")
     api().beginTransient()
     api().setTransient(moveFirst(1))
+    api().setTransient(moveFirst(2))
     expect(api().project).toBe(before)
     expect(api().refusedEdits).toBe(2)
     await settle()
@@ -207,6 +216,78 @@ describe("live editing", () => {
     expect(api().project!.name).toBe("Start")
     expect(api().role).toBe("viewer")
     expect(api().save).toEqual<SaveStatus>({ state: "refused", reason: "forbidden" })
+    expect(api().past).toEqual([])
+    // Made an editor again, the strip saying otherwise goes.
+    memory.setRole(id, "editor")
+    await settle()
+    expect(api().save).toEqual<SaveStatus>({ state: "saved" })
+  })
+
+  it("puts the screen right when a batch that was still pending in a reloaded copy turns out to have landed", async () => {
+    const { memory, id } = await opened()
+    memory.setQuiet(id, true)
+    const answer = memory.holdAnswer()
+    rename("Mine")
+    await vi.advanceTimersByTimeAsync(100)
+    // Ours is stored, its answer still on its way; then theirs, and then the copy loads again.
+    const now = openStoredProject((await memory.storage.load(id))!)
+    await memory.pushAs("other", id, projectChanges(now, { ...now, name: "Theirs" }))
+    memory.dropLog(id)
+    memory.setQuiet(id, false)
+    await vi.advanceTimersByTimeAsync(0)
+    answer()
+    await settle()
+    expect(memory.project(id).name).toBe("Theirs")
+    expect(api().project!.name).toBe("Theirs")
+    expect(api().save.state).toBe("saved")
+  })
+
+  it("reads the log again from a fresh copy when following it fails", async () => {
+    const memory = memoryStorage()
+    const watch = memory.storage.watchChanges
+    let failures = 1
+    memory.storage.watchChanges = (id, after, listener, onError) => {
+      if (failures-- > 0) {
+        queueMicrotask(() => onError(new Error("Too much to read")))
+        return () => {}
+      }
+      return watch(id, after, listener, onError)
+    }
+    connectProjectStorage(memory.storage)
+    const { id } = await memory.storage.create(projectRecord(createProject("Start")))
+    const stored = (await memory.storage.load(id))!
+    api().open(openStoredProject(stored), stored)
+    await settle()
+    const now = openStoredProject((await memory.storage.load(id))!)
+    await memory.pushAs("other", id, projectChanges(now, { ...now, name: "Theirs" }))
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(api().project!.name).toBe("Theirs")
+    await memory.pushAs("other", id, projectChanges({ ...now, name: "Theirs" }, { ...now, name: "Again" }))
+    await settle()
+    expect(api().project!.name).toBe("Again")
+  })
+
+  it("keeps a designator renumbered after someone else took it through Undo and Redo", async () => {
+    const { memory, id } = await opened(createProject("Empty"))
+    const stop = onRemoteChanges((batches) => {
+      const arrived = new Set(batches.flatMap((b) => (b.changes ?? []).flatMap((c) => (c.kind === "put" && c.collection === "components" ? [String(c.item.id)] : []))))
+      api().patch((p) => resolveDesignatorClashes(p, arrived, isCreatedHere).project)
+    })
+    const release = memory.hold()
+    api().commit((p) => addComponent(p, "resistor", { id: "c_200" }).project)
+    await vi.advanceTimersByTimeAsync(100)
+    const start = openStoredProject((await memory.storage.load(id))!)
+    release()
+    await memory.pushAs("other", id, projectChanges(start, addComponent(start, "resistor", { id: "c_100" }).project))
+    await settle()
+    const refOf = (componentId: string) => api().project!.components.find((c) => c.id === componentId)?.ref
+    expect([refOf("c_100"), refOf("c_200")]).toEqual(["R1", "R2"])
+    api().undo()
+    api().redo()
+    await settle()
+    expect([refOf("c_100"), refOf("c_200")]).toEqual(["R1", "R2"])
+    expect(memory.project(id).components.map((c: { ref: string }) => c.ref).sort()).toEqual(["R1", "R2"])
+    stop()
   })
 
   it("loads the project again after a gap, with the user's pending edit on top", async () => {
@@ -296,6 +377,7 @@ describe("two tabs on one project", () => {
       status: (s) => (shown.status = s),
       role: () => {},
       gone: () => {},
+      refused: () => {},
     }
     const sync = new ProjectSync(id, project, revision, PROJECT_FILE_VERSION, "owner", memory.storage, host)
     sync.start()

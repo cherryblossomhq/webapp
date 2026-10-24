@@ -50,8 +50,15 @@ export interface SharingState {
   invites: ShareInvite[]
 }
 
+/**
+ * What one address came to: a new invitation, an open one sent again under a new link, someone
+ * else's open invitation left as it is (only its sender or the owner sends it again), or a person
+ * who has the project already.
+ */
+export type InviteStatus = "invited" | "renewed" | "pending" | "member"
+
 export type InviteResult =
-  | { ok: true; outcomes: { email: string; status: "invited" | "renewed" | "member" }[]; emailConfigured: boolean }
+  | { ok: true; outcomes: { email: string; status: InviteStatus }[]; emailConfigured: boolean }
   | { ok: false; message: string }
 
 export interface SharingSource {
@@ -88,7 +95,7 @@ export function localSharing(owner: SharePerson): SharingSource {
       return () => listeners.delete(listener)
     },
     async invite(_projectId, emails, role) {
-      const outcomes: { email: string; status: "invited" | "renewed" | "member" }[] = []
+      const outcomes: { email: string; status: InviteStatus }[] = []
       let invites = state.invites
       for (const raw of emails) {
         const email = raw.trim().toLowerCase()

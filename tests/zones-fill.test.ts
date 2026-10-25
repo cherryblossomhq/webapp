@@ -45,6 +45,15 @@ describe("zone fill: the polygon and the board", () => {
     }
   })
 
+  it("pours on an outline that crosses itself: each lobe is board (a bow tie is two pieces, not a piece and a hole)", () => {
+    const bow = [{ x: -20, y: -15 }, { x: 20, y: 15 }, { x: 20, y: -15 }, { x: -20, y: 15 }]
+    const board = { outline: { paths: [{ closed: true, segs: bow.map((a, i) => ({ kind: "line" as const, a, b: bow[(i + 1) % 4] })) }] } }
+    const p = withZone(twoResistors(board), rectangle(-30, -30, 30, 30), { net: "GND" })
+    const f = fillOf(p)
+    expect(filled(f, { x: -15, y: 0 })).toBe(true)
+    expect(filled(f, { x: 15, y: 0 })).toBe(true)
+  })
+
   it("follows the outline of a board that is not a rectangle: no copper in a cutout or off the board", () => {
     const board = {
       outline: {

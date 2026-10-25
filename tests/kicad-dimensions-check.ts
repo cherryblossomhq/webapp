@@ -226,9 +226,19 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
           const targets = w.shape.filter((s) => s === "TARGET").length
           w.shape = w.shape.filter((s) => s !== "TARGET")
           const mixed = (a: string[]) => [...a].sort()
-          if (!isDeepStrictEqual(mixed(sig.part), mixed(w.part))) bad = `parts ${sig.part.length} against ${w.part.length}`
-          else if (!isDeepStrictEqual(mixed(sig.segment), mixed(w.segment))) bad = `track segments ${sig.segment.length} against ${w.segment.length}`
-          else if (!isDeepStrictEqual(mixed(sig.via), mixed(w.via))) bad = `vias ${sig.via.length} against ${w.via.length}`
+          // A place that sits exactly between two thousandths (-4.0625) rounds one way read from the file and the other way once the editor's y has been turned over: the same place, so the numbers of a signature agree to a thousandth and a half.
+          const sameSigs = (a: string[], c: string[]) => {
+            const x = mixed(a)
+            const y = mixed(c)
+            return x.length === y.length && x.every((t, i) => {
+              const p = t.split(/(-?\d+(?:\.\d+)?)/)
+              const q = y[i].split(/(-?\d+(?:\.\d+)?)/)
+              return p.length === q.length && p.every((u, k) => (k % 2 ? Math.abs(Number(u) - Number(q[k])) < 1.5e-3 : u === q[k]))
+            })
+          }
+          if (!sameSigs(sig.part, w.part)) bad = `parts ${sig.part.length} against ${w.part.length}`
+          else if (!sameSigs(sig.segment, w.segment)) bad = `track segments ${sig.segment.length} against ${w.segment.length}`
+          else if (!sameSigs(sig.via, w.via)) bad = `vias ${sig.via.length} against ${w.via.length}`
           else if (sig.shape.length !== w.shape.length + 3 * targets) bad = `drawings ${sig.shape.length} against ${w.shape.length} and ${targets} targets`
           else if (sig.text.length !== w.text.length || !isDeepStrictEqual(mixed(sig.text.map((t) => t)), mixed(w.text))) bad = `texts ${sig.text.length} against ${w.text.length}`
           else if (sig.dimension !== w.dimension) bad = `dimensions ${sig.dimension} against ${w.dimension}`

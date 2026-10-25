@@ -96,9 +96,10 @@ export function boardLoops(b: Project["board"]): Paths64 {
   const g = outlineGeometry(b)
   if (!g) return [rectPath(b.x, b.y, b.width, b.height)]
   if (!g.rings.length) return [rectPath((g.box.minX + g.box.maxX) / 2, (g.box.minY + g.box.maxY) / 2, g.box.maxX - g.box.minX, g.box.maxY - g.box.minY)]
-  // Each piece of board with its cutouts: one even-odd union so a hole stays a hole.
+  // Each piece of board with its cutouts: an even-odd union of its own rings, so a hole stays a hole and a ring that crosses itself (an outline
+  // KiCad still plots) is two lobes of board, not a lobe and a hole; then the pieces joined.
   return union(
-    g.regions.flatMap((r) => [r.outer, ...r.holes]).map(ring),
+    g.regions.flatMap((r) => union([r.outer, ...r.holes].map(ring), [], FillRule.EvenOdd)),
     [],
     FillRule.NonZero,
   )

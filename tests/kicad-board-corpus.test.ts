@@ -50,10 +50,26 @@ import { emptyContext, reportText, summarize as summarizeImport } from "../src/k
 
 /** The boards that import whose copper differs from KiCad's stored fill by more than a tenth of it and 5 mm2: kept as a list so a change that moves another board in is seen. Filled in after the run. */
 const ZONE_FILL_OUTLIERS: string[] = [
-  // One ESP-12 board, kept as a list so a change that moves another board in is seen. Its diff image shows KiCad copper where the editor has none
-  // or the other way round with no rule of the fill behind it that was found; the stored fill may be older than the board. (The two copies of one
-  // KiCad 4 board that were here are in: their zones of equal priority overlap in KiCad 5 and earlier, which cut only out of strictly higher ones.)
+  // The joined run (819 boards that import have a stored fill): the boards whose copper differs from KiCad's stored fill by more than a tenth of it and 5 mm2.
+  // None has a rule of the fill behind it that was found, and the stored fill may be older than the board; the share with a net class (7 of 16) is the share of all
+  // boards that have one (296 of 819), so the classes are not what moves them. Three more boards, whose outline crosses itself, poured nothing until the
+  // fill took each lobe of such an outline as board (`boardLoops`); they are in the count now.
+  "kicad-source/qa/data/pcbnew/test_copper_graphics.kicad_pcb",
+  "pcbench/PCBs/BB-PWR-3608_BB-PWR-3608_revA/raw.kicad_pcb",
+  "pcbench/PCBs/CAL430FR_CAL430F_watch/raw.kicad_pcb",
+  "pcbench/PCBs/ESP07-Breakout_ESP07-Breakout/raw.kicad_pcb",
+  "pcbench/PCBs/Hardware_Playground_NRF52832_Touch_Switch_Power_Supply/raw.kicad_pcb",
+  "pcbench/PCBs/LiPoSensor_lipo_sensor/raw.kicad_pcb",
+  "pcbench/PCBs/MOD-MPU9150_mod-mpu9150/raw.kicad_pcb",
+  "pcbench/PCBs/Neptune-Hardware_DataAcquisitionBoard/raw.kicad_pcb",
+  "pcbench/PCBs/RPi-PWM-Fan-interface_RPi PWM Fan interface/raw.kicad_pcb",
+  "pcbench/PCBs/Starling_matrix/raw.kicad_pcb",
+  "pcbench/PCBs/edid-injector_edid-injector/raw.kicad_pcb",
   "pcbench/PCBs/esp8266_link_test_esp12e-generics/raw.kicad_pcb",
+  "pcbench/PCBs/kitspace_CA3306E/raw.kicad_pcb",
+  "pcbench/PCBs/snappi-zero_snappi-zero/raw.kicad_pcb",
+  "pcbench/PCBs/tinyFISH_tinyBRUSH/raw.kicad_pcb",
+  "projects/tvlad1234__linux-ch32v003/hardware/linux-ch32v003.kicad_pcb",
 ]
 
 const CORPUS = process.env.KICAD_CORPUS

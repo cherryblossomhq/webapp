@@ -474,7 +474,8 @@ function classifyLoop(l: Omit<Loop, "box" | "shape">): string {
 
 // ---------- the outline as exact paths ----------
 
-const negate = (q: Vec2): Vec2 => ({ x: q.x, y: -q.y })
+// `0 - y` and not `-y`: a place on y = 0 must not become minus zero, which a save and a load (JSON) turns into zero and a comparison of the two tells apart.
+const negate = (q: Vec2): Vec2 => ({ x: q.x, y: 0 - q.y })
 
 /** A piece of the board's frame (y down) in the editor's (y up): the same piece mirrored, an arc through the mirrored three points. */
 function toEditor(sg: PathSeg): PathSeg {

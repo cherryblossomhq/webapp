@@ -60,7 +60,7 @@ export function collectAtoms(text, ATOMS, rootToken) {
       top.index++
       if (/^-?[\d.]+(e[+-]?\d+)?$/i.test(tok)) continue
       const entry = entryFor(top.path)
-      if (!entry || entry.skip?.includes(idx)) continue
+      if (!entry || entry.free || entry.skip?.includes(idx)) continue
       const bucket = (out[top.path] ??= {})
       bump(bucket, tok)
     }

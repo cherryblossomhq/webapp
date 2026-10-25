@@ -81,8 +81,9 @@ test("what used to be reported is built", () => {
 })
 
 test("the legacy forms are read, not ignored", () => {
-  is("gr_arc>angle", "native")
-  is("footprint>fp_arc>angle", "native")
+  // a legacy arc's sweep is read (into start, mid and end), and carried only as part of the outline, so it is the arc's own extension and not "native"
+  is("gr_arc>angle", "extend", "X8")
+  is("footprint>fp_arc>angle", "extend", "X8")
   is("gr_line>angle", "not-needed")
   is("segment>status", "native")
   is("via>status", "native")

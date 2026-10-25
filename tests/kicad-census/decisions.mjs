@@ -50,8 +50,9 @@ export const RULES = [
   rule("footprint>(?:model>)?extruded(?:>.*)?", "report", "-", { note: "an extruded 3D body drawn from a footprint shape (KiCad 11 development): not released" }),
 
   // ---- the file ----
-  rule("version", "native", "-", { effort: "S", note: "picks the reader's switches (section 3.3 of the doc); text that starts PCBNEW-BOARD is refused with a message" }),
-  rule("generator|generator_version|host", "native", "project property 'Imported from'", { effort: "S" }),
+  rule("version", "native", "project property 'KiCad file version'", { effort: "S", note: "picks the reader's switches (section 3.3 of the doc), and is kept as the project property 'KiCad file version'; text that starts PCBNEW-BOARD is refused with a message" }),
+  rule("generator_version", "native", "project property 'Imported from' and 'KiCad file version'", { effort: "S" }),
+  rule("generator|host", "not-needed", "-", { note: "which program and machine wrote the file; the release is kept in the project's 'KiCad file version' property" }),
   rule("general", "native", "BoardDef.thickness", { effort: "S" }),
   rule("general>thickness", "native", "BoardDef.thickness", { effort: "S" }),
   rule("general>legacy_teardrops", "extend", "-", { ext: "X3", note: "says the board's teardrop zones come from KiCad 7's generator and are not regenerated; kept with the teardrop zones" }),
@@ -63,8 +64,11 @@ export const RULES = [
 
   // ---- setup ----
   rule("setup", "native", "DesignRules", { effort: "M", note: "see the setup rows" }),
-  rule("setup>(?:last_trace_width|trace_min|trace_clearance|via_size|via_drill|via_min_size|via_min_drill|zone_clearance|edge_clearance|pad_to_mask_clearance|pad_to_paste_clearance|user_trace_width|user_via)", "native", "DesignRules (traceWidth, minTraceWidth, clearance, viaDiameter, viaDrill, minDrill, pourClearance, edgeClearance, maskExpansion, pasteExpansion, preferredWidths)", { effort: "S" }),
-  rule("setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|zone_45_only|max_error|hole_to_hole_min|clearance_min|through_hole_min|via_min_annulus|user_diff_pair|creepage)", "extend", "DesignRules has no field", { ext: "X10", note: "design rule values the checks need once copper, vias and zones are extended" }),
+  rule("setup>(?:trace_min|via_min_drill|zone_clearance|edge_clearance|pad_to_mask_clearance|pad_to_paste_clearance|user_trace_width|hole_to_hole_min|through_hole_min|via_min_annulus)", "native", "DesignRules (minTraceWidth, minDrill, pourClearance, edgeClearance, maskExpansion, pasteExpansion, preferredWidths, holeClearance, minAnnularRing)", { effort: "S" }),
+  rule("setup>(?:last_trace_width|via_size|via_drill|trace_clearance)", "not-needed", "-", { note: "KiCad 4 and 5 write the track width and via size last selected in the toolbar, and the Default net class's clearance a second time; the rules are the Default net class's, which is imported" }),
+  rule("setup>zone_45_only", "not-needed", "-", { note: "a drawing constraint of KiCad's own zone editor (outlines snap to 45 degrees); it changes no geometry already drawn, and the editor has nothing it constrains" }),
+  rule("setup>(?:via_min_size|user_via)", "extend", "DesignRules has no minimum via size or list of via sizes", { ext: "X10", note: "the smallest via diameter the checks allow, and the via sizes the user offers while routing" }),
+  rule("setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair|creepage)", "extend", "DesignRules has no field", { ext: "X10", note: "design rule values the checks and the fab output need: a non-zero mask sliver width or paste ratio changes the Gerbers" }),
   rule("setup>(?:uvia_size|uvia_drill|uvia_min_size|uvia_min_drill|uvias_allowed|blind_buried_vias_allowed)", "extend", "DesignRules has no field", { ext: "X5", note: "microvia and blind or buried via rules" }),
   rule("setup>(?:stackup|stackup>.*)", "extend", "BoardDef.thickness only", { ext: "X1", note: "layers with thickness, material, epsilon r, loss tangent, copper finish, edge plating, castellated pads, dielectric constraints" }),
   rule("setup>(?:tenting|tenting>(?:front|back))", "extend", "DesignRules.tentVias (one flag)", { ext: "X5", note: "front and back via tenting" }),
@@ -74,7 +78,8 @@ export const RULES = [
 
   // ---- nets ----
   rule("net", "native", "net names become labels on a generated schematic", { effort: "M", note: "KiCad 10 stops writing net numbers: the name is the key. Names carry escapes such as {slash} and ~{overbar}, decoded when read" }),
-  rule("net_class|net_class>.*", "extend", "DesignRules.netWidths only", { ext: "X10", note: "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro" }),
+  rule("net_class|net_class>(?:clearance|trace_width|via_dia|via_drill|add_net|diff_pair_width|diff_pair_gap)", "extend", "DesignRules (the Default class); netWidths only for the rest", { ext: "X10", note: "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro. The Default class's clearance, track width and via size are the design rules; every other class, and a differential pair rule, need X10" }),
+  rule("net_class>(?:uvia_dia|uvia_drill)", "extend", "-", { ext: "X5", note: "the micro via size of a net class: it applies to nothing on a board with no micro via" }),
 
   // ---- tracks and vias ----
   rule("segment", "native", "Trace polyline (consecutive same-layer, same-width segments of one net are joined)", { effort: "M" }),
@@ -111,7 +116,7 @@ export const RULES = [
   rule(`${GFX}>stroke>(?:type|width|color)`, "extend", "-", { ext: "X8", note: "line width, dash style and colour (KiCad 10)" }),
   rule(`${GFX}>pts>(?:xy|arc|arc>(?:start|mid|end))`, "extend", "-", { ext: "X8", note: "polygon points; an arc inside a polygon outline since KiCad 6" }),
   rule(`${GFX}>(?:start_shape|end_shape)(?:>.*)?`, "extend", "-", { ext: "X8", note: "line end shapes (KiCad 10)" }),
-  rule("gr_arc>angle|footprint>fp_arc>angle", "native", "-", { effort: "S", note: "the legacy arc form: (start centre) (end first end) (angle clockwise sweep), converted to start, mid and end; stamp 20210925 and older" }),
+  rule("gr_arc>angle|footprint>fp_arc>angle", "extend", "-", { ext: "X8", note: "the legacy arc form: (start centre) (end first end) (angle clockwise sweep), converted to start, mid and end; stamp 20210925 and older" }),
   rule("gr_line>angle", "not-needed", "-", { note: "a leftover token on KiCad 4 and 5 lines with no meaning" }),
   rule(`${GFX}>(?:tstamp|uuid|status)`, "not-needed", "-", { note: "KiCad's object identity and edit flags" }),
   rule("target(?:>(?:at|layer|size|tstamp|width))?", "extend", "-", { ext: "X8", note: "a board target mark, lines on its layer" }),
@@ -131,17 +136,21 @@ export const RULES = [
   rule("footprint>at", "extend", "ComponentInstance.pcb.rot is a quarter turn", { ext: "X6" }),
   rule("footprint>transform(?:>(?:translate|rotate|scale))?", "extend", "-", { ext: "X6", note: "from stamp 20260616 a footprint has translate, rotate and scale in place of at; a scale other than 1 is reported" }),
   rule("footprint>layer", "native", "ComponentInstance.pcb.side", { effort: "S", note: "back side means the layer table's last copper row, whatever it is called" }),
-  rule("footprint>(?:locked|placed)", "native", "ComponentInstance.pcb.locked", { effort: "S" }),
+  rule("footprint>locked", "native", "ComponentInstance.pcb.locked", { effort: "S" }),
+  rule("footprint>placed", "not-needed", "-", { note: "KiCad's own bookkeeping of whether a footprint was positioned after an update from the schematic; every imported part sits where the file puts it" }),
   rule("footprint>attr", "extend", "ComponentInstance.props only", { ext: "X15", note: "smd, through_hole, virtual, board_only, exclude_from_pos_files, exclude_from_bom, dnp, allow_soldermask_bridges, allow_missing_courtyard; no attr before stamp 20200826 means through-hole" }),
-  rule("footprint>(?:descr|tags)", "native", "ComponentInstance.props (a KiCad 5 tag 'net tie ...' also makes a net tie)", { effort: "S" }),
-  rule("footprint>(?:path|sheetname|sheetfile)", "native", "kept to link symbol and footprint", { effort: "S", note: "the link to the schematic symbol (Phase 3)" }),
+  rule("footprint>descr", "native", "the part's description", { effort: "S" }),
+  rule("footprint>tags", "native", "the part's keywords (a KiCad 5 tag 'net tie ...' also makes a net tie, X15)", { effort: "S" }),
+  rule("footprint>(?:path|sheetname|sheetfile)", "not-needed", "-", { note: "the link from a footprint to its symbol in the KiCad schematic; a board is imported alone, from its nets, and the schematic import reads the link from the schematic's side" }),
   rule("footprint>(?:tstamp|uuid|tedit|version|generator|generator_version)", "not-needed", "-", { note: "KiCad's object identity and edit time" }),
   rule("footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups|jumper_pad_groups><layer number>)", "extend", "PartDef.padAlias for pads that share a pin", { ext: "X15", note: "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part" }),
   rule("footprint>(?:clearance|solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|solder_paste_ratio|zone_connect)", "extend", "-", { ext: "X7", note: "footprint-wide overrides, copied onto its pads; in files up to stamp 20240201 a zero means inherit" }),
   rule("footprint>(?:autoplace_cost180|autoplace_cost90|height)", "not-needed", "-", { note: "KiCad's legacy auto-placer hints" }),
   rule("footprint>(?:fp_text|property)", "extend", "auto-placed silk reference and value", { ext: "X9", note: "the property's value is a component property (native); its text and where it sits are X9. Before 20260616 a text angle is absolute in the board frame" }),
   rule("footprint>model", "native", "Model3D (source kicad or file)", { effort: "M", note: "stock KiCad library paths map to the kicad source, the rest are listed in the report; before stamp 20171114 the offset is in inches" }),
-  rule("footprint>model>(?:at|offset|scale|rotate)(?:>xyz)?|footprint>model>(?:hide|opacity|type|uuid|layer|color|body_pcb_gap|material|overall_height)", "native", "Model3D.offset, rotation, scale", { effort: "M" }),
+  rule("footprint>model>(?:at|offset|scale|rotate)(?:>xyz)?|footprint>model>hide", "native", "Model3D.offset and rotation; a scaled, hidden or second model is reported by name", { effort: "M" }),
+  rule("footprint>model>uuid", "not-needed", "-", { note: "KiCad's object identity" }),
+  rule("footprint>model>(?:opacity|type|layer|color|body_pcb_gap|material|overall_height)", "report", "-", { note: "a 3D model's opacity, colour, material, gap to the board and body type: the editor places a model and does not restyle it" }),
   rule("footprint>group(?:>.*)?", "extend", "-", { ext: "X12" }),
   rule("footprint>embedded_files(?:>.*)?|embedded_files(?:>.*)?", "report", "-", { note: "founder decision, 24 October 2026: no 3D models packed inside the file for now. Each embedded file (KiCad 9) is a report entry named per file, \"3D model embedded in the KiCad file was not brought in\", and never dropped silently; a model referenced by path or library name is still imported as a model assignment where the editor can resolve it" }),
   rule("footprint>component_classes(?:>class)?", "extend", "-", { ext: "X20", note: "component classes (KiCad 9) that placement rule areas refer to" }),
@@ -156,7 +165,8 @@ export const RULES = [
   rule("footprint>pad>padstack>layer(?:>(?:chamfer|chamfer_ratio|roundrect_rratio|shape|size))?", "extend", "-", { ext: "X7", note: "complex padstacks: a shape per layer (KiCad 9)" }),
   rule("footprint>pad>primitives>.*", "extend", "-", { ext: "X7", note: "custom pad shapes: polygons, circles, arcs, rectangles, lines, with line widths" }),
   rule("footprint>pad>net", "native", "pin of the generated schematic", { effort: "M" }),
-  rule("footprint>pad>(?:pinfunction|pintype)", "native", "PinDef.name and kind", { effort: "S" }),
+  rule("footprint>pad>pinfunction", "native", "PinDef.name (an overbar `~{RESET}` is written `RESET#`, as the editor names an active-low pin)", { effort: "S" }),
+  rule("footprint>pad>pintype", "native", "PinDef.kind (the editor's coarse roles: input, output, io, passive, power, ground, nc)", { effort: "S" }),
   rule("footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance|thermal_bridge_width|thermal_gap|thermal_width|thermal_bridge_angle|zone_connect|tenting(?:>(?:front|back))?|property)", "extend", "-", { ext: "X7", note: "per-pad overrides and fabrication properties (BGA, fiducial, test point, heat sink, castellated, press-fit)" }),
   rule("footprint>pad>(?:remove_unused_layers|keep_end_layers|zone_layer_connections)", "extend", "-", { ext: "X7", note: "needs X1 and X3 too" }),
   rule("footprint>pad>teardrops(?:>.*)?", "extend", "-", { ext: "X3", note: "teardrop parameters on pads (KiCad 8)" }),
@@ -184,7 +194,12 @@ export function decisionFor(path) {
 // that hold a name or a number the file's author chose (the pad's number at position 1).
 
 const YES_NO = ["yes", "no", "true", "false"]
-const atoms = (path, values, skip = []) => ({ path: new RegExp(`^(${path})$`), values: new Set(values), skip })
+const atoms = (path, values, skip = []) => ({ path: new RegExp(`^(${path})$`), values: new Set(values), skip, free: false })
+/** Every bare word in these lists is a name, an identity or a piece of text the file's author chose. */
+const free = (path) => ({ path: new RegExp(`^(${path})$`), values: new Set(), skip: [], free: true })
+
+/** Tokens that hold a yes or no: `(locked yes)`, `(hide)`, `(enabled no)`. */
+const BOOLEAN_TOKENS = "locked|hide|unlocked|bold|italic|knockout|keep_text_aligned|suppress_zeroes|external|header|cols|rows|border|free|remove_unused_layers|keep_end_layers|enabled|prefer_zone_connections|allow_two_segments|curved_edges|stagger|island|filled_areas_thickness|totals|guide_cross|outline_slots|npth|plated|slots|vias|castellated|backdrill|dnp|duplicate_pad_numbers_are_jumpers|embedded_fonts|placed|capped|filled|is_time_domain|override_custom_rules|rounded|single_sided|use_netclass|castellated_pads|dielectric_constraints|exclude_from_sim|keep_upright|edge_plating|freeze_assignments|hide_dnp"
 
 export const ATOMS = [
   atoms("(?:module|footprint)>pad", ["thru_hole", "smd", "connect", "np_thru_hole", "circle", "rect", "oval", "trapezoid", "roundrect", "custom", "locked"], [1]),
@@ -235,6 +250,32 @@ export const ATOMS = [
   atoms("net_class", [], [1, 2]),
   atoms("image", ["locked"]),
   atoms("(?:module|footprint)>model", ["hide"], [1]),
+  // A node the table says is not needed or is reported is accounted for as a whole, whatever its words say (account.ts), so the rows below are for the nodes that are carried or need an extension.
+  // names, identities and text
+  free("(?:.*>)?(?:tstamp|uuid|id|members|tedit|path|data|net_name|add_net|net|sheetname|sheetfile|descr|tags|status)"),
+  free("title_block>(?:title|company|rev|date|comment)"),
+  free("(?:module|footprint)>pad>(?:pinfunction|pintype)"),
+  free("dimension>gr_text|footprint>dimension>gr_text"),
+  atoms("(?:gr_text_box|(?:module|footprint)>fp_text_box)", ["locked"], [1]),
+  atoms("(?:module|footprint)>property", ["hide"], [1, 2]),
+  atoms("property", [], [1, 2]),
+  atoms("setup>stackup>layer", ["addsublayer"], [1]),
+  atoms("setup>stackup>layer>(?:thickness|dielectric_model)", ["locked", "constant", "djordjevic_sarkar"]),
+  // layer names are the layer table's; the one word after a layer is `knockout` (text)
+  atoms("(?:.*>)?layer", ["knockout"], [1]),
+  free("(?:.*>)?layers"),
+  atoms("(?:module|footprint)>(?:fp_text|property)>at|(?:gr_text|gr_text_box|footprint>fp_text_box)>at", ["unlocked"]),
+  atoms(`(?:.*>)?(?:${BOOLEAN_TOKENS})`, YES_NO),
+  atoms("(?:.*>)?(?:tenting|covering|plugging|capping|filling)(?:>(?:front|back))?", ["front", "back", "none", "yes", "no"]),
+  atoms("(?:.*>)?stroke>type", ["default", "dash", "dot", "dash_dot", "dash_dot_dot", "solid"]),
+  atoms("(?:.*>)?(?:start|end)_shape", ["arrow", "arrow_open", "circle", "square", "diamond", "dot", "round"]),
+  atoms("(?:.*>)?chamfer", ["top_left", "top_right", "bottom_left", "bottom_right"]),
+  atoms("dimension>style|footprint>dimension>style", ["keep_text_aligned"]),
+  atoms("barcode>type", ["qr", "datamatrix", "code39", "code128", "micro_qr"]),
+  atoms("barcode>ecc_level", ["L", "M", "Q", "H"]),
+  atoms("(?:.*>)?(?:drill_chart>column>id|drill_map>span|drill_map>(?:style|origin|unit))", ["drill_diameter", "symbol", "count", "plated", "pth", "npth", "all", "size", "shape", "span", "operation", "plating", "post_machining", "slot"]),
+  atoms("generated>type", ["tuning_pattern", "via_stack", "via_stitch"]),
+  atoms("(?:module|footprint)>variant", [], [1]),
 ]
 
 // ---- tokens of KiCad's own keyword file that no corpus board uses ----

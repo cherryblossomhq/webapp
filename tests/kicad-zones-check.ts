@@ -2,7 +2,7 @@ import { Clipper, EndType, FillRule, JoinType, type Path64, type Paths64 } from 
 import { computeConnectivity } from "../src/model/connectivity"
 import { analyzePcb } from "../src/model/pcb"
 import { isNpth } from "../src/model/instances"
-import { padShape } from "../src/model/zoneGeom"
+import { boardLoops, padShape } from "../src/model/zoneGeom"
 import { zoneLayers } from "../src/model/zones"
 import { flattenPath } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
@@ -118,7 +118,10 @@ export function compareFills(text: string, project: Project, reach = 3): FillRow
       // way, so the two are compared with the pads of the layer added to both.
       const padCopper: Paths64 = analysis.items.flatMap((it) => (it.kind === "pad" && it.layers.includes(layer) && !isNpth(it.pad) ? padShape(it.pad) : []))
       const withPads = (paths: Paths64): Paths64 => (padCopper.length && paths.length ? Clipper.union(paths, padCopper, FillRule.NonZero) : paths)
-      const theirs = withPads(storedCopper(f, name))
+      // KiCad does not cut a fill to the board (a pour drawn past the edge leaves copper outside it, which no fabrication file has), so the stored
+      // copper is cut to the board before it is compared: the editor's is inside it by construction.
+      const onBoard = boardLoops(project.board)
+      const theirs = withPads(Clipper.intersect(storedCopper(f, name), onBoard, FillRule.NonZero))
       const fill = analysis.zoneFills.find((x) => x.zoneId === z.id && x.layer === layer)
       const ours: Paths64 = withPads(
         Clipper.union(

@@ -223,6 +223,32 @@ describe("the stored form and the other exports", () => {
     expect(JSON.stringify(JSON.parse(serializeProject(plain)).project.footprints[0].pads)).not.toMatch(/custom|round|rot|layers/)
   })
 
+  it("the KiCad export writes a slot across its pad's frame tall, as KiCad reads x then y, and it reads back the same way", async () => {
+    const tall = imp(
+      board({
+        body: [
+          footprint({
+            ref: "J1",
+            pads: [
+              pad({ number: "1", at: "0 0", type: "thru_hole", shape: "rect", size: "2.4 1.4", layers: '"*.Cu" "*.Mask"', extra: "(drill oval 0.8 1.6)" }),
+              pad({ number: "2", at: "4 0 30", type: "thru_hole", shape: "circle", size: "2 2", layers: '"*.Cu" "*.Mask"', extra: "(drill oval 0.8 1.6)" }),
+            ],
+          }),
+        ],
+      }),
+    )
+    const out = await kicadFiles(tall)
+    const pcb = Object.entries(out.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
+    expect(pcb).toContain("(drill oval 0.8 1.6)")
+    expect(pcb).not.toContain("(drill oval 1.6 0.8)")
+    const before = pcbPads(tall.components[0])
+    const after = pcbPads(imp(pcb).components[0])
+    for (let j = 0; j < before.length; j++) {
+      near(after[j].slotAxis ?? 0, before[j].slotAxis ?? 0, 1e-6)
+      near(after[j].slotLength ?? 0, before[j].slotLength ?? 0, 1e-6)
+    }
+  })
+
   it("the KiCad export writes each pad as KiCad has it, and the file reads back to the same copper, layers, hole and number", async () => {
     const out = await kicadFiles(project)
     const pcb = Object.entries(out.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]

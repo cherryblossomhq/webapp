@@ -1,4 +1,5 @@
 import type { ReportEntry } from "../../board/report"
+import type { PlacedSymbol } from "../types"
 import type { SchematicTree } from "../tree"
 
 // What the import report says about the KiCad 5 side of a project: where each symbol came from,
@@ -33,8 +34,20 @@ export function legacyEntries(tree: SchematicTree): ReportEntry[] {
       code: "legacy-symbol-sources",
       severity: "note",
       object: `${symbols - missing.size} symbol${symbols - missing.size === 1 ? "" : "s"} of the sheets`,
-      why: `Each was taken from ${[...from].map(([k, n]) => `${k} (${n})`).join(", ")}: the cache first, then the project's libraries in the order its .pro lists them.`,
+      why: `Each was taken from ${[...from].map(([k, n]) => `${k} (${n})`).join(", ")}: the cache first, then the project's libraries in the order its .pro lists them. The cache holds the symbols as the schematic was last saved with them. KiCad 5 would first try the libraries installed with it, which the importer does not have; a symbol from a library of the project has not been through the cache.`,
       count: symbols - missing.size,
+    })
+  }
+  const fromLibrary = librarySymbols(tree)
+  if (fromLibrary.length) {
+    const libs = new Set<string>()
+    for (const f of tree.files.values()) for (const x of f.schematic.legacy?.symbolSources ?? []) if (x.from === "library" && x.file) libs.add(x.file)
+    out.push({
+      code: "symbol-from-library",
+      severity: "changed",
+      object: `${fromLibrary.length} symbol${fromLibrary.length > 1 ? "s" : ""} (${list(fromLibrary.map(symbolRef))}) from ${list([...libs], 3)}`,
+      why: "These symbols come from a library of the project, not from the drawing the sheet was saved with (the schematic's own cache has no entry for them), and the library may have changed since: its pin numbers may differ from the drawing, which would put the nets on other pins without a sign in the schematic.",
+      count: fromLibrary.length,
     })
   }
   const broken = sources.broken()
@@ -58,4 +71,28 @@ export function legacyEntries(tree: SchematicTree): ReportEntry[] {
     out.push({ code: "legacy-docs-not-read", severity: "note", object: `${sources.docFiles.length} library documentation file${sources.docFiles.length > 1 ? "s" : ""} (${list(sources.docFiles)})`, why: "The descriptions, keywords and datasheet links of library symbols are not read; the drawings, pins and fields are." })
   }
   return out
+}
+
+export const symbolRef = (s: PlacedSymbol) => s.props.find((p) => p.name === "Reference")?.value || s.libId
+
+/** The placed symbols of the sheets that were taken from a library of the project and not from the schematic's cache. */
+export function librarySymbols(tree: SchematicTree): PlacedSymbol[] {
+  const out: PlacedSymbol[] = []
+  for (const f of tree.files.values()) {
+    const ids = new Set((f.schematic.legacy?.symbolSources ?? []).filter((x) => x.from === "library").map((x) => x.libId))
+    if (ids.size) for (const s of f.schematic.symbols) if (ids.has(s.libId)) out.push(s)
+  }
+  return out
+}
+
+/**
+ * The warnings an import of a legacy project carries: the symbols taken from a library of the project that nothing compared with a board. With a board, the pad against pin
+ * comparison names a renumbered part (`compared` holds the symbols it covered); with none, nothing checks the library's pin numbers against the drawing the wires were made for.
+ */
+export function legacyWarnings(tree: SchematicTree, compared: ReadonlySet<object> | null): string[] {
+  const open = librarySymbols(tree).filter((s) => !compared?.has(s))
+  if (!open.length) return []
+  return [
+    `${open.length} symbol${open.length > 1 ? "s" : ""} (${list(open.map(symbolRef))}) come${open.length > 1 ? "" : "s"} from a library of the project, not from the drawing the sheet was saved with, and ${compared ? "no board footprint is linked to check" : "there is no board to check"} the pin numbers against. If the library numbers the pins differently, the nets are wrong without a sign.`,
+  ]
 }

@@ -50,6 +50,11 @@ export interface NodeAccount {
 
 export interface ImportReport {
   entries: ReportEntry[]
+  /**
+   * What a person must know before relying on the import, in plain words, shown above the entries: an import that went through but that nothing checked in one respect.
+   * Absent when there is none.
+   */
+  warnings?: string[]
   account: NodeAccount | null
 }
 

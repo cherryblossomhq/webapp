@@ -6,7 +6,7 @@ import { accountNodes, countPaths, mergeAccounts, reportedNodes, reportUnknown }
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "./build"
 import { plainnessOf, settleFor } from "./carried"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, needsOfFile, needsOfProject, refusalMessage, unbuilt, type Need } from "./needs"
-import { legacyEntries } from "./legacy/report"
+import { legacyEntries, legacyWarnings } from "./legacy/report"
 import { KicadSchematicReadError } from "./read"
 import { readSchematicTree, type KicadFiles, type SchematicTree } from "./tree"
 
@@ -127,6 +127,9 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   }
   const report = tree.report
   report.entries.push(...legacyEntries(tree))
+  // A schematic alone has no board to check the pins of a library symbol against: the warning is the import's, shown above the entries.
+  const libraryWarnings = legacyWarnings(tree, null)
+  if (libraryWarnings.length) report.warnings = libraryWarnings
   const list = [...tree.files.values()]
   const limit = options.maxObjects ?? MAX_SCHEMATIC_OBJECTS
   const objects = list.reduce((n, f) => n + f.schematic.wires.length + f.schematic.buses.length + f.schematic.symbols.length + f.schematic.labels.length + f.schematic.junctions.length + f.schematic.noConnects.length + f.schematic.busEntries.length + Object.values(f.schematic.others).reduce((m, l) => m + l.length, 0), 0)

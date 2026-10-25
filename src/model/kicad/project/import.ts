@@ -22,6 +22,7 @@ import { netLabelNames } from "../board/build"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
+import { legacyWarnings, librarySymbols, symbolRef } from "../schematic/legacy/report"
 import { linkFootprints, type LinkResult } from "../schematic/link"
 import { BUILT_EXTENSIONS as SCHEMATIC_BUILT, EXTENSION_NAMES as SCHEMATIC_EXTENSION_NAMES, refusalMessage, unbuilt, type Need } from "../schematic/needs"
 import { normalizePath, type SchematicTree } from "../schematic/tree"
@@ -451,7 +452,23 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   // Every other footprint is a part of the board with its own nets, labelled as the board's generated schematic labels them: its pads are compared too.
   for (const { fp, component } of merged.loose) pairs.push({ fp, components: [component] })
   const differences = compareNets(merged.project, pairs)
-  for (const d of differences) report.entries.push({ code: "board-differs-from-schematic", severity: "changed", object: `${d.ref} pin ${d.pin}`, why: d.why })
+  // A symbol taken from a library of a KiCad 5 project, not from the schematic's cache, may have other pin numbers than the drawing the wires were made for: a renumbered part shows as a pad whose net is not its pin's, and the difference says where the symbol came from.
+  const fromLibrary = new Map(librarySymbols(gate.tree).map((s) => [symbolRef(s), s] as const))
+  for (const d of differences) {
+    const lib = fromLibrary.get(d.ref)
+    if (lib) d.why += ` The symbol ${d.ref} comes from a library of the project, not from the drawing the sheet was saved with, so its pin numbers may differ from the ones its wires were drawn to.`
+    report.entries.push({ code: "board-differs-from-schematic", severity: "changed", object: `${d.ref} pin ${d.pin}`, why: d.why })
+  }
+  const covered = new Set<object>()
+  for (const l of link.links) {
+    if (!l.record || !sch.bySymbol.has(l.record.symbol)) continue
+    const owner = symbolFootprint.get(l.record.symbol)
+    if (!owner || owner.index !== l.footprint) continue
+    covered.add(l.record.symbol)
+    for (const u of l.units) covered.add(u.symbol)
+  }
+  const libraryWarnings = legacyWarnings(gate.tree, covered)
+  if (libraryWarnings.length) report.warnings = libraryWarnings
   reportLinks(report, link, kicadBoard, sch, symbolFootprint)
 
   const bytes = byteLength(serializeProject(merged.project))

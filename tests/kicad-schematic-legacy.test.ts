@@ -768,6 +768,62 @@ describe("a KiCad 5 project: a board with its schematic", () => {
     if (r.status === "imported") expect(r.differences.map((d) => [d.ref, d.pin])).toEqual([["R1", "2"]])
   })
 
+  // The project's own libraries instead of a cache: `Device.lib` has `R` with its pins 1 and 2 swapped from the drawing (pin 1 below, pin 2 above), and `power.lib` has `GND`.
+  // Two resistors, each with pin 2 on GND in the drawing; the board has pad 2 of both on GND.
+  const two = twoParts + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] }) + comp({ lib: "power:GND", ref: "#PWR02", ts: "5A000004", at: [7000, 4400] }) + wire(7000, 3850, 7000, 3700) + wire(7000, 4150, 7000, 4400)
+  const r2Module = `  (module R_0805 (layer F.Cu) (tedit 0) (tstamp ${R2}) (at 120 100)
+    (fp_text reference R2 (at 0 -1.5) (layer F.SilkS) (effects (font (size 1 1) (thickness 0.15))))
+    (fp_text value 10k (at 0 1.5) (layer F.Fab) (effects (font (size 1 1) (thickness 0.15))))
+    (path /${R2})
+    (pad 1 smd rect (at -1 0) (size 1 1.2) (layers F.Cu F.Paste F.Mask))
+    (pad 2 smd rect (at 1 0) (size 1 1.2) (layers F.Cu F.Paste F.Mask) (net 1 "GND"))
+  )
+`
+  const twoBoard = board("GND").replace("  (gr_line (start 90 90) (end 110 90)", `${r2Module}  (gr_line (start 90 90) (end 110 90)`)
+  const libProject = (withBoard = true) => [
+    ...(withBoard ? [{ path: "p.kicad_pcb", data: twoBoard }] : []),
+    { path: "p.sch", data: HEAD() + two + END },
+    { path: "Device.lib", data: LIB_HEAD + LIB_R.replace(LIB_HEAD, "").replaceAll("Device_R", "R").replace("X ~ 1 0 150 50 D", "X ~ 2 0 150 50 D").replace("X ~ 2 0 -150 50 U", "X ~ 1 0 -150 50 U") },
+    { path: "power.lib", data: LIB_HEAD + LIB_GND.replaceAll("power_GND", "GND") },
+    { path: "p.pro", data: "update=1\nversion=1\n[general]\nversion=1\nRootSch=\nBoardNm=\n[eeschema/libraries]\nLibName1=Device\nLibName2=power\n" },
+  ]
+
+  it("a symbol from a library of the project, not from a cache, is said plainly, and a renumbered part is named by the pad against pin comparison", () => {
+    const r = importKicadProject(libProject(), raised)
+    expect(r.status === "refused" ? r.message : r.status).toBe("imported")
+    if (r.status !== "imported") return
+    // the library's R has its pins swapped: the board's pad 2 is on GND and the pin 2 of the library symbol is not
+    expect(r.differences.map((d) => `${d.ref}.${d.pin}`).sort()).toEqual(["R1.1", "R1.2", "R2.1", "R2.2"])
+    expect(r.differences.every((d) => /comes from a library of the project, not from the drawing the sheet was saved with/.test(d.why))).toBe(true)
+    const entry = r.report.entries.find((e) => e.code === "symbol-from-library")
+    expect(entry?.severity).toBe("changed")
+    expect(entry?.why).toMatch(/not from the drawing the sheet was saved with/)
+    expect(entry?.why).toMatch(/pin numbers may differ/)
+    // the board covers R1 and R2, so the warning above the entries is only about the two power symbols, which no pad can check
+    expect(r.report.warnings).toHaveLength(1)
+    expect(r.report.warnings![0]).toMatch(/^2 symbols \(#PWR01, #PWR02\) come from a library of the project/)
+    expect(r.report.warnings![0]).not.toMatch(/R1/)
+  })
+
+  it("a library symbol with no board to check it against gives a warning above the entries; a cached one gives none", () => {
+    const alone = importKicadProject(libProject(false), raised)
+    expect(alone.status).toBe("refused")
+    const sch = importKicadSchematic({ files: files({ "p.sch": HEAD() + two + END, "Device.lib": libProject(false)[1].data as string, "power.lib": libProject(false)[2].data as string, "p.pro": libProject(false)[3].data as string }), root: "p.sch" })
+    expect(sch.status === "refused" ? sch.message : sch.status).toBe("imported")
+    if (sch.status === "imported") {
+      expect(sch.report.warnings).toHaveLength(1)
+      expect(sch.report.warnings![0]).toMatch(/R1.*come from a library of the project, not from the drawing the sheet was saved with, and there is no board to check the pin numbers against/)
+      expect(sch.report.entries.some((e) => e.code === "symbol-from-library" && e.severity === "changed")).toBe(true)
+    }
+    const cached = imp(mini(twoParts))
+    expect(cached.status).toBe("imported")
+    if (cached.status === "imported") {
+      expect(cached.report.warnings).toBeUndefined()
+      expect(cached.report.entries.some((e) => e.code === "symbol-from-library")).toBe(false)
+      expect(cached.report.entries.find((e) => e.code === "legacy-symbol-sources")?.why).toMatch(/KiCad 5 would first try the libraries installed with it/)
+    }
+  })
+
   it("the real gate refuses what the editor lacks, naming it", () => {
     const r = importKicadProject(project("GND"))
     expect(r.status).toBe("refused")

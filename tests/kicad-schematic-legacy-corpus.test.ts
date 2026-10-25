@@ -154,7 +154,7 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
           const src = new Map<string, number>()
           for (const f of tree.files.values()) for (const s of f.schematic.legacy?.symbolSources ?? []) src.set(s.from, (src.get(s.from) ?? 0) + 1)
           row.sources = [...src].map(([k, v]) => `${k} ${v}`).join(", ")
-          const raisedImp = importKicadSchematic({ files, root: name }, { built: new Set([...MEASURE, "S1", "S3"]) })
+          const raisedImp = importKicadSchematic({ files, root: name }, { built: MEASURE })
           row.raised = raisedImp.status === "imported" ? "imported" : `refused, ${raisedImp.reason}: ${raisedImp.message.slice(0, 80)}`
         } catch (e) {
           row.parse = e instanceof Error ? e.message.slice(0, 120) : String(e)
@@ -224,6 +224,16 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
           let nameBad = 0
           for (const net of nets) {
             const keys = members.get(net.id)
+            // a net no label or power pin names, of two pins or more: KiCad 5 names it after the first of its pins by name, `Net-(R1-Pad2)`
+            if (keys && keys.length >= 2 && !net.named) {
+              const g0 = ([] as number[]).concat(derived.pins.get(keys[0]) ?? [])[0]
+              const theirName = g0 === undefined ? null : derived.netName(g0)
+              if (theirName !== null && theirName !== net.name) {
+                nameBad++
+                problems.push(`${row.file}: the net ${net.name} is ${theirName} in KiCad 5`)
+              }
+              continue
+            }
             if (!keys?.length || !net.named) continue
             const g = ([] as number[]).concat(derived.pins.get(keys[0]) ?? [])[0]
             const d = g === undefined ? undefined : derived.driver.get(g)

@@ -298,6 +298,34 @@ describe("what KiCad reads and this reader does not guess", () => {
   })
 })
 
+describe("hostile input", () => {
+  const sheet = (name: string, file: string, ts: string) => `$Sheet\nS 100 100 500 500\nU ${ts}\nF0 "${name}" 60\nF1 "${file}" 60\n$EndSheet\n`
+  it("a sheet that contains itself, or two that contain each other, is a named sheet error and not a hang", () => {
+    const self = readSchematicTree(files({ "a.sch": HEAD() + sheet("A", "a.sch", "5B000001") + END }), "a.sch")
+    expect(self.errors.map((e) => e.code)).toEqual(["cycle"])
+    const two = readSchematicTree(files({ "a.sch": HEAD() + sheet("B", "b.sch", "5B000001") + END, "b.sch": HEAD() + sheet("A", "a.sch", "5B000002") + END }), "a.sch")
+    expect(two.errors.map((e) => e.code)).toEqual(["cycle"])
+  })
+
+  it("a missing sheet file, and a damaged one, name the sheet", () => {
+    const t = readSchematicTree(files({ "a.sch": HEAD() + sheet("B", "b.sch", "5B000001") + sheet("C", "c.sch", "5B000002") + END, "c.sch": "garbage" }), "a.sch")
+    expect(t.errors.map((e) => [e.code, e.sheet])).toEqual([["missing", "B"], ["unreadable", "C"]])
+  })
+
+  it("garbage, binary data and a shape with an absurd number of points are refused, never a crash", () => {
+    expect(() => readSchematicTree(files({ "t.sch": Uint8Array.from({ length: 4000 }, (_, i) => (i * 37) % 256) }), "t.sch")).toThrow()
+    expect(() => readLegacyLibraryText("EESchema-LIBRARY Version 2.4\nDEF A A 0 0 N N 1 F N\nDRAW\nP 99999999 0 1 0 0 0\nENDDRAW\nENDDEF\n")).toThrow(/unreasonable number/)
+    expect(() => readLegacySchematicText(HEAD() + "Connection ~ 99999999999 5\n" + END)).toThrow(/out of range/)
+    expect(() => readLegacySchematicText("EESchema Schematic File Version 4\n" + "LIBS:x\n".repeat(50_000) + "EELAYER END\n$EndSCHEMATC\n")).not.toThrow()
+  })
+
+  it("a schematic with more drawn objects than the editor reads is refused by size", () => {
+    const wires = Array.from({ length: 30 }, (_, i) => wire(i * 100, 0, i * 100 + 50, 0)).join("")
+    const r = imp(files({ "t.sch": HEAD() + wires + END }), { maxObjects: 10 })
+    expect(r.status === "refused" && r.reason).toBe("too-large")
+  })
+})
+
 describe("encodings", () => {
   it("UTF-8 first, and it says so", () => {
     const text = HEAD() + "Text Label 100 100 0    60   ~ 0\nBéta\n" + END

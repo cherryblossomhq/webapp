@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { legacyPartToSymbolText, readLegacyLibraryText } from "../src/model/kicad/schematic/legacy/lib"
+import { readLegacySchematicText } from "../src/model/kicad/schematic/legacy/sch"
+import { legacyToKicadText } from "../src/model/kicad/schematic/legacy/sexpr"
 import { readKicadSchematic } from "../src/model/kicad/schematic/read"
 import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
 import type { LibSymbol } from "../src/model/kicad/schematic/types"
@@ -151,5 +153,66 @@ describe.skipIf(!CORPUS || !existsSync(LEGACY))("the KiCad demos as the importer
     expect(kinds.get("rectangle") ?? 0).toBeGreaterThan(10)
     expect(kinds.get("polyline") ?? 0).toBeGreaterThan(10)
     for (const diff of bad) expect(diff).toMatch(/items? |has no match/)
+  })
+
+  it("every symbol of a legacy demo is placed as KiCad placed it when it converted the demo: turn, mirror, fields, labels", () => {
+    let symbols = 0
+    let labels = 0
+    let turned = 0
+    let mirrored = 0
+    const bad: string[] = []
+    const byClass = new Map<string, [number, number]>()
+    const turnBad: string[] = []
+    for (const dir of readdirSync(LEGACY)) {
+      const modernDir = join(MODERN, dir)
+      if (!existsSync(modernDir)) continue
+      const modern = readdirSync(modernDir).filter((x) => x.endsWith(".kicad_sch")).map((f) => ({ f, doc: readKicadSchematic(readFileSync(join(modernDir, f), "utf8")).schematic }))
+      for (const lf of readdirSync(join(LEGACY, dir)).filter((x) => x.endsWith(".sch"))) {
+        const stem = lf.replace(/\.sch$/, "")
+        const m = modern.find((x) => x.f === `${stem}.kicad_sch`)
+        if (!m) continue
+        const mine = readKicadSchematic(legacyToKicadText(readLegacySchematicText(readFileSync(join(LEGACY, dir, lf)).toString("latin1")))).schematic
+        const near = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01
+        for (const sym of mine.symbols) {
+          const name = sym.libId.slice(sym.libId.indexOf(":") + 1)
+          const their = m.doc.symbols.find((t) => near(t.at, sym.at) && t.libId.slice(t.libId.indexOf(":") + 1) === name && t.unit === sym.unit)
+          if (!their) continue
+          symbols++
+          if (sym.angle) turned++
+          if (sym.mirror) mirrored++
+          const prob: string[] = []
+          if (their.angle !== sym.angle || their.mirror !== sym.mirror) {
+            turnBad.push(`${dir}/${lf} ${sym.props[0]?.value}: ${sym.angle}${sym.mirror} against ${their.angle}${their.mirror}`)
+            prob.push("turn")
+          }
+          for (const p of sym.props) {
+            const t = their.props.find((q) => q.name === p.name)
+            if (!t || !t.at || !p.at) continue
+            // the places of the fields are not compared: KiCad's own conversion of the demos laid them out again (a reference and a value swap places, a hidden field moves)
+            if (p.hide !== t.hide && p.name !== "Datasheet" && p.name !== "Footprint") prob.push(`${p.name} hidden ${p.hide} against ${t.hide}`)
+            if (p.value !== t.value && p.name === "Reference") prob.push(`reference ${p.value} against ${t.value}`)
+          }
+          const cls = `${sym.angle}${sym.mirror}`
+          byClass.set(cls, [(byClass.get(cls) ?? [0, 0])[0] + 1, (byClass.get(cls) ?? [0, 0])[1] + (prob.length ? 1 : 0)])
+          if (prob.length) bad.push(`${cls} ${dir}/${lf} ${sym.props[0]?.value}: ${prob.slice(0, 2).join("; ")}`)
+        }
+        for (const l of mine.labels) {
+          const their = m.doc.labels.find((t) => near(t.at, l.at) && t.text === l.text && t.kind === l.kind)
+          if (!their) continue
+          labels++
+          if (their.angle !== l.angle || (l.shape ?? null) !== (their.shape ?? null)) bad.push(`${dir}/${lf} label ${l.text}: angle ${l.angle} against ${their.angle}, shape ${l.shape} against ${their.shape}`)
+        }
+      }
+    }
+    console.log(JSON.stringify([...byClass]))
+    console.log(`compared the placing of ${symbols} symbols (${turned} turned, ${mirrored} mirrored) and ${labels} labels with KiCad's conversion; ${bad.length} differ`)
+    console.log(`turn or mirror differs for ${turnBad.length}: ${turnBad.join("; ")}`)
+    expect(symbols).toBeGreaterThan(100)
+    expect(turned).toBeGreaterThan(5)
+    expect(mirrored).toBeGreaterThan(0)
+    // The demos were edited in KiCad 6 and later after they were converted (a part turned, a reference renumbered, a field hidden): a handful of differences of that kind is not the conversion.
+    // The turn and mirror of the symbols and the direction of the labels agree for the large majority, which is what a wrong numbering or matrix would break for all of them.
+    expect(turnBad.length / symbols).toBeLessThan(0.05)
+    expect(bad.filter((b) => !/hidden|reference|: turn$/.test(b)).slice(0, 10)).toEqual([])
   })
 })

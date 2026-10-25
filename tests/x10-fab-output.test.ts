@@ -232,7 +232,7 @@ describe("the fabrication notes list what a fab needs", () => {
   })
 })
 
-describe("project file version 7: net classes and their rules", () => {
+describe("project file version 7 (X10): net classes and their rules", () => {
   const v4doc = {
     format: PROJECT_FILE_FORMAT,
     version: 4,
@@ -244,13 +244,13 @@ describe("project file version 7: net classes and their rules", () => {
     expect(read.rules).not.toHaveProperty("netClasses")
     expect(migrateProjectFile(v4doc)).toEqual(v4doc.project)
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(7)
+    expect(PROJECT_FILE_VERSION).toBe(8)
     // no field of X10 is written for a project that has none
     const written = JSON.parse(serializeProject(read)).project.rules
     for (const k of ["netClasses", "defaultClass", "viaSizes", "diffPairSizes", "minViaDrill", "minClearance", "maskMinWidth", "pasteRatio", "maxError", "maskBridgesInParts"]) expect(written).not.toHaveProperty(k)
   })
-  it("a version 3 and a version 2 document reach version 7 the same way", () => {
-    for (const version of [2, 3]) expect(JSON.parse(serializeProject(parseProjectFile({ ...v4doc, version }, { id: "p" }))).version).toBe(7)
+  it("a version 3 and a version 2 document reach the current version the same way", () => {
+    for (const version of [2, 3]) expect(JSON.parse(serializeProject(parseProjectFile({ ...v4doc, version }, { id: "p" }))).version).toBe(PROJECT_FILE_VERSION)
   })
   it("classes and every rule of X10 survive a save and a load exactly", () => {
     const base = parseProjectFile(v4doc, { id: "p" })

@@ -13,7 +13,7 @@ import { pnpCsv, positionAngle } from "../src/export/pnp"
 import { projectToCircuitJson } from "../src/export/circuitJson"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { BUILT_EXTENSIONS } from "../src/model/kicad/board/needs"
-import { parseProjectFile, PROJECT_FILE_FORMAT, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile, PROJECT_FILE_FORMAT, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import { worldShapes } from "../src/model/shapeItems"
 import type { Project, Vec2 } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
@@ -295,7 +295,7 @@ describe("the project file with parts at any angle", () => {
     expect(read.components[0].pcb).toMatchObject({ rot: 270, x: 1, y: 2 })
     expect(read.board).toMatchObject({ width: 40, height: 30, cornerRadius: 2 })
     expect(read.board.outline).toBeUndefined()
-    expect(JSON.parse(serializeProject(read)).version).toBe(6)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
   })
 
   it("an angle that is not a number is read as 0, one over a turn is brought round", () => {

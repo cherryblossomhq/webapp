@@ -122,7 +122,7 @@ describe("what Sakura reads and sees", () => {
     expect(read.images.list[0]).toMatchObject({ layer: "User.1" })
     expect(read.images.list[0]).not.toHaveProperty("locked")
     // the dimension's lines are not counted among the drawings
-    expect(read.drawings.board_by_layer["F.SilkS"]).toBe(1)
+    expect(read.board_drawings.board_by_layer["F.SilkS"]).toBe(1)
     const none = JSON.parse(runTool(make([]), "get_design", {}).result)
     for (const k of ["dimensions", "groups", "images"]) expect(none).not.toHaveProperty(k)
   })

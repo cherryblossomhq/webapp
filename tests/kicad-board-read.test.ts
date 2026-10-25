@@ -540,8 +540,8 @@ describe("switch 18: dimensions of both forms are kept and accounted for", () =>
       const r = importKicadBoard(text)
       // dimensions are built: every node is accounted for and the board comes in with one
       expect(r.report.account!.unknownPaths.size).toBe(0)
-      // (these fixtures have no outline, which is X2's: the dimension does not keep them out)
-      expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X2"])
+      // (these fixtures have no outline, which X2 holds as a state of the board, not a refusal: the board comes in with its dimension)
+      expect(r.status === "imported" && r.project.dimensions?.length).toBe(1)
     }
   })
 })

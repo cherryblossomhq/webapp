@@ -874,9 +874,17 @@ describe("a KiCad 5 project: a board with its schematic", () => {
     }
   })
 
-  it("the real gate refuses what the editor lacks, naming it", () => {
+  it("the real gate takes a plain KiCad 5 project now that every extension it needs is built", () => {
     const r = importKicadProject(project("GND"))
+    expect(r.status).toBe("imported")
+  })
+
+  it("the real gate still refuses what the editor lacks (a copper zone, X3), naming it", () => {
+    const zone = "(zone (net 1) (net_name \"GND\") (layer F.Cu) (tstamp 5A000009) (hatch edge 0.508) (connect_pads (clearance 0.2)) (min_thickness 0.2) (fill yes (arc_segments 16) (thermal_gap 0.2) (thermal_bridge_width 0.2)) (polygon (pts (xy 91 91) (xy 99 91) (xy 99 99) (xy 91 99))))"
+    const files = project("GND").map((f) => (f.path === "p.kicad_pcb" ? { ...f, data: f.data.replace(/\)\s*$/, zone + ")") } : f))
+    const r = importKicadProject(files)
     expect(r.status).toBe("refused")
+    if (r.status === "refused") expect(r.needs.map((n) => n.ext)).toContain("X3")
   })
 
   it("the project's folder is read as a KiCad 5 project when there is no KiCad 6 file", () => {

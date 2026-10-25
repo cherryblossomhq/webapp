@@ -9,7 +9,9 @@ import { boardAreaMm2, describeOutline } from "../model/outline"
 import { resetOutline } from "../model/outlineOps"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { isPhysical, valueText } from "../model/instances"
+import { classIndex, classNameOf, hasNetClasses } from "../model/netClasses"
 import { findPart } from "../model/library"
+import { netTraceWidth } from "../model/ops"
 import {
   applyCapability,
   BOARD_THICKNESSES,
@@ -27,6 +29,7 @@ import { getConnectivity, getPcbAnalysis } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
+import { NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
 
 const commitProject = (fn: (p: Project) => Project) => projectApi().commit((p) => ({ ...fn(p), updatedAt: Date.now() }))
@@ -51,6 +54,7 @@ export function ProjectInspector({ project }: { project: Project }) {
       <RulesSection project={project} />
       <PoursSection project={project} />
       <NetsSection project={project} />
+      <NetClassesSection project={project} />
     </div>
   )
 }
@@ -361,6 +365,28 @@ function WidthsInput({ rules }: { rules: DesignRules }) {
   )
 }
 
+/** Via sizes offered while routing, as `0.8/0.4 1/0.5`: diameter and drill. */
+function ViaSizesInput({ rules }: { rules: DesignRules }) {
+  const unit = useLengthUnit()
+  return (
+    <CommitInput
+      ariaLabel="Via sizes offered"
+      mono
+      className="tabular-nums"
+      placeholder="none"
+      value={(rules.viaSizes ?? []).map((v) => `${formatLength(v.diameter, unit)}/${formatLength(v.drill, unit)}`).join(" ")}
+      onCommit={(text) => {
+        const sizes = text
+          .split(/[\s,;]+/)
+          .map((pair) => pair.split("/").map((n) => Number(n)))
+          .filter((pair) => pair.length === 2 && pair.every((n) => Number.isFinite(n) && n > 0) && pair[0] > pair[1])
+          .map(([d, h]) => ({ diameter: Number(fromUnit(d, unit).toFixed(4)), drill: Number(fromUnit(h, unit).toFixed(4)) }))
+        setRules({ viaSizes: sizes.length ? sizes : undefined })
+      }}
+    />
+  )
+}
+
 function RulesSection({ project }: { project: Project }) {
   const r = project.rules
   const cap = matchCapability(r)
@@ -416,6 +442,12 @@ function RulesSection({ project }: { project: Project }) {
           </span>
           <WidthsInput rules={r} />
         </div>
+        <div className="space-y-1">
+          <span className="block text-[12.5px] text-ink-2" title="Via sizes offered while routing besides the default, as diameter/drill; KiCad's user via sizes">
+            Via sizes offered <span className="text-ink-3">(diameter/drill, {unit})</span>
+          </span>
+          <ViaSizesInput rules={r} />
+        </div>
       </RuleGroup>
 
       <RuleGroup title="Clearance">
@@ -428,6 +460,9 @@ function RulesSection({ project }: { project: Project }) {
         <RuleRow label="Hole to hole" hint="Drill edge to drill edge, between vias and the holes of different parts">
           {len("holeClearance", 0, "Hole to hole clearance")}
         </RuleRow>
+        <RuleRow label="Minimum clearance" hint="No pair of nets is checked below this, whatever their net classes ask for; leave empty for none">
+          <LengthInput ariaLabel="Minimum clearance" min={0} optional placeholder="none" value={r.minClearance ?? null} onCommit={(v) => setRules({ minClearance: v === null || v <= 0 ? undefined : v })} />
+        </RuleRow>
       </RuleGroup>
 
       <RuleGroup title="Vias and holes">
@@ -439,6 +474,9 @@ function RulesSection({ project }: { project: Project }) {
         </RuleRow>
         <RuleRow label="Minimum drill" hint="Smaller holes fail the checks">
           {len("minDrill", 0.01, "Minimum drill")}
+        </RuleRow>
+        <RuleRow label="Minimum via drill" hint="Vias drilled smaller than this fail the checks; leave empty to use the minimum drill, which then holds for vias as well as through holes">
+          <LengthInput ariaLabel="Minimum via drill" min={0} optional placeholder="same" value={r.minViaDrill ?? null} onCommit={(v) => setRules({ minViaDrill: v === null || v <= 0 ? undefined : v })} />
         </RuleRow>
         <RuleRow label="Minimum annular ring" hint="Copper left around a plated hole: (pad - drill) / 2">
           {len("minAnnularRing", 0, "Minimum annular ring")}
@@ -460,6 +498,22 @@ function RulesSection({ project }: { project: Project }) {
         </RuleRow>
         <RuleRow label="Paste expansion" hint="Stencil aperture past each SMD pad; negative shrinks it">
           <LengthInput ariaLabel="Paste expansion" min={-1} value={r.pasteExpansion} onCommit={(v) => v !== null && setRules({ pasteExpansion: v })} />
+        </RuleRow>
+        <RuleRow label="Mask web" hint="Mask openings closer than this are merged into one when the mask is plotted, as KiCad does; leave empty to plot each opening on its own">
+          <LengthInput ariaLabel="Mask web" min={0} optional placeholder="none" value={r.maskMinWidth ?? null} onCommit={(v) => setRules({ maskMinWidth: v === null || v <= 0 ? undefined : v })} />
+        </RuleRow>
+        <RuleRow label="Paste ratio (%)" hint="Stencil aperture growth as a percentage of the pad, on each side, on top of the paste expansion; negative shrinks it">
+          <CommitInput
+            ariaLabel="Paste ratio"
+            type="number"
+            step={1}
+            value={r.pasteRatio === undefined ? "" : Number((r.pasteRatio * 100).toFixed(4))}
+            placeholder="0"
+            onCommit={(v) => {
+              const n = Number(v)
+              setRules({ pasteRatio: v.trim() === "" || !Number.isFinite(n) || n === 0 || Math.abs(n) >= 1000 ? undefined : n / 100 })
+            }}
+          />
         </RuleRow>
         <RuleRow label="Tent vias" hint="Cover vias with solder mask; untented vias are left open like pads">
           <Switch label="Tent vias" checked={r.tentVias} onChange={(tentVias) => setRules({ tentVias })} />
@@ -636,6 +690,7 @@ function NetsSection({ project }: { project: Project }) {
               >
                 <span className="mono truncate text-ink">{n.name}</span>
                 <span className="flex items-center gap-2 text-ink-3">
+                  {hasNetClasses(project.rules) && classIndex(project.rules).classOf(n.name) && <span className="text-[11.5px]">{classNameOf(project.rules, n.name)}</span>}
                   {project.rules.netWidths?.[n.name] !== undefined && <span className="mono">{formatLength(project.rules.netWidths[n.name], unit, true)}</span>}
                   {n.pins.length}
                 </span>
@@ -644,6 +699,7 @@ function NetsSection({ project }: { project: Project }) {
           ))}
         </ul>
       )}
+      {highlighted && <NetClassField project={project} net={highlighted.name} />}
       {highlighted && <NetWidthField project={project} net={highlighted.name} />}
     </Section>
   )
@@ -653,6 +709,8 @@ function NetsSection({ project }: { project: Project }) {
 function NetWidthField({ project, net }: { project: Project; net: string }) {
   const unit = useLengthUnit()
   const own = project.rules.netWidths?.[net]
+  const classed = hasNetClasses(project.rules) && classIndex(project.rules).classOf(net)?.traceWidth !== undefined
+  const fallback = classed ? `the width of its net class, ${formatLength(netTraceWidth({ ...project.rules, netWidths: undefined }, net), unit, true)}` : `the default ${formatLength(project.rules.traceWidth, unit, true)}`
   const set = (mm: number | null) =>
     commitProject((p) => {
       const { [net]: _, ...rest } = p.rules.netWidths ?? {}
@@ -660,8 +718,8 @@ function NetWidthField({ project, net }: { project: Project; net: string }) {
       return { ...p, rules: { ...p.rules, netWidths } }
     })
   return (
-    <Field label={`Trace width for ${net}`} hint={`Empty uses the default ${formatLength(project.rules.traceWidth, unit, true)}. Applies to new traces and the autorouter.`}>
-      <LengthInput optional value={own ?? null} placeholder={formatLength(project.rules.traceWidth, unit)} onCommit={set} />
+    <Field label={`Trace width for ${net}`} hint={`Empty uses ${fallback}. Applies to new traces and the autorouter.`}>
+      <LengthInput optional value={own ?? null} placeholder={formatLength(netTraceWidth({ ...project.rules, netWidths: undefined }, net), unit)} onCommit={set} />
     </Field>
   )
 }

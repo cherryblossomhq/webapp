@@ -255,14 +255,26 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
 
   // ---- setup ----
   const setup: Record<string, number> = {}
+  const setupWords: Record<string, string> = {}
   const userTraceWidths: number[] = []
+  const userVias: { diameter: number; drill: number }[] = []
+  const userDiffPairs: { width: number; gap: number; viaGap?: number }[] = []
   for (const c of kid(tree, "setup")?.slice(1) ?? []) {
     if (!Array.isArray(c) || typeof c[0] !== "string") continue
+    // the lists of sizes offered while routing: a via is a diameter and a drill, a differential pair a width, a gap and, in KiCad 5, a via gap
+    if (c[0] === "user_via") {
+      userVias.push({ diameter: Number(c[1]), drill: Number(c[2]) })
+      continue
+    }
+    if (c[0] === "user_diff_pair") {
+      userDiffPairs.push({ width: Number(c[1]), gap: Number(c[2]), ...(c.length > 3 ? { viaGap: Number(c[3]) } : {}) })
+      continue
+    }
     const v = Number(c[1])
     if (typeof c[1] === "string" && Number.isFinite(v)) {
       if (c[0] === "user_trace_width") userTraceWidths.push(v)
       else setup[c[0]] = v
-    }
+    } else if (typeof c[1] === "string" && c.length === 2 && !Array.isArray(c[1])) setupWords[c[0]] = c[1]
   }
 
   const padsOnSilk = ["true", "yes"].includes(strAt(kid(kid(kid(tree, "setup"), "pcbplotparams"), "padsonsilk"), 1) ?? "")
@@ -296,7 +308,11 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     viaDrill: numAt(kid(c, "via_drill"), 1, NaN),
     uviaDiameter: numAt(kid(c, "uvia_dia"), 1, NaN),
     uviaDrill: numAt(kid(c, "uvia_drill"), 1, NaN),
+    ...(kid(c, "diff_pair_width") ? { diffPairWidth: numAt(kid(c, "diff_pair_width"), 1, NaN) } : {}),
+    ...(kid(c, "diff_pair_gap") ? { diffPairGap: numAt(kid(c, "diff_pair_gap"), 1, NaN) } : {}),
     nets: kids(c, "add_net").map((a) => decodeNetName(overbar(strAt(a, 1) ?? ""))),
+    netsRaw: kids(c, "add_net").map((a) => overbar(strAt(a, 1) ?? "")),
+    missing: ["clearance", "trace_width", "via_dia", "via_drill", "uvia_dia", "uvia_drill"].filter((k) => !kid(c, k)),
   }))
 
   // ---- points and numbers ----
@@ -775,7 +791,10 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     copper,
     copperLayerCount: declared,
     setup,
+    setupWords,
     userTraceWidths,
+    userVias,
+    userDiffPairs,
     nets,
     padsOnSilk,
     netClasses,

@@ -43,7 +43,12 @@ export interface LegacyNetClass {
   uviaDrill: number
   diffPairWidth?: number
   diffPairGap?: number
+  /** The members as the user reads them (`{slash}` as `/`). */
   nets: string[]
+  /** The members as the file spells them, which is how the file's nets are keyed. */
+  netsRaw: string[]
+  /** The fields a class block of the file leaves out, by KiCad's names: KiCad 5 writes all six, so a missing one is a file this importer cannot take exactly. */
+  missing: string[]
 }
 
 export interface KicadPad {
@@ -284,7 +289,13 @@ export interface KicadBoard {
   copperLayerCount: number
   /** Numeric `setup` values by token: `last_trace_width`, `pad_to_mask_clearance`... */
   setup: Record<string, number>
+  /** `setup` entries that are one word, not a number: `allow_soldermask_bridges_in_footprints yes`. */
+  setupWords: Record<string, string>
   userTraceWidths: number[]
+  /** `(user_via diameter drill)` entries: the via sizes offered while routing. Every number as written; one that is not a number is kept as NaN. */
+  userVias: { diameter: number; drill: number }[]
+  /** `(user_diff_pair width gap via_gap)` entries: the differential pair sizes offered while routing. */
+  userDiffPairs: { width: number; gap: number; viaGap?: number }[]
   nets: KicadNet[]
   /** `(padsonsilk true)` in the plot settings: a pad that lists a silkscreen layer is plotted there. */
   padsOnSilk: boolean

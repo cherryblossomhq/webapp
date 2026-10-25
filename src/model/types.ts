@@ -735,6 +735,76 @@ export interface DesignRules {
   thermalSpokeAngle: 0 | 45
   /** Trace width (mm) by net name, for nets that carry current such as supplies and motor outputs. */
   netWidths?: Record<string, number>
+  /**
+   * Net classes other than Default, in order (`model/netClasses.ts` says how a net finds its class and what a class sets).
+   * Absent or empty is a board with no classes: every net is in Default, which is the rules above (X10).
+   */
+  netClasses?: NetClass[]
+  /** What the Default class has that the rules above do not: a name and description of its own, micro via sizes, a differential pair. */
+  defaultClass?: DefaultNetClass
+  /** Via sizes offered while routing, besides the rule's own (KiCad's `user_via`). */
+  viaSizes?: ViaSize[]
+  /** Differential pair sizes offered while routing (KiCad's `user_diff_pair`). */
+  diffPairSizes?: DiffPairSize[]
+  /** The smallest via drill, when it differs from `minDrill`, which is then the through hole's (KiCad's `via_min_drill` and `through_hole_min`). Absent: both are `minDrill`. */
+  minViaDrill?: number
+  /** The board's minimum clearance (KiCad's `clearance_min`): no pair of nets is checked below it, whatever their classes say. Absent: none. */
+  minClearance?: number
+  /** Solder mask openings closer than this are merged into one when the mask is plotted (KiCad's `solder_mask_min_width`). Absent or 0: none are. */
+  maskMinWidth?: number
+  /** Paste aperture growth as a fraction of the pad's size on each side, on top of `pasteExpansion` (KiCad's `pad_to_paste_clearance_ratio`; -0.1 shrinks by 10%). Absent: 0. */
+  pasteRatio?: number
+  /** The most a drawn circle, arc or round corner may differ from the true one, in mm, where the editor turns one into a polygon (KiCad's `max_error`; its default is 0.005). Absent: that default. */
+  maxError?: number
+  /** Parts of the board may let the mask bridge between their own pads (KiCad's `allow_soldermask_bridges_in_footprints`); the editor has no mask bridge check, so it is kept and exported. */
+  maskBridgesInParts?: boolean
+}
+
+/** A via size: pad diameter and drill, in mm. */
+export interface ViaSize {
+  diameter: number
+  drill: number
+}
+
+/** A differential pair size: each trace's width, the gap between them and, where the file has one, the gap between their vias, in mm. */
+export interface DiffPairSize {
+  width: number
+  gap: number
+  viaGap?: number
+}
+
+/**
+ * A net class: the sizes the nets in it start with, and the clearance KiCad checks them at. A size that is absent is the Default class's,
+ * that is the rules' (KiCad 9 lets a class leave a field to the Default class, and `.kicad_pro` files do).
+ */
+export interface NetClass {
+  /** Unique, and not "Default": that class is the rules themselves (`DesignRules.defaultClass` holds what else it has). */
+  name: string
+  description?: string
+  /** Copper to copper of another net; two nets are checked at the larger of their classes' (`pairClearance`). */
+  clearance?: number
+  /** Width of new traces on the net's nets. */
+  traceWidth?: number
+  viaDiameter?: number
+  viaDrill?: number
+  microViaDiameter?: number
+  microViaDrill?: number
+  diffPairWidth?: number
+  diffPairGap?: number
+  /** Nets in the class, by name, as the schematic names them. */
+  nets: string[]
+  /** Wildcard patterns (`*` and `?`, or a regular expression) that also put a net in the class, as KiCad's net class patterns do. */
+  patterns?: string[]
+}
+
+/** What the Default class has that the design rules do not hold: a name and description of its own and sizes that only a class has. */
+export interface DefaultNetClass {
+  name?: string
+  description?: string
+  microViaDiameter?: number
+  microViaDrill?: number
+  diffPairWidth?: number
+  diffPairGap?: number
 }
 
 export interface Project {

@@ -25,6 +25,7 @@ import { modelKey, planModels } from "./models"
 import type { OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
 import { decodeNetName, eraOf } from "./read"
+import { importRulesX10 } from "./netClassImport"
 import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 
 export { KICAD_LIBRARY_RELEASE, stockModelId } from "./models"
@@ -288,7 +289,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   let project: Project = createProject(options.name ?? title ?? "Imported KiCad board", "")
 
   // ---------- design rules ----------
-  const def = board.netClasses.find((c) => c.name === "Default") ?? board.netClasses[0]
+  // Only the class named Default is the rules: a board with other classes and no Default has KiCad's own Default class, which `setup` says by its values (a user class's values are never the rules).
+  const def = board.netClasses.find((c) => c.name === "Default")
   const pick = (...values: (number | undefined)[]) => values.find((v) => v !== undefined && Number.isFinite(v))
   const rules = { ...project.rules }
   type NumericRule = "traceWidth" | "minTraceWidth" | "clearance" | "viaDiameter" | "viaDrill" | "minDrill" | "pourClearance" | "edgeClearance" | "holeClearance" | "minAnnularRing"
@@ -358,6 +360,9 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
   for (const o of [...board.segments, ...board.arcTracks, ...board.vias, ...board.shapes, ...board.footprints.flatMap((f) => f.shapes)]) if (o.netRaw) allNets.add(o.netRaw)
   const labelText = netLabelNames(new Map(), report, allNets)
+  // X10: net classes and the rules that go with them, by the labels the nets have in the project
+  const { unknownMembers: _unknownMembers, ...x10 } = importRulesX10(board, labelText, report, lose)
+  project = { ...project, rules: { ...project.rules, ...x10 } }
   const degenerate: string[] = []
   const badNets: string[] = []
   let privateShapes = 0

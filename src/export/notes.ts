@@ -2,6 +2,8 @@ import { boardColors, boardFinish, mountingHoles, SURFACE_FINISHES } from "../mo
 import { boardAreaMm2, describeOutline } from "../model/outline"
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { inBom, inPositionFile } from "../model/partFlags"
+import { computeConnectivity } from "../model/connectivity"
+import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } from "../model/netClasses"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
 import { worldTexts } from "../model/texts"
@@ -81,7 +83,9 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     `  Hole to hole      ${mm(r.holeClearance)}`,
     `  Copper to edge    ${mm(r.edgeClearance)}`,
     `  Mask expansion    ${mm(r.maskExpansion)}`,
+    ...ruleNotes(project),
     "",
+    ...netClassNotes(project),
     "STACKUP",
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
@@ -92,6 +96,49 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...files.map((f) => `  ${f}`),
   ]
   return lines.join("\n") + "\n"
+}
+
+/**
+ * What a fab needs to know about the rules beyond the plain ones, for a board that has any (one drawn here has none, so its notes read as they did): the
+ * smallest via drill, the board's minimum clearance, the mask web the Gerbers were made with, and the paste ratio.
+ */
+function ruleNotes(project: Project): string[] {
+  const r = project.rules
+  return [
+    ...(r.minViaDrill !== undefined ? [`  Via drill         ${mm(r.minViaDrill)} minimum (through holes: ${mm(r.minDrill)})`] : []),
+    ...(r.minClearance !== undefined ? [`  Minimum clearance ${mm(r.minClearance)}: no pair of nets is checked below it`] : []),
+    ...(r.maskMinWidth !== undefined ? [`  Mask web          ${mm(r.maskMinWidth)} minimum: mask openings closer than this are merged into one in the mask files`] : []),
+    ...(r.pasteRatio !== undefined ? [`  Paste             ${Number((r.pasteRatio * 100).toFixed(4))}% of each pad's size on every side, with the ${mm(r.pasteExpansion)} expansion`] : []),
+    ...(r.maxError !== undefined ? [`  Curve accuracy    ${mm(r.maxError)}: the most a polygon may differ from the circle or arc it stands for`] : []),
+  ]
+}
+
+/**
+ * The net classes of a board that has any: the clearance, trace width and via each asks for, and how many nets are in it. Two nets are
+ * checked at the larger of their classes' clearances, so the tightest spacing a fab has to make is the smallest class clearance in use.
+ */
+function netClassNotes(project: Project): string[] {
+  const r = project.rules
+  const classes = r.netClasses ?? []
+  if (!classes.length) return []
+  const index = classIndex(r)
+  const nets = computeConnectivity(project)
+    .nets.filter((n) => n.pins.length > 0)
+    .map((n) => n.name)
+  const counts = new Map<string, number>()
+  for (const n of nets) {
+    const name = index.classOf(n)?.name ?? defaultClassName(r)
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  const row = (name: string, v: { clearance: number; traceWidth: number; viaDiameter: number; viaDrill: number }) =>
+    `  ${name.slice(0, 18).padEnd(18)}${mm(v.clearance)} space, ${mm(v.traceWidth)} trace, via ${mm(v.viaDiameter)} / ${mm(v.viaDrill)}; ${counts.get(name) ?? 0} net${counts.get(name) === 1 ? "" : "s"}`
+  const all = [index.base, ...classes.map((c) => classValuesOf(r, c.name))]
+  return [
+    "NET CLASSES",
+    ...all.map((v) => row(v.name, v)),
+    `  Tightest space    ${mm(Math.min(...all.map((v) => v.clearance)))}: two nets are checked at the larger of their classes' spaces`,
+    "",
+  ]
 }
 
 /** Where the drawings on the board and in its parts went, and which were not plotted: only for a board that has any. */

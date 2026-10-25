@@ -216,7 +216,8 @@ const setVia = (id: string, patch: Partial<Via>) =>
   projectApi().commit((p) => ({ ...p, updatedAt: Date.now(), vias: p.vias.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
 
 function ViaInspector({ via: v, net, project }: { via: Via; net: string; project: Project }) {
-  const { minDrill, minAnnularRing } = project.rules
+  const { minAnnularRing } = project.rules
+  const minDrill = project.rules.minViaDrill ?? project.rules.minDrill
   const ring = (v.diameter - v.drill) / 2
   return (
     <Section title="Via">

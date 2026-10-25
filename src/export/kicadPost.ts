@@ -1,6 +1,7 @@
 import type { AnyCircuitElement } from "circuit-json"
 import { round } from "../lib/geometry"
 import { findPart } from "../model/library"
+import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes } from "../model/partFlags"
 import { zoneClearance } from "../model/rules"
 import type { ComponentInstance, Project } from "../model/types"
@@ -186,6 +187,13 @@ export function applyBoardSettings(pcb: string, project: Project): string {
   })
   out = out.replace(/\(pad_to_mask_clearance [^)]*\)/, `(pad_to_mask_clearance ${mm6(rules.maskExpansion)})`)
   if (rules.pasteExpansion) out = out.replace(/(\(pad_to_mask_clearance [^)]*\))/, `$1\n    (pad_to_paste_clearance ${mm6(rules.pasteExpansion)})`)
+  // The mask web, the paste ratio and the mask bridges are board settings in KiCad 9's file (`parseSetup`: `solder_mask_min_width`, `pad_to_paste_clearance_ratio`, `allow_soldermask_bridges_in_footprints`).
+  const more = [
+    ...(rules.maskMinWidth !== undefined ? [`(solder_mask_min_width ${mm6(rules.maskMinWidth)})`] : []),
+    ...(rules.pasteRatio !== undefined ? [`(pad_to_paste_clearance_ratio ${round(rules.pasteRatio, 6)})`] : []),
+    ...(rules.maskBridgesInParts ? ["(allow_soldermask_bridges_in_footprints yes)"] : []),
+  ]
+  if (more.length) out = out.replace(/(\(pad_to_mask_clearance [^)]*\))/, `$1\n    ${more.join("\n    ")}`)
   return out
 }
 
@@ -206,30 +214,45 @@ export interface KicadProject {
   text: string
   /** Nets whose widths could not be written, since KiCad reads `*` and `?` in a net class pattern as wildcards. */
   unmatched: string[]
+  /** What the project's rules hold that the file cannot, in words for whoever exported it. */
+  notes: string[]
 }
+
+/** A net class pattern that matches exactly one net: KiCad reads it as a wildcard and as a regular expression, and a backslash before each character either reads specially makes the second match the name itself and the first match nothing a board would have. */
+const exactPattern = (net: string) => net.replace(/[\\.+*?^$()[\]{}|]/g, "\\$&")
 
 /** The .kicad_pro with the project's design rules, default sizes, per-net trace widths and properties. */
 export function applyProjectSettings(pro: string, project: Project): KicadProject {
   const rules = project.rules
   const json = JSON.parse(pro) as Json
   const unmatched: string[] = []
+  const notes: string[] = []
+  const classed = hasNetClasses(rules)
+  // The board's smallest clearance is the lowest any class asks for (KiCad raises every pair to it), or the one the project set; a board with no classes has the rules' own.
+  const minClearance = rules.minClearance ?? (classed ? Math.min(rules.clearance, ...(rules.netClasses ?? []).map((c) => c.clearance ?? rules.clearance)) : rules.clearance)
 
   const design = object(object(json, "board"), "design_settings")
   Object.assign(object(design, "rules"), {
-    min_clearance: rules.clearance,
+    min_clearance: minClearance,
     min_track_width: rules.minTraceWidth,
-    min_through_hole_diameter: rules.minDrill,
+    // KiCad 9 has one smallest drill, for vias and through holes alike: the smaller of the two keeps it from flagging what the project allows
+    min_through_hole_diameter: rules.minViaDrill !== undefined ? Math.min(rules.minDrill, rules.minViaDrill) : rules.minDrill,
     min_via_annular_width: rules.minAnnularRing,
     min_via_diameter: rules.minViaDiameter ?? round(rules.minDrill + 2 * rules.minAnnularRing, 6),
     min_hole_to_hole: rules.holeClearance,
     min_hole_clearance: rules.clearance,
     min_copper_edge_clearance: rules.edgeClearance,
+    ...(rules.maxError !== undefined ? { max_error: rules.maxError } : {}),
   })
+  if (rules.minViaDrill !== undefined && rules.minViaDrill !== rules.minDrill) {
+    notes.push(`KiCad 9 has one smallest drill for vias and through holes, so the project file has the smaller, ${Math.min(rules.minDrill, rules.minViaDrill)} mm (the project checks vias at ${rules.minViaDrill} mm and through holes at ${rules.minDrill} mm).`)
+  }
   Object.assign(object(design, "defaults"), {
     track_widths: [0, ...[...new Set([rules.traceWidth, ...rules.preferredWidths])].sort((a, b) => a - b)],
     via_dimensions: [
       { diameter: 0, drill: 0 },
       { diameter: rules.viaDiameter, drill: rules.viaDrill },
+      ...(rules.viaSizes ?? []).filter((v) => !(v.diameter === rules.viaDiameter && v.drill === rules.viaDrill)).map((v) => ({ diameter: v.diameter, drill: v.drill })),
     ],
   })
 
@@ -239,17 +262,53 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
   const widthValues = [...new Set(wideNets.map(([, w]) => w))].sort((a, b) => a - b).slice(0, MAX_NET_CLASSES)
   const className = (w: number) => `Trace ${w} mm`
   const settings = object(json, "net_settings")
-  settings.classes = [
-    { name: "Default", track_width: rules.traceWidth, ...base },
-    ...widthValues.map((w, i) => ({ name: className(w), priority: i, track_width: w, ...base })),
-  ]
-  const patterns: { netclass: string; pattern: string }[] = []
-  for (const [net, w] of wideNets) {
-    if (!widthValues.includes(w)) continue
-    if (/[*?]/.test(net)) unmatched.push(net)
-    else patterns.push({ netclass: className(w), pattern: net })
+  if (!classed) {
+    const d = rules.defaultClass
+    settings.classes = [
+      { name: "Default", track_width: rules.traceWidth, ...base, ...(d ? defaultFields(d) : {}) },
+      ...widthValues.map((w, i) => ({ name: className(w), priority: i, track_width: w, ...base })),
+    ]
+    const patterns: { netclass: string; pattern: string }[] = []
+    for (const [net, w] of wideNets) {
+      if (!widthValues.includes(w)) continue
+      if (/[*?]/.test(net)) unmatched.push(net)
+      else patterns.push({ netclass: className(w), pattern: net })
+    }
+    settings.netclass_patterns = patterns
+  } else {
+    // KiCad 9 combines the classes a net is in by priority (lower is first), field by field. A width given to one net is a class of its own that
+    // sets only the width and comes first, so it wins over the net's class for the width and leaves its clearance and vias alone; the project's classes
+    // follow in their order with every size written, so the first of them a net is in decides all of its sizes.
+    const classes = rules.netClasses ?? []
+    settings.classes = [
+      { name: "Default", track_width: rules.traceWidth, ...base, ...(rules.defaultClass ? defaultFields(rules.defaultClass) : {}) },
+      ...widthValues.map((w, i) => ({ name: className(w), priority: i, track_width: w })),
+      ...classes.map((c, j) => {
+        const v = classValuesOfClass(rules, c.name)
+        return {
+          name: c.name,
+          priority: widthValues.length + j,
+          clearance: v.clearance,
+          track_width: v.traceWidth,
+          via_diameter: v.viaDiameter,
+          via_drill: v.viaDrill,
+          ...(v.microViaDiameter !== undefined ? { microvia_diameter: v.microViaDiameter } : {}),
+          ...(v.microViaDrill !== undefined ? { microvia_drill: v.microViaDrill } : {}),
+          ...(v.diffPairWidth !== undefined ? { diff_pair_width: v.diffPairWidth } : {}),
+          ...(v.diffPairGap !== undefined ? { diff_pair_gap: v.diffPairGap } : {}),
+        }
+      }),
+    ]
+    const patterns: { netclass: string; pattern: string }[] = []
+    for (const [net, w] of wideNets) if (widthValues.includes(w)) patterns.push({ netclass: className(w), pattern: exactPattern(net) })
+    for (const c of classes) {
+      for (const net of c.nets) patterns.push({ netclass: c.name, pattern: exactPattern(net) })
+      for (const pattern of c.patterns ?? []) patterns.push({ netclass: c.name, pattern })
+    }
+    settings.netclass_patterns = patterns
+    if (rules.defaultClass?.name || rules.defaultClass?.description) notes.push(`KiCad 9 names the Default net class "Default" and gives it no description, so the project's own ("${rules.defaultClass.name ?? ""}"${rules.defaultClass.description ? `, "${rules.defaultClass.description}"` : ""}) stays in the project.`)
   }
-  settings.netclass_patterns = patterns
+  if (!classed && rules.defaultClass?.description) notes.push(`KiCad 9 gives the Default net class no description, so "${rules.defaultClass.description}" stays in the project.`)
 
   // Project properties as text variables, `${REVISION}` in KiCad's text fields.
   const variables = object(json, "text_variables")
@@ -258,7 +317,17 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
     const name = key.trim().replace(/[^A-Za-z0-9_]+/g, "_").toUpperCase()
     if (name && value) variables[name] = value
   }
-  return { text: `${JSON.stringify(json, null, 2)}\n`, unmatched }
+  return { text: `${JSON.stringify(json, null, 2)}\n`, unmatched, notes }
+}
+
+/** The fields only the Default class has, in KiCad's names. */
+function defaultFields(d: NonNullable<Project["rules"]["defaultClass"]>) {
+  return {
+    ...(d.microViaDiameter !== undefined ? { microvia_diameter: d.microViaDiameter } : {}),
+    ...(d.microViaDrill !== undefined ? { microvia_drill: d.microViaDrill } : {}),
+    ...(d.diffPairWidth !== undefined ? { diff_pair_width: d.diffPairWidth } : {}),
+    ...(d.diffPairGap !== undefined ? { diff_pair_gap: d.diffPairGap } : {}),
+  }
 }
 
 // ---------- Title block ----------

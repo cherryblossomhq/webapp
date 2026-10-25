@@ -915,7 +915,44 @@ function ruleSummary(r: DesignRules) {
     pour_clearance: r.pourClearance,
     thermal_relief: r.thermalRelief,
     net_widths: r.netWidths,
+    ...netClassSummary(r),
   }
+}
+
+/** Most nets a class lists in full for the model; a power class on a big board can have hundreds. */
+const CLASS_NETS_SHOWN = 24
+
+/**
+ * Net classes and the rules that go with them, for a board that has any (a board drawn here has none and says nothing new): each class with
+ * only the sizes it sets, in the tool's names, the nets it lists (the first few, with the count) and its patterns. Two nets are checked at
+ * the larger of their classes' clearances, and a class's width and via size are what new traces, vias and route_pcb use on its nets.
+ */
+function netClassSummary(r: DesignRules) {
+  const out: Record<string, unknown> = {}
+  const classes = r.netClasses ?? []
+  if (classes.length) {
+    out.net_classes = classes.map((c) => ({
+      name: c.name,
+      ...(c.description ? { description: c.description } : {}),
+      ...(c.clearance !== undefined ? { clearance: c.clearance } : {}),
+      ...(c.traceWidth !== undefined ? { trace_width: c.traceWidth } : {}),
+      ...(c.viaDiameter !== undefined ? { via_diameter: c.viaDiameter } : {}),
+      ...(c.viaDrill !== undefined ? { via_drill: c.viaDrill } : {}),
+      ...(c.diffPairWidth !== undefined ? { diff_pair_width: c.diffPairWidth } : {}),
+      ...(c.diffPairGap !== undefined ? { diff_pair_gap: c.diffPairGap } : {}),
+      nets: c.nets.length > CLASS_NETS_SHOWN ? [...c.nets.slice(0, CLASS_NETS_SHOWN), `... ${c.nets.length - CLASS_NETS_SHOWN} more`] : c.nets,
+      ...(c.patterns?.length ? { patterns: c.patterns } : {}),
+    }))
+  }
+  const d = r.defaultClass
+  if (d) out.default_class = { ...(d.name ? { name: d.name } : {}), ...(d.description ? { description: d.description } : {}), ...(d.diffPairWidth !== undefined ? { diff_pair_width: d.diffPairWidth } : {}), ...(d.diffPairGap !== undefined ? { diff_pair_gap: d.diffPairGap } : {}) }
+  if (r.viaSizes?.length) out.via_sizes = r.viaSizes.map((v) => `${v.diameter}/${v.drill}`)
+  if (r.minViaDrill !== undefined) out.min_via_drill = r.minViaDrill
+  if (r.minClearance !== undefined) out.min_clearance = r.minClearance
+  if (r.maskMinWidth !== undefined) out.mask_min_width = r.maskMinWidth
+  if (r.pasteRatio !== undefined) out.paste_ratio = r.pasteRatio
+  if (r.maxError !== undefined) out.max_error = r.maxError
+  return out
 }
 
 /** Length rules the tool sets, with the range each accepts in mm. */

@@ -69,8 +69,9 @@ export const RULES = [
   rule("setup>(?:via_size|via_drill|trace_clearance)", "not-needed", "-", { note: "KiCad 4 and 5 write the Default net class's via size, via drill and clearance a second time (equal to the class's own in all 1,227 corpus boards with both); the net class block, which KiCad reads after them, is what it keeps, and a board with no class block has them as the Default class, which the importer reads as the rules" }),
   rule("setup>zone_45_only", "not-needed", "-", { note: "a drawing constraint of KiCad's own zone editor (outlines snap to 45 degrees); it changes no geometry already drawn, and the editor has nothing it constrains" }),
   rule("setup>via_min_size", "native", "DesignRules.minViaDiameter", { effort: "S", note: "the smallest via diameter the checks allow" }),
-  rule("setup>user_via", "extend", "DesignRules has no list of via sizes", { ext: "X10", note: "the via sizes the user offers while routing" }),
-  rule("setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair|creepage)", "extend", "DesignRules has no field", { ext: "X10", note: "design rule values the checks and the fab output need: a non-zero mask sliver width or paste ratio changes the Gerbers" }),
+  rule("setup>user_via", "extend", "DesignRules.viaSizes", { ext: "X10", note: "the via sizes the user offers while routing" }),
+  rule("setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair)", "extend", "DesignRules (maskMinWidth, pasteRatio, maskBridgesInParts, maxError, minClearance, diffPairSizes)", { ext: "X10", note: "design rule values the checks and the fab output need: a non-zero mask sliver width or paste ratio changes the Gerbers" }),
+  rule("setup>creepage", "extend", "DesignRules has no creepage rule and Checks no creepage test", { ext: "X26", note: "KiCad 10's minimum creepage distance between copper of different nets: a rule a board is checked against, which the editor cannot check yet, so a non-zero one is refused by name" }),
   rule("setup>(?:uvia_size|uvia_drill|uvia_min_size|uvia_min_drill|uvias_allowed|blind_buried_vias_allowed)", "extend", "DesignRules has no field", { ext: "X5", note: "microvia and blind or buried via rules" }),
   rule("setup>(?:stackup|stackup>.*)", "extend", "BoardDef.thickness only", { ext: "X1", note: "layers with thickness, material, epsilon r, loss tangent, copper finish, edge plating, castellated pads, dielectric constraints" }),
   rule("setup>(?:tenting|tenting>(?:front|back))", "extend", "DesignRules.tentVias (one flag)", { ext: "X5", note: "front and back via tenting" }),
@@ -80,8 +81,8 @@ export const RULES = [
 
   // ---- nets ----
   rule("net", "native", "net names become labels on a generated schematic", { effort: "M", note: "KiCad 10 stops writing net numbers: the name is the key. Names carry escapes such as {slash} and ~{overbar}, decoded when read" }),
-  rule("net_class|net_class>(?:clearance|trace_width|via_dia|via_drill|add_net|diff_pair_width|diff_pair_gap)", "extend", "DesignRules (the Default class); netWidths only for the rest", { ext: "X10", note: "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro. The Default class's clearance, track width and via size are the design rules; every other class, and a differential pair rule, need X10" }),
-  rule("net_class>(?:uvia_dia|uvia_drill)", "extend", "-", { ext: "X5", note: "the micro via size of a net class: it applies to nothing on a board with no micro via" }),
+  rule("net_class|net_class>(?:clearance|trace_width|via_dia|via_drill|add_net|diff_pair_width|diff_pair_gap)", "extend", "DesignRules (the Default class) and DesignRules.netClasses (every other)", { ext: "X10", note: "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro. The Default class's clearance, track width and via size are the design rules; every other class, a differential pair rule and a description of the Default class's own are X10" }),
+  rule("net_class>(?:uvia_dia|uvia_drill)", "extend", "NetClass.microViaDiameter and microViaDrill, DesignRules.defaultClass", { ext: "X10", note: "the micro via size of a net class, kept with the class; a size that is KiCad's own default, or the Default class's, says nothing" }),
 
   // ---- tracks and vias ----
   rule("segment", "native", "Trace polyline (consecutive same-layer, same-width segments of one net are joined)", { effort: "M" }),
@@ -299,7 +300,8 @@ export const TOKENS = [
   token("kicad_pcb", "native", "", "the root list; its version, generator and generator_version are read"),
   token("true false", "native", "", "boolean atoms (`(locked yes)` from stamp 20230924, `true` and `false` in a few KiCad 8 nodes); the reader accepts yes, no, true, false and the bare flag"),
   token("edge_connector edge_plating castellated_pads copper_finish dielectric_constraints constant djordjevic_sarkar", "extend", "X1", "stackup nodes and dielectric models"),
-  token("clearance_min hole_to_hole_min through_hole_min via_min_annulus user_diff_pair creepage", "extend", "X10", "design rule values in `setup`"),
+  token("clearance_min hole_to_hole_min through_hole_min via_min_annulus user_diff_pair", "extend", "X10", "design rule values in `setup`"),
+  token("creepage", "extend", "X26", "the minimum creepage distance (KiCad 10)"),
   token("fab_layers_line_width fab_layers_text_dims portrait", "not-needed", "", "KiCad's editing defaults and page orientation"),
   token("hatch_smoothing_level hatch_smoothing_value zone_type reverse_hatch cross_hatch dots squares", "extend", "X3", "hatched zone fills and copper thieving patterns"),
   token("counterbore countersink post_machining", "extend", "X22", "pad and via post-machining (KiCad 10)"),

@@ -200,7 +200,7 @@ export function PcbEditor() {
     if (m.kind !== "route") return
     const at = m.points[m.points.length - 1]
     commitRoute(m)
-    projectApi().commit((p) => (p.vias.some((v) => samePoint(v, at)) ? p : addVia(p, at, { locked: true }).project))
+    projectApi().commit((p) => (p.vias.some((v) => samePoint(v, at)) ? p : addVia(p, at, { locked: true, net: netNameOf(p, m.netId) }).project))
     const nextLayer: CopperLayer = m.layer === "top" ? "bottom" : "top"
     uiApi().setActiveLayer(nextLayer)
     setMode({ ...m, layer: nextLayer, points: [at] })

@@ -1,6 +1,7 @@
 import { uid } from "../lib/id"
 import { pointInBox, pointSegmentDistance, round, type Box } from "../lib/geometry"
 import { computeConnectivity } from "./connectivity"
+import { classIndex, classValues } from "./netClasses"
 import { boardTextStrokes, ownTexts } from "./board"
 import { textsOnLayer } from "./texts"
 import { pcbCourtyard, pcbSilk } from "./instances"
@@ -51,12 +52,16 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
   const bottom = testers("bottom")
   if (!top.length || !bottom.length) return { project: base, added: 0 }
 
-  const { viaDiameter, viaDrill, clearance } = base.rules
+  // The via is its net's class's size, and keeps the larger of its class's clearance and the other copper's from that copper (a board with no classes: the rules').
+  const { viaDiameter, viaDrill } = classValues(base.rules, net)
+  const index = classIndex(base.rules)
+  const clearance = index.clearanceOf(net)
+  const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const gapTo = (netId: string | null | undefined) => index.pair(net, netId ? (netNames.get(netId) ?? null) : null)
   const r = viaDiameter / 2
   const ring = r + RING
-  const keep = r + clearance
-  const pads = pcb.items.flatMap((it) => (it.kind === "pad" ? [it.pad] : []))
-  const segments = pcb.items.flatMap((it) => (it.kind === "segment" ? [it] : []))
+  const pads = pcb.items.flatMap((it) => (it.kind === "pad" ? [{ pad: it.pad, keep: r + gapTo(it.netId) }] : []))
+  const segments = pcb.items.flatMap((it) => (it.kind === "segment" ? [{ ...it, keep: r + gapTo(pcb.islandNet.get(pcb.island.get(it.id)!)) }] : []))
   // The grid stays off part bodies; no via goes through designators, board text or part
   // outlines, so the silkscreen is not broken up by drill holes.
   const bodies = base.components.flatMap((c) => {
@@ -79,7 +84,7 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
       maxY: Math.max(...pts.map((p) => p.y)) + r,
     })
   }
-  const others = base.vias.map((v) => ({ at: { x: v.x, y: v.y }, r: v.diameter / 2 }))
+  const others = base.vias.map((v) => ({ at: { x: v.x, y: v.y }, r: v.diameter / 2, keep: r + gapTo(pcb.viaNet.get(v.id)) }))
 
   const solid = (p: Vec2, around = ring) => {
     for (let i = 0; i <= SAMPLES; i++) {
@@ -93,9 +98,9 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
   const clear = (p: Vec2, underParts = false) =>
     (underParts ? outlines.every(([a, b]) => pointSegmentDistance(p, a, b) >= r + 0.1) : !bodies.some((b) => pointInBox(p, b))) &&
     !silk.some((b) => pointInBox(p, b)) &&
-    pads.every((pad) => pointPadDistance(p, pad) >= keep) &&
-    segments.every((s) => pointSegmentDistance(p, s.a, s.b) >= keep + s.width / 2) &&
-    others.every((o) => Math.hypot(p.x - o.at.x, p.y - o.at.y) >= o.r + keep)
+    pads.every((o) => pointPadDistance(p, o.pad) >= o.keep) &&
+    segments.every((s) => pointSegmentDistance(p, s.a, s.b) >= s.keep + s.width / 2) &&
+    others.every((o) => Math.hypot(p.x - o.at.x, p.y - o.at.y) >= o.r + o.keep)
 
   // Grid centred on the board so the pattern sits symmetrically.
   const b = base.board
@@ -132,7 +137,7 @@ function islandVias(project: Project, net: string, netId: string | undefined, fi
   if (!netId) return []
   const pcb = analyzePcb(project, computeConnectivity(project), { keepIslands: true })
   const zones = new Set(project.zones.filter((z) => z.net === net).map((z) => z.id))
-  const { viaDiameter, viaDrill } = project.rules
+  const { viaDiameter, viaDrill } = classValues(project.rules, net)
   const out: Via[] = []
   const zoneItems = pcb.items.flatMap((it) => (it.kind === "zone" && zones.has(it.zoneId) ? [it] : []))
   const onNet = (it: (typeof zoneItems)[number]) => pcb.islandNet.get(pcb.island.get(it.id)!) === netId

@@ -16,6 +16,7 @@ import { blockFrames, blocksWithout } from "./blocks"
 import { UnionFind, computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { drawingBounds, moveDrawing } from "./drawings"
 import { DEFAULT_RULES } from "./rules"
+import { classValues, hasNetClasses } from "./netClasses"
 import { labelBox } from "./labels"
 import { findPart, getPart } from "./library"
 import { dirVector, pinStubPoint, schematicBounds, schematicPins, type WorldPin } from "./instances"
@@ -37,9 +38,12 @@ import type {
 export { DEFAULT_RULES }
 export { autoPlacePcb, repackCopper, repackPcb } from "./autoplace"
 
-/** Width for new traces on a net: its own width when it has one, else the default. */
+/**
+ * Width for new traces on a net: the width the net was given by name (`rules.netWidths`), else its net class's (X10), else the default.
+ * A width given to one net wins over its class's because it is the more specific; a board with no classes has no middle step.
+ */
 export const netTraceWidth = (rules: DesignRules, netName: string | null | undefined) =>
-  (netName ? rules.netWidths?.[netName] : undefined) ?? rules.traceWidth
+  (netName ? rules.netWidths?.[netName] : undefined) ?? (netName && hasNetClasses(rules) ? classValues(rules, netName).traceWidth : rules.traceWidth)
 
 export function createProject(name = "Untitled project", description = ""): Project {
   const now = Date.now()
@@ -186,13 +190,15 @@ export function addTrace(project: Project, trace: Omit<Trace, "id">): { project:
   return { project: touch({ ...project, traces: [...project.traces, t] }), trace: t }
 }
 
-export function addVia(project: Project, at: Vec2, opts: { locked?: boolean } = {}): { project: Project; via: Via } {
+/** A via for a net: its net class's size, else the rules'. `net` is the net's name. */
+export function addVia(project: Project, at: Vec2, opts: { locked?: boolean; net?: string | null } = {}): { project: Project; via: Via } {
+  const size = classValues(project.rules, opts.net)
   const via: Via = {
     id: uid("v"),
     x: round(at.x),
     y: round(at.y),
-    diameter: project.rules.viaDiameter,
-    drill: project.rules.viaDrill,
+    diameter: size.viaDiameter,
+    drill: size.viaDrill,
     ...(opts.locked ? { locked: true } : {}),
   }
   return { project: touch({ ...project, vias: [...project.vias, via] }), via }

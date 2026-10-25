@@ -236,10 +236,16 @@ export const PATH_RULES: PathRule[] = [
   "note": "the via sizes the user offers while routing"
  },
  {
-  "source": "^(setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair|creepage))$",
+  "source": "^(setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair))$",
   "decision": "extend",
   "ext": "X10",
   "note": "design rule values the checks and the fab output need: a non-zero mask sliver width or paste ratio changes the Gerbers"
+ },
+ {
+  "source": "^(setup>creepage)$",
+  "decision": "extend",
+  "ext": "X26",
+  "note": "KiCad 10's minimum creepage distance between copper of different nets: a rule a board is checked against, which the editor cannot check yet, so a non-zero one is refused by name"
  },
  {
   "source": "^(setup>(?:uvia_size|uvia_drill|uvia_min_size|uvia_min_drill|uvias_allowed|blind_buried_vias_allowed))$",
@@ -284,13 +290,13 @@ export const PATH_RULES: PathRule[] = [
   "source": "^(net_class|net_class>(?:clearance|trace_width|via_dia|via_drill|add_net|diff_pair_width|diff_pair_gap))$",
   "decision": "extend",
   "ext": "X10",
-  "note": "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro. The Default class's clearance, track width and via size are the design rules; every other class, and a differential pair rule, need X10"
+  "note": "KiCad 5 keeps net classes in the board; KiCad 6 and later in .kicad_pro. The Default class's clearance, track width and via size are the design rules; every other class, a differential pair rule and a description of the Default class's own are X10"
  },
  {
   "source": "^(net_class>(?:uvia_dia|uvia_drill))$",
   "decision": "extend",
-  "ext": "X5",
-  "note": "the micro via size of a net class: it applies to nothing on a board with no micro via"
+  "ext": "X10",
+  "note": "the micro via size of a net class, kept with the class; a size that is KiCad's own default, or the Default class's, says nothing"
  },
  {
   "source": "^(segment)$",
@@ -1494,12 +1500,19 @@ export const TOKEN_RULES: TokenRule[] = [
    "hole_to_hole_min",
    "through_hole_min",
    "via_min_annulus",
-   "user_diff_pair",
-   "creepage"
+   "user_diff_pair"
   ],
   "decision": "extend",
   "ext": "X10",
   "note": "design rule values in `setup`"
+ },
+ {
+  "names": [
+   "creepage"
+  ],
+  "decision": "extend",
+  "ext": "X26",
+  "note": "the minimum creepage distance (KiCad 10)"
  },
  {
   "names": [

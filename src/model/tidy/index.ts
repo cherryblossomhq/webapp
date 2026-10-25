@@ -1,5 +1,6 @@
 import { emptyBox, expandBox, pointOnSegment, round, samePoint, snap, type Box } from "../../lib/geometry"
 import { renameStoredNets } from "../copperNets"
+import { renameClassNets } from "../netClasses"
 import { blockFrames, blocksWithout, componentTextBoxes, drawnIslands, uniqueBlockName } from "../blocks"
 import { blockPorts, readingOrder } from "../blockPorts"
 import { computeConnectivity, pinKey } from "../connectivity"
@@ -1174,7 +1175,9 @@ export function renameNets(project: Project, renamed: Record<string, string>): P
   const vias = project.vias.map((v) => (v.net && renamed[v.net] ? { ...v, net: renamed[v.net] } : v))
   const widths = project.rules.netWidths
   const netWidths = widths ? Object.fromEntries(Object.entries(widths).map(([k, v]) => [renamed[k] ?? k, v])) : undefined
-  return renameStoredNets({ ...project, zones, vias, rules: netWidths ? { ...project.rules, netWidths } : project.rules }, renamed)
+  // a net class lists its nets by name too, so it follows a net that was renamed
+  const rules = renameClassNets(netWidths ? { ...project.rules, netWidths } : project.rules, renamed)
+  return renameStoredNets({ ...project, zones, vias, rules }, renamed)
 }
 
 // ---------- The check ----------
@@ -1257,6 +1260,7 @@ function sameDrawing(a: Project, b: Project): boolean {
       blocks: (p.blocks ?? []).map((x) => [x.id, x.name, [...x.components].sort()]),
       zones: p.zones,
       widths: p.rules.netWidths ?? null,
+      ...(p.rules.netClasses ? { classes: p.rules.netClasses } : {}),
     })
   }
   return pick(a) === pick(b)

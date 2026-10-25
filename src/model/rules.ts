@@ -1,4 +1,5 @@
-import type { BoardDef, DesignRules, Project, ThermalRelief } from "./types"
+import { normalizeDefaultClass, normalizeNetClasses } from "./netClasses"
+import type { BoardDef, DesignRules, DiffPairSize, Project, ThermalRelief, ViaSize } from "./types"
 
 /** What a typical two-layer fab makes without extra charge, and the sizes new copper gets. */
 export const DEFAULT_RULES: DesignRules = {
@@ -93,7 +94,42 @@ export function normalizeRules(raw: Partial<DesignRules> | undefined): DesignRul
   // an absent minimum via diameter is no minimum; a stored one must be a positive number
   if (!(typeof rules.minViaDiameter === "number" && Number.isFinite(rules.minViaDiameter) && rules.minViaDiameter > 0)) delete rules.minViaDiameter
   const widths = Array.isArray(rules.preferredWidths) ? rules.preferredWidths.filter((w) => Number.isFinite(w) && w > 0) : []
+  normalizeNetClassRules(rules)
   return { ...rules, preferredWidths: widths.length ? [...new Set(widths)].sort((a, b) => a - b) : DEFAULT_RULES.preferredWidths }
+}
+
+const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0
+
+/** The X10 fields of a stored project's rules, each valid or gone (an absent one is the default). Works on a copy `normalizeRules` made. */
+function normalizeNetClassRules(rules: DesignRules) {
+  const classes = normalizeNetClasses(rules.netClasses)
+  if (classes.length) rules.netClasses = classes
+  else delete rules.netClasses
+  const def = normalizeDefaultClass(rules.defaultClass)
+  if (def) rules.defaultClass = def
+  else delete rules.defaultClass
+  const sizes: ViaSize[] = []
+  if (Array.isArray(rules.viaSizes)) {
+    for (const v of rules.viaSizes as Partial<ViaSize>[]) {
+      if (v && positive(v.diameter) && positive(v.drill) && !sizes.some((s) => s.diameter === v.diameter && s.drill === v.drill)) sizes.push({ diameter: v.diameter, drill: v.drill })
+    }
+  }
+  if (sizes.length) rules.viaSizes = sizes
+  else delete rules.viaSizes
+  const pairs: DiffPairSize[] = []
+  if (Array.isArray(rules.diffPairSizes)) {
+    for (const d of rules.diffPairSizes as Partial<DiffPairSize>[]) {
+      if (d && positive(d.width) && positive(d.gap) && !pairs.some((p) => p.width === d.width && p.gap === d.gap && p.viaGap === d.viaGap)) {
+        pairs.push({ width: d.width, gap: d.gap, ...(typeof d.viaGap === "number" && Number.isFinite(d.viaGap) && d.viaGap >= 0 ? { viaGap: d.viaGap } : {}) })
+      }
+    }
+  }
+  if (pairs.length) rules.diffPairSizes = pairs
+  else delete rules.diffPairSizes
+  for (const key of ["minViaDrill", "minClearance", "maskMinWidth", "maxError"] as const) if (!positive(rules[key])) delete rules[key]
+  // a paste ratio is a fraction of the pad, negative to shrink; zero is none
+  if (!(typeof rules.pasteRatio === "number" && Number.isFinite(rules.pasteRatio) && rules.pasteRatio !== 0 && Math.abs(rules.pasteRatio) < 10)) delete rules.pasteRatio
+  if (rules.maskBridgesInParts !== true) delete rules.maskBridgesInParts
 }
 
 export const THERMAL_RELIEF_OPTIONS: { value: ThermalRelief; label: string; title: string }[] = [

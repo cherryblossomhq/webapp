@@ -174,7 +174,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       result = importer.importKicadBoard(bytes, importOptions)
       context.notRead.push(...notReadBeside(files))
     }
-    done({ summary: summarize(result, context), project: result.status === "imported" ? result.project : null })
+    done({ summary: summarize(result, context), project: result.status === "imported" ? result.project : null, ...(result.status === "imported" && result.files?.length ? { files: result.files } : {}) })
   } catch (e) {
     // A file that unpacks past the limit (its size field said less, or nothing) is said in plain words.
     if (e instanceof ImportInputError) return done({ project: null, summary: stoppedSummary("bad-input", e.message) })

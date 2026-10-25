@@ -1,4 +1,5 @@
 import { uid } from "../lib/id"
+import { remapPartGroups } from "./boardObjects"
 import { rotate90 } from "../lib/geometry"
 import { findPart } from "./library"
 import { isPhysical } from "./instances"
@@ -218,7 +219,10 @@ export function addPartText(project: Project, componentId: string, text: { text:
 
 /** Removes a part's own text (a reference or a value stays: hide it instead). */
 export function removePartText(project: Project, componentId: string, index: number): Project {
-  return withTexts(project, componentId, (texts) => (texts[index]?.kind === "user" ? texts.filter((_, i) => i !== index) : null))
+  const next = withTexts(project, componentId, (texts) => (texts[index]?.kind === "user" ? texts.filter((_, i) => i !== index) : null))
+  if (next === project || !next.components.some((c) => c.id === componentId && c.groups)) return next
+  // A group of the part's texts names them by place: the later places shift down.
+  return { ...next, components: next.components.map((c) => (c.id === componentId ? remapPartGroups(c, "t", new Set([index])) : c)) }
 }
 
 /**

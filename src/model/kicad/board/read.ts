@@ -1,5 +1,5 @@
 import { legacyArc, rotK } from "./geometry"
-import { decodeBase64, imageFacts } from "./imageData"
+import { decodeBase64, imageFacts } from "../../../lib/imageFacts"
 import { newReport, type ImportReport } from "./report"
 import { atomsOf, decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "./sexpr"
 import type {

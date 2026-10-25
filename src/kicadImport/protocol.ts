@@ -1,3 +1,4 @@
+import type { KeptFile } from "../model/kicad/board/images"
 import type { Project } from "../model/types"
 import type { BoardChoice } from "./pick"
 import type { ImportSummary } from "./summary"
@@ -23,7 +24,8 @@ export interface StartRequest {
 /** Where a job is. The importer reads and builds in one call, so building covers the size check that ends it. */
 export type Phase = "reading" | "building"
 
-export type ImportOutcome = { summary: ImportSummary; project: Project | null }
+/** What an import hands back: the summary, the project, and the files the project names that the host keeps (a board's reference images), by the SHA-256 the project holds them by. */
+export type ImportOutcome = { summary: ImportSummary; project: Project | null; files?: KeptFile[] }
 
 export type WorkerEvent =
   | { type: "progress"; id: number; phase: Phase }

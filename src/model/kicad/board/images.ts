@@ -10,7 +10,7 @@
 import type { ReferenceImage } from "../../types"
 import { isTextLayer } from "../../texts"
 import { resolveLayer } from "./graphics"
-import { sha256Hex } from "./imageData"
+import { sha256Hex } from "../../../lib/imageFacts"
 import type { KicadBoard, KicadImage } from "./types"
 
 const r6 = (n: number) => {

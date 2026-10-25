@@ -319,9 +319,9 @@ export function componentTexts(c: ComponentInstance): WorldText[] {
 }
 
 /** The text of a dimension as a world text (X11): what KiCad shows for it, anchored where KiCad puts it, on the dimension's layer. Selecting it selects the dimension (`m:<id>`). */
-export function dimensionWorldText(d: BoardDimension): WorldText | null {
+export function dimensionWorldText(d: BoardDimension, keepEmpty = false): WorldText | null {
   const t = dimensionDrawing(d).text
-  if (!t || t.content === "") return null
+  if (!t || (t.content === "" && !keepEmpty)) return null
   const hj = d.hj === "left" ? -1 : d.hj === "right" ? 1 : 0
   const vj = d.vj === "top" ? -1 : d.vj === "bottom" ? 1 : 0
   const source: BoardText = { id: `m:${d.id}`, layer: d.layer, text: t.content, x: t.x, y: t.y, size: d.size, rot: t.rot, side: d.layer.startsWith("B.") ? "bottom" : "top" }

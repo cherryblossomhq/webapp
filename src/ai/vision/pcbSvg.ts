@@ -10,7 +10,9 @@ import { dashShape, pathsSvgPath, shapeSvgPath, type DashPiece } from "../../mod
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import { layerText, textLayerKind, textLayerSide, worldTexts, type LayerText } from "../../model/texts"
 import type { BoardShape, CopperLayer, Project } from "../../model/types"
+import { imageSize } from "../../model/boardObjects"
 import { getPcbAnalysis } from "../../store/analysis"
+import { imageDataUri } from "../../store/imageFiles"
 import type { PixelSize } from "./limits"
 import type { PcbMeasure } from "./measure"
 import { n, pts, svgDocument, text } from "./svg"
@@ -149,6 +151,19 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   let body = bd.outline?.paths.length
     ? `<path d="${pathsSvgPath(bd.outline.paths.filter((p) => p.closed))}" fill="${PCB.board}" fill-rule="evenodd" ${edgeStroke}/>${bd.outline.paths.some((p) => !p.closed) ? `<path d="${pathsSvgPath(bd.outline.paths.filter((p) => !p.closed))}" fill="none" ${edgeStroke}/>` : ""}`
     : `<rect x="${n(board.minX)}" y="${n(board.minY)}" width="${n(bd.width)}" height="${n(bd.height)}" rx="${n(r)}" fill="${PCB.board}" stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}"/>`
+
+  // Reference images come first, under everything else, as the editor draws a bitmap: the picture (when its file has been read, which the look tool does before it draws), else its frame.
+  for (const m of project.images ?? []) {
+    const side = shapeLayerInfo(m.layer)?.side
+    if (side && !shownSet.has(side)) continue
+    const { w, h } = imageSize(m)
+    const uri = imageDataUri(m)
+    body += `<g transform="translate(${n(m.x)} ${n(m.y)}) scale(1 -1)" opacity="0.85">${
+      uri
+        ? `<image href="${uri}" x="${n(-w / 2)}" y="${n(-h / 2)}" width="${n(w)}" height="${n(h)}" preserveAspectRatio="none"/>`
+        : `<rect x="${n(-w / 2)}" y="${n(-h / 2)}" width="${n(w)}" height="${n(h)}" fill="none" stroke="${PCB.shapeUser}" stroke-width="${n(1.2 * px)}" stroke-dasharray="${n(6 * px)} ${n(4 * px)}"/>`
+    }</g>`
+  }
 
   // Text on the board's edge layer is part of the outline, as KiCad plots it.
   for (const x of texts) if (x.kind === "edge") body += textSvg(x.t, PCB.edge, px)

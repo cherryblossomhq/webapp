@@ -1,4 +1,5 @@
 import { uid } from "../lib/id"
+import { remapPartGroups } from "./boardObjects"
 import { registerProjectFootprints } from "./footprints"
 import { isShapeLayer } from "./shapeLayers"
 import { isClosedShape, mapShape } from "./shapes"
@@ -113,7 +114,10 @@ export function moveLandShapes(project: Project, land: string, indices: number[]
 
 export function removeLandShapes(project: Project, land: string, indices: number[]): Project {
   const set = new Set(indices)
-  return withLand(project, land, (shapes) => (shapes.some((_, i) => set.has(i)) ? shapes.filter((_, i) => !set.has(i)) : shapes))
+  const next = withLand(project, land, (shapes) => (shapes.some((_, i) => set.has(i)) ? shapes.filter((_, i) => !set.has(i)) : shapes))
+  if (next === project || !next.components.some((c) => c.groups && c.footprint === land)) return next
+  // The parts drawn with this land hold groups of its drawings by place: the later places shift down.
+  return { ...next, components: next.components.map((c) => (c.footprint === land ? remapPartGroups(c, "s", set) : c)) }
 }
 
 /** Adds a drawing to a land, in the land's own frame. */

@@ -99,9 +99,9 @@ export function hitShape(shapes: WorldShape[], at: Vec2, tol: number, vis: Shape
   return null
 }
 
-/** What clicking a drawing selects: a board drawing is itself, a part's drawing is the part. */
+/** What clicking a drawing selects: a board drawing is itself, a dimension's line is the dimension, a part's drawing is the part. */
 export function shapeSelectionId(ws: WorldShape): string {
-  return ws.owner === "#board" ? ws.id : `c:${ws.owner}`
+  return ws.select ?? (ws.owner === "#board" ? ws.id : `c:${ws.owner}`)
 }
 
 /** The board drawings (`g:` ids) a marquee touches. */

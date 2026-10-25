@@ -12,7 +12,7 @@ import { kiRound, mmToIu } from "../lib/kicadText"
 import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
 import type { WorldText } from "../model/texts"
-import { shownOf, textBoxCorners, worldTexts } from "../model/texts"
+import { isDimensionText, shownOf, textBoxCorners, worldTexts } from "../model/texts"
 import type { ComponentInstance, Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 
@@ -33,7 +33,7 @@ import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
-const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n").replace(/\t/g, "\\t")}"`
+export const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n").replace(/\t/g, "\\t")}"`
 
 /** KiCad's numbers for the user layers it has to be told about (`kicadShapes.ts`). */
 const userLayerNumber = (name: string): number | null => {
@@ -46,6 +46,8 @@ const userLayerNumber = (name: string): number | null => {
 export interface KicadTexts {
   text: string
   notes: string[]
+  /** The id each text was written with, by what the editor selects it by (`x:<id>`, `p:<part>:<place>`): a group names its members by them. */
+  uuids: Map<string, string[]>
 }
 
 /** The thickness a text is written with: its stored base, which a bold stroke text is multiplied from, as that file format stores it. */
@@ -56,7 +58,7 @@ function writtenThickness(t: WorldText): number | null {
   return (t.bold ? kiRound(iu * 1.6) : iu) / 1e6
 }
 
-function effects(t: WorldText, mirror: boolean, hide: boolean): string[] {
+export function effects(t: WorldText, mirror: boolean, hide: boolean): string[] {
   const thickness = writtenThickness(t)
   const justify = [t.hj === -1 ? "left" : t.hj === 1 ? "right" : "", t.vj === -1 ? "top" : t.vj === 1 ? "bottom" : "", mirror ? "mirror" : ""].filter(Boolean)
   return [
@@ -83,8 +85,10 @@ const norm = (a: number) => round(((a % 360) + 360) % 360, 6)
  * (found by reference), and the user layers they are on in the layer table.
  */
 export function applyTexts(pcb: string, project: Project): KicadTexts {
-  const all = worldTexts(project).filter((t) => t.placed)
-  if (!all.length) return { text: pcb, notes: [] }
+  // (A dimension's text is written with the dimension.)
+  const all = worldTexts(project).filter((t) => t.placed && !isDimensionText(t))
+  const uuids = new Map<string, string[]>()
+  if (!all.length) return { text: pcb, notes: [], uuids }
   let serial = 0
   const uuid = () => `00000000-0000-4000-a000-${(++serial).toString(16).padStart(12, "0")}`
   const componentOf = new Map(project.components.map((c) => [c.id, c]))
@@ -130,10 +134,12 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
           ")",
         ]
         board.push(indent(lines, "  "))
+        uuids.set(t.id, [`00000000-0000-4000-a000-${(serial).toString(16).padStart(12, "0")}`])
       } else {
         const at = toBoard({ x: t.x, y: t.y })
         const lines = [`(gr_text ${quote(content)}`, `  (at ${xy(at)}${norm(t.rot) ? ` ${mm6(norm(t.rot))}` : ""})`, `  ${layer}`, `  (uuid ${uuid()})`, ...effects(t, t.mirror, false).map((l) => `  ${l}`), ")"]
         board.push(indent(lines, "  "))
+        uuids.set(t.id, [`00000000-0000-4000-a000-${(serial).toString(16).padStart(12, "0")}`])
       }
       continue
     }
@@ -151,6 +157,7 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
       list.push(indent([`(fp_text user ${quote(content)}`, `  ${at}`, `  ${layer}`, ...(t.hidden ? ["  (hide yes)"] : []), `  (uuid ${uuid()})`, ...effects(t, t.mirror, false).map((l) => `  ${l}`), ")"], "    "))
     }
     byRef.set(ref, list)
+    uuids.set(t.id, [`00000000-0000-4000-a000-${serial.toString(16).padStart(12, "0")}`])
   }
 
   let text = pcb
@@ -179,7 +186,7 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
     ...(boxKnockouts ? [`${boxKnockouts} text ${boxKnockouts === 1 ? "box has" : "boxes have"} knockout, which KiCad 9 has no node for (its parser refuses it), so ${boxKnockouts === 1 ? "it is" : "they are"} written without it.`] : []),
     "Text (board text, and the reference, value and own text of each part) is written as KiCad's own text items on their layers, with size, thickness, justification, angle, mirror, bold, italic and knockout. Text variables such as ${REFERENCE} are written as they are, for KiCad to resolve.",
   ]
-  return { text, notes }
+  return { text, notes, uuids }
 }
 
 /** The content to write: a text's own content as stored (variables unresolved), the part's reference or value for a text that follows them. */
@@ -190,4 +197,4 @@ function shownOfRaw(project: Project, t: WorldText): string {
   return t.content
 }
 
-export const hasTexts = (project: Project, c?: ComponentInstance) => (c ? !!c.texts : worldTexts(project).some((t) => t.placed))
+export const hasTexts = (project: Project, c?: ComponentInstance) => (c ? !!c.texts : worldTexts(project).some((t) => t.placed && !isDimensionText(t)))

@@ -30,7 +30,7 @@ const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "
 const STROKE_TYPE = { dash: "dash", dot: "dot", dash_dot: "dash_dot", dash_dot_dot: "dash_dot_dot" } as const
 
 /** KiCad's numbers for the user layers it has to be told about: `User.1` is 50 and `User.9` is 58, `User.10` is 60 (59 is the rescue layer). */
-const userLayerNumber = (name: string): number | null => {
+export const userLayerNumber = (name: string): number | null => {
   const m = name.match(/^User\.(\d+)$/)
   if (!m) return null
   const n = Number(m[1])
@@ -41,6 +41,8 @@ export interface KicadDrawings {
   text: string
   /** What did not come across as it is, in words for whoever exported it. */
   notes: string[]
+  /** The ids the items were written with, by what the editor selects each drawing by (`g:<id>` on the board, `s:<part>:<place>` in a part's land): a group names its members by them. */
+  uuids: Map<string, string[]>
 }
 
 interface Out {
@@ -137,8 +139,8 @@ export function localFrame(c: ComponentInstance) {
   }
 }
 
-/** Whether the project has any drawing that is written out: a board drawing, or one of a part placed on the board. */
-export const hasDrawings = (project: Project) => worldShapes(project).some((s) => s.placed)
+/** Whether the project has any drawing that is written out: a board drawing, or one of a part placed on the board (a dimension's lines are written with the dimension). */
+export const hasDrawings = (project: Project) => worldShapes(project).some((s) => s.placed && !s.dim)
 
 /**
  * The board file with the project's drawings added: the board's own as top-level `gr_*` items and
@@ -146,10 +148,12 @@ export const hasDrawings = (project: Project) => worldShapes(project).some((s) =
  * layer table, and the nets of copper drawings in the net table.
  */
 export function applyDrawings(pcb: string, project: Project): KicadDrawings {
-  const shapes = worldShapes(project).filter((s) => s.placed)
-  if (!shapes.length) return { text: pcb, notes: [] }
+  const shapes = worldShapes(project).filter((s) => s.placed && !s.dim)
+  const uuids = new Map<string, string[]>()
+  if (!shapes.length) return { text: pcb, notes: [], uuids }
   let serial = 0
-  const uuid = () => `00000000-0000-4000-9000-${(++serial).toString(16).padStart(12, "0")}`
+  const uuidAt = (n: number) => `00000000-0000-4000-9000-${n.toString(16).padStart(12, "0")}`
+  const uuid = () => uuidAt(++serial)
   const nets = new Map<string, number>()
   for (const m of pcb.matchAll(/\n {2}\(net (\d+) "((?:[^"\\]|\\.)*)"\)/g)) nets.set(m[2].replace(/\\(.)/g, "$1"), Number(m[1]))
   const added: string[] = []
@@ -175,10 +179,13 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
   const componentOf = new Map(project.components.map((c) => [c.id, c]))
   const layers = new Set<string>()
   const toBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
-  for (const { owner, shape } of shapes) {
+  for (const { id, owner, shape } of shapes) {
     layers.add(shape.layer)
+    const from = serial
+    const issued = () => Array.from({ length: serial - from }, (_, i) => uuidAt(from + i + 1))
     if (owner === BOARD_SHAPE_OWNER) {
       for (const b of drawing(mapShape(shape, toBoard), false, out)) board.push(indent(b, "  "))
+      uuids.set(id, issued())
       continue
     }
     const c = componentOf.get(owner)
@@ -187,6 +194,7 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
     const list = byRef.get(ref) ?? []
     for (const b of drawing(mapShape(shape, localFrame(c)), true, out)) list.push(indent(b, "    "))
     byRef.set(ref, list)
+    uuids.set(id, issued())
   }
 
   let text = pcb
@@ -217,5 +225,5 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
   const notes = ["Drawings (lines, arcs, circles, rectangles, polygons and curves on the board and in each part) are written as KiCad's own graphic items on their layers, with their stroke, dash and fill."]
   if (out.flattened.has("ellipse")) notes.push("KiCad 9 has no ellipse: ellipses and elliptical arcs are written as polygons and lines within 0.5 micrometre of the true curve.")
   if (out.flattened.has("hole")) notes.push("KiCad 9's polygon has no holes: a filled polygon with holes is written as one outline joined to its holes by zero-width bridges, with its edges drawn on top.")
-  return { text, notes }
+  return { text, notes, uuids }
 }

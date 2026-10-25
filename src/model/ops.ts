@@ -133,6 +133,8 @@ export function updateComponent(
       }
       // The KiCad footprint id names the footprint the file gave, so another footprint makes it wrong (`${FOOTPRINT_NAME}`).
       if (patch.footprint !== undefined && patch.footprint !== c.footprint && patch.fpid === undefined) delete next.fpid
+      // A part's own groups name the pads, drawings and texts of its land by place, so another footprint ends them.
+      if (patch.footprint !== undefined && patch.footprint !== c.footprint) delete next.groups
       return next
     }),
   })

@@ -28,8 +28,8 @@ export interface TextsCheck {
   inkWrong: number
   /** Text boxes whose rectangle, border and margins were compared. */
   boxes: number
-  /** Texts of parts turned by other than a quarter turn: counted, not compared (X6 places those parts). */
-  notComparedTurned: number
+  /** Texts of parts turned by other than a quarter turn, which are compared like the rest (X6). */
+  turned: number
   /** Texts of parts that were paired by footprint order and not by place (parts that share a place). */
   pairedByOrder: number
   note: string
@@ -57,7 +57,7 @@ function sameInk(a: { x: number; y: number }[][], b: number[][][]): boolean {
 export function checkTexts(text: string, project: Project, opts: { font?: OracleFont } = {}): TextsCheck {
   const o = textOracle(text)
   const layers: Record<string, number> = {}
-  const result: TextsCheck = { file: 0, project: 0, counts: true, wrong: 0, layers, inkChecked: 0, inkWrong: 0, boxes: 0, notComparedTurned: 0, pairedByOrder: 0, note: "" }
+  const result: TextsCheck = { file: 0, project: 0, counts: true, wrong: 0, layers, inkChecked: 0, inkWrong: 0, boxes: 0, turned: 0, pairedByOrder: 0, note: "" }
   const complain = (what: string) => {
     result.wrong++
     if (!result.note) result.note = what
@@ -154,11 +154,8 @@ export function checkTexts(text: string, project: Project, opts: { font?: Oracle
       continue
     }
     const world = componentTexts(c).map((w) => ({ w, used: false }))
-    if (!quarter(f.angle)) {
-      // X6 places a part turned by another angle: its texts are counted and not compared
-      result.notComparedTurned += f.texts.filter((t) => fileOf(t)).length
-      continue
-    }
+    // A part at any angle (X6) is compared like any other: the oracle turns each text by the footprint's angle as KiCad does.
+    if (!quarter(f.angle)) result.turned += f.texts.filter((t) => fileOf(t)).length
     if ((sharedPlace.get(`${f.at[0]},${f.at[1]},${f.bottom}`) ?? 0) > 1) result.pairedByOrder += f.texts.filter((t) => fileOf(t)).length
     for (const t of f.texts) {
       if (!fileOf(t)) continue

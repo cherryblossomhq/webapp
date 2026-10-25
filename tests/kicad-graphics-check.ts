@@ -82,8 +82,6 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
   let wrong = 0
   let firstWrong = ""
   for (const s of file) {
-    // A part turned by other than a quarter turn is placed at the nearest one (X6), so its drawings are not where the file has them: counted, not compared.
-    if (!s.quarter) continue
     let minX = Infinity
     let maxX = -Infinity
     let minY = Infinity
@@ -102,7 +100,9 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
     // A first pass takes each project drawing once; a drawing left over (many tiny drawings within a micrometre of each other cannot be told apart) is looked for again among all of them, the counts per layer having been compared already.
     for (const strict of [true, false]) {
       if (hit) break
-      const cands = [-1, 0, 1].flatMap((dx) => [-1, 0, 1].flatMap((dy) => buckets.get(key(s.type, s.layer, minX, minY, dx, dy)) ?? []))
+      // A rectangle of a part turned by other than a quarter turn is a polygon in KiCad (`EDA_SHAPE::rotate`) and in the project (X6): looked for as either.
+      const types = s.type === "rect" ? ["rect", "polygon"] : [s.type]
+      const cands = types.flatMap((type) => [-1, 0, 1].flatMap((dx) => [-1, 0, 1].flatMap((dy) => buckets.get(key(type, s.layer, minX, minY, dx, dy)) ?? [])))
       for (let i = 0; i < cands.length && !hit; i++) {
         const cand = cands[i]
       if (strict && cand.used) continue

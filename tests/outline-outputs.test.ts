@@ -19,7 +19,8 @@ import { autoroute } from "../src/model/autoroute"
 import { computeConnectivity } from "../src/model/connectivity"
 import { addComponent, addVia, autoPlacePcb, createProject, labelPin } from "../src/model/ops"
 import { boardAreaMm2, boxOnBoard, outlineGeometry } from "../src/model/outline"
-import { addOutlinePaths, addSlot, circlePath, setOutlinePaths } from "../src/model/outlineOps"
+import { addOutlinePaths, addOutlineShape, addSlot, circlePath, outlineSlots, setOutlinePaths } from "../src/model/outlineOps"
+import { buildShape } from "../src/editor/pcb/shapeEditing"
 import { analyzePcb } from "../src/model/pcb"
 import { fillTester } from "../src/model/pour"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
@@ -88,6 +89,70 @@ function populated(base: Project = drawn()): Project {
 
 const analyze = (p: Project) => analyzePcb(p, computeConnectivity(p))
 const kinds = (p: Project, kind: string) => analyze(p).violations.filter((v) => v.kind === kind)
+
+describe("a board drawn with the drawing tools on Edge.Cuts", () => {
+  /** What a user does: line, arc, line and line pieces one after another that end where the next begins, a circle inside, a slot. */
+  const byTools = (): Project => {
+    let p = createProject("tools")
+    p = { ...p, board: { ...p.board, width: 50, height: 40, x: 0, y: 0, cornerRadius: 0 } }
+    const style = { layer: "Edge.Cuts", width: 0.1 }
+    const piece = (tool: Parameters<typeof buildShape>[0], points: Vec2[]) => {
+      const shape = buildShape(tool, points, style)
+      expect(shape).not.toBeNull()
+      const res = addOutlineShape(p, shape!)
+      p = res.project
+      return res
+    }
+    // the first piece of an outline on the rectangle board: the rectangle waits as its first shape, to be replaced by the first closed shape that reaches outside it
+    piece("line", [P(0, 0), P(40, 0)])
+    piece("arc", [P(40, 0), P(55, 15), P(40, 30)])
+    piece("line", [P(40, 30), P(0, 30)])
+    const last = piece("line", [P(0, 30), P(0, 0)])
+    expect(last.closedLoops).toBe(1)
+    expect(last.replacedRectangle).toBe(true)
+    piece("circle", [P(15, 15), P(19, 15)])
+    p = addSlot(p, P(28, 8), P(28, 22), 2)
+    return p
+  }
+
+  it("makes the same board as the shapes themselves do: the pieces join into a loop, a closed shape inside is a cutout", () => {
+    const p = byTools()
+    // the loop closed outside the 50 by 40 rectangle replaced it: the board is the D shape with the circle and the slot cut out of it
+    const g = outlineGeometry(p.board)!
+    expect(p.board.outline!.seed).toBeUndefined()
+    expect(p.board.outline!.paths.filter((q) => q.closed)).toHaveLength(3)
+    expect([p.board.width, p.board.height]).toEqual([55, 30])
+    expect(boardAreaMm2(p.board)).toBeCloseTo(AREA, 0)
+    expect(g.contains(P(10, 25))).toBe(true)
+    expect(g.contains(P(15, 15))).toBe(false)
+    expect(g.contains(P(28, 15))).toBe(false)
+    expect(outlineSlots(p.board.outline!.paths)).toHaveLength(1)
+  })
+
+  it("a shape that reaches outside the plain rectangle replaces it when it is drawn closed in one go", () => {
+    let p = createProject("replace")
+    p = { ...p, board: { ...p.board, width: 50, height: 40, x: 0, y: 0, cornerRadius: 0 } }
+    const res = addOutlineShape(p, buildShape("polygon", [P(-30, -30), P(60, -30), P(60, 40), P(-30, 40)], { layer: "Edge.Cuts", width: 0.1 })!)
+    expect(res.replacedRectangle).toBe(true)
+    expect(res.project.board.outline!.paths).toHaveLength(1)
+    expect([res.project.board.width, res.project.board.height]).toEqual([90, 70])
+    const inside = addOutlineShape(res.project, buildShape("rect", [P(0, 0), P(10, 10)], { layer: "Edge.Cuts", width: 0.1 })!)
+    expect(inside.replacedRectangle).toBe(false)
+    expect(inside.project.board.outline!.paths).toHaveLength(2)
+  })
+
+  it("every output holds for it as for the board that was set directly: checks, files, solid, save and load", () => {
+    const p = populated(byTools())
+    expect(kinds(p, "outline")).toEqual([])
+    expect(kinds(p, "edge-clearance")).toEqual([])
+    expect(() => buildFabricationFiles(p)).not.toThrow()
+    expect(gerberLayers(p).Edge_Cuts).toContain("G03*")
+    expect(npthHoles(p)).toHaveLength(1)
+    const text = serializeProject(p)
+    expect(parseProjectFile(text, { id: "x" }).board).toEqual(p.board)
+    expect(stepVolume(writeStep({ name: "t", board: stepBoard(p), models: [], placements: [] }).text).solids).toBeGreaterThanOrEqual(1)
+  })
+})
 
 describe("a board drawn from scratch with an outline, a cutout and a slot", () => {
   const p = drawn()

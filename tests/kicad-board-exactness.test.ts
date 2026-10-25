@@ -283,6 +283,51 @@ describe("B3: a node counted as imported is in the built project", () => {
   })
 })
 
+describe("B3 after X2 and X6: the nodes of a turned footprint and of an outline of any shape are imported only because the builder writes them", () => {
+  const imp = (text: string) => {
+    const read = readKicadBoard(text)
+    const b = read.board
+    const outline = outlineOf(b)
+    const paths = countPaths(b.tree)
+    const needs = needsOf(b, { paths }, outline)
+    const account = accountNodes(b.tree, read.text, new Set(unbuilt(needs).map((n) => n.ext)), paths, settleFor(b))
+    const built = buildKicadProject(b, outline, { entries: [], account }, {})
+    return { account, built, needs }
+  }
+
+  it("a footprint placed by (transform (translate) (rotate) (scale 1)) is a part at the file's own angle, and its nodes are imported", () => {
+    const text = board({
+      version: 20260616,
+      body: [`(footprint "L:A" (layer "F.Cu") (transform (translate 12 7) (rotate 33.5) (scale 1)) (property "Reference" "U1" (at 0 -1 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15)))) ${pad({ number: "1", at: "1 0 33.5" })})`],
+    })
+    const { account, built, needs } = imp(text)
+    expect(unbuilt(needs).map((n) => n.ext)).not.toContain("X6")
+    for (const path of ["footprint>transform", "footprint>transform>translate", "footprint>transform>rotate", "footprint>transform>scale"]) expect(account.importedPaths.has(path), path).toBe(true)
+    expect(built.project.components[0].pcb).toMatchObject({ x: 12, y: -7, rot: 33.5, side: "top" })
+    const w = pcbPads(built.project.components[0])[0]
+    expect(w.x).toBeCloseTo(12 + Math.cos((33.5 * Math.PI) / 180), 3)
+    expect(w.y).toBeCloseTo(-(7 - Math.sin((33.5 * Math.PI) / 180)), 3)
+  })
+
+  it("an outline of a polygon, a circle cutout and an arc is held as those shapes exactly, and the nodes it is drawn with are imported", () => {
+    const edge = [
+      '(gr_poly (pts (xy 0 0) (xy 30 0) (xy 30 20) (xy 0 20)) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_circle (center 10 10) (end 13 10) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_arc (start 24 6) (mid 27 9) (end 24 12) (stroke (width 0.1) (type solid)) (layer "Edge.Cuts"))',
+      '(gr_line (start 24 12) (end 24 6) (stroke (width 0.1) (type solid)) (layer "Edge.Cuts"))',
+    ].join(" ")
+    const { account, built } = imp(board({ outline: edge }))
+    for (const path of ["gr_poly", "gr_poly>pts", "gr_poly>pts>xy", "gr_circle", "gr_circle>center", "gr_circle>end", "gr_arc", "gr_arc>mid", "gr_line>start"]) expect(account.importedPaths.has(path), path).toBe(true)
+    const paths = built.project.board.outline!.paths
+    expect(paths).toHaveLength(3)
+    // the circle: its centre and radius as the file has them (KiCad's y down becomes y up)
+    const circle = paths.find((q) => q.segs.length === 2 && q.segs.every((g) => g.kind === "arc"))!
+    expect(circle.segs[0]).toMatchObject({ kind: "arc", start: { x: 13, y: -10 } })
+    expect(built.project.board.width).toBe(30)
+    expect(built.project.board.height).toBe(20)
+  })
+})
+
 describe("B4 and m3: an outline is a rectangle only if it is one to 0.001 mm, and a corner bends the right way", () => {
   const arc = (s: string, m: string, e: string) => `(gr_arc (start ${s}) (mid ${m}) (end ${e}) (stroke (width 0.1) (type default)) (layer "Edge.Cuts"))`
   const line = (a: string, b: string) => `(gr_line (start ${a}) (end ${b}) (stroke (width 0.1) (type default)) (layer "Edge.Cuts"))`

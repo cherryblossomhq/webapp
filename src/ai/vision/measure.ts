@@ -1,4 +1,5 @@
-import { boardAreaMm2, boxOnBoard, describeOutline, outlineGeometry } from "../../model/outline"
+import { boardAreaMm2, describeOutline } from "../../model/outline"
+import { partOutsideBoard } from "../../model/pcb"
 import { boxesOverlap, type Box } from "../../lib/geometry"
 import { isPhysical, pcbCourtyard, schematicBounds } from "../../model/instances"
 import { drawingBounds } from "../../model/drawings"
@@ -185,8 +186,6 @@ export function measurePcb(project: Project): PcbMeasure {
   const physical = project.components.filter((c) => isPhysical(findPart(c.partId)))
   const placed = physical.filter((c) => c.pcb.placed)
   const bd = project.board
-  const shape = outlineGeometry(bd)
-  const board: Box = { minX: bd.x - bd.width / 2, maxX: bd.x + bd.width / 2, minY: bd.y - bd.height / 2, maxY: bd.y + bd.height / 2 }
 
   const offBoard: string[] = []
   const boxes: { ref: string; side: string; box: Box }[] = []
@@ -194,7 +193,7 @@ export function measurePcb(project: Project): PcbMeasure {
     const cy = pcbCourtyard(c)
     if (!cy) continue
     boxes.push({ ref: c.ref, side: c.pcb.side, box: cy })
-    if (cy.minX < board.minX || cy.maxX > board.maxX || cy.minY < board.minY || cy.maxY > board.maxY || (shape && !boxOnBoard(shape, cy))) offBoard.push(c.ref)
+    if (partOutsideBoard(project, c, cy)) offBoard.push(c.ref)
   }
   // The same test as the overlap check in the PCB analysis, so the two always agree.
   const overlaps: Clash[] = []

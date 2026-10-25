@@ -21,7 +21,10 @@ export function syncOutlineBox(board: BoardDef): BoardDef {
   return next.width === board.width && next.height === board.height && next.x === board.x && next.y === board.y && board.cornerRadius === 0 ? board : next
 }
 
-const withPaths = (project: Project, paths: ShapePath[]): Project => ({ ...project, board: syncOutlineBox({ ...project.board, outline: { paths } }) })
+const withPaths = (project: Project, paths: ShapePath[], seed = false): Project => ({ ...project, board: syncOutlineBox({ ...project.board, outline: { paths, ...(seed ? { seed: true as const } : {}) } }) })
+
+/** Whether the waiting rectangle (`BoardOutline.seed`) is still the first path after an edit of path `edited`: editing the rectangle itself makes it the user's. */
+const keepsSeed = (project: Project, edited: number) => !!project.board.outline?.seed && edited !== 0
 
 /** The board's rectangle as an outline path: its corners, and quarter arcs where `cornerRadius` rounds them. */
 export function rectPath(b: Pick<BoardDef, "x" | "y" | "width" | "height" | "cornerRadius">): ShapePath {
@@ -105,7 +108,7 @@ export function joinPaths(paths: ShapePath[], eps = JOIN_EPS): ShapePath[] {
     let merged = false
     outer: for (let i = 0; i < open.length; i++) {
       const p = open[i]
-      if (near(start(p), end(p), eps) && p.segs.length >= 2 - (isFullCircle(p.segs[0]) ? 1 : 0)) {
+      if (near(start(p), end(p), eps) && (p.segs.length >= 3 || p.segs.some((sg) => sg.kind !== "line") || isFullCircle(p.segs[0]))) {
         // A path that returns to its start is a loop; the last piece is made to end exactly where the first begins.
         const segs = [...p.segs]
         const last = segs.length - 1
@@ -173,22 +176,20 @@ function pathInsidePath(inner: ShapePath, outer: ShapePath): boolean {
 export function addOutlinePaths(project: Project, drawn: ShapePath[]): { project: Project; replacedRectangle: boolean; closedLoops: number; open: number } {
   const plain = isPlainBoard(project.board)
   const existing = plain ? [rectPath(project.board)] : project.board.outline!.paths
-  const before = existing.filter((p) => p.closed).length
-  let base = existing
+  // The board's rectangle waits as the first path until a closed shape that does not lie inside it is drawn, which replaces it.
+  const seeded = plain || !!project.board.outline?.seed
+  let joined = joinPaths([...existing, ...drawn])
   let replaced = false
-  if (plain) {
-    const closedNew = drawn.filter((p) => p.closed)
-    const rect = existing[0]
-    const outside = closedNew.filter((p) => !pathInsidePath(p, rect))
-    if (outside.length) {
-      // The drawn shape is the board now: the rectangle goes, and so do the pieces that would have been cut from it.
-      base = []
+  if (seeded && joined[0]?.closed) {
+    const rect = joined[0]
+    if (joined.slice(1).some((p) => p.closed && !pathInsidePath(p, rect))) {
+      joined = joined.slice(1)
       replaced = true
     }
   }
-  const joined = joinPaths([...base, ...drawn])
-  const closedLoops = joined.filter((p) => p.closed).length - (replaced ? 0 : before)
-  return { project: withPaths(project, joined), replacedRectangle: replaced, closedLoops: Math.max(0, closedLoops), open: joined.filter((p) => !p.closed).length }
+  const closedBefore = existing.filter((p) => p.closed).length
+  const closedLoops = joined.filter((p) => p.closed).length - closedBefore + (replaced ? 1 : 0)
+  return { project: withPaths(project, joined, seeded && !replaced), replacedRectangle: replaced, closedLoops: Math.max(0, closedLoops), open: joined.filter((p) => !p.closed).length }
 }
 
 /** A drawing's geometry as outline pieces: a line or arc is one open piece; a circle, rectangle or polygon a loop; a polygon with holes, a loop each. */
@@ -205,8 +206,10 @@ export function removeOutlinePath(project: Project, index: number): Project {
   const paths = explicitPaths(project)
   if (index < 0 || index >= paths.length) return project
   const rest = paths.filter((_, i) => i !== index)
-  if (!rest.length) return resetOutline(project)
-  return withPaths(project, rest)
+  const seed = !!project.board.outline?.seed && index !== 0
+  // With only the waiting rectangle left, nothing has been drawn: the board is the rectangle again.
+  if (!rest.length || (seed && rest.length === 1)) return resetOutline(project)
+  return withPaths(project, rest, seed)
 }
 
 /** Back to the rectangle: the outline goes and the board is the box it had. */
@@ -304,7 +307,7 @@ export function moveOutlineVertex(project: Project, pathIndex: number, vertex: n
     if (segs[before].kind === "ellipse") return null
     segs[before] = withEnd(segs[before], to)
   }
-  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)))
+  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)), keepsSeed(project, pathIndex))
 }
 
 /** Move an arc's middle point, which is how its curve is dragged. */
@@ -312,7 +315,7 @@ export function moveOutlineArcMid(project: Project, pathIndex: number, seg: numb
   const paths = explicitPaths(project)
   const s = paths[pathIndex]?.segs[seg]
   if (!s || s.kind !== "arc" || !arcCircle(s.start, to, s.end)) return null
-  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...q, segs: q.segs.map((x, k) => (k === seg ? { ...s, mid: to } : x)) } : q)))
+  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...q, segs: q.segs.map((x, k) => (k === seg ? { ...s, mid: to } : x)) } : q)), keepsSeed(project, pathIndex))
 }
 
 /** A straight edge turned into an arc bulging a quarter of its length to the left of its direction, or an arc made straight. */
@@ -329,7 +332,7 @@ export function toggleOutlineArc(project: Project, pathIndex: number, seg: numbe
     next = { kind: "arc", start: s.a, mid: m, end: s.b }
   } else if (s.kind === "arc") next = { kind: "line", a: s.start, b: s.end }
   else return null
-  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs: p.segs.map((x, k) => (k === seg ? next : x)) } : q)))
+  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs: p.segs.map((x, k) => (k === seg ? next : x)) } : q)), keepsSeed(project, pathIndex))
 }
 
 /** A piece split in two at the point of it nearest `at` (lines and arcs). */
@@ -361,7 +364,7 @@ export function splitOutlineSeg(project: Project, pathIndex: number, seg: number
     pieces = [{ kind: "arc", start: s.start, mid: at1(u / 2), end: m }, { kind: "arc", start: m, mid: at1((1 + u) / 2), end: s.end }]
   } else return null
   const segs = [...p.segs.slice(0, seg), ...pieces, ...p.segs.slice(seg + 1)]
-  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)))
+  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)), keepsSeed(project, pathIndex))
 }
 
 /** A circle as a closed outline path (a round board, or a round cutout). */
@@ -415,7 +418,7 @@ export function translateOutlinePath(project: Project, pathIndex: number, dx: nu
         return { ...s, c: mv(s.c) }
     }
   })
-  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)))
+  return withPaths(project, paths.map((q, i) => (i === pathIndex ? { ...p, segs } : q)), keepsSeed(project, pathIndex))
 }
 
 /** The selection id of a piece of the outline: `o:<path>:<piece>`. */

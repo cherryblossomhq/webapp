@@ -6,7 +6,7 @@ export interface OracleShape {
   filled: boolean
   dash: string | null
   net: string | null
-  /** False for a drawing of a footprint turned by other than a quarter turn, which the project places at the nearest quarter (X6). */
+  /** False for a drawing of a footprint turned by other than a quarter turn; the project holds those exactly since X6, and the checks compare them like the rest. */
   quarter: boolean
   analytic?: { c: number[]; r: number; ends?: number[][] }
   lines: number[][][]

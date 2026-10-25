@@ -246,6 +246,20 @@ export function hasCourtyard(c: ComponentInstance): boolean {
   return !!fp && !fp.noCourtyard
 }
 
+/** The courtyard's corners on the board, in order: the box of the land turned and mirrored as the part is. Null for a part with no land. */
+export function pcbCourtyardRing(c: ComponentInstance): Vec2[] | null {
+  const fp = componentFootprint(c)
+  if (!fp) return null
+  const b = fp.courtyard
+  const mirror = c.pcb.side === "bottom"
+  return [
+    { x: b.minX, y: b.minY },
+    { x: b.maxX, y: b.minY },
+    { x: b.maxX, y: b.maxY },
+    { x: b.minX, y: b.maxY },
+  ].map((q) => transformPoint(q, c.pcb, c.pcb.rot, mirror))
+}
+
 export function pcbCourtyard(c: ComponentInstance): Box | null {
   const fp = componentFootprint(c)
   if (!fp) return null

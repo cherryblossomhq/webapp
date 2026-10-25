@@ -12,6 +12,9 @@ const DEG = Math.PI / 180
 /** How far a flattened curve may be from the true one (mm). The editor and the Gerber use this, a fifth of the 0.001 mm the importer promises. */
 export const FLATTEN_TOLERANCE = 0.0002
 
+/** The most points one arc or ellipse is flattened to: 0.0002 mm accuracy needs fewer on any radius under a kilometre. */
+const MAX_FLATTEN_POINTS = 100_000
+
 /** KiCad's width for a drawing a file gives none (`DEFAULT_LINE_WIDTH`). */
 export const DEFAULT_SHAPE_WIDTH = 0.1
 
@@ -192,7 +195,8 @@ export function flattenArc(start: Vec2, mid: Vec2, end: Vec2, tol = FLATTEN_TOLE
   const a = arcCircle(start, mid, end)
   if (!a || a.r < 1e-9) return [start, end]
   const step = a.r <= tol ? Math.PI : 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tol / a.r)))
-  const n = Math.max(2, Math.ceil(Math.abs(a.sweep) / step))
+  // An arc of a radius no board has (a hostile file's near-straight arc) is cut into at most MAX_FLATTEN_POINTS pieces, so it cannot hang a reader.
+  const n = Math.min(MAX_FLATTEN_POINTS, Math.max(2, Math.ceil(Math.abs(a.sweep) / step)))
   const out: Vec2[] = [start]
   for (let i = 1; i < n; i++) out.push(onCircle(a.c, a.r, a.a0 + (a.sweep * i) / n))
   out.push(end)
@@ -228,7 +232,7 @@ export function flattenBezier(p0: Vec2, c1: Vec2, c2: Vec2, p1: Vec2, tol = FLAT
 export function flattenEllipse(c: Vec2, rx: number, ry: number, rot: number, t0: number, t1: number, tol = FLATTEN_TOLERANCE): Vec2[] {
   const big = Math.max(rx, ry)
   const step = big <= tol ? Math.PI : 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tol / big)))
-  const n = Math.max(2, Math.ceil(Math.abs(t1 - t0) / step))
+  const n = Math.min(MAX_FLATTEN_POINTS, Math.max(2, Math.ceil(Math.abs(t1 - t0) / step)))
   const out: Vec2[] = []
   for (let i = 0; i <= n; i++) out.push(ellipsePoint(c, rx, ry, rot, t0 + ((t1 - t0) * i) / n))
   return out

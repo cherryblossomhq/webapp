@@ -348,7 +348,8 @@ function mergeCollinear(seq: Seq[]): Seq[] {
   /** The two pieces joined: null when a joint of either leaves the merged line, or the second turns back. */
   const join = (u: Seq, v: Seq): Seq | null => {
     if ((u.b[0] - u.a[0]) * (v.b[0] - v.a[0]) + (u.b[1] - u.a[1]) * (v.b[1] - v.a[1]) <= 0) return null
-    const joints = [...(u.joints ?? []), u.b, ...(v.joints ?? [])]
+    // Both ends of the joint count: they meet within the join tolerance and not always exactly, and each must lie on the merged line.
+    const joints = [...(u.joints ?? []), u.b, v.a, ...(v.joints ?? [])]
     if (joints.some((j) => toSegment(j, u.a, v.b) > EXACT_TOLERANCE)) return null
     return { p: u.p, a: u.a, b: v.b, joints }
   }

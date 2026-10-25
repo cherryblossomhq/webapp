@@ -1,5 +1,6 @@
 import { boxesOverlap, round, type Box } from "../lib/geometry"
 import { boardObstacles, exitCorridors } from "../model/autoplace"
+import { boxOnBoard, outlineGeometry } from "../model/outline"
 import { mountingHoles } from "../model/board"
 import { pinKey } from "../model/connectivity"
 import { padGap } from "../model/decoupling"
@@ -139,7 +140,8 @@ function standingProblems(project: Project, c: ComponentInstance): string[] {
   if (!box) return []
   const out: string[] = []
   const board = boardBox(project)
-  if (box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY) out.push("sticks out of the board outline")
+  const shape = outlineGeometry(project.board)
+  if (box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY || (shape && !boxOnBoard(shape, box))) out.push("sticks out of the board outline")
   for (const h of mountingHoles(project.board)) {
     const r = h.diameter / 2
     if (boxesOverlap(box, { minX: h.x - r, maxX: h.x + r, minY: h.y - r, maxY: h.y + r })) out.push("covers a mounting hole")

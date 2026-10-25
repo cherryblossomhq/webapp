@@ -2,24 +2,25 @@ import {
   boxesOverlap,
   closestPointOnSegment,
   dist,
+  isQuarterTurn,
   pointSegmentDistance,
   segmentSegmentDistance,
   segmentsIntersect,
   type Box,
 } from "../lib/geometry"
 import { mountingHoles } from "./board"
-import { boxOnBoard, copperEdgeClearance, outlineGeometry, outlineState } from "./outline"
+import { boxOnBoard, convexOverlap, copperEdgeClearance, outlineGeometry, outlineState, ringOnBoard } from "./outline"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
 import { findPart } from "./library"
-import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
 import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
 import { worldShapes } from "./shapeItems"
 import { segEnd, shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
 import { layerText, worldTexts } from "./texts"
-import type { BoardDef, BoardShape, CopperLayer, Project, Vec2, Via } from "./types"
+import type { BoardDef, BoardShape, ComponentInstance, CopperLayer, Project, Vec2, Via } from "./types"
 
 /** componentId used for board-level copper such as mounting holes. */
 export const BOARD_OWNER = "#board"
@@ -784,9 +785,6 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
 
   // Board edge
   const b = project.board
-  const board: Box = { minX: b.x - b.width / 2, minY: b.y - b.height / 2, maxX: b.x + b.width / 2, maxY: b.y + b.height / 2 }
-  const geometry = outlineGeometry(b)
-  const outside = (box: Box) => (geometry ? !boxOnBoard(geometry, box) : box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY)
   // A board whose outline is not closed (or is missing) cannot be cut out: the one error that says so, where the outline stops.
   const state = outlineState(b)
   if (state !== "closed") {
@@ -802,7 +800,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   }
   for (const c of project.components) {
     const cy = c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null
-    if (cy && outside(cy)) {
+    if (cy && partOutsideBoard(project, c, cy)) {
       push({
         severity: "error",
         kind: "outside-board",
@@ -822,6 +820,12 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
       const q = placed[j]
       if (p.c.pcb.side !== q.c.pcb.side) continue
       if (!boxesOverlap(inflate(p.box, -0.05), inflate(q.box, -0.05))) continue
+      // A part at an angle that is not a quarter turn has a turned courtyard, whose box overlaps more than it does.
+      if (!isQuarterTurn(p.c.pcb.rot) || !isQuarterTurn(q.c.pcb.rot)) {
+        const ra = pcbCourtyardRing(p.c)
+        const rb = pcbCourtyardRing(q.c)
+        if (ra && rb && convexOverlap(ra, rb) <= 0.1) continue
+      }
       push({
         severity: "warning",
         kind: "overlap",
@@ -861,6 +865,22 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
 // ---------- Manufacturability ----------
 
 const mm = (v: number) => formatLength(v, "mm", true)
+
+/**
+ * Whether a placed part's courtyard is not wholly on the board. A part on a quarter turn is its box against the board's box (or its outline); a part
+ * at any other angle is its turned courtyard itself, so a part standing across a corner is not taken for one that sticks out.
+ */
+export function partOutsideBoard(project: Project, c: ComponentInstance, box = pcbCourtyard(c)): boolean {
+  if (!box) return false
+  const b = project.board
+  const geometry = outlineGeometry(b)
+  if (!isQuarterTurn(c.pcb.rot)) {
+    const ring = pcbCourtyardRing(c)
+    if (ring) return geometry ? !ringOnBoard(geometry, ring) : ring.some((p) => edgeDistance(b, p) < -1e-9)
+  }
+  if (geometry) return !boxOnBoard(geometry, box)
+  return box.minX < b.x - b.width / 2 || box.maxX > b.x + b.width / 2 || box.minY < b.y - b.height / 2 || box.maxY > b.y + b.height / 2
+}
 
 /** Distance from a point inside the board to its (rounded) outline; negative outside. */
 export function edgeDistance(b: BoardDef, p: Vec2): number {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { runTool } from "../src/ai/tools"
 import { isQuarterTurn, normalizeAngle, rotate90, transformPoint } from "../src/lib/geometry"
 import { addComponent, createProject } from "../src/model/ops"
+import { setOutlinePaths } from "../src/model/outlineOps"
 import { componentFootprint, pcbCourtyard, pcbPads, slotEnds } from "../src/model/instances"
 import { analyzePcb, pointPadDistance, segmentPadDistance } from "../src/model/pcb"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -18,6 +19,7 @@ import type { Project, Vec2 } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 
 const D2R = Math.PI / 180
+const P2 = (x: number, y: number): Vec2 => ({ x, y })
 /** A point of the part's own frame on the board: mirrored in x on the bottom, turned by `rot` counter-clockwise, moved to the part. The independent formula the tests check against. */
 const place = (local: Vec2, at: Vec2, rot: number, bottom: boolean): Vec2 => {
   const x = bottom ? -local.x : local.x
@@ -142,6 +144,36 @@ describe("the pads of a part at any angle", () => {
   })
 })
 
+describe("courtyards of parts at an angle in the checks", () => {
+  const land = (c: ReturnType<typeof resistorAt>["c"]) => componentFootprint(c)!.courtyard
+  const kindsOf = (p: Project, kind: string) => analyzePcb(p, computeConnectivity(p)).violations.filter((v) => v.kind === kind)
+  const at = (p: Project, ids: Record<string, Vec2>) => ({ ...p, components: p.components.map((c) => (ids[c.ref] ? { ...c, pcb: { ...c.pcb, x: ids[c.ref].x, y: ids[c.ref].y } } : c)) })
+
+  it("a part turned to lie against a chamfered corner is on the board by its own courtyard, not by its box", () => {
+    const { project, c } = resistorAt(45, "top", { x: 0, y: 0 })
+    const w = land(c).maxX - land(c).minX
+    const outline = setOutlinePaths(project, [{ closed: true, segs: [[0, 0, 20, 0], [20, 0, 20, 12], [20, 12, 12, 20], [12, 20, 0, 20], [0, 20, 0, 0]].map(([x1, y1, x2, y2]) => ({ kind: "line" as const, a: { x: x1, y: y1 }, b: { x: x2, y: y2 } })) }])
+    // the centre c on the diagonal such that the courtyard's far side lies 0.05 mm inside the chamfer x + y = 32
+    const centre = (32 - 0.05 - (Math.SQRT2 * w) / 2) / 2
+    expect(kindsOf(at(outline, { [c.ref]: { x: centre, y: centre } }), "outside-board")).toEqual([])
+    expect(kindsOf(at(outline, { [c.ref]: { x: centre + 0.2, y: centre + 0.2 } }), "outside-board")).toHaveLength(1)
+    // the same part on a rectangle board whose corner is rounded
+    const rounded = { ...project, board: { ...project.board, width: 20, height: 20, x: 10, y: 10, cornerRadius: 6 } }
+    expect(kindsOf(at(rounded, { [c.ref]: { x: 10, y: 10 } }), "outside-board")).toEqual([])
+  })
+
+  it("two turned parts overlap by their courtyards, not by their boxes", () => {
+    const a = resistorAt(45, "top", { x: 0, y: 0 })
+    const h = land(a.c).maxY - land(a.c).minY
+    const two = (t: number) => {
+      const b = addComponent(a.project, "resistor", { sch: { x: 3, y: 0 }, pcb: { x: (-t) / Math.SQRT2, y: t / Math.SQRT2, rot: 45, placed: true } })
+      return b.project
+    }
+    expect(kindsOf(two(h + 0.3), "overlap")).toEqual([])
+    expect(kindsOf(two(h - 0.3), "overlap")).toHaveLength(1)
+  })
+})
+
 describe("slots and holes of a part at an angle", () => {
   const slotLand = (rot: number, side: "top" | "bottom") => {
     const text = board({
@@ -165,7 +197,7 @@ describe("slots and holes of a part at an angle", () => {
 })
 
 describe("a KiCad board with parts at any angle", () => {
-  const angles = [33, 33.5, 179.999, 270.25, 45]
+  const angles = [33, 33.5, 90, 179.999, 270, 270.25, 45]
   for (const bottom of [false, true]) {
     it(`imports every part at the file's own angle on the ${bottom ? "bottom" : "top"}, and the pads and drawings are where the file puts them`, () => {
       const body = angles.map((a, i) =>
@@ -201,7 +233,9 @@ describe("a KiCad board with parts at any angle", () => {
           // the corners of the pad: its box turned by the part's angle, as the file's absolute pad angle is the part's
           for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
             const corner = toEditor(kicadWorld(lx + sx * 0.7, ly + sy * 0.45))
-            const poly = pads[k].points ?? []
+            // a part on a quarter turn keeps its level rectangle (its box), any other angle is the turned polygon
+            const w = pads[k]
+            const poly = w.points ?? [{ x: w.x - w.width / 2, y: w.y - w.height / 2 }, { x: w.x + w.width / 2, y: w.y - w.height / 2 }, { x: w.x + w.width / 2, y: w.y + w.height / 2 }, { x: w.x - w.width / 2, y: w.y + w.height / 2 }]
             expect(poly.some((q) => near(q, corner, 1e-3))).toBe(true)
           }
         })
@@ -212,7 +246,11 @@ describe("a KiCad board with parts at any angle", () => {
         const circle = own.find((s) => s.shape.type === "circle")!.shape as { c: Vec2; r: number }
         expect(near(circle.c, toEditor(kicadWorld(0.5, 0.25)), 1e-3)).toBe(true)
         expect(circle.r).toBeCloseTo(0.5, 6)
-        const rect = own.find((s) => s.shape.type === "polygon")!.shape as { pts: Vec2[] }
+        const rectOwn = own.find((s) => s.shape.type === "polygon" || s.shape.type === "rect")!
+        // the drawing keeps its style when a turned rectangle becomes a polygon: layer (swapped on the bottom), width and no fill
+        expect(rectOwn.shape.layer).toBe(bottom ? "B.CrtYd" : "F.CrtYd")
+        expect(rectOwn.shape.width).toBeCloseTo(0.05, 9)
+        const rect = (rectOwn.shape.type === "rect" ? { pts: [P2(rectOwn.shape.a.x, rectOwn.shape.a.y), P2(rectOwn.shape.b.x, rectOwn.shape.a.y), P2(rectOwn.shape.b.x, rectOwn.shape.b.y), P2(rectOwn.shape.a.x, rectOwn.shape.b.y)] } : rectOwn.shape) as { pts: Vec2[] }
         for (const [lx, ly] of [[-2, -1.5], [2, -1.5], [2, 1.5], [-2, 1.5]]) expect(rect.pts.some((q) => near(q, toEditor(kicadWorld(lx, ly)), 1e-3))).toBe(true)
       })
     })

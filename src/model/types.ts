@@ -486,6 +486,12 @@ export interface MountingHoles {
  */
 export interface BoardOutline {
   paths: ShapePath[]
+  /**
+   * `paths[0]` is the rectangle the board was before anything was drawn on its edge, still waiting to be replaced: the first closed
+   * shape drawn that does not lie inside it becomes the board in its place (and a shape inside it is a cutout). Cleared as soon as that
+   * happens or the rectangle itself is edited. Absent for every outline that came from a file or was set whole.
+   */
+  seed?: true
 }
 
 export interface BoardDef {

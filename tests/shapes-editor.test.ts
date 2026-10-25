@@ -62,7 +62,9 @@ describe("the layer list", () => {
   })
 
   it("offers every drawing layer to the tools", () => {
-    expect(drawLayerChoices()).toBe(SHAPE_LAYERS)
+    // every drawing layer, and the board's edge after them: what is drawn on it is the outline (X2)
+    expect(drawLayerChoices().slice(0, -1)).toEqual(SHAPE_LAYERS)
+    expect(drawLayerChoices().at(-1)?.name).toBe("Edge.Cuts")
     expect(drawLayerChoices().some((l) => l.name === "User.45")).toBe(true)
   })
 })

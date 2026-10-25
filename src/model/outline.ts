@@ -407,3 +407,43 @@ export function describeOutline(b: Pick<BoardDef, "outline">): string | null {
   if (open) bits.push(`${open} open edge${open === 1 ? "" : "s"}`)
   return bits.join(", ")
 }
+
+/** Whether a convex ring (a turned part's courtyard) lies on the board: its corners are on it and no edge cuts across its sides. */
+export function ringOnBoard(g: OutlineGeometry, ring: Vec2[]): boolean {
+  if (!g.rings.length) return true
+  if (!ring.every((p) => g.contains(p))) return false
+  for (let i = 0; i < ring.length; i++) if (g.nearestToSegment(ring[i], ring[(i + 1) % ring.length], 1e-9) <= 1e-9) return false
+  return true
+}
+
+/**
+ * How far two convex rings overlap along the direction that frees them soonest (separating axis): positive when they overlap by that much,
+ * negative by the gap when they do not touch. For two boxes this is the smaller of the overlaps along x and y.
+ */
+export function convexOverlap(a: Vec2[], b: Vec2[]): number {
+  let least = Infinity
+  for (const ring of [a, b]) {
+    for (let i = 0; i < ring.length; i++) {
+      const p = ring[i]
+      const q = ring[(i + 1) % ring.length]
+      const nx = q.y - p.y
+      const ny = p.x - q.x
+      const len = Math.hypot(nx, ny)
+      if (len < 1e-12) continue
+      const range = (pts: Vec2[]) => {
+        let lo = Infinity
+        let hi = -Infinity
+        for (const v of pts) {
+          const d = (v.x * nx + v.y * ny) / len
+          lo = Math.min(lo, d)
+          hi = Math.max(hi, d)
+        }
+        return [lo, hi]
+      }
+      const [alo, ahi] = range(a)
+      const [blo, bhi] = range(b)
+      least = Math.min(least, Math.min(ahi, bhi) - Math.max(alo, blo))
+    }
+  }
+  return least
+}

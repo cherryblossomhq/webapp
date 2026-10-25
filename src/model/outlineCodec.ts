@@ -15,7 +15,7 @@ import type { BoardOutline, Vec2 } from "./types"
 export type PackedOutline = (string | number)[][]
 
 export function packOutline(outline: BoardOutline): PackedOutline {
-  return outline.paths.map((p) => {
+  const packed = outline.paths.map((p) => {
     const out: (string | number)[] = [p.closed ? "c" : "o"]
     if (!p.segs.length) return out
     const s0 = segStart(p.segs[0])
@@ -38,6 +38,8 @@ export function packOutline(outline: BoardOutline): PackedOutline {
     }
     return out
   })
+  // The rectangle that waits to be replaced (`BoardOutline.seed`) is a marker in front of the paths.
+  return outline.seed ? [["s"], ...packed] : packed
 }
 
 const NUMBERS: Record<string, number> = { L: 2, A: 4, B: 6, E: 7 }
@@ -46,8 +48,17 @@ const NUMBERS: Record<string, number> = { L: 2, A: 4, B: 6, E: 7 }
 export function unpackOutline(raw: unknown): BoardOutline | null {
   if (!Array.isArray(raw)) return null
   const paths: ShapePath[] = []
+  let seed = false
+  // The marker holds only if the path after it (the rectangle) read: otherwise the first path left is not the one it meant.
+  let firstRead: boolean | null = null
   for (const item of raw) {
+    if (Array.isArray(item) && item.length === 1 && item[0] === "s") {
+      seed = true
+      continue
+    }
     if (!Array.isArray(item) || (item[0] !== "c" && item[0] !== "o")) continue
+    const readNow = firstRead === null
+    if (readNow) firstRead = false
     const segs: PathSeg[] = []
     let ok = true
     let i = 1
@@ -91,8 +102,9 @@ export function unpackOutline(raw: unknown): BoardOutline | null {
     }
     if (!ok || !segs.length) continue
     paths.push({ closed: item[0] === "c", segs })
+    if (readNow) firstRead = true
   }
-  return { paths }
+  return { paths, ...(seed && firstRead && paths[0].closed ? { seed: true as const } : {}) }
 }
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
@@ -101,6 +113,7 @@ const point = (v: unknown): Vec2 | null => (v && typeof v === "object" && finite
 /** The outline of a hand-written file, `{ paths: [{ closed, segs: [...] }] }`: each piece that reads is kept, a path with a piece that does not is dropped. */
 export function normalizeOutline(raw: unknown): BoardOutline | null {
   const list = (raw as { paths?: unknown } | null)?.paths
+  const seeded = (raw as { seed?: unknown } | null)?.seed === true
   if (!Array.isArray(list)) return null
   const paths: ShapePath[] = []
   for (const p of list) {
@@ -131,5 +144,5 @@ export function normalizeOutline(raw: unknown): BoardOutline | null {
     }
     if (segs.length === segsRaw.length) paths.push({ closed: (p as { closed?: unknown }).closed === true, segs })
   }
-  return { paths }
+  return { paths, ...(seeded && paths.length && paths[0].closed ? { seed: true as const } : {}) }
 }

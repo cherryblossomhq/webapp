@@ -12,6 +12,7 @@ import { needs as censusNeeds } from "./kicad-census/needs.mjs"
 import { copperOracle, oracle } from "./kicad-census/pads.mjs"
 import { decodeNetName } from "../src/model/kicad/board"
 import { cleanFlags } from "../src/model/partFlags"
+import { checkEdge } from "./kicad-edge-check"
 import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
 import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
 import { fontFromGlyphStrings, loadFontFile } from "./kicad-census/texts.mjs"
@@ -19,6 +20,10 @@ import glyphsBase from "../src/lib/kicadFont/glyphsBase"
 import glyphsCjk from "../src/lib/kicadFont/glyphsCjk"
 import { loadKicadFont } from "../src/lib/kicadFont/load"
 import { buildFabricationFiles } from "../src/export/bundle"
+import { projectToCircuitJson } from "../src/export/circuitJson"
+import { OutlineNotClosedError } from "../src/export/outlineGuard"
+import { pnpCsv } from "../src/export/pnp"
+import { outlineState } from "../src/model/outline"
 import { runTool } from "../src/ai/tools"
 import { parseProjectFile } from "../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
@@ -127,6 +132,21 @@ interface Row {
   /** Texts whose strokes were laid out against the oracle's with KiCad's font, and how many differ. */
   textsInk: number
   textsTurned: number
+  /** An imported board whose outline does not close or is missing: the Gerber export refused it with the message. */
+  outlineRefused: boolean
+  /** X6: parts of the project at an angle that is not a quarter turn, the ones of them whose pads were compared with the oracle's, the pads and the pad outlines compared on them. */
+  turnedParts: number
+  turnedCompared: number
+  turnedPads: number
+  turnedBoxes: number
+  /** X2: the outline against the file's Edge.Cuts, both ways; the shape the project holds. */
+  edgePieces: number
+  edgeSamples: number
+  edgeWrong: number
+  edgeRepairs: number
+  edgeMerged: number
+  edgeDropped: number
+  outlineHeld: string
   textsByOrder: number
   textsInkWrong: number
   /** The texts survive the stored form. */
@@ -236,6 +256,18 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           textsBoxes: 0,
           textsInk: 0,
           textsTurned: 0,
+          outlineRefused: false,
+          turnedParts: 0,
+          turnedCompared: 0,
+          turnedPads: 0,
+          turnedBoxes: 0,
+          edgePieces: 0,
+          edgeSamples: 0,
+          edgeWrong: 0,
+          edgeRepairs: 0,
+          edgeMerged: 0,
+          edgeDropped: 0,
+          outlineHeld: "",
           textsByOrder: 0,
           textsInkWrong: 0,
           textsRoundTrip: true,
@@ -409,11 +441,13 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           let fail = false
           for (const comp of built.project.components) {
             const f = o.find((q) => q.ref === comp.ref)
-            if (!f || byRef.get(f.ref) !== 1 || f.angle % 90 !== 0 || f.pads.length === 0) {
+            if (!f || byRef.get(f.ref) !== 1 || f.pads.length === 0) {
               skipped++
               continue
             }
             const world = pcbPads(comp)
+            const turned = f.angle % 90 !== 0
+            if (turned) row.turnedParts++
             // the project has a pad for every pad of the file that has copper or a hole; pads with no number are kept as holes
             if (world.length !== f.pads.length) {
               fail = true
@@ -424,16 +458,20 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               // a trapezoid is placed by the middle of its outline, which is not its pad's position
               if (f.pads[j].shape === "trapezoid") continue
               compared++
+              if (turned) row.turnedPads++
               if (!near(world[j].x, f.pads[j].x) || !near(world[j].y, -f.pads[j].y)) {
                 if (!fail) row.notes.push(`${comp.ref} pad ${j}: project (${world[j].x}, ${world[j].y}), file (${f.pads[j].x}, ${-f.pads[j].y}), footprint at ${f.angle}${f.bottom ? " bottom" : ""}`)
                 fail = true
               }
               // the outline's extent, for the pads whose shape the project draws as the file does: quarter angles, no custom shape
               const box = f.pads[j].box
-              const quarter = f.pads[j].angle % 90 === 0
+              // the pad's own turn within the part: its stored (board) angle less the part's, whatever the part's angle
+              const own = (((f.pads[j].angle - f.angle) / 90) % 1 + 1) % 1
+              const quarter = own < 1e-6 || own > 1 - 1e-6
               const hole = world[j].plated === false
               if (box && quarter && !hole && ["rect", "oval", "circle"].includes(f.pads[j].shape)) {
                 row.boxChecked++
+                if (turned) row.turnedBoxes++
                 if (!near(world[j].width, box.w) || !near(world[j].height, box.h)) {
                   row.boxWrong++
                   if (row.boxWrong === 1) row.notes.push(`${comp.ref} pad ${j}: project outline ${world[j].width} by ${world[j].height}, file ${box.w} by ${box.h}`)
@@ -573,11 +611,21 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.textsLayers = txt.layers
           row.textsBoxes = txt.boxes
           row.textsInk = txt.inkChecked
-          row.textsTurned = txt.notComparedTurned
+          row.textsTurned = txt.turned
           row.textsByOrder = txt.pairedByOrder
           row.textsInkWrong = txt.inkWrong
           row.textsRoundTrip = textsRoundTripOk(built.project)
           if (txt.note) row.notes.push(`texts: ${txt.note}`)
+          // ---- slice 2c-i, X2: the board's outline against the file's Edge.Cuts, to 0.001 mm both ways ----
+          const edge = checkEdge(text, built.project, outlineOf(board).repair)
+          row.edgePieces = edge.pieces
+          row.edgeSamples = edge.fileSamples + edge.projectSamples
+          row.edgeWrong = edge.wrong
+          row.edgeRepairs = edge.atRepairs
+          row.edgeMerged = edge.merged
+          row.edgeDropped = edge.dropped
+          row.outlineHeld = built.project.board.outline ? (built.project.board.outline.paths.length ? (built.project.board.outline.paths.every((p) => p.closed) ? "outline" : "open") : "missing") : "rectangle"
+          if (edge.note) row.notes.push(edge.note)
           if (imported.status === "imported") {
             const p = imported.project
             const problems: string[] = []
@@ -585,17 +633,32 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
             for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "board", "rules", "properties"] as const) {
               if (!isDeepStrictEqual(back[k], p[k])) problems.push(`${k} differ after a save and a load`)
             }
+            const outlineProblem = outlineState(p.board) !== "closed"
             try {
-              const files = buildFabricationFiles(p)
-              if (!Object.keys(files).length || Object.values(files).some((f) => typeof f !== "string" || !f.length)) problems.push("a fabrication file is empty")
-              // the Gerbers, the drill file, the BOM, the position file and the notes are all there
-              for (const ext of [".gtl", ".gbl", ".gm1", ".drl"]) if (!Object.keys(files).some((k) => k.endsWith(ext))) problems.push(`no ${ext} file`)
+              let files: Record<string, string> = {}
+              try {
+                files = buildFabricationFiles(p)
+                if (outlineProblem) problems.push("the Gerbers were made for a board whose outline does not close")
+              } catch (e) {
+                // A board with no closed outline cannot be fabricated: the export says so, with the message (the founder's decision), and that is the right answer for it.
+                if (!(outlineProblem && e instanceof OutlineNotClosedError && /outline/.test(e.message))) throw e
+                row.outlineRefused = true
+              }
+              if (!outlineProblem) {
+                if (!Object.keys(files).length || Object.values(files).some((f) => typeof f !== "string" || !f.length)) problems.push("a fabrication file is empty")
+                // the Gerbers, the drill file, the BOM, the position file and the notes are all there
+                for (const ext of [".gtl", ".gbl", ".gm1", ".drl"]) if (!Object.keys(files).some((k) => k.endsWith(ext))) problems.push(`no ${ext} file`)
+              }
               // the import screen: the summary and the report text build, and say the board came in
               const summary = summarizeImport(imported, { ...emptyContext(), used: [rel], boardBytes: text.length })
               if (summary.status !== "imported") problems.push("the import screen's summary does not say the board came in")
               if (!reportText(summary, p.name).includes(p.name)) problems.push("the import report text is empty")
               const checks = runTool(p, "run_checks", {})
               if (checks.isError) problems.push(`run_checks: ${checks.result.slice(0, 80)}`)
+              else if (outlineProblem && !/outline/i.test(checks.result)) problems.push("run_checks does not say the outline is not closed")
+              // the position file, the bill of materials and Circuit JSON do not need the outline closed
+              if (!pnpCsv(p).includes("Designator")) problems.push("no position file")
+              if (!projectToCircuitJson(p).elements.length) problems.push("no Circuit JSON")
             } catch (e) {
               problems.push(`export or checks threw: ${e instanceof Error ? e.message : e}`)
             }
@@ -624,6 +687,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(rows.filter((r) => !r.gfxCounts || r.gfxWrong > 0 || !r.gfxRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("drawings"))}`)).toEqual([])
       // slice 1b-iii: every text object of the file is in the project, on its layer, with its place, size, angle, justification and content, to 0.001 mm; the texts survive the stored form; an imported board is whole end to end
       expect(rows.filter((r) => !r.textsCounts || r.textsWrong > 0 || r.textsInkWrong > 0 || !r.textsRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("texts"))}`)).toEqual([])
+      // slice 2c-i: every piece the file draws on Edge.Cuts is on the project's outline and the other way round, to 0.001 mm
+      expect(rows.filter((r) => r.edgeWrong > 0).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("outline"))}`)).toEqual([])
       expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
@@ -668,6 +733,7 @@ function summarize(rows: Row[], seconds: number): string {
     ["texts: every text of the file in the project, place, size, angle, mirror, justification, flags and content (oracle)", (r) => r.textsWrong === 0],
     ["texts: strokes equal the oracle's layout with KiCad's font (boards sampled)", (r) => r.textsInkWrong === 0],
     ["texts: a save and a load give the same texts in memory (stored form)", (r) => r.textsRoundTrip],
+    ["outline: every piece of the file's Edge.Cuts is on the project's outline, and the other way round, to 0.001 mm (oracle; repairs counted)", (r) => r.edgeWrong === 0],
     ["no crash", (r) => r.status !== "CRASH"],
   ]
   for (const [label, f] of cols) {
@@ -700,10 +766,16 @@ function summarize(rows: Row[], seconds: number): string {
   const textLayerTotals = new Map<string, number>()
   for (const r of board) for (const [k, v] of Object.entries(r.textsLayers)) textLayerTotals.set(k, (textLayerTotals.get(k) ?? 0) + v)
   lines.push(`texts: ${board.reduce((n, r) => n + r.textsFile, 0)} compared (board text, and the reference, value and own text of each part), ${board.reduce((n, r) => n + r.textsProject, 0)} in the projects, on ${count(board, (r) => r.textsFile > 0)} boards; ${board.reduce((n, r) => n + r.textsWrong, 0)} not matched; ${board.reduce((n, r) => n + r.textsBoxes, 0)} text boxes. By layer: ${[...textLayerTotals].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ")}`)
-  lines.push(`texts not compared: ${board.reduce((n, r) => n + r.textsTurned, 0)} on parts turned by other than a quarter turn (X6 places those parts); texts of parts that share a place with another part, paired by footprint order and compared: ${board.reduce((n, r) => n + r.textsByOrder, 0)}`)
+  lines.push(`texts on parts turned by other than a quarter turn, compared like the rest (X6): ${board.reduce((n, r) => n + r.textsTurned, 0)}; texts of parts that share a place with another part, paired by footprint order and compared: ${board.reduce((n, r) => n + r.textsByOrder, 0)}`)
+  lines.push(`X6: ${board.reduce((n, r) => n + r.turnedParts, 0)} parts at an angle that is not a quarter turn on ${count(board, (r) => r.turnedParts > 0)} boards, their ${board.reduce((n, r) => n + r.turnedPads, 0)} pads compared with the oracle's places and ${board.reduce((n, r) => n + r.turnedBoxes, 0)} pad outlines with its extents (wrong: ${board.reduce((n, r) => n + r.boxWrong, 0)}); drawings and texts of those parts are in the counts above`)
+  const held = new Map<string, number>()
+  for (const r of board) if (r.outlineHeld) held.set(r.outlineHeld, (held.get(r.outlineHeld) ?? 0) + 1)
+  lines.push(`X2: the outline is held as ${[...held].map(([k, v]) => `${k} ${v}`).join(", ")}; ${board.reduce((n, r) => n + r.edgePieces, 0)} pieces of Edge.Cuts compared (${board.reduce((n, r) => n + r.edgeSamples, 0)} points both ways, wrong ${board.reduce((n, r) => n + r.edgeWrong, 0)}); points off by more than 0.001 mm at a repair (a gap closed by a connector): ${board.reduce((n, r) => n + r.edgeRepairs, 0)} on ${count(board, (r) => r.edgeRepairs > 0)} boards; on boards where pieces were merged onto a line (up to 0.1 mm): ${board.reduce((n, r) => n + r.edgeMerged, 0)} on ${count(board, (r) => r.edgeMerged > 0)} boards; short pieces dropped as the report says: ${board.reduce((n, r) => n + r.edgeDropped, 0)}`)
+  const importedReal = board.filter((r) => r.status === "imported" && ["pcbench", "github", "kicad-demos"].includes(r.group))
+  lines.push(`real boards that import now: ${importedReal.length} of ${board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group)).length}; all boards: ${count(board, (r) => r.status === "imported")} of ${board.length}`)
   lines.push(`text strokes laid out against the oracle with KiCad's font: ${board.reduce((n, r) => n + r.textsInk, 0)} texts on ${count(board, (r) => r.textsInk > 0)} boards, ${board.reduce((n, r) => n + r.textsInkWrong, 0)} differ`)
   const imported = board.filter((r) => r.status === "imported")
-  lines.push(`imported boards end to end (save and load, Gerbers, drill, BOM, position file, notes, run_checks): ${count(imported, (r) => r.endToEnd === "ok")}/${imported.length} ok`)
+  lines.push(`imported boards end to end (save and load, Gerbers, drill, BOM, position file, notes, run_checks): ${count(imported, (r) => r.endToEnd === "ok")}/${imported.length} ok; of them ${count(imported, (r) => r.outlineRefused)} have an outline that does not close or is missing, and the Gerber export refuses them with the message, as it should`)
   lines.push(`pins whose KiCad type was folded into a role: ${board.reduce((n, r) => n + r.foldedPins, 0)} on ${count(board, (r) => r.foldedPins > 0)} boards; single-pad nets accepted in Checks: ${board.reduce((n, r) => n + r.loneLabels, 0)} on ${count(board, (r) => r.loneLabels > 0)} boards`)
   const realRows = board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group))
   const exts = [...new Set(board.flatMap((r) => [...r.censusNeeds, ...r.needsActual]))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))

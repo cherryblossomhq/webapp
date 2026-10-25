@@ -809,7 +809,7 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
 const setBoardTool: ToolSpec = {
   name: "set_board",
   description:
-    "Set the board: size in millimetres (width and height together), thickness, corner radius, copper weight, surface finish, solder mask and silkscreen colours, and corner mounting holes. Only the fields given change. A board can have any shape: outline and add_cutouts are text, shapes made of M x y (start), L x y, A mx my x y (arc through the middle point to the end), Z (close), O cx cy r (circle) and S x1 y1 x2 y2 width (slot), in mm with y up; a shape inside another is a cutout. outline \"rect\" goes back to the rectangle; get_design lists the outline and the cutouts, which remove_cutouts counts from 0.",
+    "Set the board: size in mm (width and height together), thickness, corner radius, copper weight, surface finish, mask and silkscreen colours, corner mounting holes. Only the fields given change. Any shape: outline and add_cutouts are text of shapes in mm, y up: M x y (start), L x y, A mx my x y (arc through mx my to the end), O cx cy r (circle), S x1 y1 x2 y2 width (slot), Z (close); a shape inside another is a cutout. outline \"rect\" restores the rectangle; remove_cutouts counts from 0 as get_design lists them.",
   input_schema: {
     type: "object",
     properties: {

@@ -164,6 +164,31 @@ describe("editing the outline", () => {
     expect(outlineState(closed.project.board)).toBe("closed")
   })
 
+  it("the rectangle waits as the first shape until a closed shape reaches outside it; shapes inside are cutouts, and editing it makes it the user's", () => {
+    const line = (a: Vec2, b: Vec2): ShapePath => ({ closed: false, segs: [{ kind: "line", a, b }] })
+    // an open piece, then a cutout, then a loop that closes outside: the rectangle is replaced and the cutout stays
+    let r = addOutlinePaths(plain(), [line(P(0, 0), P(10, 0))])
+    expect(r.project.board.outline!.seed).toBe(true)
+    expect(r.project.board.outline!.paths[0].closed).toBe(true)
+    r = addOutlinePaths(r.project, [circlePath(P(5, 5), 2)])
+    expect(r.replacedRectangle).toBe(false)
+    expect(r.project.board.outline!.seed).toBe(true)
+    r = addOutlinePaths(r.project, [line(P(10, 0), P(40, 0)), line(P(40, 0), P(40, 30)), line(P(40, 30), P(0, 30)), line(P(0, 30), P(0, 0))])
+    expect(r.replacedRectangle).toBe(true)
+    expect(r.project.board.outline!.seed).toBeUndefined()
+    expect(r.project.board.outline!.paths.filter((p) => p.closed)).toHaveLength(2)
+    expect([r.project.board.width, r.project.board.height]).toEqual([40, 30])
+    // the marker survives a save and a load
+    const waiting = addOutlinePaths(plain(), [line(P(0, 0), P(10, 0))]).project
+    expect(parseProjectFile(serializeProject(waiting), { id: "x" }).board.outline!.seed).toBe(true)
+    expect(unpackOutline(packOutline(waiting.board.outline!))!.seed).toBe(true)
+    // taking the rectangle's own corner makes it the user's: it is no longer replaced
+    const moved = moveOutlineVertex(waiting, 0, 0, P(-26, -21))!
+    expect(moved.board.outline!.seed).toBeUndefined()
+    // deleting what was drawn leaves the rectangle as a plain board again
+    expect(removeOutlinePath(waiting, 1).board.outline).toBeUndefined()
+  })
+
   it("moves a corner and the two edges follow; an arc keeps its middle point", () => {
     const base = withOutline([poly([0, 0], [10, 0], [10, 10], [0, 10])])
     const moved = moveOutlineVertex(base, 0, 2, P(14, 12))!

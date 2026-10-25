@@ -77,6 +77,8 @@ export interface WorldPad {
   layers: CopperLayer[]
   /** False for a non-plated hole: no copper, no net, width = height = drill. */
   plated?: false
+  /** See `PadDef.axisSpokes`. */
+  axisSpokes?: true
   /**
    * The angle of a slotted hole's axis in degrees, [0, 180), only when it is not along x or y: a part
    * placed at an angle that is not a quarter turn. Its copper is then a polygon (`points`).
@@ -162,7 +164,7 @@ export function pcbPads(c: ComponentInstance): WorldPad[] {
     const padNumber = pad.pin
     const pin = pad.pin ? (part.padAlias?.[pad.pin] ?? pad.pin) : null
     const slot = pad.slotLength ? { slotLength: pad.slotLength } : {}
-    const plated = pad.plated === false ? { plated: false as const } : {}
+    const plated = { ...(pad.plated === false ? { plated: false as const } : {}), ...(pad.axisSpokes ? { axisSpokes: true as const } : {}) }
     if (quarter) {
       return {
         componentId: c.id,

@@ -19,6 +19,7 @@ import type {
   KicadText,
   KicadVia,
   KicadZone,
+  KicadZoneSeg,
   LayerRow,
   LegacyNetClass,
   Pt,
@@ -506,14 +507,32 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const anyRestricted = !!keepout && Object.values(keepout).some(Boolean)
     const kind = kid(z, "placement") ? "placement" : keepout ? (anyRestricted ? "keepout" : "rule-area") : kid(z, "teardrop") || kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper"
     const pts = kid(kid(z, "polygon"), "pts")
+    const ringOf = (node: List): KicadZoneSeg[] => {
+      const segs: KicadZoneSeg[] = []
+      for (const c of node.slice(1)) {
+        if (!Array.isArray(c)) continue
+        if (c[0] === "xy") segs.push({ kind: "xy", at: pt(c, "a zone outline") })
+        else if (c[0] === "arc") segs.push({ kind: "arc", start: pt(kid(c, "start"), "a zone outline arc"), mid: pt(kid(c, "mid"), "a zone outline arc"), end: pt(kid(c, "end"), "a zone outline arc") })
+      }
+      return segs
+    }
+    let rings = kids(z, "polygon").map((poly) => ringOf(kid(poly, "pts") ?? []))
     let polygon = points(pts, "a zone outline")
     // Switch 6: a footprint's zone is in the board frame before stamp 20260616.
     if (fp && !stampFrom(FIRST_FP_AFFINE_TRANSFORM)) {
-      polygon = polygon.map((p) => {
+      const back = (p: Pt): Pt => {
         const r = rotK(p.x - fp.at.x, p.y - fp.at.y, -fp.angle)
         return { x: r.x, y: r.y }
-      })
+      }
+      polygon = polygon.map(back)
+      rings = rings.map((r) => r.map((s) => (s.kind === "xy" ? { kind: "xy" as const, at: back(s.at) } : { kind: "arc" as const, start: back(s.start), mid: back(s.mid), end: back(s.end) })))
     }
+    const connectNode = kid(z, "connect_pads")
+    const connectWord = connectNode ? (atomsOf(connectNode).find((a) => a === "yes" || a === "no" || a === "thru_hole_only") ?? "thermal") : "thermal"
+    const fillNode = kid(z, "fill")
+    const modeWord = strAt(kid(fillNode, "mode"), 1)
+    const smoothWord = strAt(kid(fillNode, "smoothing"), 1)
+    const teardropType = strAt(kid(kid(kid(z, "attr"), "teardrop"), "type"), 1)
     const net = netOf(z)
     const named = strAt(kid(z, "net_name"), 1)
     return {
@@ -525,8 +544,21 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       kind,
       keepout,
       polygon,
-      hasArcs: kids(pts, "arc").length > 0,
+      rings,
+      hasArcs: rings.some((r) => r.some((s) => s.kind === "arc")),
       filled: kids(z, "filled_polygon").length > 0,
+      connect: connectWord as KicadZone["connect"],
+      clearance: connectNode && kid(connectNode, "clearance") ? numAt(kid(connectNode, "clearance"), 1, 0) : null,
+      minThickness: kid(z, "min_thickness") ? numAt(kid(z, "min_thickness"), 1, 0) : null,
+      thermalGap: kid(fillNode, "thermal_gap") ? numAt(kid(fillNode, "thermal_gap"), 1, 0) : null,
+      thermalBridge: kid(fillNode, "thermal_bridge_width") ? numAt(kid(fillNode, "thermal_bridge_width"), 1, 0) : null,
+      smoothing: smoothWord === "chamfer" || smoothWord === "fillet" ? smoothWord : "none",
+      radius: numAt(kid(fillNode, "radius"), 1, 0),
+      islandMode: numAt(kid(fillNode, "island_removal_mode"), 1, 0),
+      islandArea: kid(fillNode, "island_area_min") ? numAt(kid(fillNode, "island_area_min"), 1, 0) : null,
+      fillMode: modeWord === "hatch" ? "hatch" : modeWord === "thieving" ? "thieving" : "polygon",
+      teardrop: teardropType === "padvia" || teardropType === "track_end" ? teardropType : null,
+      strokedFill: !["no", "false"].includes(strAt(kid(z, "filled_areas_thickness"), 1) ?? ""),
       locked: flagOf(z, "locked"),
       inFootprint: fp !== null,
       node: z,

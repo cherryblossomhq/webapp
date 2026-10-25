@@ -43,13 +43,13 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:footprint>)?zone>(?:zone_type|fill>(?:hatch_smoothing_level|hatch_smoothing_value)|hatch_smoothing_level|hatch_smoothing_value))$",
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X24",
   "note": "hatched fill smoothing and the zone's kind"
  },
  {
   "source": "^((?:footprint>)?zone>fill>thieving>(?:type|pattern))$",
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X24",
   "note": "thieving patterns: dots or squares"
  },
  {
@@ -171,9 +171,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^(general>legacy_teardrops)$",
-  "decision": "extend",
-  "ext": "X3",
-  "note": "says the board's teardrop zones come from KiCad 7's generator and are not regenerated; kept with the teardrop zones"
+  "decision": "not-needed",
+  "note": "says whether the board's teardrop zones were made by the generator of KiCad 7 or by an older one, which only decides how KiCad regenerates them on request; the editor has no generator, and the teardrop zones themselves are imported"
  },
  {
   "source": "^(general>(?:area|drawings|links|modules|nets|no_connects|tracks|zones))$",
@@ -360,9 +359,15 @@ export const PATH_RULES: PathRule[] = [
   "note": "via stacks (per-layer sizes), tenting and unused-pad removal"
  },
  {
-  "source": "^(via>(?:teardrops(?:>.*)?|zone_layer_connections))$",
+  "source": "^(via>teardrops(?:>.*)?)$",
+  "decision": "not-needed",
+  "note": "the settings KiCad reads when it generates teardrops (Edit, Teardrop, Add); the teardrops it generated are zones of the board, which are imported"
+ },
+ {
+  "source": "^(via>zone_layer_connections)$",
   "decision": "extend",
-  "ext": "X3"
+  "ext": "X5",
+  "note": "the layers a via with unused layers removed connects to zones on (KiCad 9)"
  },
  {
   "source": "^(via>(?:capping|covering|plugging|filling)(?:>(?:front|back))?)$",
@@ -378,35 +383,48 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^((?:footprint>)?zone)$",
-  "decision": "extend",
-  "ext": "X3"
+  "decision": "native",
+  "note": "a copper zone, a keepout or rule area, or a teardrop"
  },
  {
-  "source": "^((?:footprint>)?zone>(?:net|net_name|layer|layers|name|locked|priority|min_thickness|filled_areas_thickness|hatch|connect_pads|connect_pads>clearance|fill|keepout|keepout>(?:tracks|vias|pads|copperpour|footprints)|polygon|polygon>pts|polygon>pts>xy|polygon>pts>arc|polygon>pts>arc>(?:start|mid|end)))$",
-  "decision": "extend",
-  "ext": "X3"
+  "source": "^((?:footprint>)?zone>(?:net|net_name|layer|layers|name|locked|priority|min_thickness|filled_areas_thickness|connect_pads|connect_pads>clearance|fill|keepout|keepout>(?:tracks|vias|pads|copperpour|footprints)|polygon|polygon>pts|polygon>pts>xy|polygon>pts>arc|polygon>pts>arc>(?:start|mid|end)))$",
+  "decision": "native"
  },
  {
-  "source": "^((?:footprint>)?zone>fill>(?:arc_segments|hatch_border_algorithm|hatch_gap|hatch_min_hole_area|hatch_orientation|hatch_thickness|island_area_min|island_removal_mode|mode|radius|smoothing|thermal_bridge_width|thermal_gap))$",
+  "source": "^((?:footprint>)?zone>hatch)$",
+  "decision": "not-needed",
+  "note": "how KiCad draws the zone's border on screen (none, short hatches or full hatches), which changes no copper"
+ },
+ {
+  "source": "^((?:footprint>)?zone>fill>(?:island_area_min|island_removal_mode|mode|radius|smoothing|thermal_bridge_width|thermal_gap))$",
+  "decision": "native"
+ },
+ {
+  "source": "^((?:footprint>)?zone>fill>arc_segments)$",
+  "decision": "not-needed",
+  "note": "the number of segments of a circle in KiCad 5's fill; KiCad 6 and later read and ignore it, and the editor's fill draws circles to a fixed error"
+ },
+ {
+  "source": "^((?:footprint>)?zone>fill>(?:hatch_border_algorithm|hatch_gap|hatch_min_hole_area|hatch_orientation|hatch_thickness))$",
   "decision": "extend",
-  "ext": "X3"
+  "ext": "X24",
+  "note": "hatched fill: the pattern's line width, gap and angle"
  },
  {
   "source": "^((?:footprint>)?zone>fill>thieving(?:>.*)?)$",
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X24",
   "note": "copper thieving fill (KiCad 11 development)"
  },
  {
   "source": "^((?:footprint>)?zone>attr(?:>teardrop(?:>type)?)?)$",
-  "decision": "extend",
-  "ext": "X3",
-  "note": "a teardrop is a copper zone whose outline is its fill"
+  "decision": "native",
+  "note": "a teardrop is a copper zone that joins its own net's pads solidly"
  },
  {
   "source": "^((?:footprint>)?zone>property(?:>.*)?)$",
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X24",
   "note": "zone properties (hatch position, KiCad 10)"
  },
  {
@@ -418,12 +436,12 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:footprint>)?zone>filled_polygon(?:>.*)?)$",
   "decision": "not-needed",
-  "note": "a filled polygon is KiCad's own result of its fill, which it recomputes on every refill; ours is filled the same way from the outline and rules, and the import report says so. This is the one place the format is itself an approximation"
+  "note": "a filled polygon is KiCad's own result of its fill, which it recomputes on every refill; the editor fills the zone again from its outline and settings by KiCad's rules and the import report says so. Slices of the corpus compare the two (docs/kicad-import.md section 11)"
  },
  {
   "source": "^((?:footprint>)?zone>fill_segments(?:>.*)?)$",
   "decision": "not-needed",
-  "note": "hatch fill segments KiCad computed"
+  "note": "the stripes of KiCad 5's segment fill, a mode KiCad 6 and later read as an ordinary polygon fill, as the editor does"
  },
  {
   "source": "^((?:footprint>)?zone>(?:tstamp|uuid))$",
@@ -711,9 +729,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^(footprint>pad>teardrops(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "X3",
-  "note": "teardrop parameters on pads (KiCad 8)"
+  "decision": "not-needed",
+  "note": "the settings KiCad reads when it generates teardrops at a pad (KiCad 8); the teardrops it generated are zones of the board, which are imported"
  },
  {
   "source": "^(footprint>pad>(?:die_length|die_delay))$",
@@ -1541,7 +1558,7 @@ export const TOKEN_RULES: TokenRule[] = [
    "squares"
   ],
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X24",
   "note": "hatched zone fills and copper thieving patterns"
  },
  {

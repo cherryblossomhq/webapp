@@ -83,6 +83,11 @@ export interface PadDef {
   slotLength?: number
   layer: "top" | "through"
   /**
+   * A pad KiCad draws as an oval that is as wide as it is tall: a circle to look at and to route to, but its thermal relief spokes
+   * lie along its axes where a circle's lie at 45 degrees. Set by the KiCad import only.
+   */
+  axisSpokes?: true
+  /**
    * False for a non-plated hole (NPTH): a bare drill with no copper, pin null and
    * width = height = holeDiameter. It is an obstacle for copper but never part of a net.
    */
@@ -621,13 +626,72 @@ export interface BoardDef {
   mountingHoles?: MountingHoles | null
 }
 
-/** Copper pour covering the whole board on one layer, tied to a net by name. */
+/**
+ * How a zone joins the pads of its own net: with spokes on every pad (`thermal`), with spokes on through-hole pads and solid on the
+ * rest (`tht`), solidly (`solid`), or not at all (`none`: the pour keeps its clearance round them).
+ */
+export type ZoneConnection = "thermal" | "tht" | "solid" | "none"
+
+/** What a rule area keeps out, in KiCad's words: each flag set is "not allowed" inside it. A rule area with no flag set restricts nothing (it is there for rules). */
+export interface ZoneKeepout {
+  tracks?: true
+  vias?: true
+  pads?: true
+  /** Copper pours: a pour keeps out of the area, by its outline and with no clearance. */
+  pour?: true
+  footprints?: true
+}
+
+/**
+ * A copper pour: the whole board on one layer, or (X3) any polygon on one layer or both, with its own settings; or a rule area
+ * (keepout) that keeps tracks, vias, pads, pours or parts out of a polygon. The fill is not stored: it is computed from the zone,
+ * the copper round it and the rules, and refilled whenever any of them changes (`model/pour.ts`, `model/zoneFill.ts`).
+ *
+ * A zone with none of the fields below `clearance` is the editor's own whole-board pour, as it always was: its fill, its thermal
+ * reliefs and everything else about it come from the board's design rules and are unchanged. Each optional field's absence is that
+ * default.
+ */
 export interface Zone {
   id: string
+  /** The net's name; empty for a zone on no net (a pour that touches nothing, or a rule area). */
   net: string
+  /** The layer, or the first of its layers (`layers`). */
   layer: CopperLayer
   /** Gap to copper on other nets (mm); defaults to the pour clearance rule. */
   clearance?: number
+  /** A name to tell it by (KiCad's zone name). */
+  name?: string
+  /**
+   * The polygon the zone covers: the first closed path is its outline and every other closed path is a hole in it, as KiCad
+   * stores a zone. Absent is the whole board (inset by the edge clearance), which is what a pour drawn by the editor is.
+   */
+  outline?: ShapePath[]
+  /** Every layer it is on, `layer` first: a zone on both copper layers. Absent is the one layer. */
+  layers?: CopperLayer[]
+  /** Which of two overlapping zones wins: the higher one is filled first and the lower keeps out of it. Absent is 0. */
+  priority?: number
+  /** The thinnest copper the fill keeps (mm); necks and slivers under it are removed. Defaults to the pour minimum width rule. */
+  minWidth?: number
+  /** How its pads are joined; defaults to the thermal relief rule. */
+  connect?: ZoneConnection
+  /** The ring of clearance round a pad with a thermal relief (mm); defaults to the zone's clearance. */
+  thermalGap?: number
+  /** The width of a thermal relief's spokes (mm); defaults to the thermal spoke width rule. */
+  spokeWidth?: number
+  /** Rounded or cut off corners of the outline, by `radius` (mm). */
+  smoothing?: { kind: "chamfer" | "fillet"; radius: number }
+  /** What happens to copper no same-net copper touches: removed (absent), kept (`never`), or removed when under that many square millimetres. */
+  islands?: "never" | number
+  /** Present: a rule area, not a pour; it has no net and no fill. */
+  keepout?: ZoneKeepout
+  /** KiCad's teardrop zone, made at a pad or via (`padvia`) or the end of a track (`track_end`): it joins its own net's pads solidly, and rule areas and lower zones do not cut into it. */
+  teardrop?: "padvia" | "track_end"
+  /** How far the fill keeps from the board's edge (mm); defaults to the edge clearance rule. A board brought in from KiCad 5 or earlier says it itself: that KiCad kept a pour its clearance and half the edge line's width from the edge. */
+  edgeGap?: number
+  /** How far the fill keeps from the edge of a drilled hole that has no copper (mm); defaults to the clearance. KiCad 6 and later keep a pour out of such a hole by the board's own hole clearance, which is less than a pour's clearance; KiCad 5 and earlier used the pour's. */
+  holeGap?: number
+  /** Pinned by the user (KiCad's lock): the editing tools leave it where it is. */
+  locked?: true
 }
 
 /**

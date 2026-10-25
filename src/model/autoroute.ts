@@ -5,6 +5,7 @@ import { findPart } from "./library"
 import { pcbPads, type WorldPad } from "./instances"
 import { pointShapeDistance, type ShapeCopper } from "./shapes"
 import { outlineGeometry, rasterizeInside } from "./outline"
+import { areaDistance, zoneArea, zoneLayers } from "./zones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
 import { fillTester } from "./pour"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
@@ -259,6 +260,7 @@ class Router {
     this.closed = new Uint32Array(n * 2)
     this.deadline = performance.now() + timeLimitMs
     this.markEdge()
+    this.markKeepouts()
     for (const s of shapes) this.addShape(s.shape, s.net)
     this.reserveEscapes(shapes)
   }
@@ -348,6 +350,38 @@ class Router {
         if (d < this.project.rules.edgeClearance + viaR + this.margin) {
           this.viaOwner[0][i] = BLOCKED
           this.viaOwner[1][i] = BLOCKED
+        }
+      }
+    }
+  }
+
+  /** Rule areas that keep tracks or vias out: a cell is blocked where the trace or via it would hold touches the area. */
+  private markKeepouts() {
+    const viaR = this.project.rules.viaDiameter / 2
+    for (const z of this.project.zones) {
+      if (!z.keepout || !(z.keepout.tracks || z.keepout.vias)) continue
+      const area = zoneArea(z)
+      if (!area) continue
+      const layers = zoneLayers(z)
+      const reach = Math.max(viaR, ...this.owners.keys()) + this.margin + 1e-6
+      const x0 = Math.max(0, Math.floor((area.box.minX - reach - this.ox) / this.g))
+      const x1 = Math.min(this.nx - 1, Math.ceil((area.box.maxX + reach - this.ox) / this.g))
+      const y0 = Math.max(0, Math.floor((area.box.minY - reach - this.oy) / this.g))
+      const y1 = Math.min(this.ny - 1, Math.ceil((area.box.maxY + reach - this.oy) / this.g))
+      for (let iy = y0; iy <= y1; iy++) {
+        for (let ix = x0; ix <= x1; ix++) {
+          const d = areaDistance(area, { x: this.cx(ix), y: this.cy(iy) }, reach)
+          if (!Number.isFinite(d)) continue
+          const i = iy * this.nx + ix
+          if (z.keepout.tracks) {
+            for (const [w, arr] of this.owners) {
+              if (d < w / 2 + this.margin) for (const l of layers) arr[l === "top" ? 0 : 1][i] = BLOCKED
+            }
+          }
+          if (z.keepout.vias && d < viaR + this.margin) {
+            this.viaOwner[0][i] = BLOCKED
+            this.viaOwner[1][i] = BLOCKED
+          }
         }
       }
     }

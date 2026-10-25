@@ -15,6 +15,7 @@ import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
 import { findPart } from "./library"
 import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { keepoutViolations } from "./zoneChecks"
 import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
@@ -110,6 +111,7 @@ export interface DrcViolation {
     | "via-in-pad"
     | "floating-copper"
     | "decoupling"
+    | "keepout"
   message: string
   at: Vec2
 }
@@ -837,6 +839,9 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
       })
     }
   }
+
+  // Rule areas that keep tracks, vias, pads or parts out.
+  if (project.zones.length) for (const v of keepoutViolations(project, items)) push(v)
 
   // Decoupling capacitors far from the supply pin they serve. Where several chips share the rail,
   // a capacitor beside the supply pin of any of them is fine, so only one far from all is reported.

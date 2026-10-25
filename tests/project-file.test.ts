@@ -252,7 +252,7 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     const migrated = migrateProjectFile(v2)
     expect(migrated).toEqual(v2.project)
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(6)
+    expect(PROJECT_FILE_VERSION).toBe(9)
   })
   it("a reader of version 2 would refuse a version 4 file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -381,5 +381,75 @@ describe("version 4, board and footprint drawings", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v4({ footprints: [land("L", [pad1])] }), origin)))
     expect(written.project).not.toHaveProperty("graphics")
     expect(written.project.footprints[0]).not.toHaveProperty("shapes")
+  })
+})
+
+/** A project as version 8 wrote it: the editor's own whole-board pours, no polygon zones. */
+const v8 = {
+  format: PROJECT_FILE_FORMAT,
+  version: 8,
+  project: {
+    ...v2.project,
+    name: "v8",
+    zones: [{ id: "z", net: "GND", layer: "top" }, { id: "z2", net: "GND", layer: "bottom", clearance: 0.4 }],
+  },
+}
+
+describe("version 8, before polygon zones, rule areas and zone settings", () => {
+  it("opens as it was written and is saved as the current version, the pours untouched", () => {
+    expect(migrateProjectFile(v8)).toEqual(v8.project)
+    const read = parseProjectFile(v8, origin)
+    expect(read.zones).toEqual(v8.project.zones)
+    const written = JSON.parse(serializeProject(read))
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
+    expect(written.project.zones).toEqual(v8.project.zones)
+  })
+
+  it("a version 6 or 7 document with pours reads the same way", () => {
+    for (const version of [6, 7]) expect(parseProjectFile({ ...v8, version }, origin).zones).toEqual(v8.project.zones)
+  })
+})
+
+describe("version 9 zones", () => {
+  const ring = (pts: number[][]) => ({ closed: true, segs: pts.map((a, i) => ({ kind: "line", a: P(a[0], a[1]), b: P(pts[(i + 1) % pts.length][0], pts[(i + 1) % pts.length][1]) })) })
+  const arcRing = {
+    closed: true,
+    segs: [
+      { kind: "line", a: P(0, 0), b: P(4, 0) },
+      { kind: "arc", start: P(4, 0), mid: P(5, 2), end: P(4, 4) },
+      { kind: "line", a: P(4, 4), b: P(0, 4) },
+      { kind: "line", a: P(0, 4), b: P(0, 0) },
+    ],
+  }
+  const zones = [
+    { id: "a", net: "GND", layer: "top", layers: ["top", "bottom"], outline: [ring([[0, 0], [10.123456789, 0], [10, 8], [0, 8]]), ring([[2, 2], [3, 2], [3, 3]])], priority: 2, name: "ground", clearance: 0.5, minWidth: 0.25, connect: "tht", thermalGap: 0.4, spokeWidth: 0.3, smoothing: { kind: "fillet", radius: 1 }, islands: 12.5, edgeGap: 0.6, holeGap: 0.25, locked: true },
+    { id: "b", net: "", layer: "bottom", outline: [arcRing], keepout: { tracks: true, pour: true } },
+    { id: "c", net: "VCC", layer: "top", outline: [ring([[0, 0], [1, 0], [1, 1]])], teardrop: "padvia", islands: "never", connect: "solid" },
+  ]
+  it("round-trips every field exactly, a straight ring as bare numbers and an arc ring in the outline form", () => {
+    const doc = { ...v8, version: 9, project: { ...v8.project, zones } }
+    const read = parseProjectFile(doc, origin)
+    expect(read.zones).toEqual(zones)
+    const written = JSON.parse(serializeProject(read))
+    expect(written.project.zones[0].ol[0].slice(0, 3)).toEqual(["p", 0, 0])
+    expect(written.project.zones[1].ol[0][0]).toBe("c")
+    expect(written.project.zones[0]).not.toHaveProperty("outline")
+    expect(parseProjectFile(serializeProject(read), origin).zones).toEqual(zones)
+  })
+  it("a polygon of 2,000 corners with millimetre coordinates to a micron is about 16 bytes a corner", () => {
+    const pts = Array.from({ length: 2000 }, (_, i) => [Math.round(Math.cos(i / 318) * 40000) / 1000, Math.round(Math.sin(i / 318) * 40000) / 1000])
+    const big = { id: "big", net: "GND", layer: "top", outline: [ring(pts)] }
+    const text = serializeProject(parseProjectFile({ ...v8, version: 9, project: { ...v8.project, zones: [big] } }, origin))
+    expect(text.length).toBeLessThan(2000 * 18 + 4000)
+  })
+  it("drops a zone with a damaged layer or a rule area with no polygon, and repairs what can be", () => {
+    const bad = [
+      { id: "x", net: "A", layer: "middle", priority: 1 },
+      { id: "y", net: "", layer: "top", keepout: { vias: true } },
+      { id: "w", net: "GND", layer: "top", priority: -3, minWidth: -1, connect: "sideways", smoothing: { kind: "round", radius: 1 }, outline: [ring([[0, 0], [1, 0], [1, 1]])] },
+    ]
+    const read = parseProjectFile({ ...v8, version: 9, project: { ...v8.project, zones: bad.map((z) => (z.outline ? { ...z, ol: [["p", 0, 0, 1, 0, 1, 1]], outline: undefined } : z)) } }, origin)
+    expect(read.zones.map((z) => z.id)).toEqual(["w"])
+    expect(read.zones[0]).toEqual({ id: "w", net: "GND", layer: "top", outline: [ring([[0, 0], [1, 0], [1, 1]])] })
   })
 })

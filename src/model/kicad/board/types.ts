@@ -248,6 +248,9 @@ export interface KicadModel {
   node: List
 }
 
+/** One piece of a zone's outline: a corner, or an arc through three points (KiCad 7 and later write them). */
+export type KicadZoneSeg = { kind: "xy"; at: Pt } | { kind: "arc"; start: Pt; mid: Pt; end: Pt }
+
 export interface KicadZone {
   net: string | null
   netRaw: string | null
@@ -259,8 +262,28 @@ export interface KicadZone {
   kind: string
   keepout: { tracks: boolean; vias: boolean; pads: boolean; copperpour: boolean; footprints: boolean } | null
   polygon: Pt[]
+  /** Every `(polygon (pts ...))` with its arcs: the first is the outline and the others are holes in it. */
+  rings: KicadZoneSeg[][]
   hasArcs: boolean
   filled: boolean
+  /** `connect_pads`: absent is a thermal relief on every pad, `yes` solid, `no` none, `thru_hole_only` thermal on through-hole pads. */
+  connect: "thermal" | "yes" | "no" | "thru_hole_only"
+  /** `connect_pads (clearance ...)`, null when the file gives none. */
+  clearance: number | null
+  minThickness: number | null
+  thermalGap: number | null
+  thermalBridge: number | null
+  smoothing: "none" | "chamfer" | "fillet"
+  radius: number
+  /** `island_removal_mode`: 0 always (the default), 1 never, 2 below an area. */
+  islandMode: number
+  /** `island_area_min`, mm^2, null when the file gives none. */
+  islandArea: number | null
+  /** `fill (mode ...)`: segment (the old one, which KiCad 6 and later read as polygon), polygon and solid are one; hatch and thieving are not. */
+  fillMode: "polygon" | "hatch" | "thieving"
+  teardrop: "padvia" | "track_end" | null
+  /** The file has no `filled_areas_thickness`: its filled polygons are shrunk by half the minimum width and were drawn with a pen that wide (KiCad 5 and earlier), and KiCad 6 and later read them as the copper they drew. */
+  strokedFill: boolean
   locked: boolean
   inFootprint: boolean
   node: List

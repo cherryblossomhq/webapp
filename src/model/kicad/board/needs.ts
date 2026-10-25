@@ -2,6 +2,7 @@ import { ruleFor } from "./account"
 import { landPad } from "./build"
 import { netClassIsPlain, settledFor, settledSetup } from "./carried"
 import { quarterTurns } from "./geometry"
+import { zoneOnlyCopper } from "./zones"
 import { NEGLIGIBLE_WIDTH } from "./graphics"
 import { KICAD_FONT_NAME } from "./texts"
 import { hasExpression, textVariables, UNSUPPORTED_VARIABLES } from "../../texts"
@@ -17,13 +18,15 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // with the differences named in `Need.source`.
 
 /** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X2", "X6", "X8", "X9", "X13", "X15"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X2", "X3", "X6", "X8", "X9", "X13", "X15"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
   X1: "more than two copper layers, or a stackup",
   X2: "an outline that is not a plain or rounded rectangle, a cutout, or an outline that is not closed",
   X3: "copper zones, keepouts or teardrops",
+  X26: "filled zones on layers that are not copper (solder mask, paste, silkscreen or user layers)",
+  X27: "zones that belong to a part (a keepout or a pour drawn inside a footprint)",
   X4: "arc tracks",
   X5: "blind, buried or micro vias, or via stacks",
   X6: "parts turned by other than a quarter turn",
@@ -282,9 +285,10 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (outline.status !== "closed") need("X2", outline.status === "no outline" ? "no outline on Edge.Cuts" : "an outline that does not close")
   else if (!outline.representable) need("X2", `an outline that is ${outline.shape}${outline.cutouts ? " with cutouts" : ""}`)
 
-  const zoneCount = board.zones.length + board.footprints.reduce((n, f) => n + f.zones.length, 0)
-  if (zoneCount > 0) need("X3", "copper zones, keepouts or rule areas")
-  if (board.zones.some((z) => z.kind === "teardrop") || has(/^general>legacy_teardrops/)) need("X3", "teardrops")
+  // X3 (zones) is built: a copper zone, a keepout, a rule area or a teardrop zone of the board is imported. What is left of it is named.
+  if (board.zones.some((z) => z.kind !== "placement" && z.fillMode !== "polygon")) need("X24", "a zone filled with a hatch or a thieving pattern", "importer")
+  if (board.zones.some((z) => z.kind !== "placement" && !zoneOnlyCopper(z, board))) need("X26", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
+  if (board.footprints.some((f) => f.zones.length)) need("X27", "a zone that belongs to a part (a keepout or pour drawn inside a footprint)", "importer")
   if (board.arcTracks.length > 0) need("X4", "arc tracks")
   const frontBack = (layers: string[]) => layers.includes(board.copper.front) && layers.includes(board.copper.back)
   if (board.vias.some((v) => v.kind !== "through" || (v.layers.length === 2 && !frontBack(v.layers))) || has(/^via>(free|tenting|remove_unused_layers|keep_end_layers|padstack)/)) need("X5", "blind, buried or micro vias, or via stacks")

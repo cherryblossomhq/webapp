@@ -21,12 +21,13 @@ const is = (path, decision, ext) => {
 }
 
 test("a zone's outline is copper geometry, not something to drop", () => {
-  is("zone>polygon", "extend", "X3")
-  is("zone>polygon>pts", "extend", "X3")
-  is("zone>polygon>pts>xy", "extend", "X3")
-  is("zone>polygon>pts>arc>mid", "extend", "X3")
-  is("footprint>zone>polygon>pts>xy", "extend", "X3")
-  is("zone>keepout>vias", "extend", "X3")
+  is("zone>polygon", "native")
+  is("zone>polygon>pts", "native")
+  is("zone>polygon>pts>xy", "native")
+  is("zone>polygon>pts>arc>mid", "native")
+  is("footprint>zone>polygon>pts>xy", "native")
+  is("zone>keepout>vias", "native")
+  is("zone>fill>hatch_gap", "extend", "X24")
 })
 
 test("only KiCad's own fill result is dropped from a zone", () => {
@@ -77,7 +78,7 @@ test("what used to be reported is built", () => {
   is("footprint>variant>field>name", "extend", "X23")
   is("footprint>units>unit>pins", "extend", "X23")
   is("footprint>component_classes>class", "extend", "X20")
-  is("general>legacy_teardrops", "extend", "X3")
+  is("general>legacy_teardrops", "not-needed")
 })
 
 test("the legacy forms are read, not ignored", () => {

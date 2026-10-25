@@ -17,6 +17,8 @@ import type { CopperItem } from "./pcb"
 import { outlineGeometry } from "./outline"
 import { flattenPath, shapePolylines, shapeRings } from "./shapes"
 import { zoneClearance } from "./rules"
+import { fillPolygonZones } from "./zoneFill"
+import { needsZoneEngine } from "./zones"
 import type { CopperLayer, DesignRules, Project, Vec2 } from "./types"
 
 /** One filled region: the outer ring (counter-clockwise) followed by its holes (clockwise). */
@@ -214,6 +216,9 @@ export interface PourInput {
  * pads as the thermal relief rule says. Regions that no same-net copper touches are dropped.
  */
 export function fillZones(project: Project, sch: SchematicConnectivity, input: PourInput): ZoneFill[] {
+  // A zone with a polygon of its own, a rule area or settings of its own (X3) is filled by the polygon engine (`zoneFill.ts`); a project whose
+  // pours are all the editor's whole-board pours is filled by the code below, as it always was.
+  if (needsZoneEngine(project)) return fillPolygonZones(project, sch, input)
   const b = project.board
   const { rules } = project
   const edge = rules.edgeClearance

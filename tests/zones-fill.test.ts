@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
+import { computeConnectivity } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
-import { addVia } from "../src/model/ops"
+import { addComponent, addVia, labelPin } from "../src/model/ops"
+import { buildCopperItems, type CopperItem } from "../src/model/pcb"
+import { fillPolygonZones } from "../src/model/zoneFill"
 import { rectangle, analyze, fillArea, fillOf, filled, twoResistors, withZone } from "./zones-fixtures"
 import type { Project } from "../src/model/types"
 
@@ -220,5 +223,87 @@ describe("zone fill: thinnest copper, smoothing, islands", () => {
     p = addVia(p, { x: 0, y: -6 }).project
     // A via on no net is another net's copper to a pour.
     expect(filled(fillOf(p), { x: 0, y: -6 })).toBe(false)
+  })
+})
+
+describe("zone fill: what the steps of KiCad's fill decide", () => {
+  const polygonFill = (project: Project, edit: (items: CopperItem[]) => CopperItem[], id = "z1") => {
+    const sch = computeConnectivity(project)
+    const items = edit(buildCopperItems(project, sch))
+    const fills = fillPolygonZones(project, sch, { items, netOf: (i) => (items[i].kind === "pad" || items[i].kind === "segment" || items[i].kind === "via" ? (items[i] as { netId?: string | null }).netId ?? null : null) })
+    return fills.find((f) => f.zoneId === id)!
+  }
+
+  it("a round pad's spokes are at 45 degrees and those of an oval pad as wide as it is tall, along the axes", () => {
+    const p = withZone(twoResistors(), rectangle(-12, -8, 12, 8), { net: "GND", connect: "thermal", clearance: 0.3, thermalGap: 0.3, spokeWidth: 0.3, minWidth: 0.2 })
+    const target = pcbPads(p.components[0]).find((x) => x.pin === "2")!
+    const round = (axisSpokes: boolean) =>
+      polygonFill(p, (items) =>
+        items.map((it) => (it.kind === "pad" && it.pad.componentId === target.componentId && it.pad.pin === "2" ? { ...it, pad: { ...it.pad, shape: "circle" as const, width: 0.9, height: 0.9, ...(axisSpokes ? { axisSpokes: true as const } : {}) } } : it)),
+      )
+    const reach = 0.45 + 0.15
+    const at = (f: ReturnType<typeof round>, deg: number) => filled(f, { x: target.x + Math.cos((deg * Math.PI) / 180) * reach, y: target.y + Math.sin((deg * Math.PI) / 180) * reach })
+    const circle = round(false)
+    const oval = round(true)
+    expect([at(circle, 45), at(circle, 135), at(circle, 0), at(circle, 90)]).toEqual([true, true, false, false])
+    expect([at(oval, 0), at(oval, 90), at(oval, 180), at(oval, 45)]).toEqual([true, true, true, false])
+  })
+
+  it("a through-hole pad gets the relief and a surface-mount pad is joined solidly, when the zone says through-hole only", () => {
+    let p = twoResistors()
+    p = addComponent(p, "attiny85", { sch: { x: 10, y: 10 }, pcb: { x: 0, y: -6, placed: true } }).project
+    const dip = p.components[2]
+    p = labelPin(p, { componentId: dip.id, pin: "4" }, "GND")
+    p = withZone(p, rectangle(-12, -12, 12, 4), { net: "GND", connect: "tht", clearance: 0.3, thermalGap: 0.3, spokeWidth: 0.3, minWidth: 0.2 })
+    const f = fillOf(p)
+    const hole = pcbPads(p.components[2]).find((x) => x.pin === "4")!
+    expect(hole.holeDiameter).toBeDefined()
+    // Between two spokes (a round pad's are at 45 degrees, the others' on the axes) the ring is bare.
+    const a = (22 * Math.PI) / 180
+    expect(filled(f, { x: hole.x + (hole.width / 2 + 0.15) * Math.cos(a), y: hole.y + (hole.height / 2 + 0.15) * Math.sin(a) })).toBe(false)
+    const smd = gnd(p, 0)
+    expect(filled(f, { x: smd.x + smd.width / 2 + 0.15, y: smd.y + smd.height / 2 + 0.15 })).toBe(true)
+  })
+
+  it("keeps a hole with no copper back by the hole gap, or by the zone's gap when it has none", () => {
+    const p = withZone(twoResistors(), rectangle(-12, -8, 12, 8), { net: "GND", clearance: 0.6 })
+    const hole: CopperItem = {
+      kind: "pad",
+      id: "npth",
+      pad: { componentId: "x", pin: null, padNumber: null, shape: "circle", x: 0, y: -4, width: 3.2, height: 3.2, holeDiameter: 3.2, layers: ["top", "bottom"], plated: false },
+      netId: null,
+      layers: ["top", "bottom"],
+      box: { minX: -1.6, minY: -5.6, maxX: 1.6, maxY: -2.4 },
+    }
+    const withGap = (holeGap?: number) => polygonFill({ ...p, zones: p.zones.map((z) => ({ ...z, ...(holeGap !== undefined ? { holeGap } : {}) })) }, (items) => [...items, hole])
+    const at = (f: ReturnType<typeof withGap>, d: number) => filled(f, { x: 1.6 + d, y: -4 })
+    expect([at(withGap(), 0.5), at(withGap(), 0.7)]).toEqual([false, true])
+    expect([at(withGap(0.25), 0.15), at(withGap(0.25), 0.4)]).toEqual([false, true])
+  })
+
+  it("the larger of the zone's clearance and the board's clearance is the gap to another net", () => {
+    const p0 = twoResistors()
+    const wide = { ...p0, rules: { ...p0.rules, clearance: 0.8 } }
+    const p = withZone(wide, rectangle(-12, -8, 12, 4), { net: "GND", clearance: 0.3 })
+    const s = sig(p)
+    const f = fillOf(p)
+    expect(filled(f, { x: s.x, y: s.y - s.height / 2 - 0.6 })).toBe(false)
+    expect(filled(f, { x: s.x, y: s.y - s.height / 2 - 1.0 })).toBe(true)
+  })
+
+  it("an arc in the outline is filled as the curve it is", () => {
+    const p = withZone(twoResistors(), rectangle(-12, -8, 12, 4), { net: "GND" })
+    const arc = {
+      closed: true,
+      segs: [
+        { kind: "line" as const, a: { x: 0, y: -8 }, b: { x: 10, y: -8 } },
+        { kind: "arc" as const, start: { x: 10, y: -8 }, mid: { x: 14, y: -4 }, end: { x: 10, y: 0 } },
+        { kind: "line" as const, a: { x: 10, y: 0 }, b: { x: 0, y: 0 } },
+        { kind: "line" as const, a: { x: 0, y: 0 }, b: { x: 0, y: -8 } },
+      ],
+    }
+    const f = fillOf({ ...p, zones: p.zones.map((z) => ({ ...z, outline: [arc] })) })
+    expect(filled(f, { x: 13, y: -4 })).toBe(true)
+    expect(filled(f, { x: 13, y: -7 })).toBe(false)
   })
 })

@@ -24,7 +24,7 @@ export function ReportView({ summary: s, name, saveError = null, saveKind = null
           {saveError ? (
             <div role="alert" className="mt-1.5 rounded-[10px] border border-danger/25 bg-danger-soft px-3 py-2 text-[13px] text-danger">
               <p>{reportLead(s, saveError)}</p>
-              <p className="mt-1 text-ink-2">{saveNextStep(saveKind)}</p>
+              <p className="mt-1 text-ink-2">{saveNextStep(saveKind, s.kind)}</p>
             </div>
           ) : (
             <p className="mt-0.5 text-[13px] text-ink-2">{reportLead(s)}</p>

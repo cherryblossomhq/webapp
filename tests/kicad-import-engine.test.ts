@@ -5,9 +5,11 @@ import { startImport } from "../src/kicadImport/client"
 import { runImport, type BoardImporter, type ProjectBytes, type ProjectImporter } from "../src/kicadImport/engine"
 import type { Phase, WorkerEvent } from "../src/kicadImport/protocol"
 import { PLAIN_NAMES } from "../src/kicadImport/summary"
+import { EXTENSION_NAMES as SCHEMATIC_NAMES } from "../src/model/kicad/schematic"
 import { EXTENSION_NAMES } from "../src/model/kicad/board"
 import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeWorkers, zipEntry } from "./kicad-import-helpers"
+import { divider, schematic } from "./kicad-schematic-fixtures"
 
 // The job and its worker protocol, with the real importer behind it: every outcome the report
 // screen has to draw (imported, imported with report entries, refused for missing extensions,
@@ -140,23 +142,122 @@ describe("several boards", () => {
 })
 
 describe("the schematic and project importer", () => {
-  const files = () => [entry("p.kicad_pcb", empty), entry("p.kicad_pro", "{}"), entry("p.kicad_sch", "(kicad_sch)")]
+  const U1 = "11111111-0000-4000-8000-000000000001"
+  const U2 = "11111111-0000-4000-8000-000000000002"
+  /** R1 and R2 of the divider on a board, on the nets the schematic gives them. */
+  const dividerBoard = board({
+    nets: ['(net 0 "")', '(net 1 "VCC")', '(net 2 "/MID")', '(net 3 "GND")'],
+    body: [
+      footprint({ ref: "R1", at: "10 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "VCC")' }), pad({ number: "2", at: "1 0", net: '(net 2 "/MID")' })], extra: `(path "/${U1}")` }),
+      footprint({ ref: "R2", at: "15 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 2 "/MID")' }), pad({ number: "2", at: "1 0", net: '(net 3 "GND")' })], extra: `(path "/${U2}")` }),
+    ],
+  })
+  const files = () => [entry("demo.kicad_pcb", dividerBoard), entry("demo.kicad_pro", "{}"), entry("demo.kicad_sch", divider())]
 
-  it("until it exists, the project and schematic files are listed as coming and the board is imported alone", async () => {
+  it("a board, its project file and its schematic import as one project, and the report says so", async () => {
     const o = outcomeOf(await run(files()))
     expect(o.summary.status).toBe("imported")
-    expect(o.summary.notRead.map((n) => n.file).sort()).toEqual(["p.kicad_pro", "p.kicad_sch"])
-    expect(o.summary.notRead.every((n) => /schematic import is coming/.test(n.why))).toBe(true)
+    expect(o.summary.kind).toBe("project")
+    expect(o.summary.message).toBe("The project came in, its board and its schematic, and is ready to open.")
+    expect(o.project?.name).toBe("demo")
+    expect(o.project?.components.map((c) => c.ref).sort()).toEqual(["#PWR01", "#PWR02", "R1", "R2"])
+    expect(o.project?.wires.length).toBeGreaterThan(0)
+    expect(o.summary.brought).toEqual(expect.arrayContaining([{ label: "wires on the schematic", count: 5 }, { label: "net labels", count: 1 }]))
+    expect(o.summary.used.sort()).toEqual(["demo.kicad_pcb", "demo.kicad_pro", "demo.kicad_sch"])
+    expect(o.summary.notRead).toEqual([])
+    expect(o.summary.boardBytes).toBe(dividerBoard.length)
+    expect(o.summary.stamp).toBe(20240108)
   })
 
-  it("once plugged in, it is called instead of the board importer, with every file read", async () => {
+  it("a zip of the project folder imports the board and the schematic together", async () => {
+    const zip = await zipEntry("demo.zip", { "demo/demo.kicad_pcb": dividerBoard, "demo/demo.kicad_sch": divider(), "demo/demo.kicad_pro": "{}", "demo/notes.txt": "x" })
+    const o = outcomeOf(await run([zip]))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.kind).toBe("project")
+    expect(o.project?.components.map((c) => c.ref).sort()).toEqual(["#PWR01", "#PWR02", "R1", "R2"])
+    expect(o.summary.ignored.map((i) => i.examples)).toEqual([["notes.txt"]])
+  })
+
+  it("a dropped folder (its files, each with its path) is the same", async () => {
+    const dropped = [entry("demo/demo.kicad_pcb", dividerBoard), entry("demo/demo.kicad_sch", divider()), entry("demo/demo.kicad_pro", "{}"), entry("demo/demo-backups/demo-2024.kicad_pcb", "old")]
+    const o = outcomeOf(await run(dropped))
+    expect(o.summary.kind).toBe("project")
+    expect(o.project?.components.some((c) => c.ref === "R1")).toBe(true)
+  })
+
+  it("a lone .kicad_sch is a schematic-only project, said in its own words", async () => {
+    const o = outcomeOf(await run([entry("demo.kicad_sch", divider())]))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.kind).toBe("schematic")
+    expect(o.summary.message).toBe("The schematic came in and is ready to open.")
+    expect(o.project?.name).toBe("demo")
+    expect(o.project?.components.map((c) => c.ref).sort()).toEqual(["#PWR01", "#PWR02", "R1", "R2"])
+    // no board was read: the file's own stamp is the schematic's
+    expect(o.summary.stamp).toBe(20230121)
+    expect(o.summary.boardBytes).toBe(0)
+    expect(o.summary.used).toEqual(["demo.kicad_sch"])
+    expect(o.project?.traces).toEqual([])
+    expect(o.summary.brought.map((b) => b.label)).toEqual(expect.arrayContaining(["parts", "wires on the schematic", "net labels"]))
+  })
+
+  it("a schematic with its project file says the project file's settings wait for a board", async () => {
+    const o = outcomeOf(await run([entry("demo.kicad_sch", divider()), entry("demo.kicad_pro", "{}")]))
+    expect(o.summary.kind).toBe("schematic")
+    expect(o.summary.notRead).toEqual([{ file: "demo.kicad_pro", why: expect.stringMatching(/belong to the board/) }])
+  })
+
+  it("a schematic that needs what the editor lacks is refused in plain words: sheets inside sheets, named, and no project is made", async () => {
+    const hierarchical = schematic({
+      body: [`(sheet (at 10 10) (size 20 10) (uuid s1) (property "Sheetname" "Power" (at 0 0 0)) (property "Sheetfile" "power.kicad_sch" (at 0 0 0)))`],
+    })
+    const power = schematic({})
+    const o = outcomeOf(await run([entry("top.kicad_sch", hierarchical), entry("power.kicad_sch", power)]))
+    expect(o.project).toBeNull()
+    expect(o.summary.kind).toBe("schematic")
+    expect(o.summary.status).toBe("refused")
+    expect(o.summary.reason).toBe("unsupported")
+    expect(o.summary.message).toMatch(/^This schematic uses 1 thing Cherry Blossom cannot hold yet, listed below\.$/)
+    expect(o.summary.missing).toEqual([{ id: "S1", name: PLAIN_NAMES.S1, why: expect.stringMatching(/./) }])
+  })
+
+  it("a refusal of the project's board or schematic says project, with the board's own reason", async () => {
+    const arc = '(arc (start 1 1) (mid 2 2) (end 3 1) (width 0.2) (layer "F.Cu") (net 1))'
+    const o = outcomeOf(await run([entry("demo.kicad_pcb", board({ nets: ['(net 0 "")', '(net 1 "VCC")'], body: [arc] })), entry("demo.kicad_sch", divider())]))
+    expect(o.summary.kind).toBe("project")
+    expect(o.summary.reason).toBe("unsupported")
+    expect(o.summary.message).toBe("This project uses 1 thing Cherry Blossom cannot hold yet, listed below.")
+    expect(o.summary.missing[0].name).toBe(PLAIN_NAMES.X4)
+  })
+
+  it("KiCad 5's schematic beside a board is set aside with its reason, and the board imports alone", async () => {
+    const o = outcomeOf(await run([entry("p.kicad_pcb", empty), entry("p.sch", "EESchema Schematic File Version 4"), entry("p.pro", "update=1")]))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.kind).toBeUndefined()
+    expect(o.summary.notRead.map((n) => n.file).sort()).toEqual(["p.pro", "p.sch"])
+    expect(o.summary.notRead.every((n) => /KiCad 5/.test(n.why))).toBe(true)
+  })
+
+  it("a schematic that is not a schematic is refused with the reader's words", async () => {
+    const o = outcomeOf(await run([entry("junk.kicad_sch", "(kicad_sch (version")]))
+    expect(o.summary.kind).toBe("schematic")
+    expect(o.summary.reason).toBe("unreadable")
+  })
+
+  it("every extension of the schematic importer has a plain name, so no report shows a bare id", () => {
+    for (let n = 1; n <= 12; n++) expect(PLAIN_NAMES[`S${n}`], `S${n}`).toBeTruthy()
+    for (const id of Object.keys(SCHEMATIC_NAMES)) expect(PLAIN_NAMES[id], id).not.toMatch(/S\d+/)
+  })
+
+  it("once plugged in by a test, it is called instead of the board importer, with every file read and its path", async () => {
     const board$ = vi.fn()
     const project: ProjectImporter = vi.fn(async (f: ProjectBytes) => {
       expect(f.projectFile?.name).toBe("p.kicad_pro")
-      expect(f.schematics.map((s) => s.name)).toEqual(["p.kicad_sch"])
-      return (await import("../src/model/kicad/board")).importKicadBoard(f.board)
+      expect(f.schematics.map((s) => [s.name, s.path])).toEqual([["p.kicad_sch", "p.kicad_sch"]])
+      expect(f.boardPath).toBe("p.kicad_pcb")
+      return (await import("../src/model/kicad/board")).importKicadBoard(f.board!)
     })
-    const o = outcomeOf(await run(files(), { loadBoardImporter: async () => ({ importKicadBoard: board$ }) as unknown as BoardImporter, loadProjectImporter: async () => project }))
+    const three = [entry("p.kicad_pcb", empty), entry("p.kicad_pro", "{}"), entry("p.kicad_sch", "(kicad_sch)")]
+    const o = outcomeOf(await run(three, { loadBoardImporter: async () => ({ importKicadBoard: board$ }) as unknown as BoardImporter, loadProjectImporter: async () => project }))
     expect(project).toHaveBeenCalledTimes(1)
     expect(board$).not.toHaveBeenCalled()
     expect(o.summary.status).toBe("imported")
@@ -168,6 +269,12 @@ describe("the schematic and project importer", () => {
     const load = vi.fn()
     await run([entry("p.kicad_pcb", empty)], { loadProjectImporter: load })
     expect(load).not.toHaveBeenCalled()
+  })
+
+  it("with no project importer plugged in, a board's schematic and project file are said not to be read, and the board imports alone", async () => {
+    const o = outcomeOf(await run([entry("p.kicad_pcb", empty), entry("p.kicad_pro", "{}"), entry("p.kicad_sch", "(kicad_sch)")], { loadProjectImporter: null }))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.notRead.map((n) => n.file).sort()).toEqual(["p.kicad_pro", "p.kicad_sch"])
   })
 })
 

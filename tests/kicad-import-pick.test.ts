@@ -32,15 +32,21 @@ describe("what a file is", () => {
 describe("one file", () => {
   it("a single board is the project", async () => {
     const r = await ready([input("my board.kicad_pcb")])
-    expect(r.files.board.path).toBe("my board.kicad_pcb")
+    expect(r.files.board?.path).toBe("my board.kicad_pcb")
     expect(r.files.projectFile).toBeNull()
     expect(r.files.schematics).toEqual([])
   })
 
-  it("a lone schematic says there is no board, and what to add", async () => {
-    const r = await picked([input("a.kicad_sch")])
+  it("a lone schematic is a project of its own, with no board", async () => {
+    const r = await ready([input("a.kicad_sch")])
+    expect(r.files.board).toBeNull()
+    expect(paths(r.files.schematics)).toEqual(["a.kicad_sch"])
+  })
+
+  it("KiCad 5's schematic alone says it is not read, and what to do", async () => {
+    const r = await picked([input("a.sch"), input("a.pro")])
     expect(r.kind).toBe("none")
-    if (r.kind === "none") expect(r.why).toMatch(/no board.+\.kicad_pcb/)
+    if (r.kind === "none") expect(r.why).toMatch(/KiCad 5.+\.sch.+KiCad 6/)
   })
 
   it("a file that is not KiCad's says there is no board", async () => {
@@ -53,7 +59,7 @@ describe("one file", () => {
 describe("several files at once", () => {
   it("takes the board and the files beside it, and names the rest as set aside", async () => {
     const r = await ready([input("p.kicad_pcb"), input("p.kicad_pro"), input("p.kicad_sch"), input("p.kicad_dru"), input("notes.txt")])
-    expect(r.files.board.path).toBe("p.kicad_pcb")
+    expect(r.files.board?.path).toBe("p.kicad_pcb")
     expect(r.files.projectFile?.path).toBe("p.kicad_pro")
     expect(paths(r.files.schematics)).toEqual(["p.kicad_sch"])
     expect(r.files.rules?.path).toBe("p.kicad_dru")
@@ -66,7 +72,7 @@ describe("several files at once", () => {
     expect(first.kind).toBe("choose")
     if (first.kind === "choose") expect(first.boards.map((b) => b.id)).toEqual(["a.kicad_pcb", "b.kicad_pcb"])
     const second = await ready(files, "b.kicad_pcb")
-    expect(second.files.board.path).toBe("b.kicad_pcb")
+    expect(second.files.board?.path).toBe("b.kicad_pcb")
     expect(second.ignored.map((i) => i.why)).toEqual(["another board, not the one chosen"])
   })
 
@@ -80,19 +86,45 @@ describe("a zip with one project", () => {
     const zip = await zipInput("proj.zip", { "proj/proj.kicad_pcb": "b", "proj/proj.kicad_pro": "p", "proj/proj.kicad_sch": "s", "proj/sub/sheet2.kicad_sch": "s2", "proj/proj.kicad_dru": "d", "proj/fabrication/out.gbr": "g" })
     const r = await ready([zip])
     // A zip's files are named with the zip's own path in front.
-    expect(r.files.board.path).toBe("proj/proj/proj.kicad_pcb")
+    expect(r.files.board?.path).toBe("proj/proj/proj.kicad_pcb")
     expect(r.files.projectFile?.path).toBe("proj/proj/proj.kicad_pro")
     expect(paths(r.files.schematics)).toEqual(["proj/proj/proj.kicad_sch", "proj/proj/sub/sheet2.kicad_sch"])
     expect(r.files.rules?.path).toBe("proj/proj/proj.kicad_dru")
-    expect(new TextDecoder().decode(await r.files.board.read())).toBe("b")
+    expect(new TextDecoder().decode(await r.files.board!.read())).toBe("b")
     expect(r.ignored.map((i) => i.path)).toEqual(["proj/proj/fabrication/out.gbr"])
   })
 
   it("leaves out the computer's own files and KiCad's backups and autosaves", async () => {
     const zip = await zipInput("p.zip", { "p.kicad_pcb": "b", "__MACOSX/._p.kicad_pcb": "x", ".DS_Store": "x", "p-backups/p-2024.kicad_pcb": "old", "_autosave-p.kicad_pcb": "auto", "p.kicad_pcb-bak": "bak" })
     const r = await ready([zip])
-    expect(r.files.board.path).toBe("p/p.kicad_pcb")
+    expect(r.files.board?.path).toBe("p/p.kicad_pcb")
     expect(r.ignored.length).toBe(5)
+  })
+})
+
+describe("schematics with no board", () => {
+  it("take the sheets below the first one, its project file and rules, and set the rest aside", async () => {
+    const r = await ready([input("p/p.kicad_sch"), input("p/sheets/power.kicad_sch"), input("p/p.kicad_pro"), input("p/p.kicad_dru"), input("p/notes.txt"), input("other/other.kicad_pro")])
+    expect(r.files.board).toBeNull()
+    expect(paths(r.files.schematics)).toEqual(["p/p.kicad_sch", "p/sheets/power.kicad_sch"])
+    expect(r.files.projectFile?.path).toBe("p/p.kicad_pro")
+    expect(r.files.rules?.path).toBe("p/p.kicad_dru")
+    expect(r.ignored.map((i) => i.path).sort()).toEqual(["other/other.kicad_pro", "p/notes.txt"])
+  })
+
+  it("two folders each with a schematic ask which, and a choice picks one", async () => {
+    const files = [input("a/a.kicad_sch"), input("a/a.kicad_pro"), input("b/b.kicad_sch")]
+    const first = await picked(files)
+    expect(first.kind).toBe("choose")
+    if (first.kind === "choose") expect(first.boards).toEqual([expect.objectContaining({ id: "a/a.kicad_sch", schematic: true }), expect.objectContaining({ id: "b/b.kicad_sch", schematic: true })])
+    const second = await ready(files, "b/b.kicad_sch")
+    expect(paths(second.files.schematics)).toEqual(["b/b.kicad_sch"])
+    expect(second.ignored.map((i) => i.why)).toContain("outside the chosen schematic's folder")
+  })
+
+  it("a board beside the schematics wins: it is the project's board", async () => {
+    const r = await ready([input("p.kicad_sch"), input("p.kicad_pcb")])
+    expect(r.files.board?.path).toBe("p.kicad_pcb")
   })
 })
 
@@ -139,16 +171,23 @@ describe("nested folders", () => {
 
   it("folder separators from Windows are read as folders", async () => {
     const r = await ready([input("Top\\m.kicad_pcb"), input("Top\\m.kicad_pro")])
-    expect(r.files.board.path).toBe("Top/m.kicad_pcb")
+    expect(r.files.board?.path).toBe("Top/m.kicad_pcb")
     expect(r.files.projectFile?.path).toBe("Top/m.kicad_pro")
   })
 })
 
 describe("a zip with no board", () => {
-  it("with only a schematic says the board is missing", async () => {
-    const r = await picked([await zipInput("p.zip", { "p.kicad_sch": "s", "p.kicad_pro": "p" })])
+  it("with only a schematic and its project file is a schematic-only project, in the zip's folder", async () => {
+    const r = await ready([await zipInput("p.zip", { "p.kicad_sch": "s", "p.kicad_pro": "p" })])
+    expect(r.files.board).toBeNull()
+    expect(paths(r.files.schematics)).toEqual(["p/p.kicad_sch"])
+    expect(r.files.projectFile?.path).toBe("p/p.kicad_pro")
+  })
+
+  it("with only a project file says there is nothing to import, and what to add", async () => {
+    const r = await picked([await zipInput("p.zip", { "p.kicad_pro": "p" })])
     expect(r.kind).toBe("none")
-    if (r.kind === "none") expect(r.why).toMatch(/There is no board/)
+    if (r.kind === "none") expect(r.why).toMatch(/\.kicad_pcb or \.kicad_sch/)
   })
 
   it("with nothing of KiCad's says so and lists what it set aside", async () => {
@@ -168,13 +207,13 @@ describe("a zip with no board", () => {
 describe("legacy files", () => {
   it("a .brd is offered as the board, to be refused with its version message by the reader", async () => {
     const r = await ready([input("old.brd")])
-    expect(r.files.board.path).toBe("old.brd")
-    expect(kindOf(r.files.board.path)).toBe("legacy-board")
+    expect(r.files.board?.path).toBe("old.brd")
+    expect(kindOf(r.files.board!.path)).toBe("legacy-board")
   })
 
   it("a legacy .brd beside a .kicad_pcb in the same folder is the older copy and is set aside", async () => {
     const r = await ready([input("p.kicad_pcb"), input("p.brd")])
-    expect(r.files.board.path).toBe("p.kicad_pcb")
+    expect(r.files.board?.path).toBe("p.kicad_pcb")
     expect(r.ignored.map((i) => i.path)).toEqual(["p.brd"])
   })
 
@@ -227,7 +266,7 @@ describe("a corrupt zip", () => {
     zip.file("inner.zip", await inner.generateAsync({ type: "uint8array" }))
     const bytes = await zip.generateAsync({ type: "uint8array" })
     const r = await ready([{ path: "outer.zip", size: bytes.length, read: async () => bytes }])
-    expect(r.files.board.path).toBe("outer/p.kicad_pcb")
+    expect(r.files.board?.path).toBe("outer/p.kicad_pcb")
     expect(r.ignored.some((i) => /zip inside a zip/.test(i.why))).toBe(true)
   })
 })
@@ -253,7 +292,7 @@ describe("KiCad's own backups", () => {
     const r = pick(e)
     expect(r.kind).toBe("ready")
     if (r.kind !== "ready") return
-    expect(r.files.board.path).toBe("proj/proj.kicad_pcb")
+    expect(r.files.board?.path).toBe("proj/proj.kicad_pcb")
     expect(r.files.projectFile?.path).toBe("proj/proj.kicad_pro")
     expect(r.ignored.map((i) => [i.path, i.why])).toEqual([
       ["proj/proj-backups/proj-2026-10-01_101500.zip", "a KiCad backup copy"],

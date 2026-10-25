@@ -74,10 +74,14 @@ export function KicadImportDialog({ state, controller, onOpen }: { state: Import
     )
   }
   if (state.step === "choose") {
+    // With no board among the files the choice is between schematics.
+    const what = state.boards.every((b) => b.schematic) ? "schematic" : "board"
     return (
-      <Shell key="choose" label="Choose a board" onDismiss={close}>
-        <h2 className="text-[15px] font-[650] text-ink">Which board?</h2>
-        <p className="mt-1 text-[13px] text-ink-2">These files hold {state.boards.length} boards. Pick the one to import.</p>
+      <Shell key="choose" label={`Choose a ${what}`} onDismiss={close}>
+        <h2 className="text-[15px] font-[650] text-ink">Which {what}?</h2>
+        <p className="mt-1 text-[13px] text-ink-2">
+          These files hold {state.boards.length} {what}s. Pick the one to import.
+        </p>
         {/* ph-no-capture: PostHog records the text of a clicked button, and these show file paths. */}
         <div className="ph-no-capture mt-3 min-h-0 flex-1 space-y-1.5 overflow-y-auto scroll-thin">
           {state.boards.map((b) => (

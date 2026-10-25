@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { findPart, projectPartIds } from "../src/model/library"
 import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../src/model/kicad/board"
+import { joinFlags } from "../src/model/partFlags"
 import { importKicadProject, pickProjectFiles, projectNeeds, readKicadPro, readKicadRules, accountPro, accountRules, stripComments, KicadProjectFileError, KicadRulesFileError, type KicadProjectResult, type ProjectFile } from "../src/model/kicad/project"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { LIB_R, divider, schematic } from "./kicad-schematic-fixtures"
@@ -458,5 +459,62 @@ describe("which files are the project's", () => {
       { path: "proj\\demo.kicad_sch", data: "" },
     ])
     expect([p.board?.path, p.root?.path]).toEqual(["proj/demo.kicad_pcb", "proj/demo.kicad_sch"])
+  })
+})
+
+describe("the flags of a symbol and of its footprint", () => {
+  const r1Footprint = (extra: string) => footprint({ ref: "R1", at: "10 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "VCC")' }), pad({ number: "2", at: "1 0", net: '(net 2 "/MID")' })], extra: `(path "/${U1}") ${extra}` })
+  const r2Footprint = footprint({ ref: "R2", at: "15 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 2 "/MID")' }), pad({ number: "2", at: "1 0", net: '(net 3 "GND")' })], extra: `(path "/${U2}")` })
+  const boardOf = (extra: string) => board({ nets: ['(net 0 "")', '(net 1 "VCC")', '(net 2 "/MID")', '(net 3 "GND")'], body: [r1Footprint(extra), r2Footprint] })
+  const flagged = (symbolExtra: string) => divider().replace("(in_bom yes) (on_board yes) ", `(in_bom yes) (on_board yes) ${symbolExtra} `)
+  const flagsOf = (r: ReturnType<typeof imported>, ref: string) => r.project.components.find((c) => c.ref === ref)?.flags
+
+  it("the symbol wins for do not populate and the BOM, the footprint for mounting, board only, virtual and net ties, and a note says where they disagreed", () => {
+    // the footprint says do not populate and not in the BOM; the symbol says neither (a board not updated from its schematic)
+    const r = imported(importKicadProject(files(boardOf('(attr smd board_only dnp exclude_from_bom) (net_tie_pad_groups "1, 2")'), divider()), { built: BOARD_ALL }))
+    expect(flagsOf(r, "R1")).toEqual({ mount: "smd", boardOnly: true, netTies: [["1", "2"]] })
+    const note = r.report.entries.find((e) => e.code === "symbol-footprint-flags-differ")!
+    expect(note.items).toEqual(["R1"])
+    expect(note.why).toMatch(/R1 do not populate \(the symbol says no, the footprint yes\), not in the BOM \(the symbol says no, the footprint yes\)/)
+    // a part the footprint has no word about keeps nothing
+    expect(flagsOf(r, "R2")).toBeUndefined()
+  })
+
+  it("a symbol's own flags are kept, and where the footprint agrees there is no note", () => {
+    const r = imported(importKicadProject(files(boardOf("(attr smd dnp)"), flagged("(dnp yes)"))))
+    expect(flagsOf(r, "R1")).toEqual({ mount: "smd", dnp: true })
+    expect(r.report.entries.some((e) => e.code === "symbol-footprint-flags-differ")).toBe(false)
+  })
+
+  it("the footprint's own text and KiCad name come over to the symbol's part", () => {
+    const r = imported(importKicadProject(files(boardOf(""), divider()), { built: BOARD_ALL }))
+    const r1 = r.project.components.find((c) => c.ref === "R1")!
+    expect(r1.fpid).toBe("Resistor_SMD:R_0603_1608Metric")
+    expect(r1.texts?.map((t) => t.kind)).toEqual(expect.arrayContaining(["reference", "value"]))
+  })
+
+  it("is joined by the one helper: the symbol's keys, the footprint's keys, and the words where they differ", () => {
+    expect(joinFlags({ dnp: true, excludeFromSim: true }, { mount: "smd", dnp: false as never, excludeFromBom: true, virtual: true, netTies: [["1", "2"]] })).toEqual({
+      flags: { dnp: true, excludeFromSim: true, mount: "smd", virtual: true, netTies: [["1", "2"]] },
+      differ: ["do not populate (the symbol says yes, the footprint no)", "not in the BOM (the symbol says no, the footprint yes)"],
+    })
+    expect(joinFlags(undefined, undefined)).toEqual({ flags: undefined, differ: [] })
+  })
+})
+
+describe("the board hook: each footprint's component, not a guess from its reference and place", () => {
+  it("a padless footprint is a part of the board, and the symbol's footprint is the one its path names even when two sit at one place", () => {
+    const stacked = footprint({ ref: "R1", at: "10 5", pads: [pad({ number: "1", at: "-1 0" }), pad({ number: "2", at: "1 0" })] })
+    const logo = footprint({ ref: "LOGO1", at: "10 5", pads: [] })
+    const r = imported(importKicadProject(files(dividerBoard({ extra: [stacked, logo] }), divider()), { built: BOARD_ALL }))
+    // R1 (linked by path), R1_2 (the stacked footprint, loose), LOGO1 and R2
+    expect(r.project.components.map((c) => c.ref).sort()).toEqual(["#PWR01", "#PWR02", "LOGO1", "R1", "R1_2", "R2"])
+    const logoPart = r.project.components.find((c) => c.ref === "LOGO1")!
+    expect(findPart(logoPart.partId)?.pins).toEqual([])
+    expect(logoPart.pcb.placed).toBe(true)
+    // the symbol's R1 sits on the footprint the path named, with that footprint's land
+    const linked = r.project.components.find((c) => c.ref === "R1")!
+    expect(linked.sch).toMatchObject({ x: 4, y: -4 })
+    expect(linked.pcb).toMatchObject({ x: 10, y: -5, placed: true })
   })
 })

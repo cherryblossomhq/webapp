@@ -3,6 +3,7 @@ import { uid } from "../../../lib/id"
 import { bareName, computeConnectivity, pinKey } from "../../connectivity"
 import { registerProjectParts } from "../../customParts"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
+import { joinFlags } from "../../partFlags"
 import { labelBox } from "../../labels"
 import { findPart, isRegistered, projectPartIds, unregisterPart } from "../../library"
 import { SCH_GRID } from "../../symbols"
@@ -653,9 +654,38 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     const moved = newPartOf.get(`${m.part}|${m.footprint}`)
     if (moved && !models.some((x) => x.part === moved && x.footprint === m.footprint)) models.push({ ...m, part: moved })
   }
+  // A linked symbol is the schematic's part on the board's footprint: the footprint's own text and KiCad name come over with its flags, joined with the symbol's (the symbol wins where both have a say).
+  const boardOf = new Map<string, ComponentInstance>()
+  for (const l of link.links) {
+    if (!l.record) continue
+    const owner = symbolFootprint.get(l.record.symbol)
+    const next = sch.bySymbol.get(l.record.symbol)
+    const old = componentOf.get(l.footprint)
+    if (owner && next && old && owner.index === l.footprint) boardOf.set(next.id, old)
+  }
+  const differing: { ref: string; words: string[] }[] = []
+  const linkedComponents = sch.project.components.map((c) => {
+    const b = boardOf.get(c.id)
+    if (!b) return c
+    const { flags, differ } = joinFlags(c.flags, b.flags)
+    if (differ.length) differing.push({ ref: c.ref, words: differ })
+    const { flags: _symbolFlags, ...rest } = c
+    void _symbolFlags
+    return { ...rest, ...(flags ? { flags } : {}), ...(b.texts ? { texts: b.texts } : {}), ...(b.fpid ? { fpid: b.fpid } : {}) }
+  })
+  if (differing.length) {
+    report.entries.push({
+      code: "symbol-footprint-flags-differ",
+      severity: "changed",
+      object: `${differing.length} part${differing.length > 1 ? "s" : ""} (${differing.slice(0, 5).map((d) => d.ref).join(", ")}${differing.length > 5 ? ", ..." : ""})`,
+      why: `The symbol and the footprint disagree about a flag; the symbol's is kept, as KiCad would after updating the board from the schematic: ${differing.slice(0, 3).map((d) => `${d.ref} ${d.words.join(", ")}`).join("; ")}${differing.length > 3 ? "; ..." : ""}.`,
+      count: differing.length,
+      items: differing.map((d) => d.ref),
+    })
+  }
   const project: Project = {
     ...boardProject,
-    components: [...sch.project.components, ...placed],
+    components: [...linkedComponents, ...placed],
     wires: [...sch.project.wires, ...laid.wires],
     labels: [...sch.project.labels, ...laid.labels],
     ...(sch.project.netNames ? { netNames: sch.project.netNames } : {}),

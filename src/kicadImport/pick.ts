@@ -182,18 +182,21 @@ export async function expand(input: InputFile[], limit = MAX_FILE_BYTES): Promis
   return out
 }
 
-/** A board the user may pick, for the chooser. */
+/** A board the user may pick, for the chooser; or, among schematics alone, the folder of a schematic. */
 export interface BoardChoice {
   /** Its path, which is also what a choice is made by. */
   id: string
   path: string
   size: number | null
   legacy: boolean
+  /** A schematic (the one that starts a folder's project) where there is no board to choose. */
+  schematic?: true
 }
 
-/** The files that belong to one board. */
+/** The files that belong to one board, or to a schematic when there is no board. */
 export interface ProjectFiles {
-  board: InputFile
+  /** The board; null for a schematic alone. */
+  board: InputFile | null
   /** `.kicad_pro`, or KiCad 5's `.pro`, beside the board. */
   projectFile: InputFile | null
   schematics: InputFile[]
@@ -223,10 +226,29 @@ export function pick(expanded: ExpandResult, choice?: string): PickResult {
   const modern = boards.filter((f) => kindOf(f.path) === "board")
   const candidates = (modern.length ? boards.filter((f) => kindOf(f.path) === "board" || !modern.some((m) => dirName(m.path) === dirName(f.path))) : boards).sort((a, b) => a.path.localeCompare(b.path))
 
+  // No board: a KiCad schematic alone is a project too, and imports as one.
+  const sheets = usable.filter((f) => kindOf(f.path) === "schematic").sort((a, b) => a.path.localeCompare(b.path))
+  if (candidates.length === 0 && sheets.length) {
+    const dirs = [...new Set(sheets.map((f) => dirName(f.path)))]
+    // A folder inside another that has a schematic holds sheets of that project, not a project of its own.
+    const tops = dirs.filter((d) => !dirs.some((o) => o !== d && (o === "" || d.startsWith(`${o}/`))))
+    const start = (dir: string) => {
+      const here = sheets.filter((f) => dirName(f.path) === dir)
+      const pros = usable.filter((f) => ["project", "legacy-project"].includes(kindOf(f.path)) && dirName(f.path) === dir)
+      return here.find((f) => pros.some((p) => stemOf(p.path).toLowerCase() === stemOf(f.path).toLowerCase())) ?? here[0]
+    }
+    const roots = tops.map(start)
+    let root: InputFile | undefined
+    if (roots.length === 1) root = roots[0]
+    else if (choice !== undefined) root = roots.find((r) => r.path === choice)
+    if (!root) return { kind: "choose", boards: roots.map((r) => ({ id: r.path, path: r.path, size: r.size, legacy: false, schematic: true as const })), ignored }
+    return readyBeside(usable, ignored, root, null)
+  }
+
   if (candidates.length === 0) {
     const sch = usable.filter((f) => ["schematic", "legacy-schematic", "project", "legacy-project"].includes(kindOf(f.path)))
     const why = sch.length
-      ? "There is no board in these files. They have a schematic or a project file but no .kicad_pcb, and a board is what Cherry Blossom imports. Add the .kicad_pcb from the same folder."
+      ? "There is no board and no schematic Cherry Blossom can read in these files. KiCad 5's .sch and .pro files are not read; save the project in KiCad 6 or later, or add the .kicad_pcb or .kicad_sch."
       : expanded.badZips.length
         ? `${baseName(expanded.badZips[0].path)} could not be opened. ${expanded.badZips[0].why}`
         : "There is no KiCad board in these files. Pick a .kicad_pcb file, or a zip of the project folder."
@@ -240,6 +262,14 @@ export function pick(expanded: ExpandResult, choice?: string): PickResult {
     return { kind: "choose", boards: candidates.map((c) => ({ id: c.path, path: c.path, size: c.size, legacy: kindOf(c.path) === "legacy-board" })), ignored }
   }
 
+  return readyBeside(usable, ignored, chosen, chosen)
+}
+
+/**
+ * The files that go with a board (or, with no board, with the schematic that starts the project): its project file and rules
+ * in its folder, the schematics and libraries in or below it. Everything else is set aside with the reason.
+ */
+function readyBeside(usable: InputFile[], ignored: IgnoredFile[], chosen: InputFile, board: InputFile | null): PickResult {
   const dir = dirName(chosen.path)
   const beside = usable.filter((f) => within(dir, f.path))
   const here = (kind: FileKind[]) => beside.filter((f) => kind.includes(kindOf(f.path)) && dirName(f.path) === dir)
@@ -255,8 +285,8 @@ export function pick(expanded: ExpandResult, choice?: string): PickResult {
     const kind = kindOf(f.path)
     ignored.push({
       path: f.path,
-      why: kind === "board" || kind === "legacy-board" ? "another board, not the one chosen" : within(dir, f.path) ? "not a KiCad design file" : "outside the chosen board's folder",
+      why: kind === "board" || kind === "legacy-board" ? "another board, not the one chosen" : within(dir, f.path) ? "not a KiCad design file" : `outside the chosen ${board ? "board" : "schematic"}'s folder`,
     })
   }
-  return { kind: "ready", files: { board: chosen, projectFile, schematics, rules, libraries }, ignored }
+  return { kind: "ready", files: { board, projectFile, schematics, rules, libraries }, ignored }
 }

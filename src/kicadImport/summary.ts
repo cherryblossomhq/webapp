@@ -1,7 +1,8 @@
 import type { Project } from "../model/types"
 // Types only: the importer itself is loaded when an import starts (see `engine.ts`), never here.
-import type { KicadImportResult } from "../model/kicad/board/import"
-import type { ReportEntry } from "../model/kicad/board/report"
+import type { KicadBoard } from "../model/kicad/board/types"
+import type { ImportReport, ReportEntry } from "../model/kicad/board/report"
+import type { Need } from "../model/kicad/schematic/needs"
 import { baseName, type IgnoredFile } from "./pick"
 
 // What an import tells the user, as plain data: built where the import runs, sent across the
@@ -32,15 +33,33 @@ export const PLAIN_NAMES: Record<string, string> = {
   X23: "variants, units and points",
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width and tracks exposed through the solder mask",
   X25: "tables, barcodes and drill charts, text boxes inside parts, and text with expressions or variables the editor cannot fill in",
+  S1: "sheets inside sheets (hierarchical sheets, sheet pins and hierarchical labels)",
+  S2: "net labels as KiCad has them (local and global labels, their shapes and styles) and KiCad's own net names",
+  S3: "buses (bus wires, bus entries and bus aliases)",
+  S4: "notes, shapes, pictures and tables on the sheet, and wires and junctions with a look of their own",
+  S5: "symbols with several units, mirrored symbols, hidden power pins, pins that share a number and fields placed by hand",
+  S6: "symbol drawings with arcs, curves, fills and line styles",
+  S7: "flags set on a symbol (do not populate, not in the parts list, not on the board, left out of simulation)",
+  S8: "directive labels and rule areas",
+  S9: "schematic variants",
+  S10: "symbols kept inside the project",
+  S11: "KiCad's own rules for what a wire joins (a wire end on the side of another wire, a label on a pin, points a hair apart)",
+  S12: "symbols from the project's own libraries or the parts database",
 }
 
 /** The plain name of an extension; one the table does not know is still named, never shown as a bare id. */
 export const plainName = (id: string) => PLAIN_NAMES[id] ?? `a feature the editor does not have yet (${id})`
 
+/** What was imported: a board alone, a project (a board and its schematic), or a schematic alone. */
+export type ImportKind = "board" | "project" | "schematic"
+
+/** The word a message uses for it. */
+export const WHAT: Record<ImportKind, string> = { board: "board", project: "project", schematic: "schematic" }
+
 export type SummaryReason =
   /** Refused for good: the project is over the storage limit. */
   | "too-large"
-  /** The board uses something the editor cannot hold yet. */
+  /** The board or the schematic uses something the editor cannot hold yet. */
   | "unsupported"
   /** The file has something the importer does not know, or does not match exactly. */
   | "unknown"
@@ -62,7 +81,37 @@ export interface EntryLine {
   count?: number
 }
 
+/**
+ * What an import came to, whichever importer ran: the board's, the project's or the schematic's. The
+ * board's result is one of these as it is; the project's and the schematic's are put in this shape by
+ * `engine.ts`, which knows both.
+ */
+export type ImportResult =
+  | {
+      status: "imported"
+      project: Project
+      report: ImportReport
+      bytes: number
+      /** The board that was read, when there was one. */
+      board?: KicadBoard | null
+      /** The stamp and release of the file that was read, when there is no board to say them. */
+      file?: { stamp: number | null; era: string | null; generator: string | null }
+      kind?: ImportKind
+    }
+  | {
+      status: "refused"
+      reason: Exclude<SummaryReason, "bad-input" | "failed" | "cancelled">
+      message: string
+      report: ImportReport
+      needs: Need[]
+      board?: KicadBoard | null
+      file?: { stamp: number | null; era: string | null; generator: string | null }
+      kind?: ImportKind
+    }
+
 export interface ImportSummary {
+  /** What was imported; a summary from before the schematic import has none, and is a board's. */
+  kind?: ImportKind
   status: "imported" | "refused"
   reason: SummaryReason | null
   /** The one sentence for the top of the screen. */
@@ -76,7 +125,7 @@ export interface ImportSummary {
   boardBytes: number
   /** The size of the project file, when one was built. */
   projectBytes: number | null
-  /** The extensions the board needs that the editor lacks: the id, the name in words, and what in this board needs it. */
+  /** The extensions the board or schematic needs that the editor lacks: the id, the name in words, and what in the file needs it. */
   missing: { id: string; name: string; why: string }[]
   /** What the new project holds, when imported. */
   brought: { label: string; count: number }[]
@@ -114,8 +163,12 @@ function groupIgnored(ignored: IgnoredFile[]): ImportSummary["ignored"] {
 }
 
 function broughtOf(p: Project): ImportSummary["brought"] {
+  // A part of the schematic that is a symbol only (a power port, a flag) is not counted as a part.
   return [
     { label: "parts", count: p.components.length },
+    { label: "wires on the schematic", count: p.wires.length },
+    { label: "net labels", count: p.labels.length },
+    { label: "notes, shapes and pictures on the sheet", count: p.drawings?.length ?? 0 },
     { label: "tracks", count: p.traces.length },
     { label: "vias", count: p.vias.length },
     { label: "pours", count: p.zones.length },
@@ -125,14 +178,16 @@ function broughtOf(p: Project): ImportSummary["brought"] {
 }
 
 /** The summary of an import result. Pass the project's own size, which the importer measured. */
-export function summarize(result: KicadImportResult, files: FileContext): ImportSummary {
+export function summarize(result: ImportResult, files: FileContext): ImportSummary {
   const board = result.board
+  const kind: ImportKind = result.kind ?? "board"
   const entries = result.report.entries
   const account = result.report.account
   const base = {
-    stamp: board?.version ?? null,
-    era: board?.era ?? null,
-    generator: board?.generatorVersion ?? board?.generator ?? null,
+    ...(kind !== "board" ? { kind } : {}),
+    stamp: board?.version ?? result.file?.stamp ?? null,
+    era: board?.era ?? result.file?.era ?? null,
+    generator: board?.generatorVersion ?? board?.generator ?? result.file?.generator ?? null,
     boardBytes: files.boardBytes,
     accounted: account
       ? {
@@ -157,13 +212,13 @@ export function summarize(result: KicadImportResult, files: FileContext): Import
     ignored: groupIgnored(files.ignored),
   }
   if (result.status === "imported") {
-    return { ...base, status: "imported", reason: null, message: "The board came in and is ready to open.", detail: null, projectBytes: result.bytes, missing: [], brought: broughtOf(result.project) }
+    return { ...base, status: "imported", reason: null, message: importedMessage(kind), detail: null, projectBytes: result.bytes, missing: [], brought: broughtOf(result.project) }
   }
   return {
     ...base,
     status: "refused",
     reason: result.reason,
-    message: result.reason === "unsupported" ? unsupportedLead(result.needs.length) : result.message,
+    message: result.reason === "unsupported" ? unsupportedLead(result.needs.length, kind) : result.message,
     detail: null,
     projectBytes: null,
     missing: result.needs.map((n) => ({ id: n.ext, name: plainName(n.ext), why: clean(n.why) })),
@@ -198,7 +253,10 @@ export function stoppedSummary(reason: SummaryReason, message: string, files: Fi
 }
 
 /** The one sentence for a refusal over missing extensions; the list below it says which, and why. */
-export const unsupportedLead = (count: number) => `This board uses ${count === 1 ? "1 thing" : `${count} things`} Cherry Blossom cannot hold yet, listed below.`
+export const unsupportedLead = (count: number, kind: ImportKind = "board") => `This ${WHAT[kind]} uses ${count === 1 ? "1 thing" : `${count} things`} Cherry Blossom cannot hold yet, listed below.`
+
+/** The one sentence at the top of a report for something that came in. */
+export const importedMessage = (kind: ImportKind = "board") => (kind === "project" ? "The project came in, its board and its schematic, and is ready to open." : `The ${WHAT[kind]} came in and is ready to open.`)
 
 /** The full report as text, for the download. */
 export function reportText(s: ImportSummary, projectName: string): string {
@@ -211,7 +269,7 @@ export function reportText(s: ImportSummary, projectName: string): string {
   if (s.projectBytes !== null) out.push(`Project size: ${(s.projectBytes / 1024).toFixed(0)} KB`)
   section("Brought in", s.brought.map((b) => `${b.count} ${b.label}`))
   if (s.accounted) section("The file, item by item", [`${s.accounted.total} items in the file: ${s.accounted.imported} brought in, ${s.accounted.notNeeded} not needed, ${s.accounted.waiting} waiting for a feature, ${s.accounted.reported} reported below`])
-  section("Used by this board and not supported yet", s.missing.map((m) => `${m.name} (${m.id}): ${m.why}`))
+  section(`Used by this ${WHAT[s.kind ?? "board"]} and not supported yet`, s.missing.map((m) => `${m.name} (${m.id}): ${m.why}`))
   section("Not needed", s.notNeeded.map((n) => `${n.count} x ${n.why}`))
   section("Not brought in", s.notBrought.map(entry))
   section("Changed on the way in", s.changed.map(entry))
@@ -226,5 +284,5 @@ export function reportText(s: ImportSummary, projectName: string): string {
 /** The full report as JSON, for the download. */
 export const reportJson = (s: ImportSummary, projectName: string) => JSON.stringify({ project: projectName, ...s }, null, 2)
 
-/** What to call a report whose project was not made: the board's file name without its extension. */
-export const reportName = (s: ImportSummary) => (s.used[0] ?? "KiCad board").replace(/\.[^.]+$/, "")
+/** What to call a report whose project was not made: the first file's name without its extension. */
+export const reportName = (s: ImportSummary) => (s.used[0] ?? `KiCad ${WHAT[s.kind ?? "board"]}`).replace(/\.[^.]+$/, "")

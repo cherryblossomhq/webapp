@@ -5,6 +5,7 @@ import { PHASE_LABELS } from "../src/kicadImport/protocol"
 import { reportLead, reportSections, reportTitle, reportTone } from "../src/kicadImport/sections"
 import { PLAIN_NAMES, plainName, reportJson, reportName, reportText, stoppedSummary, summarize, unsupportedLead, type ImportSummary, type SummaryReason } from "../src/kicadImport/summary"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
+import { EXTENSION_NAMES as SCHEMATIC_NAMES } from "../src/model/kicad/schematic"
 import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 
 // The words of the report: every extension id has a plain name that covers what triggers it, a
@@ -14,7 +15,7 @@ const ctx = { used: ["b.kicad_pcb"], notRead: [{ file: "x.kicad_pro", why: "the 
 
 describe("plain names for the extensions", () => {
   it("has one for every extension the importer knows, and none for one it does not", () => {
-    expect(Object.keys(PLAIN_NAMES).sort()).toEqual(Object.keys(EXTENSION_NAMES).sort())
+    expect(Object.keys(PLAIN_NAMES).sort()).toEqual(Object.keys({ ...EXTENSION_NAMES, ...SCHEMATIC_NAMES }).sort())
   })
 
   it("names are words, not ids", () => {
@@ -50,6 +51,19 @@ describe("plain names for the extensions", () => {
     X23: [/variants/, /units/, /points/],
     X24: [/hatched fills/, /line end shapes/, /colours/, /negative width/, /solder mask/],
     X25: [/tables/, /barcodes/, /drill charts/, /text boxes/, /expressions/, /variables/],
+    // the schematic's (docs/kicad-import-schematic.md section 3)
+    S1: [/sheets inside sheets/, /hierarchical/, /sheet pins/],
+    S2: [/net labels/, /local and global/, /net names/],
+    S3: [/buses/, /bus entries/, /bus aliases/],
+    S4: [/notes/, /shapes/, /pictures/, /tables/, /wires and junctions/],
+    S5: [/several units/, /mirrored/, /hidden power pins/, /share a number/, /fields/],
+    S6: [/arcs/, /curves/, /fills/, /line styles/],
+    S7: [/flags/, /do not populate/, /not on the board/, /simulation/],
+    S8: [/directive labels/, /rule areas/],
+    S9: [/variants/],
+    S10: [/kept inside the project/],
+    S11: [/wire joins/, /label on a pin/],
+    S12: [/libraries/, /parts database/],
   }
 
   it("every name covers everything its extension is raised for", () => {

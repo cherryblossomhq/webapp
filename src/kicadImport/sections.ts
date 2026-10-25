@@ -1,5 +1,5 @@
 import type { SaveKind } from "./save"
-import type { EntryLine, ImportSummary, SummaryReason } from "./summary"
+import { WHAT, type EntryLine, type ImportSummary, type SummaryReason } from "./summary"
 
 // The report screen as data: a title, a lead sentence and sections of lines. The editor's report
 // view and the website's projects page each draw this in their own style, so the two say the same.
@@ -38,19 +38,24 @@ export interface ReportSection {
   lines: ReportLine[]
 }
 
+/** The title says "board" in its own words; for a project or a schematic it says that instead. */
+const titleFor = (reason: SummaryReason, kind: ImportSummary["kind"]) => (kind && kind !== "board" ? TITLES[reason].replace("board", WHAT[kind]) : TITLES[reason])
+
 export const reportTitle = (s: ImportSummary, saveError?: string | null, saveKind?: SaveKind | null) =>
-  saveError ? (saveKind === "uncertain" ? "Saving did not finish" : "Not saved") : s.status === "imported" ? "Imported from KiCad" : s.reason ? TITLES[s.reason] : "Not imported"
+  saveError ? (saveKind === "uncertain" ? "Saving did not finish" : "Not saved") : s.status === "imported" ? "Imported from KiCad" : s.reason ? titleFor(s.reason, s.kind) : "Not imported"
 
 /** The sentence under the title: the importer's own message for a refusal, the reason for a failed save. */
 export const reportLead = (s: ImportSummary, saveError?: string | null) => saveError ?? s.message
 
 /** What to do after a failed save, by what the failure means (`SaveKind`). */
-export const saveNextStep = (kind?: SaveKind | null) =>
-  kind === "uncertain"
-    ? "The board itself was read without problems. The project may be in your projects list already: look there first, and import the board again only if it is not."
+export const saveNextStep = (kind?: SaveKind | null, what: ImportSummary["kind"] = "board") => {
+  const it = `The ${WHAT[what ?? "board"]} itself`
+  return kind === "uncertain"
+    ? `${it} was read without problems. The project may be in your projects list already: look there first, and import it again only if it is not.`
     : kind === "final"
-      ? "The board itself was read without problems, but trying again would give the same answer. Download the report to keep what was found."
-      : "The board itself was read without problems. Try again, or download the report and come back later."
+      ? `${it} was read without problems, but trying again would give the same answer. Download the report to keep what was found.`
+      : `${it} was read without problems. Try again, or download the report and come back later.`
+}
 
 /** Green for an import with nothing left behind, amber when something was left out or changed, red for a refusal or a failed save. */
 export const reportTone = (s: ImportSummary, saveError?: string | null): Tone =>
@@ -67,11 +72,12 @@ export function reportSections(s: ImportSummary, saveError?: string | null): Rep
   const out: ReportSection[] = []
   const add = (title: string, lines: ReportLine[], count?: number) => lines.length && out.push({ title, lines, ...(count !== undefined ? { count } : {}) })
   if (s.missing.length) {
+    const what = WHAT[s.kind ?? "board"]
     add(
-      "What this board uses that Cherry Blossom cannot hold yet",
+      `What this ${what} uses that Cherry Blossom cannot hold yet`,
       s.missing.map((m) => ({ lead: m.name, text: m.why })),
     )
-    add("Nothing was imported", [{ text: "No part of the board is wrong or half there. Cherry Blossom imports a board whole or not at all." }])
+    add("Nothing was imported", [{ text: `No part of the ${what} is wrong or half there. Cherry Blossom imports ${what === "board" ? "a board" : `a ${what}`} whole or not at all.` }])
   }
   if (s.status === "imported" && s.brought.length) {
     const lines: ReportLine[] = [{ text: `${s.brought.map((b) => `${b.count} ${b.label}`).join(", ")}.` }]

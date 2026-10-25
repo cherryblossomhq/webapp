@@ -53,8 +53,8 @@ export function ImportNotice({ state, onDismiss }: { state: ImportState; onDismi
       </div>
       {problems.length > 0 && (
         <ul className={`mt-1 list-disc space-y-0.5 pl-4 ${names.length ? "text-warn" : "text-ink-2"}`}>
-          {problems.slice(0, 6).map((p) => (
-            <li key={p}>{p}</li>
+          {problems.slice(0, 6).map((p, i) => (
+            <li key={i}>{p}</li>
           ))}
           {problems.length > 6 && <li>And {problems.length - 6} more.</li>}
         </ul>

@@ -2,7 +2,7 @@ import JSZip from "jszip"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { describeSource } from "../src/ai/partTools"
+import { describeSource, verifyProjectParts } from "../src/ai/partTools"
 import { customPartProblems } from "../src/model/customParts"
 import { addDraftToProject } from "../src/model/indexPart"
 import { pcbPads } from "../src/model/instances"
@@ -14,6 +14,8 @@ import { partSourceLine } from "../src/model/partSource"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
 import { importKicadPart, unpackFiles } from "../src/panels/kicadImport"
+import { connectModelFiles, modelFileId } from "../src/store/modelFiles"
+import { recordedSource } from "./fixtures/supplier/source"
 
 // A user's own KiCad files imported from the library panel: a symbol library, the footprints its
 // symbols name and their 3D models, read into project parts by the converter the parts database
@@ -79,6 +81,16 @@ describe("pairing a symbol with its footprint", () => {
     const two = importKicadFiles([file(AP2204K), file(DIP8), file(SOIC8)])
     expect(two.parts).toEqual([])
     expect(two.problems).toEqual(["AP2204K-1.5: its footprint Package_TO_SOT_SMD:SOT-23-5 wasn't among the files. Add its .kicad_mod file."])
+  })
+
+  it("imports a base symbol given in a library file of many, beside another library", () => {
+    // Timer as one file of two symbols (NE555P extends NE555D), given with another library.
+    const lib = (name: string, paths: string[]) => {
+      const bodies = paths.map((p) => readFileSync(join(FIXTURES, p), "utf8")).map((t) => t.slice(t.indexOf('(symbol "'), t.lastIndexOf(")")))
+      return { name, text: `(kicad_symbol_lib (version 20241209) (generator "test")\n${bodies.join("\n")}\n)` }
+    }
+    const found = importKicadFiles([lib("Timer.kicad_sym", ["symbols/Timer.kicad_symdir/NE555D.kicad_sym", "symbols/Timer.kicad_symdir/NE555P.kicad_sym"]), file(AP2204K), file(DIP8), file(SOIC8), file(SOT23_5)])
+    expect(found.parts.map((p) => p.draft.name).sort()).toEqual(["AP2204K-1.5", "NE555D", "NE555P"])
   })
 
   it("says what's missing: no footprint, the base a symbol extends, a footprint the symbol doesn't fit", () => {
@@ -154,6 +166,17 @@ describe("3D models", () => {
     })
   })
 
+  it("reads a KiCad 5 footprint's model: its offset in inches, KiCad's library by its old name", () => {
+    const legacy = (model: string) => ({
+      name: "SOT-23-5.kicad_mod",
+      text: readFileSync(join(FIXTURES, SOT23_5), "utf8").replace(/\(model "[^"]*"[\s\S]*?\(rotate\s*\(xyz [^)]*\)\s*\)\s*\)/, model),
+    })
+    const given = only([file(AP2204K), legacy(`(model "ap2204.step" (at (xyz 0.1 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))`)], ["ap2204.step"])
+    expect(given.modelFile?.placement?.offset).toEqual({ x: 2.54, y: 0, z: 0 })
+    const library = only([file(AP2204K), legacy(`(model "\${KISYS3DMOD}/Package_TO_SOT_SMD.3dshapes/SOT-23-5.wrl" (at (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))`)])
+    expect(library.model).toMatchObject({ source: "kicad", id: "10.0.7/Package_TO_SOT_SMD.3dshapes/SOT-23-5.step" })
+  })
+
   it("takes the one model file given for the one part, to be fitted, when the footprint names none it has", () => {
     const part = only([file(AP2204K), file(SOT23_5)], ["vendor_model.step"])
     expect(part.modelFile).toEqual({ name: "vendor_model.step", placement: null })
@@ -187,6 +210,14 @@ describe("in the project", () => {
     expect(describeSource(spec)).toBe(
       "imported from the user's own KiCad files (symbol Regulator_Linear:AP2204K-1.5, footprint SOT-23-5), pins and land from them",
     )
+  })
+
+  it("is compared with the supplier by its pins only when named: its land is the user's own", async () => {
+    const part = only([file("symbols/Regulator_Linear.kicad_symdir/AMS1117-3.3.kicad_sym"), file("symbols/Regulator_Linear.kicad_symdir/AP1117-15.kicad_sym"), file("footprints/Package_TO_SOT_SMD.pretty/SOT-223-3_TabPin2.kicad_mod")])
+    const { project, spec } = add(createProject("ldo"), { ...part, draft: { ...part.draft, props: { ...part.draft.props, lcsc: "C6186" } } })
+    // KiCad's SOT-223 is drawn with other pads than LCSC's: that is no reason to call the part wrong.
+    const { results } = await verifyProjectParts(project, recordedSource(), { only: [spec.id] })
+    expect(results.get(spec.id)).toMatchObject({ lcsc: "C6186", verdict: "renamed" })
   })
 
   it("is added once: the same files imported again give the part already there", () => {
@@ -232,6 +263,34 @@ describe("the files a user hands over", () => {
     // This editor has no model store: the part comes in on its generated body, and that is said.
     expect(outcome.problems).toEqual(["AP2204K-1.5 came in without its 3D model: model files can't be kept in this editor."])
     expect(modelAssignment(project, outcome.partIds[0], project.parts![0].footprint)).toBeNull()
+  })
+
+  it("gives a part already in the project the model file handed over with it again", async () => {
+    const kept = new Map<string, ArrayBuffer>()
+    connectModelFiles({
+      async put({ bytes }) {
+        const id = await modelFileId(bytes)
+        kept.set(id, bytes)
+        return id
+      },
+      get: async (id) => kept.get(id) ?? null,
+    })
+    try {
+      let project = createProject("import")
+      const commit = (edit: (p: Project) => Project) => {
+        project = edit(project)
+      }
+      const first = await importKicadPart([asFile(AP2204K), asFile(SOT23_5)], project.id, commit)
+      expect(modelAssignment(project, first.partIds[0], project.parts![0].footprint)?.source).toBe("kicad")
+      const cube = new File(["v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n"], "ap2204.obj")
+      const again = await importKicadPart([asFile(AP2204K), asFile(SOT23_5), cube], project.id, commit)
+      expect(again.problems).toEqual([])
+      expect(again.partIds).toEqual(first.partIds)
+      expect(project.parts).toHaveLength(1)
+      expect(modelAssignment(project, first.partIds[0], project.parts![0].footprint)).toMatchObject({ source: "file", name: "ap2204.obj" })
+    } finally {
+      connectModelFiles(null)
+    }
   })
 
   it("adds nothing to a project that is no longer the open one", async () => {

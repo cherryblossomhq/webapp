@@ -1,7 +1,7 @@
 import { registerProjectFootprints } from "../model/footprints"
 import { addDraftToProject } from "../model/indexPart"
 import { baseName, importKicadFiles, isFootprintFile, isSymbolFile, type KicadImportPart } from "../model/kicadImport"
-import { fileModel, MODEL_FILE_ACCEPT, modelFormatOf } from "../model/models3d"
+import { fileModel, MODEL_FILE_ACCEPT, modelAssignment, modelFormatOf, setModel } from "../model/models3d"
 import type { FootprintDef, Model3D, Project } from "../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFileId, modelFiles } from "../store/modelFiles"
 
@@ -149,6 +149,11 @@ export async function importKicadPart(given: File[], projectId: string, commit: 
         continue
       }
       next = added.project
+      // A part already here keeps its model, unless a file was handed over with it now: that is the user's choice.
+      const { spec } = added
+      if (!added.added && part.modelFile && part.model && JSON.stringify(modelAssignment(next, spec.id, spec.footprint)) !== JSON.stringify(part.model)) {
+        next = setModel(next, spec.id, spec.footprint, part.model)
+      }
       partIds.push(added.spec.id)
       names.push(added.spec.name)
     }

@@ -781,8 +781,9 @@ export async function verifyProjectParts(
   const failed = new Map<string, string>()
   await Promise.all(
     specs.map(async (spec) => {
-      // A stored part's land is its own, drawn with other pads than a supplier's: compared by pins only.
-      const got = await supplierVerdict(source, spec, { lands: spec.source?.pins !== "database", signal })
+      // A stored or imported part's land is its own, drawn with other pads than a supplier's: compared by pins only.
+      const ownLand = spec.source?.pins === "database" || spec.source?.pins === "file"
+      const got = await supplierVerdict(source, spec, { lands: !ownLand, signal })
       if ("failed" in got) {
         recentFailures.set(spec.id, Date.now())
         failed.set(spec.id, got.failed)

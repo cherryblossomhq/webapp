@@ -92,6 +92,12 @@ function xyz(node: SNode[], name: string): [number, number, number] | undefined 
   return v?.length === 3 && v.every(Number.isFinite) ? [v[0], v[1], v[2]] : undefined
 }
 
+/** A model's offset in mm: KiCad 5.0 and older wrote it as `at`, in inches. */
+function offsetOf(model: SNode[]): [number, number, number] {
+  const inches = xyz(model, "at")
+  return xyz(model, "offset") ?? (inches ? [inches[0] * 25.4, inches[1] * 25.4, inches[2] * 25.4] : [0, 0, 0])
+}
+
 function readFootprint(file: KicadFile): Footprint | { problem: string } {
   let root: SNode[] | undefined
   try {
@@ -103,7 +109,7 @@ function readFootprint(file: KicadFile): Footprint | { problem: string } {
   const name = str(root, 1)?.trim() || stem(file.name)
   const models = all(root, "model")
     .filter((m) => !flag(m, "hide"))
-    .map((m) => ({ path: str(m, 1) ?? "", offset: xyz(m, "offset") ?? [0, 0, 0], scale: xyz(m, "scale") ?? [1, 1, 1], rotate: xyz(m, "rotate") ?? [0, 0, 0] }))
+    .map((m) => ({ path: str(m, 1) ?? "", offset: offsetOf(m), scale: xyz(m, "scale") ?? [1, 1, 1], rotate: xyz(m, "rotate") ?? [0, 0, 0] }))
     .filter((m) => m.path)
   return { file: file.name, name, description: str(first(root, "descr"), 1) ?? "", result: convertFootprint(file.text, name), models }
 }
@@ -153,8 +159,8 @@ function symbolForFootprint(fp: Footprint & { result: { ok: true } }): RawSymbol
 
 // ---------- models ----------
 
-/** KiCad's own 3D library, as a footprint names a file in it: `${KICAD9_3DMODEL_DIR}/Package_SO.3dshapes/SOIC-8.wrl`. */
-const KICAD_LIBRARY_MODEL = /^\$\{KICAD\d*_3DMODEL_DIR\}\/(.+)$/
+/** KiCad's own 3D library, as a footprint names a file in it: `${KICAD9_3DMODEL_DIR}/Package_SO.3dshapes/SOIC-8.wrl` (`${KISYS3DMOD}` before KiCad 6). */
+const KICAD_LIBRARY_MODEL = /^\$\{(?:KICAD\d*_3DMODEL_DIR|KISYS3DMOD)\}\/(.+)$/
 
 /**
  * Where a footprint places a model, as `Model3D` keeps it: the offset as written, the angles
@@ -275,21 +281,22 @@ export function importKicadFiles(files: KicadFile[], models: string[] = []): Kic
       problems.push(`${baseName(file.name)} can't be read: ${e instanceof Error ? e.message : String(e)}.`)
     }
   }
-  const symbols: { library: string; symbol: RawSymbol }[] = []
+  const symbols: { library: string; symbol: RawSymbol; alone: boolean }[] = []
   for (const { library, raws } of read) {
     const lookup = (name: string) =>
       raws.find((s) => s.name === name) ?? read.find((r) => r.library === library && r.raws.some((s) => s.name === name))?.raws.find((s) => s.name === name)
     for (const raw of raws) {
       try {
-        symbols.push({ library, symbol: resolveExtends(raw, lookup) })
+        symbols.push({ library, symbol: resolveExtends(raw, lookup), alone: raws.length === 1 })
       } catch (e) {
         problems.push(`${raw.name} can't be read: ${e instanceof Error ? e.message : String(e)}. Add the symbol it extends.`)
       }
     }
   }
-  // A base symbol given only for another to extend is not a part of its own.
+  // A base symbol given in a file of its own only for another to extend is not a part of its own;
+  // one in a library file of many symbols was given with the rest of that library.
   const bases = new Set(read.flatMap((r) => r.raws.map((s) => s.extendsName).filter(Boolean)))
-  const asked = symbols.filter((s) => !bases.has(s.symbol.name) || read.length === 1)
+  const asked = symbols.filter((s) => !(s.alone && bases.has(s.symbol.name)) || read.length === 1)
   const parts: KicadImportPart[] = []
   const add = (built: KicadImportPart | { problem: string }) => ("problem" in built ? problems.push(built.problem) : parts.push(built))
 

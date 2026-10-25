@@ -14,7 +14,7 @@
 //
 // decision:
 //   native      goes into the model as it is today (a conversion at most)
-//   extend      the model has to grow first; `ext` names the extension (X1 to X23 in the doc)
+//   extend      the model has to grow first; `ext` names the extension (X1 to X24 in the doc)
 //   not-needed  deliberately not imported; `note` is the reason, which the importer lists in code
 //   report      cannot be represented, even after the extensions; it goes into the import report
 
@@ -36,7 +36,7 @@ export const RULES = [
   rule("footprint>fp_text_box(?:>.*)?", "extend", "-", { ext: "X9", note: "a footprint's text box (KiCad 7)" }),
   rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>(?:line_spacing|href))", "extend", "BoardText", { ext: "X9" }),
   rule("(?:footprint>)?table>cells>table_cell>ij", "extend", "-", { ext: "X9", note: "a table cell's row and column" }),
-  rule("footprint>private_layers(?:><layer number>)?", "extend", "-", { ext: "X8", note: "layers a footprint draws on that the board does not show (KiCad 7)" }),
+  rule("footprint>private_layers(?:><layer number>)?", "report", "-", { note: "layers a footprint draws on that KiCad does not show or plot on the board (KiCad 7): the footprint's drawings on them are not brought in, and the import report names how many" }),
   rule("(?:[^>]+>)*custom_property(?:>.*)?", "extend", "-", { ext: "X23", note: "custom properties on any board object (KiCad 11 development)" }),
   rule("(?:footprint>)?variants?>(?:variant>)?(?:description|exclude_from_sim)|footprint>variant>(?:description|exclude_from_sim)", "extend", "-", { ext: "X23" }),
   rule("point(?:>(?:at|layer|size|uuid))?", "extend", "-", { ext: "X23", note: "PCB points at the board level (KiCad 10)" }),
@@ -88,7 +88,7 @@ export const RULES = [
   rule("(?:segment|via|arc)>status", "native", "Trace.locked", { effort: "S", note: "bit 0x40000 is KiCad 4 and 5's track lock, which KiCad 6 and later read and drop; kept as locked. The other bits are KiCad edit flags" }),
   rule("(?:segment|arc|via)>net", "extend", "Trace.net and Via.routedNet", { ext: "X13", note: "the net the file puts a track or via on; after import it is compared with the net the editor derives from what the copper touches, and every difference is reported by item" }),
   rule("(?:segment|arc|via)>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity" }),
-  rule("(?:segment|arc)>(?:layers|solder_mask_margin)", "extend", "-", { ext: "X8", note: "copper exposed through the mask (KiCad 9)" }),
+  rule("(?:segment|arc)>(?:layers|solder_mask_margin)", "extend", "-", { ext: "X24", note: "copper exposed through the mask on a track (KiCad 9)" }),
   rule("arc", "extend", "Trace is a polyline", { ext: "X4" }),
   rule("arc>(?:start|mid|end|width|layer|locked)", "extend", "Trace is a polyline", { ext: "X4" }),
   rule("via", "native", "Via (through only)", { effort: "S", note: "through vias; blind, buried and micro need X5" }),
@@ -114,9 +114,10 @@ export const RULES = [
   // ---- graphics, on the board and in footprints ----
   rule(GFX, "extend", "BoardDef is a rounded rectangle; FootprintDef has silk polylines and a courtyard box", { ext: "X8", note: "on Edge.Cuts a board line is the outline and its cutouts (X2); on every other layer a shape (X8)" }),
   rule(`${GFX}>(?:start|end|mid|center|layer|layers|stroke|width|fill|pts|locked|net|radius|solder_mask_margin)`, "extend", "-", { ext: "X8" }),
-  rule(`${GFX}>stroke>(?:type|width|color)`, "extend", "-", { ext: "X8", note: "line width, dash style and colour (KiCad 10)" }),
+  rule(`${GFX}>stroke>(?:type|width)`, "extend", "-", { ext: "X8", note: "line width and dash style" }),
+  rule(`${GFX}>stroke>color`, "extend", "-", { ext: "X24", note: "the colour of a drawing's line (KiCad 10)" }),
   rule(`${GFX}>pts>(?:xy|arc|arc>(?:start|mid|end))`, "extend", "-", { ext: "X8", note: "polygon points; an arc inside a polygon outline since KiCad 6" }),
-  rule(`${GFX}>(?:start_shape|end_shape)(?:>.*)?`, "extend", "-", { ext: "X8", note: "line end shapes (KiCad 10)" }),
+  rule(`${GFX}>(?:start_shape|end_shape)(?:>.*)?`, "extend", "-", { ext: "X24", note: "line end shapes (KiCad 10)" }),
   rule("gr_arc>angle|footprint>fp_arc>angle", "extend", "-", { ext: "X8", note: "the legacy arc form: (start centre) (end first end) (angle clockwise sweep), converted to start, mid and end; stamp 20210925 and older" }),
   rule("gr_line>angle", "not-needed", "-", { note: "a leftover token on KiCad 4 and 5 lines with no meaning" }),
   rule(`${GFX}>(?:tstamp|uuid|status)`, "not-needed", "-", { note: "KiCad's object identity and edit flags" }),
@@ -235,7 +236,7 @@ export const ATOMS = [
   atoms("(?:module|footprint)>pad>chamfer", ["top_left", "top_right", "bottom_left", "bottom_right"]),
   atoms("(?:module|footprint)>pad>(?:remove_unused_layers|keep_end_layers)", YES_NO),
   atoms("(?:module|footprint)>pad>primitives>gr_(?:poly|rect|circle|arc|bbox)>fill", YES_NO.concat(["none", "solid"])),
-  atoms("(?:(?:module|footprint)>fp_(?:rect|circle|poly)|gr_(?:rect|circle|poly))>fill", YES_NO.concat(["none", "solid", "hatch", "reverse_hatch", "cross_hatch"])),
+  atoms("(?:(?:module|footprint)>fp_(?:rect|circle|poly|ellipse|ellipse_arc)|gr_(?:rect|circle|poly|ellipse|ellipse_arc))>fill", YES_NO.concat(["none", "solid", "hatch", "reverse_hatch", "cross_hatch"])),
   atoms("(?:(?:(?:module|footprint)>fp)|gr)_[a-z_]+>stroke>type", ["default", "dash", "dot", "dash_dot", "dash_dot_dot", "solid"]),
   atoms("(?:.*>)?effects>justify", ["left", "right", "top", "bottom", "mirror"]),
   atoms("(?:.*>)?effects>font", ["bold", "italic"]),
@@ -303,9 +304,9 @@ export const TOKENS = [
   token("start_angle end_angle rotation_angle major_radius minor_radius fp_ellipse fp_ellipse_arc gr_ellipse gr_ellipse_arc", "extend", "X8", "ellipse and elliptical arc shapes (KiCad 11 development, a small addition to X8)"),
   token("fp_text_box line_spacing keep_upright href background ij", "extend", "X9", "footprint text boxes, line spacing, text kept upright, hyperlinks and table cell positions"),
   token("leader inward outward", "extend", "X11", "dimension kinds and arrow directions"),
-  token("arrow arrow_open", "extend", "X8", "line end shapes (KiCad 10)"),
+  token("arrow arrow_open", "extend", "X24", "line end shapes (KiCad 10)"),
   token("linear", "report", "", "a word of KiCad's keyword list that the board writer does not use (grid or tuning, KiCad 11 development)"),
-  token("private_layers", "extend", "X8", "a footprint's own layers that are not drawn on the board (KiCad 7)"),
+  token("private_layers", "report", "", "a footprint's own layers that KiCad does not show or plot on the board (KiCad 7)"),
   token("custom_property description exclude_from_sim num", "extend", "X23", "custom properties, variant descriptions, simulation flag and unit pin numbers"),
   token("lib_id", "extend", "X12", "the design block a group was made from (KiCad 10)"),
   token("affects connected_routing group_items locked_items other_items link start_end_only driving all cursor routing addsublayer", "extend", "X20", "rule area and copy-layout options (KiCad 9 and 10)"),

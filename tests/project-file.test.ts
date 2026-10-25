@@ -248,13 +248,13 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     expect(read.vias[1].routedNet).toBeUndefined()
     expect(read.components[0].pcb).toEqual(v2.project.components[0].pcb)
   })
-  it("migrates to the current version unchanged, and is saved as version 3", () => {
+  it("migrates to the current version unchanged, and is saved as version 4", () => {
     const migrated = migrateProjectFile(v2)
     expect(migrated).toEqual(v2.project)
-    expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(3)
-    expect(PROJECT_FILE_VERSION).toBe(3)
+    expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(4)
+    expect(PROJECT_FILE_VERSION).toBe(4)
   })
-  it("a reader of version 2 would refuse a version 3 file: the bump is what keeps a flag from being lost", () => {
+  it("a reader of version 2 would refuse a version 4 file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
     expect(written.version).toBeGreaterThan(2)
   })
@@ -269,5 +269,113 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     expect(read.traces[0].net).toBe("IN")
     expect(read.vias[0].routedNet).toBe("IN")
     expect(JSON.parse(serializeProject(read)).project.components[0].flags).toEqual(read.components[0].flags)
+  })
+})
+
+/** A project as version 3 wrote it: flags and nets on tracks, no drawings. */
+const v3 = {
+  format: PROJECT_FILE_FORMAT,
+  version: 3,
+  project: {
+    ...v2.project,
+    name: "v3",
+    components: [{ ...v2.project.components[0], flags: { mount: "smd", dnp: true, netTies: [["1", "2"]] } }],
+    traces: [{ id: "t", layer: "top", width: 0.25, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], net: "IN" }],
+  },
+}
+
+describe("version 3, before board and footprint drawings", () => {
+  it("opens as it was written, with no drawings, and is saved as version 4", () => {
+    const read = parseProjectFile(v3, origin)
+    expect(migrateProjectFile(v3)).toEqual(v3.project)
+    expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
+    expect(read.traces).toEqual(v3.project.traces)
+    expect(read.graphics).toBeUndefined()
+    expect(read.footprints).toBeUndefined()
+    expect(JSON.parse(serializeProject(read)).version).toBe(4)
+    expect(JSON.parse(serializeProject(read)).project).not.toHaveProperty("graphics")
+  })
+})
+
+const P = (x: number, y: number) => ({ x, y })
+/** One of every kind of drawing, with every optional field set. */
+const everyShape = () => [
+  { type: "line", a: P(0, 0), b: P(1, 2), layer: "F.SilkS", width: 0.12, dash: "dash", locked: true },
+  { type: "arc", start: P(0, 0), mid: P(1, 1), end: P(2, 0), layer: "B.SilkS", width: 0.2, dash: "dot" },
+  { type: "circle", c: P(3, 3), r: 1.5, layer: "F.Fab", width: 0.1, fill: true },
+  { type: "rect", a: P(-1, -1), b: P(1, 1), radius: 0.3, layer: "F.CrtYd", width: 0.05, fill: true, dash: "dash_dot" },
+  {
+    type: "polygon",
+    pts: [P(0, 0), { ...P(4, 0), mid: P(2, -1) }, P(4, 4), P(0, 4)],
+    holes: [[P(1, 1), P(2, 1), P(2, 2)]],
+    layer: "F.Cu",
+    width: 0,
+    fill: true,
+    net: "GND",
+  },
+  { type: "curve", p0: P(0, 0), c1: P(1, 3), c2: P(3, -3), p1: P(4, 0), layer: "Dwgs.User", width: 0.15, dash: "dash_dot_dot" },
+  { type: "ellipse", c: P(0, 0), rx: 2, ry: 1, rot: 30, layer: "User.7", width: 0.1, fill: true },
+  { type: "ellipse", c: P(0, 0), rx: 2, ry: 1, rot: 30, from: 10, to: 200, layer: "B.Cu", width: 0.1, net: "VCC" },
+]
+
+const pad1 = { pin: "1", shape: "rect", layer: "top", x: 0, y: 0, width: 1, height: 1 }
+const land = (name: string, pads: unknown[], shapes?: unknown[]) => ({ name, pads, silk: [], courtyard: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, ...(shapes ? { shapes } : {}) })
+const v4 = (project: Record<string, unknown>) => ({ format: PROJECT_FILE_FORMAT, version: 4, project: { name: "v4", description: "", components: [], wires: [], labels: [], ...project } as Record<string, unknown> })
+
+describe("version 4, board and footprint drawings", () => {
+  it("round-trips one of every shape on the board and in a land with every field kept", () => {
+    const shapes = everyShape()
+    const doc = v4({
+      graphics: shapes.map((s, i) => ({ ...s, id: `g${i}` })),
+      footprints: [land("PADLESS", [], shapes), land("MIXED", [pad1], shapes)],
+    })
+    const read = parseProjectFile(doc, origin)
+    expect(read.graphics).toEqual(doc.project.graphics)
+    expect(read.footprints![0].shapes).toEqual(shapes)
+    expect(read.footprints![1].shapes).toEqual(shapes)
+    const again = parseProjectFile(serializeProject(read), origin)
+    expect(again.graphics).toEqual(doc.project.graphics)
+    expect(again.footprints).toEqual(read.footprints)
+    expect(serializeProject(again)).toBe(serializeProject(read))
+  })
+
+  it("drops a damaged drawing and nothing else", () => {
+    const good = { type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1 }
+    const doc = v4({
+      graphics: [
+        { ...good, id: "ok" },
+        { ...good, id: "layer", layer: "Nope.Layer" },
+        { ...good, id: "edge", layer: "Edge.Cuts" },
+        { ...good, id: "neg", width: -0.1 },
+        { type: "line", a: P(0, 0), id: "point", layer: "F.SilkS", width: 0.1 },
+        { ...good, id: "ok" },
+        { ...good, id: "" },
+        { ...good, layer: "F.Fab", id: "ok2" },
+      ],
+      footprints: [land("L", [pad1], [good, { ...good, layer: "bad" }, { ...good, width: -1 }, { type: "circle", c: P(0, 0), layer: "F.SilkS", width: 0.1 }, { ...good, layer: "F.Fab" }])],
+    })
+    const read = parseProjectFile(doc, origin)
+    expect(read.graphics!.map((g) => g.id)).toEqual(["ok", "ok2"])
+    expect(read.footprints![0].shapes).toEqual([good, { ...good, layer: "F.Fab" }])
+    expect(read.footprints![0].pads).toEqual([pad1])
+  })
+
+  it("drops a flag that does not fit: a fill on an open shape, a dash that is not one", () => {
+    const read = parseProjectFile(v4({ graphics: [{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, fill: true, dash: "wavy", net: " " }].map((s) => ({ ...s, id: "g" })) }), origin)
+    expect(read.graphics).toEqual([{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, id: "g" }])
+  })
+
+  it("keeps a land with no pads but with drawings, and drops one with neither", () => {
+    const line = { type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1 }
+    const read = parseProjectFile(v4({ footprints: [land("LOGO", [], [line]), land("EMPTY", []), land("ALLBAD", [], [{ ...line, layer: "x" }])] }), origin)
+    // A land with no pad whose drawings are all damaged has neither, so it goes like the empty one.
+    expect(read.footprints!.map((f) => f.name)).toEqual(["LOGO"])
+    expect(read.footprints![0].shapes).toEqual([line])
+  })
+
+  it("a project with no drawings writes none", () => {
+    const written = JSON.parse(serializeProject(parseProjectFile(v4({ footprints: [land("L", [pad1])] }), origin)))
+    expect(written.project).not.toHaveProperty("graphics")
+    expect(written.project.footprints[0]).not.toHaveProperty("shapes")
   })
 })

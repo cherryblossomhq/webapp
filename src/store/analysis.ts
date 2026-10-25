@@ -1,43 +1,14 @@
-import { computeConnectivity, type SchematicConnectivity } from "../model/connectivity"
-import { runErc, type ErcFinding } from "../model/erc"
+import { getConnectivity, getErc } from "../model/connectivityCache"
+import type { SchematicConnectivity } from "../model/connectivity"
+import type { ErcFinding } from "../model/erc"
 import { analyzePcb, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import type { Project } from "../model/types"
 import { useProjectStore } from "./projectStore"
 
-const schCache = new WeakMap<Project, SchematicConnectivity>()
+export { getConnectivity, getErc }
+
 const pcbCache = new WeakMap<Project, PcbAnalysis>()
-
-/** Connectivity depends only on schematic content, so reuse it across PCB-only edits. */
-let lastSchKey: { components: unknown; wires: unknown; labels: unknown; value: SchematicConnectivity } | null = null
-
-export function getConnectivity(p: Project): SchematicConnectivity {
-  const hit = schCache.get(p)
-  if (hit) return hit
-  let value: SchematicConnectivity
-  if (lastSchKey && lastSchKey.components === p.components && lastSchKey.wires === p.wires && lastSchKey.labels === p.labels) {
-    value = lastSchKey.value
-  } else {
-    value = computeConnectivity(p)
-    lastSchKey = { components: p.components, wires: p.wires, labels: p.labels, value }
-  }
-  schCache.set(p, value)
-  return value
-}
-
-/** Keyed by the connectivity, which is reused while the schematic is unchanged, so PCB edits don't rerun it. */
-const ercCache = new WeakMap<SchematicConnectivity, ErcFinding[]>()
-
-/** Electrical check findings, ignored ones included (`splitIgnored` separates them). */
-export function getErc(p: Project): ErcFinding[] {
-  const conn = getConnectivity(p)
-  let value = ercCache.get(conn)
-  if (!value) {
-    value = runErc(p, conn)
-    ercCache.set(conn, value)
-  }
-  return value
-}
 
 export function useErc(): ErcFinding[] | null {
   const p = useProjectStore((s) => s.project)

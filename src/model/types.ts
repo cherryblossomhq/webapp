@@ -92,11 +92,75 @@ export interface PadDef {
   exposed?: true
 }
 
+// ---------- Board and footprint graphics ----------
+
+/** How a drawing's line is broken up, as KiCad's stroke types: absent is a solid line. */
+export type ShapeDash = "dash" | "dot" | "dash_dot" | "dash_dot_dot"
+
+/**
+ * A corner of a polygon outline. `mid` makes the edge from the previous corner (the last one, for
+ * the first) an arc through `mid` instead of a straight line, as KiCad's polygons can have.
+ */
+export interface ShapePoint extends Vec2 {
+  mid?: Vec2
+}
+
+/**
+ * What a drawing is, in millimetres in the frame it is held in (the board's for a board drawing, the
+ * footprint's for a land's, y up). An arc is held as KiCad holds it, by three points on it: the
+ * circle and the way round follow from them, so nothing is rounded to an angle. An ellipse's
+ * `rot` is its major axis' angle (counter-clockwise, degrees); with `from` and `to` (the parameter
+ * `t` of `(rx cos t, ry sin t)`, degrees, counter-clockwise from `from` to `to`) it is an elliptical arc.
+ */
+export type ShapeGeometry =
+  | { type: "line"; a: Vec2; b: Vec2 }
+  | { type: "arc"; start: Vec2; mid: Vec2; end: Vec2 }
+  | { type: "circle"; c: Vec2; r: number }
+  | { type: "rect"; a: Vec2; b: Vec2; radius?: number }
+  | { type: "polygon"; pts: ShapePoint[]; holes?: ShapePoint[][] }
+  | { type: "curve"; p0: Vec2; c1: Vec2; c2: Vec2; p1: Vec2 }
+  | { type: "ellipse"; c: Vec2; rx: number; ry: number; rot: number; from?: number; to?: number }
+
+/** What every drawing has, whatever it is. */
+export interface ShapeStyle {
+  /**
+   * KiCad's name for the layer: `F.SilkS`, `B.Mask`, `F.Fab`, `Dwgs.User`, `User.7`, `F.Cu`... On a
+   * land, `F.` is the part's own side and `B.` the other, so a part flipped to the bottom draws it on the other side.
+   */
+  layer: string
+  /** Stroke width (mm). A filled shape is also outlined by it. */
+  width: number
+  dash?: ShapeDash
+  /** Filled solid, as well as outlined by `width`. Only closed shapes can be. */
+  fill?: true
+  /** The net of copper that has one, by the project's net name; absent for a drawing with none. */
+  net?: string
+  locked?: true
+}
+
+/** A drawing: a line, arc, circle, rectangle, polygon, curve or ellipse on a named layer. */
+export type BoardShape = ShapeStyle & ShapeGeometry
+
+/** A drawing on the board itself (`Project.graphics`). */
+export type BoardGraphic = BoardShape & { id: string }
+
 export interface FootprintDef {
   name: string
   pads: PadDef[]
   silk: Vec2[][]
   courtyard: { minX: number; minY: number; maxX: number; maxY: number }
+  /**
+   * The footprint's drawings (a board brought in from KiCad has them on every layer): silkscreen,
+   * mask, paste, fabrication, courtyard, user layers and copper. A land with no pads has these and
+   * nothing else (a logo, a mounting hole's drawing). `silk` and `courtyard` stay what they were, so
+   * a land from the library or the footprinter reads as before and has none of these.
+   */
+  shapes?: BoardShape[]
+  /**
+   * The footprint has no courtyard of its own (a logo, a drawing): `courtyard` is only the box of its
+   * drawings, for selecting it, and the checks that need a courtyard leave it out.
+   */
+  noCourtyard?: true
   /**
    * The package's own name where a source gave one (KiCad's `SOIC-8_3.9x4.9mm_P1.27mm`, a
    * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`). The 3D view reads the body's kind and size from it.
@@ -586,6 +650,8 @@ export interface Project {
   vias: Via[]
   zones: Zone[]
   texts: BoardText[]
+  /** Drawings on the board itself, on any layer (lines, arcs, circles, rectangles, polygons, curves, ellipses). */
+  graphics?: BoardGraphic[]
   board: BoardDef
   rules: DesignRules
   /** Functional blocks of the schematic, each drawn as a titled frame around its parts. */

@@ -129,8 +129,8 @@ test("a token the table says is extended or native has a path rule or an atom li
 test("the paths that once had no rule have one", () => {
   is("footprint>fp_text_box", "extend", "X9")
   is("footprint>fp_text_box>effects>font>size", "extend", "X9")
-  is("footprint>private_layers", "extend", "X8")
-  is("footprint>private_layers><layer number>", "extend", "X8")
+  is("footprint>private_layers", "report")
+  is("footprint>private_layers><layer number>", "report")
   is("point", "extend", "X23")
   is("point>at", "extend", "X23")
   is("gr_ellipse>major_radius", "extend", "X8")

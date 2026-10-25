@@ -9,11 +9,13 @@ import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
-import type { ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import type { BoardGraphic, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
 import { quarterTurns, reach, rotK } from "./geometry"
+import { defaultGraphicId } from "../../shapeCodec"
+import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
 import { modelKey, planModels } from "./models"
 import { edgePieces, type OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
@@ -308,7 +310,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const models: ModelAssignment[] = []
   const refs = new Set<string>()
   const renamed: string[] = []
-  const padless: string[] = []
+  const pinCounts = new Map<string, number>()
   /** Pins whose KiCad type the editor's roles fold, as `R1.2 tri_state as output`. */
   const folded: string[] = []
   /** Parts whose attributes say `exclude_from_sim`, which the editor has no use for. */
@@ -323,15 +325,24 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const counters = new Map<string, number>()
   let withNet = 0
 
+  // The project's name for every net of the file, decided before the lands are made because a drawing on copper can carry one:
+  // the nets of the numbered pads (one per number, as the pins have), of the tracks, vias and drawings.
+  const allNets = new Set<string>()
+  for (const f of board.footprints) {
+    const first = new Map<string, string>()
+    for (const p of f.pads) if (p.number && p.type !== "np_thru_hole" && p.netRaw && !first.has(p.number)) first.set(p.number, p.netRaw)
+    for (const raw of first.values()) allNets.add(raw)
+  }
+  for (const o of [...board.segments, ...board.arcTracks, ...board.vias, ...board.shapes, ...board.footprints.flatMap((f) => f.shapes)]) if (o.netRaw) allNets.add(o.netRaw)
+  const labelText = netLabelNames(new Map(), report, allNets)
+  const degenerate: string[] = []
+  const badNets: string[] = []
+  let privateShapes = 0
+
   // References the file gives itself are kept; the names made up for empty ones avoid them.
   const fileRefs = new Set(board.footprints.map((f) => f.ref.trim().replace(/\*/g, "")).filter(Boolean))
   const ordered = [...board.footprints].sort((a, b) => natural.compare(a.ref, b.ref))
   for (const fp of ordered) {
-    if (!fp.pads.length) {
-      lose("a part with no pads")
-      padless.push(fp.ref || fp.name || "a footprint")
-      continue
-    }
     const turns = quarterTurns(fp.angle, reach(fp))
     if (turns === null) lose("a part turned by other than a quarter turn")
     const bottom = fp.side === "bottom"
@@ -367,8 +378,12 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
 
     // The model the part holds, and the land it is held with: footprints with the same pads and model share a land.
     const modelPlan = planModels(fp)
-    const courtyard = padBounds(pads, 0.25)
-    const land = { pads, silk: [] as Vec2[][], courtyard }
+    // The drawings of the footprint on its land, in the land's frame; the courtyard is the one the file draws, else the pads' box and a quarter millimetre, else (a logo) the box of what is drawn, which the checks leave out.
+    const drawn = landShapes(fp, board, bottom, (raw) => labelText.get(raw), lose, degenerate, badNets)
+    privateShapes += drawn.privateCount
+    const drawnCourtyard = courtyardBox(drawn.shapes)
+    const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
+    const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
     const nameBase = fp.name.includes(":") ? fp.name.slice(fp.name.indexOf(":") + 1) : fp.name
     const landName = `${slug(nameBase || fp.ref)}-${digest(JSON.stringify(land) + modelKey(modelPlan))}`
     if (!lands.has(landName)) lands.set(landName, { name: landName, ...land })
@@ -403,11 +418,6 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       props: {},
       valueProp: "value",
       ...(keywords.length ? { keywords } : {}),
-    }
-    if (!spec.pins.length) {
-      lose("a part with no numbered pads")
-      padless.push(fp.ref || fp.name || "a footprint")
-      continue
     }
     const partId = customPartId(spec)
     if (!specs.has(partId)) specs.set(partId, { id: partId, ...spec })
@@ -454,6 +464,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       looseCount += loose.length
     }
     components.push(component)
+    pinCounts.set(component.id, pinNames.size)
     padNets.set(component.id, numberNet)
     padFacts.set(component.id, facts)
 
@@ -481,8 +492,16 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       count: d.refs.length,
     })
   }
-  if (padless.length) {
-    report.entries.push({ code: "padless-part", severity: "not-brought", object: `${padless.length} part${padless.length > 1 ? "s" : ""} with no pads (${padless.slice(0, 5).join(", ")}${padless.length > 5 ? "..." : ""})`, why: "A part with no numbered pads has no pins to draw. Its drawings need the graphics extension.", count: padless.length })
+  const noPins = components.filter((c) => !pinCounts.get(c.id)).map((c) => c.ref)
+  if (noPins.length) {
+    report.entries.push({
+      code: "parts-without-pins",
+      severity: "note",
+      object: `${noPins.length} part${noPins.length > 1 ? "s" : ""} with no numbered pad (${noPins.slice(0, 5).join(", ")}${noPins.length > 5 ? ", ..." : ""})`,
+      why: "A logo, a mounting hole or a drawing has no pin to connect. It came in as a part with no pins, drawn on the board with its land's drawings.",
+      count: noPins.length,
+      items: noPins,
+    })
   }
   if (folded.length) {
     report.entries.push({
@@ -530,8 +549,6 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
 
   // ---------- the schematic: a label with the net's name on every connected pin ----------
   // Nets that only copper is on (no pad) have no label but are named the same way, so a trace can say which net it is on.
-  const copperNetNames = [...board.segments, ...board.arcTracks, ...board.vias].flatMap((o) => (o.netRaw ? [o.netRaw] : []))
-  const labelText = netLabelNames(padNets, report, copperNetNames)
   const placed = layoutSchematic(project, padNets, labelText)
   project = placed.project
 
@@ -545,6 +562,27 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   })
   if (board.arcTracks.length) lose("arc tracks")
   if (board.zones.length || board.footprints.some((f) => f.zones.length)) lose("copper zones")
+
+  // ---------- drawings on the board ----------
+  const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, where: "the board" }
+  const graphics: BoardGraphic[] = [...board.shapes.flatMap((s) => convertShape(s, graphicsCx)), ...board.targets.flatMap((t) => convertTarget(t, graphicsCx))].map((g, i): BoardGraphic => ({ id: defaultGraphicId(i), ...g }))
+
+  if (degenerate.length) {
+    report.entries.push({ code: "polygon-too-small", severity: "not-brought", object: `${degenerate.length} polygon${degenerate.length > 1 ? "s" : ""} with fewer than three corners (${[...new Set(degenerate)].slice(0, 5).join(", ")}${new Set(degenerate).size > 5 ? ", ..." : ""})`, why: "KiCad draws and plots nothing for a polygon with fewer than three corners, so none was brought in.", count: degenerate.length })
+  }
+  if (badNets.length) {
+    report.entries.push({
+      code: "drawing-net-unknown",
+      severity: "changed",
+      object: `${badNets.length} copper drawing${badNets.length > 1 ? "s" : ""} on a net number the board does not list (${badNets.slice(0, 3).join("; ")}${badNets.length > 3 ? "; ..." : ""})`,
+      why: "KiCad logs an invalid net number on a drawing and loads it with no net, so these drawings are on no net here either.",
+      count: badNets.length,
+      items: badNets,
+    })
+  }
+  if (privateShapes) {
+    report.entries.push({ code: "private-layer-drawings", severity: "not-brought", object: `${privateShapes} drawing${privateShapes > 1 ? "s" : ""} on a footprint's private layers`, why: "KiCad shows and plots nothing on a footprint's private layers, so these drawings were not brought in.", count: privateShapes })
+  }
 
   // ---------- the board ----------
   let box = outline.box
@@ -582,6 +620,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     },
     traces,
     vias,
+    ...(graphics.length ? { graphics } : {}),
     properties,
   }
 

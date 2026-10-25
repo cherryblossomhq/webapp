@@ -117,9 +117,14 @@ describe("the project", () => {
     expect(r.report.entries.some((e) => e.code === "renamed-ref" && e.count === 3)).toBe(true)
   })
 
-  it("a part with no pads is named in the report and not drawn", () => {
-    const r = importKicadBoard(board({ body: [footprint({ ref: "G1", name: "Symbol:Logo", pads: [] })] }), { built: ALL })
-    expect(r.status === "refused" || r.report.entries.some((e) => e.code === "padless-part")).toBe(true)
+  it("a part with no pads comes in as a part with no pins on a land with no pads, and the report says so", () => {
+    const r = importKicadBoard(board({ body: [footprint({ ref: "G1", name: "Symbol:Logo", pads: [], extra: '(fp_line (start -1 0) (end 1 0) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))' })] }), { built: ALL })
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.project.parts?.[0].pins).toEqual([])
+    expect(r.project.footprints?.[0].pads).toEqual([])
+    expect(r.project.footprints?.[0].shapes).toHaveLength(1)
+    expect(r.report.entries.some((e) => e.code === "parts-without-pins")).toBe(true)
   })
 
   it("takes the board's size and corner radius from its outline, y flipped", () => {

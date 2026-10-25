@@ -1,4 +1,4 @@
-import type { KicadFootprint, KicadPad, Pt } from "./types"
+import type { KicadFootprint, KicadPad, KicadShape, Pt } from "./types"
 
 // KiCad's frame: millimetres, y down, a positive angle turns counter-clockwise on screen.
 
@@ -30,10 +30,25 @@ export function quarterTurns(deg: number, radius = 0): number | null {
   return off <= limit ? ((Math.round(q) % 4) + 4) % 4 : null
 }
 
-/** The distance from a footprint's origin to the farthest corner of its farthest pad: what an angle error moves most. */
-export function reach(fp: Pick<KicadFootprint, "pads">): number {
+/** How far from the origin a drawing of a footprint reaches (an upper bound: its points, and a circle's or an ellipse's radius beyond its centre). */
+function shapeReach(s: KicadShape): number {
+  const far = (p: Pt | undefined, extra = 0) => (p ? Math.hypot(p.x, p.y) + extra : 0)
+  let r = Math.max(far(s.start), far(s.mid), far(s.end), far(s.center))
+  if (s.kind === "circle" && s.center && s.end) r = Math.max(r, far(s.center, Math.hypot(s.end.x - s.center.x, s.end.y - s.center.y)))
+  if (s.ellipse) r = Math.max(r, far(s.ellipse.center, Math.max(s.ellipse.major, s.ellipse.minor)))
+  for (const p of s.pts ?? []) r = Math.max(r, far(p))
+  for (const item of s.polyItems ?? []) {
+    if ("xy" in item) r = Math.max(r, far(item.xy))
+    else r = Math.max(r, far(item.arc.start), far(item.arc.mid), far(item.arc.end))
+  }
+  return r
+}
+
+/** The distance from a footprint's origin to the farthest corner of its farthest pad or drawing: what an angle error moves most. */
+export function reach(fp: Pick<KicadFootprint, "pads"> & { shapes?: KicadShape[] }): number {
   let r = 0
   for (const p of fp.pads) r = Math.max(r, Math.hypot(p.at.x, p.at.y) + Math.hypot(p.w, p.h) / 2)
+  for (const s of fp.shapes ?? []) r = Math.max(r, shapeReach(s))
   return r
 }
 

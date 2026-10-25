@@ -25,7 +25,7 @@ export interface PathRule {
   /** A regular expression over the whole path from the root, \`zone>polygon>pts\`; \`module\` is read as \`footprint\`. */
   source: string
   decision: Decision
-  /** The extension of the model the node needs (X1 to X23 in docs/kicad-import.md), for \`extend\`. */
+  /** The extension of the model the node needs (X1 to X24 in docs/kicad-import.md), for \`extend\`. */
   ext?: string
   note?: string
 }

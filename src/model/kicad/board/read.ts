@@ -11,6 +11,7 @@ import type {
   KicadPad,
   KicadSegment,
   KicadShape,
+  KicadTarget,
   KicadText,
   KicadVia,
   KicadZone,
@@ -131,10 +132,10 @@ export interface ReadResult {
 }
 
 const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
-const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox"])
+const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
-const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "title_block", "property", "paper", "page"])
+const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "target", "title_block", "property", "paper", "page"])
 
 function kicadKind(text: string): string | null {
   const head = text.slice(0, 400).replace(/^﻿/, "").trimStart()
@@ -233,7 +234,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   }
   const overbarOpt = (text: string | undefined) => (text === undefined ? undefined : overbar(text))
   /** The net of an object: its `(net 3 "GND")`, `(net 3)` or, from stamp 20251028, `(net "GND")`; null for no net. */
-  const netOf = (node: List): { raw: string; name: string } | null => {
+  const netOf = (node: List, unknown?: string[]): { raw: string; name: string } | null => {
     const k = kid(node, "net")
     if (!k) return null
     let raw: string | undefined
@@ -242,7 +243,11 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       const code = Number(k[1])
       if (code === 0) return null
       raw = byCode.get(code)?.raw
-      if (raw === undefined) issues.note("a net number the net table does not list")
+      // On a drawing KiCad logs "Invalid net ID" and loads it with no net, so the caller may take the number instead of the file being unreadable.
+      if (raw === undefined) {
+        if (unknown) unknown.push(String(k[1]))
+        else issues.note("a net number the net table does not list")
+      }
     } else raw = overbarOpt(strAt(k, 1))
     if (!raw) return null
     return { raw, name: decodeNetName(raw) }
@@ -312,15 +317,41 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
 
   // ---- shapes (graphics) ----
   const shapeOf = (c: List, kind: ShapeKind): KicadShape => {
-    const layer = strAt(kid(c, "layer"), 1) ?? strAt(kid(c, "layers"), 1) ?? ""
+    const layerList = kid(c, "layers") ? atomsOf(kid(c, "layers")) : []
+    const layer = strAt(kid(c, "layer"), 1) ?? layerList[0] ?? ""
     const stroke = kid(c, "stroke")
     const width = stroke ? numAt(kid(stroke, "width"), 1, 0) : numAt(kid(c, "width"), 1, 0)
     const dashType = stroke ? strAt(kid(stroke, "type"), 1) : undefined
     const fillNode = kid(c, "fill")
     // Switch 9: with no `fill` token, polygons off Edge.Cuts are filled, and zero-width rectangles and circles.
     const fillWord = fillNode ? (strAt(fillNode, 1) ?? strAt(kid(fillNode, "type"), 1)) : undefined
-    const filled = fillNode ? fillWord === "solid" || fillWord === "yes" || fillWord === "true" || (fillWord !== undefined && fillWord !== "none" && fillWord !== "no" && fillWord !== "false") : kind === "poly" ? layer !== "Edge.Cuts" : (kind === "rect" || kind === "circle") && width === 0
-    const s: KicadShape = { kind, layer, width, filled, dash: dashType && dashType !== "default" && dashType !== "solid" ? dashType : null, locked: flagOf(c, "locked"), node: c }
+    const solid = fillWord === "solid" || fillWord === "yes" || fillWord === "true"
+    const hatched = fillWord !== undefined && /hatch/.test(fillWord)
+    const filled = fillNode ? solid : kind === "poly" ? layer !== "Edge.Cuts" : (kind === "rect" || kind === "circle") && width === 0
+    // Only copper has a net: on any other layer a drawing's net means nothing and is ignored (accounted as not needed), and a number the
+    // net table does not list on copper is no net, as KiCad loads it.
+    const onCopper = (layerList.length ? layerList : [layer]).some((n) => copperNames.includes(n) || /\.Cu$/.test(n))
+    const badNet: string[] = []
+    const net = onCopper ? netOf(c, badNet) : null
+    const mask = kid(c, "solder_mask_margin")
+    const s: KicadShape = {
+      kind,
+      layer,
+      layers: layerList.length ? layerList : layer ? [layer] : [],
+      width,
+      filled,
+      hatched,
+      dash: dashType && dashType !== "default" && dashType !== "solid" ? dashType : null,
+      locked: flagOf(c, "locked"),
+      net: net?.name ?? null,
+      netRaw: net?.raw ?? null,
+      ...(badNet.length ? { badNet: badNet[0] } : {}),
+      radius: numAt(kid(c, "radius"), 1, 0),
+      ...(mask ? { maskMargin: numAt(mask, 1, 0) } : {}),
+      ending: !!(kid(c, "start_shape") || kid(c, "end_shape")),
+      colored: !!(stroke && kid(stroke, "color")),
+      node: c,
+    }
     const where = `a ${kind} on ${layer || "no layer"}`
     if (kind === "line" || kind === "rect" || kind === "bbox") {
       s.start = ptOf(c, "start", where)
@@ -350,6 +381,24 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       const pts = kid(c, "pts")
       s.pts = points(pts, where)
       if (kids(pts, "arc").length) s.hasArcs = true
+      if (kind === "poly") {
+        s.polyItems = (pts ?? []).slice(1).flatMap((n): NonNullable<KicadShape["polyItems"]> => {
+          if (!Array.isArray(n)) return []
+          if (n[0] === "xy") return [{ xy: pt(n, where) }]
+          if (n[0] === "arc") return [{ arc: { start: ptOf(n, "start", where) ?? { x: 0, y: 0 }, mid: ptOf(n, "mid", where) ?? { x: 0, y: 0 }, end: ptOf(n, "end", where) ?? { x: 0, y: 0 } } }]
+          return []
+        })
+      }
+    } else if (kind === "ellipse" || kind === "ellipse_arc") {
+      const num = (name: string) => numAt(kid(c, name), 1, NaN)
+      s.ellipse = {
+        center: ptOf(c, "center", where) ?? { x: 0, y: 0 },
+        major: num("major_radius"),
+        minor: num("minor_radius"),
+        rotation: numAt(kid(c, "rotation_angle"), 1, 0),
+        ...(kind === "ellipse_arc" ? { start: numAt(kid(c, "start_angle"), 1, 0), end: numAt(kid(c, "end_angle"), 1, 0) } : {}),
+      }
+      if (!Number.isFinite(s.ellipse.major) || !Number.isFinite(s.ellipse.minor)) issues.note(where)
     }
     return s
   }
@@ -573,6 +622,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       texts,
       shapes,
       zones: kids(fp, "zone").map((z) => zoneOf(z, place)),
+      privateLayers: atomsOf(kid(fp, "private_layers")),
       netTies,
       jumperGroups,
       jumperDuplicates: flagOf(fp, "duplicate_pad_numbers_are_jumpers"),
@@ -624,6 +674,14 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     }
   })
   const zones = kids(tree, "zone").map((z) => zoneOf(z, null))
+  const targets: KicadTarget[] = kids(tree, "target").map((c) => ({
+    shape: c.includes("x") ? "x" : "plus",
+    at: ptOf(c, "at", "a target") ?? { x: 0, y: 0 },
+    size: numAt(kid(c, "size"), 1, 0),
+    width: numAt(kid(c, "width"), 1, 0),
+    layer: strAt(kid(c, "layer"), 1) ?? "",
+    node: c,
+  }))
   const shapes: KicadShape[] = []
   const texts: KicadText[] = []
   const others: Record<string, List[]> = {}
@@ -674,6 +732,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     vias,
     zones,
     shapes,
+    targets,
     texts,
     others,
     tree,

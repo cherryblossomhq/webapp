@@ -4,6 +4,10 @@ import { designatorStrokes, placeDesignators, SILK_WIDTH } from "../model/silk"
 import { findPart } from "../model/library"
 import type { ZoneFill } from "../model/pour"
 import type { CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
+import type { BoardShape } from "../model/types"
+import { worldShapes } from "../model/shapeItems"
+import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
+import { fractureRings } from "./fracture"
 
 const EDGE_WIDTH = 0.1
 
@@ -92,6 +96,68 @@ class GerberWriter {
     this.body.push("G01*")
   }
 
+  /** Clockwise arc to `p`; `offset` is the centre relative to the current point. */
+  arcCwTo(p: Vec2, offset: Vec2) {
+    this.body.push("G02*")
+    this.body.push(`${xy(p)}I${coord(offset.x)}J${coord(offset.y)}D01*`)
+    this.body.push("G01*")
+  }
+
+  /**
+   * An arc from the current point `from` to `to` about `centre`, the way the model's circle goes.
+   * The offset is taken between the rounded points, so the centre is the model's within 0.5 nm.
+   */
+  arcAbout(from: Vec2, to: Vec2, centre: Vec2, ccw: boolean) {
+    const at = (n: number) => Math.round(n * 1e6)
+    const i = at(centre.x) - at(from.x) || 0
+    const j = at(centre.y) - at(from.y) || 0
+    this.body.push(ccw ? "G03*" : "G02*")
+    this.body.push(`${xy(to)}I${i}J${j}D01*`)
+    this.body.push("G01*")
+  }
+
+  /** One piece of a drawing's outline, continuing from the current point: a line, an exact arc, or a curve as the points it was flattened to. */
+  segTo(s: PathSeg) {
+    switch (s.kind) {
+      case "line":
+        this.lineTo(s.b)
+        return
+      case "arc": {
+        const a = arcCircle(s.start, s.mid, s.end)
+        if (!a) this.lineTo(s.end)
+        else this.arcAbout(s.start, s.end, a.c, a.sweep > 0)
+        return
+      }
+      default: {
+        const pts = flattenSeg(s)
+        for (let i = 1; i < pts.length; i++) this.lineTo(pts[i])
+      }
+    }
+  }
+
+  /** A connected run of pieces stroked with a round aperture of `width`. */
+  strokeSegs(segs: PathSeg[], width: number) {
+    if (!segs.length || width <= 0) return
+    this.use(`C,${num(width)}`)
+    this.moveTo(segStart(segs[0]))
+    for (const s of segs) this.segTo(s)
+  }
+
+  /** One dash of a dashed drawing. */
+  strokePiece(piece: DashPiece, width: number) {
+    if (width <= 0) return
+    switch (piece.kind) {
+      case "line":
+        this.stroke([piece.a, piece.b], width)
+        return
+      case "poly":
+        this.stroke(piece.pts, width)
+        return
+      case "arc":
+        this.strokeSegs([piece], width)
+    }
+  }
+
   toString(fileFunction: string, polarity: "Positive" | "Negative" = "Positive"): string {
     const lines = [
       "G04 Cherry Blossom RS-274X export*",
@@ -159,6 +225,33 @@ const padsOn = (project: Project, layer: CopperLayer): WorldPad[] => [
   ),
 ]
 
+/**
+ * One drawing as KiCad plots it (plot_brditems_plotter.cpp, PlotShape): a stroke of its width along its
+ * outline, exact arcs and circles; a filled circle as one flash of its diameter plus the width; any
+ * other fill as a region of its edge with no width added, then the outline stroked; a bezier and an
+ * ellipse, which Gerber has no primitive for, as the polyline they flatten to; a dashed outline as its dashes.
+ */
+function plotShape(w: GerberWriter, shape: BoardShape) {
+  const filled = shape.fill === true && isClosedShape(shape)
+  if (filled) {
+    if (shape.type === "circle") {
+      w.flashCircle(shape.c, 2 * shape.r + (shape.dash ? 0 : shape.width))
+      if (!shape.dash) return
+    } else {
+      const rings = shapeRings(shape)
+      if (rings.length) w.region(rings.length > 1 ? fractureRings(rings[0], rings.slice(1)) : rings[0])
+    }
+  }
+  if (shape.width <= 0) return
+  if (shape.dash) for (const piece of dashShape(shape)) w.strokePiece(piece, shape.width)
+  else for (const path of shapePaths(shape)) w.strokeSegs(path.segs, shape.width)
+}
+
+/** The drawings on one KiCad layer that are plotted: those of parts placed on the board, and the board's own. */
+function drawingsOn(project: Project, layer: string): BoardShape[] {
+  return worldShapes(project).filter((s) => s.placed && s.shape.layer === layer).map((s) => s.shape)
+}
+
 const sideName = (side: PcbSide) => (side === "top" ? "Top" : "Bot")
 
 /** Area enclosed by a ring, whichever way it winds. */
@@ -194,6 +287,7 @@ export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFi
   for (const pad of padsOn(project, layer)) if (!isNpth(pad)) flashPad(w, pad)
   for (const t of project.traces) if (t.layer === layer) w.stroke(t.points, t.width)
   for (const v of project.vias) w.flashCircle(v, v.diameter)
+  for (const shape of drawingsOn(project, layer === "top" ? "F.Cu" : "B.Cu")) plotShape(w, shape)
   return w.toString(`Copper,L${layer === "top" ? 1 : 2},${sideName(layer)}`)
 }
 
@@ -203,6 +297,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
   const grow = project.rules.maskExpansion
   for (const pad of padsOn(project, side)) flashPad(w, pad, grow)
   if (!project.rules.tentVias) for (const v of project.vias) w.flashCircle(v, v.diameter + grow * 2)
+  for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
   return w.toString(`Soldermask,${sideName(side)}`, "Negative")
 }
 
@@ -210,6 +305,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
 export function gerberPaste(project: Project, side: PcbSide): string {
   const w = new GerberWriter()
   for (const pad of padsOn(project, side)) if (pad.holeDiameter === undefined) flashPad(w, pad, project.rules.pasteExpansion)
+  for (const shape of drawingsOn(project, side === "top" ? "F.Paste" : "B.Paste")) plotShape(w, shape)
   return w.toString(`Paste,${sideName(side)}`)
 }
 
@@ -226,6 +322,7 @@ export function gerberSilkscreen(project: Project, side: PcbSide): string {
     if (t.side !== side) continue
     for (const stroke of boardTextStrokes(t)) w.stroke(stroke, boardTextStrokeWidth(t))
   }
+  for (const shape of drawingsOn(project, side === "top" ? "F.SilkS" : "B.SilkS")) plotShape(w, shape)
   return w.toString(`Legend,${sideName(side)}`)
 }
 

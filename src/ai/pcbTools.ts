@@ -372,7 +372,7 @@ function placeNear(
   if (dot >= 0) {
     const ref = resolvePinSpec(project, spec)
     if (!ref || ref.componentId !== target.id) {
-      return { error: `near "${spec}": ${target.ref} has pins ${targetPart!.pins.map((p) => (p.name === p.number ? p.number : `${p.number}/${p.name}`)).join(", ")}` }
+      return { error: `near "${spec}": ${target.ref} ${targetPart!.pins.length ? `has pins ${targetPart!.pins.map((p) => (p.name === p.number ? p.number : `${p.number}/${p.name}`)).join(", ")}` : "has no pins"}` }
     }
     targetPin = ref.pin
   }
@@ -385,7 +385,7 @@ function placeNear(
   let ownPin: string | undefined
   if (item.pin !== undefined) {
     const ref = resolvePinSpec(project, `${c.ref}.${item.pin}`)
-    if (!ref) return { error: `pin "${item.pin}": ${c.ref} has pins ${part.pins.map((p) => (p.name === p.number ? p.number : `${p.number}/${p.name}`)).join(", ")}` }
+    if (!ref) return { error: `pin "${item.pin}": ${c.ref} ${part.pins.length ? `has pins ${part.pins.map((p) => (p.name === p.number ? p.number : `${p.number}/${p.name}`)).join(", ")}` : "has no pins"}` }
     ownPin = ref.pin
   } else {
     const wanted = new Set(primaryPads.map((p) => (p.pin ? netOf(target.id, p.pin) : undefined)).filter((n): n is string => !!n))

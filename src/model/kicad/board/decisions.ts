@@ -7,7 +7,7 @@ export interface PathRule {
   /** A regular expression over the whole path from the root, `zone>polygon>pts`; `module` is read as `footprint`. */
   source: string
   decision: Decision
-  /** The extension of the model the node needs (X1 to X23 in docs/kicad-import.md), for `extend`. */
+  /** The extension of the model the node needs (X1 to X24 in docs/kicad-import.md), for `extend`. */
   ext?: string
   note?: string
 }
@@ -83,9 +83,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^(footprint>private_layers(?:><layer number>)?)$",
-  "decision": "extend",
-  "ext": "X8",
-  "note": "layers a footprint draws on that the board does not show (KiCad 7)"
+  "decision": "report",
+  "note": "layers a footprint draws on that KiCad does not show or plot on the board (KiCad 7): the footprint's drawings on them are not brought in, and the import report names how many"
  },
  {
   "source": "^((?:[^>]+>)*custom_property(?:>.*)?)$",
@@ -315,8 +314,8 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:segment|arc)>(?:layers|solder_mask_margin))$",
   "decision": "extend",
-  "ext": "X8",
-  "note": "copper exposed through the mask (KiCad 9)"
+  "ext": "X24",
+  "note": "copper exposed through the mask on a track (KiCad 9)"
  },
  {
   "source": "^(arc)$",
@@ -432,10 +431,16 @@ export const PATH_RULES: PathRule[] = [
   "ext": "X8"
  },
  {
-  "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>stroke>(?:type|width|color))$",
+  "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>stroke>(?:type|width))$",
   "decision": "extend",
   "ext": "X8",
-  "note": "line width, dash style and colour (KiCad 10)"
+  "note": "line width and dash style"
+ },
+ {
+  "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>stroke>color)$",
+  "decision": "extend",
+  "ext": "X24",
+  "note": "the colour of a drawing's line (KiCad 10)"
  },
  {
   "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>pts>(?:xy|arc|arc>(?:start|mid|end)))$",
@@ -446,7 +451,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>(?:start_shape|end_shape)(?:>.*)?)$",
   "decision": "extend",
-  "ext": "X8",
+  "ext": "X24",
   "note": "line end shapes (KiCad 10)"
  },
  {
@@ -1044,7 +1049,7 @@ export const ATOM_RULES: AtomRule[] = [
   "skip": []
  },
  {
-  "source": "^((?:(?:module|footprint)>fp_(?:rect|circle|poly)|gr_(?:rect|circle|poly))>fill)$",
+  "source": "^((?:(?:module|footprint)>fp_(?:rect|circle|poly|ellipse|ellipse_arc)|gr_(?:rect|circle|poly|ellipse|ellipse_arc))>fill)$",
   "values": [
    "yes",
    "no",
@@ -1563,7 +1568,7 @@ export const TOKEN_RULES: TokenRule[] = [
    "arrow_open"
   ],
   "decision": "extend",
-  "ext": "X8",
+  "ext": "X24",
   "note": "line end shapes (KiCad 10)"
  },
  {
@@ -1577,9 +1582,8 @@ export const TOKEN_RULES: TokenRule[] = [
   "names": [
    "private_layers"
   ],
-  "decision": "extend",
-  "ext": "X8",
-  "note": "a footprint's own layers that are not drawn on the board (KiCad 7)"
+  "decision": "report",
+  "note": "a footprint's own layers that KiCad does not show or plot on the board (KiCad 7)"
  },
  {
   "names": [

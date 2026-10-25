@@ -3,6 +3,7 @@ import { uid } from "../lib/id"
 import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
 import { pcbPads, type WorldPad } from "./instances"
+import { pointShapeDistance, type ShapeCopper } from "./shapes"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
 import { fillTester } from "./pour"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
@@ -81,8 +82,11 @@ type Shape =
   | { kind: "pad"; pad: WorldPad; layers: CopperLayer[] }
   | { kind: "segment"; a: Vec2; b: Vec2; width: number; layers: CopperLayer[] }
   | { kind: "via"; at: Vec2; diameter: number; layers: CopperLayer[] }
+  /** A drawing on a copper layer: an obstacle, never a place to start or end a connection. */
+  | { kind: "drawing"; copper: ShapeCopper; box: Box; layers: CopperLayer[] }
 
 function shapeOf(it: CopperItem): Shape | null {
+  if (it.kind === "shape") return { kind: "drawing", copper: it.copper, box: it.box, layers: it.layers }
   if (it.kind === "pad") return { kind: "pad", pad: it.pad, layers: it.layers }
   if (it.kind === "segment") return { kind: "segment", a: it.a, b: it.b, width: it.width, layers: it.layers }
   if (it.kind === "via") return { kind: "via", at: it.at, diameter: it.diameter, layers: it.layers }
@@ -91,12 +95,14 @@ function shapeOf(it: CopperItem): Shape | null {
 
 /** Distance from p to the copper edge of a shape (0 inside). */
 function shapeDistance(p: Vec2, s: Shape): number {
+  if (s.kind === "drawing") return pointShapeDistance(p, s.copper)
   if (s.kind === "pad") return pointPadDistance(p, s.pad)
   if (s.kind === "segment") return Math.max(0, pointSegmentDistance(p, s.a, s.b) - s.width / 2)
   return Math.max(0, Math.hypot(p.x - s.at.x, p.y - s.at.y) - s.diameter / 2)
 }
 
 function shapeBox(s: Shape): Box {
+  if (s.kind === "drawing") return s.box
   if (s.kind === "pad") {
     return { minX: s.pad.x - s.pad.width / 2, maxX: s.pad.x + s.pad.width / 2, minY: s.pad.y - s.pad.height / 2, maxY: s.pad.y + s.pad.height / 2 }
   }
@@ -426,6 +432,7 @@ class Router {
           if (s.kind === "pad") ok = pointPadDistance(p, s.pad) === 0 && padInset(p, s.pad) >= width / 2 - 1e-6
           else if (s.kind === "segment" && this.stubKeys.has(`${s.a.x},${s.a.y},${s.b.x},${s.b.y}`)) ok = Math.hypot(p.x - s.b.x, p.y - s.b.y) <= this.g * 0.5
           else if (s.kind === "segment") ok = pointSegmentDistance(p, s.a, s.b) <= Math.max(this.g * 0.5, (s.width - width) / 2)
+          else if (s.kind === "drawing") ok = false
           else ok = Math.hypot(p.x - s.at.x, p.y - s.at.y) <= s.diameter / 2 - width / 2 + 1e-6
           if (!ok) continue
           for (const layer of s.layers) {
@@ -733,7 +740,7 @@ function islandsByNet(analysis: PcbAnalysis): Map<string, NetIslands> {
   const out = new Map<string, NetIslands>()
   for (const it of analysis.items) {
     const root = analysis.island.get(it.id)
-    if (root === undefined) continue
+    if (root === undefined || it.kind === "shape") continue
     const net = analysis.islandNet.get(root)
     if (!net || net === "short") continue
     const shape = shapeOf(it)

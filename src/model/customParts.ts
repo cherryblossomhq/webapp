@@ -159,7 +159,8 @@ export function customPartProblems(spec: CustomPartSpec): string[] {
     problems.push(`category must be one of ${CUSTOM_CATEGORIES.join(", ")}`)
   }
   if (!/^[A-Z]{1,3}$/.test(spec.refPrefix)) problems.push("ref_prefix must be 1-3 capital letters, e.g. U, J, Q")
-  if (!spec.pins.length) problems.push("a part needs at least one pin")
+  // A part has pins, except one on a land with no numbered pad: a logo, a mounting hole's drawing (a board brought in from KiCad has them).
+  if (!spec.pins.length && !(isValidFootprint(spec.footprint) && getFootprint(spec.footprint).pads.every((p) => !p.pin))) problems.push("a part needs at least one pin")
   const numbers = new Set<string>()
   for (const p of spec.pins) {
     if (!p.number.trim()) problems.push("every pin needs a number")

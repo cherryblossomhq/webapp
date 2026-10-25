@@ -2,6 +2,7 @@ import { boardColors, boardFinish, mountingHoles, SURFACE_FINISHES } from "../mo
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { inBom, inPositionFile } from "../model/partFlags"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
+import { worldShapes } from "../model/shapeItems"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
 
@@ -82,10 +83,44 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
     ...assemblyNotes(project),
+    ...drawingNotes(project),
     "FILES",
     ...files.map((f) => `  ${f}`),
   ]
   return lines.join("\n") + "\n"
+}
+
+/** Where the drawings on the board and in its parts went, and which were not plotted: only for a board that has any. */
+function drawingNotes(project: Project): string[] {
+  const all = worldShapes(project)
+  if (!all.length) return []
+  const plotted: [string, string, string][] = [
+    ["F.Cu", "Top copper", "in the top copper file, after the pours, pads and traces"],
+    ["B.Cu", "Bottom copper", "in the bottom copper file, after the pours, pads and traces"],
+    ["F.Mask", "Top mask", "as openings in the top solder mask file"],
+    ["B.Mask", "Bottom mask", "as openings in the bottom solder mask file"],
+    ["F.Paste", "Top paste", "in the top paste file"],
+    ["B.Paste", "Bottom paste", "in the bottom paste file"],
+    ["F.SilkS", "Top silkscreen", "in the top silkscreen file"],
+    ["B.SilkS", "Bottom silkscreen", "in the bottom silkscreen file"],
+  ]
+  const placed = all.filter((d) => d.placed)
+  const count = (layer: string) => placed.filter((d) => d.shape.layer === layer).length
+  const lines = plotted.filter(([layer]) => count(layer)).map(([layer, label, where]) => `  ${label.padEnd(18)}${count(layer)}: ${where}`)
+  const names = new Set(plotted.map(([layer]) => layer))
+  const skipped = new Map<string, number>()
+  for (const { shape } of placed) {
+    if (names.has(shape.layer)) continue
+    const what = shape.layer.endsWith(".Fab") ? "fabrication" : shape.layer.endsWith(".CrtYd") ? "courtyard" : shape.layer.endsWith(".Adhes") ? "adhesive" : "user"
+    skipped.set(what, (skipped.get(what) ?? 0) + 1)
+  }
+  return [
+    "DRAWINGS",
+    ...lines,
+    ...(skipped.size ? [`  Not plotted       ${[...skipped].map(([what, n]) => `${what} ${n}`).join(", ")}: fabrication, courtyard, adhesive and user layers are not in the files, as KiCad does not plot them by default`] : []),
+    ...(all.length > placed.length ? [`  Not on the PCB    ${all.length - placed.length}: drawings of parts not placed on the board are left out`] : []),
+    "",
+  ]
 }
 
 /** The flags on parts, and what each does to the files: only for a board that has any, so a board drawn here reads as it did. */

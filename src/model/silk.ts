@@ -3,6 +3,9 @@ import { strokeText, strokeTextWidth } from "../lib/strokeFont"
 import { boardTextStrokes, mountingHoles } from "./board"
 import { findPart } from "./library"
 import { isPhysical, pcbCourtyard, pcbPads, pcbSilk } from "./instances"
+import { shapeKind, worldShapes } from "./shapeItems"
+import { shapeLayerInfo } from "./shapeLayers"
+import { shapeBox, shapePolylines } from "./shapes"
 import type { ComponentInstance, PcbSide, Project, Vec2 } from "./types"
 
 /** Cap height of part designators on the silkscreen (mm). */
@@ -65,6 +68,44 @@ function strokesBox(paths: Vec2[][], grow: number): Box | null {
   return Number.isFinite(minX) ? { minX: minX - grow, minY: minY - grow, maxX: maxX + grow, maxY: maxY + grow } : null
 }
 
+/** Longest side of a box one run of a drawing's outline is cut into, so a long line does not block everything its box covers. */
+const RUN_SIZE = 2
+
+/**
+ * What the silkscreen drawings (a board's and a part's own) take up, side by side: the filled ones as one
+ * box each, which a designator must keep clear of like board text, and the outlines in runs of boxes
+ * no bigger than `RUN_SIZE`, which a designator avoids like a part's outline.
+ */
+function silkDrawings(project: Project) {
+  const filled: { id: string; side: PcbSide; box: Box }[] = []
+  const runs: { id: string; side: PcbSide; box: Box }[] = []
+  for (const w of worldShapes(project)) {
+    if (!w.placed || shapeKind(w.shape) !== "silk") continue
+    const side = shapeLayerInfo(w.shape.layer)?.side === "bottom" ? "bottom" : "top"
+    const grow = w.shape.width / 2
+    if (w.shape.fill) {
+      const b = shapeBox(w.shape)
+      filled.push({ id: w.owner, side, box: { minX: b.minX - grow, minY: b.minY - grow, maxX: b.maxX + grow, maxY: b.maxY + grow } })
+      continue
+    }
+    for (const line of shapePolylines(w.shape)) {
+      let run: Box | null = null
+      for (const p of line) {
+        if (!run) run = { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y }
+        else {
+          const next: Box = { minX: Math.min(run.minX, p.x), minY: Math.min(run.minY, p.y), maxX: Math.max(run.maxX, p.x), maxY: Math.max(run.maxY, p.y) }
+          if (next.maxX - next.minX > RUN_SIZE || next.maxY - next.minY > RUN_SIZE) {
+            runs.push({ id: w.owner, side, box: inflate(run, grow) })
+            run = { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y }
+          } else run = next
+        }
+      }
+      if (run) runs.push({ id: w.owner, side, box: inflate(run, grow) })
+    }
+  }
+  return { filled, runs }
+}
+
 /** Every position worth trying around a part, best first by its own preference. */
 function candidates(c: ComponentInstance, cy: Box, w: number, h: number): Candidate[] {
   const hw = SILK_WIDTH / 2
@@ -123,12 +164,18 @@ export function placeDesignators(project: Project): Map<string, Designator> {
     const cy = pcbCourtyard(c)
     return cy ? [{ id: c.id, side: c.pcb.side, box: cy }] : []
   })
-  const outlines = placed.flatMap((c) =>
-    pcbSilk(c).flatMap((path) => {
-      const box = strokesBox([path], SILK_WIDTH / 2)
-      return box ? [{ id: c.id, side: c.pcb.side, box }] : []
-    }),
-  )
+  const drawings = silkDrawings(project)
+  const outlines = [
+    ...placed.flatMap((c) =>
+      pcbSilk(c).flatMap((path) => {
+        const box = strokesBox([path], SILK_WIDTH / 2)
+        return box ? [{ id: c.id, side: c.pcb.side, box }] : []
+      }),
+    ),
+    ...drawings.runs,
+  ]
+  // A filled drawing is ink a designator would vanish into, so it is kept clear of like board text.
+  for (const f of drawings.filled) texts.push({ side: f.side, box: inflate(f.box, TEXT_CLEAR) })
 
   const out = new Map<string, Designator>()
   const taken: { side: PcbSide; box: Box }[] = []
@@ -142,6 +189,8 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   for (const c of order) {
     const court = pcbCourtyard(c)
     if (!court) continue
+    // A part with no pins (a logo, a mounting hole's drawing) has no designator to read.
+    if (!findPart(c.partId)?.pins.length) continue
     // Keep clear of the part's own outline too, where it pokes out of the courtyard.
     const own = strokesBox(pcbSilk(c), SILK_WIDTH / 2)
     const cy = own
@@ -177,13 +226,13 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   return out
 }
 
-let cache: { components: unknown; texts: unknown; board: unknown; value: Map<string, Designator> } | null = null
+let cache: { components: unknown; texts: unknown; board: unknown; graphics: unknown; footprints: unknown; value: Map<string, Designator> } | null = null
 
 /** placeDesignators, reused while parts, board text and the board are unchanged. */
 export function getDesignators(project: Project): Map<string, Designator> {
-  if (cache && cache.components === project.components && cache.texts === project.texts && cache.board === project.board) return cache.value
+  if (cache && cache.components === project.components && cache.texts === project.texts && cache.board === project.board && cache.graphics === project.graphics && cache.footprints === project.footprints) return cache.value
   const value = placeDesignators(project)
-  cache = { components: project.components, texts: project.texts, board: project.board, value }
+  cache = { components: project.components, texts: project.texts, board: project.board, graphics: project.graphics, footprints: project.footprints, value }
   return value
 }
 

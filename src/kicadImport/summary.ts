@@ -30,6 +30,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   X21: "tuning patterns and pad lengths",
   X22: "via protection, backdrill and post-machining",
   X23: "variants, units and points",
+  X24: "hatched fills, line end shapes, colours on drawings and tracks exposed through the solder mask",
 }
 
 /** The plain name of an extension; one the table does not know is still named, never shown as a bare id. */

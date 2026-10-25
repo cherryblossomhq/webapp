@@ -1,7 +1,10 @@
 import { round, transformBox, transformPoint, type Box } from "../lib/geometry"
 import { getFootprint } from "./footprints"
 import { findPart } from "./library"
+import { flipShapeLayer } from "./shapeLayers"
+import { mapShape } from "./shapes"
 import type {
+  BoardShape,
   ComponentInstance,
   CopperLayer,
   FootprintDef,
@@ -141,6 +144,34 @@ export function pcbSilk(c: ComponentInstance): Vec2[][] {
   if (!fp) return []
   const mirror = c.pcb.side === "bottom"
   return fp.silk.map((path) => path.map((p) => transformPoint(p, c.pcb, c.pcb.rot, mirror)))
+}
+
+// A component is replaced, never edited, so its drawings on the board stay put for as long as the object (and its land) does.
+const shapeCache = new WeakMap<ComponentInstance, { fp: FootprintDef; shapes: BoardShape[] }>()
+
+/**
+ * The drawings of a component's land on the board, with a bottom-side part's mirrored and their
+ * layers swapped (`F.SilkS` of a bottom part is on `B.SilkS`). Cached per component object: treat the result as read-only.
+ */
+export function pcbShapes(c: ComponentInstance): BoardShape[] {
+  const fp = componentFootprint(c)
+  if (!fp?.shapes?.length) return []
+  const hit = shapeCache.get(c)
+  if (hit && hit.fp === fp) return hit.shapes
+  const mirror = c.pcb.side === "bottom"
+  const f = (p: Vec2) => transformPoint(p, c.pcb, c.pcb.rot, mirror)
+  const shapes = fp.shapes.map((s) => {
+    const m = mapShape(s, f)
+    return mirror ? { ...m, layer: flipShapeLayer(m.layer) } : m
+  })
+  shapeCache.set(c, { fp, shapes })
+  return shapes
+}
+
+/** Whether the part's land has a courtyard of its own: a logo or a drawing has none, and the checks that need one leave it out. */
+export function hasCourtyard(c: ComponentInstance): boolean {
+  const fp = componentFootprint(c)
+  return !!fp && !fp.noCourtyard
 }
 
 export function pcbCourtyard(c: ComponentInstance): Box | null {

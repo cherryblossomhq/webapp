@@ -135,7 +135,7 @@ export function scanAtoms(text: string, rootToken = "kicad_pcb"): Map<string, Ma
  * out for itself (`reason` says what, and it is checked for every board), or null when it is
  * neither, which is a node that is imported only once its extension is.
  */
-export type Settle = (path: string) => { how: "built" | "derived"; reason?: string } | null
+export type Settle = (path: string) => { how: "built" | "derived"; reason?: string; derived?: number } | null
 
 /**
  * Account for every node of a board. `needed` is the set of extensions of the model this board's
@@ -163,19 +163,24 @@ export function accountNodes(root: List, text: string, needed: ReadonlySet<strin
       account.unknownPaths.set(path, count)
       continue
     }
-    const imported = () => {
-      account.imported += count
-      account.importedPaths.set(path, count)
+    const imported = (n = count) => {
+      if (n <= 0) return
+      account.imported += n
+      account.importedPaths.set(path, (account.importedPaths.get(path) ?? 0) + n)
     }
-    const notNeeded = (reason: string) => account.notNeeded.set(reason, (account.notNeeded.get(reason) ?? 0) + count)
+    const notNeeded = (reason: string, n = count) => account.notNeeded.set(reason, (account.notNeeded.get(reason) ?? 0) + n)
     if (rule.decision === "native") imported()
     else if (rule.decision === "not-needed") notNeeded(rule.note ?? path)
     else if (rule.decision === "report") account.reported += count
     else if (rule.ext && needed.has(rule.ext)) account.pending.set(rule.ext, (account.pending.get(rule.ext) ?? 0) + count)
     else {
       const how = settle(path)
-      if (how?.how === "derived") notNeeded(how.reason ?? rule.note ?? path)
-      else imported()
+      if (how?.how === "derived") {
+        // Derived for some of the nodes of the path only (the drawings on the board's edge): the rest are written into the project.
+        const derived = how.derived === undefined ? count : Math.min(count, how.derived)
+        if (derived > 0) notNeeded(how.reason ?? rule.note ?? path, derived)
+        imported(count - derived)
+      } else imported()
     }
   }
   for (const [path, words] of scanAtoms(text)) {

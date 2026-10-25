@@ -48,6 +48,7 @@ describe("plain names for the extensions", () => {
     X21: [/tuning/, /pad lengths/],
     X22: [/via protection/, /backdrill/],
     X23: [/variants/, /units/, /points/],
+    X24: [/hatched fills/, /line end shapes/, /colours/, /solder mask/],
   }
 
   it("every name covers everything its extension is raised for", () => {

@@ -141,6 +141,12 @@ export const PCB = {
   labelHalo: "rgba(8,6,10,0.92)",
   ratsnest: "rgba(255,255,255,0.72)",
   courtyard: "rgba(110,240,175,0.7)",
+  // Drawings on the layers that are neither copper nor silkscreen: thin and muted, so they never read as copper.
+  shapeMask: "rgba(96,200,120,0.75)",
+  shapePaste: "rgba(205,205,215,0.7)",
+  shapeFab: "rgba(175,165,200,0.8)",
+  shapeAdhesive: "rgba(225,175,95,0.75)",
+  shapeUser: "rgba(150,175,205,0.8)",
   select: "#ffffff",
   selectSoft: "rgba(255,255,255,0.08)",
   highlight: "rgba(255,255,255,0.35)",

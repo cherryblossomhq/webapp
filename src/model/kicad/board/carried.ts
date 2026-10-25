@@ -19,19 +19,25 @@ export interface Settled {
   how: "built" | "derived"
   /** For `derived`: what the editor does instead. */
   reason?: string
+  /** For `derived`: how many of the nodes at this path it holds for (the others are built); absent for all of them. */
+  derived?: number
 }
 
-const SHAPES = "(?:gr_|footprint>fp_)(?:line|arc|circle|rect|poly|curve)"
+const SHAPES = "(?:gr_|footprint>fp_)(?:line|arc|circle|rect|poly|curve|ellipse|ellipse_arc)"
 
-const row = (source: string, how: Settled["how"], reason?: string) => ({ re: new RegExp(`^(?:${source})$`), how, ...(reason ? { reason } : {}) })
+const row = (source: string, how: Settled["how"], reason?: string, scope?: "edge" | "net") => ({ re: new RegExp(`^(?:${source})$`), how, ...(reason ? { reason } : {}), ...(scope ? { scope } : {}) })
 
 const ROWS = [
   row("footprint>at", "built"),
   row("footprint>pad|footprint>pad>(?:at|size|drill|rect_delta)", "built"),
   row("via>layers", "built"),
-  // Drawings on Edge.Cuts are the outline (`outline.ts`); a drawing on any other layer needs X8 and is never settled here.
-  row(`${SHAPES}|${SHAPES}>(?:start|end|mid|center|layer|pts|pts>xy|pts>arc|pts>arc>(?:start|mid|end)|angle|radius)`, "built"),
-  row(`${SHAPES}>(?:stroke|stroke>(?:type|width)|width|fill|locked)`, "derived", "the width and style of an outline line: the board is cut along the line's centre"),
+  // Drawings on Edge.Cuts are the outline (`outline.ts`), which is cut along a line's centre whatever its width, style or fill; a drawing on any other
+  // layer is X8: its geometry, width, dash, fill, lock and net are written into the project (`graphics.ts`), a `target` mark as its circle and two lines.
+  row(`${SHAPES}|${SHAPES}>(?:start|end|mid|center|layer|layers|pts|pts>xy|pts>arc|pts>arc>(?:start|mid|end)|angle|radius|major_radius|minor_radius|rotation_angle|start_angle|end_angle|solder_mask_margin)`, "built"),
+  // Only copper has a net: the net of a drawing on any other layer means nothing (KiCad loads it, even with a number its table lacks) and is not brought; on copper it is written (a number the table lacks is no net, and says so).
+  row(`${SHAPES}>net`, "derived", "the net a drawing names when it is not on a copper layer: only copper has a net, and KiCad draws and plots it the same without", "net"),
+  row(`${SHAPES}>(?:stroke|stroke>(?:type|width)|width|fill|locked)`, "derived", "the width and style of an outline line: the board is cut along the line's centre", "edge"),
+  row("target|target>(?:at|layer|size|width)", "built"),
   row("net_class>(?:clearance|trace_width|via_dia|via_drill)", "built"),
   row("net_class", "derived", "the Default net class's name and description are KiCad's own; its clearance, track width and via size are the design rules, which are imported"),
   row("net_class>add_net", "derived", "every net that no other class names is in the Default class, so listing them says nothing"),
@@ -45,10 +51,50 @@ const ROWS = [
 ]
 
 /** What the builder does with an `extend` node whose extension the board does not need, from its path alone. */
-export function settledFor(path: string): Settled | null {
+export function settledFor(path: string, counts?: { edge?: ReadonlyMap<string, number>; net?: ReadonlyMap<string, number> }): Settled | null {
   const p = path.replace(/^module(?=$|>)/, "footprint")
-  for (const r of ROWS) if (r.re.test(p)) return r.how === "derived" ? { how: r.how, reason: r.reason } : { how: r.how }
+  for (const r of ROWS) {
+    if (!r.re.test(p)) continue
+    if (r.how !== "derived") return { how: r.how }
+    // Derived for the drawings on the board's edge only: with no count to say how many, it is for none of them.
+    if ("scope" in r) return { how: "derived", reason: r.reason, derived: (r.scope === "edge" ? counts?.edge : counts?.net)?.get(path) ?? 0 }
+    return { how: r.how, reason: r.reason }
+  }
   return null
+}
+
+/** How many nodes of each path belong to a drawing on Edge.Cuts: the drawing's own list and everything inside it. */
+export const edgeNodeCounts = (board: KicadBoard) => shapeNodeCounts(board, (layer) => layer === "Edge.Cuts")
+
+/** How many `net` nodes of each path are on a drawing that is not on a copper layer, which means nothing there. */
+export const ignoredNetCounts = (board: KicadBoard) => shapeNodeCounts(board, (_, copper) => !copper, "net")
+
+/** Counts of nodes by path inside the drawings (board and footprint) that `pick` takes, by the drawing's layer and whether it is a copper one; with `only`, just the nodes of that name. */
+function shapeNodeCounts(board: KicadBoard, pick: (layer: string | undefined, copper: boolean) => boolean, only?: string): Map<string, number> {
+  const copperNames = new Set(board.copper.names)
+  const out = new Map<string, number>()
+  const count = (node: List, path: string) => {
+    if (!only || path.endsWith(`>${only}`)) out.set(path, (out.get(path) ?? 0) + 1)
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (Array.isArray(c) && typeof c[0] === "string") count(c, `${path}>${c[0]}`)
+    }
+  }
+  const visit = (node: List, path: string) => {
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c) || typeof c[0] !== "string") continue
+      const here = path ? `${path}>${c[0]}` : c[0]
+      const isShape = path === "" ? /^gr_(?:line|arc|circle|rect|poly|curve|ellipse|ellipse_arc)$/.test(c[0]) : /^(?:module|footprint)$/.test(path) && /^fp_(?:line|arc|circle|rect|poly|curve|ellipse|ellipse_arc)$/.test(c[0])
+      if (isShape) {
+        const layer = strAt(kid(c, "layer"), 1) ?? strAt(kid(c, "layers"), 1)
+        const layers = kid(c, "layers") ? (kid(c, "layers") as List).slice(1).filter((x): x is string => typeof x === "string") : [layer ?? ""]
+        if (pick(layer, layers.some((n) => copperNames.has(n) || /\.Cu$/.test(n)))) count(c, here)
+      } else if (path === "" && (c[0] === "footprint" || c[0] === "module")) visit(c, c[0])
+    }
+  }
+  visit(board.tree, "")
+  return out
 }
 
 const DEFAULT_CLASS_NOTE = "This is the default net class."
@@ -118,9 +164,10 @@ export function netClassIsPlain(board: KicadBoard): boolean {
 /** The path-and-board settle function the accounting uses. */
 export function settleFor(board: KicadBoard): (path: string) => Settled | null {
   const setup = settledSetup(board)
+  const counts = { edge: edgeNodeCounts(board), net: ignoredNetCounts(board) }
   return (path) => {
     const reason = setup.get(path.replace(/^(setup>[^>]+).*$/, "$1"))
     if (path.startsWith("setup>") && reason) return { how: "derived", reason }
-    return settledFor(path)
+    return settledFor(path, counts)
   }
 }

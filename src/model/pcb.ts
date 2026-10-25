@@ -11,11 +11,13 @@ import { mountingHoles } from "./board"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
 import { findPart } from "./library"
-import { isNpth, isPhysical, pcbCourtyard, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbPads, slotEnds, type WorldPad } from "./instances"
 import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
-import type { BoardDef, CopperLayer, Project, Vec2, Via } from "./types"
+import { worldShapes } from "./shapeItems"
+import { shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
+import type { BoardDef, BoardShape, CopperLayer, Project, Vec2, Via } from "./types"
 
 /** componentId used for board-level copper such as mounting holes. */
 export const BOARD_OWNER = "#board"
@@ -44,6 +46,25 @@ export type CopperItem =
       layers: CopperLayer[]
       box: Box
       /** The net the via says it is on (`Via.routedNet`), when it says one and the project has it. */
+      netId?: string | null
+    }
+  | {
+      /**
+       * A drawing on a copper layer (a board brought in from KiCad can have them): copper like a trace or a pad. It
+       * conducts only when it names a net (`BoardShape.net`); one with none is copper that touches nothing and
+       * keeps clear of every net, as KiCad treats it.
+       */
+      kind: "shape"
+      id: string
+      /** The selection id of the drawing (`g:` or `s:`). */
+      shapeId: string
+      /** `#board`, or the component the drawing belongs to. */
+      owner: string
+      shape: BoardShape
+      copper: ShapeCopper
+      conducts: boolean
+      layers: CopperLayer[]
+      box: Box
       netId?: string | null
     }
   | {
@@ -169,8 +190,35 @@ function padPadDistance(p: WorldPad, q: WorldPad): number {
   return Math.hypot(dx, dy)
 }
 
+const copperCache = new WeakMap<CopperItem, ShapeCopper>()
+
+/** A pad, trace, via or drawing as lines with a half width and a filled area, for measuring against a drawing. */
+function itemCopper(it: CopperItem): ShapeCopper {
+  if (it.kind === "shape") return it.copper
+  let c = copperCache.get(it)
+  if (c) return c
+  if (it.kind === "segment") c = { edges: [[it.a, it.b]], half: it.width / 2, fill: [] }
+  else if (it.kind === "via") c = { edges: [[it.at, it.at]], half: it.diameter / 2, fill: [] }
+  else if (it.kind === "pad") {
+    const p = it.pad
+    if (p.shape === "circle") c = { edges: [[p, p]], half: p.width / 2, fill: [] }
+    else if (p.shape === "pill") {
+      const r = Math.min(p.width, p.height) / 2
+      const half = Math.max(p.width, p.height) / 2 - r
+      const horizontal = p.width >= p.height
+      c = { edges: [horizontal ? [{ x: p.x - half, y: p.y }, { x: p.x + half, y: p.y }] : [{ x: p.x, y: p.y - half }, { x: p.x, y: p.y + half }]], half: r, fill: [] }
+    } else {
+      const ring = p.shape === "polygon" && p.points && p.points.length >= 3 ? p.points : rectCorners(p)
+      c = { edges: ring.map((q, i) => [q, ring[(i + 1) % ring.length]] as [Vec2, Vec2]), half: 0, fill: [ring] }
+    }
+  } else c = { edges: [], half: 0, fill: [] }
+  copperCache.set(it, c)
+  return c
+}
+
 /** Edge-to-edge distance between two copper items (0 when touching/overlapping). */
 export function itemDistance(x: CopperItem, y: CopperItem): number {
+  if (x.kind === "shape" || y.kind === "shape") return x.kind === "zone" || y.kind === "zone" ? Infinity : shapeShapeDistance(itemCopper(x), itemCopper(y))
   if (x.kind === "pad" && y.kind === "pad") return padPadDistance(x.pad, y.pad)
   if (x.kind === "segment" && y.kind === "segment")
     return Math.max(0, segmentSegmentDistance(x.a, x.b, y.a, y.b) - x.width / 2 - y.width / 2)
@@ -190,10 +238,18 @@ const shareLayer = (a: CopperItem, b: CopperItem) => a.layers.some((l) => b.laye
 /** Non-plated holes are copper obstacles (for clearance) but never conduct. */
 export const isNpthItem = (it: CopperItem) => it.kind === "pad" && isNpth(it.pad)
 
+/** At most this many points of a drawing stand for it in the ratsnest and where it joins a pour. */
+const SHAPE_POINTS = 32
+
 function itemPoint(item: CopperItem): Vec2[] {
   if (item.kind === "pad") return [{ x: item.pad.x, y: item.pad.y }]
   if (item.kind === "via") return [item.at]
   if (item.kind === "zone") return []
+  if (item.kind === "shape") {
+    const pts = item.copper.edges.flatMap(([a]) => [a])
+    const step = Math.max(1, Math.ceil(pts.length / SHAPE_POINTS))
+    return pts.filter((_, i) => i % step === 0)
+  }
   return [item.a, item.b]
 }
 
@@ -201,6 +257,7 @@ function itemCenter(item: CopperItem): Vec2 {
   if (item.kind === "pad") return { x: item.pad.x, y: item.pad.y }
   if (item.kind === "via") return item.at
   if (item.kind === "zone") return item.polygon[0][0]
+  if (item.kind === "shape") return { x: (item.box.minX + item.box.maxX) / 2, y: (item.box.minY + item.box.maxY) / 2 }
   return { x: (item.a.x + item.b.x) / 2, y: (item.a.y + item.b.y) / 2 }
 }
 
@@ -214,7 +271,7 @@ const anchorPoints = (item: CopperItem): Vec2[] => itemPoint(item)
  */
 export function buildCopperItems(project: Project, sch: SchematicConnectivity, useStored = true): CopperItem[] {
   const items: CopperItem[] = []
-  const stored = useStored && (project.traces.some((t) => t.net) || project.vias.some((v) => v.routedNet))
+  const stored = useStored && (project.traces.some((t) => t.net) || project.vias.some((v) => v.routedNet) || project.graphics?.some((g) => g.net) || project.footprints?.some((f) => f.shapes?.some((s) => s.net)))
   const netByName = stored ? new Map(sch.nets.map((n) => [n.name, n.id])) : null
   const idOf = (name: string | undefined) => (name && netByName ? (netByName.get(name.trim()) ?? null) : null)
   for (const c of project.components) {
@@ -270,6 +327,24 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
       ...(v.routedNet ? { netId: idOf(v.routedNet) } : {}),
     })
   }
+  // Drawings on a copper layer.
+  for (const w of worldShapes(project)) {
+    if (!w.placed || (w.shape.layer !== "F.Cu" && w.shape.layer !== "B.Cu")) continue
+    const layer: CopperLayer = w.shape.layer === "F.Cu" ? "top" : "bottom"
+    const box = shapeInkBox(w.shape)
+    items.push({
+      kind: "shape",
+      id: `shape:${w.id}`,
+      shapeId: w.id,
+      owner: w.owner,
+      shape: w.shape,
+      copper: shapeCopper(w.shape),
+      conducts: useStored && !!w.shape.net,
+      layers: [layer],
+      box,
+      ...(w.shape.net && useStored ? { netId: idOf(w.shape.net) } : {}),
+    })
+  }
   return items
 }
 
@@ -295,7 +370,7 @@ interface Islands {
 }
 
 /** Union-find over copper items: touching copper on a shared layer, aliased pads, and pour anchors. */
-function connectItems(items: CopperItem[]): Islands {
+function connectItems(items: CopperItem[], ties: NetTies | null = null): Islands {
   const n = items.length
   const parent = Array.from({ length: n }, (_, i) => i)
   const find = (i: number): number => {
@@ -332,13 +407,17 @@ function connectItems(items: CopperItem[]): Islands {
     if (!shareLayer(x, y) || !boxesOverlap(x.box, y.box)) return
     // A non-plated hole has no copper: whatever touches it stays its own island.
     if (isNpthItem(x) || isNpthItem(y)) return
+    // A drawing that names no net is copper that connects nothing.
+    if ((x.kind === "shape" && !x.conducts) || (y.kind === "shape" && !y.conducts)) return
     if (x.kind === "zone" || y.kind === "zone") {
       const [z, o] = x.kind === "zone" ? [x, y] : [y, x]
       if (z.kind === "zone" && o.kind !== "zone" && anchorPoints(o).some((p) => z.contains(p))) union(i, j)
       return
     }
     if (sameComponentPads(x, y)) return
-    if (itemDistance(x, y) <= 1e-6) union(i, j)
+    if (itemDistance(x, y) > 1e-6) return
+    if (ties && tieExempt(ties, x, y)) return
+    union(i, j)
   })
 
   // Same-pin pads of a component (aliases like SOT-223 tab) are internally connected.
@@ -397,45 +476,76 @@ function zoneItems(fills: ZoneFill[]): CopperItem[] {
 
 // ---------- Net ties ----------
 
-/** The net tie groups of the parts on the board, each with the nets of its pads; null when no part has one. */
+/** The net tie groups of the parts on the board, and the pads of each that carry a net; null when no part has a net tie. */
 interface NetTies {
-  /** By component id: its groups, each the pad numbers (KiCad's) and the nets those pads are on. */
-  groups: Map<string, { pins: Set<string>; nets: Set<string> }[]>
+  /** By component id: the pads in its tie groups that are on a net (the pad's item and its net). */
+  pads: Map<string, { item: CopperItem; net: string }[]>
 }
 
 function netTies(project: Project, items: CopperItem[]): NetTies | null {
   const tied = project.components.filter((c) => c.flags?.netTies?.length)
   if (!tied.length) return null
-  const groups = new Map<string, { pins: Set<string>; nets: Set<string> }[]>()
-  for (const c of tied) groups.set(c.id, netTieGroups(c).map((pins) => ({ pins, nets: new Set<string>() })))
+  const numbers = new Map(tied.map((c) => [c.id, new Set(netTieGroups(c).flatMap((g) => [...g]))]))
+  const pads = new Map<string, { item: CopperItem; net: string }[]>(tied.map((c) => [c.id, []]))
   for (const it of items) {
     if (it.kind !== "pad" || !it.netId || !it.pad.padNumber) continue
-    for (const g of groups.get(it.pad.componentId) ?? []) if (g.pins.has(it.pad.padNumber)) g.nets.add(it.netId)
+    if (numbers.get(it.pad.componentId)?.has(it.pad.padNumber)) pads.get(it.pad.componentId)!.push({ item: it, net: it.netId })
   }
-  return { groups }
+  return { pads }
 }
 
-/** Whether every net in a short is joined to the others by the net ties of the parts that have a pad in it. */
-function tiedTogether(ties: NetTies, items: CopperItem[], find: (i: number) => number, root: number, nets: Set<string>): boolean {
-  const parent = new Map([...nets].map((n) => [n, n]))
-  const top = (n: string): string => (parent.get(n) === n ? n : top(parent.get(n)!))
-  const present = new Set<string>()
-  items.forEach((it, i) => {
-    if (it.kind === "pad" && find(i) === root && ties.groups.has(it.pad.componentId)) present.add(it.pad.componentId)
-  })
-  for (const id of present) {
-    for (const g of ties.groups.get(id)!) {
-      const joined = [...g.nets].filter((n) => nets.has(n))
-      for (let k = 1; k < joined.length; k++) parent.set(top(joined[k]), top(joined[0]))
+const ownerOf = (it: CopperItem): string | null => (it.kind === "pad" ? it.pad.componentId : it.kind === "shape" ? it.owner : null)
+const netOfItem = (it: CopperItem): string | null => (it.kind === "pad" || it.kind === "shape" || it.kind === "segment" || it.kind === "via" ? (it.netId ?? null) : null)
+
+/**
+ * Whether two copper items that meet are allowed to, because one belongs to a net tie footprint. KiCad
+ * exempts only the tie's own copper (`DRC_ENGINE::IsNetTieExclusion`): the tie's own pads and drawings may overlap each other
+ * whatever their nets, and a track meeting the tie's other copper is excused only where it enters a tie pad on the track's own net
+ * (there the tie's copper lies under the track's own net). A track of net A that meets the tie's pad of net B anywhere else is a
+ * short, as it is anywhere else on the board. "Where" is judged as the point of the track nearest the other copper lying inside
+ * that tie pad, with the pad touching both.
+ */
+/** The point of an item nearest a place, which stands for where it meets another item there. */
+function nearestPointOf(it: CopperItem, ref: Vec2): Vec2 {
+  if (it.kind === "segment") return closestPointOnSegment(ref, it.a, it.b)
+  if (it.kind === "via") return it.at
+  if (it.kind === "pad") return { x: it.pad.x, y: it.pad.y }
+  if (it.kind === "shape") {
+    let best: Vec2 = itemCenter(it)
+    let d = Infinity
+    for (const [a] of it.copper.edges) {
+      const dd = Math.hypot(a.x - ref.x, a.y - ref.y)
+      if (dd < d) {
+        d = dd
+        best = a
+      }
+    }
+    return best
+  }
+  return itemCenter(it)
+}
+
+function tieExempt(ties: NetTies, x: CopperItem, y: CopperItem): boolean {
+  const ox = ownerOf(x)
+  const oy = ownerOf(y)
+  // The tie's own copper: its pads and drawings may overlap each other.
+  const nx = netOfItem(x)
+  const ny = netOfItem(y)
+  if (ox !== null && ox === oy && ties.pads.has(ox) && nx && ny && nx !== ny) return true
+  for (const [foreign, own, owner] of [[x, y, oy], [y, x, ox]] as const) {
+    if (owner === null || !ties.pads.has(owner) || ownerOf(foreign) === owner) continue
+    const net = netOfItem(foreign)
+    if (!net) continue
+    for (const p of ties.pads.get(owner)!) {
+      if (p.net !== net) continue
+      // The track is on this tie pad's net and enters it, and the other copper of the tie overlaps that pad there.
+      if (own === p.item || itemDistance(foreign, p.item) > 1e-6 || itemDistance(own, p.item) > 1e-6) continue
+      // ... and the meeting is inside that pad: the foreign copper where it is nearest the tie's other copper lies in the pad.
+      const at = nearestPointOf(foreign, itemCenter(own))
+      if (p.item.kind === "pad" && pointPadDistance(at, p.item.pad) <= 1e-6) return true
     }
   }
-  return new Set([...nets].map(top)).size === 1
-}
-
-/** Whether `item` is a pad in a net tie group with a pad on net `net`: copper of that net may come up to it. */
-function tiedPad(ties: NetTies, item: CopperItem, net: string): boolean {
-  if (item.kind !== "pad" || !item.pad.padNumber) return false
-  return (ties.groups.get(item.pad.componentId) ?? []).some((g) => g.pins.has(item.pad.padNumber!) && g.nets.has(net))
+  return false
 }
 
 /**
@@ -445,7 +555,7 @@ function tiedPad(ties: NetTies, item: CopperItem, net: string): boolean {
  */
 export function derivedCopperNets(project: Project, sch: SchematicConnectivity): { traceNet: Map<string, string | null>; viaNet: Map<string, string | null> } {
   const items = buildCopperItems(project, sch, false)
-  const { find, islandNet } = connectItems(items)
+  const { find, islandNet } = connectItems(items, netTies(project, items))
   const traceNet = new Map<string, string | null>()
   const viaNet = new Map<string, string | null>()
   items.forEach((it, i) => {
@@ -465,7 +575,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   // Pours need each item's net, which comes from copper connectivity without the pours.
   let zoneFills: ZoneFill[] = opts.fills ?? []
   if (project.zones.length && !opts.fills) {
-    const pre = connectItems(copper)
+    const pre = connectItems(copper, netTies(project, copper))
     // A stitching via touches nothing but the pours, so it carries its net itself.
     const viaNetName = new Map(project.vias.filter((v) => v.net).map((v) => [v.id, v.net!]))
     const netOf = (i: number) => {
@@ -479,7 +589,9 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
     zoneFills = fillZones(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands })
   }
   const items = zoneFills.length ? [...copper, ...zoneItems(zoneFills)] : copper
-  const { find, islandNets, islandNet } = connectItems(items)
+  // Net ties: a net tie footprint's own copper may overlap itself, and a track is excused where it enters a tie pad of its own net.
+  const ties = netTies(project, items)
+  const { find, islandNets, islandNet } = connectItems(items, ties)
 
   const island = new Map<string, number>()
   items.forEach((it, i) => island.set(it.id, find(i)))
@@ -496,14 +608,9 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   let vid = 0
   const push = (v: Omit<DrcViolation, "id">) => violations.push({ ...v, id: `drc${vid++}` })
 
-  // Net ties: pads of one group may be on different nets, and copper of those nets may touch them.
-  // KiCad exempts only the tie footprint's own copper, which is its pads' overlap; this lets any copper of the
-  // tied nets touch the pads. It must narrow to the tie's own copper when X8 brings footprint copper (slice 1b-ii).
-  const ties = netTies(project, items)
   // Shorts
   for (const [root, nets] of islandNets) {
     if (nets.size < 2) continue
-    if (ties && tiedTogether(ties, items, find, root, nets)) continue
     const names = [...nets].map((id) => sch.nets.find((x) => x.id === id)?.name ?? id)
     const idx = items.findIndex((_, i) => find(i) === root && items[i].kind === "segment")
     const at = itemCenter(items[idx >= 0 ? idx : items.findIndex((_, i) => find(i) === root)])
@@ -563,6 +670,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   /** Which copper an item is, for a message: a pad as "J1.2", else a trace, a via or a mounting hole. */
   const describe = (it: CopperItem) => {
     if (it.kind === "pad") return it.pad.componentId === BOARD_OWNER ? "a mounting hole" : `${refOfPart.get(it.pad.componentId) ?? "a part"}.${it.pad.padNumber ?? it.pad.pin ?? "pad"}`
+    if (it.kind === "shape") return it.owner === BOARD_OWNER ? "a copper drawing" : `a copper drawing of ${refOfPart.get(it.owner) ?? "a part"}`
     return it.kind === "segment" ? "a trace" : it.kind === "via" ? "a via" : "a pour"
   }
   forOverlappingPairs(items, clearance, (i, j) => {
@@ -582,8 +690,14 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
     const ni = islandNet.get(ri)
     const nj = islandNet.get(rj)
     if (ni && nj && ni === nj && ni !== "short") return
-    // As for shorts above: wider than KiCad, which exempts only the tie footprint's own copper; narrow it with X8.
-    if (ties && ni && nj && (tiedPad(ties, x, nj) || tiedPad(ties, y, ni))) return
+    // Copper drawings that name no net are checked against copper that has one, not against each other or against copper that has none.
+    if ((x.kind === "shape" || y.kind === "shape") && !ni && !nj) return
+    // A net tie's own copper, and a track entering a tie pad of its own net, are excused (see `tieExempt`); and so is a part's own copper against itself.
+    if (ties && tieExempt(ties, x, y)) return
+    if (x.kind === "shape" || y.kind === "shape") {
+      const ox = ownerOf(x)
+      if (ox !== null && ox === ownerOf(y) && ox !== BOARD_OWNER) return
+    }
     const d = itemDistance(x, y)
     if (d >= clearance - 1e-6) return
     const key = `${Math.min(ri, rj)}:${Math.max(ri, rj)}`
@@ -608,7 +722,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   const board: Box = { minX: b.x - b.width / 2, minY: b.y - b.height / 2, maxX: b.x + b.width / 2, maxY: b.y + b.height / 2 }
   const outside = (box: Box) => box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY
   for (const c of project.components) {
-    const cy = c.pcb.placed ? pcbCourtyard(c) : null
+    const cy = c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null
     if (cy && outside(cy)) {
       push({
         severity: "error",
@@ -621,7 +735,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
 
   // Courtyard overlap
   const placed = project.components
-    .map((c) => ({ c, box: c.pcb.placed ? pcbCourtyard(c) : null }))
+    .map((c) => ({ c, box: c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null }))
     .filter((x): x is { c: (typeof project.components)[number]; box: Box } => !!x.box)
   for (let i = 0; i < placed.length; i++) {
     for (let j = i + 1; j < placed.length; j++) {
@@ -686,6 +800,8 @@ function itemEdgeDistance(b: BoardDef, it: CopperItem): number {
   const d = (p: Vec2) => edgeDistance(b, p)
   if (it.kind === "segment") return Math.min(d(it.a), d(it.b)) - it.width / 2
   if (it.kind === "via") return d(it.at) - it.diameter / 2
+  // A drawing is nearest the edge at one of its points (the outline is convex, so the distance is smallest at a vertex).
+  if (it.kind === "shape") return it.copper.edges.reduce((m, [a, b]) => Math.min(m, d(a), d(b)), Infinity) - it.copper.half
   if (it.kind !== "pad") return Infinity
   const pad = it.pad
   if (pad.shape === "circle") return d(pad) - pad.width / 2
@@ -823,11 +939,11 @@ function manufacturability(
     if (it.kind === "zone" || isNpthItem(it)) continue
     const d = itemEdgeDistance(board, it)
     if (d >= rules.edgeClearance - eps) continue
-    const key = it.kind === "segment" ? it.traceId : it.kind === "via" ? it.viaId : it.pad.componentId
+    const key = it.kind === "segment" ? it.traceId : it.kind === "via" ? it.viaId : it.kind === "shape" ? it.shapeId : it.pad.componentId
     if (edgeSeen.has(key)) continue
     edgeSeen.add(key)
-    const at = it.kind === "segment" ? (edgeDistance(board, it.a) < edgeDistance(board, it.b) ? it.a : it.b) : it.kind === "via" ? it.at : { x: it.pad.x, y: it.pad.y }
-    const what = it.kind === "segment" ? "Trace" : it.kind === "via" ? "Via" : `${owner(it.pad.componentId)} pad`
+    const at = it.kind === "segment" ? (edgeDistance(board, it.a) < edgeDistance(board, it.b) ? it.a : it.b) : it.kind === "via" ? it.at : it.kind === "shape" ? { x: (it.box.minX + it.box.maxX) / 2, y: (it.box.minY + it.box.maxY) / 2 } : { x: it.pad.x, y: it.pad.y }
+    const what = it.kind === "segment" ? "Trace" : it.kind === "via" ? "Via" : it.kind === "shape" ? "Copper drawing" : `${owner(it.pad.componentId)} pad`
     push({
       severity: it.kind === "pad" ? "warning" : "error",
       kind: "edge-clearance",

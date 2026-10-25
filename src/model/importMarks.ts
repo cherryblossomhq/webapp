@@ -1,5 +1,5 @@
-import { computeConnectivity, pinKey } from "./connectivity"
-import { runErc } from "./erc"
+import { pinKey } from "./connectivity"
+import { getConnectivity, getErc, sameSchematic } from "./connectivityCache"
 import type { Project } from "./types"
 
 // What the KiCad import set on its own (`Project.importMarks`): the lone-label checks it ignored
@@ -11,12 +11,12 @@ export function pruneImportMarks(before: Project, after: Project): Project {
   const marks = after.importMarks
   if (!marks) return after
   // Only a schematic edit can change them.
-  if (before.components === after.components && before.wires === after.wires && before.labels === after.labels) return after
-  const conn = computeConnectivity(after)
+  if (sameSchematic(before, after)) return after
+  const conn = getConnectivity(after)
   const byId = new Map(after.components.map((c) => [c.id, c]))
   let checks = marks.checks
   if (checks?.length) {
-    const still = new Set(runErc(after, conn).filter((f) => f.kind === "lone-label").map((f) => f.key))
+    const still = new Set(getErc(after).filter((f) => f.kind === "lone-label").map((f) => f.key))
     checks = checks.filter((k) => still.has(k))
   }
   let noConnect = marks.noConnect

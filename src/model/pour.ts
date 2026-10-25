@@ -14,6 +14,7 @@ import {
 import type { SchematicConnectivity } from "./connectivity"
 import { isNpth, type WorldPad } from "./instances"
 import type { CopperItem } from "./pcb"
+import { shapePolylines, shapeRings } from "./shapes"
 import { zoneClearance } from "./rules"
 import type { CopperLayer, DesignRules, Project, Vec2 } from "./types"
 
@@ -75,6 +76,18 @@ const inflate = (paths: Paths64, d: number): Paths64 =>
 
 const stroke = (points: Vec2[], halfWidth: number): Paths64 =>
   Clipper.inflatePaths([points.map((p) => pt(p.x, p.y))], halfWidth * S, JoinType.Round, EndType.Round, 2, ARC_TOL)
+
+/** A copper drawing's copper grown by `d`: its outline stroked with half its width plus `d`, and what a filled one covers. */
+function shapeObstacle(it: Extract<CopperItem, { kind: "shape" }>, d: number): Paths64 {
+  const half = it.copper.half + d
+  const out: Paths64 = []
+  for (const line of shapePolylines(it.shape)) if (line.length >= 2) out.push(...stroke(line, half))
+  if (it.shape.fill) {
+    const rings = shapeRings(it.shape).map((ring) => ring.map((p) => pt(p.x, p.y)))
+    if (rings.length) out.push(...inflate(Clipper.union(rings, [], FillRule.EvenOdd), half))
+  }
+  return out
+}
 
 /** Copper outline of a pad as clipper paths. */
 export function padPaths(pad: WorldPad): Paths64 {
@@ -210,6 +223,12 @@ export function fillZones(project: Project, sch: SchematicConnectivity, input: P
       } else if (it.kind === "via") {
         if (same) anchors.push(it.at)
         else clip.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap + m))
+      } else if (it.kind === "shape") {
+        if (same) {
+          const step = Math.max(1, Math.ceil(it.copper.edges.length / 32))
+          it.copper.edges.forEach(([a], i) => i % step === 0 && anchors.push(a))
+        }
+        else clip.push(...shapeObstacle(it, gap + m))
       }
     })
     const earlier = filledByLayer.get(zone.layer)

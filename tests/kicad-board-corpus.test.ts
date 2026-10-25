@@ -12,6 +12,7 @@ import { needs as censusNeeds } from "./kicad-census/needs.mjs"
 import { copperOracle, oracle } from "./kicad-census/pads.mjs"
 import { decodeNetName } from "../src/model/kicad/board"
 import { cleanFlags } from "../src/model/partFlags"
+import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
 
 // The per-board pass or fail table of slice 1a over a local corpus (not in the repo):
 //
@@ -90,6 +91,16 @@ interface Row {
   mismatchListed: boolean
   foldedPins: number
   loneLabels: number
+  /** Slice 1b-ii: the file's drawings (board, footprints, targets as three each) against the project's. */
+  gfxFile: number
+  gfxProject: number
+  /** The same count on every layer in both. */
+  gfxCounts: boolean
+  /** Drawings of the file with no match in the project to 0.001 mm. */
+  gfxWrong: number
+  gfxLayers: Record<string, number>
+  /** The drawings survive the stored form: the same project in memory after a save and a load. */
+  gfxRoundTrip: boolean
   /** The 3D models of the board: held, and not held by reason. */
   modelsKept: number
   modelsDropped: Record<string, number>
@@ -177,6 +188,12 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           mismatchListed: true,
           foldedPins: 0,
           loneLabels: 0,
+          gfxFile: 0,
+          gfxProject: 0,
+          gfxCounts: true,
+          gfxWrong: 0,
+          gfxLayers: {},
+          gfxRoundTrip: true,
           modelsKept: 0,
           modelsDropped: {},
           needs: [],
@@ -335,7 +352,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
                 .filter(([k]) => re.test(k.replace(/^module/, "footprint")))
                 .reduce((sum, [, v]) => sum + v, 0)
             row.estBuilt = c.tracks.segments * 125 + c.tracks.vias * 80 + c.pads.total * 95 + (c.pads.flags["has-net"] ?? 0) * 170 + c.fps.total * 400
-            row.estUnbuilt = c.tracks.arcs * 200 + count(/^footprint>fp_(line|arc|circle|poly|rect|curve)$/) * 42 + count(/^gr_(line|arc|circle|poly|rect|curve)$/) * 90 + count(/^(footprint>(fp_text|property)|gr_text)$/) * 90 + c.zones.vertices * 22
+            row.estUnbuilt = c.tracks.arcs * 200 + count(/^(footprint>(fp_text|property)|gr_text)$/) * 90 + c.zones.vertices * 22
           }
           row.netsProject = forced.entries.some((e) => e.code === "net-mismatch") ? "fail" : forced.entries.some((e) => e.severity === "refused") ? "refused" : "ok"
           // pads in the project against the oracle: parts with a reference of their own, turned by a quarter turn
@@ -492,6 +509,15 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.mismatchListed = (listed?.items?.length ?? 0) === row.copperMismatches && (listed?.count ?? 0) === row.copperMismatches
           row.foldedPins = forced.entries.find((e) => e.code === "pin-type-folded")?.count ?? 0
           row.loneLabels = forced.entries.find((e) => e.code === "lone-labels-accepted")?.count ?? 0
+          // ---- slice 1b-ii: every drawing, on the board and in footprints, against the raw file, by layer and to 0.001 mm ----
+          const gfx = checkGraphics(text, built.project, built.lossy)
+          row.gfxFile = gfx.file
+          row.gfxProject = gfx.project
+          row.gfxCounts = gfx.counts
+          row.gfxWrong = gfx.wrong
+          row.gfxLayers = gfx.layers
+          row.gfxRoundTrip = roundTripOk(built.project)
+          if (gfx.note) row.notes.push(gfx.note)
           row.padsProject = fail ? "fail" : compared ? "ok" : "none"
           row.padsProjectCompared = compared
           row.padsProjectSkipped = skipped
@@ -510,6 +536,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(bad.map((r) => `${r.file}: ${r.error}`)).toEqual([])
       expect(rows.filter((r) => !r.file.endsWith(".brd") && r.status !== "refused:unreadable" && !(r.parse && r.nodes && r.counts)).map((r) => r.file)).toEqual([])
       // slice 1b-i: flags, no-connect pins and the nets of copper equal the file's everywhere, every mismatch is listed, and the gate names only what is not built
+      // slice 1b-ii: every drawing of the file is in the project, on its layer, to 0.001 mm
+      expect(rows.filter((r) => !r.gfxCounts || r.gfxWrong > 0 || !r.gfxRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("drawings"))}`)).toEqual([])
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
     3_600_000,
@@ -546,6 +574,9 @@ function summarize(rows: Row[], seconds: number): string {
     ["needs: nothing beyond the census's", (r) => r.needsExtra.length === 0],
     ["refusal message names the cause", (r) => r.messageNamed],
     ["the gate names exactly the needs that are not built (X13 and X15 are built and never named)", (r) => r.gateExact],
+    ["drawings: the same count on every layer as the file's (oracle)", (r) => r.gfxCounts],
+    ["drawings: every drawing of the file in the project within 0.001 mm (oracle)", (r) => r.gfxWrong === 0],
+    ["drawings: a save and a load give the same drawings in memory (stored form)", (r) => r.gfxRoundTrip],
     ["no crash", (r) => r.status !== "CRASH"],
   ]
   for (const [label, f] of cols) {
@@ -572,6 +603,9 @@ function summarize(rows: Row[], seconds: number): string {
     const rs = holds(without)
     lines.push(`copper mismatches on real boards with copper that need none of ${without.join(", ")}: ${rs.length} boards, ${count(rs, (r) => r.copperMismatches > 0)} with an item the editor derives another net for, ${rs.reduce((n, r) => n + r.copperMismatches, 0)} items`)
   }
+  const layerTotals = new Map<string, number>()
+  for (const r of board) for (const [k, v] of Object.entries(r.gfxLayers)) layerTotals.set(k, (layerTotals.get(k) ?? 0) + v)
+  lines.push(`drawings: ${board.reduce((n, r) => n + r.gfxFile, 0)} in the files (board, footprints, targets as three), ${board.reduce((n, r) => n + r.gfxProject, 0)} in the projects, on ${count(board, (r) => r.gfxFile > 0)} boards; ${board.reduce((n, r) => n + r.gfxWrong, 0)} not matched to 0.001 mm. By layer: ${[...layerTotals].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ")}`)
   lines.push(`pins whose KiCad type was folded into a role: ${board.reduce((n, r) => n + r.foldedPins, 0)} on ${count(board, (r) => r.foldedPins > 0)} boards; single-pad nets accepted in Checks: ${board.reduce((n, r) => n + r.loneLabels, 0)} on ${count(board, (r) => r.loneLabels > 0)} boards`)
   const realRows = board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group))
   const exts = [...new Set(board.flatMap((r) => [...r.censusNeeds, ...r.needsActual]))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
@@ -600,9 +634,9 @@ function summarize(rows: Row[], seconds: number): string {
   const totals = real.map((r) => r.projectBytes + r.estUnbuilt).sort((a, b) => a - b)
   const tq = (p: number) => totals[Math.min(totals.length - 1, Math.floor(p * totals.length))] ?? 0
   const cap = 900 * 1024
-  lines.push(`real boards (${real.length}): measured / estimated for what 1a builds: median ${rq(0.5).toFixed(2)}, p10 ${rq(0.1).toFixed(2)}, p90 ${rq(0.9).toFixed(2)}`)
-  lines.push(`real boards: measured 1a project plus the estimate for what is not built yet (graphics, text, zone outlines): median ${(tq(0.5) / 1024).toFixed(0)} KB, p90 ${(tq(0.9) / 1024).toFixed(0)} KB, p99 ${(tq(0.99) / 1024).toFixed(0)} KB, largest ${((totals[totals.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${totals.filter((t) => t > cap).length}; measured 1a part alone over 900 KB: ${real.filter((r) => r.projectBytes > cap).length}; the old estimate said ${real.filter((r) => r.estBuilt + r.estUnbuilt > cap).length}`)
-  lines.push(`measured project size (what slice 1a builds): median ${(q(0.5) / 1024).toFixed(0)} KB, p90 ${(q(0.9) / 1024).toFixed(0)} KB, p99 ${(q(0.99) / 1024).toFixed(0)} KB, largest ${((sizes[sizes.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${sizes.filter((s) => s > 900 * 1024).length}`)
+  lines.push(`real boards (${real.length}): measured / estimated for what 1b-ii builds: median ${rq(0.5).toFixed(2)}, p10 ${rq(0.1).toFixed(2)}, p90 ${rq(0.9).toFixed(2)}`)
+  lines.push(`real boards: measured 1b-ii project plus the estimate for what is not built yet (text, zone outlines): median ${(tq(0.5) / 1024).toFixed(0)} KB, p90 ${(tq(0.9) / 1024).toFixed(0)} KB, p99 ${(tq(0.99) / 1024).toFixed(0)} KB, largest ${((totals[totals.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${totals.filter((t) => t > cap).length}; measured 1b-ii part alone over 900 KB: ${real.filter((r) => r.projectBytes > cap).length}; the old estimate said ${real.filter((r) => r.estBuilt + r.estUnbuilt > cap).length}`)
+  lines.push(`measured project size (what slice 1b-ii builds): median ${(q(0.5) / 1024).toFixed(0)} KB, p90 ${(q(0.9) / 1024).toFixed(0)} KB, p99 ${(q(0.99) / 1024).toFixed(0)} KB, largest ${((sizes[sizes.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${sizes.filter((s) => s > 900 * 1024).length}`)
   return lines.join("\n")
 }
 

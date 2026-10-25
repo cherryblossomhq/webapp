@@ -2,6 +2,7 @@ import { ruleFor } from "./account"
 import { landPad } from "./build"
 import { netClassIsPlain, settledFor, settledSetup } from "./carried"
 import { quarterTurns, reach } from "./geometry"
+import { resolveLayer } from "./graphics"
 import { numAt, type List } from "./sexpr"
 import { ZERO_MEANS_INHERIT_UNTIL } from "./read"
 import type { OutlineResult } from "./outline"
@@ -13,8 +14,8 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // The rules are the ones of `tests/kicad-census/slices.mjs`, which the census judged the plan by,
 // with the differences named in `Need.source`.
 
-/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X13", "X15"])
+/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings). */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X8", "X13", "X15"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -38,6 +39,7 @@ export const EXTENSION_NAMES: Record<string, string> = {
   X21: "tuning patterns or pad lengths",
   X22: "via protection, backdrill or post-machining",
   X23: "variants, units or points",
+  X24: "hatched fills, line end shapes, colours on drawings, or tracks exposed through the solder mask",
 }
 
 export interface Need {
@@ -236,9 +238,12 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   for (const s of board.arcTracks) mark([s.layer])
   for (const v of board.vias) mark(v.layers)
   for (const z of board.zones) mark(z.layers)
+  for (const s of board.shapes) mark(s.layers)
+  for (const t of board.targets) mark([t.layer])
   for (const fp of board.footprints) {
     for (const z of fp.zones) mark(z.layers)
     for (const p of fp.pads) mark(p.layers)
+    for (const s of fp.shapes) mark(s.layers)
   }
   if (board.copperLayerCount > 2 || undeclared.size) need("X1", `${board.copperLayerCount} copper layers${undeclared.size ? `, and copper on ${[...undeclared].join(", ")}, which the layer table lacks` : ""}`)
 
@@ -271,6 +276,11 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (shapeGfx(board.shapes) || board.footprints.some((f) => shapeGfx(f.shapes)) || board.footprints.some((f) => f.pads.length === 0) || has(/^target/)) need("X8", "drawings beyond the editor's silkscreen lines, or parts with no pads")
   // A part is its pins: one whose pads are all unnumbered (a mounting hole) has none to draw, which X8's graphics-only parts will.
   else if (board.footprints.some((f) => !f.pads.some((p) => p.number !== "" && p.type !== "np_thru_hole"))) need("X8", "a part with no numbered pads, such as a mounting hole", "importer")
+  // X24: what KiCad 9 and 10 add to a drawing that the editor's shapes do not hold (the nodes of line ends, colours and track mask openings are found by the table below).
+  const allShapes = [...board.shapes, ...board.footprints.flatMap((f) => f.shapes)]
+  if (allShapes.some((s) => s.hatched && layerClass(s.layer, copperSet) !== "edge")) need("X24", "a drawing filled with a hatch", "importer")
+  // An outline drawn on a translated name of the edge layer is not read by the outline code, so it is X2's.
+  if (allShapes.some((s) => s.layers.some((n) => resolveLayer(board, n).translatedEdge))) need("X2", "an outline drawn on a translated name of the edge layer", "importer")
   if (board.footprints.length > 0 || has(/^gr_text/)) need("X9", "the reference and value text of every part, and board text")
   if (!netClassIsPlain(board)) need("X10", "net classes beyond the default, or a default class with a name or description of its own")
   // A through hole's and a via's smallest drill are two rules; the design rules hold one.

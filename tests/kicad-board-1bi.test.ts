@@ -599,9 +599,14 @@ describe("X15: a net tie is not a short", () => {
   const withTie = imported(tie('(net_tie_pad_groups "1, 2")')).project
   const without = imported(tie("")).project
   const shorts = (p: Project) => analysis(p).violations.filter((v) => v.kind === "short")
-  it("copper of A that touches both pads of a tie is no short; without the tie it is", () => {
+  it("copper of A that enters the tie's pad of A, and so touches its overlap with B, is no short; without the tie it is", () => {
+    const enters = (flags: string) => imported(tie(flags, [seg("4 5", "10 5", "(net 1)")])).project
+    expect(shorts(enters(""))).toHaveLength(1)
+    expect(shorts(enters('(net_tie_pad_groups "1, 2")'))).toEqual([])
+  })
+  it("but copper of A that goes on onto the tie's pad of B is a short again, tie or not: only the tie's own copper is excused", () => {
     expect(shorts(without)).toHaveLength(1)
-    expect(shorts(withTie)).toEqual([])
+    expect(shorts(withTie)).toHaveLength(1)
   })
   it("a short that the tie does not explain is still one: a third net on the pad", () => {
     const three = imported(tie('(net_tie_pad_groups "1, 2")', [seg("4 5", "11 5", "(net 1)"), seg("10.4 5", "10.4 8", "(net 3)"), footprint({ ref: "R3", at: "10 12", pads: [pad({ number: "1", at: "0.4 -4", net: net(3, "C") }), pad({ number: "2", at: "5 0", net: net(3, "C") })] })], net(3, "C"))).project
@@ -671,7 +676,7 @@ describe("the project file, version 3", () => {
     const read = parseProjectFile(v2, { id: "x" })
     expect(read.traces[0]).toEqual(v2.project.traces[0])
     expect(read.vias[0]).toEqual(v2.project.vias[0])
-    expect(JSON.parse(serializeProject(read)).version).toBe(3)
+    expect(JSON.parse(serializeProject(read)).version).toBe(4)
   })
   it("junk in a flag, a trace net or a via net is dropped, a good value kept", () => {
     const doc = {
@@ -696,8 +701,8 @@ describe("the project file, version 3", () => {
 })
 
 describe("the gate after slice 1b-i", () => {
-  it("builds X13 and X15, and only them", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15"])
+  it("builds X13 and X15 (and X8, which slice 1b-ii added)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X8"])
   })
   it("a board whose only needs are X13 and X15 is imported by the real gate; one that also needs text is refused for the text alone", () => {
     const onlyCopper = board({ nets: ['(net 0 "")', net(1, "A")], body: [seg("0 0", "5 0", "(net 1)"), '(via (at 5 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))'] })

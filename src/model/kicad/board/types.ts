@@ -89,7 +89,7 @@ export interface KicadText {
   node: List
 }
 
-export type ShapeKind = "line" | "arc" | "circle" | "rect" | "poly" | "curve" | "bbox"
+export type ShapeKind = "line" | "arc" | "circle" | "rect" | "poly" | "curve" | "bbox" | "ellipse" | "ellipse_arc"
 
 export interface KicadShape {
   kind: ShapeKind
@@ -100,15 +100,46 @@ export interface KicadShape {
   mid?: Pt
   center?: Pt
   pts?: Pt[]
-  /** A polygon outline with arcs among its points (the arcs are in `node`). */
+  /** A polygon outline with arcs among its points. */
   hasArcs?: boolean
+  /** A polygon's outline in file order: its points and its arcs. */
+  polyItems?: ({ xy: Pt } | { arc: { start: Pt; mid: Pt; end: Pt } })[]
   /** A legacy arc as written: start is its centre, end the first end, this the sweep. */
   legacySweep?: number
   width: number
+  /** Filled solid (`fill solid`, `yes`, or a legacy shape that is filled by its absence). */
   filled: boolean
+  /** The fill is a hatch (`hatch`, `reverse_hatch`, `cross_hatch`), which the editor cannot draw. */
+  hatched: boolean
   /** The stroke style (`dash`, `dot`...), or null for solid. */
   dash: string | null
   locked: boolean
+  /** Every layer the shape names: `(layer X)` is one, `(layers X Y)` can be several. */
+  layers: string[]
+  /** The shape's net (copper shapes can have one), as the user reads it and as the file spells it. */
+  net: string | null
+  netRaw: string | null
+  /** The net number a copper drawing names that the net table does not list (KiCad loads it with no net). */
+  badNet?: string
+  /** A rectangle's corner radius (KiCad 10), 0 for none. */
+  radius: number
+  /** An ellipse or elliptical arc: centre, radii, and the major axis' angle in degrees as the file writes it (KiCad's frame), with the sweep of an arc. */
+  ellipse?: { center: Pt; major: number; minor: number; rotation: number; start?: number; end?: number }
+  /** The shape's own solder mask margin, when it writes one. */
+  maskMargin?: number
+  /** The shape has a start or end shape (an arrowhead), or its own colour: KiCad 10 things the editor does not hold. */
+  ending: boolean
+  colored: boolean
+  node: List
+}
+
+/** A `target` mark: a circle with a cross or an X, drawn on one layer. */
+export interface KicadTarget {
+  shape: "plus" | "x"
+  at: Pt
+  size: number
+  width: number
+  layer: string
   node: List
 }
 
@@ -169,6 +200,8 @@ export interface KicadFootprint {
   texts: KicadText[]
   shapes: KicadShape[]
   zones: KicadZone[]
+  /** Layers the footprint draws on that KiCad shows and plots on no board layer (`private_layers`, KiCad 7). */
+  privateLayers: string[]
   /** Net tie groups: lists of pad numbers whose nets may meet. KiCad 5 tags that say "net tie" make one group of every pad. */
   netTies: string[][]
   /** Jumper pad groups (KiCad 9): lists of pad numbers connected inside the part. */
@@ -242,6 +275,7 @@ export interface KicadBoard {
   vias: KicadVia[]
   zones: KicadZone[]
   shapes: KicadShape[]
+  targets: KicadTarget[]
   texts: KicadText[]
   /** Lists the typed fields do not cover, by token: dimensions, groups, images, targets, generated patterns... */
   others: Record<string, List[]>

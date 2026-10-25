@@ -31,6 +31,8 @@ import { componentFootprint, isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk,
 import { findPart } from "../model/library"
 import { boardColors, boardTextStrokeWidth, mountingHoles, roundedOutline } from "../model/board"
 import { analyzePcb } from "../model/pcb"
+import { worldShapes } from "../model/shapeItems"
+import { drawingElements } from "./circuitJsonShapes"
 import { getDesignators, SILK_WIDTH } from "../model/silk"
 import type { ComponentInstance, PartDef, PinDef, Project, Rotation, TextAnchor, Vec2 } from "../model/types"
 
@@ -598,6 +600,24 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   }
   void netNameOf
 
+  // ---------- Drawings ----------
+  // The KiCad export writes them itself, exactly, so they are left out of the circuit it converts.
+  const drawingNotes: string[] = []
+  if (!options.forKicad && worldShapes(project).some((s) => s.placed)) {
+    const drawn = drawingElements(project, {
+      pcbIds: new Map(parts.map((p) => [p.c.id, p.pcbId])),
+      next: (prefix) => ids.next(prefix),
+      netOf: (name) => {
+        const netId = sch.nets.find((n) => n.name === name)?.id
+        return netId ? { net: netIds.get(netId), trace: traceIds.get(netId) } : {}
+      },
+    })
+    elements.push(...drawn.elements)
+    drawingNotes.push("Drawings: silkscreen and fabrication drawings, closed courtyard shapes, and copper drawings (strokes as traces, fills as pours) are in the file, with curves, ellipses, arcs in polygons and dashed lines flattened to points.")
+    if (drawn.left.size) drawingNotes.push(`Left out, since Circuit JSON has no element for them: ${[...drawn.left].map(([what, n]) => `${n} ${what}`).join(", ")}. Solder mask, paste and adhesive drawings are always left out.`)
+    else drawingNotes.push("Solder mask, paste, adhesive and user layer drawings have no element in Circuit JSON and are left out.")
+  }
+
   // ---------- Schematic ----------
   for (const { c, part, sourceId, schId } of parts) {
     const bounds = schematicBounds(c, part)
@@ -741,6 +761,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     notes.push("The 3D view, the net trace widths and the pour and mask settings stay in Cherry Blossom; the design rules the board states (trace width, clearances, drills) are in the board.")
   }
   void projectFootprints
+  notes.push(...drawingNotes)
   return { elements, notes }
 }
 

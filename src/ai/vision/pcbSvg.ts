@@ -4,8 +4,11 @@ import { boardTextStrokes, boardTextStrokeWidth } from "../../model/board"
 import { isPhysical, pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
+import { worldShapes } from "../../model/shapeItems"
+import { shapeLayerInfo } from "../../model/shapeLayers"
+import { dashShape, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
-import type { CopperLayer, Project } from "../../model/types"
+import type { BoardShape, CopperLayer, Project } from "../../model/types"
 import { getPcbAnalysis } from "../../store/analysis"
 import type { PixelSize } from "./limits"
 import type { PcbMeasure } from "./measure"
@@ -80,6 +83,28 @@ function padLabels(items: ReturnType<typeof getPcbAnalysis>["items"], names: Map
   return out
 }
 
+function pieceD(p: DashPiece): string {
+  if (p.kind === "line") return `M${n(p.a.x)} ${n(p.a.y)}L${n(p.b.x)} ${n(p.b.y)}`
+  if (p.kind === "arc") return shapeSvgPath({ type: "arc", start: p.start, mid: p.mid, end: p.end })
+  return `M${p.pts.map((q) => `${n(q.x)} ${n(q.y)}`).join("L")}`
+}
+
+/** One drawing as the editor draws it (`ShapeDraw`): stroked by its width, filled when it is, in dashes when it is dashed; mask and paste thin, and every layer that is not copper or silkscreen soft. */
+function shapeSvg(shape: BoardShape, color: string, px: number): string {
+  const kind = shapeLayerInfo(shape.layer)?.kind
+  const thin = kind === "mask" || kind === "paste"
+  const soft = kind !== "copper" && kind !== "silk"
+  const width = Math.max(thin ? Math.min(shape.width, 0.08) : shape.width, px)
+  const d = shapeSvgPath(shape)
+  const round = `stroke-width="${n(width)}" stroke-linecap="round" stroke-linejoin="round"`
+  const dashed = shape.dash ? dashShape(shape) : []
+  let out = ""
+  if (shape.fill) out += `<path d="${d}" fill="${color}"${soft ? ' fill-opacity="0.4"' : ""} fill-rule="evenodd" ${dashed.length ? 'stroke="none"' : `stroke="${color}" ${round}`}/>`
+  if (dashed.length) out += `<path d="${dashed.map(pieceD).join("")}" fill="none" stroke="${color}" ${round}/>`
+  else if (!shape.fill) out += `<path d="${d}" fill="none" stroke="${color}" ${round}/>`
+  return out
+}
+
 function outline(b: Box, color: string, px: number, grow = 0.2): string {
   return `<rect x="${n(b.minX - grow)}" y="${n(b.minY - grow)}" width="${n(b.maxX - b.minX + grow * 2)}" height="${n(b.maxY - b.minY + grow * 2)}" fill="none" stroke="${color}" stroke-width="${n(Math.max(0.1, 1.6 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
 }
@@ -97,6 +122,10 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const front: CopperLayer = opts.side === "bottom" ? "bottom" : "top"
   const placed = project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
   const has = (x: PcbExtra) => opts.extras.has(x)
+  // The drawings on the board and in its placed parts, by what their layer is for; none on a board that has none.
+  const drawings = worldShapes(project).filter((d) => d.placed)
+  const kindOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.kind ?? "user"
+  const sideOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.side ?? null
 
   let body = `<rect x="${n(board.minX)}" y="${n(board.minY)}" width="${n(bd.width)}" height="${n(bd.height)}" rx="${n(r)}" fill="${PCB.board}" stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}"/>`
 
@@ -112,6 +141,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       if (t.layer !== l) continue
       body += `<polyline points="${pts(t.points)}" fill="none" stroke="${l === "top" ? PCB.topCopper : PCB.bottomCopper}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
     }
+    for (const d of drawings) if (kindOf(d) === "copper" && sideOf(d) === l) body += shapeSvg(d.shape, l === "top" ? PCB.topCopper : PCB.bottomCopper, px)
     for (const it of pcb.items) {
       if (it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l) body += pad(it.pad, l === front ? PCB.pad : PCB.padBack, px)
     }
@@ -138,6 +168,11 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       if (!shownSet.has(tx.side)) continue
       for (const path of boardTextStrokes(tx)) body += line(path, tx.side === "top" ? PCB.silk : PCB.silkBottom, boardTextStrokeWidth(tx))
     }
+    for (const d of drawings) {
+      const side = sideOf(d)
+      if (kindOf(d) !== "silk" || !side || !shownSet.has(side)) continue
+      body += `<g opacity="${side === front ? 1 : 0.55}">${shapeSvg(d.shape, side === "top" ? PCB.silk : PCB.silkBottom, px)}</g>`
+    }
   }
 
   if (has("labels")) {
@@ -151,6 +186,14 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       const cy = pcbCourtyard(c)
       if (!cy || !shownSet.has(c.pcb.side)) continue
       body += `<rect x="${n(cy.minX)}" y="${n(cy.minY)}" width="${n(cy.maxX - cy.minX)}" height="${n(cy.maxY - cy.minY)}" fill="none" stroke="${PCB.courtyard}" stroke-width="${n(1.2 * px)}"/>`
+    }
+    // The drawings on the other layers (courtyard, fabrication, mask, paste, adhesive, user) come with the courtyards: muted, and off by default like them.
+    const colors = { courtyard: PCB.courtyard, fab: PCB.shapeFab, mask: PCB.shapeMask, paste: PCB.shapePaste, adhesive: PCB.shapeAdhesive, user: PCB.shapeUser } as const
+    for (const d of drawings) {
+      const kind = kindOf(d)
+      const side = sideOf(d)
+      if (kind === "copper" || kind === "silk" || (side && !shownSet.has(side))) continue
+      body += `<g opacity="${!side || side === front ? 1 : 0.55}">${shapeSvg(d.shape, colors[kind], px)}</g>`
     }
   }
 

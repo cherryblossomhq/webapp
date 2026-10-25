@@ -6,6 +6,9 @@ import type { Project } from "../model/types"
 import { projectRecord, type ProjectStorage, type SaveRefusal } from "./storage"
 
 const HISTORY_LIMIT = 200
+
+/** Copper that names its net follows a rename, and what an import marked that no longer holds is retired. Both stop at once for an edit that left the schematic alone. */
+const settleEdit = (before: Project, made: Project) => pruneImportMarks(before, followNetRenames(before, made))
 /** Quiet time after an edit before it is saved, so a burst of edits is one save. */
 const SAVE_DELAY_MS = 600
 /** Waits before retrying a save that didn't arrive (offline, a server error). */
@@ -217,8 +220,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!project) return
     const made = fn(project)
     if (made === project) return
-    // Copper that names its net follows a rename, and what an import marked that no longer holds is retired.
-    const next = pruneImportMarks(project, followNetRenames(project, made))
+    const next = settleEdit(project, made)
     // A change that lands mid-drag (the copilot works in the background) ends the drag where it
     // is: rebuilding the drag from its starting snapshot afterwards would drop the change.
     const before = transientBase && transientBase !== project ? [transientBase, project] : [project]
@@ -261,7 +263,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return
     }
     // A fresh object lets caches that skipped work during the drag (copper pours) recompute.
-    const finalProject = finalize ? finalize(project) : { ...project }
+    const dropped = finalize ? finalize(project) : { ...project }
+    // What a schematic drag connected or renamed is settled as a commit settles it (a pin that now has a net loses its import mark); a PCB drag skips it at once.
+    const finalProject = settleEdit(transientBase, dropped)
     if (finalProject === transientBase) {
       set({ transientBase: null, project: finalProject })
       return

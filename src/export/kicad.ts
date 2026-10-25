@@ -4,6 +4,7 @@ import { applyToPoint } from "transformation-matrix"
 import type { Project } from "../model/types"
 import { slugify } from "./bundle"
 import { projectToCircuitJson } from "./circuitJson"
+import { applyDrawings } from "./kicadShapes"
 import { addNoConnects, addSymbolFields, applyBoardSettings, applyFootprintFlags, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
@@ -77,7 +78,9 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
   pro.runUntilFinished()
 
   // What the converter has no place for: put into the files it wrote.
-  const boardText = applyFootprintFlags(applyBoardSettings(pcb.getOutputString(), project), project)
+  const flagged = applyFootprintFlags(applyBoardSettings(pcb.getOutputString(), project), project)
+  const drawings = applyDrawings(flagged, project)
+  const boardText = drawings.text
   const footprintIds = boardFootprintIds(boardText)
   const fields = new Map(project.components.map((c) => [c.ref, symbolFields(c, footprintIds)]))
   const page = sch.ctx.c2kMatSch
@@ -93,6 +96,7 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
     },
     notes: [
       ...notes,
+      ...drawings.notes,
       "KiCad names every net, so nets the schematic leaves unnamed are called Net-(REF-PIN), as KiCad would.",
       "Parts keep our schematic symbols and land patterns; they are stored in the files, not in a KiCad library, and have no 3D models.",
       "Symbols carry the footprint, part number, LCSC number, manufacturer and every other part property as hidden fields; the board's footprints carry only the part and LCSC numbers.",

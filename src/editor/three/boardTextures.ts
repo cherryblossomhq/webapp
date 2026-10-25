@@ -3,7 +3,9 @@ import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finis
 import { isNpth, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
-import type { ComponentInstance, CopperLayer, Project, Vec2 } from "../../model/types"
+import { worldShapes } from "../../model/shapeItems"
+import { dashShape, shapeCanvasPath } from "../../model/shapes"
+import type { BoardShape, ComponentInstance, CopperLayer, Project, Vec2 } from "../../model/types"
 
 /** The finish seen at the thin rim of a mask opening. */
 const RIM = { gold: "#b08a4e", tin: "#8f9196", copper: "#a8704c" }
@@ -109,6 +111,41 @@ function strokePolylines(ctx: CanvasRenderingContext2D, paths: Vec2[][], width: 
   ctx.stroke()
 }
 
+/** The drawings of the board and of its placed parts on one layer (`F.SilkS`, `B.Cu`...); none for a board that has none. */
+function drawingsOn(project: Project, layer: string): BoardShape[] {
+  return worldShapes(project).filter((d) => d.placed && d.shape.layer === layer).map((d) => d.shape)
+}
+
+/** Draw drawings with the context's fill and stroke style: filled ones filled, every one stroked by its width (in dashes when dashed). */
+function drawShapes(ctx: CanvasRenderingContext2D, shapes: BoardShape[]) {
+  if (!shapes.length) return
+  ctx.lineCap = "round"
+  ctx.lineJoin = "round"
+  for (const shape of shapes) {
+    if (shape.fill) {
+      ctx.beginPath()
+      shapeCanvasPath(ctx, shape)
+      ctx.fill("evenodd")
+    }
+    if (shape.width <= 0) continue
+    ctx.lineWidth = shape.width
+    ctx.beginPath()
+    if (shape.dash) {
+      for (const piece of dashShape(shape)) {
+        if (piece.kind === "line") {
+          ctx.moveTo(piece.a.x, piece.a.y)
+          ctx.lineTo(piece.b.x, piece.b.y)
+        } else if (piece.kind === "arc") shapeCanvasPath(ctx, { type: "arc", start: piece.start, mid: piece.mid, end: piece.end })
+        else {
+          ctx.moveTo(piece.pts[0].x, piece.pts[0].y)
+          for (const q of piece.pts.slice(1)) ctx.lineTo(q.x, q.y)
+        }
+      }
+    } else shapeCanvasPath(ctx, shape)
+    ctx.stroke()
+  }
+}
+
 // ---------- layer content ----------
 
 /** Fill every copper shape on one layer with the current fill/stroke style. */
@@ -136,6 +173,7 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
     ctx.arc(h.x, h.y, h.diameter / 2, 0, Math.PI * 2)
   }
   ctx.fill()
+  drawShapes(ctx, drawingsOn(project, layer === "top" ? "F.Cu" : "B.Cu"))
 }
 
 /** Silkscreen polylines and their stroke widths for one side. */
@@ -243,13 +281,28 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   a.ctx.restore()
 
   const silkSets = silkStrokes(input, side)
+  const silkShapes = drawingsOn(input.project, side === "top" ? "F.SilkS" : "B.SilkS")
   a.ctx.strokeStyle = silk
   for (const s of silkSets) strokePolylines(a.ctx, s.paths, s.width)
+  if (silkShapes.length) {
+    a.ctx.save()
+    a.ctx.fillStyle = silk
+    drawShapes(a.ctx, silkShapes)
+    a.ctx.restore()
+  }
 
   // Exposed pads are separate metal meshes; the thin rim of the mask opening shows the finish.
   a.ctx.fillStyle = RIM[finishMetal(boardFinish(b))]
   maskOpenings(a.ctx, input, side, input.project.rules.maskExpansion)
   a.ctx.fill()
+  // Drawings on the mask layer are openings too, shown in the finish's colour.
+  const maskShapes = drawingsOn(input.project, side === "top" ? "F.Mask" : "B.Mask")
+  if (maskShapes.length) {
+    a.ctx.save()
+    a.ctx.strokeStyle = a.ctx.fillStyle
+    drawShapes(a.ctx, maskShapes)
+    a.ctx.restore()
+  }
 
   // Surface: height + roughness
   const s = makeCanvas(w, h)
@@ -265,6 +318,12 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   s.ctx.globalCompositeOperation = "lighter"
   s.ctx.strokeStyle = `rgb(${H_SILK},${R_SILK - R_MASK},0)`
   for (const set of silkSets) strokePolylines(s.ctx, set.paths, set.width)
+  if (silkShapes.length) {
+    s.ctx.save()
+    s.ctx.fillStyle = s.ctx.strokeStyle
+    drawShapes(s.ctx, silkShapes)
+    s.ctx.restore()
+  }
   s.ctx.globalCompositeOperation = "source-over"
   s.ctx.filter = "none"
 

@@ -76,7 +76,7 @@ export function releaseBuild(build: Pick<SchematicBuild, "registered">) {
 }
 
 /** The release a stamp belongs to, for the "Imported from" property when the file does not name its version. */
-const ERA_NAME: Record<KicadSchematic["era"], string> = { "pre6-nightly": "5.99 (a development build)", kicad6: "6", kicad7: "7", kicad8: "8", kicad9: "9", kicad10: "10", "kicad11-dev": "11 (a development build)", unknown: "(version not given)" }
+const ERA_NAME: Record<KicadSchematic["era"], string> = { legacy: "5 or older (a legacy .sch file)", "pre6-nightly": "5.99 (a development build)", kicad6: "6", kicad7: "7", kicad8: "8", kicad9: "9", kicad10: "10", "kicad11-dev": "11 (a development build)", unknown: "(version not given)" }
 
 const referenceOf = (s: PlacedSymbol) => s.props.find((p) => p.name === "Reference")?.value ?? ""
 const valueOf = (s: PlacedSymbol) => s.props.find((p) => p.name === "Value")?.value ?? ""
@@ -220,6 +220,8 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     onBoard: ReturnType<NonNullable<SchematicBuildOptions["footprintFor"]>>
     power: LibPin | null
   }
+  /** The places of the pins of the type "no connect" (KiCad 5 joins what is drawn to such a pin). */
+  const ncPinKeys = new Set<string>()
   const placed: Placed[] = []
   for (const sym of root.symbols) {
     const d = drawingOf(sym)
@@ -288,7 +290,8 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     if (p.power) {
       const pp = p.power
       // Before stamp 20230221 a global power symbol with a hidden pin is named by that pin; from it the Value is the net, and an empty one stays empty.
-      const legacy = root.version !== null && root.version < MODERN_POWER_SYMBOLS_FROM && lib.power === "global" && pp.hidden
+      // In a KiCad 5 schematic the pin names the net whether it is shown or not (`LIB_PIN::IsPowerConnection`: a power input pin of a power symbol, or a hidden one).
+      const legacy = root.legacy ? true : root.version !== null && root.version < MODERN_POWER_SYMBOLS_FROM && lib.power === "global" && pp.hidden
       const net = (legacy ? pp.name : record?.value || valueOf(sym)).trim()
       const c: ComponentInstance = {
         id: uid("c"),
@@ -338,6 +341,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     for (const q of pinsHere) {
       const at = toSheet(q.at, sym)
       for (const number of expandPinNumber(q.number)) pinPoints.push({ c, pin: number, at })
+      if (q.type === "no_connect") ncPinKeys.add(keyOf(at))
     }
   }
 
@@ -391,6 +395,60 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     ncOf.set(pp.c.id, set)
   }
   for (const c of components) if (ncOf.has(c.id)) c.nc = [...ncOf.get(c.id)!]
+
+  // A pin of the type "no connect" is on no net in the editor (as in KiCad 6 and later). KiCad 5 joins it to whatever is drawn to it: a wire end, a label, a junction, another pin.
+  if (root.legacy && ncPinKeys.size) {
+    const here = new Map<string, number>()
+    for (const pp of pinPoints) here.set(keyOf(pp.at), (here.get(keyOf(pp.at)) ?? 0) + 1)
+    const drawn = new Set<string>()
+    for (const w of root.wires) if (w.pts.length >= 2) for (const p of [w.pts[0], w.pts[w.pts.length - 1]]) drawn.add(keyOf(p))
+    for (const l of root.labels) drawn.add(keyOf(l.at))
+    for (const j of root.junctions) drawn.add(keyOf(j.at))
+    for (const k of ncPinKeys) {
+      if (drawn.has(k) || (here.get(k) ?? 0) > 1) {
+        lose("S11", "a pin of the type no connect with a wire, label, junction or other pin at it, which KiCad 5 joins to the net and KiCad 6 and later leave out")
+        break
+      }
+    }
+  }
+
+  // A symbol taken from one of the project's libraries and not from the schematic's own cache is not the symbol the wires were drawn to: libraries change. If a wire
+  // ends near such a symbol, where it has no pin and where nothing else is, the library has moved its pins since: the project is refused as inexact, naming the symbol.
+  if (root.legacy) {
+    const fromLibrary = new Set(root.legacy.symbolSources.filter((x) => x.from === "library").map((x) => x.libId))
+    if (fromLibrary.size) {
+      const at = new Map<string, number>()
+      const bump = (p: Pt) => at.set(keyOf(p), (at.get(keyOf(p)) ?? 0) + 1)
+      for (const w of root.wires) if (w.pts.length >= 2) for (const e of [w.pts[0], w.pts[w.pts.length - 1]]) bump(e)
+      for (const pp of pinPoints) bump(pp.at)
+      for (const l of root.labels) bump(l.at)
+      for (const j of root.junctions) bump(j.at)
+      for (const n of root.noConnects) bump(n.at)
+      const drifted: string[] = []
+      for (const [sym, c] of bySymbol) {
+        if (!fromLibrary.has(sym.libId)) continue
+        const mine = pinPoints.filter((p) => p.c === c)
+        if (!mine.length) continue
+        const reach = 2.54
+        const x0 = Math.min(...mine.map((p) => p.at.x)) - reach
+        const x1 = Math.max(...mine.map((p) => p.at.x)) + reach
+        const y0 = Math.min(...mine.map((p) => p.at.y)) - reach
+        const y1 = Math.max(...mine.map((p) => p.at.y)) + reach
+        const own = new Set(mine.map((p) => keyOf(p.at)))
+        const dangling = root.wires.some((w) => w.pts.length >= 2 && [w.pts[0], w.pts[w.pts.length - 1]].some((e) => e.x >= x0 && e.x <= x1 && e.y >= y0 && e.y <= y1 && !own.has(keyOf(e)) && at.get(keyOf(e)) === 1))
+        if (dangling) drifted.push(`${c.ref} (${sym.libId})`)
+      }
+      if (drifted.length) {
+        report.entries.push({
+          code: "symbol-may-have-changed",
+          severity: "refused",
+          object: `${drifted.length} symbol${drifted.length > 1 ? "s" : ""} (${drifted.slice(0, 4).join(", ")}${drifted.length > 4 ? ", ..." : ""})`,
+          why: "These symbols come from a library of the project, not from the schematic's own cache, and a wire ends near each where it has no pin: the library has drawn the symbol differently since the schematic was drawn, so its nets would not be the ones in the file. Nothing is guessed.",
+          count: drifted.length,
+        })
+      }
+    }
+  }
 
   // ---------- wires, cut at the junctions on their bodies ----------
   const junctionPts = root.junctions.map((j) => j.at)
@@ -468,7 +526,8 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     labels.push(label)
     trackPoint(l.at)
     // A label on a pin is KiCad's alone with the pin, and skips a wire that only passes there (sch_label.cpp); the editor joins the wire.
-    if (pinAt.has(keyOf(l.at)) && !junctionKeys.has(keyOf(l.at))) {
+    // KiCad 5 does not: a label joins the pin at its point and every wire it lies on (`NETLIST_OBJECT_LIST::segmentToPointConnect`), which is what the editor does.
+    if (!root.legacy && pinAt.has(keyOf(l.at)) && !junctionKeys.has(keyOf(l.at))) {
       for (const i of grid.near(l.at)) {
         const o = wiresIn[i]
         if (strictlyInside(q(l.at.x), q(l.at.y), q(o.a.x), q(o.a.y), q(o.b.x), q(o.b.y))) lose("S11", "a label on a pin that lies on a wire's side, which the editor joins to the wire and KiCad does not")
@@ -519,7 +578,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     }
   }
 
-  const version = `${root.generatorVersion ? `KiCad ${root.generatorVersion}, ` : ""}${root.version === null ? "no version stamp" : `file version ${root.version}`}`
+  const version = root.legacy ? `EESchema Schematic File Version ${root.legacy.version}` : `${root.generatorVersion ? `KiCad ${root.generatorVersion}, ` : ""}${root.version === null ? "no version stamp" : `file version ${root.version}`}`
   const properties = [
     { key: "Imported from", value: options.source ?? `KiCad ${root.generatorVersion ?? ERA_NAME[root.era]}` },
     { key: "KiCad file version", value: version },

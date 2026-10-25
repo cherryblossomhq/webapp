@@ -6,3 +6,8 @@ export { needsOfFile, needsOfProject, BUILT_EXTENSIONS, EXTENSION_NAMES, refusal
 export { buildSchematicProject, type SchematicBuild, type SchematicBuildOptions } from "./build"
 export { resolveLibSymbol, drawingFromLib, specFromSymbol, toSheet, MM_PER_UNIT } from "./symbols"
 export type * from "./types"
+export { readLegacySchematic, isLegacySchematic } from "./legacy/read"
+export { readLegacySchematicText, legacySchematicVersion, type LegacySchematic } from "./legacy/sch"
+export { readLegacyLibraryText, legacyPartToSymbolText, legacyLibraryVersion, type LegacyLibrary, type LegacyPart } from "./legacy/lib"
+export { legacyToKicadText, orientationOf } from "./legacy/sexpr"
+export { LegacySources, type LegacySource } from "./legacy/sources"

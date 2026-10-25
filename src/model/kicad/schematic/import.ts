@@ -6,6 +6,7 @@ import { accountNodes, countPaths, mergeAccounts, reportedNodes, reportUnknown }
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "./build"
 import { plainnessOf, settleFor } from "./carried"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, needsOfFile, needsOfProject, refusalMessage, unbuilt, type Need } from "./needs"
+import { legacyEntries } from "./legacy/report"
 import { KicadSchematicReadError } from "./read"
 import { readSchematicTree, type KicadFiles, type SchematicTree } from "./tree"
 
@@ -116,10 +117,16 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
     tree = readSchematicTree(files, rootPath)
   } catch (e) {
     const message = e instanceof KicadSchematicReadError ? e.message : `The file could not be read: ${e instanceof Error ? e.message : String(e)}`
+    // A record of a legacy file that the importer does not know is refused by name, as an unknown node of a `.kicad_sch` is.
+    if (e instanceof KicadSchematicReadError && e.code === "unknown-record") {
+      const report: ImportReport = { entries: [{ code: "unknown-node", severity: "refused", object: `the record "${e.path ?? "?"}"`, why: `${message} Nothing is guessed: the schematic is not imported until the importer learns it.` }], account: null }
+      return { refused: { status: "refused", reason: "unknown", message, report, needs: [], tree: null } }
+    }
     const report: ImportReport = { entries: [{ code: e instanceof KicadSchematicReadError ? e.code : "unreadable", severity: "refused", object: "the file", why: message }], account: null }
     return { refused: { status: "refused", reason: "unreadable", message, report, needs: [], tree: null } }
   }
   const report = tree.report
+  report.entries.push(...legacyEntries(tree))
   const list = [...tree.files.values()]
   const limit = options.maxObjects ?? MAX_SCHEMATIC_OBJECTS
   const objects = list.reduce((n, f) => n + f.schematic.wires.length + f.schematic.buses.length + f.schematic.symbols.length + f.schematic.labels.length + f.schematic.junctions.length + f.schematic.noConnects.length + f.schematic.busEntries.length + Object.values(f.schematic.others).reduce((m, l) => m + l.length, 0), 0)

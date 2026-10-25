@@ -1,4 +1,6 @@
 import { newReport, type ImportReport } from "../board/report"
+import { isLegacySchematic, readLegacySchematic } from "./legacy/read"
+import { LegacySources } from "./legacy/sources"
 import { KicadSchematicReadError, readKicadSchematic } from "./read"
 import type { KicadSchematic, SchSheet, SheetFile } from "./types"
 
@@ -56,6 +58,8 @@ export interface SchematicTree {
   errors: SheetError[]
   instances: SheetInstancePath[]
   report: ImportReport
+  /** The libraries a KiCad 5 schematic's symbols are searched in, when the project has legacy sheets. */
+  legacy: LegacySources | null
 }
 
 /** `a\b/./c/../d` as `a/b/d`; a path that climbs out of the folder keeps its `..`. */
@@ -102,11 +106,12 @@ export function readSchematicTree(files: KicadFiles, rootPath: string): Schemati
   const index = new FileIndex(files)
   const rootFound = index.find(rootPath)
   if (!rootFound) throw new KicadSchematicReadError("missing-root", `The schematic ${rootPath} is not among the files.`)
-  const tree: SchematicTree = { root: rootFound.path, files: new Map(), uses: [], errors: [], instances: [], report: newReport() }
+  const tree: SchematicTree = { root: rootFound.path, files: new Map(), uses: [], errors: [], instances: [], report: newReport(), legacy: null }
   const tried = new Map<string, "ok" | "bad">()
 
   const load = (path: string, data: string | Uint8Array): KicadSchematic => {
-    const read = readKicadSchematic(data)
+    // A KiCad 5 or older sheet is read with the libraries of the project the root sheet is in.
+    const read = isLegacySchematic(data) ? readLegacySchematic(data, (tree.legacy ??= new LegacySources(index, rootFound.path))) : readKicadSchematic(data)
     for (const e of read.report.entries) tree.report.entries.push({ ...e, object: `${path}: ${e.object}` })
     tree.files.set(path, { path, schematic: read.schematic, text: read.text })
     return read.schematic

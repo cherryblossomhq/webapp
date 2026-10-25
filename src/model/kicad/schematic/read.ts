@@ -4,6 +4,7 @@ import { convertOverbar, decodeNetName } from "../board/read"
 import { decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "../board/sexpr"
 import type {
   BusEntry,
+  LegacyInfo,
   EmbeddedFileRef,
   KicadSchematic,
   LabelKind,
@@ -51,8 +52,10 @@ export const ARC_COMPLEMENT_UNTIL = 20230121
 /** A file that cannot be read as a KiCad schematic at all, with the reason in plain words. */
 export class KicadSchematicReadError extends Error {
   constructor(
-    readonly code: "empty" | "missing-root" | "not-sexpr" | "unbalanced" | "truncated" | "not-a-schematic" | "legacy-schematic" | "too-deep" | "encoding" | "bad-number" | "bad-value",
+    readonly code: "empty" | "missing-root" | "not-sexpr" | "unbalanced" | "truncated" | "not-a-schematic" | "legacy-schematic" | "legacy-damaged" | "unknown-record" | "too-deep" | "encoding" | "bad-number" | "bad-value",
     message: string,
+    /** For `unknown-record`: the record the legacy file has that this importer does not know, as the accounting names it. */
+    readonly path: string | null = null,
   ) {
     super(message)
   }
@@ -108,8 +111,12 @@ function kindOfText(text: string): string | null {
   return null
 }
 
-/** Reads a `.kicad_sch`, as text or bytes. Throws `KicadSchematicReadError` for a file that is not a schematic it can read at all. */
-export function readKicadSchematic(input: string | Uint8Array): SchematicReadResult {
+/**
+ * Reads a `.kicad_sch`, as text or bytes. Throws `KicadSchematicReadError` for a file that is not a schematic it can read at all.
+ * `legacy` is given by the legacy reader (`legacy/read.ts`), which hands this the text of the KiCad 5 schematic written as a
+ * `.kicad_sch` (`legacy/sexpr.ts`) so that one reader, one accounting and one build serve both.
+ */
+export function readKicadSchematic(input: string | Uint8Array, legacy?: LegacyInfo): SchematicReadResult {
   const report = newReport()
   let text: string
   if (typeof input === "string") text = input
@@ -121,7 +128,7 @@ export function readKicadSchematic(input: string | Uint8Array): SchematicReadRes
   if (!text.trim()) throw new KicadSchematicReadError("empty", "The file is empty.")
   const kind = kindOfText(text)
   if (kind?.startsWith("legacy:")) {
-    throw new KicadSchematicReadError("legacy-schematic", `This is a KiCad 5 or older schematic (EESchema Schematic File Version ${kind.slice(7)}). Reading those is not supported yet: open it in KiCad 6 or later and save it again.`)
+    throw new KicadSchematicReadError("legacy-schematic", `This is a KiCad 5 or older schematic (EESchema Schematic File Version ${kind.slice(7)}); it is read with the files of its project (its symbol libraries), by the legacy reader.`)
   }
   if (kind && kind !== "schematic") {
     const what = { board: "a KiCad board", "symbol-library": "a KiCad symbol library", footprint: "a single KiCad footprint" }[kind] ?? "another KiCad file"
@@ -136,7 +143,7 @@ export function readKicadSchematic(input: string | Uint8Array): SchematicReadRes
   }
   const tree = root.find((n): n is List => nameOf(n) === "kicad_sch")
   if (!tree) throw new KicadSchematicReadError("not-a-schematic", "This file has no (kicad_sch ...) list, so it is not a KiCad schematic.")
-  return { schematic: readSchematic(tree, report), text, report }
+  return { schematic: readSchematic(tree, report, legacy), text, report }
 }
 
 // ---------- small readers ----------
@@ -492,12 +499,12 @@ const TYPED_ROOT = new Set([
   "embedded_files",
 ])
 
-function readSchematic(tree: List, report: ImportReport): KicadSchematic {
+function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): KicadSchematic {
   const versionNode = kid(tree, "version")
   const stampNumber = versionNode ? numAt(versionNode, 1, NaN) : NaN
   const stamp = Number.isFinite(stampNumber) ? stampNumber : null
   if (stamp === null) report.entries.push({ code: "no-version", severity: "note", object: "the file", why: "The file has no (version N) stamp, so it is read by its tokens alone." })
-  else if (stamp > NEWEST_KNOWN_STAMP) {
+  else if (stamp > NEWEST_KNOWN_STAMP && !legacy) {
     report.entries.push({ code: "newer-format", severity: "note", object: "the file", why: `The file's version stamp ${stamp} is newer than the newest this importer was written against (${NEWEST_KNOWN_STAMP}). It is read by its tokens, and anything new is named in this report.` })
   }
   const titleBlock: { key: string; value: string }[] = []
@@ -565,7 +572,8 @@ function readSchematic(tree: List, report: ImportReport): KicadSchematic {
   const gen = kid(tree, "generator")
   return {
     version: stamp,
-    era: schEraOf(stamp),
+    era: legacy ? "legacy" : schEraOf(stamp),
+    ...(legacy ? { legacy } : {}),
     generator: strAt(gen, 1) ?? null,
     generatorVersion: strAt(kid(tree, "generator_version"), 1) ?? null,
     uuid: strAt(kid(tree, "uuid"), 1) ?? "",

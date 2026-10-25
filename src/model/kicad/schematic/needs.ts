@@ -73,6 +73,10 @@ export function needsOfFile(s: KicadSchematic, paths: ReadonlyMap<string, number
   if (s.labels.some((l) => l.kind === "directive") || other("rule_area") > 0) need("S8", "directive labels or rule areas")
   if ([...paths.keys()].some((p) => /variant$/.test(p))) need("S9", "schematic variants")
 
+  // A KiCad 5 schematic whose symbols are in no library the project gives: they are in the parts database or in KiCad's own libraries, which are not read yet.
+  const missing = s.legacy?.symbolSources.filter((x) => x.from === "missing") ?? []
+  if (missing.length) need("S12", `symbols that no library of the project has (${missing.slice(0, 4).map((x) => x.libId).join(", ")}${missing.length > 4 ? ", ..." : ""})`, "importer")
+
   // The importer's own additions: what the model cannot hold that the census rules did not list.
   if (s.symbols.some((sym) => symbolFlagged(sym) && !symbolFlaggedByCensus(sym))) need("S7", "a symbol left out of the position files", "importer")
 

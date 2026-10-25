@@ -26,6 +26,7 @@ import { linkFootprints, type LinkResult } from "../schematic/link"
 import { BUILT_EXTENSIONS as SCHEMATIC_BUILT, EXTENSION_NAMES as SCHEMATIC_EXTENSION_NAMES, refusalMessage, unbuilt, type Need } from "../schematic/needs"
 import { normalizePath, type SchematicTree } from "../schematic/tree"
 import { KicadRulesFileError, accountRules, readKicadRules, reportUnknownRules, type KicadRules } from "./dru"
+import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegacyPro } from "./legacyPro"
 import { KicadProjectFileError, accountPro, designSettingsNeeds, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
 
 // The KiCad project import: a `.kicad_pro`, the `.kicad_sch` sheets and the `.kicad_pcb`, as one
@@ -112,16 +113,21 @@ export function pickProjectFiles(files: ProjectFile[]) {
   const of = (ext: string) => all.filter((f) => extOf(f.path) === ext)
   const boards = of(".kicad_pcb")
   const pros = of(".kicad_pro")
-  const sheets = of(".kicad_sch")
+  const legacyPros = of(".pro")
+  const modernSheets = of(".kicad_sch")
+  const legacySheets = of(".sch")
+  // A KiCad 5 schematic: `.sch` sheets and no `.kicad_sch`. Its project file is a `.pro`, or a `.kicad_pro` (a KiCad 6 board and project over a KiCad 5 schematic).
+  const legacy = !modernSheets.length && legacySheets.length > 0
+  const sheets = legacy ? legacySheets : modernSheets
   const dru = of(".kicad_dru")
   const notes: string[] = []
   // The project's name is the project file's, else the board's.
-  const anchor = pros[0] ?? boards[0]
+  const anchor = legacy && !pros.length ? (boards[0] ?? legacyPros[0]) : (pros[0] ?? boards[0])
   const stem = anchor ? stemOf(anchor.path) : ""
   const dir = anchor ? dirOf(anchor.path) : ""
   const board = boards.find((b) => stemOf(b.path) === stem && dirOf(b.path) === dir) ?? boards.find((b) => stemOf(b.path) === stem) ?? boards[0]
   if (boards.length > 1) notes.push(`There are ${boards.length} boards among the files; ${board.path} was imported.`)
-  const pro = pros.find((p) => dirOf(p.path) === dirOf(board?.path ?? "")) ?? pros[0]
+  const pro = legacy && !pros.length ? (legacyPros.find((p) => stemOf(p.path) === stem && dirOf(p.path) === dir) ?? legacyPros.find((p) => stemOf(p.path) === stem) ?? legacyPros.find((p) => dirOf(p.path) === dir)) : (pros.find((p) => dirOf(p.path) === dirOf(board?.path ?? "")) ?? pros[0])
   // The root schematic: same name and folder as the board or project, else the one no other sheet names.
   const base = stemOf((pro ?? board)?.path ?? "")
   const folder = dirOf((pro ?? board)?.path ?? "")
@@ -130,14 +136,17 @@ export function pickProjectFiles(files: ProjectFile[]) {
     const text = (d: string | Uint8Array) => (typeof d === "string" ? d : new TextDecoder().decode(d))
     const named = new Set<string>()
     for (const s of sheets) {
-      for (const m of text(s.data).matchAll(/\(property\s+"(?:Sheetfile|Sheet file|File)"\s+"([^"]+)"/g)) named.add(normalizePath(`${dirOf(s.path)}/${m[1]}`).toLowerCase())
+      // A KiCad 6 sheet names its file in a property; a KiCad 5 sheet in its `F1` line.
+      const re = legacy ? /^F1\s+"([^"]+)"/gm : /\(property\s+"(?:Sheetfile|Sheet file|File)"\s+"([^"]+)"/g
+      for (const m of text(s.data).matchAll(re)) named.add(normalizePath(`${dirOf(s.path)}/${m[1]}`).toLowerCase())
     }
     const heads = sheets.filter((s) => !named.has(s.path.toLowerCase()))
     root = heads.find((s) => dirOf(s.path) === folder) ?? heads[0] ?? sheets[0]
     if (heads.length > 1) notes.push(`There are ${heads.length} schematics that no other sheet uses; ${root.path} was taken as the root.`)
   }
   const rules = dru.find((d) => dirOf(d.path) === dirOf(board?.path ?? "")) ?? dru[0]
-  return { board, pro, root, rules, sheets: new Map(sheets.map((s) => [s.path, s.data] as const)), all, notes }
+  // A KiCad 5 schematic is read with the libraries beside it: every file of the project goes to the reader.
+  return { board, pro, proIsLegacy: !!pro && legacy && !pros.length, root, rules, legacy, sheets: new Map((legacy ? all : sheets).map((s) => [s.path, s.data] as const)), all, notes }
 }
 
 /**
@@ -311,7 +320,22 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   let proNeeds: Need[] = []
   let proAccount: NodeAccount | null = null
   let rulesAccount: NodeAccount | null = null
-  if (picked.pro) {
+  if (picked.pro && picked.proIsLegacy) {
+    // A KiCad 5 `.pro`: an ini file. Its library list is read again by the schematic's reader, from the files; here it is accounted for and its design settings judged as a `.kicad_pro`'s are.
+    try {
+      const read = readLegacyPro(picked.pro.data)
+      pro = read.legacy.pro
+      for (const why of read.notes) report.entries.push({ code: "encoding", severity: "note", object: picked.pro.path, why })
+      const account = accountLegacyPro(read.legacy)
+      proAccount = account
+      reportUnknownLegacyPro(account, report, picked.pro.path)
+      proNeeds = projectNeeds(read.legacy.pro, null)
+    } catch (e) {
+      if (!(e instanceof LegacyProFileError)) throw e
+      report.entries.push({ code: e.code, severity: "refused", object: picked.pro.path, why: e.message })
+      return refuse("unreadable", `${picked.pro.path}: ${e.message}`)
+    }
+  } else if (picked.pro) {
     try {
       const read = readKicadPro(picked.pro.data)
       pro = read.pro

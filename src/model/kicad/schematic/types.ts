@@ -12,8 +12,8 @@ export interface Pt {
   y: number
 }
 
-/** Which KiCad release wrote the file, from its version stamp (docs/kicad-import-schematic.md, section 6). */
-export type SchEra = "pre6-nightly" | "kicad6" | "kicad7" | "kicad8" | "kicad9" | "kicad10" | "kicad11-dev" | "unknown"
+/** Which KiCad release wrote the file, from its version stamp (docs/kicad-import-schematic.md, section 6). `legacy` is a KiCad 5 or older `.sch` file, read through `schematic/legacy/`. */
+export type SchEra = "legacy" | "pre6-nightly" | "kicad6" | "kicad7" | "kicad8" | "kicad9" | "kicad10" | "kicad11-dev" | "unknown"
 
 /** A field: `(property "Reference" "R1" (at ...) (effects ...))`. A value of `~` before stamp 20250318 is empty and is read as such. */
 export interface SchProperty {
@@ -199,6 +199,19 @@ export interface EmbeddedFileRef {
   type: string
 }
 
+/** What is known about a schematic that was read from KiCad 5 or an older legacy file (`.sch`): the file's own version and encoding, every record by kind, and where each symbol came from. */
+export interface LegacyInfo {
+  /** The `EESchema Schematic File Version` of the file, 1 to 5; also the schematic's `version`. */
+  version: number
+  encoding: "utf-8" | "latin-1"
+  /** Every record of the file by its path with its count (`$Comp>F`, `Wire>Wire`, `Text>Label`...). */
+  records: Record<string, number>
+  /** The ERC markers (`Kmarq`) of the file, which are not brought. */
+  markers: number
+  /** Each symbol of the sheet and the library file it was found in (a cache or a library), or none. */
+  symbolSources: { libId: string; from: "cache" | "library" | "missing"; file: string | null; name: string | null }[]
+}
+
 export interface KicadSchematic {
   /** The `(version N)` stamp; null when the file has none. */
   version: number | null
@@ -229,6 +242,8 @@ export interface KicadSchematic {
   embeddedFiles: EmbeddedFileRef[]
   /** Lists the typed fields do not cover, by token: text, text_box, polyline, rectangle, circle, arc, bezier, image, table, rule_area... */
   others: Record<string, List[]>
+  /** Set for a KiCad 5 or older schematic: its items are those of the legacy file written as a `.kicad_sch` (`schematic/legacy/sexpr.ts`). */
+  legacy?: LegacyInfo
   /** The root `(kicad_sch ...)` list, whole. */
   tree: List
 }

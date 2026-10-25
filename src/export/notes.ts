@@ -179,6 +179,7 @@ function assemblyNotes(project: Project): string[] {
     `  Not in position   ${refs((c) => !!c.flags?.excludeFromPos)}: left out of pnp.csv`,
     `  Virtual           ${refs((c) => !!c.flags?.virtual)}: left out of bom.csv and pnp.csv`,
     `  Board only        ${refs((c) => !!c.flags?.boardOnly)}: no schematic symbol in KiCad; still in bom.csv unless also not in the BOM`,
+    ...(flagged.some((c) => c.flags?.notOnBoard) ? [`  Not on the board  ${refs((c) => !!c.flags?.notOnBoard)}: no footprint on the board, so none in the Gerber, drill and pnp files; still in bom.csv unless also not in the BOM`] : []),
     `  In bom.csv        ${flagged.filter(inBom).length} of the ${flagged.length} flagged parts; in pnp.csv ${flagged.filter(inPositionFile).length}`,
     "",
   ]

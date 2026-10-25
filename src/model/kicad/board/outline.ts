@@ -1,3 +1,7 @@
+import { reversePath } from "../../outlineOps"
+import { arcCircle, flattenSeg, mapShape, segEnd, segStart, shapePaths, type PathSeg, type ShapePath } from "../../shapes"
+import type { ShapeGeometry, Vec2 } from "../../types"
+import { rawGeometry, TRANSLATED_LAYER_NAMES } from "./graphics"
 import { arcThrough, rotK } from "./geometry"
 import type { KicadBoard, KicadShape, Pt } from "./types"
 
@@ -33,6 +37,8 @@ interface Piece {
   rectLike?: boolean
   /** A polygon with arcs among its points. */
   polyArcs?: boolean
+  /** The piece as exact geometry in the board's frame (KiCad's, y down), which is what the outline is built from. */
+  geom?: ShapeGeometry | null
 }
 
 export interface OutlineGap {
@@ -54,6 +60,13 @@ export interface OutlineResult {
   cutouts: number
   openChains: number
   repair: { merged: number; dropped: number; zeroLength: number; moved: number }
+  /**
+   * The outline as the model holds it (X2): closed loops and the chains left open, exact lines, arcs and curves in the editor's frame (y up),
+   * in the order of the file. Every piece is where the file has it; where two ends of a loop meet by up to a tenth of a millimetre and not
+   * exactly, a straight connector joins them (`connectors`), and ends within a thousandth of a millimetre are made one point (`snapped`).
+   */
+  paths: ShapePath[]
+  joins: { connectors: number; snapped: number; maxGap: number }
   /** Whether `BoardDef` holds it: one closed rectangle, or one with four equal corner radii, and nothing cut out of it. */
   representable: boolean
   /** The biggest outer loop's bounding box, in KiCad's frame. */
@@ -64,6 +77,22 @@ export interface OutlineResult {
 }
 
 const dist = (p: Xy, q: Xy) => Math.hypot(p[0] - q[0], p[1] - q[1])
+
+function pathsBoxOf(path: ShapePath) {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const sg of path.segs) {
+    for (const q of flattenSeg(sg, 0.001)) {
+      minX = Math.min(minX, q.x)
+      minY = Math.min(minY, q.y)
+      maxX = Math.max(maxX, q.x)
+      maxY = Math.max(maxY, q.y)
+    }
+  }
+  return { minX, minY, maxX, maxY }
+}
 
 class UF {
   p: number[]
@@ -83,6 +112,34 @@ class UF {
 }
 
 function pieceOf(s: KicadShape, tf: (p: Pt) => Xy, zero?: { n: number }): Piece | null {
+  const piece = pieceOfShape(s, tf, zero)
+  if (!piece) return null
+  const raw = rawGeometry(s)
+  piece.geom = raw ? mapShape(raw, (q) => {
+    const r = tf(q)
+    return { x: r[0], y: r[1] }
+  }) : null
+  return piece
+}
+
+function pieceOfShape(s: KicadShape, tf: (p: Pt) => Xy, zero?: { n: number }): Piece | null {
+  if (s.kind === "ellipse" || s.kind === "ellipse_arc") {
+    const raw = rawGeometry(s)
+    if (!raw || raw.type !== "ellipse") return null
+    const geom = mapShape(raw, (q) => {
+      const r = tf(q)
+      return { x: r[0], y: r[1] }
+    })
+    const [path] = shapePaths(geom)
+    if (path.closed) {
+      const box = pathsBoxOf(path)
+      return { kind: "poly", a: null, b: null, pts: [[box.minX, box.minY], [box.maxX, box.maxY]], rectLike: false, polyArcs: true }
+    }
+    const a = segStart(path.segs[0])
+    const b = segEnd(path.segs[path.segs.length - 1])
+    return { kind: "curve", a: [a.x, a.y], b: [b.x, b.y], pts: [[a.x, a.y], [b.x, b.y]] }
+  }
+  if (s.kind === "bbox") return pieceOfShape({ ...s, kind: "rect" }, tf, zero)
   if (s.kind === "line") {
     if (!s.start || !s.end) return null
     const a = tf(s.start)
@@ -131,17 +188,20 @@ function pieceOf(s: KicadShape, tf: (p: Pt) => Xy, zero?: { n: number }): Piece 
   return null
 }
 
+/** Whether a drawing's layer is the board's edge: `Edge.Cuts`, or the name an old board in Italian, Polish or French gives it, which KiCad itself maps (`createOldLayerMapping`). */
+const isEdgeLayer = (layer: string) => layer === "Edge.Cuts" || TRANSLATED_LAYER_NAMES[layer] === "Edge.Cuts"
+
 /** The Edge.Cuts pieces of a board, footprints' included, in the board's frame. `zero` counts the lines of no length that are left out. */
 export function edgePieces(board: KicadBoard, zero?: { n: number }): Piece[] {
   const out: Piece[] = []
   for (const s of board.shapes) {
-    if (s.layer !== "Edge.Cuts") continue
+    if (!isEdgeLayer(s.layer)) continue
     const p = pieceOf(s, (q) => [q.x, q.y], zero)
     if (p) out.push(p)
   }
   for (const fp of board.footprints) {
     for (const s of fp.shapes) {
-      if (s.layer !== "Edge.Cuts") continue
+      if (!isEdgeLayer(s.layer)) continue
       const p = pieceOf(
         s,
         (q) => {
@@ -411,12 +471,120 @@ function classifyLoop(l: Omit<Loop, "box" | "shape">): string {
   return "arcs"
 }
 
+// ---------- the outline as exact paths ----------
+
+const negate = (q: Vec2): Vec2 => ({ x: q.x, y: -q.y })
+
+/** A piece of the board's frame (y down) in the editor's (y up): the same piece mirrored, an arc through the mirrored three points. */
+function toEditor(sg: PathSeg): PathSeg {
+  switch (sg.kind) {
+    case "line":
+      return { kind: "line", a: negate(sg.a), b: negate(sg.b) }
+    case "arc":
+      return { kind: "arc", start: negate(sg.start), mid: negate(sg.mid), end: negate(sg.end) }
+    case "bezier":
+      return { kind: "bezier", p0: negate(sg.p0), c1: negate(sg.c1), c2: negate(sg.c2), p1: negate(sg.p1) }
+    case "ellipse": {
+      // Mirrored in y: (rx cos t, ry sin t) turned by rot becomes the same turned by -rot at -t.
+      return { kind: "ellipse", c: negate(sg.c), rx: sg.rx, ry: sg.ry, rot: -sg.rot, t0: -sg.t1, t1: -sg.t0 }
+    }
+  }
+}
+
+/** The segs of one piece, oriented to run from `from` (an arc or curve is turned round when `from` is its far end). Null for an elliptical arc run backwards: it is held counter-clockwise only. */
+function orientedSegs(piece: Piece, from: Xy, a: Xy, b: Xy): PathSeg[] {
+  const geom = piece.geom
+  if (!geom) return [{ kind: "line", a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } }]
+  if (piece.kind === "line") return [{ kind: "line", a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } }]
+  const [path] = shapePaths(geom)
+  const forward = dist(from, [segStart(path.segs[0]).x, segStart(path.segs[0]).y]) <= dist(from, [segEnd(path.segs[path.segs.length - 1]).x, segEnd(path.segs[path.segs.length - 1]).y])
+  if (forward) return path.segs
+  const back = reversePath({ closed: false, segs: path.segs })
+  if (back) return back.segs
+  // An elliptical arc run backwards is held as short straight pieces within the flattening tolerance.
+  const pts = path.segs.flatMap((sg) => flattenSeg(sg, 0.0002)).reverse()
+  return pts.slice(1).map((q, i): PathSeg => ({ kind: "line", a: pts[i], b: q }))
+}
+
+function setStart(sg: PathSeg, to: Vec2): PathSeg {
+  switch (sg.kind) {
+    case "line":
+      return { ...sg, a: to }
+    case "arc":
+      return { ...sg, start: to }
+    case "bezier":
+      return { ...sg, p0: to }
+    case "ellipse":
+      return sg
+  }
+}
+
+/**
+ * Pieces in order, each running into the next, as one path of the model. A joint whose two ends are the same point stays as it is; ends
+ * within a thousandth of a millimetre are made one point (the next piece begins where the last ended); ends further apart, as far as the join
+ * tolerance, are joined by a straight connector, so no piece of the file is moved.
+ */
+function pathOf(chain: { piece: Piece; segs: PathSeg[] }[], closed: boolean, joins: { connectors: number; snapped: number; maxGap: number }): ShapePath {
+  const segs: PathSeg[] = []
+  const link = (to: PathSeg) => {
+    const last = segs[segs.length - 1]
+    if (!last) {
+      segs.push(to)
+      return
+    }
+    const e = segEnd(last)
+    const st = segStart(to)
+    const gap = Math.hypot(e.x - st.x, e.y - st.y)
+    if (gap === 0) segs.push(to)
+    else if (gap <= EXACT_TOLERANCE && to.kind !== "ellipse") {
+      joins.snapped++
+      segs.push(setStart(to, e))
+    } else {
+      joins.connectors++
+      joins.maxGap = Math.max(joins.maxGap, gap)
+      segs.push({ kind: "line", a: e, b: st }, to)
+    }
+  }
+  for (const c of chain) for (const sg of c.segs) link(sg)
+  if (closed && segs.length) {
+    const e = segEnd(segs[segs.length - 1])
+    const st = segStart(segs[0])
+    const gap = Math.hypot(e.x - st.x, e.y - st.y)
+    if (gap > 0) {
+      if (gap <= EXACT_TOLERANCE && segs[segs.length - 1].kind !== "ellipse") {
+        joins.snapped++
+        const last = segs.length - 1
+        const sg = segs[last]
+        segs[last] = sg.kind === "line" ? { ...sg, b: st } : sg.kind === "arc" ? { ...sg, end: st } : sg.kind === "bezier" ? { ...sg, p1: st } : sg
+      } else {
+        joins.connectors++
+        joins.maxGap = Math.max(joins.maxGap, gap)
+        segs.push({ kind: "line", a: e, b: st })
+      }
+    }
+  }
+  return { closed, segs: segs.map(toEditor) }
+}
+
+/** The path of a loop of one piece (a circle, a rectangle, a polygon, a whole ellipse), or null when it has none. */
+function closedPiecePath(piece: Piece): ShapePath | null {
+  const geom = piece.geom
+  if (!geom) return null
+  if (piece.kind === "arc" && piece.fullCircle) {
+    const c = arcCircle({ x: piece.pts[0][0], y: piece.pts[0][1] }, { x: piece.pts[1][0], y: piece.pts[1][1] }, { x: piece.pts[2][0], y: piece.pts[2][1] })
+    if (!c) return null
+    return { closed: true, segs: shapePaths({ type: "circle", c: c.c, r: c.r })[0].segs.map(toEditor) }
+  }
+  const [path] = shapePaths(geom)
+  return path && path.closed ? { closed: true, segs: path.segs.map(toEditor) } : null
+}
+
 /** The outline of a board: its loops, what is left open, and whether the model holds it. */
 export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResult {
   const zero = { n: 0 }
   const raw = edgePieces(board, zero)
   if (!raw.length) {
-    return { status: "no outline", shape: "none", pieces: 0, loops: 0, outerLoops: 0, cutouts: 0, openChains: 0, repair: { merged: 0, dropped: 0, zeroLength: zero.n, moved: 0 }, representable: false, box: null, cornerRadius: 0, gaps: [] }
+    return { status: "no outline", shape: "none", pieces: 0, loops: 0, outerLoops: 0, cutouts: 0, openChains: 0, repair: { merged: 0, dropped: 0, zeroLength: zero.n, moved: 0 }, representable: false, box: null, cornerRadius: 0, gaps: [], paths: [], joins: { connectors: 0, snapped: 0, maxGap: 0 } }
   }
   const repair = { merged: 0, dropped: 0, zeroLength: zero.n, moved: 0 }
   const pieces = repairPieces(raw, tol, repair)
@@ -436,7 +604,18 @@ export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResul
     const base = { kinds, pts, pieces: ps, merged }
     return { ...base, box: { minX, minY, maxX, maxY, area: (maxX - minX) * (maxY - minY) }, shape: classifyLoop(base) }
   }
-  for (const p of pieces) if (!p.a) loops.push(mk([p.kind], p.pts, [p], null))
+  const joins = { connectors: 0, snapped: 0, maxGap: 0 }
+  const closedPaths: ShapePath[] = []
+  const openPaths: ShapePath[] = []
+  const addClosed = (path: ShapePath | null) => {
+    if (path && path.segs.length) closedPaths.push(path)
+  }
+  for (const p of pieces) {
+    if (!p.a) {
+      loops.push(mk([p.kind], p.pts, [p], null))
+      addClosed(closedPiecePath(p))
+    }
+  }
 
   // Join ends within the tolerance, on a grid so thousands of pieces stay fast. Each end is matched
   // with the nearest end of another piece, so a chamfer of 0.05 mm whose ends meet its neighbours
@@ -491,6 +670,26 @@ export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResul
       if (partner[2 * i + 1] < 0) looseEnds.push(open[i].b!)
     }
   }
+  /** Follows the matched ends from piece `i0`, entered at its end `enter0`: the pieces in order, and whether it came round to where it began. */
+  const visited = new Set<number>()
+  const walk = (i0: number, enter0: number): { seq: Seq[]; closed: boolean } => {
+    const seq: Seq[] = []
+    let i = i0
+    let enter = enter0
+    for (;;) {
+      visited.add(i)
+      const piece = open[i]
+      seq.push({ p: piece, a: enter === 0 ? piece.a! : piece.b!, b: enter === 0 ? piece.b! : piece.a! })
+      const next = partner[2 * i + (1 - enter)]
+      if (next < 0) return { seq, closed: false }
+      const j = next >> 1
+      if (j === i0 && (next & 1) === enter0) return { seq, closed: true }
+      if (visited.has(j)) return { seq, closed: false }
+      i = j
+      enter = next & 1
+    }
+  }
+  const chainSegs = (seq: Seq[]) => seq.map((x) => ({ piece: x.p, segs: orientedSegs(x.p, x.a, x.a, x.b) }))
   for (const members of comps.values()) {
     const ps = members.map((i) => open[i])
     const loose: Xy[] = []
@@ -515,8 +714,30 @@ export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResul
         })
         seq = orderLoop(idx.map((g) => open[g]), 0, sub)
       }
-      loops.push(mk(ps.map((p) => p.kind), ps.flatMap((p) => p.pts), ps, seq ? mergeCollinear(seq) : null))
+      const merged = seq ? mergeCollinear(seq) : null
+      loops.push(mk(ps.map((p) => p.kind), ps.flatMap((p) => p.pts), ps, merged))
+      if (single) addClosed(closedPiecePath(ps[0]))
+      else if (merged) closedPaths.push(pathOf(chainSegs(merged), true, joins))
+      else {
+        // The matched ends could not be followed round: whatever they make is kept as the pieces they join.
+        for (const i of members) if (!visited.has(i)) {
+          const w = walk(i, 0)
+          ;(w.closed ? closedPaths : openPaths).push(pathOf(chainSegs(w.seq), w.closed, joins))
+        }
+      }
     } else {
+      // A component with an end that touches nothing: its chains are kept as drawn (the board is "not closed"), and a loop in it is kept as a loop.
+      for (const i of members) {
+        if (visited.has(i) || (partner[2 * i] >= 0 && partner[2 * i + 1] >= 0)) continue
+        const w = walk(i, partner[2 * i] < 0 ? 0 : 1)
+        openPaths.push(pathOf(chainSegs(w.seq), false, joins))
+      }
+      for (const i of members) {
+        if (visited.has(i)) continue
+        const w = walk(i, 0)
+        const pathHere = pathOf(chainSegs(w.closed ? mergeCollinear(w.seq) : w.seq), w.closed, joins)
+        ;(w.closed ? closedPaths : openPaths).push(pathHere)
+      }
       openChains++
       if (gaps.length < 3 && loose.length) {
         const from = loose[0]
@@ -550,5 +771,7 @@ export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResul
     box: biggest ? { minX: biggest.box.minX, minY: biggest.box.minY, maxX: biggest.box.maxX, maxY: biggest.box.maxY } : null,
     cornerRadius,
     gaps,
+    paths: [...closedPaths, ...openPaths],
+    joins,
   }
 }

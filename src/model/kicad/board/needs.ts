@@ -1,8 +1,8 @@
 import { ruleFor } from "./account"
 import { landPad } from "./build"
 import { netClassIsPlain, settledFor, settledSetup } from "./carried"
-import { quarterTurns, reach } from "./geometry"
-import { NEGLIGIBLE_WIDTH, resolveLayer } from "./graphics"
+import { quarterTurns } from "./geometry"
+import { NEGLIGIBLE_WIDTH } from "./graphics"
 import { KICAD_FONT_NAME } from "./texts"
 import { hasExpression, textVariables, UNSUPPORTED_VARIABLES } from "../../texts"
 import { numAt, type List } from "./sexpr"
@@ -17,7 +17,7 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // with the differences named in `Need.source`.
 
 /** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X8", "X9", "X13", "X15"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X2", "X6", "X8", "X9", "X13", "X15"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -173,7 +173,8 @@ const IMPORTER_ONLY = [
 function padNeeds(fp: KicadFootprint, p: KicadPad, board: KicadBoard, why: Map<string, string>, opts: NeedsOptions) {
   const where = `${fp.ref || fp.name || "a footprint"}, pad ${p.number || "(no number)"}`
   const need = (reason: string) => why.has(reason) || why.set(reason, where)
-  if (p.hasAngle && quarterTurns(p.angle, Math.hypot(p.w, p.h) / 2) === null) need("a pad turned by other than a quarter turn")
+  // A pad's stored angle is the board's, so its turn within the part is the difference (the other way round on the bottom, where the flip negated it, `landPad`): a pad that is the part's own turn is no turn of its own, whatever the part's angle.
+  if (quarterTurns(fp.side === "bottom" ? fp.angle - p.angle : p.angle - fp.angle, Math.hypot(p.w, p.h) / 2) === null) need("a pad turned by other than a quarter turn")
   if (p.shape === "roundrect") need("a rounded rectangle pad")
   if (p.shape === "custom") need("a custom shaped pad")
   if (p.node.some((c) => Array.isArray(c) && c[0] === "chamfer")) need("a chamfered pad")
@@ -288,8 +289,6 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   const frontBack = (layers: string[]) => layers.includes(board.copper.front) && layers.includes(board.copper.back)
   if (board.vias.some((v) => v.kind !== "through" || (v.layers.length === 2 && !frontBack(v.layers))) || has(/^via>(free|tenting|remove_unused_layers|keep_end_layers|padstack)/)) need("X5", "blind, buried or micro vias, or via stacks")
 
-  if (board.footprints.some((f) => quarterTurns(f.angle, reach(f)) === null || f.transformed)) need("X6", "a part turned by other than a quarter turn")
-
   const why = new Map<string, string>()
   for (const fp of board.footprints) {
     for (const p of fp.pads) padNeeds(fp, p, board, why, opts)
@@ -311,8 +310,6 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (allShapes.some((s) => s.hatched && layerClass(s.layer, copperSet) !== "edge")) need("X24", "a drawing filled with a hatch", "importer")
   // A filled drawing whose stroke width is negative shrinks its fill when KiCad plots it (`PlotShape`: the polygon is inflated by half the negative width, a circle's diameter is cut by it; plot_brditems_plotter.cpp, lines 948-951, 1040-1046 and 1170-1173), which the model's widths (never negative) cannot say. A nanometre of it (-0.000001 in one corpus file) is no width at all, as before.
   if (allShapes.some((s) => s.filled && s.width <= -NEGLIGIBLE_WIDTH && ["rect", "bbox", "circle", "poly", "ellipse"].includes(s.kind) && layerClass(s.layer, copperSet) !== "edge")) need("X24", "a filled drawing with a negative width, which shrinks its fill", "importer")
-  // An outline drawn on a translated name of the edge layer is not read by the outline code, so it is X2's.
-  if (allShapes.some((s) => s.layers.some((n) => resolveLayer(board, n).translatedEdge))) need("X2", "an outline drawn on a translated name of the edge layer", "importer")
   if (board.footprints.length > 0 || has(/^gr_text/)) need("X9", "the reference and value text of every part, and board text")
   if (!netClassIsPlain(board)) need("X10", "net classes beyond the default, or a default class with a name or description of its own")
   // A through hole's and a via's smallest drill are two rules; the design rules hold one.

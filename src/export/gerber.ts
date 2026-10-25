@@ -9,6 +9,7 @@ import { worldShapes } from "../model/shapeItems"
 import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
 import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
+import { requireClosedOutline } from "./outlineGuard"
 
 const EDGE_WIDTH = 0.1
 
@@ -344,6 +345,12 @@ export function gerberSilkscreen(project: Project, side: PcbSide): string {
 export function gerberEdgeCuts(project: Project): string {
   const w = new GerberWriter()
   const b = project.board
+  // A board with an outline of its own: every path as drawn, arcs as arcs (G02 and G03), the cutouts and slots with it.
+  if (b.outline?.paths.length) {
+    for (const path of b.outline.paths) w.strokeSegs(path.segs, EDGE_WIDTH)
+    plotTexts(w, project, "Edge.Cuts")
+    return w.toString("Profile,NP")
+  }
   const minX = b.x - b.width / 2
   const maxX = b.x + b.width / 2
   const minY = b.y - b.height / 2
@@ -389,6 +396,7 @@ export type GerberLayerName =
   | "Edge_Cuts"
 
 export function gerberLayers(project: Project, fills: ZoneFill[] = []): Record<GerberLayerName, string> {
+  requireClosedOutline(project, "The Gerber and drill files")
   return {
     F_Cu: gerberCopper(project, "top", fills),
     B_Cu: gerberCopper(project, "bottom", fills),

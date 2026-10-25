@@ -34,6 +34,10 @@ import {
   updateComponent,
 } from "../model/ops"
 import { SCH_GRID } from "../model/symbols"
+import { outlineGeometry, outlineState } from "../model/outline"
+import { addOutlinePaths, explicitPaths, joinPaths, resetOutline, setOutlinePaths } from "../model/outlineOps"
+import { cutoutTexts, edgeText, parseOutlineText } from "../model/outlineText"
+import { flattenPath } from "../model/shapes"
 import { MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
 import { applyCapability, BOARD_THICKNESSES, FAB_CAPABILITIES, matchCapability, THERMAL_RELIEF_OPTIONS } from "../model/rules"
 import type { ComponentInstance, DesignRules, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
@@ -169,7 +173,7 @@ const getDesign: ToolSpec = {
     const drawings = designDrawings(project)
     const design = {
       project: project.name,
-      board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y },
+      board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y, ...outlineReport(project.board) },
       design_rules_mm: ruleSummary(project.rules),
       components,
       power_symbols: powerSymbols,
@@ -742,10 +746,70 @@ const layoutPcbTool: ToolSpec = {
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
 
+/** What `get_design` says of a board's outline: nothing for a rectangle; its edge and cutouts as text, and when it is not closed. */
+function outlineReport(b: Project["board"]) {
+  if (!b.outline) return {}
+  const state = outlineState(b)
+  const cuts = cutoutTexts(b)
+  return {
+    outline: edgeText(b) || undefined,
+    ...(cuts.length ? { cutouts: cuts.map((c) => c.text) } : {}),
+    ...(state !== "closed" ? { outline_state: state === "missing" ? "missing: the board has no outline, so it cannot be fabricated" : "not closed: an edge ends in the open, so it cannot be fabricated" } : {}),
+  }
+}
+
+/** The outline edits of set_board, or the sentence that says why they cannot be made. */
+function shapeBoard(project: Project, input: Record<string, unknown>): { project: Project; changed: string[] } | string {
+  let next = project
+  const changed: string[] = []
+  if (input.outline !== undefined) {
+    if (typeof input.outline !== "string") return "outline must be text, or \"rect\""
+    if (input.outline.trim().toLowerCase() === "rect") {
+      next = resetOutline(next, next.board.cornerRadius)
+      changed.push("rectangle outline")
+    } else {
+      const parsed = parseOutlineText(input.outline)
+      if ("error" in parsed) return parsed.error
+      const paths = joinPaths(parsed.paths)
+      if (!paths.some((p) => p.closed)) return "The outline needs at least one closed shape: end it with Z, or bring its end back to its start"
+      next = setOutlinePaths(next, paths)
+      changed.push(`outline of ${paths.length} shape${paths.length === 1 ? "" : "s"}`)
+    }
+  }
+  if (input.remove_cutouts !== undefined) {
+    const list = input.remove_cutouts
+    if (!Array.isArray(list) || !list.every((n) => Number.isInteger(n))) return "remove_cutouts must be whole numbers"
+    const cuts = cutoutTexts(next.board)
+    if (list.some((n) => n < 0 || n >= cuts.length)) return cuts.length ? `remove_cutouts counts from 0 to ${cuts.length - 1}` : "The board has no cutouts"
+    const gone = new Set(list.map((n) => cuts[n].path))
+    next = setOutlinePaths(
+      next,
+      next.board.outline!.paths.filter((_, i) => !gone.has(i)),
+    )
+    changed.push(`${gone.size} cutout${gone.size === 1 ? "" : "s"} removed`)
+  }
+  if (input.add_cutouts !== undefined) {
+    if (typeof input.add_cutouts !== "string") return "add_cutouts must be text"
+    const parsed = parseOutlineText(input.add_cutouts)
+    if ("error" in parsed) return parsed.error
+    const loops = parsed.paths.filter((p) => p.closed)
+    if (loops.length !== parsed.paths.length) return "A cutout must be a closed shape: end it with Z"
+    const g = outlineGeometry({ outline: { paths: explicitPaths(next) } })
+    for (const loop of loops) {
+      const pts = flattenPath(loop)
+      const edges = pts.map((q, i) => [q, pts[(i + 1) % pts.length]] as const)
+      if (!g || !g.rings.length || !pts.every((q) => g.contains(q)) || edges.some(([a, c]) => g.nearestToSegment(a, c, 1e-9) <= 1e-9)) return "A cutout must lie wholly inside the board, clear of its edge and of the other cutouts"
+    }
+    next = addOutlinePaths(next, loops).project
+    changed.push(`${loops.length} cutout${loops.length === 1 ? "" : "s"} added`)
+  }
+  return { project: next, changed }
+}
+
 const setBoardTool: ToolSpec = {
   name: "set_board",
   description:
-    "Set the board: outline size in millimetres (width and height together), thickness, corner radius, copper weight, surface finish, solder mask and silkscreen colours, and corner mounting holes. Only the fields given change.",
+    "Set the board: size in millimetres (width and height together), thickness, corner radius, copper weight, surface finish, solder mask and silkscreen colours, and corner mounting holes. Only the fields given change. A board can have any shape: outline and add_cutouts are text, shapes made of M x y (start), L x y, A mx my x y (arc through the middle point to the end), Z (close), O cx cy r (circle) and S x1 y1 x2 y2 width (slot), in mm with y up; a shape inside another is a cutout. outline \"rect\" goes back to the rectangle; get_design lists the outline and the cutouts, which remove_cutouts counts from 0.",
   input_schema: {
     type: "object",
     properties: {
@@ -758,11 +822,18 @@ const setBoardTool: ToolSpec = {
       mask_color: { type: "string", description: "Solder mask colour as #rrggbb; green is #1f6b3a" },
       silk_color: { type: "string", description: "Silkscreen colour as #rrggbb" },
       mounting_holes: { type: "string", enum: ["none", ...MOUNTING_HOLE_PRESETS.map((h) => h.id)] },
+      outline: { type: "string", description: "The board's shape as text, or \"rect\"" },
+      add_cutouts: { type: "string", description: "Cutouts to add, inside the board" },
+      remove_cutouts: { type: "array", items: { type: "integer" }, description: "Cutouts to remove, by number" },
     },
   },
   run: (project, input) => {
     const b = { ...project.board }
     const changed: string[] = []
+    const shaped = input.outline !== undefined || input.add_cutouts !== undefined || input.remove_cutouts !== undefined
+    if (project.board.outline?.paths.length && input.outline !== "rect" && (input.width !== undefined || input.height !== undefined || input.corner_radius !== undefined || input.mounting_holes !== undefined)) {
+      return fail(project, "The board has an outline of its own, so its size follows it and it has no corner radius or corner holes: pass outline \"rect\" to go back to a rectangle first")
+    }
     if (input.width !== undefined || input.height !== undefined) {
       if (input.height === undefined) return fail(project, "input.height is required with input.width")
       if (input.width === undefined) return fail(project, "input.width is required with input.height")
@@ -805,8 +876,14 @@ const setBoardTool: ToolSpec = {
       b.mountingHoles = preset?.holes ?? null
       changed.push(preset ? `${preset.label} mounting holes` : "no mounting holes")
     }
+    let next: Project = { ...project, updatedAt: Date.now(), board: b }
+    if (shaped) {
+      const shapedTo = shapeBoard(next, input)
+      if (typeof shapedTo === "string") return fail(project, shapedTo)
+      next = shapedTo.project
+      changed.push(...shapedTo.changed)
+    }
     if (!changed.length) return fail(project, "Give at least one board property to change")
-    const next = { ...project, updatedAt: Date.now(), board: b }
     return ok(next, `Board: ${changed.join(", ")}.`, `Board set: ${changed.join(", ")}`)
   },
 }

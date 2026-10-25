@@ -1,4 +1,4 @@
-import { round } from "../lib/geometry"
+import { cosSin, round } from "../lib/geometry"
 import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
 import { shapeLayerInfo } from "../model/shapeLayers"
@@ -129,9 +129,7 @@ const indent = (lines: string[], by: string) => lines.map((l) => `${by}${l}`).jo
 
 /** A footprint's own frame: a point of the board to the footprint's local coordinates, as the converter writes the pads. */
 export function localFrame(c: ComponentInstance) {
-  const k = (((Math.round(c.pcb.rot / 90) % 4) + 4) % 4) as 0 | 1 | 2 | 3
-  const cs = [1, 0, -1, 0][k]
-  const sn = [0, 1, 0, -1][k]
+  const { cs, sn } = cosSin(c.pcb.rot)
   return (p: Vec2): Vec2 => {
     const dx = p.x - c.pcb.x
     const dy = -(p.y - c.pcb.y)

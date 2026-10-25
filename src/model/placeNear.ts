@@ -29,7 +29,7 @@ export interface PadLike {
 export interface NearSpot {
   x: number
   y: number
-  rot: Rotation
+  rot: number
   side: PcbSide
   /** Courtyard where it lands. */
   box: Box
@@ -41,7 +41,7 @@ export interface NearSpot {
 export interface NearOptions {
   side: PcbSide
   /** Rotations to try; all four when absent. */
-  rotations?: Rotation[]
+  rotations?: number[]
   /** Courtyards the part's own may not overlap; callers grow them by the spacing they want. */
   blocked: Box[]
   /** The part's courtyard stays inside this. */

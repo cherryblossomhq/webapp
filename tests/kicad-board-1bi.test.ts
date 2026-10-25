@@ -20,7 +20,7 @@ import { BUILT_EXTENSIONS, needsOf } from "../src/model/kicad/board/needs"
 import { fillTester } from "../src/model/pour"
 import { analyzePcb, derivedCopperNets } from "../src/model/pcb"
 import { setFlags } from "../src/model/partFlags"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
 import { useProjectStore } from "../src/store/projectStore"
 import { board, footprint, pad } from "./kicad-board-fixtures"
@@ -676,7 +676,7 @@ describe("the project file, version 3", () => {
     const read = parseProjectFile(v2, { id: "x" })
     expect(read.traces[0]).toEqual(v2.project.traces[0])
     expect(read.vias[0]).toEqual(v2.project.vias[0])
-    expect(JSON.parse(serializeProject(read)).version).toBe(4)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
   })
   it("junk in a flag, a trace net or a via net is dropped, a good value kept", () => {
     const doc = {
@@ -701,8 +701,8 @@ describe("the project file, version 3", () => {
 })
 
 describe("the gate after slice 1b-i", () => {
-  it("builds X13 and X15 (and X8, which slice 1b-ii added, and X9, which slice 1b-iii did)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X8", "X9"])
+  it("builds X13 and X15 (and X8, which slice 1b-ii added, and X9, which slice 1b-iii did), and slice 2c-i X2 and X6", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X2", "X6", "X8", "X9"])
   })
   it("a board whose only needs are built is imported by the real gate with its parts; one that also needs text in another font is refused for that alone", () => {
     const onlyCopper = board({ nets: ['(net 0 "")', net(1, "A")], body: [seg("0 0", "5 0", "(net 1)"), '(via (at 5 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))'] })

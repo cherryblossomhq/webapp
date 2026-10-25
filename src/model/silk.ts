@@ -1,6 +1,7 @@
 import { boxesOverlap, type Box } from "../lib/geometry"
 import { strokeText, strokeTextWidth } from "../lib/strokeFont"
 import { boardTextStrokes, mountingHoles, ownTexts } from "./board"
+import { boxOnBoard, outlineGeometry } from "./outline"
 import { findPart } from "./library"
 import { isPhysical, pcbCourtyard, pcbPads, pcbSilk } from "./instances"
 import { shapeKind, worldShapes } from "./shapeItems"
@@ -148,6 +149,7 @@ function candidates(c: ComponentInstance, cy: Box, w: number, h: number): Candid
 export function placeDesignators(project: Project): Map<string, Designator> {
   const placed = project.components.filter((c) => c.pcb.placed && !c.ref.startsWith("#") && isPhysical(findPart(c.partId)))
   const b = project.board
+  const shape = outlineGeometry(b)
   const board = inflate({ minX: b.x - b.width / 2, maxX: b.x + b.width / 2, minY: b.y - b.height / 2, maxY: b.y + b.height / 2 }, -EDGE_CLEAR)
 
   const pads = placed.flatMap((c) =>
@@ -211,6 +213,7 @@ export function placeDesignators(project: Project): Map<string, Designator> {
       if (best && cand.cost >= best.cost) continue
       const box = cand.box
       if (box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY) continue
+      if (shape && !boxOnBoard(shape, inflate(box, EDGE_CLEAR))) continue
       if (pads.some((p) => p.side.includes(side) && boxesOverlap(p.box, box))) continue
       if (holes.some((h) => boxesOverlap(h, box))) continue
       if (texts.some((t) => t.side === side && boxesOverlap(t.box, box))) continue

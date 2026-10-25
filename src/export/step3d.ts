@@ -5,10 +5,14 @@ import { placementMatrix } from "../editor/three/files/placement"
 import { ModelMaterials } from "../editor/three/models"
 import { boardColors, mountingHoles } from "../model/board"
 import { pcbPads, slotEnds } from "../model/instances"
+import { outlineGeometry, pointInRing, signedArea, type OutlineGeometry } from "../model/outline"
+import { reversePath } from "../model/outlineOps"
+import { arcCircle, flattenSeg, type ShapePath } from "../model/shapes"
+import { requireClosedOutline } from "./outlineGuard"
 import { findPart } from "../model/library"
 import { componentModel, modelFileKey } from "../model/models3d"
-import type { ComponentInstance, Model3D, Project } from "../model/types"
-import { writeStep, type StepColor, type StepExportInput, type StepMesh, type StepModelInput, type StepPlacement } from "./step"
+import type { ComponentInstance, Model3D, Project, Vec2 } from "../model/types"
+import { writeStep, type StepContourSeg, type StepColor, type StepExportInput, type StepMesh, type StepModelInput, type StepPlacement } from "./step"
 
 // The board as a STEP assembly, for mechanical CAD: the board's exact solid with every hole, and
 // every part where it sits. A part with a STEP model (its supplier's, or a STEP file the user
@@ -81,20 +85,63 @@ export function componentMatrix(project: Project, c: ComponentInstance): THREE.M
   return m
 }
 
+/** A closed outline path as the pieces the STEP writer takes (arcs exact, curves flattened to 0.0002 mm), counter-clockwise or clockwise as asked. */
+function contourOf(path: ShapePath, ccw: boolean): StepContourSeg[] {
+  const pieces: StepContourSeg[] = []
+  for (const s of path.segs) {
+    if (s.kind === "arc") {
+      const c = arcCircle(s.start, s.mid, s.end)
+      if (c && c.r > 1e-9) {
+        pieces.push({ kind: "arc", a: s.start, b: s.end, c: c.c, r: c.r, ccw: c.sweep > 0 })
+        continue
+      }
+    }
+    const pts = flattenSeg(s.kind === "arc" ? { kind: "line", a: s.start, b: s.end } : s)
+    for (let i = 1; i < pts.length; i++) pieces.push({ kind: "line", a: pts[i - 1], b: pts[i] })
+  }
+  // Which way round the path runs is the sign of the area of its flattened outline (arcs bulge past their chords).
+  const runsCcw = signedArea(path.segs.flatMap((s) => flattenSeg(s).slice(0, -1))) > 0
+  if (runsCcw === ccw) return pieces
+  const back = reversePath({ closed: true, segs: path.segs })
+  return back ? contourOf(back, ccw) : pieces
+}
+
+/** The pieces of board an outline of its own is, for the STEP writer, and which piece each drill is in. */
+function stepRegions(g: OutlineGeometry, paths: ShapePath[]): NonNullable<StepExportInput["board"]["outline"]["regions"]> {
+  return g.regions.map((_, ri) => {
+    const mine = g.rings.filter((r) => r.region === ri)
+    const outer = mine.find((r) => !r.hole)!
+    return { outer: contourOf(paths[outer.path], true), holes: mine.filter((r) => r.hole).map((r) => contourOf(paths[r.path], false)) }
+  })
+}
+
 export function stepBoard(project: Project): StepExportInput["board"] {
   const b = project.board
+  const g = outlineGeometry(b)
   const holes: StepExportInput["board"]["holes"] = []
+  // With an outline of its own, each drill is measured against it: it goes with the piece it is in, or is marked as not safely inside one.
+  const place = (x: number, y: number, diameter: number, slot?: { a: Vec2; b: Vec2 }) => {
+    if (!g) {
+      holes.push({ x, y, diameter, ...(slot && { slot }) })
+      return
+    }
+    const ends = slot ? [slot.a, slot.b] : [{ x, y }]
+    const r = diameter / 2
+    const inside = ends.every((p) => g.contains(p) && g.nearest(p) > r + 1e-3)
+    const ring = inside ? g.rings.find((q) => !q.hole && pointInRing(ends[0], q.pts) && g.regions[q.region]) : undefined
+    holes.push({ x, y, diameter, region: ring && inside ? ring.region : -1, ...(slot && { slot }) })
+  }
   for (const c of placedComponents(project)) {
     for (const p of pcbPads(c)) {
       if (!p.holeDiameter) continue
       const ends = slotEnds(p)
-      holes.push({ x: p.x, y: p.y, diameter: p.holeDiameter, ...(ends && { slot: { a: ends[0], b: ends[1] } }) })
+      place(p.x, p.y, p.holeDiameter, ends ? { a: ends[0], b: ends[1] } : undefined)
     }
   }
-  for (const v of project.vias) holes.push({ x: v.x, y: v.y, diameter: v.drill })
-  for (const h of mountingHoles(b)) holes.push({ x: h.x, y: h.y, diameter: h.drill })
+  for (const v of project.vias) place(v.x, v.y, v.drill)
+  for (const h of mountingHoles(b)) place(h.x, h.y, h.drill)
   return {
-    outline: { x: b.x, y: b.y, width: b.width, height: b.height, cornerRadius: b.cornerRadius },
+    outline: { x: b.x, y: b.y, width: b.width, height: b.height, cornerRadius: b.cornerRadius, ...(g ? { regions: stepRegions(g, b.outline!.paths) } : {}) },
     thickness: b.thickness,
     holes,
     color: hexColor(boardColors(b).mask),
@@ -138,6 +185,7 @@ async function inBatches<T>(items: T[], run: (item: T) => Promise<void>) {
  * can't be fetched as the mesh the 3D view draws. The notes say which.
  */
 export async function stepFile(project: Project, options: { onProgress?: (p: StepProgress) => void; signal?: AbortSignal } = {}): Promise<{ text: string; notes: string[] }> {
+  requireClosedOutline(project, "The STEP model")
   const notes: string[] = []
   const plans: PartPlan[] = placedComponents(project).map((c) => ({ c, model: componentModel(project, c) }))
   const files = new Map<string, Model3D>()

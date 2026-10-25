@@ -1,0 +1,56 @@
+import { round } from "../lib/geometry"
+import { flattenPath, type PathSeg } from "../model/shapes"
+import type { Project, Vec2 } from "../model/types"
+import { KICAD_PAGE_ORIGIN } from "./kicadShapes"
+
+// A board with an outline of its own, written into the board file as KiCad's own Edge.Cuts items: a line is `gr_line`, an arc
+// `gr_arc` (three points, as KiCad 9 has it), a cubic curve `gr_curve`, a circle two half circle arcs, an elliptical arc the
+// lines it flattens to (KiCad 9 has no ellipse). The converter writes the outline as straight lines from Circuit JSON, which has no
+// arcs, so its own Edge.Cuts items are taken out and these put in. A board with no outline of its own is not touched.
+
+const mm6 = (n: number) => String(round(n, 6) || 0)
+const toBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
+const xy = (p: Vec2) => {
+  const q = toBoard(p)
+  return `${mm6(q.x)} ${mm6(q.y)}`
+}
+
+export interface KicadOutline {
+  text: string
+  notes: string[]
+}
+
+const WIDTH = 0.1
+
+export function applyOutline(pcb: string, project: Project): KicadOutline {
+  const paths = project.board.outline?.paths
+  if (!paths) return { text: pcb, notes: [] }
+  let serial = 0
+  const uuid = () => `00000000-0000-4000-8000-${(++serial).toString(16).padStart(12, "0")}`
+  const tail = () => [`(stroke`, `  (width ${WIDTH})`, `  (type solid)`, `)`, `(layer "Edge.Cuts")`, `(uuid ${uuid()})`]
+  const block = (name: string, body: string[]) => [`  (${name}`, ...[...body, ...tail()].map((l) => `    ${l}`), `  )`].join("\n")
+  let flattened = false
+  const seg = (s: PathSeg): string[] => {
+    switch (s.kind) {
+      case "line":
+        return [block("gr_line", [`(start ${xy(s.a)})`, `(end ${xy(s.b)})`])]
+      case "arc":
+        return [block("gr_arc", [`(start ${xy(s.start)})`, `(mid ${xy(s.mid)})`, `(end ${xy(s.end)})`])]
+      case "bezier":
+        return [block("gr_curve", [`(pts (xy ${xy(s.p0)}) (xy ${xy(s.c1)}) (xy ${xy(s.c2)}) (xy ${xy(s.p1)}))`])]
+      case "ellipse": {
+        flattened = true
+        const pts = flattenPath({ closed: false, segs: [s] }, 0.0005)
+        return pts.slice(1).map((p, i) => block("gr_line", [`(start ${xy(pts[i])})`, `(end ${xy(p)})`]))
+      }
+    }
+  }
+  const items = paths.flatMap((p) => p.segs.flatMap(seg))
+  // Out with what the converter wrote on Edge.Cuts: its blocks are the top-level `gr_*` items of that layer.
+  let text = pcb.replace(/\n {2}\(gr_(?:line|arc|circle|rect|poly|curve)\b[\s\S]*?\n {2}\)/g, (b) => (/\(layer "?Edge\.Cuts"?\)/.test(b) ? "" : b))
+  const end = text.lastIndexOf("\n)")
+  if (items.length && end >= 0) text = `${text.slice(0, end)}\n${items.join("\n")}${text.slice(end)}`
+  const notes = ["The board outline is written as KiCad's own Edge.Cuts lines, arcs and curves, exactly."]
+  if (flattened) notes.push("KiCad 9 has no ellipse: an elliptical piece of the outline is written as lines within 0.5 micrometre of the true curve.")
+  return { text, notes }
+}

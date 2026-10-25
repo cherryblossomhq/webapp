@@ -7,6 +7,7 @@
 // should have received a copy of the GNU General Public License along with this program; if not, see
 // <https://www.gnu.org/licenses/>.
 
+import { rotate90 } from "../../../lib/geometry"
 import { kiRound, mmToIu } from "../../../lib/kicadText"
 import { flipShapeLayer } from "../../shapeLayers"
 import { isTextLayer, partTextWorld, textInk } from "../../texts"
@@ -184,12 +185,9 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const dx = ex - place.x
     const dy = ey - place.y
     // Taken back through the placement: turn by -rot, then mirror x on the bottom.
-    const q = ((place.rot % 360) + 360) % 360
-    let rx = dx
-    let ry = dy
-    if (q === 90) [rx, ry] = [dy, -dx]
-    else if (q === 180) [rx, ry] = [-dx, -dy]
-    else if (q === 270) [rx, ry] = [-dy, dx]
+    const back = rotate90({ x: dx, y: dy }, -place.rot)
+    const rx = back.x
+    const ry = back.y
     const lx = place.bottom ? -rx : rx
     const ly = ry
     const world = norm360(t.angle)

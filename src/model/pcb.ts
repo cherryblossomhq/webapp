@@ -8,6 +8,7 @@ import {
   type Box,
 } from "../lib/geometry"
 import { mountingHoles } from "./board"
+import { boxOnBoard, copperEdgeClearance, outlineGeometry, outlineState } from "./outline"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
 import { findPart } from "./library"
@@ -16,7 +17,7 @@ import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
 import { worldShapes } from "./shapeItems"
-import { shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
+import { segEnd, shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
 import { layerText, worldTexts } from "./texts"
 import type { BoardDef, BoardShape, CopperLayer, Project, Vec2, Via } from "./types"
 
@@ -103,6 +104,7 @@ export interface DrcViolation {
     | "via-size"
     | "hole-clearance"
     | "edge-clearance"
+    | "outline"
     | "via-in-pad"
     | "floating-copper"
     | "decoupling"
@@ -136,8 +138,25 @@ const segBox = (a: Vec2, b: Vec2, w: number): Box => ({
 
 const inflate = (b: Box, d: number): Box => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
 
+/** A polygon pad's corners when it has them (a part turned by other than a quarter turn has all its rectangular pads this way), else null. */
+const polygonRing = (pad: WorldPad): Vec2[] | null => (pad.shape === "polygon" && pad.points && pad.points.length >= 3 ? pad.points : null)
+
+function pointRingDistance(p: Vec2, ring: Vec2[]): number {
+  let inside = false
+  let best = Infinity
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i]
+    const b = ring[j]
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+    best = Math.min(best, pointSegmentDistance(p, a, b))
+  }
+  return inside ? 0 : best
+}
+
 /** Distance from point to a pad's copper (0 inside). */
 export function pointPadDistance(p: Vec2, pad: WorldPad): number {
+  const ring = polygonRing(pad)
+  if (ring) return pointRingDistance(p, ring)
   if (pad.shape === "circle") return Math.max(0, dist(p, pad) - pad.width / 2)
   if (pad.shape === "pill") {
     const r = Math.min(pad.width, pad.height) / 2
@@ -164,6 +183,18 @@ function rectCorners(pad: WorldPad): Vec2[] {
 }
 
 export function segmentPadDistance(a: Vec2, b: Vec2, pad: WorldPad): number {
+  const ring = polygonRing(pad)
+  if (ring) {
+    if (pointRingDistance(a, ring) === 0 || pointRingDistance(b, ring) === 0) return 0
+    let best = Math.min(pointRingDistance(a, ring), pointRingDistance(b, ring))
+    for (let i = 0; i < ring.length; i++) {
+      const c = ring[i]
+      const d = ring[(i + 1) % ring.length]
+      if (segmentsIntersect(a, b, c, d)) return 0
+      best = Math.min(best, pointSegmentDistance(c, a, b))
+    }
+    return best
+  }
   if (pad.shape === "circle") return Math.max(0, pointSegmentDistance(pad, a, b) - pad.width / 2)
   if (pad.shape === "pill") {
     const r = Math.min(pad.width, pad.height) / 2
@@ -187,6 +218,7 @@ export function segmentPadDistance(a: Vec2, b: Vec2, pad: WorldPad): number {
 
 function padPadDistance(p: WorldPad, q: WorldPad): number {
   if (p.shape === "circle" && q.shape === "circle") return Math.max(0, dist(p, q) - p.width / 2 - q.width / 2)
+  if (polygonRing(p) || polygonRing(q)) return shapeShapeDistance(padCopper(p), padCopper(q))
   const a = padBox(p)
   const b = padBox(q)
   const dx = Math.max(a.minX - b.maxX, b.minX - a.maxX, 0)
@@ -196,6 +228,19 @@ function padPadDistance(p: WorldPad, q: WorldPad): number {
 
 const copperCache = new WeakMap<CopperItem, ShapeCopper>()
 
+/** A pad as lines with a half width and a filled area. */
+function padCopper(p: WorldPad): ShapeCopper {
+  if (p.shape === "circle") return { edges: [[p, p]], half: p.width / 2, fill: [] }
+  if (p.shape === "pill") {
+    const r = Math.min(p.width, p.height) / 2
+    const half = Math.max(p.width, p.height) / 2 - r
+    const horizontal = p.width >= p.height
+    return { edges: [horizontal ? [{ x: p.x - half, y: p.y }, { x: p.x + half, y: p.y }] : [{ x: p.x, y: p.y - half }, { x: p.x, y: p.y + half }]], half: r, fill: [] }
+  }
+  const ring = polygonRing(p) ?? rectCorners(p)
+  return { edges: ring.map((q, i) => [q, ring[(i + 1) % ring.length]] as [Vec2, Vec2]), half: 0, fill: [ring] }
+}
+
 /** A pad, trace, via or drawing as lines with a half width and a filled area, for measuring against a drawing. */
 function itemCopper(it: CopperItem): ShapeCopper {
   if (it.kind === "shape") return it.copper
@@ -204,17 +249,7 @@ function itemCopper(it: CopperItem): ShapeCopper {
   if (it.kind === "segment") c = { edges: [[it.a, it.b]], half: it.width / 2, fill: [] }
   else if (it.kind === "via") c = { edges: [[it.at, it.at]], half: it.diameter / 2, fill: [] }
   else if (it.kind === "pad") {
-    const p = it.pad
-    if (p.shape === "circle") c = { edges: [[p, p]], half: p.width / 2, fill: [] }
-    else if (p.shape === "pill") {
-      const r = Math.min(p.width, p.height) / 2
-      const half = Math.max(p.width, p.height) / 2 - r
-      const horizontal = p.width >= p.height
-      c = { edges: [horizontal ? [{ x: p.x - half, y: p.y }, { x: p.x + half, y: p.y }] : [{ x: p.x, y: p.y - half }, { x: p.x, y: p.y + half }]], half: r, fill: [] }
-    } else {
-      const ring = p.shape === "polygon" && p.points && p.points.length >= 3 ? p.points : rectCorners(p)
-      c = { edges: ring.map((q, i) => [q, ring[(i + 1) % ring.length]] as [Vec2, Vec2]), half: 0, fill: [ring] }
-    }
+    c = padCopper(it.pad)
   } else c = { edges: [], half: 0, fill: [] }
   copperCache.set(it, c)
   return c
@@ -750,7 +785,21 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   // Board edge
   const b = project.board
   const board: Box = { minX: b.x - b.width / 2, minY: b.y - b.height / 2, maxX: b.x + b.width / 2, maxY: b.y + b.height / 2 }
-  const outside = (box: Box) => box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY
+  const geometry = outlineGeometry(b)
+  const outside = (box: Box) => (geometry ? !boxOnBoard(geometry, box) : box.minX < board.minX || box.maxX > board.maxX || box.minY < board.minY || box.maxY > board.maxY)
+  // A board whose outline is not closed (or is missing) cannot be cut out: the one error that says so, where the outline stops.
+  const state = outlineState(b)
+  if (state !== "closed") {
+    const open = (b.outline?.paths ?? []).filter((p) => !p.closed)
+    const first = open[0]
+    const at = first ? segEnd(first.segs[first.segs.length - 1]) : { x: b.x, y: b.y }
+    push({
+      severity: "error",
+      kind: "outline",
+      message: state === "missing" ? "The board has no outline, so it cannot be cut out" : `The board outline is not closed: ${open.length} piece${open.length === 1 ? "" : "s"} of it end${open.length === 1 ? "s" : ""} in the open`,
+      at: { x: at.x, y: at.y },
+    })
+  }
   for (const c of project.components) {
     const cy = c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null
     if (cy && outside(cy)) {
@@ -815,6 +864,8 @@ const mm = (v: number) => formatLength(v, "mm", true)
 
 /** Distance from a point inside the board to its (rounded) outline; negative outside. */
 export function edgeDistance(b: BoardDef, p: Vec2): number {
+  const g = outlineGeometry(b)
+  if (g) return g.signedDistance(p)
   const r = Math.max(0, Math.min(b.cornerRadius, b.width / 2, b.height / 2))
   const qx = Math.abs(p.x - b.x) - (b.width / 2 - r)
   const qy = Math.abs(p.y - b.y) - (b.height / 2 - r)
@@ -826,7 +877,14 @@ export function edgeDistance(b: BoardDef, p: Vec2): number {
  * How close an item's copper comes to the board edge. The inner distance to a convex
  * outline is concave, so over a segment or a rectangle it is smallest at a vertex.
  */
-function itemEdgeDistance(b: BoardDef, it: CopperItem): number {
+function itemEdgeDistance(b: BoardDef, it: CopperItem, limit = Infinity): number {
+  const g = outlineGeometry(b)
+  if (g) {
+    // A board with an outline of its own: the copper's centre lines against every edge, so concave corners, arcs and cutouts count.
+    if (it.kind === "zone") return Infinity
+    const c = itemCopper(it)
+    return copperEdgeClearance(g, c.edges, c.half, limit)
+  }
   const d = (p: Vec2) => edgeDistance(b, p)
   if (it.kind === "segment") return Math.min(d(it.a), d(it.b)) - it.width / 2
   if (it.kind === "via") return d(it.at) - it.diameter / 2
@@ -971,7 +1029,7 @@ function manufacturability(
   const edgeSeen = new Set<string>()
   for (const it of items) {
     if (it.kind === "zone" || isNpthItem(it)) continue
-    const d = itemEdgeDistance(board, it)
+    const d = itemEdgeDistance(board, it, rules.edgeClearance + 0.01)
     if (d >= rules.edgeClearance - eps) continue
     const key = it.kind === "segment" ? it.traceId : it.kind === "via" ? it.viaId : it.kind === "shape" ? it.shapeId : it.pad.componentId
     if (edgeSeen.has(key)) continue

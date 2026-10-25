@@ -128,7 +128,7 @@ describe("every need shows what in the board raised it", () => {
     "text in a font of the computer": board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }),
     "rounded pad and a track": board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }),
     "four copper layers": board({ layers: `(layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))` }),
-    "no outline": board({ outline: false }),
+    "a copper pour": board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (fill yes) (polygon (pts (xy 0 0) (xy 5 0) (xy 5 5))))'] }),
   }
 
   for (const [what, text] of Object.entries(boards)) {

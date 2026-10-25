@@ -5,6 +5,8 @@ import { Shell } from "../kicadImport/KicadImportDialog"
 import { ReportView } from "../kicadImport/ReportView"
 import { loadReport } from "../kicadImport/reportStore"
 import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
+import { boardAreaMm2, describeOutline } from "../model/outline"
+import { resetOutline } from "../model/outlineOps"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { isPhysical, valueText } from "../model/instances"
 import { findPart } from "../model/library"
@@ -90,7 +92,7 @@ function ProjectSection({ project }: { project: Project }) {
         <Row label="Nets" value={stats.nets} />
         <Row label="Connections routed" value={stats.routed} />
         <Row label="Vias" value={project.vias.length} />
-        <Row label="Board area" value={`${((b.width * b.height) / 100).toFixed(1)} cm²`} />
+        <Row label="Board area" value={`${(boardAreaMm2(b) / 100).toFixed(1)} cm²`} />
         <Row label="Created" value={dateFormat.format(project.createdAt)} />
         <Row label="Modified" value={dateFormat.format(project.updatedAt)} />
       </div>
@@ -219,13 +221,27 @@ function BoardSection({ project }: { project: Project }) {
   const holes = MOUNTING_HOLE_PRESETS.find((o) => o.holes.drill === b.mountingHoles?.drill)
   return (
     <Section title="Board" id="board">
+      {b.outline ? (
+        <div className="space-y-1.5 rounded-[8px] border border-line p-2 text-[12.5px]">
+          <Row label="Outline" value={describeOutline(b)} />
+          <Row label="Bounding box" value={`${Number(b.width.toFixed(3))} x ${Number(b.height.toFixed(3))} mm`} />
+          <p className="text-ink-3">This board has an outline of its own, drawn on the Edge.Cuts layer, and its size follows it. Draw a closed shape inside it for a cutout, or pick the outline to move a corner or bend an edge into an arc.</p>
+          <Button title="Remove the drawn outline: the board becomes the rectangle of its bounding box" onClick={() => commitProject((p) => resetOutline(p))}>
+            Back to a rectangle
+          </Button>
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 gap-2">
-        <Field label="Width">
-          <LengthInput min={5} value={b.width} onCommit={(v) => v !== null && setBoard({ width: v })} />
-        </Field>
-        <Field label="Height">
-          <LengthInput min={5} value={b.height} onCommit={(v) => v !== null && setBoard({ height: v })} />
-        </Field>
+        {!b.outline && (
+          <>
+            <Field label="Width">
+              <LengthInput min={5} value={b.width} onCommit={(v) => v !== null && setBoard({ width: v })} />
+            </Field>
+            <Field label="Height">
+              <LengthInput min={5} value={b.height} onCommit={(v) => v !== null && setBoard({ height: v })} />
+            </Field>
+          </>
+        )}
         <Field label="Thickness">
           <select className="field h-8" value={b.thickness} onChange={(e) => setBoard({ thickness: Number(e.target.value) })}>
             {thicknesses.map((t) => (
@@ -235,9 +251,11 @@ function BoardSection({ project }: { project: Project }) {
             ))}
           </select>
         </Field>
-        <Field label="Corner radius">
-          <LengthInput value={b.cornerRadius} onCommit={(v) => v !== null && setBoard({ cornerRadius: Math.min(v, b.width / 2, b.height / 2) })} />
-        </Field>
+        {!b.outline && (
+          <Field label="Corner radius">
+            <LengthInput value={b.cornerRadius} onCommit={(v) => v !== null && setBoard({ cornerRadius: Math.min(v, b.width / 2, b.height / 2) })} />
+          </Field>
+        )}
         <Group label="Copper">
           <Segmented<string>
             size="sm"
@@ -265,14 +283,16 @@ function BoardSection({ project }: { project: Project }) {
       <Group label="Silkscreen">
         <ColorField label="Silkscreen colour" value={b.silkColor} fallback={defaultSilkColor(colors.mask)} onCommit={(silkColor) => setBoard({ silkColor })} />
       </Group>
-      <Group label="Mounting holes">
-        <Segmented
-          size="sm"
-          value={holes?.id ?? "none"}
-          onChange={(v) => setBoard({ mountingHoles: MOUNTING_HOLE_PRESETS.find((o) => o.id === v)?.holes ?? null })}
-          options={[{ value: "none", label: "None" }, ...MOUNTING_HOLE_PRESETS.map((o) => ({ value: o.id, label: o.label, title: `${o.holes.drill} mm drill, ${o.holes.inset} mm from the edges` }))]}
-        />
-      </Group>
+      {!b.outline && (
+        <Group label="Mounting holes">
+          <Segmented
+            size="sm"
+            value={holes?.id ?? "none"}
+            onChange={(v) => setBoard({ mountingHoles: MOUNTING_HOLE_PRESETS.find((o) => o.id === v)?.holes ?? null })}
+            options={[{ value: "none", label: "None" }, ...MOUNTING_HOLE_PRESETS.map((o) => ({ value: o.id, label: o.label, title: `${o.holes.drill} mm drill, ${o.holes.inset} mm from the edges` }))]}
+          />
+        </Group>
+      )}
       <Stackup project={project} />
     </Section>
   )

@@ -30,6 +30,7 @@ import { libraryFootprint } from "../model/footprintLibrary"
 import { componentFootprint, isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, valueText, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
+import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
@@ -235,6 +236,15 @@ interface PadLink {
 function smtPad(pad: WorldPad, link: PadLink, layer: "top" | "bottom", id: string): PcbSmtPad {
   const at = { x: mm(pad.x), y: mm(pad.y) }
   const common = { pcb_smtpad_id: id, layer, ...link, is_covered_with_solder_mask: false }
+  if (pad.oriented) {
+    const o = pad.oriented
+    // A part at an angle that is not a quarter turn: the pad keeps its own size and turns, as KiCad's pad angle and Circuit JSON's rotated shapes have it.
+    if (pad.points?.length && pad.shape === "polygon" && pad.slotAxis === undefined) {
+      return pad.points.length === 4
+        ? ({ type: "pcb_smtpad", shape: "rotated_rect", ...at, width: mm(o.width), height: mm(o.height), ccw_rotation: o.rot, ...common } as PcbSmtPad)
+        : ({ type: "pcb_smtpad", shape: "rotated_pill", ...at, width: mm(o.width), height: mm(o.height), radius: mm(Math.min(o.width, o.height) / 2), ccw_rotation: o.rot, ...common } as PcbSmtPad)
+    }
+  }
   if (pad.shape === "polygon" && pad.points?.length) return { type: "pcb_smtpad", shape: "polygon", points: pad.points.map(pt), ...common }
   if (pad.shape === "circle") return { type: "pcb_smtpad", shape: "circle", ...at, radius: mm(pad.width / 2), ...common }
   if (pad.shape === "pill") {
@@ -248,8 +258,18 @@ function platedHole(pad: WorldPad, link: PadLink, id: string): PcbPlatedHole {
   const drill = pad.holeDiameter!
   const common = { pcb_plated_hole_id: id, layers: ["top", "bottom"] as ("top" | "bottom")[], ...link, is_covered_with_solder_mask: false }
   const slot = slotEnds(pad)
-  const along = pad.width >= pad.height
+  const o = pad.oriented
+  const along = o ? o.width >= o.height : pad.width >= pad.height
   const hole = slot ? { hole_width: mm(along ? pad.slotLength! : drill), hole_height: mm(along ? drill : pad.slotLength!) } : { hole_width: mm(drill), hole_height: mm(drill) }
+  if (o && pad.points?.length === 4) {
+    // A rectangular pad of a part at an angle that is not a quarter turn: it keeps its size and turns.
+    const rect = { rect_pad_width: mm(o.width), rect_pad_height: mm(o.height), ...at, ...common }
+    if (slot) return { type: "pcb_plated_hole", shape: "rotated_pill_hole_with_rect_pad", hole_shape: "rotated_pill", pad_shape: "rect", ...hole, hole_ccw_rotation: o.rot, rect_ccw_rotation: o.rot, hole_offset_x: 0, hole_offset_y: 0, ...rect } as PcbPlatedHole
+    return { type: "pcb_plated_hole", shape: "circular_hole_with_rect_pad", hole_shape: "circle", pad_shape: "rect", hole_diameter: mm(drill), hole_offset_x: 0, hole_offset_y: 0, rect_ccw_rotation: o.rot, ...rect } as PcbPlatedHole
+  }
+  if (o && pad.shape === "polygon" && pad.points && pad.points.length > 4) {
+    return { type: "pcb_plated_hole", shape: "pill", outer_width: mm(o.width), outer_height: mm(o.height), ...hole, ccw_rotation: o.rot, ...at, ...common } as PcbPlatedHole
+  }
   if (pad.shape === "polygon" && pad.points?.length) {
     return {
       type: "pcb_plated_hole",
@@ -285,6 +305,9 @@ function platedHole(pad: WorldPad, link: PadLink, id: string): PcbPlatedHole {
 function npthElement(pad: WorldPad, pcbComponentId: string | undefined, id: string): PcbHole {
   const at = { x: mm(pad.x), y: mm(pad.y) }
   const owner = pcbComponentId ? { pcb_component_id: pcbComponentId } : {}
+  if (pad.slotAxis !== undefined && pad.slotLength && pad.slotLength > pad.holeDiameter! + 1e-6) {
+    return { type: "pcb_hole", pcb_hole_id: id, hole_shape: "rotated_pill", hole_width: mm(pad.slotLength), hole_height: mm(pad.holeDiameter!), ccw_rotation: pad.slotAxis, ...at, ...owner } as PcbHole
+  }
   if (pad.slotLength && pad.slotLength > pad.holeDiameter! + 1e-6) {
     const along = pad.width >= pad.height
     return { type: "pcb_hole", pcb_hole_id: id, hole_shape: "pill", hole_width: mm(along ? pad.slotLength : pad.holeDiameter!), hole_height: mm(along ? pad.holeDiameter! : pad.slotLength), ...at, ...owner }
@@ -388,6 +411,8 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   const colors = boardColors(b)
   const rules = project.rules
   const roundedBoard = b.cornerRadius > 1e-6
+  // A board with an outline of its own: its biggest piece is the board's outline, and every cutout (and every other piece, as a cutout of the rest it is not) is a `pcb_cutout`. Circuit JSON has no arcs, so they are written as straight pieces within 0.005 mm.
+  const customRegions = (outlineState(b) === "closed" ? outlineRegionsAt(b, 0.005) : []).sort((p, q) => Math.abs(signedArea(q.outer)) - Math.abs(signedArea(p.outer)))
   const r = Math.max(0, Math.min(b.cornerRadius, b.width / 2, b.height / 2))
   elements.push({
     type: "pcb_board",
@@ -399,6 +424,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     num_layers: 2,
     material: "fr4",
     ...(roundedBoard ? { outline: roundedOutline(b.x - b.width / 2, b.y - b.height / 2, b.x + b.width / 2, b.y + b.height / 2, r) } : {}),
+    ...(customRegions.length ? { outline: customRegions[0].outer.map((q) => ({ x: round(q.x), y: round(q.y) })) } : {}),
     solder_mask_color: colors.mask,
     silkscreen_color: colors.silk,
     is_via_in_pad_allowed: rules.viaInPad,
@@ -413,6 +439,14 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     min_trace_to_pad_edge_clearance: rules.clearance,
     min_pad_edge_to_pad_edge_clearance: rules.clearance,
   })
+  for (const rg of customRegions) {
+    for (const hole of rg.holes) {
+      elements.push({ type: "pcb_cutout", pcb_cutout_id: ids.next("pcb_cutout"), shape: "polygon", points: hole.map((q) => ({ x: mm(q.x), y: mm(q.y) })) } as AnyCircuitElement)
+    }
+  }
+  if (customRegions.length > 1) notes.push(`The board is ${customRegions.length} separate pieces, and Circuit JSON has one outline: the biggest is the board's outline and the others are left out.`)
+  if (customRegions.length && b.outline?.paths.some((p) => p.segs.some((s) => s.kind !== "line"))) notes.push("The board outline has arcs or curves, which Circuit JSON has no way to hold: they are written as straight pieces within 0.005 mm.")
+  if (b.outline && outlineState(b) !== "closed") notes.push("The board outline is not closed, so Circuit JSON has the board's box and none of the outline.")
   for (const hole of mountingHoles(b)) {
     elements.push({
       type: "pcb_plated_hole",

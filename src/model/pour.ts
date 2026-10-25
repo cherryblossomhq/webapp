@@ -14,7 +14,8 @@ import {
 import type { SchematicConnectivity } from "./connectivity"
 import { isNpth, type WorldPad } from "./instances"
 import type { CopperItem } from "./pcb"
-import { shapePolylines, shapeRings } from "./shapes"
+import { outlineGeometry } from "./outline"
+import { flattenPath, shapePolylines, shapeRings } from "./shapes"
 import { zoneClearance } from "./rules"
 import type { CopperLayer, DesignRules, Project, Vec2 } from "./types"
 
@@ -114,6 +115,26 @@ export function padPaths(pad: WorldPad): Paths64 {
   return [rectPath(pad.x, pad.y, pad.width, pad.height)]
 }
 
+/**
+ * Where copper may be poured: the board inset by the edge clearance. A board with an outline of its own is its loops (holes
+ * cut out) inset the same way, and a piece of outline left open is kept clear of by the same distance on either side; with no loop at all
+ * the box of the edges stands for the board.
+ */
+function boardArea(b: Project["board"], edge: number): Paths64 {
+  const g = outlineGeometry(b)
+  if (!g) return [roundedRectPath(b.x, b.y, b.width - edge * 2, b.height - edge * 2, Math.max(0, b.cornerRadius - edge))]
+  const loops = g.rings.length
+    ? inflate(Clipper.union(g.regions.flatMap((r) => [r.outer, ...r.holes]).map((ring) => ring.map((p) => pt(p.x, p.y))), [], FillRule.NonZero), -edge)
+    : [rectPath((g.box.minX + g.box.maxX) / 2, (g.box.minY + g.box.maxY) / 2, g.box.maxX - g.box.minX, g.box.maxY - g.box.minY)]
+  const open = (b.outline?.paths ?? []).filter((p) => !p.closed)
+  if (!open.length) return loops
+  const strokes: Paths64 = open.flatMap((p) => {
+    const pts = flattenPath(p)
+    return pts.length >= 2 ? stroke(pts, edge) : []
+  })
+  return Clipper.difference(loops, strokes, FillRule.NonZero)
+}
+
 /** Keepout around a pad of another net. */
 function padClearance(pad: WorldPad, gap: number): Paths64 {
   return inflate(padPaths(pad), gap)
@@ -139,7 +160,9 @@ function thermalRelief(pad: WorldPad, gap: number, rules: DesignRules): Paths64 
   const copper = padPaths(pad)
   const ring = Clipper.difference(inflate(copper, gap), copper, FillRule.NonZero)
   const reach = Math.hypot(pad.width, pad.height) + gap * 2 + 0.2
-  const base = (pad.height > pad.width ? Math.PI / 2 : 0) + (rules.thermalSpokeAngle === 45 ? Math.PI / 4 : 0)
+  // A pad of a part at an angle keeps its spokes on its own axes; any other pad is as it always was.
+  const axis = pad.oriented ? (pad.oriented.rot * Math.PI) / 180 + (pad.oriented.height > pad.oriented.width ? Math.PI / 2 : 0) : pad.height > pad.width ? Math.PI / 2 : 0
+  const base = axis + (rules.thermalSpokeAngle === 45 ? Math.PI / 4 : 0)
   const angles = rules.thermalSpokes === 2 ? [base] : [base, base + Math.PI / 2]
   const spokes = angles.map((a) => barPath(pad.x, pad.y, reach, rules.thermalSpokeWidth, a))
   return Clipper.difference(ring, spokes, FillRule.NonZero)
@@ -194,7 +217,7 @@ export function fillZones(project: Project, sch: SchematicConnectivity, input: P
   const b = project.board
   const { rules } = project
   const edge = rules.edgeClearance
-  const area = [roundedRectPath(b.x, b.y, b.width - edge * 2, b.height - edge * 2, Math.max(0, b.cornerRadius - edge))]
+  const area = boardArea(b, edge)
   const minWidth = Math.max(0.01, rules.pourMinWidth)
   const eroded = inflate(area, -minWidth / 2)
   const fills: ZoneFill[] = []

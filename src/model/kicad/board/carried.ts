@@ -1,3 +1,4 @@
+import { TRANSLATED_LAYER_NAMES } from "./graphics"
 import type { KicadBoard } from "./types"
 import { kid, numAt, strAt, type List } from "./sexpr"
 
@@ -66,7 +67,7 @@ export function settledFor(path: string, counts?: { edge?: ReadonlyMap<string, n
 }
 
 /** How many nodes of each path belong to a drawing on Edge.Cuts: the drawing's own list and everything inside it. */
-export const edgeNodeCounts = (board: KicadBoard) => shapeNodeCounts(board, (layer) => layer === "Edge.Cuts")
+export const edgeNodeCounts = (board: KicadBoard) => shapeNodeCounts(board, (layer) => layer === "Edge.Cuts" || (layer !== undefined && TRANSLATED_LAYER_NAMES[layer] === "Edge.Cuts"))
 
 /** How many `net` nodes of each path are on a drawing that is not on a copper layer, which means nothing there. */
 export const ignoredNetCounts = (board: KicadBoard) => shapeNodeCounts(board, (_, copper) => !copper, "net")

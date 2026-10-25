@@ -4,6 +4,7 @@ import { applyToPoint } from "transformation-matrix"
 import type { Project } from "../model/types"
 import { slugify } from "./bundle"
 import { projectToCircuitJson } from "./circuitJson"
+import { applyOutline } from "./kicadOutline"
 import { applyDrawings } from "./kicadShapes"
 import { applyTexts } from "./kicadTexts"
 import { addNoConnects, addSymbolFields, applyBoardSettings, applyFootprintFlags, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock } from "./kicadPost"
@@ -81,7 +82,8 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
   // What the converter has no place for: put into the files it wrote.
   const flagged = applyFootprintFlags(applyBoardSettings(pcb.getOutputString(), project), project)
   const drawings = applyDrawings(flagged, project)
-  const texts = applyTexts(drawings.text, project)
+  const outline = applyOutline(drawings.text, project)
+  const texts = applyTexts(outline.text, project)
   const boardText = texts.text
   const footprintIds = boardFootprintIds(boardText)
   const fields = new Map(project.components.map((c) => [c.ref, symbolFields(c, footprintIds)]))
@@ -99,6 +101,7 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
     notes: [
       ...notes,
       ...drawings.notes,
+      ...outline.notes,
       ...texts.notes,
       "KiCad names every net, so nets the schematic leaves unnamed are called Net-(REF-PIN), as KiCad would.",
       "Parts keep our schematic symbols and land patterns; they are stored in the files, not in a KiCad library, and have no 3D models.",

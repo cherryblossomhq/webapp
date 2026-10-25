@@ -1,4 +1,4 @@
-import { emptyBox, expandBox, round, snap, type Box } from "../../../lib/geometry"
+import { emptyBox, expandBox, normalizeAngle, round, snap, type Box } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "../../connectivity"
 import { customPartId, customPartProblems, digest, registerProjectParts } from "../../customParts"
@@ -9,11 +9,12 @@ import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
-import type { BoardGraphic, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import { pathsBox } from "../../shapes"
+import type { BoardGraphic, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
-import { quarterTurns, reach, rotK } from "./geometry"
+import { quarterTurns, rotK } from "./geometry"
 import { defaultGraphicId } from "../../shapeCodec"
 import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
 import { convertBoardText, convertPartTexts, landTextBox, type PartPlacement, type TextConversion } from "./texts"
@@ -21,7 +22,7 @@ import { defaultTextId } from "../../textCodec"
 import { textShown } from "../../texts"
 import { flipShapeLayer } from "../../shapeLayers"
 import { modelKey, planModels } from "./models"
-import { edgePieces, type OutlineResult } from "./outline"
+import type { OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
 import { decodeNetName, eraOf } from "./read"
 import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
@@ -268,9 +269,13 @@ interface PinFacts {
   kind: PinDef["kind"]
 }
 
-/** Where a footprint sits on the board: the editor's rotation for it (a bottom part is turned half a turn, see `landPad`). */
-export function placementRotation(angle: number, bottom: boolean): Rotation {
-  return ((((Math.round(angle / 90) + (bottom ? 2 : 0)) % 4) + 4) % 4) * 90 as Rotation
+/**
+ * Where a footprint sits on the board: the editor's rotation for it, in degrees (a bottom part is turned half a
+ * turn, see `landPad`). The angle is the file's own, any angle (X6), taken to the millionth of a degree, which
+ * moves no point of a part under 100 m across by a thousandth of a millimetre: `90.0000001` is the quarter turn.
+ */
+export function placementRotation(angle: number, bottom: boolean): number {
+  return normalizeAngle(angle + (bottom ? 180 : 0))
 }
 
 /** Board to project. Throws nothing for a board the model can hold; `lossy` names every approximation otherwise. */
@@ -364,8 +369,6 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const fileRefs = new Set(board.footprints.map((f) => f.ref.trim().replace(/\*/g, "")).filter(Boolean))
   const ordered = [...board.footprints].sort((a, b) => natural.compare(a.ref, b.ref))
   for (const fp of ordered) {
-    const turns = quarterTurns(fp.angle, reach(fp))
-    if (turns === null) lose("a part turned by other than a quarter turn")
     const bottom = fp.side === "bottom"
     const rot = placementRotation(fp.angle, bottom)
 
@@ -637,13 +640,18 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   textCount += boardTexts.length
 
   // ---------- the board ----------
+  // A rectangle or a rounded rectangle is the board's own shape, as ever. Any other outline (X2) is held as the paths it is: loops with their cutouts, and what does not close, kept as drawn.
   let box = outline.box
+  let outlineDef: BoardOutline | undefined
   if (!box || !outline.representable) {
-    lose(outline.status === "closed" ? `an outline that is ${outline.shape}` : "an outline that does not close")
-    if (!box) {
+    outlineDef = { paths: outline.paths }
+    if (outline.paths.length) {
+      const exact = pathsBox(outline.paths)
+      box = { minX: exact.minX, maxX: exact.maxX, minY: -exact.maxY, maxY: -exact.minY }
+    } else {
+      // No outline at all: the board is held with none, and the box is the parts' with a margin, so there is something to show and route in.
       const b = emptyBox()
       for (const c of components) expandBox(b, c.pcb, 5)
-      for (const piece of edgePieces(board)) for (const [x, y] of piece.pts) expandBox(b, { x, y: -y })
       box = b.minX <= b.maxX ? { minX: b.minX, minY: -b.maxY, maxX: b.maxX, maxY: -b.minY } : { minX: -25, minY: -20, maxX: 25, maxY: 20 }
     }
   }
@@ -669,6 +677,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       thickness: board.thickness ?? 1.6,
       cornerRadius: round(outline.representable ? outline.cornerRadius : 0),
       mountingHoles: null,
+      ...(outlineDef ? { outline: outlineDef } : {}),
     },
     traces,
     vias,

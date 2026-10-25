@@ -288,8 +288,13 @@ export function shapeBox(shape: ShapeGeometry): Box {
 }
 
 function computeShapeBox(shape: ShapeGeometry): Box {
+  return pathsBox(shapePaths(shape))
+}
+
+/** The exact box of some paths (arcs and ellipses to their true extremes), not grown by any stroke. */
+export function pathsBox(paths: ShapePath[]): Box {
   const b = emptyBox()
-  for (const path of shapePaths(shape)) {
+  for (const path of paths) {
     for (const s of path.segs) {
       expandBox(b, segStart(s))
       expandBox(b, segEnd(s))
@@ -366,7 +371,9 @@ export function mapShape<T extends ShapeGeometry>(shape: T, f: (p: Vec2) => Vec2
           if (s.kind === "line") pts.push(p(s.b))
           else if (s.kind === "arc") pts.push({ ...p(s.end), mid: p(s.mid) })
         }
-        out = { type: "polygon", pts }
+        // The drawing's style (layer, width, dash, fill, net, lock) goes with it: only the geometry is a polygon now.
+        const { a: _a, b: _b, radius: _radius, ...style } = g
+        out = { ...style, type: "polygon", pts }
       }
       break
     }
@@ -557,8 +564,13 @@ const f6 = (n: number) => String(Math.round(n * 1e6) / 1e6)
  * counter-clockwise, which is what SVG's sweep flag 1 means in a y-up user space).
  */
 export function shapeSvgPath(shape: ShapeGeometry): string {
+  return pathsSvgPath(shapePaths(shape))
+}
+
+/** SVG path data for some paths (an outline's), in the frame they are held in. */
+export function pathsSvgPath(paths: ShapePath[]): string {
   let d = ""
-  for (const path of shapePaths(shape)) {
+  for (const path of paths) {
     path.segs.forEach((s, i) => {
       const from = segStart(s)
       if (i === 0) d += `M${f6(from.x)} ${f6(from.y)}`
@@ -593,8 +605,15 @@ export function shapeSvgPath(shape: ShapeGeometry): string {
 }
 
 /** Draw a shape's outline into a 2D canvas context whose user space is the board's (y up). Strokes and fills are the caller's. */
-export function shapeCanvasPath(ctx: { moveTo(x: number, y: number): void; lineTo(x: number, y: number): void; arc(x: number, y: number, r: number, a0: number, a1: number, anticlockwise?: boolean): void; ellipse(x: number, y: number, rx: number, ry: number, rot: number, a0: number, a1: number, anticlockwise?: boolean): void; bezierCurveTo(a: number, b: number, c: number, d: number, e: number, f: number): void; closePath(): void }, shape: ShapeGeometry) {
-  for (const path of shapePaths(shape)) {
+export function shapeCanvasPath(ctx: CanvasPathLike, shape: ShapeGeometry) {
+  pathsCanvasPath(ctx, shapePaths(shape))
+}
+
+type CanvasPathLike = { moveTo(x: number, y: number): void; lineTo(x: number, y: number): void; arc(x: number, y: number, r: number, a0: number, a1: number, anticlockwise?: boolean): void; ellipse(x: number, y: number, rx: number, ry: number, rot: number, a0: number, a1: number, anticlockwise?: boolean): void; bezierCurveTo(a: number, b: number, c: number, d: number, e: number, f: number): void; closePath(): void }
+
+/** Draw some paths into a 2D canvas context whose user space is the board's (y up). */
+export function pathsCanvasPath(ctx: CanvasPathLike, paths: ShapePath[]) {
+  for (const path of paths) {
     path.segs.forEach((s, i) => {
       const from = segStart(s)
       if (i === 0) ctx.moveTo(from.x, from.y)

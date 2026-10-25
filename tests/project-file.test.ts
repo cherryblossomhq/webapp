@@ -248,11 +248,11 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     expect(read.vias[1].routedNet).toBeUndefined()
     expect(read.components[0].pcb).toEqual(v2.project.components[0].pcb)
   })
-  it("migrates to the current version unchanged, and is saved as version 4", () => {
+  it("migrates to the current version unchanged, and is saved as the current version", () => {
     const migrated = migrateProjectFile(v2)
     expect(migrated).toEqual(v2.project)
-    expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(4)
-    expect(PROJECT_FILE_VERSION).toBe(4)
+    expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
+    expect(PROJECT_FILE_VERSION).toBe(6)
   })
   it("a reader of version 2 would refuse a version 4 file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -285,14 +285,14 @@ const v3 = {
 }
 
 describe("version 3, before board and footprint drawings", () => {
-  it("opens as it was written, with no drawings, and is saved as version 4", () => {
+  it("opens as it was written, with no drawings, and is saved as the current version", () => {
     const read = parseProjectFile(v3, origin)
     expect(migrateProjectFile(v3)).toEqual(v3.project)
     expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
     expect(read.traces).toEqual(v3.project.traces)
     expect(read.graphics).toBeUndefined()
     expect(read.footprints).toBeUndefined()
-    expect(JSON.parse(serializeProject(read)).version).toBe(4)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
     expect(JSON.parse(serializeProject(read)).project).not.toHaveProperty("graphics")
   })
 })

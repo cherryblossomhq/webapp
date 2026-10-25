@@ -10,6 +10,7 @@ import type { StepExportInput, StepExportResult, StepMesh, StepModelInput } from
 import { refs, StepWriter, type Shape } from "./writer"
 
 export type {
+  StepContourSeg,
   StepBoardInput,
   StepColor,
   StepExportInput,

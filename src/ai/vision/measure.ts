@@ -1,3 +1,4 @@
+import { boardAreaMm2, boxOnBoard, describeOutline, outlineGeometry } from "../../model/outline"
 import { boxesOverlap, type Box } from "../../lib/geometry"
 import { isPhysical, pcbCourtyard, schematicBounds } from "../../model/instances"
 import { drawingBounds } from "../../model/drawings"
@@ -157,7 +158,7 @@ export function measureSchematic(project: Project): SchematicMeasure {
 }
 
 export interface PcbMeasure {
-  board: { width: number; height: number; x: number; y: number }
+  board: { width: number; height: number; x: number; y: number; /** What an outline of its own is, in words, with its area; absent for a rectangle. */ outline?: string }
   /** Placed and unplaced real parts. */
   placed: number
   total: number
@@ -184,6 +185,7 @@ export function measurePcb(project: Project): PcbMeasure {
   const physical = project.components.filter((c) => isPhysical(findPart(c.partId)))
   const placed = physical.filter((c) => c.pcb.placed)
   const bd = project.board
+  const shape = outlineGeometry(bd)
   const board: Box = { minX: bd.x - bd.width / 2, maxX: bd.x + bd.width / 2, minY: bd.y - bd.height / 2, maxY: bd.y + bd.height / 2 }
 
   const offBoard: string[] = []
@@ -192,7 +194,7 @@ export function measurePcb(project: Project): PcbMeasure {
     const cy = pcbCourtyard(c)
     if (!cy) continue
     boxes.push({ ref: c.ref, side: c.pcb.side, box: cy })
-    if (cy.minX < board.minX || cy.maxX > board.maxX || cy.minY < board.minY || cy.maxY > board.maxY) offBoard.push(c.ref)
+    if (cy.minX < board.minX || cy.maxX > board.maxX || cy.minY < board.minY || cy.maxY > board.maxY || (shape && !boxOnBoard(shape, cy))) offBoard.push(c.ref)
   }
   // The same test as the overlap check in the PCB analysis, so the two always agree.
   const overlaps: Clash[] = []
@@ -209,7 +211,7 @@ export function measurePcb(project: Project): PcbMeasure {
   const unroutedNets = [...new Set(pcb.ratsnest.map((r) => netNames.get(r.netId) ?? r.netId))]
 
   return {
-    board: { width: bd.width, height: bd.height, x: bd.x, y: bd.y },
+    board: { width: bd.width, height: bd.height, x: bd.x, y: bd.y, ...(bd.outline ? { outline: `${describeOutline(bd)}, ${round(boardAreaMm2(bd) / 100)} cm2` } : {}) },
     placed: placed.length,
     total: physical.length,
     unplaced: physical.filter((c) => !c.pcb.placed).map((c) => c.ref),
@@ -256,7 +258,7 @@ export function describeSchematic(m: SchematicMeasure): string[] {
 /** The PCB numbers as lines for the tool result. */
 export function describePcb(m: PcbMeasure): string[] {
   const lines = [
-    `Board ${m.board.width} x ${m.board.height} mm (${range({ minX: m.board.x - m.board.width / 2, maxX: m.board.x + m.board.width / 2, minY: m.board.y - m.board.height / 2, maxY: m.board.y + m.board.height / 2 }, " mm")}); ${m.placed} of ${m.total} parts placed; ${m.traces} traces, ${m.vias} vias, ${m.pours} pours`,
+    `Board ${m.board.width} x ${m.board.height} mm${m.board.outline ? ` bounding box, an outline of its own (${m.board.outline})` : ""} (${range({ minX: m.board.x - m.board.width / 2, maxX: m.board.x + m.board.width / 2, minY: m.board.y - m.board.height / 2, maxY: m.board.y + m.board.height / 2 }, " mm")}); ${m.placed} of ${m.total} parts placed; ${m.traces} traces, ${m.vias} vias, ${m.pours} pours`,
   ]
   const b = m.bounds
   if (b.minX < m.board.x - m.board.width / 2 - 1e-6 || b.maxX > m.board.x + m.board.width / 2 + 1e-6 || b.minY < m.board.y - m.board.height / 2 - 1e-6 || b.maxY > m.board.y + m.board.height / 2 + 1e-6) {

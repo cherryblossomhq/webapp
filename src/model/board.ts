@@ -50,7 +50,8 @@ export interface MountingHole extends Vec2 {
 /** Corner mounting holes, skipped when the board is too small to hold them. */
 export function mountingHoles(b: BoardDef): MountingHole[] {
   const m = b.mountingHoles
-  if (!m) return []
+  // The corner holes are the corners of the rectangle: a board with an outline of its own has cutouts and parts' holes instead.
+  if (!m || b.outline?.paths.length) return []
   const halfW = b.width / 2 - m.inset
   const halfH = b.height / 2 - m.inset
   if (halfW < m.diameter / 2 || halfH < m.diameter / 2) return []

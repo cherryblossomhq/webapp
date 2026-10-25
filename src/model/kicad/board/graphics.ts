@@ -126,7 +126,7 @@ function polygonPoints(s: KicadShape): ShapePoint[] {
 }
 
 /** The geometry a KiCad shape describes, in KiCad's frame, or null when the file's numbers do not make a shape. */
-function rawGeometry(s: KicadShape): ShapeGeometry | null {
+export function rawGeometry(s: KicadShape): ShapeGeometry | null {
   switch (s.kind) {
     case "line":
       return s.start && s.end ? { type: "line", a: s.start, b: s.end } : null

@@ -30,8 +30,11 @@ export function defaultDrawWidth(layer: string): number {
 /** The layer a drawing tool starts on. */
 export const DEFAULT_DRAW_LAYER = "F.SilkS"
 
-/** Every layer the picker offers: all of KiCad's drawing layers. */
-export const drawLayerChoices = (): ShapeLayerInfo[] => SHAPE_LAYERS
+/** The board's edge: what a drawing tool draws on this layer is the board outline or a cutout, not a drawing. */
+export const EDGE_CUTS_LAYER = "Edge.Cuts"
+
+/** Every layer the picker offers: all of KiCad's drawing layers, and the board's edge. */
+export const drawLayerChoices = (): ShapeLayerInfo[] => [...SHAPE_LAYERS, { name: EDGE_CUTS_LAYER, kind: "user", side: null, label: "Board outline (Edge.Cuts)" }]
 
 // ---------- which drawings are shown ----------
 

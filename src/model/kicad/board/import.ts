@@ -126,6 +126,32 @@ function noteOutline(outline: OutlineResult, report: ImportReport) {
       count: merged + dropped + zeroLength,
     })
   }
+  const { connectors, snapped, maxGap } = outline.joins
+  if (connectors || snapped) {
+    report.entries.push({
+      code: "outline-joined",
+      severity: "changed",
+      object: "the board outline",
+      why: `${connectors ? `${connectors} joint${connectors === 1 ? "" : "s"} of the outline had two ends up to ${maxGap.toFixed(3)} mm apart; each is closed by a short straight piece, and no piece of the file moved. ` : ""}${snapped ? `${snapped} end${snapped === 1 ? "" : "s"} within a thousandth of a millimetre of the next piece ${snapped === 1 ? "was" : "were"} made the same point.` : ""}`.trim(),
+      count: connectors + snapped,
+    })
+  }
+  if (outline.status === "no outline") {
+    report.entries.push({
+      code: "outline-missing",
+      severity: "note",
+      object: "the board outline",
+      why: "The file draws nothing on Edge.Cuts, so the board has no outline. It is kept that way: the board is marked as having none, Checks reports it as an error, and the Gerber, drill and STEP exports say so until an outline is drawn. The board's box is the parts' with a margin.",
+    })
+  } else if (outline.status !== "closed") {
+    report.entries.push({
+      code: "outline-open",
+      severity: "note",
+      object: "the board outline",
+      why: `The outline is kept as the file draws it, ${outline.openChains} edge${outline.openChains === 1 ? "" : "s"} of it open. The board is marked as not closed, Checks reports it as an error, and the Gerber, drill and STEP exports say so until it is closed.`,
+      count: outline.openChains,
+    })
+  }
   for (const g of outline.gaps) {
     report.entries.push({
       code: "outline-gap",

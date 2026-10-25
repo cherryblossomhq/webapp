@@ -13,17 +13,34 @@ export interface StepPoint {
   y: number
 }
 
+/** One piece of a board outline: a straight edge, or a circular arc from `a` to `b` about `c` (`ccw`: counter-clockwise, seen from +z). */
+export type StepContourSeg =
+  | { kind: "line"; a: StepPoint; b: StepPoint }
+  | { kind: "arc"; a: StepPoint; b: StepPoint; c: StepPoint; r: number; ccw: boolean }
+
+/** A piece of board: its outline counter-clockwise, and the cutouts inside it (each clockwise). */
+export interface StepRegion {
+  outer: StepContourSeg[]
+  holes: StepContourSeg[][]
+}
+
 export interface StepHole {
   x: number
   y: number
   diameter: number
+  /** With a board that has `regions`: which one the drill is in, or -1 when it is not safely inside one (it is left out and counted). */
+  region?: number
   /** A slot instead: a capsule `diameter` wide from `a` to `b` (its end centres). */
   slot?: { a: StepPoint; b: StepPoint }
 }
 
 export interface StepBoardInput {
-  /** Rounded rectangle centred on (x, y), mm; cornerRadius 0 is square. */
-  outline: { x: number; y: number; width: number; height: number; cornerRadius: number }
+  /**
+   * Rounded rectangle centred on (x, y), mm; cornerRadius 0 is square. With `regions` the board is
+   * those pieces instead (an outline of its own: arcs, cutouts, several pieces) and the rectangle is
+   * only the box they lie in.
+   */
+  outline: { x: number; y: number; width: number; height: number; cornerRadius: number; regions?: StepRegion[] }
   /** The board's bottom face is z = 0 and its top z = thickness. */
   thickness: number
   /** Drills through the board, plated or not. */

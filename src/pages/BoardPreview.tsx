@@ -2,6 +2,7 @@ import { useId, useMemo } from "react"
 import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../model/board"
 import { isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
+import { pathsSvgPath } from "../model/shapes"
 import type { Project } from "../model/types"
 import { getZoneFills } from "../store/analysis"
 
@@ -36,10 +37,11 @@ export function BoardPreview({ project }: { project: Project }) {
     const pourD = fills
       .flatMap((f) => f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`)))
       .join("")
-    return { b, mask, silk, metal, copperTone, pourD, parts, topPads }
+    const outlineD = b.outline?.paths.length ? pathsSvgPath(b.outline.paths.filter((p) => p.closed)) : ""
+    return { b, mask, silk, metal, copperTone, pourD, outlineD, parts, topPads }
   }, [project])
 
-  const { b, mask, silk, metal, copperTone, pourD, parts, topPads } = content
+  const { b, mask, silk, metal, copperTone, pourD, outlineD, parts, topPads } = content
   // Not the project's id: the examples share one, and an SVG id is global to the page.
   const soft = `soft${useId().replace(/[^\w-]/g, "")}`
   const minX = b.x - b.width / 2
@@ -57,8 +59,17 @@ export function BoardPreview({ project }: { project: Project }) {
         </filter>
       </defs>
       <g transform="scale(1,-1)">
-        <rect x={minX + pad * 0.12} y={minY - pad * 0.18} width={b.width} height={b.height} rx={b.cornerRadius} fill="#000" opacity={0.28} filter={`url(#${soft})`} />
-        <rect x={minX} y={minY} width={b.width} height={b.height} rx={b.cornerRadius} fill={mask} />
+        {outlineD ? (
+          <>
+            <path d={outlineD} transform={`translate(${pad * 0.12} ${-pad * 0.18})`} fill="#000" fillRule="evenodd" opacity={0.28} filter={`url(#${soft})`} />
+            <path d={outlineD} fill={mask} fillRule="evenodd" />
+          </>
+        ) : (
+          <>
+            <rect x={minX + pad * 0.12} y={minY - pad * 0.18} width={b.width} height={b.height} rx={b.cornerRadius} fill="#000" opacity={0.28} filter={`url(#${soft})`} />
+            <rect x={minX} y={minY} width={b.width} height={b.height} rx={b.cornerRadius} fill={mask} />
+          </>
+        )}
         {pourD && <path d={pourD} fill={copperTone} fillRule="evenodd" />}
         {project.traces
           .filter((t) => t.layer === "top")

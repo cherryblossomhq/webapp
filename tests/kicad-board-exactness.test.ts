@@ -577,16 +577,20 @@ describe("M4: an active-low pin is named as the editor names one", () => {
   })
 })
 
-describe("m1: an angle is a quarter turn only if no pad moves more than 0.0005 mm by it", () => {
+describe("m1 after X6: a part's angle is the file's own, not the quarter turn beside it", () => {
   const withAngle = (angle: string, padX: number) => board({ body: [footprint({ at: `10 10 ${angle}`, pads: [pad({ number: "1", at: `${padX} 0`, size: "1 1" }), pad({ number: "2", at: `${-padX} 0`, size: "1 1" })] })] })
-  it("90.01 degrees on a part with pads 50 mm out moves them 0.009 mm: X6", () => {
-    expect(needsOf1(withAngle("90.01", 50), WITHOUT("X6"))).toContain("X6")
+  it("90.01 degrees is a part at 90.01, whatever its size: the pads are where the file has them, not 0.009 mm off", () => {
+    const r = importKicadBoard(withAngle("90.01", 50), { built: ALL })
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.project.components[0].pcb.rot).toBe(90.01)
+    expect(needsOf1(withAngle("90.01", 50), WITHOUT("X6"))).not.toContain("X6")
   })
-  it("90.01 degrees on a part with pads 1 mm out moves them 0.0002 mm: a quarter turn", () => {
-    expect(needsOf1(withAngle("90.01", 1), WITHOUT("X6"))).not.toContain("X6")
-  })
-  it("an angle that is exact is a quarter turn at any size", () => {
-    expect(needsOf1(withAngle("90", 500), WITHOUT("X6"))).not.toContain("X6")
+  it("an angle within a millionth of a degree of a quarter turn is the quarter turn", () => {
+    const r = importKicadBoard(withAngle("90.0000001", 50), { built: ALL })
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.project.components[0].pcb.rot).toBe(90)
   })
 })
 

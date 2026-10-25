@@ -6,7 +6,7 @@ import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
 import { worldShapes } from "../../model/shapeItems"
 import { shapeLayerInfo } from "../../model/shapeLayers"
-import { dashShape, shapeSvgPath, type DashPiece } from "../../model/shapes"
+import { dashShape, pathsSvgPath, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import { layerText, textLayerKind, textLayerSide, worldTexts, type LayerText } from "../../model/texts"
 import type { BoardShape, CopperLayer, Project } from "../../model/types"
@@ -144,7 +144,11 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
     return t ? [{ layer: wt.layer, kind: textLayerKind(wt.layer), side: textLayerSide(wt.layer), t }] : []
   })
 
-  let body = `<rect x="${n(board.minX)}" y="${n(board.minY)}" width="${n(bd.width)}" height="${n(bd.height)}" rx="${n(r)}" fill="${PCB.board}" stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}"/>`
+  // A board with an outline of its own is drawn as it is: its loops filled (cutouts left out), and every edge, closed or not, stroked.
+  const edgeStroke = `stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}" stroke-linejoin="round" stroke-linecap="round"`
+  let body = bd.outline?.paths.length
+    ? `<path d="${pathsSvgPath(bd.outline.paths.filter((p) => p.closed))}" fill="${PCB.board}" fill-rule="evenodd" ${edgeStroke}/>${bd.outline.paths.some((p) => !p.closed) ? `<path d="${pathsSvgPath(bd.outline.paths.filter((p) => !p.closed))}" fill="none" ${edgeStroke}/>` : ""}`
+    : `<rect x="${n(board.minX)}" y="${n(board.minY)}" width="${n(bd.width)}" height="${n(bd.height)}" rx="${n(r)}" fill="${PCB.board}" stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}"/>`
 
   // Text on the board's edge layer is part of the outline, as KiCad plots it.
   for (const x of texts) if (x.kind === "edge") body += textSvg(x.t, PCB.edge, px)

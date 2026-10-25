@@ -1,4 +1,5 @@
 import { boardColors, boardFinish, mountingHoles, SURFACE_FINISHES } from "../model/board"
+import { boardAreaMm2, describeOutline } from "../model/outline"
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { inBom, inPositionFile } from "../model/partFlags"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
@@ -58,7 +59,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...(project.properties ?? []).map((p) => `${p.key}: ${p.value}`),
     ...(project.properties?.length ? [""] : []),
     "BOARD",
-    `  Size              ${mm(b.width)} x ${mm(b.height)}${b.cornerRadius > 0 ? `, ${mm(b.cornerRadius)} corner radius` : ""}`,
+    `  Size              ${mm(b.width)} x ${mm(b.height)}${b.outline ? ` bounding box; outline of its own (${describeOutline(b)}), area ${(boardAreaMm2(b) / 100).toFixed(2)} cm2` : b.cornerRadius > 0 ? `, ${mm(b.cornerRadius)} corner radius` : ""}`,
     "  Layers            2",
     `  Thickness         ${mm(b.thickness)}`,
     "  Material          FR-4",

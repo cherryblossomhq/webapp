@@ -1,6 +1,8 @@
 // Core document model. World coordinates are y-up in both editors:
 // schematic units are on a 0.1 grid, KiCad's 50 mil (see model/symbols.ts); PCB units are millimetres.
 
+import type { ShapePath } from "./shapes"
+
 export interface Vec2 {
   x: number
   y: number
@@ -399,7 +401,8 @@ export interface ComponentInstance {
   pcb: {
     x: number
     y: number
-    rot: Rotation
+    /** Degrees counter-clockwise, any angle in [0, 360). A part drawn in the editor is on a quarter turn; a board brought in from KiCad may be at any angle (X6). */
+    rot: number
     side: PcbSide
     placed: boolean
     /** Pinned by the user: automatic placement and re-packing leave it where it is. */
@@ -475,12 +478,29 @@ export interface MountingHoles {
   inset: number
 }
 
+/**
+ * A board outline drawn path by path (X2): each path is lines, arcs, curves and elliptical arcs that
+ * follow one another, closed or not. A closed path is a loop: the loops nest, and a loop inside a loop
+ * that is the board is a hole in it (a cutout, a slot), one inside that is board again, and so on. A path
+ * that does not close is kept as drawn, and the board is "not closed" while it is there.
+ */
+export interface BoardOutline {
+  paths: ShapePath[]
+}
+
 export interface BoardDef {
+  /** The board's bounding box when it has an `outline`, else its size. */
   width: number
   height: number
-  /** Board centre in PCB space. */
+  /** Board centre in PCB space (the bounding box's centre when it has an `outline`). */
   x: number
   y: number
+  /**
+   * The board's shape when it is not the rectangle `width` by `height` with `cornerRadius`: absent for a
+   * board drawn in the editor and never given one. With it, `cornerRadius` is 0 and the box above follows
+   * it (`syncOutlineBox`, `model/outlineOps.ts`). An outline with no paths is a board with no outline.
+   */
+  outline?: BoardOutline
   /** Finished board thickness (mm). */
   thickness: number
   cornerRadius: number

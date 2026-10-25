@@ -9,7 +9,7 @@
 // that pass between holes; with fewer, they are one face each.
 
 import { len } from "./format"
-import type { StepBoardInput, StepColor, StepHole, StepPoint } from "./types"
+import type { StepBoardInput, StepColor, StepContourSeg, StepHole, StepPoint } from "./types"
 import { refs, type Shape, type StepWriter } from "./writer"
 
 /** Cut edges and hole walls: the tan of bare FR4. */
@@ -75,12 +75,14 @@ interface Capsule {
   a: StepPoint
   b: StepPoint
   r: number
+  /** The piece of a board with `regions` it is cut from. */
+  region?: number
 }
 
 function capsule(h: StepHole): Capsule {
   const r = h.diameter / 2
-  if (!h.slot) return { a: pt(h.x, h.y), b: pt(h.x, h.y), r }
-  return { a: h.slot.a, b: h.slot.b, r }
+  if (!h.slot) return { a: pt(h.x, h.y), b: pt(h.x, h.y), r, region: h.region }
+  return { a: h.slot.a, b: h.slot.b, r, region: h.region }
 }
 
 function holeProfile(c: Capsule, i: number): Profile {
@@ -168,7 +170,9 @@ export function boardHoles(board: StepBoardInput): BoardHoles {
       invalid++
       return
     }
-    if (outlineDistance(board.outline, c.a) > -(c.r + GAP) || outlineDistance(board.outline, c.b) > -(c.r + GAP)) {
+    // With an outline of its own the caller has already measured each drill against it and says which piece it is in (or -1).
+    const reaches = board.outline.regions ? c.region === undefined || c.region < 0 : outlineDistance(board.outline, c.a) > -(c.r + GAP) || outlineDistance(board.outline, c.b) > -(c.r + GAP)
+    if (reaches) {
       atEdge++
       return
     }
@@ -238,6 +242,7 @@ function stripSplits(o: StepBoardInput["outline"], holes: Capsule[]): number[] {
 
 /** Writes the board's product, solid and colours; the caller places it in the assembly. */
 export function writeBoard(w: StepWriter, board: StepBoardInput, holes: Capsule[]): Shape {
+  if (board.outline.regions) return writeRegions(w, board, holes)
   const t = board.thickness > EPS ? board.thickness : 1.6
   const o = board.outline
   const splits = stripSplits(o, holes)
@@ -363,6 +368,125 @@ export function writeBoard(w: StepWriter, board: StepBoardInput, holes: Capsule[
   const rep = w.add(`ADVANCED_BREP_SHAPE_REPRESENTATION('PCB',(#${origin},#${solid}),#${ctx})`)
   const styled = [w.style(solid, board.color), ...walls.map((f) => w.style(f, FR4))]
   w.presentation(styled, ctx)
+  const product = w.product("PCB")
+  w.add(`SHAPE_DEFINITION_REPRESENTATION(#${product.shape},#${rep})`)
+  return { definition: product.definition, rep, origin }
+}
+
+
+// ---------- a board with an outline of its own ----------
+
+type RegionSeg = StepContourSeg
+
+/** A contour run the other way: pieces in reverse, each from its far end to its near, an arc turning the other way. */
+function reversed(segs: RegionSeg[]): RegionSeg[] {
+  return segs
+    .map((s): RegionSeg => (s.kind === "line" ? { kind: "line", a: s.b, b: s.a } : { kind: "arc", a: s.b, b: s.a, c: s.c, r: s.r, ccw: !s.ccw }))
+    .reverse()
+}
+
+/** A rectangle-board profile piece as a contour piece: an arc there is always counter-clockwise. */
+function toContour(s: Seg): RegionSeg {
+  return s.kind === "line" ? s : { kind: "arc", a: s.a, b: s.b, c: s.c, r: s.r, ccw: true }
+}
+
+/**
+ * The board when it is not a rounded rectangle: one solid for each piece of it (`regions`), each an outline of lines and circular
+ * arcs, with the cutouts inside it and the drills in it cut through. Top and bottom are a plane each, bounded by the outline and
+ * every hole; a wall is a plane per straight piece and a cylinder per arc, which may turn either way (a concave corner). Nothing
+ * is cut into strips, so a very large number of holes in one piece is slow for a reader that is quadratic in them.
+ */
+function writeRegions(w: StepWriter, board: StepBoardInput, holes: Capsule[]): Shape {
+  const t = board.thickness > EPS ? board.thickness : 1.6
+  const regions = board.outline.regions!
+  const zAxis = w.dir(0, 0, 1)
+  const up = w.add(`VECTOR('',#${zAxis},${len(t)})`)
+  const vertices = new Map<string, number>()
+  const vertex = (p: StepPoint, z: number) => {
+    const key = `${len(p.x)},${len(p.y)},${z}`
+    let id = vertices.get(key)
+    if (id === undefined) {
+      id = w.add(`VERTEX_POINT('',#${w.point(p.x, p.y, z)})`)
+      vertices.set(key, id)
+    }
+    return id
+  }
+  const edge = (from: number, to: number, curve: number, same = true) => w.add(`EDGE_CURVE('',#${from},#${to},#${curve},${same ? ".T." : ".F."})`)
+  const line = (a: StepPoint, b: StepPoint, z: number) => {
+    const v = w.add(`VECTOR('',#${w.dir(b.x - a.x, b.y - a.y, 0)},${len(Math.hypot(b.x - a.x, b.y - a.y))})`)
+    return edge(vertex(a, z), vertex(b, z), w.add(`LINE('',#${w.point(a.x, a.y, z)},#${v})`))
+  }
+  const oriented = (e: number, forward: boolean) => w.add(`ORIENTED_EDGE('',*,*,#${e},${forward ? ".T." : ".F."})`)
+  const loop = (edges: [number, boolean][]) => w.add(`EDGE_LOOP('',${refs(edges.map(([e, f]) => oriented(e, f)))})`)
+  const bound = (l: number, outer: boolean) => w.add(`${outer ? "FACE_OUTER_BOUND" : "FACE_BOUND"}('',#${l},.T.)`)
+  const topPlane = w.add(`PLANE('',#${w.placement(w.point(0, 0, t), zAxis, w.dir(1, 0, 0))})`)
+  const bottomPlane = w.add(`PLANE('',#${w.placement(w.point(0, 0, 0), w.dir(0, 0, -1), w.dir(1, 0, 0))})`)
+
+  const solids: number[] = []
+  const walls: number[] = []
+  const style: number[] = []
+  const origin = w.origin()
+  const ctx = w.contexts.geometry
+  regions.forEach((region, ri) => {
+    const faces: number[] = []
+    const topHoles: number[] = []
+    const bottomHoles: number[] = []
+    let outerTops: number[] = []
+    let outerBottoms: number[] = []
+    // Every profile is counter-clockwise from +z, as the rectangle's are: the cutouts, written clockwise, are turned round.
+    const profiles: { segs: RegionSeg[]; hole: boolean }[] = [
+      { segs: region.outer, hole: false },
+      ...region.holes.map((h) => ({ segs: reversed(h), hole: true })),
+      ...holes.filter((c) => c.region === ri).map((c) => ({ segs: holeProfile(c, 0).segs.map(toContour), hole: true })),
+    ]
+    profiles.forEach(({ segs, hole }) => {
+      const n = segs.length
+      const verticals = segs.map((s) => edge(vertex(s.a, 0), vertex(s.a, t), w.add(`LINE('',#${w.point(s.a.x, s.a.y, 0)},#${up})`)))
+      const curve = (s: RegionSeg, z: number) => {
+        if (s.kind === "line") return line(s.a, s.b, z)
+        const at = w.placement(w.point(s.c.x, s.c.y, z), zAxis, w.dir(s.a.x - s.c.x, s.a.y - s.c.y, 0))
+        return edge(vertex(s.a, z), vertex(s.b, z), w.add(`CIRCLE('',#${at},${len(s.r)})`), s.ccw)
+      }
+      const bottoms = segs.map((s) => curve(s, 0))
+      const tops = segs.map((s) => curve(s, t))
+      segs.forEach((s, i) => {
+        const next = verticals[(i + 1) % n]
+        const wall = hole
+          ? loop([[verticals[i], true], [tops[i], true], [next, false], [bottoms[i], false]])
+          : loop([[bottoms[i], true], [next, true], [tops[i], false], [verticals[i], false]])
+        let surface: number
+        let sense = ".T."
+        if (s.kind === "line") {
+          const dx = s.b.x - s.a.x
+          const dy = s.b.y - s.a.y
+          const normal = hole ? w.dir(-dy, dx, 0) : w.dir(dy, -dx, 0)
+          surface = w.add(`PLANE('',#${w.placement(w.point(s.a.x, s.a.y, 0), normal, w.dir(dx, dy, 0))})`)
+        } else {
+          surface = w.add(`CYLINDRICAL_SURFACE('',#${w.placement(w.point(s.c.x, s.c.y, 0), zAxis, w.dir(s.a.x - s.c.x, s.a.y - s.c.y, 0))},${len(s.r)})`)
+          // The cylinder's own normal points away from its axis. A hole's wall faces into it and a concave corner of the outline faces in too.
+          if (hole === s.ccw) sense = ".F."
+        }
+        const face = w.add(`ADVANCED_FACE('',(#${bound(wall, true)}),#${surface},${sense})`)
+        walls.push(face)
+        faces.push(face)
+      })
+      if (!hole) {
+        outerTops = tops
+        outerBottoms = bottoms
+        return
+      }
+      topHoles.push(bound(loop(tops.map((e) => [e, false] as [number, boolean]).reverse()), false))
+      bottomHoles.push(bound(loop(bottoms.map((e) => [e, true] as [number, boolean])), false))
+    })
+    faces.push(w.add(`ADVANCED_FACE('',${refs([bound(loop(outerTops.map((e) => [e, true] as [number, boolean])), true), ...topHoles])},#${topPlane},.T.)`))
+    faces.push(w.add(`ADVANCED_FACE('',${refs([bound(loop(outerBottoms.map((e) => [e, false] as [number, boolean]).reverse()), true), ...bottomHoles])},#${bottomPlane},.T.)`))
+    const shell = w.add(`CLOSED_SHELL('',${refs(faces)})`)
+    const solid = w.add(`MANIFOLD_SOLID_BREP('PCB',#${shell})`)
+    solids.push(solid)
+    style.push(w.style(solid, board.color))
+  })
+  const rep = w.add(`ADVANCED_BREP_SHAPE_REPRESENTATION('PCB',(#${origin},${solids.map((s) => `#${s}`).join(",")}),#${ctx})`)
+  w.presentation([...style, ...walls.map((f) => w.style(f, FR4))], ctx)
   const product = w.product("PCB")
   w.add(`SHAPE_DEFINITION_REPRESENTATION(#${product.shape},#${rep})`)
   return { definition: product.definition, rep, origin }

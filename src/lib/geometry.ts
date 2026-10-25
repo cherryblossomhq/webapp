@@ -27,9 +27,14 @@ export const round = (n: number, digits = 4) => {
 
 export const roundPoint = (p: Vec2): Vec2 => ({ x: round(p.x), y: round(p.y) })
 
-/** Rotate counter-clockwise by a multiple of 90°, exact for grid coordinates. */
-export function rotate90(p: Vec2, rot: Rotation): Vec2 {
-  switch (rot) {
+/**
+ * Rotate counter-clockwise by `rot` degrees. A quarter turn is exact for grid coordinates (no
+ * cosine of a rounded angle); any other angle is a true rotation, which is what a part placed at
+ * 45 degrees needs. A schematic only ever passes a `Rotation`.
+ */
+export function rotate90(p: Vec2, rot: number): Vec2 {
+  const q = ((rot % 360) + 360) % 360
+  switch (q) {
     case 0:
       return { x: p.x, y: p.y }
     case 90:
@@ -39,14 +44,39 @@ export function rotate90(p: Vec2, rot: Rotation): Vec2 {
     case 270:
       return { x: p.y, y: -p.x }
   }
+  const a = (q * Math.PI) / 180
+  const c = Math.cos(a)
+  const s = Math.sin(a)
+  return { x: p.x * c - p.y * s, y: p.x * s + p.y * c }
 }
 
 export const nextRotation = (rot: Rotation): Rotation => (((rot + 90) % 360) as Rotation)
 
+/** Whether an angle is a whole quarter turn (a part turned by it keeps level pads), exactly. */
+export const isQuarterTurn = (deg: number) => Number.isFinite(deg) && ((deg % 90) + 90) % 90 === 0
+
+/** Cosine and sine of an angle in degrees, exactly 0, 1 or -1 on a quarter turn. */
+export function cosSin(deg: number): { cs: number; sn: number } {
+  const q = ((deg % 360) + 360) % 360
+  if (q === 0) return { cs: 1, sn: 0 }
+  if (q === 90) return { cs: 0, sn: 1 }
+  if (q === 180) return { cs: -1, sn: 0 }
+  if (q === 270) return { cs: 0, sn: -1 }
+  const a = (q * Math.PI) / 180
+  return { cs: Math.cos(a), sn: Math.sin(a) }
+}
+
+/** An angle in degrees brought into [0, 360), with float noise from a sum of turns removed. */
+export const normalizeAngle = (deg: number): number => {
+  const m = ((deg % 360) + 360) % 360
+  const r = Math.round(m * 1e6) / 1e6
+  return r >= 360 ? 0 : r
+}
+
 export function transformPoint(
   p: Vec2,
   origin: Vec2,
-  rot: Rotation,
+  rot: number,
   mirrorX = false,
 ): Vec2 {
   const m = mirrorX ? { x: -p.x, y: p.y } : p
@@ -90,7 +120,7 @@ export function expandBox(b: Box, p: Vec2, pad = 0): Box {
 
 export const boxValid = (b: Box) => Number.isFinite(b.minX) && b.maxX >= b.minX
 
-export function transformBox(b: Box, origin: Vec2, rot: Rotation, mirrorX = false): Box {
+export function transformBox(b: Box, origin: Vec2, rot: number, mirrorX = false): Box {
   const out = emptyBox()
   for (const c of [
     v(b.minX, b.minY),

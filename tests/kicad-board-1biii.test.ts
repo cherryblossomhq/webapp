@@ -41,8 +41,8 @@ const plainFp = (name: string, at: string, layer: string, texts: string, ref = "
   `(footprint "${name}" (layer "${layer}") (at ${at}) ${prop("Reference", ref, "0 -2 0", layer === "B.Cu" ? "B.SilkS" : "F.SilkS")} ${prop("Value", "val", "0 2 0", layer === "B.Cu" ? "B.Fab" : "F.Fab")} ${texts} ${pad({ number: "1", at: "-1 0" })} ${pad({ number: "2", at: "1 0" })})`
 
 describe("the gate after slice 1b-iii", () => {
-  it("builds X9 with X8, X13 and X15", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X8", "X9"])
+  it("builds X9 with X8, X13 and X15, and 2c-i X2 and X6", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X2", "X6", "X8", "X9"])
   })
   it("a board with a part and text imports through the real gate", () => {
     const r = importKicadBoard(board({ body: [plainFp("L:A", "10 5", "F.Cu", "")] }))

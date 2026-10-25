@@ -1,4 +1,4 @@
-import { round, transformBox, transformPoint, type Box } from "../lib/geometry"
+import { isQuarterTurn, normalizeAngle, round, transformBox, transformPoint, type Box } from "../lib/geometry"
 import { getFootprint } from "./footprints"
 import { findPart } from "./library"
 import { flipShapeLayer } from "./shapeLayers"
@@ -77,15 +77,36 @@ export interface WorldPad {
   layers: CopperLayer[]
   /** False for a non-plated hole: no copper, no net, width = height = drill. */
   plated?: false
+  /**
+   * The angle of a slotted hole's axis in degrees, [0, 180), only when it is not along x or y: a part
+   * placed at an angle that is not a quarter turn. Its copper is then a polygon (`points`).
+   */
+  slotAxis?: number
+  /**
+   * A rectangular or pill pad of a part turned by other than a quarter turn: its size before the
+   * turn and the angle of its width axis in degrees, [0, 180). Its copper is the polygon in `points`
+   * and `width` and `height` are that polygon's extents; this is what an exporter that has a turned
+   * pad of its own (Circuit JSON's `rotated_rect`, KiCad's pad angle) is given.
+   */
+  oriented?: { width: number; height: number; rot: number }
 }
 
 /**
  * End centres of a slotted hole, which runs along the pad's longer side; null for a round hole.
  * Works on footprint pads and on world pads, whose width and height already follow the rotation.
  */
-export function slotEnds(pad: Pick<WorldPad, "x" | "y" | "width" | "height" | "holeDiameter" | "slotLength">): [Vec2, Vec2] | null {
+export function slotEnds(pad: Pick<WorldPad, "x" | "y" | "width" | "height" | "holeDiameter" | "slotLength" | "slotAxis">): [Vec2, Vec2] | null {
   if (!pad.holeDiameter || !pad.slotLength || pad.slotLength <= pad.holeDiameter + 1e-6) return null
   const half = (pad.slotLength - pad.holeDiameter) / 2
+  if (pad.slotAxis !== undefined) {
+    const a = (pad.slotAxis * Math.PI) / 180
+    const dx = Math.cos(a) * half
+    const dy = Math.sin(a) * half
+    return [
+      { x: round(pad.x - dx), y: round(pad.y - dy) },
+      { x: round(pad.x + dx), y: round(pad.y + dy) },
+    ]
+  }
   return pad.width >= pad.height
     ? [
         { x: round(pad.x - half), y: pad.y },
@@ -108,33 +129,84 @@ export function componentFootprint(c: ComponentInstance): FootprintDef | null {
   return getFootprint(c.footprint)
 }
 
-/** Pads in board coordinates, with bottom-side parts mirrored across their local Y axis. */
+/** A stadium (a pill) as a polygon: the rectangle `width` by `height` with the ends rounded, flattened to 0.0002 mm. */
+function pillPolygon(width: number, height: number): Vec2[] {
+  const r = Math.min(width, height) / 2
+  const half = (Math.max(width, height) - 2 * r) / 2
+  const horizontal = width >= height
+  const steps = Math.max(4, Math.ceil(Math.PI / (2 * Math.acos(Math.max(0, 1 - 0.0002 / Math.max(r, 0.0002))))))
+  const pts: Vec2[] = []
+  for (const end of [1, -1]) {
+    for (let i = 0; i <= steps; i++) {
+      // Each cap is a half circle: the +x or +y one first, then the other, so the ring runs one way round.
+      const a = (horizontal ? -Math.PI / 2 : 0) + (end === 1 ? 0 : Math.PI) + (i / steps) * Math.PI
+      pts.push(horizontal ? { x: end * half + r * Math.cos(a), y: r * Math.sin(a) } : { x: r * Math.cos(a), y: end * half + r * Math.sin(a) })
+    }
+  }
+  return pts
+}
+
+/** Pads in board coordinates, with bottom-side parts mirrored across their local Y axis. A part turned by other than a quarter turn has its rectangular and pill pads as polygons (their exact outline on the board). */
 export function pcbPads(c: ComponentInstance): WorldPad[] {
   const part = findPart(c.partId)
   const fp = componentFootprint(c)
   if (!fp || !part) return []
   const mirror = c.pcb.side === "bottom"
-  const swap = c.pcb.rot === 90 || c.pcb.rot === 270
+  const quarter = isQuarterTurn(c.pcb.rot)
+  const turn = normalizeAngle(c.pcb.rot)
+  const swap = quarter && (turn === 90 || turn === 270)
   return fp.pads.map((pad) => {
     const center = transformPoint(pad, c.pcb, c.pcb.rot, mirror)
     const smdLayer: CopperLayer = c.pcb.side
+    const layers: CopperLayer[] = pad.layer === "through" ? ["top", "bottom"] : [smdLayer]
+    const padNumber = pad.pin
+    const pin = pad.pin ? (part.padAlias?.[pad.pin] ?? pad.pin) : null
+    const slot = pad.slotLength ? { slotLength: pad.slotLength } : {}
+    const plated = pad.plated === false ? { plated: false as const } : {}
+    if (quarter) {
+      return {
+        componentId: c.id,
+        padNumber,
+        pin,
+        shape: pad.shape,
+        x: round(center.x),
+        y: round(center.y),
+        width: swap ? pad.height : pad.width,
+        height: swap ? pad.width : pad.height,
+        points: pad.points?.map((p) => {
+          const w = transformPoint(p, c.pcb, c.pcb.rot, mirror)
+          return { x: round(w.x), y: round(w.y) }
+        }),
+        holeDiameter: pad.holeDiameter,
+        ...slot,
+        layers,
+        ...plated,
+      }
+    }
+    const base = { componentId: c.id, padNumber, pin, holeDiameter: pad.holeDiameter, layers, ...plated }
+    // Any other angle: the outline on the board is a turned rectangle or stadium, held as its corners.
+    let ring: Vec2[] | null = null
+    if (pad.shape === "polygon" && pad.points) ring = pad.points.map((p) => transformPoint(p, c.pcb, c.pcb.rot, mirror))
+    else if (pad.shape === "rect") {
+      const hw = pad.width / 2
+      const hh = pad.height / 2
+      ring = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => transformPoint({ x: pad.x + dx, y: pad.y + dy }, c.pcb, c.pcb.rot, mirror))
+    } else if (pad.shape === "pill") ring = pillPolygon(pad.width, pad.height).map((q) => transformPoint({ x: pad.x + q.x, y: pad.y + q.y }, c.pcb, c.pcb.rot, mirror))
+    const axis = pad.slotLength ? ((turn + (pad.width >= pad.height ? 0 : 90)) % 180) : undefined
+    if (!ring) return { ...base, shape: pad.shape, x: round(center.x), y: round(center.y), width: pad.width, height: pad.height, ...slot, ...(axis !== undefined ? { slotAxis: round(axis, 6) } : {}) }
+    const xs = ring.map((q) => q.x)
+    const ys = ring.map((q) => q.y)
     return {
-      componentId: c.id,
-      padNumber: pad.pin,
-      pin: pad.pin ? (part.padAlias?.[pad.pin] ?? pad.pin) : null,
-      shape: pad.shape,
+      ...base,
+      shape: "polygon" as const,
       x: round(center.x),
       y: round(center.y),
-      width: swap ? pad.height : pad.width,
-      height: swap ? pad.width : pad.height,
-      points: pad.points?.map((p) => {
-        const w = transformPoint(p, c.pcb, c.pcb.rot, mirror)
-        return { x: round(w.x), y: round(w.y) }
-      }),
-      holeDiameter: pad.holeDiameter,
-      ...(pad.slotLength ? { slotLength: pad.slotLength } : {}),
-      layers: pad.layer === "through" ? ["top", "bottom"] : [smdLayer],
-      ...(pad.plated === false ? { plated: false as const } : {}),
+      width: round(Math.max(...xs) - Math.min(...xs)),
+      height: round(Math.max(...ys) - Math.min(...ys)),
+      points: ring.map((q) => ({ x: round(q.x), y: round(q.y) })),
+      ...slot,
+      ...(axis !== undefined ? { slotAxis: round(axis, 6) } : {}),
+      ...(pad.shape === "rect" || pad.shape === "pill" ? { oriented: { width: pad.width, height: pad.height, rot: round(turn % 180, 6) } } : {}),
     }
   })
 }

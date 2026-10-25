@@ -4,6 +4,7 @@ import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
 import { pcbPads, type WorldPad } from "./instances"
 import { pointShapeDistance, type ShapeCopper } from "./shapes"
+import { outlineGeometry, rasterizeInside } from "./outline"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
 import { fillTester } from "./pour"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
@@ -65,6 +66,14 @@ const POWER_NAME = /^(gnd|agnd|dgnd|pgnd|vcc|vdd|vss|vin|vbus|vbat|v\+|[0-9]+v[0
 
 /** How far a point inside a pad is from the pad's edge (0 outside). */
 function padInset(p: Vec2, pad: WorldPad): number {
+  if (pad.shape === "polygon" && pad.points && pad.points.length >= 3) {
+    // A turned rectangle or pill of a part at an angle: inside it, the distance to its nearest side.
+    const ring = pad.points
+    if (pointPadDistance(p, pad) > 0) return 0
+    let best = Infinity
+    for (let i = 0; i < ring.length; i++) best = Math.min(best, pointSegmentDistance(p, ring[i], ring[(i + 1) % ring.length]))
+    return best
+  }
   if (pad.shape === "circle") return Math.max(0, pad.width / 2 - Math.hypot(p.x - pad.x, p.y - pad.y))
   if (pad.shape === "pill") {
     const r = Math.min(pad.width, pad.height) / 2
@@ -320,9 +329,15 @@ class Router {
   private markEdge() {
     const b = this.project.board
     const viaR = this.project.rules.viaDiameter / 2
+    // A board with an outline of its own: which cells are on it is scan-filled once, and only the edges near a cell are measured.
+    const g = outlineGeometry(b)
+    const onBoard = g?.rings.length ? rasterizeInside(g, this.ox, this.oy, this.nx, this.ny, this.g) : null
+    let reachLimit = this.project.rules.edgeClearance + viaR + this.margin + 1e-6
+    for (const w of this.owners.keys()) reachLimit = Math.max(reachLimit, this.project.rules.edgeClearance + w / 2 + this.margin + 1e-6)
     for (let iy = 0; iy < this.ny; iy++) {
       for (let ix = 0; ix < this.nx; ix++) {
-        const d = edgeDistance(b, { x: this.cx(ix), y: this.cy(iy) })
+        const at = { x: this.cx(ix), y: this.cy(iy) }
+        const d = g ? (onBoard && !onBoard[iy * this.nx + ix] ? -1 : g.nearest(at, reachLimit)) : edgeDistance(b, at)
         const i = iy * this.nx + ix
         for (const [w, arr] of this.owners) {
           if (d < this.project.rules.edgeClearance + w / 2 + this.margin) {

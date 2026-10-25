@@ -92,8 +92,9 @@ export function checkPads(o: OracleFootprint[], project: Project): X7Check {
       if (worst > TOL) bad.push(`copper differs by ${worst.toFixed(4)} at ${at} (${d.eff})`)
       // ---- the layers ----
       const sides = (set: Iterable<string>) => [...set].map((s) => (s === "F" ? "top" : "bottom"))
-      if (noCopper) {
-        if (!setEq(w.ring ?? [], sides(d.faces.flashed))) bad.push("copper layers of a hole")
+      if (w.plated === false) {
+        // a non-plated hole's `layers` are the obstacle's (both sides); the copper it flashes is its ring
+        if (!setEq(w.ring ?? [], sides(d.faces.flashed))) bad.push(`copper layers of a hole ${(w.ring ?? []).join("+") || "none"} against the file's ${sides(d.faces.flashed).join("+") || "none"}`)
       } else if (!setEq(w.layers, sides(d.faces.flashed))) bad.push(`copper layers ${w.layers.join("+")} against the file's ${sides(d.faces.flashed).join("+")}`)
       if (!setEq(maskSides(w), sides(d.faces.mask))) bad.push(`mask layers ${maskSides(w).join("+")} against the file's ${sides(d.faces.mask).join("+")}`)
       if (!setEq(pasteSides(w), sides(d.faces.paste))) bad.push(`paste layers ${pasteSides(w).join("+")} against the file's ${sides(d.faces.paste).join("+")}`)

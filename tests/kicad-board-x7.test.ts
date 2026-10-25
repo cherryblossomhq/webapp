@@ -534,3 +534,37 @@ describe("the project is the project it was for a board with no X7 features", ()
     for (const p of land.pads) expect(Object.keys(p).sort()).toEqual(["height", "layer", "pin", "shape", "width", "x", "y"])
   })
 })
+
+describe("corpus findings: slots on square pads, round ovals of non-plated holes, and a turn from a bottom part", () => {
+  const thru = '"*.Cu" "*.Mask"'
+  const slotAt = (layer: string, at: string) => {
+    // a pad's stored angle is the board's: the part's own, so the pad does not turn within it
+    const r = imp(board({ body: [footprint({ ref: "U1", layer, at, pads: [pad({ number: "1", type: "thru_hole", shape: "rect", at: `0 0 ${at.split(" ")[2]}`, size: "3.5 3.5", layers: thru, extra: "(drill oval 3 1)" })] })] }))
+    return slotEnds(pcbPads(r.project.components[0])[0])!
+  }
+  it("a slot across a square pad follows the part's turn, top and bottom", () => {
+    // the drill is wider than high: along the pad's x, which is the board's y once the part turns a quarter
+    const horizontal = (e: ReturnType<typeof slotAt>) => Math.abs(e[0].y - e[1].y) < 1e-6 && Math.abs(e[0].x - e[1].x) > 1
+    const vertical = (e: ReturnType<typeof slotAt>) => Math.abs(e[0].x - e[1].x) < 1e-6 && Math.abs(e[0].y - e[1].y) > 1
+    expect(horizontal(slotAt("F.Cu", "10 5 0"))).toBe(true)
+    expect(vertical(slotAt("F.Cu", "10 5 90"))).toBe(true)
+    expect(vertical(slotAt("B.Cu", "10 5 90"))).toBe(true)
+    expect(horizontal(slotAt("B.Cu", "10 5 180"))).toBe(true)
+  })
+  it("a round oval with a round drill keeps its copper in a non-plated hole, a circle's is dropped", () => {
+    const ring = (shape: string, drill: string) => {
+      const r = imp(board({ body: [footprint({ ref: "U1", pads: [pad({ number: "", type: "np_thru_hole", shape, at: "0 0", size: "1.5 1.5", layers: thru, extra: `(drill ${drill})` })] })] }))
+      return pcbPads(r.project.components[0])[0].ring
+    }
+    expect(ring("oval", "1.5")).toEqual(["top", "bottom"])
+    expect(ring("circle", "1.5")).toBeUndefined()
+    expect(ring("circle", "oval 1.5")).toEqual(["top", "bottom"])
+    expect(ring("oval", "oval 1.5")).toBeUndefined()
+  })
+  it("a pad turned a quarter within a bottom part has its sides swapped on the board", () => {
+    const r = imp(board({ body: [footprint({ ref: "U1", layer: "B.Cu", at: "10 5 180", pads: [pad({ number: "1", at: "0 0 90", size: "3.5 1.7", layers: '"B.Cu" "B.Paste" "B.Mask"', extra: "(drill (offset 0.9 0))" })] })] }))
+    const w = pcbPads(r.project.components[0])[0]
+    near(w.width, 1.7)
+    near(w.height, 3.5)
+  })
+})

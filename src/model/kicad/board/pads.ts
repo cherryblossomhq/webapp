@@ -222,10 +222,12 @@ export function landPad(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?
       break
     }
     case "circle":
-      Object.assign(out, { shape: "circle", width: r6(size.w), height: r6(size.w) })
+      // A circle with an oval drill of a non-plated hole keeps its copper in KiCad even where the drill covers it, so it stays a stadium of equal sides.
+      Object.assign(out, { shape: npth && drill?.oval ? "pill" : "circle", width: r6(size.w), height: r6(size.w) })
       break
     case "oval":
-      if (Math.abs(size.w - size.h) < 1e-6) Object.assign(out, { shape: "circle", width: r6(size.w), height: r6(size.w) })
+      // A round oval of a non-plated hole stays a stadium: KiCad flashes its copper even where a round drill covers it (a circle's is dropped, pad.cpp `FlashLayer`).
+      if (Math.abs(size.w - size.h) < 1e-6 && !(npth && drill && !drill.oval)) Object.assign(out, { shape: "circle", width: r6(size.w), height: r6(size.w) })
       else out.shape = "pill"
       break
     case "rect":
@@ -261,7 +263,9 @@ export function landPad(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?
       const axis = (((holeAxis + (polygonCentre ? turn : frameTurn)) % 180) + 180) % 180
       const normal = out.width >= out.height ? 0 : 90
       const diff = Math.abs(axis - normal)
-      if (diff > 1e-6 && Math.abs(diff - 180) > 1e-6) out.holeAxis = r6(axis)
+      // A square or round pad has no longer side for the slot to follow when the part turns, so its axis is always written.
+      const square = Math.abs(out.width - out.height) < 1e-9
+      if (square || (diff > 1e-6 && Math.abs(diff - 180) > 1e-6)) out.holeAxis = r6(axis)
     }
   }
   // ---- layers, margins, overrides ----

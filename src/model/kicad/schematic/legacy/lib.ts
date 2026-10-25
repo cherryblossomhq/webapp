@@ -102,7 +102,7 @@ export interface LegacyLibrary {
   /** `EESchema-LIB` files (`.sym`: one symbol to reuse shapes) rather than `EESchema-LIBRARY`. */
   isSymbolFile: boolean
   parts: LegacyPart[]
-  /** Every name a symbol can be found by: the symbols' own, and their aliases (a name used twice in a library is renamed `name_0`, `name_1`...). */
+  /** Every name a symbol can be found by: the symbols' own, and their aliases (a name used twice in a library is renamed `name1`, `name12`... as 5.1's `checkForDuplicates` does). */
   byName: Map<string, LegacyPart>
   /** Every record of the file by path with its count. */
   records: Map<string, number>
@@ -213,17 +213,21 @@ export function readLegacyLibraryText(text: string): LegacyLibrary {
     else throw new LegacyParseError("unknown-record", `Line ${at + 1}: a line of the library this importer does not know (${JSON.stringify(raw.slice(0, 60))}).`, at + 1, "?")
   }
 
-  // Register the names: the symbols' own, then their aliases, a name already taken is renamed `name_0`, `name_1`...
+  // Register the names: the symbols' own, then their aliases, a name already taken is renamed as 5.1 renames it: `name1`, then `name12`...
   for (const part of parts) {
     for (const alias of part.aliases) {
       if (!byName.has(alias)) {
         byName.set(alias, part)
         continue
       }
-      let i = 0
-      let renamed: string
-      do renamed = `${alias}_${i++}`
-      while (byName.has(renamed))
+      // 5.1 `checkForDuplicates` (`sch_legacy_plugin.cpp:2792`): the counter is appended to the name being tried, so the tries are `A1`, `A12`, `A123`...
+      let cur = alias
+      let counter = 1
+      let renamed = alias
+      while (byName.has(renamed)) {
+        cur += String(counter++)
+        renamed = cur
+      }
       if (alias === part.name) part.name = renamed
       else part.aliases[part.aliases.indexOf(alias)] = renamed
       byName.set(renamed, part)

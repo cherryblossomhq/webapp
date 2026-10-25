@@ -295,12 +295,13 @@ export function deriveLegacyNets(rootFile, opts = {}) {
         continue
       }
       out.symbols++
-      // The uses of the symbol: one for each `AR` line (a path and a unit), or its own place.
-      const uses = c.ar.length ? c.ar.map((a) => ({ path: a.path.toUpperCase().replace(/\/0+(?=[0-9A-F])/g, "/"), ref: a.ref, unit: a.part || c.unit })) : [{ path: c.ts === "0" ? `/0@${c.fields[0] ?? ""}` : `/${[...chain, c.ts].join("/")}`, ref: c.fields[0] ?? "", unit: c.unit }]
+      // The use of the symbol on this sheet: 5.1 `GetRef` takes the `AR` line whose path is the sheet's path and the symbol's own timestamp, and the reference of field 0 when there is none
+      // (a stale line, with another timestamp, is never matched).
+      const norm = (path) => path.toUpperCase().replace(/\/0+(?=[0-9A-F])/g, "/")
+      const here = `/${[...chain, c.ts].join("/")}`
+      const hit = c.ar.find((a) => norm(a.path) === here)
+      const uses = [hit ? { path: here, ref: hit.ref, unit: hit.part || c.unit } : { path: c.ts === "0" ? `/0@${c.fields[0] ?? ""}` : here, ref: c.fields[0] ?? "", unit: c.unit }]
       for (const use of uses) {
-        // A use whose path is not this sheet's place belongs to another instance of a shared sheet.
-        const mine = c.ar.length ? use.path === `/${[...chain, c.ts].join("/")}` : true
-        if (!mine) continue
         for (const p of part.pins) {
           if (p.unit !== 0 && p.unit !== use.unit) continue
           if (p.convert !== 0 && p.convert !== c.convert) continue

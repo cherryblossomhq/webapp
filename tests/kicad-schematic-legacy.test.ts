@@ -111,6 +111,27 @@ describe("the records of a legacy schematic", () => {
     expect(props.slice(4).map((p) => p.name)).toEqual(["First", "Field5"])
   })
 
+  it("a user field slot given twice overwrites, as 5.1 does, and a slot beyond the count takes the next one", () => {
+    const f = (i: number, t: string, just = "C", style = "CNN") => `F ${i} "${t}" H 0 0 50  0001 ${just} ${style} "N${i}"`
+    const text = HEAD() + comp({ lib: "Device:R", ref: "R1", ts: R1, at: [0, 0], extraFields: [f(4, "x", "L", "CIN"), f(4, "y"), f(9, "z"), f(9, "w")] }) + END
+    const c = readLegacySchematicText(text).comps[0]
+    expect(c.fields.filter((q) => q.index >= 4).map((q) => [q.index, q.text])).toEqual([[4, "y"], [5, "z"], [6, "w"]])
+    // what the first line set (left, italic) stays, since KiCad sets a justification or style only when the line says it
+    expect(c.fields.find((q) => q.index === 4)).toMatchObject({ hjust: "L", italic: true })
+  })
+
+  it("an AR line that names another symbol's timestamp is never matched: the reference is field 0's (5.1 GetRef)", () => {
+    const text = HEAD() + comp({ lib: "Device:R", ref: "R1", ts: R1, at: [0, 0], ar: ["/5B000001/" + R2] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [500, 0], ar: ["/5B000001/" + R2, "/5B000002/00" + R2.slice(2)] }) + END
+    const l = readLegacySchematicText(text)
+    expect(l.comps[0].ar).toEqual([])
+    expect(l.comps[1].ar.map((a) => a.path)).toEqual(["/5B000001/" + R2])
+    expect(l.notes.filter((n) => n.code === "stale-ar")).toHaveLength(2)
+    const sch = readKicadSchematic(legacyToKicadText(l)).schematic
+    expect(sch.symbols[0].instances).toEqual([])
+    const r = imp(mini(comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000], ar: ["/5B000001/" + R2] })))
+    expect(r.status === "refused" ? r.message : r.report.entries.find((e) => e.code === "legacy-stale-ar")?.why).toMatch(/never matches such a line/)
+  })
+
   it("the orientation matrices are the turn and mirror KiCad's own list gives, and place a pin where the matrix does", () => {
     const matrices: [number, number, number, number][] = [
       [1, 0, 0, -1],
@@ -493,7 +514,10 @@ describe("the library format", () => {
     expect(() => readLegacyLibraryText("EESchema-LIBRARY Version 2.4\nDEF A A 0 0 N N 1 F N\nDRAW\nX A 1 0 0 1 R 50 50 1 1 Q\nENDDRAW\nENDDEF\n")).toThrow(/unknown pin type/)
     expect(() => readLegacyLibraryText("EESchema-LIBRARY Version 2.4\nDEF A A 0 0 N N 1 F N\nWHAT\nENDDEF\n")).toThrow(/does not know/)
     const twice = readLegacyLibraryText("EESchema-LIBRARY Version 2.4\nDEF A A 0 0 N N 1 F N\nENDDEF\nDEF A A 0 0 N N 1 F N\nENDDEF\n")
-    expect([...twice.byName.keys()]).toEqual(["A", "A_0"])
+    // 5.1 `checkForDuplicates` appends the counter to the name it is trying: A1, then A12
+    expect([...twice.byName.keys()]).toEqual(["A", "A1"])
+    const thrice = readLegacyLibraryText("EESchema-LIBRARY Version 2.4\nDEF A A 0 0 N N 1 F N\nENDDEF\nDEF A A 0 0 N N 1 F N\nENDDEF\nDEF A A 0 0 N N 1 F N\nENDDEF\n")
+    expect([...thrice.byName.keys()]).toEqual(["A", "A1", "A12"])
   })
 
   it("a header without a version number is KiCad's own error for the oldest cache libraries", () => {

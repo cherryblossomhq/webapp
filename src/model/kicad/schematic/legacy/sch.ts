@@ -185,7 +185,7 @@ export interface LegacySchematic {
   /** The ERC markers old KiCad versions saved in the schematic (`Kmarq`): KiCad recomputes them. */
   markers: { type: string; x: number; y: number; text: string }[]
   /** What the file says that KiCad does not read or reads another way, each with the line: said in the import report, never dropped silently. */
-  notes: { code: "ignored-v1" | "comma-decimal"; text: string }[]
+  notes: { code: "ignored-v1" | "comma-decimal" | "stale-ar"; text: string }[]
   /** Every record of the file by its path, with its count: what the accounting shows. */
   records: Map<string, number>
 }
@@ -427,8 +427,9 @@ export function readLegacySchematicText(text: string): LegacySchematic {
         const y = c.int()
         const size = c.int()
         const attrs = c.hex()
-        // The file's slot is only a hint for a user field: it takes the next free slot.
-        if (index >= MANDATORY_FIELDS) index = MANDATORY_FIELDS + fields.filter((f) => f.index >= MANDATORY_FIELDS).length
+        // 5.1 (`sch_legacy_plugin.cpp:1588`): a slot at or beyond the number of fields so far is a new field in the next free slot; a slot below it is that field again, which the line overwrites.
+        const held = MANDATORY_FIELDS + fields.filter((f) => f.index >= MANDATORY_FIELDS).length
+        if (index >= held) index = held
         const f: LegacyField = { index, text, orient, x, y, size, attrs, hjust: "C", vjust: "C", italic: false, bold: false, name: null }
         if (version > 1) {
           const hjust = c.char()
@@ -456,9 +457,16 @@ export function readLegacySchematicText(text: string): LegacySchematic {
         }
         if (orient !== "H" && orient !== "V") c.fail("bad-value", "the orientation of a field must be H or V")
         endOfLine(c)
-        // A field of a slot that the file gives twice: the later one wins, as in KiCad.
+                // KiCad sets a justification, italic or bold only when the line says it, so what an earlier line of the slot set stays.
         const had = fields.findIndex((q) => q.index === f.index)
-        if (had >= 0) fields[had] = f
+        if (had >= 0) {
+          const prev = fields[had]
+          if (f.hjust === "C") f.hjust = prev.hjust
+          if (f.vjust === "C") f.vjust = prev.vjust
+          f.italic = f.italic || prev.italic
+          f.bold = f.bold || prev.bold
+          fields[had] = f
+        }
         else fields.push(f)
         count("$Comp>F")
       } else if (c.compare("$EndComp")) {
@@ -490,6 +498,13 @@ export function readLegacySchematicText(text: string): LegacySchematic {
     if (!sawU) throw new LegacyParseError("bad-line", `Line ${startLine}: a symbol with no \`U\` line.`, startLine, "$Comp")
     if (!sawMatrix) throw new LegacyParseError("bad-line", `Line ${startLine}: a symbol with no orientation matrix.`, startLine, "$Comp")
     comp.fields = fields.sort((a, b) => a.index - b.index)
+    // 5.1 `SCH_COMPONENT::GetRef` (`sch_component.cpp:705`) takes an `AR` line only when its path is the sheet's path and the symbol's own timestamp; a line whose last element is another
+    // timestamp is a stale one (a symbol copied or re-stamped), never matched, and the reference is the one of field 0.
+    const stamp = (t: string) => t.toUpperCase().replace(/^0+(?=.)/, "")
+    const own = stamp(comp.ts)
+    const kept = comp.ar.filter((a) => stamp(a.path.split("/").filter((e) => e !== "").pop() ?? "") === own)
+    if (kept.length !== comp.ar.length) out.notes.push({ code: "stale-ar", text: `${comp.refDesignator || comp.libName} (line ${startLine}): ${comp.ar.length - kept.length} \`AR\` line${comp.ar.length - kept.length > 1 ? "s" : ""} name another symbol's timestamp` })
+    comp.ar = kept
     return comp
   }
 

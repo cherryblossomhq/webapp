@@ -106,6 +106,16 @@ export function readLegacySchematic(input: string | Uint8Array, sources: LegacyS
       count: ignored.length,
     })
   }
+  const stale = legacy.notes.filter((n) => n.code === "stale-ar")
+  if (stale.length) {
+    read.report.entries.push({
+      code: "legacy-stale-ar",
+      severity: "note",
+      object: `${stale.length} symbol${stale.length > 1 ? "s" : ""} with a reference line for another symbol (${stale.slice(0, 3).map((n) => n.text.split(" (")[0]).join(", ")}${stale.length > 3 ? ", ..." : ""})`,
+      why: "A reference line (AR) of these symbols names the timestamp of another symbol. KiCad 5.1 never matches such a line (SCH_COMPONENT::GetRef), so the reference of the symbol is the one in its own first field, as here.",
+      count: stale.length,
+    })
+  }
   const commas = legacy.notes.filter((n) => n.code === "comma-decimal")
   if (commas.length) {
     read.report.entries.push({ code: "legacy-comma-decimal", severity: "changed", object: commas.map((n) => n.text).join("; "), why: "The file was written in a language that has a decimal comma; the number is read as it says (KiCad would read the part before the comma).", count: commas.length })

@@ -74,25 +74,28 @@ describe("B2 and M2: nets are the file's, by raw name, pad by pad", () => {
     nets: ['(net 0 "")', '(net 1 "GND")'],
     body: [footprint({ ref: "BP1", pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "1", at: "1 0" }), pad({ number: "2", at: "3 0" })] })],
   })
-  it("a pad number with a net and the same number with none is X7, named in the refusal, and not a refusal for good", () => {
+  it("a pad number with a net and the same number with none is X7 (a pin each), imported with the netless one marked no connect", () => {
     const r = importKicadBoard(BP1)
-    expect(r.status).toBe("refused")
-    if (r.status !== "refused") return
-    expect(r.needs.map((n) => n.ext)).toContain("X7")
-    expect(r.needs.find((n) => n.ext === "X7")?.why).toMatch(/share a number but carry different nets, or a net and no net/)
-    expect(r.reason).toBe("unsupported")
-    expect(r.report.entries.some((e) => e.code === "pad-number-two-nets")).toBe(false)
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    const c = r.project.components[0]
+    const { pinNet } = computeConnectivity(r.project)
+    expect(pinNet.get(pinKey(c.id, "1"))).toBe("net:GND")
+    expect(pinNet.get(pinKey(c.id, "1.2"))).toBeUndefined()
+    expect(c.nc).toEqual(["1.2", "2"])
+    expect(r.report.entries.some((e) => e.code === "pad-number-two-nets" || e.code === "net-mismatch")).toBe(false)
   })
   it("two nets on one number is the same need", () => {
     const text = board({ nets: ['(net 0 "")', '(net 1 "A")', '(net 2 "B")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "A")' }), pad({ number: "1", at: "1 0", net: '(net 2 "B")' })] })] })
     expect(needsOf1(text)).toContain("X7")
   })
-  it("the netless pad does not join the net: the build says so", () => {
+  it("the netless pad does not join the net: it has a pin of its own, and the build is exact", () => {
     const read = readKicadBoard(BP1)
     const report: ImportReport = { entries: [], account: null }
     const built = buildKicadProject(read.board, outlineOf(read.board), report, { allowLossy: true })
-    expect(built.lossy).toContain("pads that share a number but carry different nets, or a net and no net")
-    expect(report.entries.find((e) => e.code === "net-mismatch")?.object).toMatch(/pad 1 is on GND but has no net in the file/)
+    expect(built.lossy).toEqual([])
+    expect(report.entries.some((e) => e.code === "net-mismatch")).toBe(false)
+    expect(built.project.footprints![0].pads.map((p) => p.pin)).toEqual(["1", "1.2", "2"])
   })
   it("/A/B and /A{slash}B are two nets with two labels, and a single /A{slash}B is labelled /A/B", () => {
     const two = board({ nets: ['(net 0 "")', '(net 1 "/A/B")', '(net 2 "/A{slash}B")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "/A/B")' }), pad({ number: "2", at: "1 0", net: '(net 2 "/A{slash}B")' })] })] })

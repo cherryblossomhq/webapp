@@ -29,6 +29,7 @@ import { registerProjectParts } from "../model/customParts"
 import { libraryFootprint } from "../model/footprintLibrary"
 import { componentFootprint, isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, valueText, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
+import { holeCentre, padOutline } from "../model/padDistance"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
@@ -224,7 +225,11 @@ function padElements(c: ComponentInstance, pcbComponentId: string, portIds: Map<
       port_hints: [...new Set([pad.padNumber, pad.pin].filter((h): h is string => !!h))],
       ...(pad.pin && portIds.has(pad.pin) ? { pcb_port_id: portIds.get(pad.pin) } : {}),
     }
-    out.push(pad.holeDiameter ? platedHole(pad, link, ids.next("pcb_plated_hole")) : smtPad(pad, link, pad.layers[0], ids.next("pcb_smtpad")))
+    if (pad.holeDiameter) {
+      // A hole whose pad has no copper at all is a bare hole in Circuit JSON.
+      if (pad.layers.length === 0) out.push(npthElement(pad, pcbComponentId, ids.next("pcb_hole")))
+      else out.push(platedHole(pad, link, ids.next("pcb_plated_hole")))
+    } else for (const layer of pad.layers) out.push(smtPad(pad, link, layer, ids.next("pcb_smtpad")))
   }
   return out
 }
@@ -235,15 +240,19 @@ interface PadLink {
   pcb_port_id?: string
 }
 
+/** A pad's own mask and paste margins, where Circuit JSON has a field for them (a pad of the board's margins says none). */
+const padMargins = (pad: WorldPad) => ({ ...(pad.maskMargin !== undefined ? { soldermask_margin: mm(pad.maskMargin) } : {}), ...(pad.pasteMargin !== undefined ? { solderpaste_margin: mm(pad.pasteMargin) } : {}) })
+
 function smtPad(pad: WorldPad, link: PadLink, layer: "top" | "bottom", id: string): PcbSmtPad {
   const at = { x: mm(pad.x), y: mm(pad.y) }
-  const common = { pcb_smtpad_id: id, layer, ...link, is_covered_with_solder_mask: false }
+  const common = { pcb_smtpad_id: id, layer, ...link, is_covered_with_solder_mask: false, ...padMargins(pad) }
   if (pad.oriented) {
     const o = pad.oriented
     // A part at an angle that is not a quarter turn: the pad keeps its own size and turns, as KiCad's pad angle and Circuit JSON's rotated shapes have it.
     if (pad.points?.length && pad.shape === "polygon" && pad.slotAxis === undefined) {
-      return pad.points.length === 4
-        ? ({ type: "pcb_smtpad", shape: "rotated_rect", ...at, width: mm(o.width), height: mm(o.height), ccw_rotation: o.rot, ...common } as PcbSmtPad)
+      const radius = o.corner ? { rect_border_radius: mm(o.corner) } : {}
+      return pad.points.length === 4 || o.corner
+        ? ({ type: "pcb_smtpad", shape: "rotated_rect", ...at, width: mm(o.width), height: mm(o.height), ...radius, ccw_rotation: o.rot, ...common } as PcbSmtPad)
         : ({ type: "pcb_smtpad", shape: "rotated_pill", ...at, width: mm(o.width), height: mm(o.height), radius: mm(Math.min(o.width, o.height) / 2), ccw_rotation: o.rot, ...common } as PcbSmtPad)
     }
   }
@@ -252,14 +261,30 @@ function smtPad(pad: WorldPad, link: PadLink, layer: "top" | "bottom", id: strin
   if (pad.shape === "pill") {
     return { type: "pcb_smtpad", shape: "pill", ...at, width: mm(pad.width), height: mm(pad.height), radius: mm(Math.min(pad.width, pad.height) / 2), ...common }
   }
-  return { type: "pcb_smtpad", shape: "rect", ...at, width: mm(pad.width), height: mm(pad.height), ...common }
+  return { type: "pcb_smtpad", shape: "rect", ...at, width: mm(pad.width), height: mm(pad.height), ...(pad.corner ? { rect_border_radius: mm(pad.corner) } : {}), ...common }
 }
 
 function platedHole(pad: WorldPad, link: PadLink, id: string): PcbPlatedHole {
   const at = { x: mm(pad.x), y: mm(pad.y) }
   const drill = pad.holeDiameter!
-  const common = { pcb_plated_hole_id: id, layers: ["top", "bottom"] as ("top" | "bottom")[], ...link, is_covered_with_solder_mask: false }
+  const common = { pcb_plated_hole_id: id, layers: (pad.x7 ? pad.layers : ["top", "bottom"]) as ("top" | "bottom")[], ...link, is_covered_with_solder_mask: false, ...(pad.maskMargin !== undefined ? { soldermask_margin: mm(pad.maskMargin) } : {}) }
   const slot = slotEnds(pad)
+  // A pad whose hole is not at its centre, with rounded corners, or of a shape of its own: its outline round the hole, exactly.
+  if (pad.x7 && (pad.hole || pad.corner || pad.rings || (pad.shape === "polygon" && !pad.oriented))) {
+    const hole = pad.hole ?? pad
+    const ring = padOutline(pad)[0]
+    return {
+      type: "pcb_plated_hole",
+      shape: "hole_with_polygon_pad",
+      hole_shape: slot ? "rotated_pill" : "circle",
+      ...(slot ? { hole_width: mm(pad.slotLength!), hole_height: mm(drill), ccw_rotation: pad.slotAxis ?? 0 } : { hole_diameter: mm(drill) }),
+      pad_outline: ring.map((p) => ({ x: mm(p.x - pad.x), y: mm(p.y - pad.y) })),
+      hole_offset_x: mm(hole.x - pad.x),
+      hole_offset_y: mm(hole.y - pad.y),
+      ...at,
+      ...common,
+    } as PcbPlatedHole
+  }
   const o = pad.oriented
   const along = o ? o.width >= o.height : pad.width >= pad.height
   const hole = slot ? { hole_width: mm(along ? pad.slotLength! : drill), hole_height: mm(along ? drill : pad.slotLength!) } : { hole_width: mm(drill), hole_height: mm(drill) }
@@ -305,7 +330,7 @@ function platedHole(pad: WorldPad, link: PadLink, id: string): PcbPlatedHole {
 }
 
 function npthElement(pad: WorldPad, pcbComponentId: string | undefined, id: string): PcbHole {
-  const at = { x: mm(pad.x), y: mm(pad.y) }
+  const at = { x: mm(holeCentre(pad).x), y: mm(holeCentre(pad).y) }
   const owner = pcbComponentId ? { pcb_component_id: pcbComponentId } : {}
   if (pad.slotAxis !== undefined && pad.slotLength && pad.slotLength > pad.holeDiameter! + 1e-6) {
     return { type: "pcb_hole", pcb_hole_id: id, hole_shape: "rotated_pill", hole_width: mm(pad.slotLength), hole_height: mm(pad.holeDiameter!), ccw_rotation: pad.slotAxis, ...at, ...owner } as PcbHole
@@ -833,6 +858,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   if (emptyZones.length) notes.push(`Pours that fill nothing were left out: ${emptyZones.join(", ")}.`)
   if (project.drawings?.length) notes.push("The schematic's drawings (texts, lines and shapes) are left out.")
   if (project.footprints?.length || project.parts?.length) notes.push("Parts and land patterns made for the project are exported as the parts and pads they are; they have no link to a library in the other tool.")
+  if (!kicad && project.components.some((c) => onBoard(c) && pcbPads(c).some((p) => p.rings || p.shape === "polygon" && p.x7))) notes.push("A custom pad is written as the outline of its copper, and one with a hole in it or in pieces as its first outline: Circuit JSON has no pad with a cut-out. The KiCad export keeps it whole.")
   if (!kicad) {
     if (project.description || project.properties?.length) notes.push("The project's description and properties (revision, author and the like) are left out: Circuit JSON has no field for them.")
     notes.push("The 3D view, the net trace widths and the pour and mask settings stay in Cherry Blossom; the design rules the board states (trace width, clearances, drills) are in the board.")

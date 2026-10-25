@@ -16,8 +16,9 @@ function mix(a: string, b: string, t: number): string {
 
 function padElement(pad: WorldPad, key: string, fill: string) {
   if (pad.shape === "circle") return <circle key={key} cx={pad.x} cy={pad.y} r={pad.width / 2} fill={fill} />
+  if (pad.rings && pad.rings.length > 1) return <path key={key} d={pad.rings.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`).join("")} fillRule="evenodd" fill={fill} />
   if (pad.shape === "polygon" && pad.points) return <polygon key={key} points={pad.points.map((p) => `${p.x},${p.y}`).join(" ")} fill={fill} />
-  const rx = pad.shape === "pill" ? Math.min(pad.width, pad.height) / 2 : Math.min(pad.width, pad.height) * 0.12
+  const rx = pad.shape === "pill" ? Math.min(pad.width, pad.height) / 2 : pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12
   return <rect key={key} x={pad.x - pad.width / 2} y={pad.y - pad.height / 2} width={pad.width} height={pad.height} rx={rx} fill={fill} />
 }
 
@@ -95,7 +96,7 @@ export function BoardPreview({ project }: { project: Project }) {
         ))}
         {topPads.filter((p) => p.holeDiameter).map((p, i) => {
           const ends = slotEnds(p)
-          if (!ends) return <circle key={`h${i}`} cx={p.x} cy={p.y} r={(p.holeDiameter ?? 0) / 2} fill="#141217" />
+          if (!ends) return <circle key={`h${i}`} cx={(p.hole ?? p).x} cy={(p.hole ?? p).y} r={(p.holeDiameter ?? 0) / 2} fill="#141217" />
           const [a, z] = ends
           return <line key={`h${i}`} x1={a.x} y1={a.y} x2={z.x} y2={z.y} stroke="#141217" strokeWidth={p.holeDiameter} strokeLinecap="round" />
         })}

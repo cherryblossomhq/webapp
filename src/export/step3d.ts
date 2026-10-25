@@ -5,6 +5,7 @@ import { placementMatrix } from "../editor/three/files/placement"
 import { ModelMaterials } from "../editor/three/models"
 import { boardColors, mountingHoles } from "../model/board"
 import { pcbPads, slotEnds } from "../model/instances"
+import { holeCentre } from "../model/padDistance"
 import { outlineGeometry, pointInRing, signedArea, type OutlineGeometry } from "../model/outline"
 import { reversePath } from "../model/outlineOps"
 import { arcCircle, flattenSeg, type ShapePath } from "../model/shapes"
@@ -135,7 +136,8 @@ export function stepBoard(project: Project): StepExportInput["board"] {
     for (const p of pcbPads(c)) {
       if (!p.holeDiameter) continue
       const ends = slotEnds(p)
-      place(p.x, p.y, p.holeDiameter, ends ? { a: ends[0], b: ends[1] } : undefined)
+      const at = holeCentre(p)
+      place(at.x, at.y, p.holeDiameter, ends ? { a: ends[0], b: ends[1] } : undefined)
     }
   }
   for (const v of project.vias) place(v.x, v.y, v.drill)

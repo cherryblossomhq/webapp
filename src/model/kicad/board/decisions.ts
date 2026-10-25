@@ -128,9 +128,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^(footprint>pad>(?:terminal_pad|bevelled|thru))$",
-  "decision": "extend",
-  "ext": "X7",
-  "note": "pad corner style and padstack words"
+  "decision": "report",
+  "note": "a word of KiCad's token list that no release writes in a pad: KiCad 10's own pad parser stops at it (parsePAD, pcb_io_kicad_sexpr_parser.cpp 10.0.0 `:6366`, \"Expecting\"), so such a file does not load there either"
  },
  {
   "source": "^(footprint>pad>sim_electrical_type|footprint>attr>exclude_from_sim)$",
@@ -687,14 +686,20 @@ export const PATH_RULES: PathRule[] = [
   "ext": "X7"
  },
  {
-  "source": "^(footprint>pad>(?:at|size|layers|drill|drill>offset|options|options>(?:anchor|clearance)|primitives|rect_delta|roundrect_rratio|chamfer|chamfer_ratio|padstack|padstack>mode))$",
+  "source": "^(footprint>pad>(?:at|size|layers|drill|drill>offset|options|options>(?:anchor|clearance)|primitives|rect_delta|roundrect_rratio|chamfer|chamfer_ratio))$",
   "decision": "extend",
   "ext": "X7"
  },
  {
+  "source": "^(footprint>pad>(?:padstack|padstack>mode))$",
+  "decision": "extend",
+  "ext": "X1",
+  "note": "a pad stack (KiCad 9): the pad has its own shape on each copper layer, which needs the layer stack"
+ },
+ {
   "source": "^(footprint>pad>padstack>layer(?:>(?:chamfer|chamfer_ratio|roundrect_rratio|shape|size))?)$",
   "decision": "extend",
-  "ext": "X7",
+  "ext": "X1",
   "note": "complex padstacks: a shape per layer (KiCad 9)"
  },
  {
@@ -716,16 +721,28 @@ export const PATH_RULES: PathRule[] = [
   "decision": "native"
  },
  {
-  "source": "^(footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance|thermal_bridge_width|thermal_gap|thermal_width|thermal_bridge_angle|zone_connect|tenting(?:>(?:front|back))?|property))$",
+  "source": "^(footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance|thermal_bridge_width|thermal_gap|thermal_width|thermal_bridge_angle|zone_connect|property))$",
   "decision": "extend",
   "ext": "X7",
   "note": "per-pad overrides and fabrication properties (BGA, fiducial, test point, heat sink, castellated, press-fit)"
  },
  {
-  "source": "^(footprint>pad>(?:remove_unused_layers|keep_end_layers|zone_layer_connections))$",
+  "source": "^(footprint>pad>tenting(?:>(?:front|back))?)$",
   "decision": "extend",
-  "ext": "X7",
-  "note": "needs X1 and X3 too"
+  "ext": "X5",
+  "note": "a pad that tents or opens its own solder mask, as a via does"
+ },
+ {
+  "source": "^(footprint>pad>(?:remove_unused_layers|keep_end_layers))$",
+  "decision": "extend",
+  "ext": "X1",
+  "note": "a through-hole pad that drops its copper on layers nothing connects to; on two copper layers only `remove_unused_layers` without `keep_end_layers` changes anything"
+ },
+ {
+  "source": "^(footprint>pad>zone_layer_connections)$",
+  "decision": "extend",
+  "ext": "X3",
+  "note": "a pad that joins a pour on some copper layers and not others"
  },
  {
   "source": "^(footprint>pad>teardrops(?:>.*)?)$",

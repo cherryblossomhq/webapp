@@ -244,7 +244,7 @@ describe("project file version 7 (X10): net classes and their rules", () => {
     expect(read.rules).not.toHaveProperty("netClasses")
     expect(migrateProjectFile(v4doc)).toEqual(v4doc.project)
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(8)
+    expect(PROJECT_FILE_VERSION).toBe(10)
     // no field of X10 is written for a project that has none
     const written = JSON.parse(serializeProject(read)).project.rules
     for (const k of ["netClasses", "defaultClass", "viaSizes", "diffPairSizes", "minViaDrill", "minClearance", "maskMinWidth", "pasteRatio", "maxError", "maskBridgesInParts"]) expect(written).not.toHaveProperty(k)

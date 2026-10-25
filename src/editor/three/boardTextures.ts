@@ -1,6 +1,7 @@
 import * as THREE from "three"
 import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../../model/board"
-import { isNpth, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
+import { isNpth, maskSides, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
+import { maskMargin, padOpeningRings } from "../../model/padOpening"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
 import { worldShapes } from "../../model/shapeItems"
@@ -80,13 +81,18 @@ function padPath(ctx: CanvasRenderingContext2D, pad: WorldPad, grow = 0) {
     ctx.arc(pad.x, pad.y, w / 2, 0, Math.PI * 2)
     return
   }
+  if (pad.rings && pad.rings.length > 1) {
+    // A custom pad with a hole in it or in pieces: the rings are counted even-odd, so the context fills with "evenodd".
+    ringsPath(ctx, pad.rings)
+    return
+  }
   if (pad.shape === "polygon" && pad.points && pad.points.length >= 3) {
     ctx.moveTo(pad.points[0].x, pad.points[0].y)
     for (const p of pad.points.slice(1)) ctx.lineTo(p.x, p.y)
     ctx.closePath()
     return
   }
-  const r = pad.shape === "pill" ? Math.min(w, h) / 2 : Math.min(w, h) * 0.12
+  const r = pad.shape === "pill" ? Math.min(w, h) / 2 : pad.x7 ? Math.max(0, (pad.corner ?? 0) + grow) : Math.min(w, h) * 0.12
   ctx.roundRect(pad.x - w / 2, pad.y - h / 2, w, h, r)
 }
 
@@ -182,7 +188,7 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
   }
   ctx.beginPath()
   for (const pads of padsByComponent.values()) {
-    for (const p of pads) if (p.layers.includes(layer) && !isNpth(p)) padPath(ctx, p)
+    for (const p of pads) if ((isNpth(p) ? (p.ring ?? []) : p.layers).includes(layer)) padPath(ctx, p)
   }
   for (const v of project.vias) {
     ctx.moveTo(v.x + v.diameter / 2, v.y)
@@ -219,7 +225,13 @@ function silkStrokes(input: TextureInput, side: CopperLayer): { paths: Vec2[][];
 function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: CopperLayer, grow: number) {
   ctx.beginPath()
   for (const pads of input.padsByComponent.values()) {
-    for (const p of pads) if (p.layers.includes(side) && !isNpth(p)) padPath(ctx, p, grow)
+    for (const p of pads) {
+      if (!maskSides(p).includes(side) || isNpth(p)) continue
+      // A pad with X7 features has the opening KiCad plots for it, with its own margin.
+      const rings = p.x7 ? padOpeningRings(p, maskMargin(p, input.project.rules)) : null
+      if (rings) ringsPath(ctx, rings)
+      else padPath(ctx, p, grow)
+    }
   }
   const rings = [...mountingHoles(input.project.board), ...(input.project.rules.tentVias ? [] : input.project.vias)]
   for (const h of rings) {

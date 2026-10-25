@@ -1,0 +1,247 @@
+import { normalizeAngle, round } from "../lib/geometry"
+import { computeConnectivity, pinKey } from "../model/connectivity"
+import { componentFootprint, pcbPads, type WorldPad } from "../model/instances"
+import { hasPadFeatures } from "../model/padGeom"
+import { padFaces } from "../model/padFaces"
+import { flipShapeLayer } from "../model/shapeLayers"
+import { shapePaths } from "../model/shapes"
+import { onBoard } from "../model/partFlags"
+import type { BoardShape, ComponentInstance, PadDef, PadSides, Project, Vec2 } from "../model/types"
+import { localFrame, ringItems } from "./kicadShapes"
+
+// The pads of a part that has X7 features, written into the board file the converter made, exactly as KiCad has them: the shape (rectangle,
+// rounded or chamfered rectangle, oval, circle, custom pad), its size and turn, the hole (round or oval, with its offset), the layers, the
+// margins, clearance and pour settings, its number and net. The converter has no place for most of that (it writes every pad as a rectangle,
+// a circle or an oval and a hole with no offset in a footprint's frame), so every pad of such a part is written here and the converter's
+// are taken out; a part with none is left as the converter wrote it.
+//
+// A footprint is written as the converter does: its position and angle `A` on the page, its pads in its own frame (`localFrame`), the file's
+// state for a part on the bottom being the flipped one. The land's vectors (a drawing of a custom pad, a drill's offset, the chamfered
+// corners) are the library's, y up; KiCad stores them in the pad's frame, y down, and for a part on the bottom flipped (`PAD::Flip`, pad.cpp
+// 10.0.0 `:1442`): a vector (x, y) is (x, -y) for a part on top and (x, y) on the bottom, the pad's turn is `A + turn` on top and
+// `A - turn + 180` on the bottom (the pad is in the file's frame where the editor mirrored it: the editor's turn is the file's footprint
+// angle plus half a turn, `landPad`), and the chamfered corners swap top for bottom there.
+//
+// The tokens are the ones KiCad 9's parser reads in a pad (`parsePAD`, pcb_io_kicad_sexpr_parser.cpp 9.0.0 `:5100-5480`).
+
+const mm6 = (n: number) => String(round(n, 6) || 0)
+const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
+const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+
+/** KiCad's rotation of a vector (counter-clockwise on screen, y down). */
+function turnVec(v: Vec2, deg: number): Vec2 {
+  if (!deg) return v
+  const a = (deg * Math.PI) / 180
+  const c = Math.cos(a)
+  const s = Math.sin(a)
+  return { x: v.x * c + v.y * s, y: -v.x * s + v.y * c }
+}
+
+const FACE = { top: "F", bottom: "B" } as const
+
+/** KiCad's layer names for a pad's sides of one kind, as the file writes them (`*.Cu` for both). */
+function layerNames(sides: PadSides, kind: "Cu" | "Mask" | "Paste" | "SilkS", partBottom: boolean): string[] {
+  if (sides === "none") return []
+  if (sides === "both") return [`*.${kind}`]
+  const top = sides === "top" !== partBottom
+  return [`${top ? FACE.top : FACE.bottom}.${kind}`]
+}
+
+/** The primitives of a custom pad as KiCad's `primitives` node holds them, in the pad's stored frame. */
+function primitiveBlock(shape: BoardShape, map: (v: Vec2) => Vec2): string | null {
+  const width = mm6(shape.width)
+  const fill = `(fill ${shape.fill ? "yes" : "no"})`
+  const p = (v: Vec2) => map(v)
+  switch (shape.type) {
+    case "line":
+      return `(gr_line (start ${xy(p(shape.a))}) (end ${xy(p(shape.b))}) (width ${width}))`
+    case "arc":
+      return `(gr_arc (start ${xy(p(shape.start))}) (mid ${xy(p(shape.mid))}) (end ${xy(p(shape.end))}) (width ${width}))`
+    case "circle":
+      return `(gr_circle (center ${xy(p(shape.c))}) (end ${xy(p({ x: shape.c.x + shape.r, y: shape.c.y }))}) (width ${width}) ${fill})`
+    case "rect": {
+      if (shape.radius && shape.radius > 0) return polyOf(shape, p, width, fill)
+      return `(gr_rect (start ${xy(p(shape.a))}) (end ${xy(p(shape.b))}) (width ${width}) ${fill})`
+    }
+    case "curve":
+      return `(gr_curve (pts (xy ${xy(p(shape.p0))}) (xy ${xy(p(shape.c1))}) (xy ${xy(p(shape.c2))}) (xy ${xy(p(shape.p1))})) (width ${width}))`
+    case "polygon":
+      return polyOf(shape, p, width, fill)
+    default:
+      return null
+  }
+}
+
+/** A polygon (or a rounded rectangle) as a `gr_poly`, its corners and arcs in the stored frame. */
+function polyOf(shape: BoardShape, map: (v: Vec2) => Vec2, width: string, fill: string): string | null {
+  const path = shapePaths(shape)[0]
+  if (!path) return null
+  const mapped = path.segs.map((s) => {
+    switch (s.kind) {
+      case "line":
+        return { ...s, a: map(s.a), b: map(s.b) }
+      case "arc":
+        return { ...s, start: map(s.start), mid: map(s.mid), end: map(s.end) }
+      default:
+        return s
+    }
+  })
+  return `(gr_poly (pts ${ringItems({ closed: true, segs: mapped }).join(" ")}) (width ${width}) ${fill})`
+}
+
+/** One pad of a part, as KiCad's pad node. */
+function writePad(def: PadDef, world: WorldPad, c: ComponentInstance, frame: (p: Vec2) => Vec2, footprintAngle: number, net: { code: number; name: string } | null, uuid: string): string {
+  const bottom = c.pcb.side === "bottom"
+  const own = def.rot ?? 0
+  const fixed = def.shape === "polygon" && !def.custom
+  // The pad's own frame: the land's vectors as KiCad stores them (y down, the library's flipped on the bottom), turned by the part of the pad's turn the frame is to carry.
+  const hole = world.hole ?? world
+  const slot = def.holeDiameter !== undefined && def.slotLength !== undefined && def.slotLength > def.holeDiameter + 1e-9
+  const slotAxis = def.holeAxis ?? (def.width >= def.height ? 0 : 90)
+  // A slot runs along x of the pad's frame in KiCad; for a pad whose frame is not its own (a polygon) the frame is turned to it.
+  const extra = slot && fixed ? slotAxis : slot && slotAxis % 90 !== 0 ? slotAxis : 0
+  const store = (v: Vec2): Vec2 => turnVec({ x: v.x, y: bottom ? v.y : -v.y }, -extra)
+  const angle = normalizeAngle((bottom ? footprintAngle - own + 180 : footprintAngle + own) + extra)
+  const at = frame(hole)
+  const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : "smd"
+  const lines: string[] = []
+  const w = def.width
+  const h = def.height
+  let shape: string
+  let size = `${mm6(w)} ${mm6(h)}`
+  const extras: string[] = []
+  if (def.custom || fixed) {
+    shape = "custom"
+    size = fixed ? "0.001 0.001" : `${mm6(w)} ${mm6(def.custom!.anchor === "circle" ? w : h)}`
+    const anchor = def.custom?.anchor ?? "circle"
+    const hull = def.custom?.hull ? " (clearance convexhull)" : ""
+    extras.push(`(options (anchor ${anchor})${hull})`)
+    const centre = { x: def.x, y: def.y }
+    const prims: string[] = []
+    if (fixed) {
+      // A polygon pad: a tiny anchor at its centre and the outline as a filled polygon, with the vectors of the land's frame.
+      const pts = (def.points ?? []).map((q) => store({ x: q.x - centre.x, y: q.y - centre.y }))
+      prims.push(`(gr_poly (pts ${pts.map((q) => `(xy ${xy(q)})`).join(" ")}) (width 0) (fill yes))`)
+    } else {
+      for (const s of def.custom!.shapes) {
+        const b = primitiveBlock(s, store)
+        if (b) prims.push(b)
+      }
+      for (const s of def.custom!.proxy ?? []) {
+        const b = primitiveBlock(s, store)
+        if (b) prims.push(b.replace(/^\(gr_line/, "(gr_vector").replace(/^\(gr_rect/, "(gr_bbox").replace(/ \(width [^)]*\)/, " (width 0)"))
+      }
+    }
+    if (prims.length) extras.push(`(primitives ${prims.join(" ")})`)
+  } else if (def.shape === "circle") {
+    shape = "circle"
+    size = `${mm6(w)} ${mm6(w)}`
+  } else if (def.shape === "pill") shape = "oval"
+  else if (def.round || def.chamfer) {
+    shape = "roundrect"
+    extras.push(`(roundrect_rratio ${mm6(def.round ?? 0)})`)
+    if (def.chamfer) {
+      // The flip swapped top and bottom.
+      const k = def.chamfer.corners
+      const stored = bottom ? (k & 1 ? 8 : 0) | (k & 2 ? 4 : 0) | (k & 4 ? 2 : 0) | (k & 8 ? 1 : 0) : k
+      const names = [stored & 1 ? "top_left" : "", stored & 2 ? "top_right" : "", stored & 8 ? "bottom_left" : "", stored & 4 ? "bottom_right" : ""].filter(Boolean)
+      extras.push(`(chamfer_ratio ${mm6(def.chamfer.ratio)})`, `(chamfer ${names.join(" ")})`)
+    }
+  } else shape = "rect"
+  // The number the file gives the pad: its own when the land keeps one.
+  const number = def.number !== undefined ? def.number : (def.pin ?? "")
+  lines.push(`(pad ${quote(number)} ${type} ${shape}`)
+  lines.push(`  (at ${xy(at)}${angle ? ` ${mm6(angle)}` : ""})`)
+  lines.push(`  (size ${size})`)
+  if (def.holeDiameter !== undefined) {
+    const off = def.holeOffset && (def.holeOffset.x !== 0 || def.holeOffset.y !== 0) ? def.holeOffset : null
+    // KiCad's offset moves the copper from the hole: the opposite of where the land has the hole from the copper.
+    const o = off ? store({ x: -off.x, y: -off.y }) : null
+    const drill = slot ? `oval ${mm6(def.slotLength!)} ${mm6(def.holeDiameter)}` : mm6(def.holeDiameter)
+    lines.push(`  (drill ${drill}${o ? ` (offset ${xy(o)})` : ""})`)
+  }
+  const faces = padFaces(def)
+  const names = [...layerNames(faces.copper, "Cu", bottom), ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom), ...(def.layers?.other ?? []).map((n) => (bottom ? flipShapeLayer(n) : n))]
+  lines.push(`  (layers ${names.map(quote).join(" ")})`)
+  for (const e of extras) lines.push(`  ${e}`)
+  if (def.maskMargin !== undefined) lines.push(`  (solder_mask_margin ${mm6(def.maskMargin)})`)
+  if (def.pasteMargin !== undefined) lines.push(`  (solder_paste_margin ${mm6(def.pasteMargin)})`)
+  if (def.pasteRatio !== undefined) lines.push(`  (solder_paste_margin_ratio ${mm6(def.pasteRatio)})`)
+  if (def.clearance !== undefined) lines.push(`  (clearance ${mm6(def.clearance)})`)
+  if (def.zoneConnect !== undefined) lines.push(`  (zone_connect ${{ none: 0, thermal: 1, solid: 2, tht: 3 }[def.zoneConnect]})`)
+  if (def.thermalWidth !== undefined) lines.push(`  (thermal_bridge_width ${mm6(def.thermalWidth)})`)
+  if (def.thermalGap !== undefined) lines.push(`  (thermal_gap ${mm6(def.thermalGap)})`)
+  if (def.thermalAngle !== undefined) lines.push(`  (thermal_bridge_angle ${mm6(def.thermalAngle)})`)
+  if (net) lines.push(`  (net ${net.code} ${quote(net.name)})`)
+  if (def.property) lines.push(`  (property pad_prop_${def.property})`)
+  lines.push(`  (uuid ${uuid})`)
+  lines.push(")")
+  return lines.map((l) => `    ${l}`).join("\n")
+}
+
+export interface KicadPadsResult {
+  text: string
+  notes: string[]
+}
+
+/** Whether any placed part of the project has a pad that needs writing here. */
+export const hasPadWork = (project: Project) => project.components.some((c) => onBoard(c) && c.pcb.placed && (componentFootprint(c)?.pads.some(hasPadFeatures) ?? false))
+
+/**
+ * The board file with the pads of every part that has X7 features written as KiCad has them (each such part's pads, all of them, in the order
+ * of its land), found by reference.
+ */
+export function applyPads(pcb: string, project: Project): KicadPadsResult {
+  if (!hasPadWork(project)) return { text: pcb, notes: [] }
+  const sch = computeConnectivity(project)
+  const netName = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const nets = new Map<string, number>()
+  for (const m of pcb.matchAll(/\n {2}\(net (\d+) "((?:[^"\\]|\\.)*)"\)/g)) nets.set(m[2].replace(/\\(.)/g, "$1"), Number(m[1]))
+  const added: string[] = []
+  let next = Math.max(0, ...nets.values()) + 1
+  const code = (name: string) => {
+    let n = nets.get(name)
+    if (n === undefined) {
+      n = next++
+      nets.set(name, n)
+      added.push(`\n  (net ${n} ${quote(name)})`)
+    }
+    return n
+  }
+  let serial = 0
+  const uuid = () => `00000000-0000-4000-b000-${(++serial).toString(16).padStart(12, "0")}`
+  const byRef = new Map(project.components.filter((c) => onBoard(c) && c.pcb.placed).map((c) => [c.ref, c]))
+  let text = pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
+    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const c = ref === undefined ? undefined : byRef.get(ref)
+    const fp = c ? componentFootprint(c) : null
+    if (!c || !fp || !fp.pads.some(hasPadFeatures)) return block
+    const A = Number(block.match(/\n {4}\(at \S+ \S+(?: (\S+))?\)/)?.[1] ?? 0)
+    const world = pcbPads(c)
+    // The converter's frame for this footprint: a point of the board less the footprint's place, y flipped, turned back by its angle.
+    const frame = localFrame(c)
+    const written = fp.pads.map((def, i) => {
+      const w = world[i]
+      const netId = def.pin ? sch.pinNet.get(pinKey(c.id, def.pin)) : undefined
+      const name = netId ? netName.get(netId) : undefined
+      return writePad(def, w, c, frame, A, name ? { code: code(name), name } : null, uuid())
+    })
+    // The converter's pads out, ours in at the first one's place.
+    let first = true
+    const body = block.replace(/\n {4}\(pad\b[\s\S]*?\n {4}\)(?=\n)/g, () => {
+      if (!first) return ""
+      first = false
+      return `\n${written.join("\n")}`
+    })
+    return first ? body.replace(/\n {2}\)$/, () => `\n${written.join("\n")}\n  )`) : body
+  })
+  if (added.length) {
+    const nets2 = [...text.matchAll(/\n {2}\(net \d+ "(?:[^"\\]|\\.)*"\)/g)]
+    const last = nets2[nets2.length - 1]
+    if (last) text = `${text.slice(0, last.index + last[0].length)}${added.join("")}${text.slice(last.index + last[0].length)}`
+  }
+  return {
+    text,
+    notes: ["The pads of a part that has a rounded or chamfered corner, a custom shape, a hole off its centre, a turn of its own, its own layers or margins, or a number that is not its pin's are written as KiCad has them (shape, size, turn, hole, layers, margins, clearance, pour connection and number). The pad types KiCad calls connector pads are written as surface-mount pads with the layers they have."],
+  }
+}

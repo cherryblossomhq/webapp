@@ -1,4 +1,5 @@
 import type { WorldPad } from "../model/instances"
+import { maskMargin, padOpeningRings } from "../model/padOpening"
 import { padPaths, polygonKit, withMaxError, type FillPolygon } from "../model/pour"
 import { dashShape, flattenSeg, isClosedShape, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
 import { textsOnLayer } from "../model/texts"
@@ -19,7 +20,12 @@ import type { BoardShape, PcbSide, Project, Vec2 } from "../model/types"
 const NM = 1e-6
 
 /** A pad's opening as polygons: its copper shape grown by the mask expansion, round at the corners when it grows. */
-function padOpening(pad: WorldPad, grow: number) {
+function padOpening(pad: WorldPad, grow: number, rules: Project["rules"]) {
+  // A pad with X7 features has the opening KiCad plots for it, with its own margin (`padOpening.ts`).
+  if (pad.x7) {
+    const rings = padOpeningRings(pad, maskMargin(pad, rules))
+    return rings?.length ? polygonKit.unionEvenOdd(rings.map((r) => polygonKit.path(r))) : []
+  }
   const copper = padPaths(pad)
   return grow === 0 ? copper : polygonKit.inflate(copper, grow)
 }
@@ -63,7 +69,7 @@ export function maskRegions(project: Project, side: PcbSide, pads: WorldPad[], d
   const { maskExpansion: grow, maskMinWidth: minWidth = 0, tentVias } = project.rules
   return withMaxError(project.rules.maxError, () => {
     const parts = []
-    for (const pad of pads) parts.push(...padOpening(pad, grow))
+    for (const pad of pads) parts.push(...padOpening(pad, grow, project.rules))
     if (!tentVias) for (const v of project.vias) parts.push(...polygonKit.circle(v.x, v.y, v.diameter / 2 + grow))
     for (const shape of drawings) parts.push(...shapePolygons(shape))
     const layer = side === "top" ? "F.Mask" : "B.Mask"

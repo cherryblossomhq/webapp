@@ -17,6 +17,7 @@
 // importer's), and nothing else is decoded or trimmed.
 
 import { parseSexpr, kid, kids, numAt } from "./sexpr.mjs"
+import { padDetail } from "./pad-detail.mjs"
 
 const D2R = Math.PI / 180
 
@@ -146,16 +147,19 @@ export function oracle(text) {
       const w = numAt(size, 1)
       const h = numAt(size, 2)
       const rd = kid(p, "rect_delta")
-      const own = p[3] === "custom" ? null : corners(p[3], w, h, rd ? [numAt(rd, 1), numAt(rd, 2)] : null)
+      // a pad of no size (either way) is a micron square, as KiCad's parser makes it (parsePAD, 9.0.0 `:5485`, 10.0.0 `:6412`)
+      const kw = w <= 0 || h <= 0 ? 0.001 : w
+      const kh = w <= 0 || h <= 0 ? 0.001 : h
+      const own = p[3] === "custom" ? null : corners(p[3], kw, kh, rd ? [numAt(rd, 1), numAt(rd, 2)] : null)
       let box = null
       if (p[3] === "circle") {
         // a circle is as wide as its size's x whatever its turn (KiCad's pad.cpp), and as high
-        box = { w, h: w }
+        box = { w: kw, h: kw }
       } else if (p[3] === "oval") {
         // a stadium: its centre line of length (long - short) turned by the pad's angle, grown by the short side's half, in each axis
-        const long = Math.max(w, h)
-        const short = Math.min(w, h)
-        const axis = ((padAngle + (w >= h ? 0 : 90)) * Math.PI) / 180
+        const long = Math.max(kw, kh)
+        const short = Math.min(kw, kh)
+        const axis = ((padAngle + (kw >= kh ? 0 : 90)) * Math.PI) / 180
         box = { w: (long - short) * Math.abs(Math.cos(axis)) + short, h: (long - short) * Math.abs(Math.sin(axis)) + short }
       } else if (own) {
         const placed = own.map((c) => apply(mul(translate(px, py), turn(padAngle)), c))
@@ -163,17 +167,22 @@ export function oracle(text) {
         const ys = placed.map((c) => c[1])
         box = { w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
       }
+      const detail = padDetail(p, { stamp, copper, px, py, padAngle, kw, kh, fp })
       return {
         number: String(p[1] ?? ""),
         type: p[2],
         shape: p[3],
         x: px,
         y: py,
+        // where the copper's centre is on the board: the pad's place moved by the shape offset, turned with the pad (ShapePos)
+        cx: detail.cx,
+        cy: detail.cy,
         angle: padAngle,
         w,
         h,
         net: netOf(p),
         box,
+        detail,
       }
     })
     fps.push({ ref: refNode ? (refNode[2] ?? "") : "", x, y, angle, bottom, pads })

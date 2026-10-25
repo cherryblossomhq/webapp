@@ -97,7 +97,77 @@ export interface PadDef {
    * QFN-16). A part may list it as a pin, usually ground, or leave it unconnected.
    */
   exposed?: true
+  // ---------- X7, the pad model: everything below is optional, and an absent field is what a pad was before it ----------
+  /**
+   * The number the KiCad file gives the pad, which the KiCad export writes back. Absent when it is `pin` (and, for a pad
+   * with no pin, when it has no number). Pads that share a number but carry different nets each have a pin of their
+   * own and share this; an unnumbered pad that carries a net has a pin of its own and this is the empty string.
+   */
+  number?: string
+  /**
+   * The pad's own turn within its part, in degrees counter-clockwise, when it is not a whole quarter turn (a quarter
+   * turn is the size's width and height swapped, so lands from before keep the pads they had). `x`, `y`, `width` and
+   * `height` are the pad as it is before the turn, about its centre; `points` of a polygon pad are never turned.
+   */
+  rot?: number
+  /** A rectangle with rounded corners: the radius is this times the shorter side, 0 to 0.5 (KiCad's `roundrect_rratio`). */
+  round?: number
+  /**
+   * A rectangle with chamfered corners: the size of the cut is `ratio` times the shorter side; `corners` is a sum of 1
+   * (top left), 2 (top right), 4 (bottom right) and 8 (bottom left) as the pad is seen, before its turn.
+   */
+  chamfer?: { ratio: number; corners: number }
+  /**
+   * A custom pad: its copper is the anchor (a circle of diameter `width`, or the rectangle `width` by `height`, about `x`, `y`)
+   * with these drawings added, each with its line width and fill, in the pad's frame about its centre before its turn. `hull`:
+   * a pour keeps its clearance from the convex hull of the pad instead of its outline (KiCad's `clearance convexhull`).
+   */
+  custom?: { anchor: "circle" | "rect"; shapes: BoardShape[]; hull?: true; proxy?: BoardShape[] }
+  /**
+   * The hole's place relative to the pad's centre, in the pad's frame before its turn (KiCad's drill `offset` moves the copper
+   * from the hole, so this is its negative).
+   */
+  holeOffset?: Vec2
+  /**
+   * Which way a slotted hole runs in the pad's frame before its turn, in degrees: 0 along x, 90 along y (a polygon pad, which has no
+   * turn, any angle). Absent is along the pad's longer side, which is what a slot has always done; the field is for one across it
+   * (and for a square pad).
+   */
+  holeAxis?: number
+  /** The layers the pad is on where they are not what its kind has (`padFaces`). Sides are relative to the part's own side. */
+  layers?: PadLayers
+  /** The mask opening's margin round the pad, the paste margin, and its ratio of the pad's size; each replaces the board's (KiCad's `solder_mask_margin`, `solder_paste_margin`, `solder_paste_margin_ratio`). */
+  maskMargin?: number
+  pasteMargin?: number
+  pasteRatio?: number
+  /** The clearance copper of another net keeps from this pad, replacing the net classes' (KiCad's local `clearance`). */
+  clearance?: number
+  /** How a pour joins the pad (KiCad's `zone_connect`: none, thermal relief, solid, thermal relief on through-hole pads only), and the thermal relief's own gap and spoke width. */
+  zoneConnect?: ZoneConnect
+  thermalGap?: number
+  thermalWidth?: number
+  /** A turn of the thermal spokes in degrees, from the pad's own axes. */
+  thermalAngle?: number
+  /** KiCad's fabrication property (`bga`, `fiducial_glob`, `fiducial_loc`, `testpoint`, `castellated`, `heatsink`, `mechanical`, `pressfit`). */
+  property?: PadProperty
 }
+
+/** The sides a layer of a pad is on, relative to the part's own side (a part on the bottom turns them over). */
+export type PadSides = "top" | "bottom" | "both" | "none"
+
+/** Where a pad has copper, solder mask, paste and silkscreen, for a field the pad's kind does not settle. */
+export interface PadLayers {
+  copper?: PadSides
+  mask?: PadSides
+  paste?: PadSides
+  silk?: PadSides
+  /** Other layers of the part the pad is on (fabrication, courtyard, user), by KiCad's name with `F.` the part's own side: kept and written back, drawn nowhere. */
+  other?: string[]
+}
+
+export type ZoneConnect = "none" | "thermal" | "solid" | "tht"
+
+export type PadProperty = "bga" | "fiducial_glob" | "fiducial_loc" | "testpoint" | "castellated" | "heatsink" | "mechanical" | "pressfit"
 
 // ---------- Board and footprint graphics ----------
 

@@ -25,7 +25,8 @@ const netOf = (r: Extract<KicadImportResult, { status: "imported" }>, ref: strin
 describe("the gate", () => {
   const simple = board({ nets: ['(net 0 "")', '(net 1 "GND")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0" })] })] })
 
-  const rounded = board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] })] })
+  // a pad with a shape of its own on each copper layer (a KiCad 9 pad stack) needs the layer stack (X1), which is not built
+  const rounded = board({ body: [footprint({ pads: [pad({ at: "0 0", extra: '(padstack (mode front_inner_back) (layer "Inner" (shape rect) (size 2 2)))' })] })] })
 
   it("refuses a board that uses what the editor cannot hold yet, naming it, and imports nothing", () => {
     const r = importKicadBoard(rounded)
@@ -33,16 +34,16 @@ describe("the gate", () => {
     if (r.status !== "refused") return
     expect(r.reason).toBe("unsupported")
     expect(r.message).toMatch(/^This board uses .+, which (is|are) not supported yet\.$/)
-    expect(r.message).toMatch(/pads/)
-    expect(r.needs.map((n) => n.ext)).toEqual(["X7"])
+    expect(r.message).toMatch(/pad stacks/)
+    expect(r.needs.map((n) => n.ext)).toEqual(["X1"])
     expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused")).toBe(true)
   })
 
   it("names every extension a board needs in the one sentence", () => {
-    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))', '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }))
+    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0", extra: '(padstack (mode front_inner_back) (layer "Inner" (shape rect) (size 2 2)))' })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))', '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }))
     // X13 (nets on tracks and vias) and X9 (text) are built: a board's tracks and its text are no reason to refuse it; a font of the computer is
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7", "X19"])
-    if (r.status === "refused") expect(r.message).toMatch(/pads that are turned, rounded.+text in a font other than KiCad's own.+, which are not supported yet\./)
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X1", "X19"])
+    if (r.status === "refused") expect(r.message).toMatch(/pad stacks.+text in a font other than KiCad's own.+, which are not supported yet\./)
   })
 
   it("a board that needs nothing the editor lacks is imported (every extension built, for the test)", () => {
@@ -61,7 +62,7 @@ describe("the gate", () => {
     expect(a.unknownAtoms.size).toBe(0)
     const sum = a.imported + [...a.notNeeded.values()].reduce((x, y) => x + y, 0) + [...a.pending.values()].reduce((x, y) => x + y, 0) + a.reported
     expect(sum).toBe(a.total)
-    expect(a.pending.get("X7")).toBeGreaterThan(0)
+    expect(a.pending.get("X1")).toBeGreaterThan(0)
     // text is built: its nodes are counted as imported, not left pending
     expect(a.pending.get("X9")).toBeUndefined()
   })
@@ -300,10 +301,18 @@ describe("slots and ovals on a turned footprint", () => {
     }
   })
 
-  it("a slot across the pad's long side is X7, never drawn along it", () => {
-    const text = board({ body: [footprint({ at: "20 10", pads: [pad({ number: "1", type: "thru_hole", shape: "oval", at: "0 0", size: "1.6 1", layers: "*.Cu *.Mask", extra: "(drill oval 0.6 1.2)" })] })] })
-    const r = importKicadBoard(text, { built: new Set(Object.keys(EXTENSION_NAMES).filter((x) => x !== "X7")) })
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7"])
+  it("a slot across the pad's long side is held across it (X7), turning with the part", () => {
+    for (const fa of [0, 90, 180, 270]) {
+      const text = board({ body: [footprint({ at: `20 10 ${fa}`, pads: [pad({ number: "1", type: "thru_hole", shape: "oval", at: `0 0 ${fa}`, size: "1.6 1", layers: "*.Cu *.Mask", extra: "(drill oval 0.6 1.2)" })] })] })
+      const [world] = pcbPads(imported(text).project.components[0])
+      // the pad is 1.6 along the part's x and the slot 1.2 along its y: across the pad
+      const ends = slotEnds(world)!
+      const alongX = (fa / 90) % 2 === 0
+      expect(Math.abs(ends[0].x - ends[1].x) < 1e-6).toBe(alongX)
+      expect(Math.abs(ends[0].y - ends[1].y) < 1e-6).toBe(!alongX)
+      expect(world.slotLength).toBeCloseTo(1.2, 6)
+      expect(world.holeDiameter).toBeCloseTo(0.6, 6)
+    }
   })
 
   it("a non-plated hole is a hole with no pin and no copper", () => {
@@ -348,22 +357,23 @@ describe("files that are damaged never crash or hang", () => {
     expect(importKicadBoard(noise).status).toBe("refused")
   })
 
-  it("a pad number repeated on two nets is X7 (its own net on every pad), not a refusal for good", () => {
+  it("a pad number repeated on two nets is X7 (its own pin and net on every pad), no refusal", () => {
     const text = board({ nets: ['(net 0 "")', '(net 1 "A")', '(net 2 "B")'], body: [footprint({ ref: "U1", pads: [pad({ number: "1", at: "0 0", net: '(net 1 "A")' }), pad({ number: "1", at: "2 0", net: '(net 2 "B")' })] })] })
-    const r = importKicadBoard(text)
-    expect(r.status).toBe("refused")
-    if (r.status === "refused") {
-      expect(r.reason).toBe("unsupported")
-      expect(r.needs.find((n) => n.ext === "X7")?.why).toMatch(/share a number but carry different nets/)
-    }
-    // with every extension built the build still cannot carry it, and says so rather than joining the pads to one net
-    const built = importKicadBoard(text, { built: ALL })
-    expect(built.status === "refused" && built.reason).toBe("inexact")
+    const r = imported(text)
+    expect(netOf(r, "U1", "1")).toBe("net:A")
+    expect(netOf(r, "U1", "1.2")).toBe("net:B")
+    // the land keeps the file's number on both, for the KiCad writer
+    const land = r.project.footprints![0]
+    expect(land.pads.map((p) => [p.pin, p.number])).toEqual([["1", undefined], ["1.2", "1"]])
+    expect(pcbPads(r.project.components[0]).map((p) => p.padNumber)).toEqual(["1", "1"])
   })
 
-  it("an unnumbered pad that carries a net is X7, not a net dropped", () => {
-    const text = board({ nets: ['(net 0 "")', '(net 1 "A")'], body: [footprint({ pads: [pad({ number: "", at: "0 0", net: '(net 1 "A")' }), pad({ number: "1", at: "2 0" })] })] })
-    const r = importKicadBoard(text, { built: new Set(Object.keys(EXTENSION_NAMES).filter((x) => x !== "X7")) })
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7"])
+  it("an unnumbered pad that carries a net has a pin of its own, and its net", () => {
+    const text = board({ nets: ['(net 0 "")', '(net 1 "A")'], body: [footprint({ ref: "U1", pads: [pad({ number: "", at: "0 0", net: '(net 1 "A")' }), pad({ number: "1", at: "2 0" })] })] })
+    const r = imported(text)
+    expect(netOf(r, "U1", "_1")).toBe("net:A")
+    expect(netOf(r, "U1", "1")).toBeUndefined()
+    expect(r.project.footprints![0].pads.map((p) => [p.pin, p.number])).toEqual([["_1", ""], ["1", undefined]])
+    expect(pcbPads(r.project.components[0])[0].padNumber).toBeNull()
   })
 })

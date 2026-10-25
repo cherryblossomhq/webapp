@@ -52,7 +52,7 @@ interface Out {
 }
 
 /** A ring's points in KiCad's `pts` order: a corner is `xy`, an arc corner is `arc`; the ring starts where the edge into it is straight, so it needs no closing arc. */
-function ringItems(path: ShapePath): string[] {
+export function ringItems(path: ShapePath): string[] {
   let segs: PathSeg[] = path.segs
   const lastLine = (() => {
     for (let i = segs.length - 1; i >= 0; i--) if (segs[i].kind === "line") return i

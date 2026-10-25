@@ -280,13 +280,13 @@ describe("dimensions, groups and images are stored compactly and read back as th
     expect(read.groups).toBeUndefined()
     expect(read.images).toBeUndefined()
     const written = JSON.parse(serializeProject(read))
-    expect(written.version).toBe(8)
+    expect(written.version).toBe(10)
     expect(written.project).not.toHaveProperty("dm")
     expect(written.project).not.toHaveProperty("grp")
     expect(written.project).not.toHaveProperty("im")
   })
   it("a newer file is still refused", () => {
-    expect(() => parseProjectFile({ format: "cherryblossom.project", version: 9, project: {} }, { id: "x" })).toThrow(/newer version/)
+    expect(() => parseProjectFile({ format: "cherryblossom.project", version: 11, project: {} }, { id: "x" })).toThrow(/newer version/)
   })
 })
 

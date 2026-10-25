@@ -72,7 +72,38 @@ export interface KicadPad {
   pinType?: string
   rectDelta?: Pt
   roundrectRatio?: number
+  /** `chamfer_ratio`, and the corners `chamfer` names (this importer's own bits: 1 top left, 2 top right, 4 bottom right, 8 bottom left, as the pad is seen). */
+  chamferRatio?: number
+  chamferCorners?: number
+  /** A custom pad's anchor shape, whether its pour clearance follows the convex hull, and its drawings with the pad's own proxy items (a number box, a spoke template), which are never plotted. */
+  anchor?: "circle" | "rect"
+  hull?: boolean
+  primitives: KicadShape[]
+  proxies: KicadShape[]
+  /** The pad's own margins, clearance and pour settings as the file writes them, with a zero in a file up to stamp 20240201 already read as no setting (KiCad's own rule). `zoneConnect` is KiCad's number (0 none, 1 thermal, 2 solid, 3 thermal on through-hole pads). */
+  local: PadLocal
+  /** `pad_prop_*` words of the pad's `property`. */
+  properties: string[]
+  /** The pad has a `padstack` node (KiCad 9), and its `(remove_unused_layers)` and `(keep_end_layers)`. */
+  padstack: boolean
+  removeUnused?: boolean
+  keepEnds?: boolean
+  zoneLayers: boolean
+  /** A `tenting` that says yes or no for a side (`none` is no setting). */
+  tented: boolean
   node: List
+}
+
+/** What a pad or a footprint sets for itself: margins, clearance and how a pour joins it. Absent is no setting. */
+export interface PadLocal {
+  maskMargin?: number
+  pasteMargin?: number
+  pasteRatio?: number
+  clearance?: number
+  zoneConnect?: number
+  thermalGap?: number
+  thermalWidth?: number
+  thermalAngle?: number
 }
 
 export interface KicadText {
@@ -316,6 +347,8 @@ export interface KicadFootprint {
   sheetfile: string
   props: { key: string; value: string }[]
   pads: KicadPad[]
+  /** The footprint's own margins, clearance and pour connection, which each of its pads that sets none of its own takes (`PAD::GetSolderMaskExpansion` and the others ask the footprint). */
+  local: PadLocal
   models: KicadModel[]
   texts: KicadText[]
   shapes: KicadShape[]

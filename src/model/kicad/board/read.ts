@@ -22,6 +22,7 @@ import type {
   KicadZoneSeg,
   LayerRow,
   LegacyNetClass,
+  PadLocal,
   Pt,
   ShapeKind,
 } from "./types"
@@ -802,6 +803,39 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     }
   }
 
+  /**
+   * What a pad or a footprint sets for itself. In a file up to stamp 20240201 a margin, a paste ratio or a clearance of zero is no setting
+   * (switch 8; `parsePAD` and `parseFOOTPRINT` clear it, 10.0.0 `:6098-6140` and `:5325-5365`); later, zero is a setting.
+   */
+  const localOf = (node: List): PadLocal => {
+    const out: PadLocal = {}
+    const num = (name: string, zeroInherits: boolean): number | undefined => {
+      const k = kid(node, name)
+      if (!k) return undefined
+      const v = numAt(k, 1, NaN)
+      if (!Number.isFinite(v) || (zeroInherits && v === 0 && stampAtMost(ZERO_MEANS_INHERIT_UNTIL))) return undefined
+      return v
+    }
+    const maskMargin = num("solder_mask_margin", true)
+    const pasteMargin = num("solder_paste_margin", true)
+    const pasteRatio = num("solder_paste_margin_ratio", true) ?? num("solder_paste_ratio", true)
+    const clearance = num("clearance", true)
+    const zoneConnect = num("zone_connect", false)
+    const thermalGap = num("thermal_gap", false)
+    const thermalWidth = num("thermal_bridge_width", false) ?? num("thermal_width", false)
+    const thermalAngle = num("thermal_bridge_angle", false)
+    if (maskMargin !== undefined) out.maskMargin = maskMargin
+    if (pasteMargin !== undefined) out.pasteMargin = pasteMargin
+    if (pasteRatio !== undefined) out.pasteRatio = pasteRatio
+    if (clearance !== undefined) out.clearance = clearance
+    // `-1` is KiCad's "inherit": the same as writing nothing.
+    if (zoneConnect !== undefined && zoneConnect >= 0 && zoneConnect <= 3) out.zoneConnect = zoneConnect
+    if (thermalGap !== undefined) out.thermalGap = thermalGap
+    if (thermalWidth !== undefined) out.thermalWidth = thermalWidth
+    if (thermalAngle !== undefined) out.thermalAngle = thermalAngle
+    return out
+  }
+
   const footprints: KicadFootprint[] = []
   for (const fp of tree) {
     if (!Array.isArray(fp) || (fp[0] !== "footprint" && fp[0] !== "module")) continue
@@ -865,6 +899,31 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       }
       const net = netOf(c)
       const rd = kid(c, "rect_delta")
+      const options = kid(c, "options")
+      const anchorWord = strAt(kid(options, "anchor"), 1)
+      const chamferNode = kid(c, "chamfer")
+      const primitives: KicadShape[] = []
+      const proxies: KicadShape[] = []
+      for (const g of kid(c, "primitives")?.slice(1) ?? []) {
+        if (!Array.isArray(g) || typeof g[0] !== "string" || !g[0].startsWith("gr_")) continue
+        const kind = g[0].slice(3)
+        if (kind === "bbox" || kind === "vector") proxies.push(shapeOf(g, kind === "vector" ? "line" : "bbox"))
+        else if (["line", "arc", "circle", "rect", "poly", "curve"].includes(kind)) primitives.push(shapeOf(g, kind as ShapeKind))
+      }
+      // `remove_unused_layers` and `keep_end_layers` set one mode in turn, the later word winning (parsePAD, 10.0.0 `:6372-6382`): yes and yes keeps the ends, yes alone keeps none, no keeps every layer.
+      let removeUnused: boolean | undefined
+      let keepEnds: boolean | undefined
+      for (const w of c) {
+        if (!Array.isArray(w)) continue
+        const yes = w[1] === undefined || w[1] === "yes" || w[1] === "true"
+        if (w[0] === "remove_unused_layers") {
+          removeUnused = yes
+          keepEnds = undefined
+        } else if (w[0] === "keep_end_layers") {
+          keepEnds = yes
+          removeUnused = true
+        }
+      }
       const pad: KicadPad = {
         number,
         type: strAt(c, 2) ?? "",
@@ -878,8 +937,25 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         drill,
         net: net ? net.name : null,
         netRaw: net ? net.raw : null,
+        primitives,
+        proxies,
+        local: localOf(c),
+        properties: atomsOf(kid(c, "property")),
+        padstack: !!kid(c, "padstack"),
+        zoneLayers: !!kid(c, "zone_layer_connections"),
+        tented: !!kid(c, "tenting") && (kid(c, "tenting") as List).slice(1).some((t) => (Array.isArray(t) ? t[1] !== undefined && t[1] !== "none" : true)),
         node: c,
       }
+      if (removeUnused !== undefined) pad.removeUnused = removeUnused
+      if (keepEnds !== undefined) pad.keepEnds = keepEnds
+      if (anchorWord === "circle" || anchorWord === "rect") pad.anchor = anchorWord
+      if (strAt(kid(options, "clearance"), 1) === "convexhull") pad.hull = true
+      if (chamferNode) {
+        const corners = atomsOf(chamferNode)
+        pad.chamferCorners = (corners.includes("top_left") ? 1 : 0) | (corners.includes("top_right") ? 2 : 0) | (corners.includes("bottom_right") ? 4 : 0) | (corners.includes("bottom_left") ? 8 : 0)
+      }
+      const chamferRatio = kid(c, "chamfer_ratio")
+      if (chamferRatio) pad.chamferRatio = numAt(chamferRatio, 1, 0)
       const pf = strAt(kid(c, "pinfunction"), 1)
       const pt_ = strAt(kid(c, "pintype"), 1)
       if (pf) pad.pinFunction = pf
@@ -953,6 +1029,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       sheetfile: strAt(kid(fp, "sheetfile"), 1) ?? "",
       props,
       pads,
+      local: localOf(fp),
       models,
       texts,
       shapes,

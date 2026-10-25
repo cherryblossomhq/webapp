@@ -3,6 +3,7 @@ import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { inBom, inPositionFile } from "../model/partFlags"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
+import { worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
 
@@ -75,6 +76,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     "CHECKED AGAINST",
     `  Trace / space     ${mm(r.minTraceWidth)} / ${mm(r.clearance)}`,
     `  Drill             ${mm(r.minDrill)} minimum, ${mm(r.minAnnularRing)} annular ring`,
+    ...(r.minViaDiameter !== undefined ? [`  Via diameter      ${mm(r.minViaDiameter)} minimum`] : []),
     `  Hole to hole      ${mm(r.holeClearance)}`,
     `  Copper to edge    ${mm(r.edgeClearance)}`,
     `  Mask expansion    ${mm(r.maskExpansion)}`,
@@ -84,6 +86,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     "",
     ...assemblyNotes(project),
     ...drawingNotes(project),
+    ...textNotes(project),
     "FILES",
     ...files.map((f) => `  ${f}`),
   ]
@@ -119,6 +122,44 @@ function drawingNotes(project: Project): string[] {
     ...lines,
     ...(skipped.size ? [`  Not plotted       ${[...skipped].map(([what, n]) => `${what} ${n}`).join(", ")}: fabrication, courtyard, adhesive and user layers are not in the files, as KiCad does not plot them by default`] : []),
     ...(all.length > placed.length ? [`  Not on the PCB    ${all.length - placed.length}: drawings of parts not placed on the board are left out`] : []),
+    "",
+  ]
+}
+
+/** Where the texts of a board brought in from KiCad went and which were not plotted: only for a board that has any, so a board drawn here reads as it did. */
+function textNotes(project: Project): string[] {
+  const all = worldTexts(project)
+  if (!all.length) return []
+  const placed = all.filter((t) => t.placed)
+  const drawn = placed.filter((t) => !t.hidden)
+  const plotted: [string, string, string][] = [
+    ["F.Cu", "Top copper", "in the top copper file, as copper that belongs to no net: pours keep clear of it and the checks treat it as copper"],
+    ["B.Cu", "Bottom copper", "in the bottom copper file, as copper that belongs to no net: pours keep clear of it and the checks treat it as copper"],
+    ["F.Mask", "Top mask", "as openings in the top solder mask file"],
+    ["B.Mask", "Bottom mask", "as openings in the bottom solder mask file"],
+    ["F.Paste", "Top paste", "in the top paste file"],
+    ["B.Paste", "Bottom paste", "in the bottom paste file"],
+    ["F.SilkS", "Top silkscreen", "in the top silkscreen file"],
+    ["B.SilkS", "Bottom silkscreen", "in the bottom silkscreen file"],
+    ["Edge.Cuts", "Board edge", "in the outline file"],
+  ]
+  const count = (layer: string) => drawn.filter((t) => t.layer === layer).length
+  const lines = plotted.filter(([layer]) => count(layer)).map(([layer, label, where]) => `  ${label.padEnd(18)}${count(layer)}: ${where}`)
+  const names = new Set(plotted.map(([layer]) => layer))
+  const skipped = new Map<string, number>()
+  for (const t of drawn) {
+    if (names.has(t.layer)) continue
+    const what = t.layer.endsWith(".Fab") ? "fabrication" : t.layer.endsWith(".CrtYd") ? "courtyard" : t.layer.endsWith(".Adhes") ? "adhesive" : "user"
+    skipped.set(what, (skipped.get(what) ?? 0) + 1)
+  }
+  const knockouts = drawn.filter((t) => t.knockout).length
+  return [
+    "TEXT",
+    ...lines,
+    ...(knockouts ? [`  Knockout          ${knockouts}: a filled box with the letters left out, plotted as a region`] : []),
+    ...(skipped.size ? [`  Not plotted       ${[...skipped].map(([what, n]) => `${what} ${n}`).join(", ")}: fabrication, courtyard, adhesive and user layers are not in the files, as KiCad does not plot them by default`] : []),
+    ...(placed.length > drawn.length ? [`  Hidden            ${placed.length - drawn.length}: hidden text is neither drawn nor plotted`] : []),
+    ...(all.length > placed.length ? [`  Not on the PCB    ${all.length - placed.length}: text of parts not placed on the board is left out`] : []),
     "",
   ]
 }

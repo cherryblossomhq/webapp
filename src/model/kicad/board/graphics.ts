@@ -98,6 +98,9 @@ function roundGeometry<T extends ShapeGeometry>(g: T): T {
   return walk(g) as T
 }
 
+/** A negative stroke width of less than this much (mm) is no width: a file written with -0.000001 means zero. A larger one shrinks the fill when KiCad plots it, which is X24's. */
+export const NEGLIGIBLE_WIDTH = 1e-4
+
 const same = (p: Pt, q: Pt) => Math.abs(p.x - q.x) < 1e-7 && Math.abs(p.y - q.y) < 1e-7
 
 /** A KiCad polygon's outline as corners, an arc item being a straight edge to its start where the chain is not already there, then the arc. */
@@ -219,7 +222,7 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
   let width = s.width <= 0 && !(s.filled && closed) ? DEFAULT_SHAPE_WIDTH : s.width
   // A filled shape's negative width shrinks its fill in KiCad's plot; a nanometre of it (some files have -0.000001) is none, and more is not held.
   if (width < 0) {
-    if (width > -1e-4) width = 0
+    if (width > -NEGLIGIBLE_WIDTH) width = 0
     else cx.lose(`a filled drawing with a negative width (${cx.where})`)
   }
   const copperWithMask = layers.filter((l) => COPPER_FACE[l] && layers.includes(COPPER_FACE[l]))

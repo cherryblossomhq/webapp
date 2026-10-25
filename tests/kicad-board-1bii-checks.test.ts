@@ -144,7 +144,8 @@ describe("silkscreen drawings and designators", () => {
   it("a designator keeps off a filled drawing on the same side, and a part with no pins has none", () => {
     const logo = footprint({ ref: "G1", name: "Symbol:Logo", at: "20 10", pads: [], extra: `(fp_poly (pts (xy -4 -4) (xy 4 -4) (xy 4 4) (xy -4 4)) (stroke (width 0) (type solid)) (fill solid) (layer "F.SilkS"))` })
     const p = imp(board({ nets: ['(net 0 "")'], body: [footprint({ ref: "R1", at: "20 10.8", pads: [pad({ number: "1", at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), logo], outline: '(gr_rect (start 0 0) (end 40 20) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' }))
-    const d = placeDesignators(p)
+    // A part from a KiCad board has the texts the file gives it and no designator of the editor's; without them it is a part drawn here.
+    const d = placeDesignators({ ...p, components: p.components.map(({ texts: _texts, ...c }) => c) })
     const r1 = p.components.find((c) => c.ref === "R1")!
     const logoPart = p.components.find((c) => c.ref !== "R1")!
     expect(d.has(logoPart.id)).toBe(false)

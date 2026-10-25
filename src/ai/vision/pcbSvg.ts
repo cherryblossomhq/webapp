@@ -1,6 +1,6 @@
 import type { Box } from "../../lib/geometry"
 import { PCB } from "../../editor/theme"
-import { boardTextStrokes, boardTextStrokeWidth } from "../../model/board"
+import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
 import { isPhysical, pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
@@ -8,6 +8,7 @@ import { worldShapes } from "../../model/shapeItems"
 import { shapeLayerInfo } from "../../model/shapeLayers"
 import { dashShape, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
+import { layerText, textLayerKind, textLayerSide, worldTexts, type LayerText } from "../../model/texts"
 import type { BoardShape, CopperLayer, Project } from "../../model/types"
 import { getPcbAnalysis } from "../../store/analysis"
 import type { PixelSize } from "./limits"
@@ -105,6 +106,16 @@ function shapeSvg(shape: BoardShape, color: string, px: number): string {
   return out
 }
 
+/** A KiCad text as the editor draws it: strokes with its pen, a knockout filled with its letters left out, a text box's border. */
+function textSvg(t: LayerText, color: string, px: number, soft = false): string {
+  const round = (w: number) => `stroke-width="${n(Math.max(w, px))}" stroke-linecap="round" stroke-linejoin="round"`
+  let out = ""
+  if (t.fills.length) out += `<path d="${t.fills.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${n(p.x)},${n(p.y)}`).join("L")}Z`)).join("")}" fill="${color}"${soft ? ' fill-opacity="0.4"' : ""} fill-rule="evenodd"/>`
+  for (const s of t.strokes) out += `<polyline points="${pts(s.length === 1 ? [s[0], s[0]] : s)}" fill="none" stroke="${color}" ${round(t.pen)}/>`
+  if (t.border) out += `<polyline points="${pts([...t.border.points, t.border.points[0]])}" fill="none" stroke="${color}" ${round(t.border.width)}/>`
+  return out
+}
+
 function outline(b: Box, color: string, px: number, grow = 0.2): string {
   return `<rect x="${n(b.minX - grow)}" y="${n(b.minY - grow)}" width="${n(b.maxX - b.minX + grow * 2)}" height="${n(b.maxY - b.minY + grow * 2)}" fill="none" stroke="${color}" stroke-width="${n(Math.max(0.1, 1.6 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
 }
@@ -126,8 +137,17 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const drawings = worldShapes(project).filter((d) => d.placed)
   const kindOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.kind ?? "user"
   const sideOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.side ?? null
+  // The KiCad texts on the board and in its placed parts, with the layer each is on; none on a board that has none.
+  const texts = worldTexts(project).flatMap((wt) => {
+    if (!wt.placed || wt.hidden) return []
+    const t = layerText(project, wt)
+    return t ? [{ layer: wt.layer, kind: textLayerKind(wt.layer), side: textLayerSide(wt.layer), t }] : []
+  })
 
   let body = `<rect x="${n(board.minX)}" y="${n(board.minY)}" width="${n(bd.width)}" height="${n(bd.height)}" rx="${n(r)}" fill="${PCB.board}" stroke="${PCB.edge}" stroke-width="${n(Math.max(0.15, 2 * px))}"/>`
+
+  // Text on the board's edge layer is part of the outline, as KiCad plots it.
+  for (const x of texts) if (x.kind === "edge") body += textSvg(x.t, PCB.edge, px)
 
   for (const l of shown) {
     if (has("pours")) {
@@ -142,6 +162,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       body += `<polyline points="${pts(t.points)}" fill="none" stroke="${l === "top" ? PCB.topCopper : PCB.bottomCopper}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
     }
     for (const d of drawings) if (kindOf(d) === "copper" && sideOf(d) === l) body += shapeSvg(d.shape, l === "top" ? PCB.topCopper : PCB.bottomCopper, px)
+    for (const x of texts) if (x.kind === "copper" && x.side === l) body += textSvg(x.t, l === "top" ? PCB.topCopper : PCB.bottomCopper, px)
     for (const it of pcb.items) {
       if (it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l) body += pad(it.pad, l === front ? PCB.pad : PCB.padBack, px)
     }
@@ -164,7 +185,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       if (d) for (const path of designatorStrokes(d)) body += line(path, color, SILK_WIDTH)
       body += "</g>"
     }
-    for (const tx of project.texts ?? []) {
+    for (const tx of ownTexts(project)) {
       if (!shownSet.has(tx.side)) continue
       for (const path of boardTextStrokes(tx)) body += line(path, tx.side === "top" ? PCB.silk : PCB.silkBottom, boardTextStrokeWidth(tx))
     }
@@ -172,6 +193,10 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       const side = sideOf(d)
       if (kindOf(d) !== "silk" || !side || !shownSet.has(side)) continue
       body += `<g opacity="${side === front ? 1 : 0.55}">${shapeSvg(d.shape, side === "top" ? PCB.silk : PCB.silkBottom, px)}</g>`
+    }
+    for (const x of texts) {
+      if (x.kind !== "silk" || !x.side || !shownSet.has(x.side)) continue
+      body += `<g opacity="${x.side === front ? 1 : 0.55}">${textSvg(x.t, x.side === "top" ? PCB.silk : PCB.silkBottom, px)}</g>`
     }
   }
 
@@ -194,6 +219,10 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       const side = sideOf(d)
       if (kind === "copper" || kind === "silk" || (side && !shownSet.has(side))) continue
       body += `<g opacity="${!side || side === front ? 1 : 0.55}">${shapeSvg(d.shape, colors[kind], px)}</g>`
+    }
+    for (const x of texts) {
+      if (!x.kind || x.kind === "edge" || x.kind === "copper" || x.kind === "silk" || (x.side && !shownSet.has(x.side))) continue
+      body += `<g opacity="${!x.side || x.side === front ? 1 : 0.55}">${textSvg(x.t, colors[x.kind], px, true)}</g>`
     }
   }
 

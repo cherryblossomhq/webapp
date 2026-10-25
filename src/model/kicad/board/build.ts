@@ -9,17 +9,21 @@ import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
-import type { BoardGraphic, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import type { BoardGraphic, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
 import { quarterTurns, reach, rotK } from "./geometry"
 import { defaultGraphicId } from "../../shapeCodec"
 import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
+import { convertBoardText, convertPartTexts, landTextBox, type PartPlacement, type TextConversion } from "./texts"
+import { defaultTextId } from "../../textCodec"
+import { textShown } from "../../texts"
+import { flipShapeLayer } from "../../shapeLayers"
 import { modelKey, planModels } from "./models"
 import { edgePieces, type OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
-import { decodeNetName } from "./read"
+import { decodeNetName, eraOf } from "./read"
 import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 
 export { KICAD_LIBRARY_RELEASE, stockModelId } from "./models"
@@ -296,6 +300,20 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   set("minDrill", pick(board.setup.through_hole_min, board.setup.via_min_drill))
   set("holeClearance", board.setup.hole_to_hole_min, true)
   set("minAnnularRing", board.setup.via_min_annulus, true)
+  // KiCad's `via_min_size`: the smallest via diameter the checks allow (`DesignRules.minViaDiameter`; absent is no minimum).
+  if (board.setup.via_min_size !== undefined && Number.isFinite(board.setup.via_min_size) && board.setup.via_min_size > 0) rules.minViaDiameter = board.setup.via_min_size
+  // KiCad 4 and 5 boards never state a minimum annular ring, and KiCad 5 has no such check: the editor's own default (0.13 mm) would flag
+  // rings KiCad never showed, so such a board starts with none (0) and one note says so. A KiCad 6 or later board without the setting is
+  // checked against the default, as its project file would say (`import.ts` names the project file it did not read).
+  if (board.setup.via_min_annulus === undefined && ["kicad3", "kicad4", "kicad5"].includes(eraOf(board.version))) {
+    rules.minAnnularRing = 0
+    report.entries.push({
+      code: "annular-ring-none",
+      severity: "note",
+      object: "the minimum annular ring",
+      why: "KiCad 4 and 5 boards state no minimum annular ring and KiCad 5 has no such check, so the project has none (0 mm) and Checks do not flag a ring that KiCad never flagged. Set one in the design rules if your fab needs it.",
+    })
+  }
   set("pourClearance", board.setup.zone_clearance, true)
   set("edgeClearance", board.setup.edge_clearance, true)
   if (board.setup.pad_to_mask_clearance !== undefined) rules.maskExpansion = board.setup.pad_to_mask_clearance
@@ -338,6 +356,9 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const degenerate: string[] = []
   const badNets: string[] = []
   let privateShapes = 0
+  /** Text objects brought in, for the report; and the conversion context a text is built with. */
+  let textCount = 0
+  const textCx = (where: string): TextConversion => ({ board, lose, where })
 
   // References the file gives itself are kept; the names made up for empty ones avoid them.
   const fileRefs = new Set(board.footprints.map((f) => f.ref.trim().replace(/\*/g, "")).filter(Boolean))
@@ -382,7 +403,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const drawn = landShapes(fp, board, bottom, (raw) => labelText.get(raw), lose, degenerate, badNets)
     privateShapes += drawn.privateCount
     const drawnCourtyard = courtyardBox(drawn.shapes)
-    const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
+    // A footprint of text only (a logo's name) has no pad and no drawing: its box, for selecting it, is where its texts are.
+    const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x), y: round(frameTop(fp.at).y), rot, bottom, at: fp.at, angle: fp.angle })
+    const textBox = !pads.length && !drawn.shapes.length ? landTextBox(convertPartTexts(fp.texts, fp.ref, placeOf(), { board, lose: () => {}, where: "" }, { ref: fp.ref })) : null
+    const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? textBox ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
     const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
     const nameBase = fp.name.includes(":") ? fp.name.slice(fp.name.indexOf(":") + 1) : fp.name
     const landName = `${slug(nameBase || fp.ref)}-${digest(JSON.stringify(land) + modelKey(modelPlan))}`
@@ -453,10 +477,14 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       ref,
       props: fp.value ? { value: fp.value } : {},
       footprint: landName,
+      ...(fp.name ? { fpid: fp.name } : {}),
       sch: { x: 0, y: 0, rot: 0 },
       pcb: { x: round(at.x), y: round(at.y), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
       ...(flags ? { flags } : {}),
+      // The part's own text, as the file has it (none is a part with no designator); with it the editor places none.
+      texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }),
     }
+    textCount += component.texts!.length
     // A pad with no net is what a pin left unconnected looks like in KiCad: Checks would say "isn't connected" of each, so it is marked no connect.
     const loose = [...pinNames.keys()].filter((n) => !numberNet.has(n)).sort(natural.compare)
     if (loose.length) {
@@ -560,6 +588,22 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const net = v.netRaw ? labelText.get(v.netRaw) : undefined
     return { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
   })
+  // A track or via on a net number the net table does not list is on no net, as KiCad loads it (`parseNet`, parser lines 305-315).
+  const copperBadNets = [
+    ...board.segments.filter((s) => s.badNet !== undefined).map((s) => `a track at (${s.start.x}, ${s.start.y}): net ${s.badNet}`),
+    ...board.arcTracks.filter((s) => s.badNet !== undefined).map((s) => `an arc track at (${s.start.x}, ${s.start.y}): net ${s.badNet}`),
+    ...board.vias.filter((v) => v.badNet !== undefined).map((v) => `a via at (${v.at.x}, ${v.at.y}): net ${v.badNet}`),
+  ]
+  if (copperBadNets.length) {
+    report.entries.push({
+      code: "copper-net-unknown",
+      severity: "changed",
+      object: `${copperBadNets.length} track${copperBadNets.length > 1 ? "s and vias" : " or via"} on a net number the board does not list (${copperBadNets.slice(0, 3).join("; ")}${copperBadNets.length > 3 ? "; ..." : ""})`,
+      why: "KiCad logs an invalid net number on a track or via and loads it with no net, so these are on no net here either.",
+      count: copperBadNets.length,
+      items: copperBadNets,
+    })
+  }
   if (board.arcTracks.length) lose("arc tracks")
   if (board.zones.length || board.footprints.some((f) => f.zones.length)) lose("copper zones")
 
@@ -583,6 +627,14 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   if (privateShapes) {
     report.entries.push({ code: "private-layer-drawings", severity: "not-brought", object: `${privateShapes} drawing${privateShapes > 1 ? "s" : ""} on a footprint's private layers`, why: "KiCad shows and plots nothing on a footprint's private layers, so these drawings were not brought in.", count: privateShapes })
   }
+
+  // ---------- text on the board ----------
+  const boardTexts: BoardText[] = []
+  for (const t of board.texts) {
+    const converted = convertBoardText(t, textCx("the board"), defaultTextId(boardTexts.length))
+    if (converted) boardTexts.push(converted)
+  }
+  textCount += boardTexts.length
 
   // ---------- the board ----------
   let box = outline.box
@@ -621,8 +673,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     traces,
     vias,
     ...(graphics.length ? { graphics } : {}),
+    ...(boardTexts.length ? { texts: boardTexts } : {}),
     properties,
   }
+  reportTexts(project, textCount, report)
 
   // ---------- every pad on the net the file gives it ----------
   const checked = verifyNets(project, padFacts, labelText, report)
@@ -633,6 +687,32 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   if (Object.keys(noConnect).length) project = { ...project, importMarks: { ...project.importMarks, noConnect } }
   const pins = components.reduce((n, c) => n + (padNets.get(c.id)?.size ?? 0), 0)
   return { project, lossy, stats: { parts: components.length, lands: lands.size, pins, nets: checked.nets, padsWithNet: withNet, copperNetMismatches } }
+}
+
+// ---------- text ----------
+
+/** The report entry for the variables the texts use that the board file cannot resolve. */
+function reportTexts(project: Project, count: number, report: ImportReport) {
+  if (!count) return
+  const unresolved = new Map<string, number>()
+  const note = (owner: ComponentInstance | null, content: string, layer: string | undefined) => {
+    const left: string[] = []
+    textShown(project, owner, content, 0, left, layer)
+    for (const name of left) unresolved.set(name, (unresolved.get(name) ?? 0) + 1)
+  }
+  for (const t of project.texts) note(null, t.text, t.layer)
+  for (const c of project.components) for (const t of c.texts ?? []) if (t.kind === "user" || t.text !== undefined) note(c, t.text ?? "", c.pcb.side === "bottom" ? flipShapeLayer(t.layer) : t.layer)
+  if (unresolved.size) {
+    const names = [...unresolved.keys()].sort()
+    report.entries.push({
+      code: "text-variable-unresolved",
+      severity: "changed",
+      object: `text variables with no value in a board file (${names.slice(0, 5).map((n) => `\${${n}}`).join(", ")}${names.length > 5 ? ", ..." : ""})`,
+      why: "KiCad takes these from the project file (`.kicad_pro` text variables) or from the clock when it draws the text, and a board file alone does not have them, so the text shows the name as written, which is what KiCad draws when it has no project.",
+      count: [...unresolved.values()].reduce((a, b) => a + b, 0),
+      items: names,
+    })
+  }
 }
 
 // ---------- nets ----------

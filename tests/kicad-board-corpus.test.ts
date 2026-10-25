@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -13,6 +13,16 @@ import { copperOracle, oracle } from "./kicad-census/pads.mjs"
 import { decodeNetName } from "../src/model/kicad/board"
 import { cleanFlags } from "../src/model/partFlags"
 import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
+import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
+import { fontFromGlyphStrings, loadFontFile } from "./kicad-census/texts.mjs"
+import glyphsBase from "../src/lib/kicadFont/glyphsBase"
+import glyphsCjk from "../src/lib/kicadFont/glyphsCjk"
+import { loadKicadFont } from "../src/lib/kicadFont/load"
+import { buildFabricationFiles } from "../src/export/bundle"
+import { runTool } from "../src/ai/tools"
+import { parseProjectFile } from "../src/model/projectFile"
+import { isDeepStrictEqual } from "node:util"
+import { emptyContext, reportText, summarize as summarizeImport } from "../src/kicadImport/summary"
 
 // The per-board pass or fail table of slice 1a over a local corpus (not in the repo):
 //
@@ -34,6 +44,12 @@ const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : ""
 const OUT = process.env.KICAD_CORPUS_OUT ?? join(tmpdir(), "kicad-board-corpus")
 const LIMIT = Number(process.env.KICAD_LIMIT ?? 0)
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
+// KiCad's stroke font is shipped (`src/lib/kicadFont`) and loaded for the run: the strokes of every Nth board's texts (KICAD_INK_EVERY, 4 by default;
+// 1 for all) are laid out by the importer's engine with it and by the oracle's own layout with the oracle's own decoding of the same glyph strings, and compared.
+const INK_EVERY = Number(process.env.KICAD_INK_EVERY ?? 4)
+// With KICAD_NEWSTROKE naming a copy of KiCad's own `common/newstroke_font.cpp` the oracle reads its glyphs from that file (parsed by the oracle's own code), so the comparison
+// is against KiCad's real data and not only against what is shipped; without it, from the shipped strings.
+const oracleFont = process.env.KICAD_NEWSTROKE && existsSync(process.env.KICAD_NEWSTROKE) ? loadFontFile(process.env.KICAD_NEWSTROKE) : fontFromGlyphStrings([...glyphsBase.split("\n"), ...glyphsCjk.split("\n")])
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -101,6 +117,22 @@ interface Row {
   gfxLayers: Record<string, number>
   /** The drawings survive the stored form: the same project in memory after a save and a load. */
   gfxRoundTrip: boolean
+  /** Slice 1b-iii: the file's text objects (board, parts) against the project's, by layer, with each one's place, size, angle, justification and content. */
+  textsFile: number
+  textsProject: number
+  textsCounts: boolean
+  textsWrong: number
+  textsLayers: Record<string, number>
+  textsBoxes: number
+  /** Texts whose strokes were laid out against the oracle's with KiCad's font, and how many differ. */
+  textsInk: number
+  textsTurned: number
+  textsByOrder: number
+  textsInkWrong: number
+  /** The texts survive the stored form. */
+  textsRoundTrip: boolean
+  /** An imported board, end to end: it saves and loads the same, its Gerbers, drill, BOM, position file and notes generate, and run_checks runs ("" when it is not imported). */
+  endToEnd: string
   /** The 3D models of the board: held, and not held by reason. */
   modelsKept: number
   modelsDropped: Record<string, number>
@@ -143,7 +175,9 @@ function groupOf(rel: string) {
 describe.skipIf(!CORPUS)("the KiCad corpus", () => {
   it(
     "reads, accounts for and builds every board, and agrees with the census",
-    () => {
+    async () => {
+      // KiCad's own stroke font, as shipped, with its CJK glyphs: the importer lays out the text of a footprint that is only text with it
+      await loadKicadFont({ cjk: true })
       const boards = JSON.parse(readFileSync(join(CENSUS, "boards.json"), "utf8")) as Record<string, any>[]
       const census = new Map(boards.map((b) => [b.file as string, b]))
       const files = walk(CORPUS!).sort()
@@ -194,6 +228,18 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           gfxWrong: 0,
           gfxLayers: {},
           gfxRoundTrip: true,
+          textsFile: 0,
+          textsProject: 0,
+          textsCounts: true,
+          textsWrong: 0,
+          textsLayers: {},
+          textsBoxes: 0,
+          textsInk: 0,
+          textsTurned: 0,
+          textsByOrder: 0,
+          textsInkWrong: 0,
+          textsRoundTrip: true,
+          endToEnd: "",
           modelsKept: 0,
           modelsDropped: {},
           needs: [],
@@ -518,6 +564,44 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.gfxLayers = gfx.layers
           row.gfxRoundTrip = roundTripOk(built.project)
           if (gfx.note) row.notes.push(gfx.note)
+          // ---- slice 1b-iii: every text object, on the board and in footprints, against the raw file ----
+          const txt = checkTexts(text, built.project, { font: rows.length % INK_EVERY === 0 ? oracleFont : undefined })
+          row.textsFile = txt.file
+          row.textsProject = txt.project
+          row.textsCounts = txt.counts
+          row.textsWrong = txt.wrong
+          row.textsLayers = txt.layers
+          row.textsBoxes = txt.boxes
+          row.textsInk = txt.inkChecked
+          row.textsTurned = txt.notComparedTurned
+          row.textsByOrder = txt.pairedByOrder
+          row.textsInkWrong = txt.inkWrong
+          row.textsRoundTrip = textsRoundTripOk(built.project)
+          if (txt.note) row.notes.push(`texts: ${txt.note}`)
+          if (imported.status === "imported") {
+            const p = imported.project
+            const problems: string[] = []
+            const back = parseProjectFile(serializeProject(p), { id: p.id })
+            for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "board", "rules", "properties"] as const) {
+              if (!isDeepStrictEqual(back[k], p[k])) problems.push(`${k} differ after a save and a load`)
+            }
+            try {
+              const files = buildFabricationFiles(p)
+              if (!Object.keys(files).length || Object.values(files).some((f) => typeof f !== "string" || !f.length)) problems.push("a fabrication file is empty")
+              // the Gerbers, the drill file, the BOM, the position file and the notes are all there
+              for (const ext of [".gtl", ".gbl", ".gm1", ".drl"]) if (!Object.keys(files).some((k) => k.endsWith(ext))) problems.push(`no ${ext} file`)
+              // the import screen: the summary and the report text build, and say the board came in
+              const summary = summarizeImport(imported, { ...emptyContext(), used: [rel], boardBytes: text.length })
+              if (summary.status !== "imported") problems.push("the import screen's summary does not say the board came in")
+              if (!reportText(summary, p.name).includes(p.name)) problems.push("the import report text is empty")
+              const checks = runTool(p, "run_checks", {})
+              if (checks.isError) problems.push(`run_checks: ${checks.result.slice(0, 80)}`)
+            } catch (e) {
+              problems.push(`export or checks threw: ${e instanceof Error ? e.message : e}`)
+            }
+            row.endToEnd = problems.join("; ") || "ok"
+            if (problems.length) row.notes.push(`end to end: ${row.endToEnd}`)
+          }
           row.padsProject = fail ? "fail" : compared ? "ok" : "none"
           row.padsProjectCompared = compared
           row.padsProjectSkipped = skipped
@@ -538,6 +622,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       // slice 1b-i: flags, no-connect pins and the nets of copper equal the file's everywhere, every mismatch is listed, and the gate names only what is not built
       // slice 1b-ii: every drawing of the file is in the project, on its layer, to 0.001 mm
       expect(rows.filter((r) => !r.gfxCounts || r.gfxWrong > 0 || !r.gfxRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("drawings"))}`)).toEqual([])
+      // slice 1b-iii: every text object of the file is in the project, on its layer, with its place, size, angle, justification and content, to 0.001 mm; the texts survive the stored form; an imported board is whole end to end
+      expect(rows.filter((r) => !r.textsCounts || r.textsWrong > 0 || r.textsInkWrong > 0 || !r.textsRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("texts"))}`)).toEqual([])
+      expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
     3_600_000,
@@ -577,6 +664,10 @@ function summarize(rows: Row[], seconds: number): string {
     ["drawings: the same count on every layer as the file's (oracle)", (r) => r.gfxCounts],
     ["drawings: every drawing of the file in the project within 0.001 mm (oracle)", (r) => r.gfxWrong === 0],
     ["drawings: a save and a load give the same drawings in memory (stored form)", (r) => r.gfxRoundTrip],
+    ["texts: the same count on every layer as the file's (oracle)", (r) => r.textsCounts],
+    ["texts: every text of the file in the project, place, size, angle, mirror, justification, flags and content (oracle)", (r) => r.textsWrong === 0],
+    ["texts: strokes equal the oracle's layout with KiCad's font (boards sampled)", (r) => r.textsInkWrong === 0],
+    ["texts: a save and a load give the same texts in memory (stored form)", (r) => r.textsRoundTrip],
     ["no crash", (r) => r.status !== "CRASH"],
   ]
   for (const [label, f] of cols) {
@@ -606,6 +697,13 @@ function summarize(rows: Row[], seconds: number): string {
   const layerTotals = new Map<string, number>()
   for (const r of board) for (const [k, v] of Object.entries(r.gfxLayers)) layerTotals.set(k, (layerTotals.get(k) ?? 0) + v)
   lines.push(`drawings: ${board.reduce((n, r) => n + r.gfxFile, 0)} in the files (board, footprints, targets as three), ${board.reduce((n, r) => n + r.gfxProject, 0)} in the projects, on ${count(board, (r) => r.gfxFile > 0)} boards; ${board.reduce((n, r) => n + r.gfxWrong, 0)} not matched to 0.001 mm. By layer: ${[...layerTotals].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ")}`)
+  const textLayerTotals = new Map<string, number>()
+  for (const r of board) for (const [k, v] of Object.entries(r.textsLayers)) textLayerTotals.set(k, (textLayerTotals.get(k) ?? 0) + v)
+  lines.push(`texts: ${board.reduce((n, r) => n + r.textsFile, 0)} compared (board text, and the reference, value and own text of each part), ${board.reduce((n, r) => n + r.textsProject, 0)} in the projects, on ${count(board, (r) => r.textsFile > 0)} boards; ${board.reduce((n, r) => n + r.textsWrong, 0)} not matched; ${board.reduce((n, r) => n + r.textsBoxes, 0)} text boxes. By layer: ${[...textLayerTotals].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ")}`)
+  lines.push(`texts not compared: ${board.reduce((n, r) => n + r.textsTurned, 0)} on parts turned by other than a quarter turn (X6 places those parts); texts of parts that share a place with another part, paired by footprint order and compared: ${board.reduce((n, r) => n + r.textsByOrder, 0)}`)
+  lines.push(`text strokes laid out against the oracle with KiCad's font: ${board.reduce((n, r) => n + r.textsInk, 0)} texts on ${count(board, (r) => r.textsInk > 0)} boards, ${board.reduce((n, r) => n + r.textsInkWrong, 0)} differ`)
+  const imported = board.filter((r) => r.status === "imported")
+  lines.push(`imported boards end to end (save and load, Gerbers, drill, BOM, position file, notes, run_checks): ${count(imported, (r) => r.endToEnd === "ok")}/${imported.length} ok`)
   lines.push(`pins whose KiCad type was folded into a role: ${board.reduce((n, r) => n + r.foldedPins, 0)} on ${count(board, (r) => r.foldedPins > 0)} boards; single-pad nets accepted in Checks: ${board.reduce((n, r) => n + r.loneLabels, 0)} on ${count(board, (r) => r.loneLabels > 0)} boards`)
   const realRows = board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group))
   const exts = [...new Set(board.flatMap((r) => [...r.censusNeeds, ...r.needsActual]))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
@@ -635,8 +733,8 @@ function summarize(rows: Row[], seconds: number): string {
   const tq = (p: number) => totals[Math.min(totals.length - 1, Math.floor(p * totals.length))] ?? 0
   const cap = 900 * 1024
   lines.push(`real boards (${real.length}): measured / estimated for what 1b-ii builds: median ${rq(0.5).toFixed(2)}, p10 ${rq(0.1).toFixed(2)}, p90 ${rq(0.9).toFixed(2)}`)
-  lines.push(`real boards: measured 1b-ii project plus the estimate for what is not built yet (text, zone outlines): median ${(tq(0.5) / 1024).toFixed(0)} KB, p90 ${(tq(0.9) / 1024).toFixed(0)} KB, p99 ${(tq(0.99) / 1024).toFixed(0)} KB, largest ${((totals[totals.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${totals.filter((t) => t > cap).length}; measured 1b-ii part alone over 900 KB: ${real.filter((r) => r.projectBytes > cap).length}; the old estimate said ${real.filter((r) => r.estBuilt + r.estUnbuilt > cap).length}`)
-  lines.push(`measured project size (what slice 1b-ii builds): median ${(q(0.5) / 1024).toFixed(0)} KB, p90 ${(q(0.9) / 1024).toFixed(0)} KB, p99 ${(q(0.99) / 1024).toFixed(0)} KB, largest ${((sizes[sizes.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${sizes.filter((s) => s > 900 * 1024).length}`)
+  lines.push(`real boards: measured project plus the census estimate for what is not built yet (zone outlines; the estimate still counts text, so it overstates): median ${(tq(0.5) / 1024).toFixed(0)} KB, p90 ${(tq(0.9) / 1024).toFixed(0)} KB, p99 ${(tq(0.99) / 1024).toFixed(0)} KB, largest ${((totals[totals.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${totals.filter((t) => t > cap).length}; measured part alone over 900 KB: ${real.filter((r) => r.projectBytes > cap).length}; the old estimate said ${real.filter((r) => r.estBuilt + r.estUnbuilt > cap).length}`)
+  lines.push(`measured project size (what slice 1b-iii builds: drawings and text): median ${(q(0.5) / 1024).toFixed(0)} KB, p90 ${(q(0.9) / 1024).toFixed(0)} KB, p99 ${(q(0.99) / 1024).toFixed(0)} KB, largest ${((sizes[sizes.length - 1] ?? 0) / 1024).toFixed(0)} KB; over 900 KB: ${sizes.filter((s) => s > 900 * 1024).length}`)
   return lines.join("\n")
 }
 

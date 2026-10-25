@@ -90,6 +90,8 @@ export function applyCapability(rules: DesignRules, cap: FabCapability): DesignR
 /** Rules from a project file, with every rule it predates at its default. */
 export function normalizeRules(raw: Partial<DesignRules> | undefined): DesignRules {
   const rules = { ...DEFAULT_RULES, ...raw }
+  // an absent minimum via diameter is no minimum; a stored one must be a positive number
+  if (!(typeof rules.minViaDiameter === "number" && Number.isFinite(rules.minViaDiameter) && rules.minViaDiameter > 0)) delete rules.minViaDiameter
   const widths = Array.isArray(rules.preferredWidths) ? rules.preferredWidths.filter((w) => Number.isFinite(w) && w > 0) : []
   return { ...rules, preferredWidths: widths.length ? [...new Set(widths)].sort((a, b) => a - b) : DEFAULT_RULES.preferredWidths }
 }

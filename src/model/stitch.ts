@@ -1,7 +1,8 @@
 import { uid } from "../lib/id"
 import { pointInBox, pointSegmentDistance, round, type Box } from "../lib/geometry"
 import { computeConnectivity } from "./connectivity"
-import { boardTextStrokes } from "./board"
+import { boardTextStrokes, ownTexts } from "./board"
+import { textsOnLayer } from "./texts"
 import { pcbCourtyard, pcbSilk } from "./instances"
 import type { AutorouteResult } from "./autoroute"
 import { analyzePcb, pointPadDistance } from "./pcb"
@@ -67,7 +68,8 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
     silk.push({ minX: d.box.minX - r, maxX: d.box.maxX + r, minY: d.box.minY - r, maxY: d.box.maxY + r })
   }
   const outlines = base.components.flatMap((c) => (c.pcb.placed ? pcbSilk(c).flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const)) : []))
-  for (const t of base.texts ?? []) {
+  for (const side of ["F.SilkS", "B.SilkS"]) for (const t of textsOnLayer(base, side)) silk.push({ minX: t.box.minX - r, maxX: t.box.maxX + r, minY: t.box.minY - r, maxY: t.box.maxY + r })
+  for (const t of ownTexts(base)) {
     const pts = boardTextStrokes(t).flat()
     if (!pts.length) continue
     silk.push({

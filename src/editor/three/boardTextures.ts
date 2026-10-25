@@ -1,10 +1,11 @@
 import * as THREE from "three"
-import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles } from "../../model/board"
+import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../../model/board"
 import { isNpth, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
 import { worldShapes } from "../../model/shapeItems"
 import { dashShape, shapeCanvasPath } from "../../model/shapes"
+import { textsOnLayer } from "../../model/texts"
 import type { BoardShape, ComponentInstance, CopperLayer, Project, Vec2 } from "../../model/types"
 
 /** The finish seen at the thin rim of a mask opening. */
@@ -146,6 +147,25 @@ function drawShapes(ctx: CanvasRenderingContext2D, shapes: BoardShape[]) {
   }
 }
 
+/** The KiCad texts on one layer with the context's fill and stroke style: a knockout filled with its letters left out, strokes with their pen, a text box's border. */
+function drawTexts(ctx: CanvasRenderingContext2D, project: Project, layer: string, style?: () => void) {
+  const texts = textsOnLayer(project, layer)
+  // Nothing is asked of the context for a board with no text on the layer, so a board drawn here is drawn as it was.
+  if (!texts.length) return
+  ctx.save()
+  style?.()
+  for (const t of texts) {
+    if (t.fills.length) {
+      ctx.beginPath()
+      for (const polygon of t.fills) ringsPath(ctx, polygon)
+      ctx.fill("evenodd")
+    }
+    if (t.strokes.length) strokePolylines(ctx, t.strokes.map((s) => (s.length === 1 ? [s[0], s[0]] : s)), t.pen)
+    if (t.border) strokePolylines(ctx, [[...t.border.points, t.border.points[0]]], t.border.width)
+  }
+  ctx.restore()
+}
+
 // ---------- layer content ----------
 
 /** Fill every copper shape on one layer with the current fill/stroke style. */
@@ -174,6 +194,7 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
   }
   ctx.fill()
   drawShapes(ctx, drawingsOn(project, layer === "top" ? "F.Cu" : "B.Cu"))
+  drawTexts(ctx, project, layer === "top" ? "F.Cu" : "B.Cu")
 }
 
 /** Silkscreen polylines and their stroke widths for one side. */
@@ -188,7 +209,7 @@ function silkStrokes(input: TextureInput, side: CopperLayer): { paths: Vec2[][];
     if (d) parts.push(...designatorStrokes(d))
   }
   out.push({ paths: parts, width: SILK_WIDTH })
-  for (const t of input.project.texts ?? []) {
+  for (const t of ownTexts(input.project)) {
     if (t.side === side && t.text.trim()) out.push({ paths: boardTextStrokes(t), width: boardTextStrokeWidth(t) })
   }
   return out
@@ -290,6 +311,8 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
     drawShapes(a.ctx, silkShapes)
     a.ctx.restore()
   }
+  const silkLayer = side === "top" ? "F.SilkS" : "B.SilkS"
+  drawTexts(a.ctx, input.project, silkLayer, () => (a.ctx.fillStyle = silk))
 
   // Exposed pads are separate metal meshes; the thin rim of the mask opening shows the finish.
   a.ctx.fillStyle = RIM[finishMetal(boardFinish(b))]
@@ -303,6 +326,7 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
     drawShapes(a.ctx, maskShapes)
     a.ctx.restore()
   }
+  drawTexts(a.ctx, input.project, side === "top" ? "F.Mask" : "B.Mask", () => (a.ctx.strokeStyle = a.ctx.fillStyle))
 
   // Surface: height + roughness
   const s = makeCanvas(w, h)
@@ -324,6 +348,7 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
     drawShapes(s.ctx, silkShapes)
     s.ctx.restore()
   }
+  drawTexts(s.ctx, input.project, silkLayer, () => (s.ctx.fillStyle = s.ctx.strokeStyle))
   s.ctx.globalCompositeOperation = "source-over"
   s.ctx.filter = "none"
 

@@ -287,9 +287,10 @@ describe("the gate and the accounting", () => {
     expect(r.status).toBe("imported")
   })
 
-  it("a part with graphics is refused for its text alone", () => {
+  it("a part with graphics is imported, its text and its drawings with it (X9 is built since slice 1b-iii)", () => {
     const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), gr("line", "(start 0 0) (end 4 0)")] }))
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X9"])
+    expect(r.status).toBe("imported")
+    expect(r.status === "imported" && r.project.components[0].texts?.map((t) => t.kind)).toEqual(["reference", "value"])
   })
 
   it("counts the stroke and width of a drawing on Edge.Cuts as not needed and every other drawing's as imported", () => {

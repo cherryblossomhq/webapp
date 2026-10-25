@@ -135,7 +135,7 @@ const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
 const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
-const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "target", "title_block", "property", "paper", "page"])
+const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page"])
 
 function kicadKind(text: string): string | null {
   const head = text.slice(0, 400).replace(/^﻿/, "").trimStart()
@@ -403,31 +403,77 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     return s
   }
 
-  const textOf = (c: List, kind: string): KicadText => {
+  /** A number of the file that KiCad clamps to a text size (`SetTextSize` with its minimum and maximum, eda_text.h:61-62). */
+  const textSize = (v: number) => Math.min(250, Math.max(0.001, v))
+  const DEFAULT_TEXT_SIZE = 1.524
+  /** KiCad's `%R` and `%V` in text are `${REFERENCE}` and `${VALUE}` (10.0.0 parser lines 3748-3749, master 4484-4485); a field's own text (a `property`) is not converted. */
+  const legacyVars = (text: string) => text.replace(/%V/g, "${VALUE}").replace(/%R/g, "${REFERENCE}")
+  /** A `(border yes)` or `(border)` flag. */
+  const flagOrYes = (n: List) => n[1] === undefined || n[1] === "yes" || n[1] === "true"
+
+  /**
+   * A text object: `(fp_text reference R1 (at ..))`, `(property "Reference" "R1" (at ..))`, `(gr_text "x" (at ..))`, or a
+   * text box. The first number of a size is its height and the second its width (`parseEDA_TEXT`, 10.0.0 parser line 780, master 817).
+   */
+  const textOf = (c: List, kind: string, defaults: { layer: string } = { layer: "" }): KicadText => {
     // `(fp_text reference R1 (at ..))` has the kind first and the text second; `(property "Reference" "R1")` and `(gr_text "x")` the text first.
-    const isFpText = c[0] === "fp_text"
-    const text = overbar(isFpText ? (strAt(c, 2) ?? "") : c[0] === "property" ? (strAt(c, 2) ?? "") : (strAt(c, 1) ?? ""))
+    const head = c[0]
+    const isFpText = head === "fp_text"
+    const isBox = head === "gr_text_box" || head === "fp_text_box"
+    const first = c[1] === "locked" ? 2 : 1
+    const raw = isFpText ? (strAt(c, 2) ?? "") : head === "property" ? (strAt(c, 2) ?? "") : (strAt(c, first) ?? "")
+    const text = overbar(head === "property" || isBox ? raw : legacyVars(raw))
     const at = kid(c, "at")
     // Switch 7: the angle is the board-frame angle as stored, in every release (the position moved into the footprint's frame in 20260616, the angle did not).
-    const angle = numAt(at, 3, 0)
+    const angle = isBox ? numAt(kid(c, "angle"), 1, 0) : numAt(at, 3, 0)
     const effects = kid(c, "effects")
     const font = kid(effects, "font")
     const size = kid(font, "size")
     const justify = atomsOf(kid(effects, "justify"))
+    const layerNode = kid(c, "layer")
+    const stroke = kid(c, "stroke")
+    const marginsNode = kid(c, "margins")
+    const start = kid(c, "start")
+    const end = kid(c, "end")
+    const box: KicadText["box"] = isBox
+      ? {
+          start: start ? pt(start, `the text box "${text}"`) : { x: 0, y: 0 },
+          end: end ? pt(end, `the text box "${text}"`) : { x: 0, y: 0 },
+          hasOutline: !!kid(c, "pts"),
+          // From stamp 20230825 the border is its own flag, on unless the file says no (the text box starts with it on, pcb_textbox.cpp:53 of 10.0.0); before, it is there when the stroke has a width (10.0.0 parser line 4250, master 5019).
+          border: kid(c, "border") ? flagOrYes(kid(c, "border")!) : stampBefore(20230825) ? !!stroke && kid(stroke, "width") !== undefined && numAt(kid(stroke, "width"), 1, 0) >= 0 : true,
+          strokeWidth: stroke && kid(stroke, "width") ? numAt(kid(stroke, "width"), 1, 0) : null,
+          margins: marginsNode ? [numAt(marginsNode, 1), numAt(marginsNode, 2), numAt(marginsNode, 3), numAt(marginsNode, 4)] : null,
+        }
+      : null
+    const fontAtoms = atomsOf(font)
+    const flagIn = (name: string) => fontAtoms.includes(name) || flagOf(font, name)
     return {
       kind,
       text,
       at: at ? pt(at, `the text "${text}"`) : { x: 0, y: 0 },
       angle,
-      layer: strAt(kid(c, "layer"), 1) ?? "",
-      w: numAt(size, 1, 1),
-      h: numAt(size, 2, 1),
+      layer: strAt(layerNode, 1) ?? defaults.layer,
+      // `(size h w)`: the first number is the height, the second the width; absent, both are 60 mils.
+      h: size ? textSize(numAt(size, 1, 0)) : DEFAULT_TEXT_SIZE,
+      w: size ? textSize(numAt(size, 2, 0)) : DEFAULT_TEXT_SIZE,
       thickness: numAt(kid(font, "thickness"), 1, 0),
       hide: flagOf(c, "hide") || flagOf(effects, "hide"),
       mirror: justify.includes("mirror"),
-      // `(at x y a unlocked)` (parser line 4551) and `(unlocked yes)` (line 4607) turn keep-upright off; a footprint's text is upright by default.
+      // `(at x y a unlocked)` (10.0.0 parser line 3811, master 4551) and `(unlocked yes)` (3867, master 4607) turn keep-upright off; a footprint's text is upright by default.
       keepUpright: !(atomsOf(at).includes("unlocked") || flagOf(c, "unlocked")),
       justify,
+      // A text says `(layer "F.Cu" knockout)` (parser 10.0.0 lines 3828-3835); a text box has its own node, `(knockout yes)` (KiCad 10, parser lines 4190-4200), and its layer node takes no word after the name.
+      knockout: isBox ? flagOf(c, "knockout") : layerNode ? layerNode.includes("knockout") || flagOf(layerNode, "knockout") : false,
+      bold: flagIn("bold"),
+      italic: flagIn("italic"),
+      face: strAt(kid(font, "face"), 1) ?? null,
+      lineSpacing: kid(font, "line_spacing") ? numAt(kid(font, "line_spacing"), 1, 1) : 1,
+      href: strAt(kid(effects, "href"), 1) ?? null,
+      locked: flagOf(c, "locked") || c[1] === "locked",
+      renderCache: !!kid(c, "render_cache"),
+      field: head === "property" ? (strAt(c, 1) ?? "") : null,
+      box,
       node: c,
     }
   }
@@ -500,17 +546,20 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       if (head === "pad") pads.push(padOf(c))
       else if (head === "fp_text") {
         const kind = strAt(c, 1) ?? "user"
-        const t = textOf(c, kind)
+        const t = textOf(c, kind, { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" })
         texts.push(t)
         if (kind === "reference") ref = t.text
         else if (kind === "value") value = t.text
+      } else if (head === "fp_text_box") {
+        texts.push(textOf(c, "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
       } else if (head === "property") {
         const key = strAt(c, 1) ?? ""
         const val = overbar(strAt(c, 2) ?? "")
         props.push({ key, value: val })
         if (key === "Reference") ref = val
         else if (key === "Value") value = val
-        texts.push(textOf(c, key === "Reference" ? "reference" : key === "Value" ? "value" : "user"))
+        // A property that says where it is is a text (the reference, the value and every field KiCad draws or hides); one with no place is only a property.
+        if (kid(c, "at") || kid(c, "layer") || kid(c, "effects")) texts.push(textOf(c, key === "Reference" ? "reference" : key === "Value" ? "value" : "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
       }
     }
     function padOf(c: List): KicadPad {
@@ -637,13 +686,19 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const v = st === undefined ? NaN : parseInt(st, 16)
     return Number.isFinite(v) && (v & 0x40000) !== 0
   }
+  // A track, arc track or via on a net number the net table does not list: KiCad logs "Invalid net ID" and loads it with no net
+  // (`parseNet`, parser lines 305-315), so it is no net here, and the number is kept to say so in the report.
+  const copperNet = (c: List) => {
+    const bad: string[] = []
+    const net = netOf(c, bad)
+    return { net: net?.name ?? null, netRaw: net?.raw ?? null, ...(bad.length ? { badNet: bad[0] } : {}) }
+  }
   const segments: KicadSegment[] = kids(tree, "segment").map((c) => ({
     start: ptOf(c, "start", "a track segment") ?? { x: 0, y: 0 },
     end: ptOf(c, "end", "a track segment") ?? { x: 0, y: 0 },
     width: numAt(kid(c, "width"), 1, 0),
     layer: strAt(kid(c, "layer"), 1) ?? "",
-    net: netOf(c)?.name ?? null,
-    netRaw: netOf(c)?.raw ?? null,
+    ...copperNet(c),
     locked: flagOf(c, "locked") || lockedBit(c),
     node: c,
   }))
@@ -653,8 +708,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     end: ptOf(c, "end", "an arc track") ?? { x: 0, y: 0 },
     width: numAt(kid(c, "width"), 1, 0),
     layer: strAt(kid(c, "layer"), 1) ?? "",
-    net: netOf(c)?.name ?? null,
-    netRaw: netOf(c)?.raw ?? null,
+    ...copperNet(c),
     locked: flagOf(c, "locked") || lockedBit(c),
     node: c,
   }))
@@ -667,8 +721,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       drill: numAt(kid(c, "drill"), 1, 0),
       layers: atomsOf(kid(c, "layers")),
       kind,
-      net: netOf(c)?.name ?? null,
-      netRaw: netOf(c)?.raw ?? null,
+      ...copperNet(c),
       locked: flagOf(c, "locked") || lockedBit(c),
       node: c,
     }
@@ -689,7 +742,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     if (!Array.isArray(c) || typeof c[0] !== "string") continue
     const head = c[0]
     if (head.startsWith("gr_") && SHAPE_KINDS.has(head.slice(3))) shapes.push(shapeOf(c, head.slice(3) as ShapeKind))
-    else if (head === "gr_text") texts.push(textOf(c, "board"))
+    else if (head === "gr_text" || head === "gr_text_box") texts.push(textOf(c, "board"))
     else if (!TYPED_ROOT.has(head)) (others[head] ??= []).push(c)
   }
 

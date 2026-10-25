@@ -191,6 +191,8 @@ export class BoardScene {
       prev.project.traces !== project.traces ||
       prev.project.vias !== project.vias ||
       prev.project.texts !== project.texts ||
+      prev.project.graphics !== project.graphics ||
+      prev.project.properties !== project.properties ||
       prev.project.board !== project.board ||
       // Mask expansion and tented vias change what the board shows.
       prev.project.rules !== project.rules ||

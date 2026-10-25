@@ -81,6 +81,12 @@ const stroke = (points: Vec2[], halfWidth: number): Paths64 =>
 function shapeObstacle(it: Extract<CopperItem, { kind: "shape" }>, d: number): Paths64 {
   const half = it.copper.half + d
   const out: Paths64 = []
+  // A text: its strokes (and a knockout's rings) as they are in `copper`.
+  if (it.what === "text") {
+    for (const [a, b] of it.copper.edges) out.push(...stroke(a === b || (a.x === b.x && a.y === b.y) ? [a, { x: a.x + 1e-6, y: a.y }] : [a, b], half))
+    if (it.copper.fill.length) out.push(...inflate(Clipper.union(it.copper.fill.map((ring) => ring.map((p) => pt(p.x, p.y))), [], FillRule.EvenOdd), half))
+    return out
+  }
   for (const line of shapePolylines(it.shape)) if (line.length >= 2) out.push(...stroke(line, half))
   if (it.shape.fill) {
     const rings = shapeRings(it.shape).map((ring) => ring.map((p) => pt(p.x, p.y)))

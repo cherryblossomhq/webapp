@@ -4,6 +4,7 @@ import { partHolder } from "../src/editor/three/buildBoard"
 import { placementMatrix } from "../src/editor/three/files/placement"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
+import { componentTexts } from "../src/model/texts"
 import { buildKicadProject, EXTENSION_NAMES, importKicadBoard, outlineOf, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
 import { accountNodes, countPaths, scanAtoms } from "../src/model/kicad/board/account"
 import { settleFor } from "../src/model/kicad/board/carried"
@@ -129,7 +130,7 @@ describe("B3: every word of the file is accounted for", () => {
   it("a layer's name, a net's name and a pad's number are names, not words to know", () => {
     expect(unknown(footprint({ pads: [pad({ number: "A1", at: "0 0", net: "(net 1 SomeNet)" })] }))).toEqual([])
   })
-  it("unlocked, knockout, keep_text_aligned and a bare hide on a property are known, and each needs its extension", () => {
+  it("unlocked, knockout, keep_text_aligned and a bare hide on a property are known; the text is carried and the dimension needs its extension", () => {
     const text = board({
       body: [
         `(footprint "K" (layer "F.Cu") (at 0 0) (property "Reference" "K1" (at 0 0 0 unlocked) (layer "F.SilkS" knockout) hide) ${pad({ at: "0 0" })})`,
@@ -138,7 +139,8 @@ describe("B3: every word of the file is accounted for", () => {
     })
     const r = importKicadBoard(text)
     expect(r.report.account!.unknownAtoms.size).toBe(0)
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(expect.arrayContaining(["X9", "X11"]))
+    // text is built, so only the dimension keeps the board out
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X11"])
   })
   it("the words inside a node the table drops whole are not asked about", () => {
     const text = board({ setup: "(setup (pad_to_mask_clearance 0) (pcbplotparams (layerselection 0x00010fc_ffffffff) (outputdirectory gerbers/)))" })
@@ -155,7 +157,7 @@ describe("B3: a node counted as imported is in the built project", () => {
   const fixture = board({
     version: 20240108,
     nets: ['(net 0 "")', '(net 1 "GND")', '(net 2 "VCC")'],
-    setup: "(setup (trace_min 0.15) (pad_to_mask_clearance 0.05) (pad_to_paste_clearance -0.02) (hole_to_hole_min 0.3) (via_min_annulus 0.12) (through_hole_min 0.25) (zone_clearance 0.4) (edge_clearance 0.3) (user_trace_width 0.3) (user_trace_width 0.5) (tenting front back))",
+    setup: "(setup (trace_min 0.15) (pad_to_mask_clearance 0.05) (pad_to_paste_clearance -0.02) (hole_to_hole_min 0.3) (via_min_annulus 0.12) (via_min_size 0.45) (through_hole_min 0.25) (zone_clearance 0.4) (edge_clearance 0.3) (user_trace_width 0.3) (user_trace_width 0.5) (tenting front back))",
     body: [
       '(title_block (title "Probe") (date "2026-10-24") (rev "B") (company "Acme") (comment 1 "one"))',
       '(property "Owner" "me")',
@@ -183,6 +185,8 @@ describe("B3: a node counted as imported is in the built project", () => {
     const rules = p.rules
     const comp = p.components[0]
     const pads = pcbPads(comp)
+    // the part's texts where they are on the board: the reference at (0, -1) and the value at (0, 1) of a part turned 90 degrees at (10, 5)
+    const tw = componentTexts(comp)
     const prop = (key: string) => p.properties?.find((q) => q.key === key)?.value
     const checks: [RegExp, () => boolean][] = [
       [/^version$/, () => /file version 20240108/.test(prop("KiCad file version") ?? "")],
@@ -211,6 +215,12 @@ describe("B3: a node counted as imported is in the built project", () => {
       [/^footprint>pad>net$/, () => computeConnectivity(p).pinNet.get(pinKey(comp.id, "1")) === "net:GND" && computeConnectivity(p).pinNet.get(pinKey(comp.id, "2")) === "net:VCC"],
       [/^footprint>pad>pinfunction$/, () => part.pins.map((q) => q.name).join(",") === "A,B#"],
       [/^footprint>pad>pintype$/, () => part.pins.map((q) => q.kind).join(",") === "passive,input"],
+      [/^footprint>property$/, () => comp.texts?.map((t) => t.kind).join(",") === "reference,value"],
+      [/^footprint>property>at$/, () => Math.abs(tw[0].x - 9) < 1e-9 && Math.abs(tw[0].y + 5) < 1e-9 && Math.abs(tw[1].x - 11) < 1e-9 && Math.abs(tw[1].y + 5) < 1e-9 && tw[0].rot === 90 && tw[1].rot === 90],
+      [/^footprint>property>layer$/, () => tw[0].layer === "F.SilkS" && tw[1].layer === "F.Fab"],
+      [/^footprint>property>effects(>font)?$/, () => tw.length === 2],
+      [/^footprint>property>effects>font>size$/, () => tw[0].size === 1 && tw[0].w === 1],
+      [/^footprint>property>effects>font>thickness$/, () => tw[0].thickness === 0.15 && tw[1].thickness === 0.15],
       [/^footprint>model$/, () => p.models?.length === 1],
       [/^footprint>model>(offset|offset>xyz)$/, () => JSON.stringify(p.models![0].model.offset) === JSON.stringify({ x: 0.1, y: 0.2, z: 0.3 })],
       [/^footprint>model>(rotate|rotate>xyz)$/, () => p.models![0].model.rotation.z === -90],
@@ -221,6 +231,7 @@ describe("B3: a node counted as imported is in the built project", () => {
       [/^setup>pad_to_paste_clearance$/, () => rules.pasteExpansion === -0.02],
       [/^setup>hole_to_hole_min$/, () => rules.holeClearance === 0.3],
       [/^setup>via_min_annulus$/, () => rules.minAnnularRing === 0.12],
+      [/^setup>via_min_size$/, () => rules.minViaDiameter === 0.45],
       [/^setup>through_hole_min$/, () => rules.minDrill === 0.25],
       [/^setup>zone_clearance$/, () => rules.pourClearance === 0.4],
       [/^setup>edge_clearance$/, () => rules.edgeClearance === 0.3],
@@ -517,7 +528,8 @@ describe("M1: needs rules", () => {
     expect(x("(setup (solder_mask_min_width 0.1))")).toContain("X10")
     expect(x("(setup (pad_to_paste_clearance_ratio -0.1))")).toContain("X10")
     expect(x("(setup (max_error 0.01))")).toContain("X10")
-    expect(x("(setup (via_min_size 0.4))")).toContain("X10")
+    // the smallest via diameter is a rule of the model (slice 1b-iii); the list of via sizes the user offers is not
+    expect(x("(setup (via_min_size 0.4))")).not.toContain("X10")
     expect(x("(setup (user_via 0.8 0.4))")).toContain("X10")
     expect(x("(setup (solder_mask_min_width 0) (pad_to_paste_clearance_ratio 0) (max_error 0.005))")).not.toContain("X10")
   })

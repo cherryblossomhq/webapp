@@ -29,10 +29,12 @@ import { registerProjectParts } from "../model/customParts"
 import { libraryFootprint } from "../model/footprintLibrary"
 import { componentFootprint, isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, valueText, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
-import { boardColors, boardTextStrokeWidth, mountingHoles, roundedOutline } from "../model/board"
+import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
 import { analyzePcb } from "../model/pcb"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
+import { textElements } from "./circuitJsonTexts"
+import { worldTexts } from "../model/texts"
 import { getDesignators, SILK_WIDTH } from "../model/silk"
 import type { ComponentInstance, PartDef, PinDef, Project, Rotation, TextAnchor, Vec2 } from "../model/types"
 
@@ -530,7 +532,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   elements.push(...cad)
 
   // Free silkscreen text.
-  for (const t of project.texts ?? []) {
+  for (const t of ownTexts(project)) {
     elements.push({
       type: "pcb_silkscreen_text",
       pcb_silkscreen_text_id: ids.next("pcb_silkscreen_text"),
@@ -616,6 +618,16 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     drawingNotes.push("Drawings: silkscreen and fabrication drawings, closed courtyard shapes, and copper drawings (strokes as traces, fills as pours) are in the file, with curves, ellipses, arcs in polygons and dashed lines flattened to points.")
     if (drawn.left.size) drawingNotes.push(`Left out, since Circuit JSON has no element for them: ${[...drawn.left].map(([what, n]) => `${n} ${what}`).join(", ")}. Solder mask, paste and adhesive drawings are always left out.`)
     else drawingNotes.push("Solder mask, paste, adhesive and user layer drawings have no element in Circuit JSON and are left out.")
+  }
+
+  // ---------- Text of a board brought in from KiCad ----------
+  // The KiCad export writes it itself, with its pen, justification and every attribute, so it is left out of the circuit it converts.
+  if (!options.forKicad && worldTexts(project).some((t) => t.placed && !t.hidden)) {
+    const written = textElements(project, { pcbIds: new Map(parts.map((p) => [p.c.id, p.pcbId])), next: (prefix) => ids.next(prefix) })
+    elements.push(...written.elements)
+    drawingNotes.push("Text: silkscreen, copper and fabrication text is in the file with its size, place, turn, mirror and knockout, its variables resolved; Circuit JSON has no pen width, bold or italic, which are left out.")
+    if (written.left.size) drawingNotes.push(`Text left out, since Circuit JSON has no element for it: ${[...written.left].map(([what, n]) => `${n} on ${what}`).join(", ")}.`)
+    if (written.boxes) drawingNotes.push(`${written.boxes} text box${written.boxes > 1 ? "es are" : " is"} written as its text alone, with no box or border.`)
   }
 
   // ---------- Schematic ----------

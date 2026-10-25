@@ -114,17 +114,23 @@ export function updateComponent(
 ): Project {
   return touch({
     ...project,
-    components: project.components.map((c) =>
-      c.id === id
-        ? {
-            ...c,
-            ...patch,
-            props: patch.props ? { ...patch.props } : c.props,
-            sch: { ...c.sch, ...patch.sch },
-            pcb: { ...c.pcb, ...patch.pcb },
-          }
-        : c,
-    ),
+    components: project.components.map((c) => {
+      if (c.id !== id) return c
+      const next = {
+        ...c,
+        ...patch,
+        props: patch.props ? { ...patch.props } : c.props,
+        sch: { ...c.sch, ...patch.sch },
+        pcb: { ...c.pcb, ...patch.pcb },
+      }
+      // A reference text that shows something other than the part's reference (a part a KiCad board names `REF**`) follows the part once the part is renamed.
+      if (patch.ref !== undefined && patch.ref !== c.ref && c.texts?.some((t) => t.kind === "reference" && t.text !== undefined)) {
+        next.texts = c.texts.map((t) => (t.kind === "reference" && t.text !== undefined ? (({ text: _text, ...rest }) => rest)(t) : t))
+      }
+      // The KiCad footprint id names the footprint the file gave, so another footprint makes it wrong (`${FOOTPRINT_NAME}`).
+      if (patch.footprint !== undefined && patch.footprint !== c.footprint && patch.fpid === undefined) delete next.fpid
+      return next
+    }),
   })
 }
 

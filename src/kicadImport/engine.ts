@@ -30,6 +30,13 @@ export type ProjectImporter = (files: ProjectBytes, options: ImportOptions) => K
  */
 const loadBoardImporter = (): Promise<BoardImporter> => import("../model/kicad/board")
 
+/** KiCad's stroke font, and its CJK glyphs when the file has a character from them (a UTF-8 lead byte of U+3000 and up, or a UTF-16 file). */
+async function loadKicadFontFor(bytes: Uint8Array) {
+  const { loadKicadFont } = await import("../lib/kicadFont/load")
+  const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)
+  await loadKicadFont({ cjk: utf16 || bytes.some((b) => b >= 0xe3 && b <= 0xef) })
+}
+
 /**
  * Where the schematic and project importer plugs in. While `null`, a project's schematic and
  * project files are named in the report as not read yet and the board is imported alone. To plug it
@@ -104,7 +111,10 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       result = await projectImporter(project, importOptions)
       context.used.push(...[project.projectFile, ...project.schematics, project.rules, ...project.libraries].flatMap((f) => (f ? [f.name] : [])))
     } else {
-      result = (await (options.loadBoardImporter ?? loadBoardImporter)()).importKicadBoard(bytes, importOptions)
+      const importer = await (options.loadBoardImporter ?? loadBoardImporter)()
+      // A footprint that is nothing but text is given the box of its ink, which takes KiCad's glyphs: they are loaded for the board's text first.
+      await loadKicadFontFor(bytes)
+      result = importer.importKicadBoard(bytes, importOptions)
       context.notRead = notReadBeside(files)
     }
     done({ summary: summarize(result, context), project: result.status === "imported" ? result.project : null })

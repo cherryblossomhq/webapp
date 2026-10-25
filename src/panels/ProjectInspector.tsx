@@ -423,6 +423,9 @@ function RulesSection({ project }: { project: Project }) {
         <RuleRow label="Minimum annular ring" hint="Copper left around a plated hole: (pad - drill) / 2">
           {len("minAnnularRing", 0, "Minimum annular ring")}
         </RuleRow>
+        <RuleRow label="Minimum via diameter" hint="Vias narrower than this fail the checks; leave empty for no minimum">
+          <LengthInput ariaLabel="Minimum via diameter" min={0} optional placeholder="none" value={r.minViaDiameter ?? null} onCommit={(v) => setRules({ minViaDiameter: v === null || v <= 0 ? undefined : v })} />
+        </RuleRow>
         <RuleRow label="Via in pad" hint="Let vias sit in SMD pads; the fab fills and caps them, usually at extra cost">
           <Switch label="Allow via in pad" checked={r.viaInPad} onChange={(viaInPad) => setRules({ viaInPad })} />
         </RuleRow>

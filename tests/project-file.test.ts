@@ -365,12 +365,16 @@ describe("version 4, board and footprint drawings", () => {
     expect(read.graphics).toEqual([{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, id: "g" }])
   })
 
-  it("keeps a land with no pads but with drawings, and drops one with neither", () => {
+  it("keeps every valid land with no pads, with drawings, with none, or with drawings that were all damaged: its parts have text, and it has a courtyard", () => {
     const line = { type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1 }
     const read = parseProjectFile(v4({ footprints: [land("LOGO", [], [line]), land("EMPTY", []), land("ALLBAD", [], [{ ...line, layer: "x" }])] }), origin)
-    // A land with no pad whose drawings are all damaged has neither, so it goes like the empty one.
-    expect(read.footprints!.map((f) => f.name)).toEqual(["LOGO"])
+    expect(read.footprints!.map((f) => f.name)).toEqual(["LOGO", "EMPTY", "ALLBAD"])
     expect(read.footprints![0].shapes).toEqual([line])
+    // what is damaged is not drawn wrong, and what is left of a land is still the land
+    expect(read.footprints![2].shapes).toBeUndefined()
+    // a land with no pad stays whole through a save and a load
+    const again = parseProjectFile(serializeProject(read), origin)
+    expect(again.footprints!.map((f) => f.name)).toEqual(["LOGO", "EMPTY", "ALLBAD"])
   })
 
   it("a project with no drawings writes none", () => {

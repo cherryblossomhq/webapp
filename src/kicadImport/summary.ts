@@ -18,19 +18,20 @@ export const PLAIN_NAMES: Record<string, string> = {
   X6: "parts turned by an angle that is not a multiple of 90 degrees",
   X7: "special pads (turned, rounded, chamfered, custom, drilled off centre or slotted, on unusual layers, with their own margins, properties or nets, or whose mask and paste differ from the editor's)",
   X8: "drawings beyond plain silkscreen lines on any layer (fabrication, courtyard, user), or parts with no pads",
-  X9: "text: the reference and value of every part, and text on the board",
+  X9: "text on any layer: the reference and value of every part, part text and text on the board",
   X10: "net classes beyond the default, custom design rules, or two different smallest drill sizes",
   X11: "dimensions",
   X12: "groups of parts",
   X13: "tracks and vias that carry a net",
   X14: "reference images",
   X15: "part flags (virtual, board only, not in the parts list or position files, do not populate) and net ties",
-  X19: "text outlines and embedded fonts",
+  X19: "text in a font other than KiCad's own, text outlines and embedded fonts",
   X20: "placement rule areas and component classes",
   X21: "tuning patterns and pad lengths",
   X22: "via protection, backdrill and post-machining",
   X23: "variants, units and points",
-  X24: "hatched fills, line end shapes, colours on drawings and tracks exposed through the solder mask",
+  X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width and tracks exposed through the solder mask",
+  X25: "tables, barcodes and drill charts, text boxes inside parts, and text with expressions or variables the editor cannot fill in",
 }
 
 /** The plain name of an extension; one the table does not know is still named, never shown as a bare id. */
@@ -119,6 +120,7 @@ function broughtOf(p: Project): ImportSummary["brought"] {
     { label: "vias", count: p.vias.length },
     { label: "pours", count: p.zones.length },
     { label: "pieces of board text", count: p.texts.length },
+    { label: "texts of parts (references, values, labels)", count: p.components.reduce((n, c) => n + (c.texts?.length ?? 0), 0) },
   ].filter((b) => b.count > 0)
 }
 

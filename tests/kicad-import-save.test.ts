@@ -7,7 +7,7 @@ import { connectAnalytics } from "../src/kicadImport/analytics"
 import { forgetReport } from "../src/kicadImport/reportStore"
 import { createProject } from "../src/model/ops"
 import { PROJECT_SIZE_LIMIT_BYTES, formatSize, importKicadBoard, EXTENSION_NAMES } from "../src/model/kicad/board"
-import { board, footprint, pad } from "./kicad-board-fixtures"
+import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeStorage, fakeWorkers, stubLocalStorage } from "./kicad-import-helpers"
 import type { ImportOutcome } from "../src/kicadImport/protocol"
 
@@ -66,7 +66,7 @@ describe("saving an imported project", () => {
 
   it("a refusal from the importer has nothing to save, and saving it is refused", async () => {
     const { storage, created } = fakeStorage()
-    const refused = outcomeOf(board({ body: [footprint({ pads: [pad({ at: "0 0" })] })] }))
+    const refused = outcomeOf(REFUSED_BOARD)
     await expect(saveImported(storage, refused)).rejects.toBeInstanceOf(SaveRefused)
     expect(created).toHaveLength(0)
   })
@@ -136,7 +136,7 @@ describe("the flow, from files to a saved project", () => {
   it("a refusal shows the report and stores nothing", async () => {
     const { storage, created } = fakeStorage()
     const c = new KicadImportController(storage, { worker: fakeWorkers().create })
-    c.start([entry("p.kicad_pcb", board({ body: [footprint({ pads: [pad({ at: "0 0" })] })] }))])
+    c.start([entry("p.kicad_pcb", REFUSED_BOARD)])
     await settled(c, "report")
     expect(c.state).toMatchObject({ step: "report", projectId: null })
     expect(c.state.step === "report" && c.state.summary.reason).toBe("unsupported")

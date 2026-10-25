@@ -55,8 +55,8 @@ export function shapeShown(ws: WorldShape, vis: ShapeVisibility): boolean {
 export const visibleShapes = (shapes: WorldShape[], vis: ShapeVisibility): WorldShape[] => shapes.filter((s) => shapeShown(s, vis))
 
 /** The drawing layers a project uses, in the order of the layer list, for the layer menu. */
-export function usedShapeLayers(shapes: WorldShape[]): ShapeLayerInfo[] {
-  const used = new Set(shapes.map((s) => s.shape.layer))
+export function usedShapeLayers(shapes: WorldShape[], textLayers: string[] = []): ShapeLayerInfo[] {
+  const used = new Set([...shapes.map((s) => s.shape.layer), ...textLayers])
   const known = SHAPE_LAYERS.filter((l) => used.has(l.name))
   const unknown = [...used].filter((n) => !shapeLayerInfo(n)).sort().map((name): ShapeLayerInfo => ({ name, kind: "user", side: null, label: name }))
   return [...known, ...unknown]

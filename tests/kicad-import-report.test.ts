@@ -5,7 +5,7 @@ import { PHASE_LABELS } from "../src/kicadImport/protocol"
 import { reportLead, reportSections, reportTitle, reportTone } from "../src/kicadImport/sections"
 import { PLAIN_NAMES, plainName, reportJson, reportName, reportText, stoppedSummary, summarize, unsupportedLead, type ImportSummary, type SummaryReason } from "../src/kicadImport/summary"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
-import { board, footprint, pad } from "./kicad-board-fixtures"
+import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 
 // The words of the report: every extension id has a plain name that covers what triggers it, a
 // refusal says what in the board needs each one, and the downloads say the same as the screen.
@@ -48,7 +48,8 @@ describe("plain names for the extensions", () => {
     X21: [/tuning/, /pad lengths/],
     X22: [/via protection/, /backdrill/],
     X23: [/variants/, /units/, /points/],
-    X24: [/hatched fills/, /line end shapes/, /colours/, /solder mask/],
+    X24: [/hatched fills/, /line end shapes/, /colours/, /negative width/, /solder mask/],
+    X25: [/tables/, /barcodes/, /drill charts/, /text boxes/, /expressions/, /variables/],
   }
 
   it("every name covers everything its extension is raised for", () => {
@@ -66,7 +67,7 @@ describe("plain names for the extensions", () => {
   })
 })
 
-const refused = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }))
+const refused = importKicadBoard(REFUSED_BOARD)
 const imported = importKicadBoard(board({}))
 // What this fixture is refused for is whatever the importer does not build yet: read from its own result, so the tests keep passing as slices build more.
 const MISSING = refused.status === "refused" ? refused.needs.map((n) => n.ext) : []
@@ -110,7 +111,7 @@ describe("the summary of a real result", () => {
 
 describe("every need shows what in the board raised it", () => {
   const boards: Record<string, string> = {
-    "part text": board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] })] }),
+    "text in a font of the computer": board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }),
     "rounded pad and a track": board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }),
     "four copper layers": board({ layers: `(layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))` }),
     "no outline": board({ outline: false }),
@@ -167,7 +168,7 @@ describe("the report screen's content", () => {
     expect(reportTone({ ...s, notBrought: [{ code: "x", object: "o", why: "w" }] })).toBe("warn")
     expect(reportSections(s).map((x) => x.title)).toEqual(expect.arrayContaining(["Left out because it is not needed", "Good to know", "Files not read"]))
     const withParts = summarize(importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] })] }), { built: new Set(Object.keys(EXTENSION_NAMES)) }), ctx)
-    expect(reportSections(withParts)[0]).toMatchObject({ title: "What came in", lines: [{ text: "1 parts." }, expect.anything()] })
+    expect(reportSections(withParts)[0]).toMatchObject({ title: "What came in", lines: [{ text: "1 parts, 2 texts of parts (references, values, labels)." }, expect.anything()] })
   })
 
   it("the lead does not repeat what the sections say", () => {

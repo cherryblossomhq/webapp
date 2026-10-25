@@ -25,22 +25,24 @@ const netOf = (r: Extract<KicadImportResult, { status: "imported" }>, ref: strin
 describe("the gate", () => {
   const simple = board({ nets: ['(net 0 "")', '(net 1 "GND")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0" })] })] })
 
+  const rounded = board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] })] })
+
   it("refuses a board that uses what the editor cannot hold yet, naming it, and imports nothing", () => {
-    const r = importKicadBoard(simple)
+    const r = importKicadBoard(rounded)
     expect(r.status).toBe("refused")
     if (r.status !== "refused") return
     expect(r.reason).toBe("unsupported")
     expect(r.message).toMatch(/^This board uses .+, which (is|are) not supported yet\.$/)
-    expect(r.message).toMatch(/text/)
-    expect(r.needs.map((n) => n.ext)).toEqual(["X9"])
+    expect(r.message).toMatch(/pads/)
+    expect(r.needs.map((n) => n.ext)).toEqual(["X7"])
     expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused")).toBe(true)
   })
 
   it("names every extension a board needs in the one sentence", () => {
-    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }))
-    // X13 (nets on tracks and vias) is built: a board's tracks are no reason to refuse it
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7", "X9"])
-    if (r.status === "refused") expect(r.message).toMatch(/pads that are turned, rounded.+text, which are not supported yet\./)
+    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))', '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }))
+    // X13 (nets on tracks and vias) and X9 (text) are built: a board's tracks and its text are no reason to refuse it; a font of the computer is
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7", "X19"])
+    if (r.status === "refused") expect(r.message).toMatch(/pads that are turned, rounded.+text in a font other than KiCad's own.+, which are not supported yet\./)
   })
 
   it("a board that needs nothing the editor lacks is imported (every extension built, for the test)", () => {
@@ -53,13 +55,15 @@ describe("the gate", () => {
   })
 
   it("accounts for every node of the file: imported, not needed with its reason, pending, or reported", () => {
-    const r = importKicadBoard(simple)
+    const r = importKicadBoard(rounded)
     const a = r.report.account!
     expect(a.unknownPaths.size).toBe(0)
     expect(a.unknownAtoms.size).toBe(0)
     const sum = a.imported + [...a.notNeeded.values()].reduce((x, y) => x + y, 0) + [...a.pending.values()].reduce((x, y) => x + y, 0) + a.reported
     expect(sum).toBe(a.total)
-    expect(a.pending.get("X9")).toBeGreaterThan(0)
+    expect(a.pending.get("X7")).toBeGreaterThan(0)
+    // text is built: its nodes are counted as imported, not left pending
+    expect(a.pending.get("X9")).toBeUndefined()
   })
 })
 

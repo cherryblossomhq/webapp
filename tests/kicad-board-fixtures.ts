@@ -71,3 +71,15 @@ export function board(spec: BoardSpec = {}): string {
   ${outline}
 )`
 }
+
+/**
+ * A board the importer refuses for what stays unbuilt until phase 3 whatever the slices before it build: a part, a track, and a text in a
+ * TrueType font (X19). The import screen's tests use it for "a refusal", and read what is missing from the importer's own result.
+ */
+export const REFUSED_BOARD = board({
+  body: [
+    footprint({ pads: [pad({ at: "0 0" })] }),
+    '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))',
+    '(gr_text "Arial" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))',
+  ],
+})

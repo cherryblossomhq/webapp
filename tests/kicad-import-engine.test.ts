@@ -6,7 +6,7 @@ import { runImport, type BoardImporter, type ProjectBytes, type ProjectImporter 
 import type { Phase, WorkerEvent } from "../src/kicadImport/protocol"
 import { PLAIN_NAMES } from "../src/kicadImport/summary"
 import { EXTENSION_NAMES } from "../src/model/kicad/board"
-import { board, footprint, pad } from "./kicad-board-fixtures"
+import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeWorkers, zipEntry } from "./kicad-import-helpers"
 
 // The job and its worker protocol, with the real importer behind it: every outcome the report
@@ -45,16 +45,17 @@ describe("the outcomes", () => {
   it("imported with parts and report entries (every extension counted as built, for the test)", async () => {
     const o = outcomeOf(await run([entry("p.kicad_pcb", withPart)], { importOptions: { built: ALL } }))
     expect(o.summary.status).toBe("imported")
-    expect(o.summary.brought).toEqual([{ label: "parts", count: 1 }])
+    // the part's reference and value come in as the part's own texts
+    expect(o.summary.brought).toEqual([{ label: "parts", count: 1 }, { label: "texts of parts (references, values, labels)", count: 2 }])
     expect(o.project?.components.length).toBe(1)
   })
 
   it("refused for missing extensions: they are named, in plain words, and no project is made", async () => {
-    const o = outcomeOf(await run([entry("p.kicad_pcb", withPart)]))
+    const o = outcomeOf(await run([entry("p.kicad_pcb", REFUSED_BOARD)]))
     expect(o.project).toBeNull()
     expect(o.summary.status).toBe("refused")
     expect(o.summary.reason).toBe("unsupported")
-    expect(o.summary.missing).toEqual([{ id: "X9", name: PLAIN_NAMES.X9, why: expect.stringMatching(/reference and value text/) }])
+    expect(o.summary.missing).toEqual([{ id: "X19", name: PLAIN_NAMES.X19, why: expect.stringMatching(/Arial/) }])
   })
 
   it("refused for size: the message names the size and the limit, and nothing is built for saving", async () => {

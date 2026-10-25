@@ -67,6 +67,28 @@ describe("design rule checks", () => {
     expect(kinds(loose, "annular-ring")).toEqual([])
   })
 
+  it("flags a via narrower than the minimum via diameter (KiCad's via_min_size), and a board has no such minimum by default", () => {
+    let p = board()
+    p = { ...addVia(p, { x: 0, y: 8 }).project }
+    p = { ...p, vias: p.vias.map((v) => ({ ...v, diameter: 0.4, drill: 0.2 })) }
+    expect(DEFAULT_RULES.minViaDiameter).toBeUndefined()
+    expect(kinds(p, "via-size")).toEqual([])
+    const strict = withRules(p, { minViaDiameter: 0.45 })
+    const found = kinds(strict, "via-size")
+    expect(found).toHaveLength(1)
+    expect(found[0].severity).toBe("error")
+    expect(found[0].message).toBe("Via diameter 0.4 mm is below the 0.45 mm minimum")
+    expect(kinds(withRules(p, { minViaDiameter: 0.4 }), "via-size")).toEqual([])
+  })
+
+  it("keeps a minimum via diameter through the project file, drops an unusable one, and a board without one stays without", () => {
+    const p = withRules(board(), { minViaDiameter: 0.45 })
+    expect(normalizeRules(JSON.parse(JSON.stringify(p.rules))).minViaDiameter).toBe(0.45)
+    expect("minViaDiameter" in normalizeRules({ ...DEFAULT_RULES, minViaDiameter: 0 })).toBe(false)
+    expect("minViaDiameter" in normalizeRules({ ...DEFAULT_RULES, minViaDiameter: Number.NaN })).toBe(false)
+    expect("minViaDiameter" in normalizeRules(undefined)).toBe(false)
+  })
+
   it("flags holes closer than the hole-to-hole minimum", () => {
     let p = board()
     p = addVia(p, { x: 0, y: 8 }).project

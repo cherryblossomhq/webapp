@@ -220,7 +220,7 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
     min_track_width: rules.minTraceWidth,
     min_through_hole_diameter: rules.minDrill,
     min_via_annular_width: rules.minAnnularRing,
-    min_via_diameter: round(rules.minDrill + 2 * rules.minAnnularRing, 6),
+    min_via_diameter: rules.minViaDiameter ?? round(rules.minDrill + 2 * rules.minAnnularRing, 6),
     min_hole_to_hole: rules.holeClearance,
     min_hole_clearance: rules.clearance,
     min_copper_edge_clearance: rules.edgeClearance,

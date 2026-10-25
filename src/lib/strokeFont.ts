@@ -815,3 +815,11 @@ export function strokeText(text: string, opts: StrokeTextOptions): Vec2[][] {
   })
   return out
 }
+
+/** The editor font's glyph cell: cap height, glyph width and the step from one character to the next, in glyph units (y up, baseline 0). */
+export const EDITOR_GLYPH_CELL = { cap: CAP, width: WIDTH, advance: ADVANCE } as const
+
+/** The editor font's own strokes for a character, in its cell, for text laid out by other rules (`lib/kicadText.ts`). */
+export function editorGlyphStrokes(ch: string): [number, number][][] {
+  return glyphFor(ch) as [number, number][][]
+}

@@ -135,12 +135,11 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
 
 /** The project's drawings through the stored form and back: the same board drawings (ids included) and the same drawings in every land, to the last digit, and the stored text holds no drawing as an object. */
 export function roundTripOk(project: Project): boolean {
-  if (!project.graphics?.length && !project.footprints?.some((f) => f.shapes?.length)) return true
+  if (!project.graphics?.length && !project.footprints?.length) return true
   const text = serializeProject(project)
   const back = parseProjectFile(text, { id: project.id })
   if (!isDeepStrictEqual(back.graphics, project.graphics)) return false
-  // A land with no pad and no drawing (a footprint of text only, until X9) is not kept by a load, as before.
-  const had = new Map((project.footprints ?? []).filter((f) => f.pads.length || f.shapes?.length).map((f) => [f.name, f.shapes]))
+  const had = new Map((project.footprints ?? []).map((f) => [f.name, f.shapes]))
   const got = new Map((back.footprints ?? []).map((f) => [f.name, f.shapes]))
   if (had.size !== got.size) return false
   for (const [name, shapes] of had) if (!isDeepStrictEqual(got.get(name), shapes)) return false

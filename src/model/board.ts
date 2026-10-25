@@ -1,6 +1,6 @@
 import { emptyBox, expandBox, round } from "../lib/geometry"
 import { strokeText } from "../lib/strokeFont"
-import type { BoardDef, BoardText, MountingHoles, SurfaceFinish, Vec2 } from "./types"
+import type { BoardDef, BoardText, MountingHoles, Rotation, SurfaceFinish, Vec2 } from "./types"
 
 /** Solder mask green, the colour fabs make by default. */
 export const DEFAULT_MASK_COLOR = "#1f6b3a"
@@ -72,9 +72,15 @@ export const MOUNTING_HOLE_PRESETS: { id: string; label: string; holes: Mounting
   { id: "m4", label: "M4", holes: { drill: 4.3, diameter: 8, inset: 4.5 } },
 ]
 
+/** The editor's own silkscreen text: the board's texts that are not KiCad texts (those have a layer and are drawn by `model/texts.ts`). The same array when there is no other kind. */
+export function ownTexts(project: { texts?: BoardText[] }): BoardText[] {
+  const all = project.texts ?? []
+  return all.some((t) => t.layer !== undefined) ? all.filter((t) => t.layer === undefined) : all
+}
+
 /** Silkscreen strokes for a board text, mirrored on the bottom so it reads from below. */
 export function boardTextStrokes(t: BoardText): Vec2[][] {
-  return strokeText(t.text, { x: t.x, y: t.y, size: t.size, rotation: t.rot, mirror: t.side === "bottom" })
+  return strokeText(t.text, { x: t.x, y: t.y, size: t.size, rotation: t.rot as Rotation, mirror: t.side === "bottom" })
 }
 
 export const boardTextStrokeWidth = (t: BoardText) => Math.max(0.15, t.size * 0.14)

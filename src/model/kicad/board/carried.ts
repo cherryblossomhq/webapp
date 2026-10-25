@@ -46,6 +46,8 @@ const ROWS = [
   // X15 and X13 are built: the flags, the net tie and jumper groups, and the net of each track and via are written into the project.
   row("footprint>attr|footprint>net_tie_pad_groups|footprint>duplicate_pad_numbers_are_jumpers|footprint>jumper_pad_groups(?:><layer number>|>[^>]+)?", "built"),
   row("(?:segment|arc|via)>net", "built"),
+  // Text (X9) is built: its place, layer, size, pen, justification, mirror, flags and content are written into the project. A board text cannot be hidden in KiCad.
+  row("(?:gr_text|gr_text_box)>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503)"),
   row("footprint>pad>layers", "derived", "the layers a pad is on are what the editor draws for its type and side (copper, mask, and paste on surface-mount pads); a pad whose layers differ needs X7"),
   row("footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)|footprint>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)", "derived", "a zero margin or clearance in a file up to stamp 20240201 means no setting (KiCad reads it as inherit)"),
 ]

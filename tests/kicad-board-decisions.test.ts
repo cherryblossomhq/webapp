@@ -48,7 +48,7 @@ describe("the decision table", () => {
 
   it("native means the project builder writes the node: what it does not write is an extension need, not needed with a reason, or reported", () => {
     const rows: [string, string, string?][] = [
-      ["setup>via_min_size", "extend", "X10"],
+      ["setup>via_min_size", "native"],
       ["setup>user_via", "extend", "X10"],
       ["setup>zone_45_only", "not-needed"],
       ["setup>last_trace_width", "not-needed"],

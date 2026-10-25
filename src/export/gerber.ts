@@ -1,4 +1,4 @@
-import { boardTextStrokes, boardTextStrokeWidth, mountingHoles } from "../model/board"
+import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../model/board"
 import { isNpth, isPhysical, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
 import { designatorStrokes, placeDesignators, SILK_WIDTH } from "../model/silk"
 import { findPart } from "../model/library"
@@ -7,6 +7,7 @@ import type { CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
 import type { BoardShape } from "../model/types"
 import { worldShapes } from "../model/shapeItems"
 import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
+import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
 
 const EDGE_WIDTH = 0.1
@@ -252,6 +253,15 @@ function drawingsOn(project: Project, layer: string): BoardShape[] {
   return worldShapes(project).filter((s) => s.placed && s.shape.layer === layer).map((s) => s.shape)
 }
 
+/** The texts on one KiCad layer as KiCad plots them (`PlotText`, pcbnew/plot_brditems_plotter.cpp:767 of 10.0.0): strokes with a round pen, a knockout as a filled region with the letters left out, a text box's border as a stroked outline. */
+function plotTexts(w: GerberWriter, project: Project, layer: string) {
+  for (const t of textsOnLayer(project, layer)) {
+    for (const polygon of t.fills) w.region(polygon.length > 1 ? fractureRings(polygon[0], polygon.slice(1)) : polygon[0])
+    for (const stroke of t.strokes) w.stroke(stroke.length === 1 ? [stroke[0], stroke[0]] : stroke, t.pen)
+    if (t.border) w.stroke([...t.border.points, t.border.points[0]], t.border.width)
+  }
+}
+
 const sideName = (side: PcbSide) => (side === "top" ? "Top" : "Bot")
 
 /** Area enclosed by a ring, whichever way it winds. */
@@ -288,6 +298,7 @@ export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFi
   for (const t of project.traces) if (t.layer === layer) w.stroke(t.points, t.width)
   for (const v of project.vias) w.flashCircle(v, v.diameter)
   for (const shape of drawingsOn(project, layer === "top" ? "F.Cu" : "B.Cu")) plotShape(w, shape)
+  plotTexts(w, project, layer === "top" ? "F.Cu" : "B.Cu")
   return w.toString(`Copper,L${layer === "top" ? 1 : 2},${sideName(layer)}`)
 }
 
@@ -298,6 +309,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
   for (const pad of padsOn(project, side)) flashPad(w, pad, grow)
   if (!project.rules.tentVias) for (const v of project.vias) w.flashCircle(v, v.diameter + grow * 2)
   for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
+  plotTexts(w, project, side === "top" ? "F.Mask" : "B.Mask")
   return w.toString(`Soldermask,${sideName(side)}`, "Negative")
 }
 
@@ -306,6 +318,7 @@ export function gerberPaste(project: Project, side: PcbSide): string {
   const w = new GerberWriter()
   for (const pad of padsOn(project, side)) if (pad.holeDiameter === undefined) flashPad(w, pad, project.rules.pasteExpansion)
   for (const shape of drawingsOn(project, side === "top" ? "F.Paste" : "B.Paste")) plotShape(w, shape)
+  plotTexts(w, project, side === "top" ? "F.Paste" : "B.Paste")
   return w.toString(`Paste,${sideName(side)}`)
 }
 
@@ -318,11 +331,12 @@ export function gerberSilkscreen(project: Project, side: PcbSide): string {
     const d = designators.get(c.id)
     if (d) for (const stroke of designatorStrokes(d)) w.stroke(stroke, SILK_WIDTH)
   }
-  for (const t of project.texts ?? []) {
+  for (const t of ownTexts(project)) {
     if (t.side !== side) continue
     for (const stroke of boardTextStrokes(t)) w.stroke(stroke, boardTextStrokeWidth(t))
   }
   for (const shape of drawingsOn(project, side === "top" ? "F.SilkS" : "B.SilkS")) plotShape(w, shape)
+  plotTexts(w, project, side === "top" ? "F.SilkS" : "B.SilkS")
   return w.toString(`Legend,${sideName(side)}`)
 }
 
@@ -343,6 +357,7 @@ export function gerberEdgeCuts(project: Project): string {
       { x: minX, y: maxY },
     ]
     w.stroke([...corners, corners[0]], EDGE_WIDTH)
+    plotTexts(w, project, "Edge.Cuts")
     return w.toString("Profile,NP")
   }
   w.use(`C,${num(EDGE_WIDTH)}`)
@@ -358,6 +373,7 @@ export function gerberEdgeCuts(project: Project): string {
   w.arcCcwTo({ x: minX, y: maxY - r }, { x: 0, y: -r })
   line({ x: minX, y: maxY - r }, { x: minX, y: minY + r })
   w.arcCcwTo({ x: minX + r, y: minY }, { x: r, y: 0 })
+  plotTexts(w, project, "Edge.Cuts")
   return w.toString("Profile,NP")
 }
 

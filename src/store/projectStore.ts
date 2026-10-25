@@ -2,6 +2,7 @@ import { followNetRenames } from "../model/copperNets"
 import { pruneImportMarks } from "../model/importMarks"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
+import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
 import { projectRecord, type ProjectStorage, type SaveRefusal } from "./storage"
 
@@ -315,6 +316,31 @@ if (typeof window !== "undefined") {
     e.preventDefault()
   })
 }
+
+// A project with KiCad text is drawn with KiCad's own stroke font, a chunk of its own that is fetched the first time one is
+// open. Until it arrives the texts are laid out with the editor's letters; when it does, the open project is replaced by a
+// copy of itself (not an edit: no history step, no save) so everything that drew text draws it again.
+let fontWatch: Promise<void> | null = null
+useProjectStore.subscribe((state, prev) => {
+  const p = state.project
+  if (!p || p === prev.project || fontWatch || !textFontMissing(p)) return
+  fontWatch = ensureTextFont(p)
+    .then((loaded) => {
+      // Cleared before the swap, so the swap (and a project opened while this load ran) can ask for what it still needs.
+      fontWatch = null
+      if (!loaded) return
+      useProjectStore.setState((s) => {
+        if (!s.project) return {}
+        const copy = { ...s.project }
+        // A drag that has not moved yet keeps its base the open project, so ending it still adds no history step.
+        return s.transientBase === s.project ? { project: copy, transientBase: copy } : { project: copy }
+      })
+    })
+    .catch(() => {})
+    .finally(() => {
+      fontWatch = null
+    })
+})
 
 /** Non-hook accessor for event handlers. */
 export const projectApi = () => useProjectStore.getState()

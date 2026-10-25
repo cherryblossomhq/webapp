@@ -1,6 +1,7 @@
 import JSZip from "jszip"
 import { computeConnectivity } from "../model/connectivity"
 import { analyzePcb } from "../model/pcb"
+import { ensureTextFont } from "../model/textFont"
 import type { Project } from "../model/types"
 import { bomCsv } from "./bom"
 import { excellonDrill, npthHoles } from "./excellon"
@@ -52,6 +53,7 @@ export function buildFabricationFiles(project: Project): Record<string, string> 
 }
 
 export async function buildFabricationZip(project: Project): Promise<Blob> {
+  await ensureTextFont(project)
   const zip = new JSZip()
   for (const [name, content] of Object.entries(buildFabricationFiles(project))) zip.file(name, content)
   return zip.generateAsync({ type: "blob", compression: "DEFLATE" })

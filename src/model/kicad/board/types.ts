@@ -80,12 +80,28 @@ export interface KicadText {
   /** False when the text is "unlocked" (`(at x y a unlocked)` or `(unlocked yes)`): it may turn upside down with its part. */
   keepUpright: boolean
   layer: string
+  /** The glyph width and height (mm). In the file `(size h w)` gives the height first. */
   w: number
   h: number
   thickness: number
   hide: boolean
   mirror: boolean
   justify: string[]
+  /** `(layer F.Cu knockout)`: drawn as a hole in a filled box. */
+  knockout: boolean
+  bold: boolean
+  italic: boolean
+  /** The font face the text names (a TrueType font); null for KiCad's own stroke font. */
+  face: string | null
+  lineSpacing: number
+  href: string | null
+  locked: boolean
+  /** The outlines KiCad drew a TrueType text with (`render_cache`), which decide its silkscreen shapes (X19). */
+  renderCache: boolean
+  /** The property's name when the text is a footprint field (`Reference`, `Value`, `Datasheet`...). */
+  field: string | null
+  /** A text box (`gr_text_box`, `fp_text_box`): its corners, whether it is an outline of points, its border and margins. */
+  box: { start: Pt; end: Pt; hasOutline: boolean; border: boolean; strokeWidth: number | null; margins: [number, number, number, number] | null } | null
   node: List
 }
 
@@ -219,6 +235,8 @@ export interface KicadSegment {
   net: string | null
   /** The net as the file spells it, the key everywhere a net is compared. */
   netRaw: string | null
+  /** The net number the board's net table does not list, which KiCad loads as no net. */
+  badNet?: string
   locked: boolean
   node: List
 }
@@ -231,6 +249,7 @@ export interface KicadArcTrack {
   layer: string
   net: string | null
   netRaw: string | null
+  badNet?: string
   locked: boolean
   node: List
 }
@@ -244,6 +263,7 @@ export interface KicadVia {
   kind: "through" | "blind" | "micro" | "buried"
   net: string | null
   netRaw: string | null
+  badNet?: string
   locked: boolean
   node: List
 }

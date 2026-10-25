@@ -17,6 +17,7 @@ import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
 import { worldShapes } from "./shapeItems"
 import { shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
+import { layerText, worldTexts } from "./texts"
 import type { BoardDef, BoardShape, CopperLayer, Project, Vec2, Via } from "./types"
 
 /** componentId used for board-level copper such as mounting holes. */
@@ -66,6 +67,8 @@ export type CopperItem =
       layers: CopperLayer[]
       box: Box
       netId?: string | null
+      /** Set when the copper is a text (its strokes as edges, `shape` a box standing for it): it never conducts and is copper for every check. */
+      what?: "text"
     }
   | {
       kind: "zone"
@@ -97,6 +100,7 @@ export interface DrcViolation {
     | "trace-width"
     | "drill"
     | "annular-ring"
+    | "via-size"
     | "hole-clearance"
     | "edge-clearance"
     | "via-in-pad"
@@ -344,6 +348,29 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
       box,
       ...(w.shape.net && useStored ? { netId: idOf(w.shape.net) } : {}),
     })
+  }
+  // Text on a copper layer is copper (never on a net): a pour keeps clear of it, the router goes round it, and it keeps clear of every net.
+  for (const wt of worldTexts(project)) {
+    if (!wt.placed || wt.hidden || (wt.layer !== "F.Cu" && wt.layer !== "B.Cu")) continue
+    const t = layerText(project, wt)
+    if (!t) continue
+    const layer: CopperLayer = wt.layer === "F.Cu" ? "top" : "bottom"
+    const edges: [Vec2, Vec2][] = []
+    const fill: Vec2[][] = []
+    for (const line of t.strokes) for (let i = 0; i + 1 < line.length; i++) edges.push([line[i], line[i + 1]])
+    // A single-point stroke is a dot: an edge of no length.
+    for (const line of t.strokes) if (line.length === 1) edges.push([line[0], line[0]])
+    for (const polygon of t.fills) {
+      for (const ring of polygon) {
+        fill.push(ring)
+        for (let i = 0; i < ring.length; i++) edges.push([ring[i], ring[(i + 1) % ring.length]])
+      }
+    }
+    if (t.border) for (let i = 0; i < t.border.points.length; i++) edges.push([t.border.points[i], t.border.points[(i + 1) % t.border.points.length]])
+    const half = t.fills.length ? 0 : t.pen / 2
+    const box = t.box
+    const shape: BoardShape = { type: "rect", a: { x: box.minX, y: box.minY }, b: { x: box.maxX, y: box.maxY }, layer: wt.layer, width: 0 }
+    items.push({ kind: "shape", id: `text:${wt.id}`, shapeId: wt.id, owner: wt.owner, shape, copper: { edges, half, fill }, conducts: false, layers: [layer], box, what: "text" })
   }
   return items
 }
@@ -670,7 +697,10 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   /** Which copper an item is, for a message: a pad as "J1.2", else a trace, a via or a mounting hole. */
   const describe = (it: CopperItem) => {
     if (it.kind === "pad") return it.pad.componentId === BOARD_OWNER ? "a mounting hole" : `${refOfPart.get(it.pad.componentId) ?? "a part"}.${it.pad.padNumber ?? it.pad.pin ?? "pad"}`
-    if (it.kind === "shape") return it.owner === BOARD_OWNER ? "a copper drawing" : `a copper drawing of ${refOfPart.get(it.owner) ?? "a part"}`
+    if (it.kind === "shape") {
+      const what = it.what === "text" ? "copper text" : "copper drawing"
+      return it.owner === BOARD_OWNER ? `a ${what}` : `a ${what} of ${refOfPart.get(it.owner) ?? "a part"}`
+    }
     return it.kind === "segment" ? "a trace" : it.kind === "via" ? "a via" : "a pour"
   }
   forOverlappingPairs(items, clearance, (i, j) => {
@@ -881,6 +911,10 @@ function manufacturability(
     if (!prev || value < prev.value) smallest.set(key, { value, at, what })
   }
   for (const v of project.vias) {
+    // KiCad's `via_min_size`: a via narrower than the rule's minimum diameter (the rule is absent on a board drawn here)
+    if (rules.minViaDiameter !== undefined && v.diameter < rules.minViaDiameter - eps) {
+      push({ severity: "error", kind: "via-size", message: `Via diameter ${mm(v.diameter)} is below the ${mm(rules.minViaDiameter)} minimum`, at: { x: v.x, y: v.y } })
+    }
     if (v.drill < rules.minDrill - eps) note(`drill:via:${v.id}`, v.drill, v, "Via")
     const ring = (v.diameter - v.drill) / 2
     if (ring < rules.minAnnularRing - eps) note(`ring:via:${v.id}`, ring, v, "Via")
@@ -943,7 +977,7 @@ function manufacturability(
     if (edgeSeen.has(key)) continue
     edgeSeen.add(key)
     const at = it.kind === "segment" ? (edgeDistance(board, it.a) < edgeDistance(board, it.b) ? it.a : it.b) : it.kind === "via" ? it.at : it.kind === "shape" ? { x: (it.box.minX + it.box.maxX) / 2, y: (it.box.minY + it.box.maxY) / 2 } : { x: it.pad.x, y: it.pad.y }
-    const what = it.kind === "segment" ? "Trace" : it.kind === "via" ? "Via" : it.kind === "shape" ? "Copper drawing" : `${owner(it.pad.componentId)} pad`
+    const what = it.kind === "segment" ? "Trace" : it.kind === "via" ? "Via" : it.kind === "shape" ? (it.what === "text" ? "Copper text" : "Copper drawing") : `${owner(it.pad.componentId)} pad`
     push({
       severity: it.kind === "pad" ? "warning" : "error",
       kind: "edge-clearance",

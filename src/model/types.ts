@@ -409,6 +409,10 @@ export interface ComponentInstance {
   nc?: string[]
   /** Footprint attributes and net ties, as a board brought in from KiCad has them (`PartFlags`). */
   flags?: PartFlags
+  /** The part's reference, value and own text, where a board brought in from KiCad has them (`PartText`); absent for a part drawn in the editor. */
+  texts?: PartText[]
+  /** The footprint's id in the KiCad board it came from, `Library:Name`, which `${FOOTPRINT_LIBRARY}` and `${FOOTPRINT_NAME}` in text show; absent for a part drawn in the editor, whose footprint name is `footprint`. */
+  fpid?: string
 }
 
 export interface Wire {
@@ -499,15 +503,80 @@ export interface Zone {
   clearance?: number
 }
 
-/** Free silkscreen text on the board. Size is the cap height in mm. */
-export interface BoardText {
+/**
+ * What a text has beyond the editor's own silkscreen text, as KiCad's text objects have it (X9). A text with a
+ * `layer` is a KiCad text: it is laid out by KiCad's rules (`lib/kicadText.ts`), with the attributes below. One
+ * with none is the editor's own silkscreen text, drawn as it always was, and the rest of these are not used.
+ * Each is optional and its absence is KiCad's default.
+ */
+export interface TextAttrs {
+  /** KiCad's name of the layer it is on: `F.SilkS`, `B.Cu`, `F.Mask`, `User.1`, `Edge.Cuts`... On a part, `F.` is the part's own side. */
+  layer?: string
+  /** Glyph width (mm) when it is not the height (`size`). */
+  w?: number
+  /** Pen width (mm); absent is automatic, an eighth of the width (a fifth when bold). */
+  thickness?: number
+  bold?: true
+  italic?: true
+  /** Mirrored about its own vertical axis, as text on a bottom layer is to read from below. */
+  mirror?: true
+  /** Drawn as a hole in a filled box round it (what a knockout is on silkscreen or copper). */
+  knockout?: true
+  /** Justification; absent is centred. */
+  hj?: "left" | "right"
+  vj?: "top" | "bottom"
+  /** Line spacing factor; absent is 1. */
+  spacing?: number
+  /** `false` for a part's text that may turn upside down with the part (KiCad's "unlocked", which means keep upright is off). */
+  upright?: false
+  /** Not drawn or plotted (a part's own text; board text cannot be hidden). */
+  hide?: true
+  locked?: true
+  /** A hyperlink KiCad keeps with the text; it has no other use here. */
+  href?: string
+  /** A text box: the text is wrapped inside a rectangle centred on (x, y) and turned with the text, with an optional border. */
+  box?: TextBox
+}
+
+/** A text box (KiCad's `gr_text_box`): the rectangle's size, the border's width when it has one, and the margins (left, top, right, bottom) the text keeps from the edge. */
+export interface TextBox {
+  w: number
+  h: number
+  border?: number
+  margins: [number, number, number, number]
+}
+
+/**
+ * Text on the board. Size is the cap height in mm for the editor's own silkscreen text, and the glyph
+ * height for a KiCad text (one with a `layer`). `rot` is the angle in degrees counter-clockwise; the editor's
+ * own text turns by quarter turns only, a KiCad text by any angle.
+ */
+export interface BoardText extends TextAttrs {
   id: string
   text: string
   x: number
   y: number
   size: number
-  rot: Rotation
+  rot: number
   side: PcbSide
+}
+
+/**
+ * A part's own text, as KiCad keeps it with the footprint: its reference, its value, or text of its own.
+ * Where it sits is in the land's frame (the part before it is turned or flipped), so it goes with the part;
+ * `layer` follows the same rule (`F.` is the part's own side). A reference or value has no `text` unless it shows
+ * something other than the part's reference or value (a part that KiCad names `REF**`); text of its own has its
+ * content, with KiCad's variables in it (`${REFERENCE}`). A part with no `texts` is a part drawn in the editor, whose
+ * designator the editor places (`model/silk.ts`); one with `texts` has what the file says and no other designator.
+ */
+export interface PartText extends TextAttrs {
+  kind: "reference" | "value" | "user"
+  text?: string
+  layer: string
+  x: number
+  y: number
+  size: number
+  rot: number
 }
 
 /**
@@ -613,6 +682,11 @@ export interface DesignRules {
   holeClearance: number
   viaDiameter: number
   viaDrill: number
+  /**
+   * The smallest via diameter the checks allow (KiCad's `via_min_size`, "Minimum via diameter"); absent is no minimum, which is how a
+   * board drawn here starts. A via narrower than this is a check error, as KiCad flags it.
+   */
+  minViaDiameter?: number
   minDrill: number
   /** Copper ring around a plated hole, (pad - drill) / 2. */
   minAnnularRing: number

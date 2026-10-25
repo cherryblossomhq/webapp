@@ -1,5 +1,5 @@
 import { useId, useMemo } from "react"
-import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles } from "../model/board"
+import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../model/board"
 import { isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
 import type { Project } from "../model/types"
@@ -98,7 +98,7 @@ export function BoardPreview({ project }: { project: Project }) {
           {parts
             .filter((c) => c.pcb.side === "top")
             .flatMap((c) => pcbSilk(c).map((path, i) => <polyline key={`${c.id}${i}`} points={path.map((p) => `${p.x},${p.y}`).join(" ")} strokeWidth={0.15} />))}
-          {project.texts
+          {ownTexts(project)
             .filter((t) => t.side === "top")
             .flatMap((t) =>
               boardTextStrokes(t).map((path, i) => <polyline key={`${t.id}${i}`} points={path.map((p) => `${p.x},${p.y}`).join(" ")} strokeWidth={boardTextStrokeWidth(t)} />),

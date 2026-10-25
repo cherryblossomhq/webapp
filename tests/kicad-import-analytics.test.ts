@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { connectAnalytics, EVENT_NAME, importEvent, trackImport } from "../src/kicadImport/analytics"
 import { stoppedSummary, summarize, type ImportSummary, type SummaryReason } from "../src/kicadImport/summary"
 import { importKicadBoard } from "../src/model/kicad/board"
-import { board, footprint, pad } from "./kicad-board-fixtures"
+import { board, REFUSED_BOARD } from "./kicad-board-fixtures"
 
 // The one analytics event: what it holds, and what it never holds.
 
@@ -17,7 +17,7 @@ const withSecrets = (s: ImportSummary): ImportSummary => ({
   notes: [{ code: "x", object: "SecretBoard", why: "alice" }],
 })
 
-const refused = summarize(importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] })] })), { used: [], notRead: [], ignored: [], boardBytes: 3 * 1024 })
+const refused = summarize(importKicadBoard(REFUSED_BOARD), { used: [], notRead: [], ignored: [], boardBytes: 3 * 1024 })
 const imported = summarize(importKicadBoard(board({})), { used: [], notRead: [], ignored: [], boardBytes: 41 * 1024 * 1024 })
 
 beforeEach(() => connectAnalytics(null))
@@ -27,7 +27,7 @@ describe("the kicad_import event", () => {
     const e = importEvent(withSecrets(refused), 1234.6)
     expect(e.name).toBe("kicad_import")
     expect(Object.keys(e.properties).sort()).toEqual(["board_kb", "duration_ms", "kicad_release", "kicad_stamp", "missing_extensions", "outcome"])
-    expect(e.properties).toEqual({ outcome: "refused_unsupported", kicad_stamp: "20240108", kicad_release: "kicad8", missing_extensions: ["X9"], board_kb: 3, duration_ms: 1235 })
+    expect(e.properties).toEqual({ outcome: "refused_unsupported", kicad_stamp: "20240108", kicad_release: "kicad8", missing_extensions: ["X19"], board_kb: 3, duration_ms: 1235 })
   })
 
   it("never holds a name from the file, a net, a part, the board's file name or a sentence", () => {

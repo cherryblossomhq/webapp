@@ -9,7 +9,7 @@ import { loadReport, saveReport } from "../src/kicadImport/reportStore"
 import { stoppedSummary, summarize, unsupportedLead, type ImportSummary } from "../src/kicadImport/summary"
 import { KicadReportSection } from "../src/panels/ProjectInspector"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
-import { board, footprint, pad } from "./kicad-board-fixtures"
+import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { stubLocalStorage } from "./kicad-import-helpers"
 
 const download = vi.hoisted(() => vi.fn())
@@ -21,7 +21,7 @@ vi.mock("../src/export/bundle", async (orig) => ({ ...(await orig<typeof import(
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const ctx = { used: ["b.kicad_pcb"], notRead: [{ file: "x.kicad_pro", why: "the schematic import is coming" }], ignored: [], boardBytes: 1 }
-const refused = summarize(importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] })), ctx)
+const refused = summarize(importKicadBoard(REFUSED_BOARD), ctx)
 const withParts = summarize(importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] })] }), { built: new Set(Object.keys(EXTENSION_NAMES)) }), ctx)
 
 let root: Root

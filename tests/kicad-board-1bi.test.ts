@@ -701,18 +701,19 @@ describe("the project file, version 3", () => {
 })
 
 describe("the gate after slice 1b-i", () => {
-  it("builds X13 and X15 (and X8, which slice 1b-ii added)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X8"])
+  it("builds X13 and X15 (and X8, which slice 1b-ii added, and X9, which slice 1b-iii did)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X8", "X9"])
   })
-  it("a board whose only needs are X13 and X15 is imported by the real gate; one that also needs text is refused for the text alone", () => {
+  it("a board whose only needs are built is imported by the real gate with its parts; one that also needs text in another font is refused for that alone", () => {
     const onlyCopper = board({ nets: ['(net 0 "")', net(1, "A")], body: [seg("0 0", "5 0", "(net 1)"), '(via (at 5 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))'] })
     const plain = importKicadBoard(onlyCopper)
     expect(plain.status).toBe("imported")
-    const withPart = importKicadBoard(twoParts([seg("7 5", "10 5", "(net 1)")]))
-    expect(withPart.status).toBe("refused")
-    if (withPart.status === "refused") {
-      expect(withPart.needs.map((n) => n.ext)).toEqual(["X9"])
-      expect(withPart.message).toBe("This board uses reference, value and board text, which is not supported yet.")
+    expect(importKicadBoard(twoParts([seg("7 5", "10 5", "(net 1)")])).status).toBe("imported")
+    const arial = importKicadBoard(twoParts([seg("7 5", "10 5", "(net 1)"), '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))']))
+    expect(arial.status).toBe("refused")
+    if (arial.status === "refused") {
+      expect(arial.needs.map((n) => n.ext)).toEqual(["X19"])
+      expect(arial.message).toBe("This board uses text in a font other than KiCad's own, text outlines or embedded fonts, which is not supported yet.")
     }
   })
   it("a board with flags and net ties needs X15 and X13 in the census's sense, and they are built", () => {
@@ -720,7 +721,9 @@ describe("the gate after slice 1b-i", () => {
     const needs = needsOf(readKicadBoard(text).board, { paths: new Map([["footprint>attr", 1]]) }, outlineOf(readKicadBoard(text).board))
     expect(needs.map((n) => n.ext)).toContain("X15")
     const r = importKicadBoard(text)
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X9"])
+    // every extension the board needs is built, so it comes in with its flags
+    expect(r.status).toBe("imported")
+    expect(r.status === "imported" && r.project.components[0].flags).toMatchObject({ dnp: true, mount: "smd" })
   })
   it("builds a project whose copper nets match, and reports none, for a board that needs only text", () => {
     const text = twoParts([seg("7 5", "10 5", "(net 1)")])

@@ -6,6 +6,7 @@ import { serializeProject } from "../model/projectFile"
 import { bomCsv } from "../export/bom"
 import { pnpCsv } from "../export/pnp"
 import { findPart } from "../model/library"
+import { ensureTextFont } from "../model/textFont"
 import { isPhysical } from "../model/instances"
 import { autoPlacePcb } from "../model/ops"
 import { getPcbAnalysis } from "../store/analysis"
@@ -38,6 +39,9 @@ export function ExportMenu() {
     setOpen(false)
     setBusy(true)
     try {
+      // KiCad text is laid out with KiCad's font, which is fetched when a project with such text opens; an export waits for it.
+      const open = projectApi().project
+      if (open) await ensureTextFont(open)
       await fn()
     } catch (e) {
       setNotice({ text: `The export failed: ${e instanceof Error ? e.message : String(e)}` })

@@ -67,8 +67,8 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^(footprint>fp_text_box(?:>.*)?)$",
   "decision": "extend",
-  "ext": "X9",
-  "note": "a footprint's text box (KiCad 7)"
+  "ext": "X25",
+  "note": "a footprint's text box (KiCad 7): its corners are stored in the footprint's own frame in some releases and the board's in others, which no corpus board shows (X9 builds the board's text boxes)"
  },
  {
   "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>(?:line_spacing|href)))$",
@@ -78,7 +78,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:footprint>)?table>cells>table_cell>ij)$",
   "decision": "extend",
-  "ext": "X9",
+  "ext": "X25",
   "note": "a table cell's row and column"
  },
  {
@@ -225,10 +225,15 @@ export const PATH_RULES: PathRule[] = [
   "note": "a drawing constraint of KiCad's own zone editor (outlines snap to 45 degrees); it changes no geometry already drawn, and the editor has nothing it constrains"
  },
  {
-  "source": "^(setup>(?:via_min_size|user_via))$",
+  "source": "^(setup>via_min_size)$",
+  "decision": "native",
+  "note": "the smallest via diameter the checks allow"
+ },
+ {
+  "source": "^(setup>user_via)$",
   "decision": "extend",
   "ext": "X10",
-  "note": "the smallest via diameter the checks allow, and the via sizes the user offers while routing"
+  "note": "the via sizes the user offers while routing"
  },
  {
   "source": "^(setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair|creepage))$",
@@ -483,9 +488,15 @@ export const PATH_RULES: PathRule[] = [
   "note": "text on any layer, any angle, mirrored, justified, bold or italic, knockout; text boxes (KiCad 7 and later)"
  },
  {
-  "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>property|dimension>gr_text|footprint>dimension>gr_text)>(?:at|layer|effects|hide|unlocked|locked|uuid|tstamp|border|end|start|margins|knockout|stroke|stroke>(?:type|width)|effects>justify|effects>font|effects>font>(?:size|thickness|bold|italic|face)))$",
+  "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>(?:at|layer|effects|hide|unlocked|locked|uuid|tstamp|border|end|start|margins|knockout|stroke|stroke>(?:type|width)|effects>justify|effects>hide|effects>font|effects>font>(?:size|thickness|bold|italic|face|line_spacing)|angle))$",
   "decision": "extend",
   "ext": "X9"
+ },
+ {
+  "source": "^(gr_text_box>pts(?:>xy)?)$",
+  "decision": "extend",
+  "ext": "X25",
+  "note": "a text box that is an outline of points (a box turned by other than a quarter turn, KiCad 8 and later), which no corpus board has"
  },
  {
   "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>render_cache(?:>polygon(?:>pts(?:>xy)?)?)?)$",
@@ -502,7 +513,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:footprint>)?table(?:>.*)?|barcode(?:>.*)?|drill_chart(?:>.*)?|drill_map(?:>.*)?)$",
   "decision": "extend",
-  "ext": "X9",
+  "ext": "X25",
   "note": "tables (KiCad 9), barcodes (KiCad 10), and drill charts and maps, which are tables and drawings KiCad generates from the drill data"
  },
  {
@@ -1542,15 +1553,22 @@ export const TOKEN_RULES: TokenRule[] = [
  {
   "names": [
    "fp_text_box",
-   "line_spacing",
-   "keep_upright",
-   "href",
-   "background",
    "ij"
   ],
   "decision": "extend",
+  "ext": "X25",
+  "note": "footprint text boxes and table cell positions"
+ },
+ {
+  "names": [
+   "line_spacing",
+   "keep_upright",
+   "href",
+   "background"
+  ],
+  "decision": "extend",
   "ext": "X9",
-  "note": "footprint text boxes, line spacing, text kept upright, hyperlinks and table cell positions"
+  "note": "line spacing, text kept upright, hyperlinks and text backgrounds"
  },
  {
   "names": [

@@ -325,9 +325,10 @@ describe("unlocked text (the text may turn upside down with its part)", () => {
     expect(upright("0 0 0", " (unlocked yes)")).toBe(false)
     expect(upright("0 0 0", " (unlocked no)")).toBe(true)
   })
-  it("needs X9, as every text does, and is a known word", () => {
+  it("is carried into the project (X9 is built) as a text that does not keep upright, and is a known word", () => {
     const r = importKicadBoard(board({ body: [`(footprint "K" (layer "F.Cu") (at 0 0) (property "Reference" "K1" (at 0 0 0 unlocked) (layer "F.SilkS")) ${pad({ at: "0 0" })})`] }))
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("X9")
+    expect(r.status).toBe("imported")
+    expect(r.status === "imported" && r.project.components[0].texts).toMatchObject([{ kind: "reference", upright: false }])
     expect(r.report.account!.unknownAtoms.size).toBe(0)
   })
 })

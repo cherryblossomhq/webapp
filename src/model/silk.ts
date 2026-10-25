@@ -1,11 +1,12 @@
 import { boxesOverlap, type Box } from "../lib/geometry"
 import { strokeText, strokeTextWidth } from "../lib/strokeFont"
-import { boardTextStrokes, mountingHoles } from "./board"
+import { boardTextStrokes, mountingHoles, ownTexts } from "./board"
 import { findPart } from "./library"
 import { isPhysical, pcbCourtyard, pcbPads, pcbSilk } from "./instances"
 import { shapeKind, worldShapes } from "./shapeItems"
 import { shapeLayerInfo } from "./shapeLayers"
 import { shapeBox, shapePolylines } from "./shapes"
+import { textsOnLayer } from "./texts"
 import type { ComponentInstance, PcbSide, Project, Vec2 } from "./types"
 
 /** Cap height of part designators on the silkscreen (mm). */
@@ -156,7 +157,7 @@ export function placeDesignators(project: Project): Map<string, Designator> {
     })),
   )
   const holes = mountingHoles(b).map((h) => inflate({ minX: h.x - h.diameter / 2, maxX: h.x + h.diameter / 2, minY: h.y - h.diameter / 2, maxY: h.y + h.diameter / 2 }, PAD_CLEAR))
-  const texts = (project.texts ?? []).flatMap((t) => {
+  const texts = ownTexts(project).flatMap((t) => {
     const box = strokesBox(boardTextStrokes(t), TEXT_CLEAR)
     return box ? [{ side: t.side, box }] : []
   })
@@ -176,6 +177,8 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   ]
   // A filled drawing is ink a designator would vanish into, so it is kept clear of like board text.
   for (const f of drawings.filled) texts.push({ side: f.side, box: inflate(f.box, TEXT_CLEAR) })
+  // So is a KiCad text on the silkscreen (a part's own text and board text of a board brought in from KiCad).
+  for (const side of ["top", "bottom"] as const) for (const t of textsOnLayer(project, side === "top" ? "F.SilkS" : "B.SilkS")) texts.push({ side, box: inflate(t.box, TEXT_CLEAR) })
 
   const out = new Map<string, Designator>()
   const taken: { side: PcbSide; box: Box }[] = []
@@ -191,6 +194,8 @@ export function placeDesignators(project: Project): Map<string, Designator> {
     if (!court) continue
     // A part with no pins (a logo, a mounting hole's drawing) has no designator to read.
     if (!findPart(c.partId)?.pins.length) continue
+    // A part brought in from KiCad has the texts the file gives it (its reference among them, drawn or hidden); no designator is placed for it.
+    if (c.texts) continue
     // Keep clear of the part's own outline too, where it pokes out of the courtyard.
     const own = strokesBox(pcbSilk(c), SILK_WIDTH / 2)
     const cy = own

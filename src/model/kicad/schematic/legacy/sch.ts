@@ -729,7 +729,7 @@ export function readLegacySchematicText(text: string): LegacySchematic {
     }
     endOfLine(c)
     const at = n
-    const text = next(`Text>${kind}`, "a text").replace(/[\r\n].*$/s, "")
+    const text = next(`Text>${kind}`, "a text").replace(/[\r\n][\s\S]*$/, "")
     void at
     count(`Text>${kind}`)
     return { kind, x, y, spin, size, shape, italic, thickness, text: text.split("\\n").join("\n") }

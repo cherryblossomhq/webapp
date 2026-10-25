@@ -907,6 +907,14 @@ export function registerPart(part: PartDef) {
   if (!byId.has(part.id)) projectParts.set(part.id, part)
 }
 
+/** Takes a project part out of memory again: for an import that registered parts to check a project and then refused it. */
+export function unregisterPart(id: string) {
+  projectParts.delete(id)
+}
+
+/** The ids of the project parts in memory, so that an import can tell which parts it registered. */
+export const projectPartIds = (): string[] => [...projectParts.keys()]
+
 export const isRegistered = (id: string) => byId.has(id) || projectParts.has(id)
 
 export function getPart(id: string): PartDef {

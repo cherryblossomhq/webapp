@@ -1,0 +1,8 @@
+export { importKicadSchematic, type SchematicImportOptions, type SchematicImportResult, type SchematicInput } from "./import"
+export { readKicadSchematic, schEraOf, readArc, sheetFields, labelText, KicadSchematicReadError, type SchematicReadResult } from "./read"
+export { readSchematicTree, normalizePath, FileIndex, type KicadFiles, type SchematicTree, type SheetError, type SheetUse, type SheetInstancePath } from "./tree"
+export { linkFootprints, symbolRecords, timestampForm, type FootprintLink, type FootprintToLink, type LinkResult, type SymbolRecord } from "./link"
+export { needsOfFile, needsOfProject, BUILT_EXTENSIONS, EXTENSION_NAMES, refusalMessage, unbuilt, type Need } from "./needs"
+export { buildSchematicProject, type SchematicBuild, type SchematicBuildOptions } from "./build"
+export { resolveLibSymbol, convertCachedSymbol, partFromSymbol, drawingNeeds, toSheet, MM_PER_UNIT } from "./symbols"
+export type * from "./types"

@@ -26,7 +26,8 @@ export const RULES_SCH = [
   // ---- symbols in the library cache ----
   rule("lib_symbols", "native", "PartDef from kicad/convert.ts", { effort: "M", note: "each cached symbol becomes a project part (S10: today a project part cannot hold an arbitrary drawing)" }),
   rule("lib_symbols>symbol", "extend", "one SymbolDef per part", { ext: "S5", note: "units, body styles, power flag, inheritance (extends) resolved on read" }),
-  rule("lib_symbols>symbol>(?:power|extends|duplicate_pin_numbers_are_jumpers|embedded_fonts)", "native", "PartDef.powerNet, padAlias", { effort: "S" }),
+  rule("lib_symbols>symbol>(?:power|extends|embedded_fonts)", "native", "PartDef.powerNet", { effort: "S" }),
+  rule("lib_symbols>symbol>duplicate_pin_numbers_are_jumpers", "extend", "PartDef.padAlias", { ext: "S5", note: "pins that share a number are one pin when this is yes; KiCad's default (no) says nothing" }),
   rule("lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files)", "extend", "-", { ext: "S7" }),
   rule("lib_symbols>symbol>body_styles", "extend", "-", { ext: "S5", note: "De Morgan and named body styles" }),
   rule("lib_symbols>symbol>(?:pin_names|pin_numbers)(?:>(?:hide|offset))?", "extend", "-", { ext: "S6", note: "whether pin names and numbers are drawn, and their offset" }),
@@ -52,8 +53,9 @@ export const RULES_SCH = [
   rule("wire|wire>pts|wire>pts>xy", "native", "Wire", { effort: "S" }),
   rule(`wire>${STYLE}`, "extend", "Wire has no style", { ext: "S4", note: "wire width, dash style and colour" }),
   rule("symbol>pin>uuid|(?:wire|bus|junction|no_connect|bus_entry)>uuid", "not-needed", "-", { note: "KiCad's object identity" }),
-  rule("junction|junction>(?:at|diameter|color)", "native", "junctions are computed by model/connectivity.ts", { effort: "S", note: "an explicit junction says two crossing wires are joined; a size or colour is not kept" }),
-  rule("no_connect|no_connect>at", "native", "ComponentInstance.nc", { effort: "S" }),
+  rule("junction|junction>at", "native", "wires cut at the junction: the editor joins wires at their ends", { effort: "S", note: "an explicit junction says two crossing wires are joined; the builder cuts the wires there" }),
+  rule("junction>(?:diameter|color)", "extend", "-", { ext: "S4", note: "a junction dot of its own size or colour; KiCad's default (diameter 0, no colour) is what the editor draws" }),
+  rule("no_connect|no_connect>at", "extend", "ComponentInstance.nc", { ext: "S4", note: "a no-connect flag on a pin is the pin's nc mark (carried); one that is not on a pin is a drawing of its own" }),
   rule("bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|stroke(?:>.*)?)|bus_alias|bus_alias>members", "extend", "-", { ext: "S3", note: "buses, bus entries and bus aliases, with vector names like D[0..7]" }),
 
   // ---- labels ----
@@ -80,6 +82,7 @@ export const RULES_SCH = [
   rule("image(?:>.*)?", "extend", "-", { ext: "S4", note: "a bitmap on the sheet; large, so it goes with the model-file store (X14) and counts toward the size limit" }),
   rule("table(?:>.*)?", "extend", "-", { ext: "S4", note: "tables (KiCad 8)" }),
   rule("rule_area(?:>.*)?", "extend", "-", { ext: "S8", note: "a drawn area whose symbols are DNP, off the BOM or off the board together (KiCad 9)" }),
+  rule("group>locked", "extend", "-", { ext: "S4", note: "a locked group: the editor's blocks cannot be locked" }),
   rule("group(?:>.*)?", "native", "SchematicBlock", { effort: "S", note: "a KiCad schematic group is a named set of items; symbols become a block, other members need S4" }),
   rule("net_chain(?:>.*)?", "report", "-", { note: "net chains are KiCad 11 development" }),
 ]

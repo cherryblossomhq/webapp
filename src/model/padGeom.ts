@@ -168,7 +168,8 @@ export function customRings(pad: PadDef): Vec2[][] {
   if (hit) return hit
   const anchor: Path64 = custom.anchor === "rect" ? [nm({ x: -pad.width / 2, y: -pad.height / 2 }), nm({ x: pad.width / 2, y: -pad.height / 2 }), nm({ x: pad.width / 2, y: pad.height / 2 }), nm({ x: -pad.width / 2, y: pad.height / 2 })] : circleRing(0, 0, pad.width / 2).map(nm)
   const parts: Paths64 = [positive(anchor)]
-  for (const s of custom.shapes) for (const path of primitivePaths(s)) parts.push(positive(path))
+  // A drawing's own paths are already outer rings counter-clockwise and holes clockwise (a ring drawn round the anchor has a hole): they are not turned.
+  for (const s of custom.shapes) for (const path of primitivePaths(s)) parts.push(path)
   const merged = Clipper.union(parts, [], FillRule.NonZero)
   const rings = merged.map(mm).filter((r) => r.length >= 3)
   customCache.set(custom, rings)

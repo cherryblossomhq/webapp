@@ -471,7 +471,8 @@ describe("the flags of a symbol and of its footprint", () => {
 
   it("the symbol wins for do not populate and the BOM, the footprint for mounting, board only, virtual and net ties, and a note says where they disagreed", () => {
     // the footprint says do not populate and not in the BOM; the symbol says neither (a board not updated from its schematic)
-    const r = imported(importKicadProject(files(boardOf('(attr smd board_only dnp exclude_from_bom) (net_tie_pad_groups "1, 2")'), divider()), { built: BOARD_ALL }))
+    // (KiCad 8's file: its "Update PCB from Schematic" copies do not populate, which a KiCad 7 file's does not; see tests/kicad-join-fix2.test.ts)
+    const r = imported(importKicadProject(files(boardOf('(attr smd board_only dnp exclude_from_bom) (net_tie_pad_groups "1, 2")'), divider(20231120).replace(/\(in_bom yes\)/g, "(in_bom yes) (dnp no)")), { built: new Set([...BOARD_ALL, "S7"]) }))
     expect(flagsOf(r, "R1")).toEqual({ mount: "smd", boardOnly: true, netTies: [["1", "2"]] })
     const note = r.report.entries.find((e) => e.code === "symbol-footprint-flags-differ")!
     expect(note.items).toEqual(["R1"])

@@ -1,3 +1,4 @@
+import type { SharedFlag } from "../../partFlags"
 import { newReport, type ImportReport } from "../board/report"
 import { convertOverbar, decodeNetName } from "../board/read"
 import { decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "../board/sexpr"
@@ -67,6 +68,27 @@ export function schEraOf(stamp: number | null): SchEra {
   if (stamp <= 20250114) return "kicad9"
   if (stamp <= 20260206) return "kicad10"
   return "kicad11-dev"
+}
+
+/**
+ * The flags of a part that both a symbol and its footprint have, which the symbol is the authority for. KiCad's
+ * "Update PCB from Schematic" copies a symbol's flag to the footprint only from some release on (read from
+ * `pcbnew/netlist_reader/board_netlist_updater.cpp` of each branch: 6.0 and 7.0 copy `exclude_from_bom` only, 8.0 and
+ * 9.0 add `dnp`, 10.0 adds `exclude_from_pos_files`; the simulation flag only on master, after 10.0). A symbol that has
+ * no word for a flag (KiCad 9's has no `in_pos_files`) says nothing about it. So a footprint's own flag stands
+ * unless the file's release copies the flag and the symbol states it.
+ */
+export function flagVoice(sym: Pick<PlacedSymbol, "stamp" | "stated">): { authority: Set<SharedFlag>; stated: Set<SharedFlag> } {
+  const era = schEraOf(sym.stamp)
+  const known = era !== "unknown"
+  const copies: Record<SharedFlag, boolean> = {
+    excludeFromBom: known,
+    dnp: era === "kicad8" || era === "kicad9" || era === "kicad10" || era === "kicad11-dev",
+    excludeFromPos: era === "kicad10" || era === "kicad11-dev",
+  }
+  const has: Record<SharedFlag, boolean> = { excludeFromBom: sym.stated.inBom, dnp: sym.stated.dnp, excludeFromPos: sym.stated.inPosFiles }
+  const keys = Object.keys(copies) as SharedFlag[]
+  return { authority: new Set(keys.filter((k) => copies[k] && has[k])), stated: new Set(keys.filter((k) => has[k])) }
 }
 
 export interface SchematicReadResult {
@@ -402,6 +424,8 @@ function readPlacedSymbol(node: List, stamp: number | null): PlacedSymbol {
     dnp: yes(node, "dnp", false),
     excludeFromSim: yes(node, "exclude_from_sim", false),
     inPosFiles: yes(node, "in_pos_files", true),
+    stated: { inBom: !!kid(node, "in_bom"), dnp: !!kid(node, "dnp"), inPosFiles: !!kid(node, "in_pos_files") },
+    stamp,
     fieldsAutoplaced: yes(node, "fields_autoplaced", false),
     pins: kids(node, "pin").map((p) => ({ number: strAt(p, 1) ?? "", uuid: strAt(kid(p, "uuid"), 1) ?? "", alternate: strAt(kid(p, "alternate"), 1) ?? null })),
     instances: readInstances(kid(node, "instances"), stamp),

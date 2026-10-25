@@ -114,6 +114,10 @@ export interface PlacedSymbol {
   dnp: boolean
   excludeFromSim: boolean
   inPosFiles: boolean
+  /** Which of the flag words the file actually has on this symbol (`in_bom`, `dnp`, `in_pos_files`): a word that is not there says nothing, whatever its default. */
+  stated: { inBom: boolean; dnp: boolean; inPosFiles: boolean }
+  /** The version stamp of the file the symbol is in. */
+  stamp: number | null
   /** KiCad's `fields_autoplaced`: it laid the symbol's fields out itself. */
   fieldsAutoplaced: boolean
   /** The pins the file lists with their uuids and chosen alternates. */

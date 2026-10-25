@@ -98,22 +98,39 @@ export function setFlags(project: Project, id: string, patch: { [K in keyof Part
 }
 
 /**
- * The flags KiCad keeps on a symbol, and the footprint's own. A project import has both for a part, and each
- * says what only it knows: the symbol wins for do not populate, the BOM, the position file, simulation and being on the
- * board (KiCad copies them from the symbol to the footprint when the board is updated from the schematic, so a
- * footprint that says otherwise is a board not updated); the footprint wins for mounting, board only, virtual, the
- * courtyard and mask allowances, the jumper groups and the net ties, which a symbol has no word for.
+ * The flags KiCad keeps on a symbol, and the footprint's own. A project import has both for a part, and each says
+ * what only it knows. Three flags are on both: do not populate, not in the BOM and not in the position file. KiCad's
+ * "Update PCB from Schematic" copies a symbol's flag to its footprint only from some release on (6 and 7: the BOM; 8
+ * and 9: also do not populate; 10: also the position file; simulation, a flag only symbols have in our model, only on
+ * the development branch after 10), and a KiCad 9 symbol has no word for the position file at all. So the symbol
+ * wins for one of these only when its file's release copies it and the symbol has the word (`flagVoice`, in
+ * `kicad/schematic/read.ts`); otherwise the footprint's flag stands, and a symbol that states "yes" still adds it
+ * (a KiCad 7 symbol's do not populate is the only word the part has). Simulation and being on the board are the
+ * symbol's alone. The footprint wins for mounting, board only, virtual, the courtyard and mask allowances, the jumper
+ * groups and the net ties, which a symbol has no word for.
  */
-const SYMBOL_KEYS = ["dnp", "excludeFromBom", "excludeFromPos", "excludeFromSim", "notOnBoard"] as const
+const SYMBOL_ONLY_KEYS = ["excludeFromSim", "notOnBoard"] as const
+const SHARED_KEYS = ["dnp", "excludeFromBom", "excludeFromPos"] as const
+export type SharedFlag = (typeof SHARED_KEYS)[number]
 const FOOTPRINT_KEYS = ["mount", "virtual", "boardOnly", "allowMissingCourtyard", "allowMaskBridges", "jumperDuplicates", "jumperGroups", "netTies"] as const
 
 /** The words of the three flags a footprint also has, for saying where the two disagree. */
-const SHARED_WORDS: { [K in "dnp" | "excludeFromBom" | "excludeFromPos"]: string } = { dnp: "do not populate", excludeFromBom: "not in the BOM", excludeFromPos: "not in the position file" }
+const SHARED_WORDS: { [K in SharedFlag]: string } = { dnp: "do not populate", excludeFromBom: "not in the BOM", excludeFromPos: "not in the position file" }
 
-export function joinFlags(symbol: PartFlags | undefined, footprint: PartFlags | undefined): { flags: PartFlags | undefined; differ: string[] } {
+/**
+ * The part's flags from its symbol's and its footprint's. `voice` says, for the three shared flags, which ones the
+ * symbol is the authority for and which ones it states; without it the symbol is the authority for all three.
+ */
+export function joinFlags(symbol: PartFlags | undefined, footprint: PartFlags | undefined, voice?: { authority: ReadonlySet<SharedFlag>; stated: ReadonlySet<SharedFlag> }): { flags: PartFlags | undefined; differ: string[] } {
   const out: PartFlags = {}
-  for (const key of SYMBOL_KEYS) if (symbol?.[key]) out[key] = true
+  const authority = (k: SharedFlag) => voice?.authority.has(k) ?? true
+  for (const key of SYMBOL_ONLY_KEYS) if (symbol?.[key]) out[key] = true
+  for (const key of SHARED_KEYS) {
+    if (authority(key)) {
+      if (symbol?.[key]) out[key] = true
+    } else if (footprint?.[key] || (voice?.stated.has(key) && symbol?.[key])) out[key] = true
+  }
   for (const key of FOOTPRINT_KEYS) if (footprint?.[key] !== undefined) (out as Record<string, unknown>)[key] = footprint[key]
-  const differ = (Object.keys(SHARED_WORDS) as (keyof typeof SHARED_WORDS)[]).filter((k) => !!symbol?.[k] !== !!footprint?.[k]).map((k) => `${SHARED_WORDS[k]} (the symbol says ${symbol?.[k] ? "yes" : "no"}, the footprint ${footprint?.[k] ? "yes" : "no"})`)
+  const differ = SHARED_KEYS.filter((k) => authority(k) && !!symbol?.[k] !== !!footprint?.[k]).map((k) => `${SHARED_WORDS[k]} (the symbol says ${symbol?.[k] ? "yes" : "no"}, the footprint ${footprint?.[k] ? "yes" : "no"})`)
   return { flags: cleanFlags(out), differ }
 }

@@ -524,6 +524,21 @@ describe("where a symbol comes from", () => {
     expect(readSchematicTree(h, "t.sch").files.get("t.sch")!.schematic.legacy!.symbolSources[0]).toMatchObject({ file: "alpha.lib" })
   })
 
+  it("a library listed with the path of the machine that made the project is found by its last element", () => {
+    const alt = LIB_R.replace("DEF Device_R R", "DEF R R")
+    const f = files({
+      "t.sch": HEAD() + comp({ lib: "Device:R", ref: "R1", ts: R1, at: [0, 0] }) + comp({ lib: "other:R", ref: "R2", ts: R2, at: [500, 0] }) + END,
+      "t.pro": "update=x\nversion=1\n[eeschema/libraries]\nLibName1=C:\\Users\\me\\lib\\Device\nLibName2=/home/me/kicad/other\n",
+      "Device.lib": alt,
+      "libs/other.lib": alt,
+    })
+    const s = readSchematicTree(f, "t.sch").files.get("t.sch")!.schematic.legacy!.symbolSources
+    expect(s.map((x) => [x.libId, x.from, x.file])).toEqual([
+      ["Device:R", "library", "Device.lib"],
+      ["other:R", "library", "libs/other.lib"],
+    ])
+  })
+
   it("a KiCad 4 name has no library prefix, and `.cache.lib` is the cache of the demos", () => {
     const f = files({ "t.sch": HEAD(2) + comp({ lib: "R", ref: "R1", ts: R1, at: [0, 0] }) + END, "t.cache.lib": LIB_R.replace("DEF Device_R R", "DEF R R") })
     expect(readSchematicTree(f, "t.sch").files.get("t.sch")!.schematic.legacy!.symbolSources[0]).toMatchObject({ libId: "R", from: "cache", name: "R" })

@@ -33,6 +33,9 @@ const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastInd
 const baseOf = (path: string) => path.slice(path.lastIndexOf("/") + 1)
 const stemOf = (path: string) => baseOf(path).replace(/\.[^.]*$/, "")
 const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name)
+/** The last element of a library name, which a project may write as a path of the machine it was made on. */
+const slashed = (name: string) => name.replace(/\\/g, "/")
+const libBase = (name: string) => slashed(name).slice(slashed(name).lastIndexOf("/") + 1)
 
 /** The libraries one project's symbols are searched in. */
 export class LegacySources {
@@ -86,14 +89,17 @@ export class LegacySources {
 
   /** The file of a library the project lists: beside the schematic, in the folders of `LibDir`, then anywhere among the files by its name (the nearest to the schematic first). */
   private resolveLibrary(name: string, dir: string): string | null {
-    const file = `${name}.lib`
+    // A name written with the path of the machine that made the project (`C:\KiCad\lib\Device`, `/home/x/lib/Device`) is found by its last element, as the fallback below does.
+    const base = libBase(name)
+    const absolute = /^([A-Za-z]:)?[\\/]/.test(name)
+    const file = `${absolute ? base : slashed(name)}.lib`
     const here = this.files.find(join(dir, file))
     if (here) return here.path
     for (const d of this.pro?.libDirs ?? []) {
       const f = this.files.find(join(dir, join(d.replace(/\\/g, "/"), file)))
       if (f) return f.path
     }
-    const lower = file.toLowerCase()
+    const lower = `${base}.lib`.toLowerCase()
     const all = this.files
       .paths()
       .filter((p) => baseOf(p).toLowerCase() === lower)
@@ -153,7 +159,7 @@ export class LegacySources {
       }
     }
     const libs = this.list.filter((s) => s.kind === "library")
-    const first = nickname ? libs.filter((s) => s.name.toLowerCase() === nickname.toLowerCase()) : []
+    const first = nickname ? libs.filter((s) => libBase(s.name).toLowerCase() === nickname.toLowerCase()) : []
     for (const s of [...first, ...libs.filter((x) => !first.includes(x))]) {
       const got = this.open(s)
       if ("lib" in got) {

@@ -48,6 +48,8 @@ const EPSILON_MM = 0.001
 const SPOKE_REACH = 0.005
 
 const SQUARE = JoinType.Square
+/** An outline under this area (the square of KiCad's maximum error, 0.005 mm) is dropped. */
+const ARC_NOISE_MM2 = 0.005 * 0.005
 
 interface ItemRec {
   index: number
@@ -119,6 +121,15 @@ function insideGroup(p: { x: number; y: number }, g: Group): boolean {
   return true
 }
 
+/** The part of some paths inside a box: cheap for a large polygon, which a test against a small shape then meets in a few pieces. */
+const crop = (paths: Paths64, b: Bounds): Paths64 => Clipper.rectClip({ left: b.minX, top: b.minY, right: b.maxX, bottom: b.maxY }, paths)
+
+/** Whether a shape touches copper of a group: one of its corners in it, else what is left of the group in the shape's box meets it. */
+function groupTouches(g: Group, shape: Paths64, box: Bounds): boolean {
+  for (const p of shape) for (const q of p) if (insideGroup(q, g)) return true
+  return intersect(shape, crop(g.paths, box)).length > 0
+}
+
 /** A tester over many groups, with their boxes so most points are turned away at once. */
 class Region {
   readonly groups: Group[]
@@ -126,6 +137,12 @@ class Region {
   constructor(paths: Paths64) {
     this.groups = groupsOf(paths)
     this.boxes = this.groups.map((g) => boundsOf([g.paths[0]]))
+  }
+  /** Whether a shape touches the copper of the region. */
+  touches(shape: Paths64): boolean {
+    const box = boundsOf(shape)
+    for (let i = 0; i < this.groups.length; i++) if (overlaps(this.boxes[i], box) && groupTouches(this.groups[i], shape, box)) return true
+    return false
   }
   contains(p: { x: number; y: number }): boolean {
     for (let i = 0; i < this.groups.length; i++) {
@@ -395,9 +412,13 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   const reach = pad0(box, (Math.max(gap, set.thermalGap, holeGap, project.rules.clearance) + minWidth) * U)
 
   // ---- 2 and 3. what the fill keeps out of ----
+  let reached: Region | null = null
   const thermalPads: WorldPad[] = []
   const thermalHoles: Paths64 = []
   const holes: Paths64 = []
+  /** Zones of higher priority and another net, kept apart so the thinnest copper is judged again after they cut in (KiCad 10, `postKnockoutMinWidthPrune`). */
+  const zoneHoles: Paths64 = []
+  const startFill = fill
   const nearby = recs.filter((r) => {
     const b = r.item.box
     return b.maxX * U >= reach.minX && b.minX * U <= reach.maxX && b.maxY * U >= reach.minY && b.minY * U <= reach.maxY
@@ -418,7 +439,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         if (connection === "thermal") {
           // Only a pad the copper reaches gets a relief.
           const shape = padShape(pad)
-          if (overlaps(boundsOf(shape), box) && intersect(fill, shape).length) {
+          if (overlaps(boundsOf(shape), box) && (reached ??= new Region(fill)).touches(shape)) {
             thermalPads.push(pad)
             thermalHoles.push(...inflate(shape, set.thermalGap))
           }
@@ -457,7 +478,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         if (other.keepout?.pour) holes.push(...outlinePaths(project, other))
       } else if (other.net !== zone.net && higherPriority(project, other, zone)) {
         const theirs = fillOf(other, layer)
-        if (theirs?.length) holes.push(...inflate(theirs, Math.max(gap, zoneSettings(project, other).clearance, prep.gapRule) + EXTRA))
+        if (theirs?.length) zoneHoles.push(...inflate(theirs, Math.max(gap, zoneSettings(project, other).clearance, prep.gapRule) + EXTRA))
       }
     }
   }
@@ -465,13 +486,14 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   // Everything a thermal relief cuts out of the zone before the spokes go back in.
   if (thermalHoles.length) fill = difference(fill, union(thermalHoles))
   const clearance = holes.length ? union(holes) : []
+  const zoneCut = zoneHoles.length ? union(zoneHoles) : []
 
   // ---- 4. thermal spokes ----
   const spokes: Spoke[] = []
   for (const pad of thermalPads) spokes.push(...spokesOf(pad, project, set.thermalGap, set.spokeWidth, minWidth))
   let withSpokes = fill
   if (spokes.length) {
-    let test = difference(fill, clearance)
+    let test = difference(difference(fill, clearance), zoneCut)
     if (prune) test = inflate(inflate(test, -shrink, SQUARE), shrink, SQUARE)
     const region = new Region(test)
     const kept: Spoke[] = []
@@ -496,12 +518,19 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   if (prune) fill = inflate(fill, -shrink, SQUARE)
   if (prune) {
     // A piece no wider than the minimum is gone, as KiCad deletes it between shrinking and growing.
-    fill = groupsOf(fill)
-      .filter((g) => {
-        const b = boundsOf([g.paths[0]])
-        return Math.max(b.maxX - b.minX, b.maxY - b.minY) >= minWidth * U
-      })
-      .flatMap((g) => g.paths)
+    // The outlines come out of the offset wound one way and the holes the other, so a small outline is told by its winding, and what lies in it goes too.
+    const small: Bounds[] = []
+    const tiny = fill.filter((p) => {
+      if (!Clipper.isPositive(p)) return false
+      const b = boundsOf([p])
+      const yes = Math.max(b.maxX - b.minX, b.maxY - b.minY) < minWidth * U
+      if (yes) small.push(b)
+      return yes
+    })
+    if (tiny.length) {
+      const within = (b: Bounds) => small.some((s) => b.minX >= s.minX && b.maxX <= s.maxX && b.minY >= s.minY && b.maxY <= s.maxY)
+      fill = fill.filter((p) => !tiny.includes(p) && (Clipper.isPositive(p) || !within(boundsOf([p]))))
+    }
     if (fill.length) fill = inflate(fill, shrink)
   }
 
@@ -515,10 +544,28 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   fill = intersect(fill, area)
   const cut = padHoles.length ? union([...clearance, ...padHoles]) : clearance
   fill = difference(fill, cut)
+  // Different-net zones of higher priority cut in last, and the thinnest copper is judged again where they did: the band the trim to the
+  // polygon took off where a zone of the same net abuts stands in for that zone, so the shrinking leaves no notch along the border.
+  if (zoneCut.length && fill.length) {
+    const apron = difference(difference(startFill, maxExtents), cut)
+    fill = difference(fill, zoneCut)
+    const before = fill
+    if (prune && fill.length) {
+      let work = apron.length ? union(fill, inflate(difference(apron, zoneCut), EPSILON_MM)) : fill
+      work = inflate(work, -shrink, SQUARE)
+      const kept = groupsOf(work).filter((g) => {
+        const b = boundsOf([g.paths[0]])
+        return Math.max(b.maxX - b.minX, b.maxY - b.minY) >= minWidth * U
+      })
+      work = kept.length ? inflate(pathsOfGroups(kept), shrink) : []
+      fill = intersect(work, before)
+    }
+  }
   // The zones of the same net that outrank this one are in charge of their own polygon.
   const outranking = project.zones.filter((o) => o !== zone && !isRuleArea(o) && o.net === zone.net && o.teardrop === undefined && zoneLayers(o).includes(layer) && (o.priority ?? 0) > (zone.priority ?? 0))
   if (outranking.length && fill.length) fill = difference(fill, union(outranking.flatMap((o) => outlinePaths(project, o))))
-  return groupsOf(fill)
+  // Outlines smaller than the resolution of the fill are noise (KiCad 10, `dropSubResolutionOutlines`).
+  return groupsOf(fill).filter((g) => areaMm2([g.paths[0]]) >= ARC_NOISE_MM2)
 }
 
 /**
@@ -585,11 +632,11 @@ function removeIslands(
         const b = boundsOf([g.paths[0]])
         for (const a of anchors) {
           if (!overlaps(b, a.bounds)) continue
-          if (insideGroup(a.at, g) || intersect(a.paths, g.paths).length) return false
+          if (insideGroup(a.at, g) || groupTouches(g, a.paths, a.bounds)) return false
         }
         for (const o of others) {
           if (!overlaps(b, boundsOf([o.paths[0]]))) continue
-          if (intersect(g.paths, o.paths).length) return false
+          if (groupTouches(g, o.paths, boundsOf([o.paths[0]]))) return false
         }
         return true
       })

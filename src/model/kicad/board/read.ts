@@ -505,7 +505,10 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const restricted = (k: string) => strAt(kid(keepoutNode, k), 1) === "not_allowed"
     const keepout = keepoutNode ? { tracks: restricted("tracks"), vias: restricted("vias"), pads: restricted("pads"), copperpour: restricted("copperpour"), footprints: restricted("footprints") } : null
     const anyRestricted = !!keepout && Object.values(keepout).some(Boolean)
-    const kind = kid(z, "placement") ? "placement" : keepout ? (anyRestricted ? "keepout" : "rule-area") : kid(z, "teardrop") || kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper"
+    // KiCad 9 writes a `placement` node on every rule area, switched off (`enabled no`) on an ordinary keepout: only a switched on one places parts.
+    const placementNode = kid(z, "placement")
+    const placing = !!placementNode && strAt(kid(placementNode, "enabled"), 1) === "yes"
+    const kind = placing ? "placement" : keepout ? (anyRestricted ? "keepout" : "rule-area") : placementNode ? "rule-area" : kid(z, "teardrop") || kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper"
     const pts = kid(kid(z, "polygon"), "pts")
     const ringOf = (node: List): KicadZoneSeg[] => {
       const segs: KicadZoneSeg[] = []

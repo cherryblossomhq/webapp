@@ -13,6 +13,9 @@ import { copperOracle, oracle } from "./kicad-census/pads.mjs"
 import { decodeNetName } from "../src/model/kicad/board"
 import { cleanFlags } from "../src/model/partFlags"
 import { checkEdge } from "./kicad-edge-check"
+import { checkZoneSettings, compareFills } from "./kicad-zones-check"
+import { importedZone, zoneOracle } from "./kicad-census/zones.mjs"
+import { packZones } from "../src/model/zoneCodec"
 import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
 import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
 import { fontFromGlyphStrings, loadFontFile } from "./kicad-census/texts.mjs"
@@ -43,6 +46,9 @@ import { emptyContext, reportText, summarize as summarizeImport } from "../src/k
 // board needs. Slice 1b-i adds two checks of its own, each against the raw file read again by the
 // census's own reader (`copperOracle`): the flags and net ties of every footprint, and the net, the
 // lock and the length of every segment and via of every net. With no corpus the test is skipped.
+
+/** The boards that import whose copper differs from KiCad's stored fill by more than a tenth of it and 5 mm2: kept as a list so a change that moves another board in is seen. Filled in after the run. */
+const ZONE_FILL_OUTLIERS: string[] = []
 
 const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
@@ -147,6 +153,21 @@ interface Row {
   edgeMerged: number
   edgeDropped: number
   outlineHeld: string
+  /** X3: the zones of the file the importer takes in, the ones in the project, and how many settings, outlines or layers differ from the file's (oracle). */
+  zonesFile: number
+  zonesProject: number
+  zonesWrong: number
+  zoneBytes: number
+  zoneRoundTrip: boolean
+  /** X3, boards that import: the editor's own fill against KiCad's stored fill, copper of every layer with the pads added to both. */
+  fillLayers: number
+  fillStored: number
+  fillOurs: number
+  fillTheirs: number
+  fillXor: number
+  fillWorst: number
+  fillP99: number
+  fillMs: number
   textsByOrder: number
   textsInkWrong: number
   /** The texts survive the stored form. */
@@ -268,6 +289,19 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           edgeMerged: 0,
           edgeDropped: 0,
           outlineHeld: "",
+          zonesFile: 0,
+          zonesProject: 0,
+          zonesWrong: 0,
+          zoneBytes: 0,
+          zoneRoundTrip: true,
+          fillLayers: 0,
+          fillStored: 0,
+          fillOurs: 0,
+          fillTheirs: 0,
+          fillXor: 0,
+          fillWorst: 0,
+          fillP99: 0,
+          fillMs: 0,
           textsByOrder: 0,
           textsInkWrong: 0,
           textsRoundTrip: true,
@@ -626,11 +660,33 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.edgeDropped = edge.dropped
           row.outlineHeld = built.project.board.outline ? (built.project.board.outline.paths.length ? (built.project.board.outline.paths.every((p) => p.closed) ? "outline" : "open") : "missing") : "rectangle"
           if (edge.note) row.notes.push(edge.note)
+          // ---- X3: the zones of the file against the project's, setting by setting (oracle), and the stored form ----
+          const zset = checkZoneSettings(text, built.project)
+          row.zonesFile = zoneOracle(text).zones.filter(importedZone).length
+          row.zonesProject = built.project.zones.length
+          row.zonesWrong = zset.mismatches.length
+          if (zset.mismatches.length) row.notes.push(`zones: ${zset.mismatches.slice(0, 3).map((m) => `#${m.zone} ${m.what}`).join("; ")}`)
+          row.zoneBytes = built.project.zones.length ? JSON.stringify(packZones(built.project.zones)).length : 0
+          row.zoneRoundTrip = isDeepStrictEqual(parseProjectFile(serializeProject(built.project), { id: built.project.id }).zones, built.project.zones)
           if (imported.status === "imported") {
+            if (imported.project.zones.length) {
+              const f0 = performance.now()
+              const fills = compareFills(text, imported.project)
+              row.fillMs = performance.now() - f0
+              row.fillLayers = fills.length
+              row.fillStored = fills.filter((x) => x.stored).length
+              for (const x of fills.filter((y) => y.stored)) {
+                row.fillOurs += x.ours
+                row.fillTheirs += x.theirs
+                row.fillXor += x.xor
+                row.fillWorst = Math.max(row.fillWorst, x.hausdorff)
+                row.fillP99 = Math.max(row.fillP99, x.p99)
+              }
+            }
             const p = imported.project
             const problems: string[] = []
             const back = parseProjectFile(serializeProject(p), { id: p.id })
-            for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "board", "rules", "properties"] as const) {
+            for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "zones", "board", "rules", "properties"] as const) {
               if (!isDeepStrictEqual(back[k], p[k])) problems.push(`${k} differ after a save and a load`)
             }
             const outlineProblem = outlineState(p.board) !== "closed"
@@ -690,6 +746,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       // slice 2c-i: every piece the file draws on Edge.Cuts is on the project's outline and the other way round, to 0.001 mm
       expect(rows.filter((r) => r.edgeWrong > 0).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("outline"))}`)).toEqual([])
       expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
+      // X3: every zone of the file is in the project with its outline, layers, net and settings (oracle), the stored form gives them back, and on every board that imports the editor's fill is KiCad's within the measured bounds
+      expect(rows.filter((r) => r.zonesWrong > 0 || !r.zoneRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("zones"))}`)).toEqual([])
+      expect(rows.filter((r) => r.status === "imported" && r.fillStored > 0 && r.fillXor > Math.max(0.1 * r.fillTheirs, 5)).map((r) => `${r.file}: ${r.fillXor.toFixed(1)} mm2 differ of ${r.fillTheirs.toFixed(1)}`)).toEqual(ZONE_FILL_OUTLIERS)
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
     3_600_000,
@@ -734,6 +793,8 @@ function summarize(rows: Row[], seconds: number): string {
     ["texts: strokes equal the oracle's layout with KiCad's font (boards sampled)", (r) => r.textsInkWrong === 0],
     ["texts: a save and a load give the same texts in memory (stored form)", (r) => r.textsRoundTrip],
     ["outline: every piece of the file's Edge.Cuts is on the project's outline, and the other way round, to 0.001 mm (oracle; repairs counted)", (r) => r.edgeWrong === 0],
+    ["zones: every zone of the file in the project with its outline, layers, net and settings (oracle)", (r) => r.zonesWrong === 0],
+    ["zones: a save and a load give the same zones in memory (stored form)", (r) => r.zoneRoundTrip],
     ["no crash", (r) => r.status !== "CRASH"],
   ]
   for (const [label, f] of cols) {
@@ -771,6 +832,16 @@ function summarize(rows: Row[], seconds: number): string {
   const held = new Map<string, number>()
   for (const r of board) if (r.outlineHeld) held.set(r.outlineHeld, (held.get(r.outlineHeld) ?? 0) + 1)
   lines.push(`X2: the outline is held as ${[...held].map(([k, v]) => `${k} ${v}`).join(", ")}; ${board.reduce((n, r) => n + r.edgePieces, 0)} pieces of Edge.Cuts compared (${board.reduce((n, r) => n + r.edgeSamples, 0)} points both ways, wrong ${board.reduce((n, r) => n + r.edgeWrong, 0)}); points off by more than 0.001 mm at a repair (a gap closed by a connector): ${board.reduce((n, r) => n + r.edgeRepairs, 0)} on ${count(board, (r) => r.edgeRepairs > 0)} boards; on boards where pieces were merged onto a line (up to 0.1 mm): ${board.reduce((n, r) => n + r.edgeMerged, 0)} on ${count(board, (r) => r.edgeMerged > 0)} boards; short pieces dropped as the report says: ${board.reduce((n, r) => n + r.edgeDropped, 0)}`)
+  {
+    const zoned = board.filter((r) => r.zonesFile > 0)
+    const filled = board.filter((r) => r.status === "imported" && r.fillStored > 0)
+    const sorted = [...filled].sort((a, b) => a.fillXor / Math.max(a.fillTheirs, 1e-9) - b.fillXor / Math.max(b.fillTheirs, 1e-9))
+    const pct = (r: Row) => (100 * r.fillXor) / Math.max(r.fillTheirs, 1e-9)
+    const q = (f: number) => (sorted.length ? pct(sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]).toFixed(2) : "-")
+    lines.push(`X3: ${board.reduce((n, r) => n + r.zonesFile, 0)} zones of the files on ${zoned.length} boards taken in, ${board.reduce((n, r) => n + r.zonesProject, 0)} in the projects, ${board.reduce((n, r) => n + r.zonesWrong, 0)} settings, outlines or layers differ from the file's (oracle); zones stored in ${(board.reduce((n, r) => n + r.zoneBytes, 0) / 1024).toFixed(0)} KiB over ${zoned.length} boards, the most on one board ${(Math.max(0, ...board.map((r) => r.zoneBytes)) / 1024).toFixed(1)} KiB`)
+    lines.push(`X3 fills: ${filled.length} boards that import have a stored fill to compare with (${filled.reduce((n, r) => n + r.fillStored, 0)} zone layers, ${filled.reduce((n, r) => n + r.fillTheirs, 0).toFixed(0)} mm2 of KiCad copper, ${filled.reduce((n, r) => n + r.fillOurs, 0).toFixed(0)} mm2 of ours, ${filled.reduce((n, r) => n + r.fillXor, 0).toFixed(0)} mm2 in only one of them: ${(100 * filled.reduce((n, r) => n + r.fillXor, 0) / Math.max(1, filled.reduce((n, r) => n + r.fillTheirs, 0))).toFixed(2)} %); per board the part of KiCad's copper that differs is at the median ${q(0.5)} %, the 90th percentile ${q(0.9)} %, the worst ${q(1)} %; the farthest a point of either boundary is from the other: median ${(sorted.map((r) => r.fillWorst).sort((a, b) => a - b)[Math.floor(sorted.length / 2)] ?? 0).toFixed(2)} mm, 90th percentile ${(sorted.map((r) => r.fillWorst).sort((a, b) => a - b)[Math.floor(sorted.length * 0.9)] ?? 0).toFixed(2)} mm, and the 99th percentile of the points of a board, worst board ${Math.max(0, ...filled.map((r) => r.fillP99)).toFixed(2)} mm; the editor's own fill took ${(filled.reduce((n, r) => n + r.fillMs, 0) / 1000).toFixed(0)} s in all, ${(Math.max(0, ...filled.map((r) => r.fillMs)) / 1000).toFixed(1)} s on the slowest board`)
+    lines.push(`X3 fills over 5 % of KiCad's copper: ${sorted.filter((r) => pct(r) > 5).map((r) => `${r.file.split(/[\\/]/).slice(-2).join("/")} (${pct(r).toFixed(0)} %, ${r.fillTheirs.toFixed(0)} mm2)`).join(", ") || "none"}`)
+  }
   const importedReal = board.filter((r) => r.status === "imported" && ["pcbench", "github", "kicad-demos"].includes(r.group))
   lines.push(`real boards that import now: ${importedReal.length} of ${board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group)).length}; all boards: ${count(board, (r) => r.status === "imported")} of ${board.length}`)
   lines.push(`text strokes laid out against the oracle with KiCad's font: ${board.reduce((n, r) => n + r.textsInk, 0)} texts on ${count(board, (r) => r.textsInk > 0)} boards, ${board.reduce((n, r) => n + r.textsInkWrong, 0)} differ`)

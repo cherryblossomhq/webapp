@@ -93,6 +93,8 @@ export function normalizeZones(raw: unknown): Zone[] {
     if (typeof item.name === "string" && item.name) z.name = item.name
     // The stored form is `ol`; a hand-written file may give plain paths, `outline: [{ closed, segs }]`.
     const rings = item.ol !== undefined ? unpackRings(item.ol) : Array.isArray(item.outline) ? (normalizeOutline({ paths: item.outline })?.paths.map((p) => ({ ...p, closed: true })) ?? null) : null
+    // A polygon that was stored and does not read is a zone lost, not a zone over the whole board.
+    if ((item.ol !== undefined || item.outline !== undefined) && !rings?.length) continue
     if (rings?.length) z.outline = rings
     const layers = Array.isArray(item.layers) ? item.layers.map(layerOf).filter((l): l is CopperLayer => l !== null) : []
     if (layers.length > 1 && layers[0] === layer && new Set(layers).size === layers.length) z.layers = layers

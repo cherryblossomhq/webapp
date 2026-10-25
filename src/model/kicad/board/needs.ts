@@ -336,7 +336,8 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
     const hard = textNeedsX25(board)
     if (hard) need("X25", hard, "importer")
   }
-  if (has(/^(footprint>)?zone>placement$/) || has(/^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
+  // A rule area whose placement is switched off (what KiCad 9 writes on every keepout) places nothing; one that is on is X20.
+  if (board.zones.some((z) => z.kind === "placement") || board.footprints.some((f) => f.zones.some((z) => z.kind === "placement")) || has(/^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
   if (has(/^generated$/) || has(/^footprint>pad>(die_length|die_delay)$/)) need("X21", "tuning patterns or pad lengths")
   if (has(/^via>(capping|covering|plugging|filling|backdrill|tertiary_drill)/) || has(/^footprint>pad>(backdrill|tertiary_drill|front_post_machining|back_post_machining)/)) need("X22", "via protection or backdrill")
   if (has(/^(variants|footprint>variant|footprint>units|footprint>point)/)) need("X23", "variants, units or points")

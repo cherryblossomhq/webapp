@@ -52,6 +52,8 @@ const ROWS = [
   row("(?:segment|arc|via)>net", "built"),
   // Text (X9) is built: its place, layer, size, pen, justification, mirror, flags and content are written into the project. A board text cannot be hidden in KiCad.
   row("(?:gr_text|gr_text_box)>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503)"),
+  // A rule area's placement is X20, and a switched off one is what KiCad 9 writes on every keepout: it places nothing (a switched on one raises X20 and is refused first).
+  row("(?:footprint>)?zone>placement(?:>(?:enabled|sheetname|component_class))?", "derived", "a rule area's placement settings, switched off (KiCad 9 writes them on every keepout): they place nothing"),
   row("footprint>pad>layers", "derived", "the layers a pad is on are what the editor draws for its type and side (copper, mask, and paste on surface-mount pads); a pad whose layers differ needs X7"),
   row("footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)|footprint>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)", "derived", "a zero margin or clearance in a file up to stamp 20240201 means no setting (KiCad reads it as inherit)"),
 ]

@@ -122,9 +122,16 @@ export function convertZones(cx: ZoneContext): ZoneResult {
     if (z.smoothing !== "none" && z.radius > 0) zone.smoothing = { kind: z.smoothing, radius: z.radius }
     if (z.islandMode === 1) zone.islands = "never"
     else if (z.islandMode === 2) zone.islands = z.islandArea ?? 10
-    // KiCad 5 and earlier kept a pour its own clearance and half the edge line's width from the edge; the board file does not hold the
-    // design rule KiCad 6 and later use (it is in the project file), so those boards have the editor's edge clearance.
+    // KiCad 5 and earlier kept a pour its own clearance and half the edge line's width from the edge, and from a hole with no copper by the
+    // pour's clearance (zone_filler.cpp of 5.1, buildZoneFeatureHoleList). KiCad 6 and later keep it from the edge by the board's copper to edge
+    // clearance and from such a hole by the board's hole clearance, which are design rules of the project file (`.kicad_pro`), not of the board:
+    // the files that have a stored fill show 0.5 mm as the commonest distance from a fill to the edge in every release from 6 to 10, which is
+    // KiCad's default, and 0.25 mm is its default hole clearance.
     if (z.strokedFill) zone.edgeGap = Math.round((zone.clearance + widest / 2) * 1e6) / 1e6
+    else {
+      zone.edgeGap = 0.5
+      zone.holeGap = 0.25
+    }
     if (!z.filled) unfilled++
     out.push(zone)
   }
@@ -149,6 +156,16 @@ export function reportZones(r: ZoneResult, report: ImportReport, all: number) {
   }
   if (r.unfilled) {
     report.entries.push({ code: "zones-unfilled", severity: "changed", object: `${r.unfilled} zone${r.unfilled === 1 ? "" : "s"} with no fill in the file`, why: "KiCad had not filled these zones (it fills them before it plots). The editor fills every zone, so they have copper here.", count: r.unfilled })
+  }
+  if (r.loose.length) {
+    report.entries.push({
+      code: "zones-net-without-pins",
+      severity: "changed",
+      object: `zones on ${r.loose.length === 1 ? "a net" : "nets"} no pin is on (${r.loose.slice(0, 3).join(", ")}${r.loose.length > 3 ? ", ..." : ""})`,
+      why: "A net that only copper is on has no place among the editor's nets, which are made of pins. A zone on one keeps clear of the copper of that net instead of joining it, as a pour on no net does.",
+      count: r.loose.length,
+      items: r.loose,
+    })
   }
   if (r.degenerate) {
     report.entries.push({ code: "zones-degenerate", severity: "not-brought", object: `${r.degenerate} zone${r.degenerate === 1 ? "" : "s"} with fewer than three corners, or on no copper layer of the board`, why: "KiCad draws and fills nothing for such a zone, so none was brought in.", count: r.degenerate })

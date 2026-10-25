@@ -21,9 +21,10 @@ let lastFills: { zones: Project["zones"]; board: Project["board"]; fills: ZoneFi
 export function getPcbAnalysis(p: Project): PcbAnalysis {
   const hit = pcbCache.get(p)
   if (hit) return hit
-  // While something is being dragged, keep the last pour fill; it refills on drop.
+  // While something is being dragged, keep the last pour fill; it refills on drop. That holds for the corner of a zone that is being dragged
+  // too (its outline moves with the pointer and its copper follows on drop, as KiCad's does on a refill): the fill of a big board takes seconds.
   const dragging = useProjectStore.getState().transientBase !== null
-  if (dragging && p.zones.length && lastFills && lastFills.zones === p.zones && lastFills.board === p.board) {
+  if (dragging && p.zones.length && lastFills && lastFills.zones.length === p.zones.length && lastFills.board === p.board) {
     const stale = dragCache.get(p)
     if (stale) return stale
     const value = analyzePcb(p, getConnectivity(p), { fills: lastFills.fills })

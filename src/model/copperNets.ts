@@ -1,9 +1,16 @@
 import { pinKey } from "./connectivity"
 import { getConnectivity, sameSchematic } from "./connectivityCache"
 import type { Project } from "./types"
+import { isWholeBoardPour } from "./zones"
 
 /** The names the traces and vias of a board brought in from KiCad say they are on. */
-const storedNames = (p: Project) => new Set([...p.traces.flatMap((t) => (t.net ? [t.net] : [])), ...p.vias.flatMap((v) => (v.routedNet ? [v.routedNet] : []))])
+const storedNames = (p: Project) =>
+  new Set([
+    ...p.traces.flatMap((t) => (t.net ? [t.net] : [])),
+    ...p.vias.flatMap((v) => (v.routedNet ? [v.routedNet] : [])),
+    // A zone of its own shape (X3) names its net the same way. The editor's whole-board pours are left as they always were.
+    ...p.zones.flatMap((z) => (z.net && !isWholeBoardPour(z) ? [z.net] : [])),
+  ])
 
 /** Trace and via net names changed by `renamed` (old name to new), all at once, so a swap is a swap. */
 export function renameStoredNets(project: Project, renamed: Record<string, string>): Project {
@@ -49,7 +56,9 @@ export function followNetRenames(before: Project, after: Project): Project {
   const wasVia = new Map(before.vias.map((v) => [v.id, v.routedNet]))
   const traces = after.traces.map((t) => (t.net && renamed[t.net] && wasTrace.get(t.id) === t.net ? { ...t, net: renamed[t.net] } : t))
   const vias = after.vias.map((v) => (v.routedNet && renamed[v.routedNet] && wasVia.get(v.id) === v.routedNet ? { ...v, routedNet: renamed[v.routedNet] } : v))
-  return { ...after, traces, vias }
+  const wasZone = new Map(before.zones.map((z) => [z.id, z.net]))
+  const zones = after.zones.some((z) => z.net && renamed[z.net] && !isWholeBoardPour(z) && wasZone.get(z.id) === z.net) ? after.zones.map((z) => (z.net && renamed[z.net] && !isWholeBoardPour(z) && wasZone.get(z.id) === z.net ? { ...z, net: renamed[z.net] } : z)) : after.zones
+  return { ...after, traces, vias, zones }
 }
 
 /**

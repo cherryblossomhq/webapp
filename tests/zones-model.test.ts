@@ -198,3 +198,17 @@ describe("what a keepout keeps out", () => {
     expect(boardObstacles(base).length).toBeLessThan(obstacles.length)
   })
 })
+
+describe("a zone's net follows a rename in the schematic", () => {
+  it("renames the net of a zone of its own shape with the labels that name it, and leaves the editor's own pours as they were", async () => {
+    const { followNetRenames } = await import("../src/model/copperNets")
+    let before = withZone(twoResistors(), rectangle(-12, -8, 12, 4), { net: "GND" })
+    before = { ...before, zones: [...before.zones, { id: "own", net: "GND", layer: "bottom" }] }
+    const after = { ...before, labels: before.labels.map((l) => (l.name === "GND" ? { ...l, name: "AGND" } : l)) }
+    const next = followNetRenames(before, after)
+    expect(next.zones.find((z) => z.id === "z1")!.net).toBe("AGND")
+    expect(next.zones.find((z) => z.id === "own")!.net).toBe("GND")
+    // Nothing renamed, nothing changed.
+    expect(followNetRenames(before, before)).toBe(before)
+  })
+})

@@ -33,6 +33,27 @@ describe("Gerber copper of a polygon zone", () => {
   })
 })
 
+describe("Gerber exactness of a zone's copper", () => {
+  it("every corner of every region is a corner of the fill, to the micron, and every corner of the fill is in a region", () => {
+    const p = board()
+    const fills = analyze(p).zoneFills
+    for (const layer of ["top", "bottom"] as const) {
+      const gerber = layer === "top" ? gerberLayers(p, fills).F_Cu : gerberLayers(p, fills).B_Cu
+      const regions = [...gerber.matchAll(/G36\*([\s\S]*?)G37\*/g)].map((m) => m[1])
+      const fromGerber = new Set(regions.flatMap((r) => [...r.matchAll(/X(-?\d+)Y(-?\d+)D0[12]\*/g)].map((m) => `${m[1]},${m[2]}`)))
+      const fromFill = new Set(
+        fills
+          .filter((f) => f.layer === layer)
+          .flatMap((f) => f.polygons.flatMap((poly) => poly.flatMap((ring) => ring.map((q) => `${Math.round(q.x * 1e6)},${Math.round(q.y * 1e6)}`)))),
+      )
+      expect(fromFill.size).toBeGreaterThan(20)
+      expect([...fromFill].every((k) => fromGerber.has(k))).toBe(true)
+      // A hole of a polygon is joined to its outline by a bridge in a region (the same corners again), so the regions have no corner the fill lacks.
+      expect([...fromGerber].every((k) => fromFill.has(k))).toBe(true)
+    }
+  })
+})
+
 describe("KiCad export of zones", () => {
   it("writes every zone as KiCad 9 writes it, and the file reads back with the same zones", async () => {
     const p = board()
@@ -40,6 +61,10 @@ describe("KiCad export of zones", () => {
     const text = Object.entries(files).find(([name]) => name.endsWith(".kicad_pcb"))![1]
     expect(text.match(/\(zone\b/g)).toHaveLength(2)
     expect(text).toContain('(net_name "GND")')
+    // The zone's net number is the one the board's own net table gives that name.
+    const gndNumber = /\n {2}\(net (\d+) "GND"\)/.exec(text)![1]
+    expect(gndNumber).not.toBe("0")
+    expect(text).toContain(`(zone\n    (net ${gndNumber})`)
     expect(text).toContain('(layers "F.Cu" "B.Cu")')
     expect(text).toContain("(priority 2)")
     expect(text).toContain("(connect_pads yes (clearance 0.4))")

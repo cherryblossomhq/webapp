@@ -326,22 +326,229 @@ interface Prepared {
   loops: Paths64
 }
 
+// ---------- Reusing fills (X3) ----------
+//
+// A refill of every zone on every edit froze the editor (6 s on a board of 102 parts), so a fill is kept and reused while what it was made
+// from is the same. The zones are split into groups that can touch each other (their boxes, grown by everything that reaches across a
+// gap, overlap on a shared layer); a group is filled together, as before, and its fill is kept under a key made of the zones themselves,
+// their resolved settings, the board's outline and the copper that can reach them (every pad, track, via and drawing whose box is inside a
+// zone's box grown by the widest gap), with the net of each. A part moved away from a zone leaves its group's key as it was, so the fill
+// is not made again; one moved under it changes the key and the group is filled anew. The sums are the same ones, so a kept fill is the
+// fill a fresh run would make.
+
+/** What a group's kept fill is held under: at most this many groups, the least recently used going first. */
+let cacheLimit = 96
+const fillCache = new Map<string, ZoneFill[]>()
+/** The groups filled (not read from the cache) since the last `takeFilled`: what a worker sends back to the thread that asked. */
+let filledSinceTaken: { key: string; fills: ZoneFill[] }[] = []
+
+function remember(key: string, fills: ZoneFill[]) {
+  fillCache.delete(key)
+  fillCache.set(key, fills)
+  while (fillCache.size > cacheLimit) fillCache.delete(fillCache.keys().next().value as string)
+}
+
+/** Put in the fills another thread made, under the keys it made them under. */
+export function seedZoneFills(entries: { key: string; fills: ZoneFill[] }[]): void {
+  for (const e of entries) remember(e.key, e.fills)
+}
+
+/** The groups filled since this was last called (and forget them): the worker's reply. */
+export function takeFilled(): { key: string; fills: ZoneFill[] }[] {
+  const out = filledSinceTaken
+  filledSinceTaken = []
+  return out
+}
+
+/** How many groups' fills are kept (0 keeps none: every fill is made again, as before fills were kept). */
+export function setZoneFillCacheLimit(n: number): void {
+  cacheLimit = Math.max(0, Math.floor(n))
+  while (fillCache.size > cacheLimit) fillCache.delete(fillCache.keys().next().value as string)
+}
+
+/** Forget every kept fill (tests, and a measure of a cold fill). */
+export function clearZoneFillCache(): void {
+  fillCache.clear()
+  filledSinceTaken = []
+}
+
+/** A 64-bit hash of a string as 16 hex digits (two 32-bit hashes of different kinds), which is what keys are made of. */
+function hashText(text: string): string {
+  let a = 0x811c9dc5
+  let b = 0x9e3779b9
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193) >>> 0
+    b = Math.imul(b ^ (c + i), 0x85ebca6b) >>> 0
+    b ^= b >>> 15
+  }
+  return a.toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0")
+}
+
+const boardText = new WeakMap<Project["board"], string>()
+const boardKey = (b: Project["board"]): string => {
+  let t = boardText.get(b)
+  if (t === undefined) {
+    t = hashText(JSON.stringify(b))
+    boardText.set(b, t)
+  }
+  return t
+}
+
+/** A group of zones whose fill is not current: the key its fill is kept under once made, and the zones in it. */
+export interface PendingGroup {
+  key: string
+  zones: string[]
+}
+
+interface ZoneGroup {
+  zones: Zone[]
+  key: string
+}
+
+/**
+ * The groups of zones that can touch one another and the key of each. Two zones are in one group when, on a layer they share, their
+ * boxes grown by what a zone reaches (the widest clearance, thermal gap or hole gap it has, and the minimum width it grows and shrinks
+ * by) overlap. A rule area is a zone here: it joins the groups it overlaps.
+ */
+function groupZones(prep: Prepared, settings: Map<string, ZoneSettings>, keepIslands: boolean): ZoneGroup[] {
+  const { project, recs } = prep
+  const zones = project.zones
+  const grown = zones.map((z) => {
+    const set = settings.get(z.id)!
+    const own = hasPolygon(z) ? boundsOf(zoneRings(z).map(ring)) : boundsOf(prep.loops)
+    const pad = Math.max(set.clearance, set.thermalGap, z.holeGap ?? 0, prep.gapRule, project.rules.clearance, set.edgeGap) + 2 * Math.max(0.01, set.minWidth) + 1
+    return pad0(own, pad * U)
+  })
+  const parent = zones.map((_, i) => i)
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])))
+  for (let i = 0; i < zones.length; i++) {
+    const li = zoneLayers(zones[i])
+    for (let j = i + 1; j < zones.length; j++) {
+      if (!overlaps(grown[i], grown[j])) continue
+      if (!zoneLayers(zones[j]).some((l) => li.includes(l))) continue
+      parent[find(i)] = find(j)
+    }
+  }
+  const byRoot = new Map<number, number[]>()
+  zones.forEach((_, i) => {
+    const r = find(i)
+    byRoot.set(r, [...(byRoot.get(r) ?? []), i])
+  })
+
+  // What each piece of copper is, as text, once: its shape, its layers, its net and (for a pad) the turn of its part, which sets its spokes.
+  const turn = new Map(project.components.map((c) => [c.id, c.pcb.rot]))
+  const sigs = new Map<number, string>()
+  const sigOf = (r: ItemRec): string => {
+    let t = sigs.get(r.index)
+    if (t === undefined) {
+      t = hashText(JSON.stringify(r.item) + "|" + (r.net ?? "") + (r.item.kind === "pad" ? "|" + (turn.get(r.item.pad.componentId) ?? "") : ""))
+      sigs.set(r.index, t)
+    }
+    return t
+  }
+  const base = `${keepIslands ? "k" : "-"}|${boardKey(project.board)}|${prep.gapRule}|${project.rules.clearance}`
+  return [...byRoot.values()].map((members) => {
+    const group = members.map((i) => zones[i])
+    const parts: string[] = [base]
+    for (const i of members) {
+      const z = zones[i]
+      parts.push(JSON.stringify(z), JSON.stringify(settings.get(z.id)), prep.netIdOf.get(z.net) ?? "")
+    }
+    const boxes = members.map((i) => grown[i])
+    const near = recs.filter((r) => {
+      const b = r.item.box
+      return boxes.some((g) => b.maxX * U >= g.minX && b.minX * U <= g.maxX && b.maxY * U >= g.minY && b.minY * U <= g.maxY)
+    })
+    // Sorted: the order the copper is listed in decides nothing, so a part added elsewhere in the list does not change the key.
+    parts.push(...near.map(sigOf).sort())
+    return { zones: group, key: hashText(parts.join("\n")) + group.length }
+  })
+}
+
 /**
  * Fill every zone of a project that has a polygon, a rule area or any setting of its own, together with the editor's whole-board pours
  * (a whole-board pour is the board's outline as its polygon here). `fillZones` calls this when the project has any such zone, and fills
  * the project the way it always did when it has none.
+ *
+ * With `reuseOnly`, a group whose fill is not kept is not filled: the fills in `reuseOnly.stale` stand in for it, and it is listed in `missing`.
  */
-export function fillPolygonZones(project: Project, sch: SchematicConnectivity, input: PourInput): ZoneFill[] {
+export function fillPolygonZonesEx(project: Project, sch: SchematicConnectivity, input: PourInput, reuseOnly?: { stale: ZoneFill[] }): { fills: ZoneFill[]; missing: PendingGroup[] } {
   const netIdOf = new Map<string, string | null>()
-  const idOfNet = (name: string) => {
-    if (!netIdOf.has(name)) netIdOf.set(name, name ? (sch.nets.find((n) => n.name === name)?.id ?? null) : null)
-    return netIdOf.get(name) ?? null
-  }
+  for (const z of project.zones) netIdOf.set(z.net, z.net ? (sch.nets.find((n) => n.name === z.net)?.id ?? null) : null)
   const recs: ItemRec[] = input.items.flatMap((item, index) => (item.kind === "zone" ? [] : [{ index, item, net: input.netOf(index) }]))
   const prep: Prepared = { project, sch, input, recs, gapRule: project.rules.clearance, netIdOf, loops: boardLoops(project.board) }
   const settings = new Map(project.zones.map((z) => [z.id, zoneSettings(project, z)]))
 
-  const pours = project.zones.filter((z) => !isRuleArea(z))
+  const byKey = new Map<string, ZoneFill>()
+  const missing: PendingGroup[] = []
+  for (const group of groupZones(prep, settings, input.keepIslands === true)) {
+    const kept = fillCache.get(group.key)
+    if (kept) {
+      remember(group.key, kept)
+      for (const f of kept) byKey.set(`${f.zoneId}|${f.layer}`, f)
+      continue
+    }
+    if (reuseOnly) {
+      missing.push({ key: group.key, zones: group.zones.filter((z) => !isRuleArea(z)).map((z) => z.id) })
+      for (const f of reuseOnly.stale) {
+        const z = group.zones.find((x) => x.id === f.zoneId)
+        if (z && zoneLayers(z).includes(f.layer)) byKey.set(`${f.zoneId}|${f.layer}`, f)
+      }
+      continue
+    }
+    const fills = fillGroup(prep, group.zones, settings)
+    remember(group.key, fills)
+    filledSinceTaken.push({ key: group.key, fills })
+    for (const f of fills) byKey.set(`${f.zoneId}|${f.layer}`, f)
+  }
+  // The result keeps the order the zones are stored in, as every consumer expects.
+  const result: ZoneFill[] = []
+  for (const zone of project.zones) {
+    if (isRuleArea(zone)) continue
+    for (const layer of zoneLayers(zone)) {
+      const f = byKey.get(`${zone.id}|${layer}`)
+      if (f) result.push(f)
+    }
+  }
+  return { fills: result, missing }
+}
+
+export const fillPolygonZones = (project: Project, sch: SchematicConnectivity, input: PourInput): ZoneFill[] => fillPolygonZonesEx(project, sch, input).fills
+
+/**
+ * Earlier fills with the copper added since cut out of them: a track or via of another net (or of none) takes its clearance out of every
+ * fill it reaches, as a refill would, and nothing else changes. For work that needs the pours to be about right many times over while
+ * it adds copper (the router's steps); what it is judged by is filled in full. `fresh` is the copper added since the fills were made,
+ * with the net of each.
+ */
+export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: CopperItem; net: string | null }[]): ZoneFill[] {
+  if (!fresh.length) return fills
+  return fills.map((f) => {
+    const zone = project.zones.find((z) => z.id === f.zoneId)
+    if (!zone || !f.polygons.length) return f
+    const gap = Math.max(zoneSettings(project, zone).clearance, project.rules.clearance) + EXTRA
+    const paths: Paths64 = f.polygons.flatMap((poly) => poly.map(ring))
+    const box = boundsOf(paths)
+    const holes: Paths64 = []
+    for (const { item: it, net } of fresh) {
+      if (!it.layers.includes(f.layer) || (net !== null && net === f.netId)) continue
+      const b = it.box
+      if (!overlaps({ minX: b.minX * U, maxX: b.maxX * U, minY: b.minY * U, maxY: b.maxY * U }, box, gap * U)) continue
+      if (it.kind === "segment") holes.push(...stroke([it.a, it.b], it.width / 2 + gap))
+      else if (it.kind === "via") holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap))
+      else if (it.kind === "pad") holes.push(...inflate(padShape(it.pad), gap))
+      else if (it.kind === "shape") holes.push(...shapeObstacle(it, gap))
+    }
+    if (!holes.length) return f
+    return { ...f, polygons: groupsOf(difference(paths, union(holes))).map((g) => g.paths.map(toVec)) }
+  })
+}
+
+/** The fills of one group of zones that touch one another, filled together. */
+function fillGroup(prep: Prepared, group: Zone[], settings: Map<string, ZoneSettings>): ZoneFill[] {
+  const { project, input, netIdOf } = prep
+  const pours = group.filter((z) => !isRuleArea(z))
   const order = [...pours].sort((a, b) => (higherPriority(project, a, b) ? -1 : higherPriority(project, b, a) ? 1 : 0))
   const filled = new Map<string, Paths64>()
   const fills = new Map<string, ZoneFill>()
@@ -350,7 +557,7 @@ export function fillPolygonZones(project: Project, sch: SchematicConnectivity, i
 
   for (const zone of order) {
     for (const layer of zoneLayers(zone)) {
-      const net = idOfNet(zone.net)
+      const net = netIdOf.get(zone.net) ?? null
       const copper = fillOne(prep, zone, layer, net, settings.get(zone.id)!, (other, l) => filled.get(keyOf(other, l)) ?? null)
       filled.set(keyOf(zone, layer), pathsOfGroups(copper))
       fills.set(keyOf(zone, layer), { zoneId: zone.id, netId: net, netName: zone.net, layer, polygons: [] })
@@ -358,15 +565,8 @@ export function fillPolygonZones(project: Project, sch: SchematicConnectivity, i
     }
   }
   const out = removeIslands(prep, pours, settings, fills, islandCandidates, input.keepIslands === true)
-  // The result keeps the order the zones are stored in, as every consumer expects.
   const result: ZoneFill[] = []
-  for (const zone of project.zones) {
-    if (isRuleArea(zone)) continue
-    for (const layer of zoneLayers(zone)) {
-      const f = out.get(keyOf(zone, layer))
-      if (f) result.push(f)
-    }
-  }
+  for (const zone of pours) for (const layer of zoneLayers(zone)) result.push(out.get(keyOf(zone, layer))!)
   return result
 }
 

@@ -1,6 +1,6 @@
 import { Trash2 } from "lucide-react"
 import { areaMm2OfZone, zoneFacts } from "./zoneInspector"
-import { getConnectivity, getPcbAnalysis } from "../store/analysis"
+import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
 import { updateZone, removeZones, type ZonePatch } from "../model/zoneOps"
 import { zoneSettings } from "../model/zones"
 import { formatLength } from "../model/rules"
@@ -29,7 +29,9 @@ const KEEPOUTS: { key: keyof NonNullable<Zone["keepout"]>; label: string; hint: 
 export function ZoneInspector({ project, zone }: { project: Project; zone: Zone }) {
   const unit = useLengthUnit()
   const set = zoneSettings(project, zone)
-  const facts = zoneFacts(project, zone, getPcbAnalysis(project).zoneFills)
+  useFillTick((s) => s.tick)
+  const analysis = getLiveAnalysis(project)
+  const facts = zoneFacts(project, zone, analysis.zoneFills)
   const nets = getConnectivity(project)
     .nets.filter((n) => n.pins.length > 0)
     .map((n) => n.name)

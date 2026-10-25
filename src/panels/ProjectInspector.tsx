@@ -25,7 +25,7 @@ import {
 } from "../model/rules"
 import { removeStitching, STITCH_PITCHES, stitchCount, stitchPitch, stitchVias } from "../model/stitch"
 import type { CopperLayer, CopperWeight, DesignRules, Project, SurfaceFinish } from "../model/types"
-import { getConnectivity, getPcbAnalysis } from "../store/analysis"
+import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { isWholeBoardPour, keepoutFlags } from "../model/zones"
@@ -63,9 +63,10 @@ export function ProjectInspector({ project }: { project: Project }) {
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
 
 function ProjectSection({ project }: { project: Project }) {
+  const fillTick = useFillTick((s) => s.tick)
   const stats = useMemo(() => {
     const conn = getConnectivity(project)
-    const pcb = getPcbAnalysis(project)
+    const pcb = getLiveAnalysis(project)
     const parts = project.components.filter((c) => isPhysical(findPart(c.partId)))
     const placed = new Set(parts.filter((c) => c.pcb.placed).map((c) => c.id))
     const lines = new Set(parts.map((c) => JSON.stringify([c.partId, valueText(c, findPart(c.partId)), c.footprint, c.props.mpn ?? ""])))
@@ -83,7 +84,7 @@ function ProjectSection({ project }: { project: Project }) {
       nets: conn.nets.filter((n) => n.pins.length > 0).length,
       routed: connections ? `${connections - unrouted} of ${connections}` : "None to route",
     }
-  }, [project])
+  }, [project, fillTick])
   const b = project.board
   return (
     <Section title="Project" id="project">
@@ -571,8 +572,9 @@ function RulesSection({ project }: { project: Project }) {
 const LAYER_LABEL: Record<CopperLayer, string> = { top: "Top", bottom: "Bottom" }
 
 function PoursSection({ project }: { project: Project }) {
+  useFillTick((s) => s.tick)
   const conn = getConnectivity(project)
-  const fills = getPcbAnalysis(project).zoneFills
+  const fills = getLiveAnalysis(project).zoneFills
   const named = conn.nets.filter((n) => n.pins.length > 0 && !n.name.startsWith("Net-")).map((n) => n.name)
   const [net, setNet] = useState("")
   const [layer, setLayer] = useState<CopperLayer>("bottom")

@@ -4,7 +4,7 @@ import { downloadText, projectFileName } from "../../export/bundle"
 import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, SURFACE_FINISHES } from "../../model/board"
 import { ColorField } from "../../ui/form"
 import type { SurfaceFinish } from "../../model/types"
-import { getZoneFills } from "../../store/analysis"
+import { getLiveZoneFills, useFillTick } from "../../store/analysis"
 import { projectApi, useProjectStore } from "../../store/projectStore"
 import { selectionIds, uiApi, useUi } from "../../store/uiStore"
 import { IconButton } from "../../ui/controls"
@@ -23,6 +23,7 @@ function fileName(name: string) {
 
 export function Board3D() {
   const project = useProjectStore((s) => s.project)
+  const fillTick = useFillTick((s) => s.tick)
   const selection = useUi((s) => s.selection)
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
@@ -52,7 +53,7 @@ export function Board3D() {
     scene.onModelStatus = setModelStatus
     scene.setRealModels(useUi.getState().settings.realModels)
     const p = useProjectStore.getState().project
-    scene.setProject(p, p ? getZoneFills(p) : [])
+    scene.setProject(p, p ? getLiveZoneFills(p) : [])
     return () => {
       sceneRef.current = null
       scene.dispose()
@@ -68,9 +69,9 @@ export function Board3D() {
       builtOnce.current = true
       return
     }
-    const timer = setTimeout(() => scene.setProject(project, project ? getZoneFills(project) : []), REBUILD_DEBOUNCE_MS)
+    const timer = setTimeout(() => scene.setProject(project, project ? getLiveZoneFills(project) : []), REBUILD_DEBOUNCE_MS)
     return () => clearTimeout(timer)
-  }, [project])
+  }, [project, fillTick])
 
   useEffect(() => sceneRef.current?.setPartsVisible(showParts), [showParts])
   useEffect(() => sceneRef.current?.setRealModels(realModels), [realModels])

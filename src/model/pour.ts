@@ -17,7 +17,7 @@ import type { CopperItem } from "./pcb"
 import { outlineGeometry } from "./outline"
 import { flattenPath, shapePolylines, shapeRings } from "./shapes"
 import { zoneClearance } from "./rules"
-import { fillPolygonZones } from "./zoneFill"
+import { fillPolygonZones, fillPolygonZonesEx, type PendingGroup } from "./zoneFill"
 import { needsZoneEngine } from "./zones"
 import type { CopperLayer, DesignRules, Project, Vec2 } from "./types"
 
@@ -287,8 +287,68 @@ export function fillZones(project: Project, sch: SchematicConnectivity, input: P
   return fills
 }
 
+/**
+ * The fills of a project without filling any group of zones whose fill is not already kept (`zoneFill.ts`): `stale` stands in for those,
+ * and `missing` lists them. A project with only whole-board pours is filled as it always was.
+ */
+export function fillZonesReusing(project: Project, sch: SchematicConnectivity, input: PourInput, stale: ZoneFill[]): { fills: ZoneFill[]; missing: PendingGroup[] } {
+  if (!needsZoneEngine(project)) return { fills: fillZones(project, sch, input), missing: [] }
+  return fillPolygonZonesEx(project, sch, input, { stale })
+}
+
 /** Point-in-fill tester in millimetres, honouring holes. */
 export function fillTester(polygon: FillPolygon): (p: Vec2) => boolean {
-  const rings = polygon.map((ring) => ring.map((q) => pt(q.x, q.y)))
-  return (p) => inside(p, rings)
+  const rings = polygon.map((ring) => ring.map((q) => pt(q.x, q.y))).map(ringTester)
+  return (p) => {
+    const q = pt(p.x, p.y)
+    // A point on the outline counts as inside it; one on the edge of a hole is not inside the hole.
+    if (rings[0](q) === PointInPolygonResult.IsOutside) return false
+    for (let i = 1; i < rings.length; i++) if (rings[i](q) === PointInPolygonResult.IsInside) return false
+    return true
+  }
+}
+
+type Place = (q: { x: number; y: number }) => PointInPolygonResult
+
+/**
+ * Where a point is against one ring, as `Clipper.pointInPolygon` says it. A ring of many corners (a big pour's outline, or the copper
+ * round its pads) is held with its edges sorted into bands of y, so a point is tested against the edges of its band and not all of them,
+ * and with the box of the ring, so a point that is far from it costs nothing. The sums are exact (whole micrometres).
+ */
+function ringTester(path: Path64): Place {
+  const n = path.length
+  if (n < 48) return (q) => Clipper.pointInPolygon(q, path)
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const q of path) {
+    if (q.x < minX) minX = q.x
+    if (q.x > maxX) maxX = q.x
+    if (q.y < minY) minY = q.y
+    if (q.y > maxY) maxY = q.y
+  }
+  const bands = Math.min(2048, Math.max(8, n >> 2))
+  const height = (maxY - minY) / bands || 1
+  const band = (y: number) => Math.min(bands - 1, Math.max(0, Math.floor((y - minY) / height)))
+  const edges: number[][] = Array.from({ length: bands }, () => [])
+  for (let i = 0; i < n; i++) {
+    const a = path[i]
+    const b = path[(i + 1) % n]
+    for (let k = band(Math.min(a.y, b.y)); k <= band(Math.max(a.y, b.y)); k++) edges[k].push(i)
+  }
+  return (q) => {
+    if (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY) return PointInPolygonResult.IsOutside
+    let crossings = 0
+    for (const i of edges[band(q.y)]) {
+      const a = path[i]
+      const b = path[(i + 1) % n]
+      const cross = (b.x - a.x) * (q.y - a.y) - (q.x - a.x) * (b.y - a.y)
+      // On the edge: collinear and between its ends.
+      if (cross === 0 && q.x >= Math.min(a.x, b.x) && q.x <= Math.max(a.x, b.x) && q.y >= Math.min(a.y, b.y) && q.y <= Math.max(a.y, b.y)) return PointInPolygonResult.IsOn
+      // A crossing of the ray to the right, the half-open way so a corner on the ray counts once.
+      if (a.y > q.y !== b.y > q.y && (b.y > a.y ? cross > 0 : cross < 0)) crossings++
+    }
+    return crossings & 1 ? PointInPolygonResult.IsInside : PointInPolygonResult.IsOutside
+  }
 }

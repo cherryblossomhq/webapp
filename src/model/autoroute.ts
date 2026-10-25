@@ -5,9 +5,9 @@ import { findPart } from "./library"
 import { pcbPads, type WorldPad } from "./instances"
 import { pointShapeDistance, type ShapeCopper } from "./shapes"
 import { outlineGeometry, rasterizeInside } from "./outline"
-import { areaDistance, zoneArea, zoneLayers } from "./zones"
+import { areaDistance, needsZoneEngine, zoneArea, zoneLayers } from "./zones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
-import { fillTester } from "./pour"
+import { fillTester, type ZoneFill } from "./pour"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
 
 export interface AutorouteOptions {
@@ -1027,9 +1027,21 @@ function attempt(
   const stubIds = new Set<string>()
   const late = () => performance.now() > deadline
   // The analysis of the board as it is now: copper only changes when `p` does, so steps that added nothing share it.
-  let memo: { p: Project; a: PcbAnalysis } | null = first ? { p: project, a: first } : null
-  const analyze = () => {
-    if (memo?.p !== p) memo = { p, a: analyzePcb(p, sch) }
+  // The copper of a polygon zone (X3) takes seconds to fill on a big board, so the steps in between share the fill the board had when this
+  // attempt began with the copper this run adds cut out of it (`exact` false), and the analyses the result is judged by (`exact`) fill it again,
+  // from what the zones kept.
+  const zoned = needsZoneEngine(project)
+  let start: { fills: ZoneFill[]; known: Set<string> } | null = zoned && first ? { fills: first.zoneFills, known: new Set(first.items.map((it) => it.id)) } : null
+  let memo: { p: Project; a: PcbAnalysis; exact: boolean } | null = first ? { p: project, a: first, exact: true } : null
+  const analyze = (exact = false) => {
+    if (memo?.p === p && (memo.exact || !exact)) return memo.a
+    if (zoned && !exact) {
+      if (!start) {
+        const a = analyzePcb(project, sch)
+        start = { fills: a.zoneFills, known: new Set(a.items.map((it) => it.id)) }
+      }
+      memo = { p, a: analyzePcb(p, sch, { carve: start }), exact: false }
+    } else memo = { p, a: analyzePcb(p, sch), exact: true }
     return memo.a
   }
   /** A router over the board as `analysis` has it, told which traces are escape stubs. */
@@ -1297,7 +1309,7 @@ function attempt(
     }
   }
 
-  let final = analyze()
+  let final = analyze(true)
   if (mode.fine) {
     // Copper the retries left connecting no pad (a trace and its vias cut loose by a rip-up) goes.
     const alive = new Set<number>()
@@ -1317,7 +1329,7 @@ function attempt(
       addedTraces -= p.traces.length - traces.length
       addedVias -= p.vias.length - vias.length
       p = { ...p, traces, vias }
-      final = analyze()
+      final = analyze(true)
     }
   }
   const open = final.ratsnest.filter((r) => !wanted || wanted.has(r.netId))

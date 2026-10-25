@@ -4,6 +4,7 @@ import { PcbEditor } from "../editor/pcb/PcbEditor"
 import { SchematicEditor } from "../editor/schematic/SchematicEditor"
 import { stopCleanup } from "../editor/schematic/cleanupAction"
 import { stopTidy } from "../editor/schematic/tidyAction"
+import { stopZoneFills } from "../store/analysis"
 import { isTyping } from "../editor/viewport"
 import { CanvasNotice } from "../panels/CanvasNotice"
 import { PcbToolbar, SchematicToolbar } from "../panels/CanvasToolbar"
@@ -118,6 +119,7 @@ export function Editor() {
 
   // A tidy still running in its worker stops with the editor, and the worker with it.
   useEffect(() => stopTidy, [])
+  useEffect(() => stopZoneFills, [])
   useEffect(() => stopCleanup, [])
 
   return (

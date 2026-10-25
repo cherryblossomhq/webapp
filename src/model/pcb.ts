@@ -16,7 +16,8 @@ import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decouplin
 import { findPart } from "./library"
 import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
 import { keepoutViolations } from "./zoneChecks"
-import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
+import { carveFills, type PendingGroup } from "./zoneFill"
+import { fillTester, fillZones, fillZonesReusing, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
 import { netTieGroups } from "./partFlags"
 import { worldShapes } from "./shapeItems"
@@ -127,6 +128,8 @@ export interface PcbAnalysis {
   ratsnest: RatsLine[]
   violations: DrcViolation[]
   zoneFills: ZoneFill[]
+  /** Set when some zones' fill is not current (the groups it lists): it is the earlier one, kept while the new one is made (`reuseOnly`). Every result in this analysis that depends on the copper of a pour is then of the earlier fill. */
+  zonesPending?: PendingGroup[]
 }
 
 function padBox(p: WorldPad): Box {
@@ -636,10 +639,22 @@ export function derivedCopperNets(project: Project, sch: SchematicConnectivity):
  * Connectivity, ratsnest and DRC for the board. `fills` reuses earlier pour fills instead of
  * recomputing them, which keeps drags responsive.
  */
-export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: { fills?: ZoneFill[]; keepIslands?: boolean } = {}): PcbAnalysis {
+export function analyzePcb(
+  project: Project,
+  sch: SchematicConnectivity,
+  opts: {
+    fills?: ZoneFill[]
+    keepIslands?: boolean
+    /** Fill no zone whose fill is not kept already: `stale` stands in for it and the analysis says so (`zonesPending`). */
+    reuseOnly?: { stale: ZoneFill[] }
+    /** Take `fills` as they were made with the copper whose ids are in `known`, and cut the copper added since out of them (`carveFills`), instead of filling again. */
+    carve?: { fills: ZoneFill[]; known: ReadonlySet<string> }
+  } = {},
+): PcbAnalysis {
   const copper = buildCopperItems(project, sch)
   // Pours need each item's net, which comes from copper connectivity without the pours.
   let zoneFills: ZoneFill[] = opts.fills ?? []
+  let pending: PendingGroup[] = []
   if (project.zones.length && !opts.fills) {
     const pre = connectItems(copper, netTies(project, copper))
     // A stitching via touches nothing but the pours, so it carries its net itself.
@@ -652,7 +667,14 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
       }
       return net === "short" ? null : net
     }
-    zoneFills = fillZones(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands })
+    if (opts.carve) {
+      const { fills, known } = opts.carve
+      zoneFills = carveFills(project, fills, copper.flatMap((it, i) => (known.has(it.id) ? [] : [{ item: it, net: netOf(i) }])))
+    } else if (opts.reuseOnly) {
+      const r = fillZonesReusing(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands }, opts.reuseOnly.stale)
+      zoneFills = r.fills
+      pending = r.missing
+    } else zoneFills = fillZones(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands })
   }
   const items = zoneFills.length ? [...copper, ...zoneItems(zoneFills)] : copper
   // Net ties: a net tie footprint's own copper may overlap itself, and a track is excused where it enters a tie pad of its own net.
@@ -867,7 +889,7 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
     })
   }
 
-  return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills }
+  return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}) }
 }
 
 // ---------- Manufacturability ----------

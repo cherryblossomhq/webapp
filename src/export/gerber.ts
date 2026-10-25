@@ -179,6 +179,57 @@ class GerberWriter {
   }
 }
 
+/**
+ * A convex ring with every edge moved `d` outward (inward when negative), the corners where the moved edges meet (a mitre). `[]` when the
+ * ring shrinks to nothing, null when the ring is not convex.
+ */
+export function offsetConvexRing(pts: Vec2[], d: number): Vec2[] | null {
+  const n = pts.length
+  let area = 0
+  for (let i = 0; i < n; i++) area += pts[i].x * pts[(i + 1) % n].y - pts[(i + 1) % n].x * pts[i].y
+  if (Math.abs(area) < 1e-12) return null
+  const ring = area > 0 ? pts : [...pts].reverse()
+  const dir = (a: Vec2, b: Vec2) => {
+    const l = Math.hypot(b.x - a.x, b.y - a.y)
+    return l < 1e-12 ? null : { x: (b.x - a.x) / l, y: (b.y - a.y) / l }
+  }
+  // Drop repeated points, then insist on a left turn at every corner (or none, for a point in a straight run).
+  const clean = ring.filter((p, i) => dir(p, ring[(i + 1) % n]) !== null)
+  const m = clean.length
+  if (m < 3) return null
+  const dirs = clean.map((p, i) => dir(p, clean[(i + 1) % m])!)
+  for (let i = 0; i < m; i++) {
+    const a = dirs[(i + m - 1) % m]
+    const b = dirs[i]
+    if (a.x * b.y - a.y * b.x < -1e-9) return null
+  }
+  // Counter-clockwise, so the outward side of an edge is on its right: the normal is (dy, -dx).
+  const out: Vec2[] = []
+  for (let i = 0; i < m; i++) {
+    const a = dirs[(i + m - 1) % m]
+    const b = dirs[i]
+    const p = clean[i]
+    const cross = a.x * b.y - a.y * b.x
+    if (Math.abs(cross) < 1e-9) {
+      out.push({ x: p.x + b.y * d, y: p.y - b.x * d })
+      continue
+    }
+    // The corner moves along the bisector by d / cos(half the turn): (na + nb) * d / (1 + na . nb).
+    const na = { x: a.y, y: -a.x }
+    const nb = { x: b.y, y: -b.x }
+    const k = d / (1 + na.x * nb.x + na.y * nb.y)
+    out.push({ x: p.x + (na.x + nb.x) * k, y: p.y + (na.y + nb.y) * k })
+  }
+  if (d < 0) {
+    // An edge that comes out turned around means the ring has shrunk through itself.
+    for (let i = 0; i < m; i++) {
+      const e = { x: out[(i + 1) % m].x - out[i].x, y: out[(i + 1) % m].y - out[i].y }
+      if (e.x * dirs[i].x + e.y * dirs[i].y <= 1e-9) return []
+    }
+  }
+  return out
+}
+
 function flashPad(w: GerberWriter, pad: WorldPad, grow = 0) {
   const width = pad.width + grow * 2
   const height = pad.height + grow * 2
@@ -192,8 +243,18 @@ function flashPad(w: GerberWriter, pad: WorldPad, grow = 0) {
       return
     case "polygon":
       if (pad.points && pad.points.length >= 3) {
+        if (grow === 0) {
+          w.region(pad.points)
+          return
+        }
+        // A turned pad's opening is its outline moved out (or in) by `grow` with mitred corners, as a rectangle's is, so a part at 33 degrees
+        // gets the opening it has at 0, turned. A shape with a dent is grown by a round stroke, and cannot be shrunk.
+        const ring = offsetConvexRing(pad.points, grow)
+        if (ring) {
+          if (ring.length >= 3) w.region(ring)
+          return
+        }
         w.region(pad.points)
-        // Grow polygons by tracing their outline with a round aperture.
         if (grow > 0) w.stroke([...pad.points, pad.points[0]], grow * 2)
         return
       }

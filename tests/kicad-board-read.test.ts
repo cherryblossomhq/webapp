@@ -573,11 +573,13 @@ describe("switch 21: a zone's fill is counted, not imported", () => {
     const b = read(text).board
     expect(b.zones[0].filled).toBe(true)
     expect(b.zones[0].polygon).toHaveLength(4)
+    // Zones are built (X3): the board imports, the zone is the editor's, and the stored fill is the one thing not kept.
     const r = importKicadBoard(text)
-    expect(r.status).toBe("refused")
-    if (r.status === "refused") {
-      expect(r.needs.map((n) => n.ext)).toContain("X3")
+    expect(r.status).toBe("imported")
+    if (r.status === "imported") {
+      expect(r.project.zones).toHaveLength(1)
       expect([...r.report.account!.notNeeded.keys()].some((k) => /KiCad's own result of its fill/.test(k))).toBe(true)
+      expect(r.report.entries.some((e) => e.code === "zones-refilled")).toBe(true)
     }
   })
 })

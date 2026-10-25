@@ -176,6 +176,11 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
         if (d) body += `<path d="${d}" fill="${l === "top" ? PCB.topPour : PCB.bottomPour}" fill-rule="evenodd"/>`
       }
     }
+    // Keepouts, as an outline with a light red tint, on the layers they are on; none on a board that has none.
+    for (const z of project.zones) {
+      if (!z.keepout || !z.outline || !(z.layers ?? [z.layer]).includes(l)) continue
+      body += `<path d="${pathsSvgPath(z.outline)}" fill="#ff5470" fill-opacity="0.15" fill-rule="evenodd" stroke="#ff5470" stroke-width="${n(Math.max(0.1, 1.5 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
+    }
     for (const t of project.traces) {
       if (t.layer !== l) continue
       body += `<polyline points="${pts(t.points)}" fill="none" stroke="${l === "top" ? PCB.topCopper : PCB.bottomCopper}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`

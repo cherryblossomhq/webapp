@@ -1,7 +1,11 @@
 import JSZip from "jszip"
 import type { AnyCircuitElement } from "circuit-json"
 import { applyToPoint } from "transformation-matrix"
+import { computeConnectivity } from "../model/connectivity"
+import { analyzePcb } from "../model/pcb"
+import { needsZoneEngine } from "../model/zones"
 import type { Project } from "../model/types"
+import { applyZones } from "./kicadZones"
 import { slugify } from "./bundle"
 import { projectToCircuitJson } from "./circuitJson"
 import { applyOutline } from "./kicadOutline"
@@ -81,7 +85,9 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
 
   // What the converter has no place for: put into the files it wrote.
   const flagged = applyFootprintFlags(applyBoardSettings(pcb.getOutputString(), project), project)
-  const drawings = applyDrawings(flagged, project)
+  // Zones with a polygon, rule areas and zone settings of their own are written by the editor (`kicadZones.ts`); whole-board pours go through the converter as they did.
+  const zones = needsZoneEngine(project) ? applyZones(flagged, project, analyzePcb(project, computeConnectivity(project)).zoneFills) : { text: flagged, notes: [] as string[] }
+  const drawings = applyDrawings(zones.text, project)
   const outline = applyOutline(drawings.text, project)
   const texts = applyTexts(outline.text, project)
   const boardText = texts.text
@@ -100,13 +106,14 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
     },
     notes: [
       ...notes,
+      ...zones.notes,
       ...drawings.notes,
       ...outline.notes,
       ...texts.notes,
       "KiCad names every net, so nets the schematic leaves unnamed are called Net-(REF-PIN), as KiCad would.",
       "Parts keep our schematic symbols and land patterns; they are stored in the files, not in a KiCad library, and have no 3D models.",
       "Symbols carry the footprint, part number, LCSC number, manufacturer and every other part property as hidden fields; the board's footprints carry only the part and LCSC numbers.",
-      ...(project.zones.length ? ["Pours arrive filled as Cherry Blossom filled them, with its clearance, thinnest neck and thermal settings; press B in KiCad to refill them. KiCad's thermal spokes are always four, at its own angle."] : []),
+      ...(project.zones.length && !needsZoneEngine(project) ? ["Pours arrive filled as Cherry Blossom filled them, with its clearance, thinnest neck and thermal settings; press B in KiCad to refill them. KiCad's thermal spokes are always four, at its own angle."] : []),
       "The design rules are in the KiCad project: clearance, trace width, via and drill sizes, annular ring, hole to hole, copper to the board edge, mask and paste openings, and trace widths by net as net classes. Vias in pads and via tenting have no setting there.",
       ...(project.rules.netClasses?.length ? ["Net classes are in the KiCad project (net settings): each class's clearance, trace width, via, micro via and differential pair sizes, with its nets as patterns that match them exactly. A width given to one net is a class of its own that sets only the width."] : []),
       ...settings.notes,

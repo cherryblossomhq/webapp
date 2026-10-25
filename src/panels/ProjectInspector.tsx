@@ -28,6 +28,7 @@ import type { CopperLayer, CopperWeight, DesignRules, Project, SurfaceFinish } f
 import { getConnectivity, getPcbAnalysis } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
+import { isWholeBoardPour, keepoutFlags } from "../model/zones"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
 import { NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
@@ -576,13 +577,12 @@ function PoursSection({ project }: { project: Project }) {
   const [net, setNet] = useState("")
   const [layer, setLayer] = useState<CopperLayer>("bottom")
   const chosen = named.includes(net) ? net : (named.find((n) => n === "GND") ?? named[0] ?? "")
-  const exists = project.zones.some((z) => z.net === chosen && z.layer === layer)
+  const exists = project.zones.some((z) => isWholeBoardPour(z) && z.net === chosen && z.layer === layer)
   const [pitch, setPitch] = useState(() => String(stitchPitch(project.board)))
   const unit = useLengthUnit()
   // Stitching needs the same net poured on both layers.
-  const stitchable = [...new Set(project.zones.map((z) => z.net))].filter((n) =>
-    (["top", "bottom"] as const).every((l) => project.zones.some((z) => z.net === n && z.layer === l)),
-  )
+  const whole = project.zones.filter(isWholeBoardPour)
+  const stitchable = [...new Set(whole.map((z) => z.net))].filter((n) => (["top", "bottom"] as const).every((l) => whole.some((z) => z.net === n && z.layer === l)))
   return (
     <Section title="Copper pours" id="pours">
       {project.zones.length === 0 ? (
@@ -594,11 +594,13 @@ function PoursSection({ project }: { project: Project }) {
             const empty = !fill || fill.polygons.length === 0
             return (
               <li key={z.id} className="flex items-center justify-between rounded-[6px] px-1.5 py-0.5 hover:bg-chrome">
-                <span className="text-[12.5px]">
-                  <span className="mono text-ink">{z.net}</span>
-                  <span className="text-ink-2"> on {LAYER_LABEL[z.layer].toLowerCase()}</span>
+                <span className={`text-[12.5px] ${z.outline ? "cursor-pointer" : ""}`} onClick={z.outline ? () => uiApi().select([`z:${z.id}`]) : undefined}>
+                  <span className="mono text-ink">{z.keepout ? "Keepout" : z.net || "No net"}</span>
+                  {z.name && <span className="text-ink-2"> {z.name}</span>}
+                  <span className="text-ink-2"> on {(z.layers ?? [z.layer]).map((l) => LAYER_LABEL[l].toLowerCase()).join(" and ")}</span>
+                  {z.outline && <span className="text-ink-3">, {z.keepout ? "keeps out " + (keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join(", ") || "nothing") : "polygon"}</span>}
                   {z.clearance !== undefined && <span className="text-ink-3">, {formatLength(zoneClearance(project, z.clearance), unit, true)} gap</span>}
-                  {empty && <span className="text-warn"> (no copper to fill)</span>}
+                  {empty && !z.keepout && <span className="text-warn"> (no copper to fill)</span>}
                 </span>
                 <IconButton
                   label={`Remove ${z.net} pour on ${z.layer}`}

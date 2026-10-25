@@ -32,6 +32,8 @@ import { findPart } from "../model/library"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
+import { flattenPath } from "../model/shapes"
+import { needsZoneEngine, zoneLayers } from "../model/zones"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
 import { textElements } from "./circuitJsonTexts"
@@ -612,7 +614,9 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     elements.push(via)
   }
   const emptyZones: string[] = []
-  for (const fill of pcb.zoneFills) {
+  // The KiCad export writes the zones of a project that has polygon zones itself, so they are not in the circuit it converts.
+  const zonesWrittenByKicadExport = options.forKicad === true && needsZoneEngine(project)
+  for (const fill of zonesWrittenByKicadExport ? [] : pcb.zoneFills) {
     const netId = fill.netId ?? sch.nets.find((n) => n.name === fill.netName)?.id
     const sourceNetId = netId ? netIds.get(netId) : undefined
     if (!fill.polygons.length) {
@@ -635,6 +639,33 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     }
   }
   void netNameOf
+  // Rule areas (keepouts) are `pcb_keepout` outlines: the outline of the polygon, on the layers it is on.
+  const keepoutNotes: string[] = []
+  if (!options.forKicad) {
+    for (const z of project.zones) {
+      if (!z.keepout || !z.outline?.length) continue
+      const k = z.keepout
+      if (!(k.tracks || k.vias || k.pads || k.pour || k.footprints)) {
+        keepoutNotes.push("A rule area that keeps nothing out (it is there for rules) has no element in Circuit JSON and was left out.")
+        continue
+      }
+      const outer = flattenPath({ ...z.outline[0], closed: true })
+      if (z.outline.length > 1) keepoutNotes.push("The holes of a keepout are left out: Circuit JSON keeps out the whole outline.")
+      elements.push({
+        type: "pcb_keepout",
+        shape: "outline",
+        pcb_keepout_id: ids.next("pcb_keepout"),
+        layers: zoneLayers(z),
+        outline: outer.map(pt),
+        stroke_width: 0,
+        ...(z.name ? { description: z.name } : {}),
+        ...(k.tracks || k.vias ? {} : { allow_traces: true }),
+        ...(k.pads || k.footprints ? {} : { allow_placements: true }),
+      } as unknown as AnyCircuitElement)
+      if ((k.tracks && !k.vias) || (k.vias && !k.tracks)) keepoutNotes.push("A keepout that keeps out only tracks or only vias keeps out both in Circuit JSON, which has one flag for them.")
+      if ((k.pads && !k.footprints) || (k.footprints && !k.pads)) keepoutNotes.push("A keepout that keeps out only pads or only parts keeps out both in Circuit JSON, which has one flag for them.")
+    }
+  }
 
   // ---------- Drawings ----------
   // The KiCad export writes them itself, exactly, so they are left out of the circuit it converts.
@@ -807,7 +838,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     notes.push("The 3D view, the net trace widths and the pour and mask settings stay in Cherry Blossom; the design rules the board states (trace width, clearances, drills) are in the board.")
   }
   void projectFootprints
-  notes.push(...drawingNotes)
+  notes.push(...drawingNotes, ...new Set(keepoutNotes))
   return { elements, notes }
 }
 

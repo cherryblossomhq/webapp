@@ -8,6 +8,7 @@ import { pcbCourtyard, pcbSilk } from "./instances"
 import type { AutorouteResult } from "./autoroute"
 import { analyzePcb, pointPadDistance } from "./pcb"
 import { fillTester } from "./pour"
+import { isWholeBoardPour } from "./zones"
 import { placeDesignators } from "./silk"
 import type { BoardDef, Project, Vec2, Via } from "./types"
 
@@ -186,6 +187,6 @@ export function routeAroundStitching(project: Project, route: (p: Project) => Au
   const res = route({ ...project, vias: project.vias.filter((v) => !(v.net && nets.has(v.net) && !v.locked)) })
   if (!res.addedTraces && !res.addedVias) return { ...res, project }
   let next = res.project
-  for (const net of nets) if (next.zones.some((z) => z.net === net)) next = stitchVias(next, net).project
+  for (const net of nets) if (next.zones.some((z) => isWholeBoardPour(z) && z.net === net)) next = stitchVias(next, net).project
   return { ...res, project: next }
 }

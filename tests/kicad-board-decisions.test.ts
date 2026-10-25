@@ -81,7 +81,8 @@ describe("the decision table", () => {
 
   it("an unknown path has no row, and a rule never matches half a path", () => {
     expect(ruleFor("footprint>pad>frobnicate")).toBeNull()
-    expect(ruleFor("zone>polygon>pts")?.decision).toBe("extend")
+    expect(ruleFor("zone>polygon>pts")?.decision).toBe("native")
+    expect(ruleFor("zone>fill>hatch_gap")?.ext).toBe("X24")
     expect(ruleFor("zone>filled_polygon")?.decision).toBe("not-needed")
   })
 })

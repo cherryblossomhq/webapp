@@ -53,7 +53,7 @@ export interface OutlineResult {
   outerLoops: number
   cutouts: number
   openChains: number
-  repair: { merged: number; dropped: number; zeroLength: number }
+  repair: { merged: number; dropped: number; zeroLength: number; moved: number }
   /** Whether `BoardDef` holds it: one closed rectangle, or one with four equal corner radii, and nothing cut out of it. */
   representable: boolean
   /** The biggest outer loop's bounding box, in KiCad's frame. */
@@ -156,14 +156,15 @@ export function edgePieces(board: KicadBoard, zero?: { n: number }): Piece[] {
   return out
 }
 
-function repairPieces(pieces: Piece[], tol: number, stats: { merged: number; dropped: number }): Piece[] {
+function repairPieces(pieces: Piece[], tol: number, stats: { merged: number; dropped: number; moved: number }): Piece[] {
   const lines = pieces.filter((p) => p.kind === "line")
   const others = pieces.filter((p) => p.kind !== "line")
   interface Cluster {
     ux: number
     uy: number
     p0: Xy
-    spans: [number, number][]
+    /** Each piece's extent along the line, and how far its ends are from it. */
+    spans: [number, number, number, Piece][]
   }
   const clusters: Cluster[] = []
   for (const l of lines) {
@@ -181,7 +182,8 @@ function repairPieces(pieces: Piece[], tol: number, stats: { merged: number; dro
     if (!c) clusters.push(k)
     const t0 = (a[0] - k.p0[0]) * k.ux + (a[1] - k.p0[1]) * k.uy
     const t1 = (b[0] - k.p0[0]) * k.ux + (b[1] - k.p0[1]) * k.uy
-    k.spans.push([Math.min(t0, t1), Math.max(t0, t1)])
+    const off = (p: Xy) => Math.abs(k.uy * (p[0] - k.p0[0]) - k.ux * (p[1] - k.p0[1]))
+    k.spans.push([Math.min(t0, t1), Math.max(t0, t1), Math.max(off(a), off(b)), l])
   }
   const out: Piece[] = []
   const stubs: Piece[] = []
@@ -192,18 +194,32 @@ function repairPieces(pieces: Piece[], tol: number, stats: { merged: number; dro
   }
   for (const k of clusters) {
     k.spans.sort((a, b) => a[0] - b[0])
-    const merged: [number, number][] = []
+    // Pieces that overlap are one line drawn twice, however far (within the tolerance) the second is off; pieces that only
+    // meet end to end are one line only when both lie on it exactly, since otherwise their joint is a corner of the outline.
+    const merged: { t0: number; t1: number; dev: number; members: [number, number, number, Piece][] }[] = []
     for (const sp of k.spans) {
       const last = merged[merged.length - 1]
-      if (last && sp[0] <= last[1] + tol) last[1] = Math.max(last[1], sp[1])
-      else merged.push([sp[0], sp[1]])
+      if (last && (sp[0] < last.t1 || (sp[0] <= last.t1 + tol && sp[2] <= EXACT_TOLERANCE && last.dev <= EXACT_TOLERANCE))) {
+        last.t1 = Math.max(last.t1, sp[1])
+        last.dev = Math.max(last.dev, sp[2])
+        last.members.push(sp)
+      } else merged.push({ t0: sp[0], t1: sp[1], dev: sp[2], members: [sp] })
     }
     stats.merged += k.spans.length - merged.length
-    for (const [t0, t1] of merged) {
-      const a: Xy = [k.p0[0] + k.ux * t0, k.p0[1] + k.uy * t0]
-      const b: Xy = [k.p0[0] + k.ux * t1, k.p0[1] + k.uy * t1]
+    for (const g of merged) {
+      // A piece that merges with nothing stays exactly where the file has it; only a merged run is rebuilt on the line.
+      if (g.members.length === 1) {
+        const original = g.members[0][3]
+        if (g.t1 - g.t0 < tol) stubs.push(original)
+        else out.push(original)
+        continue
+      }
+      // Every member that does not lie on the merged line moves with it, and is counted.
+      stats.moved += g.members.filter((m) => m[2] > 1e-6).length
+      const a: Xy = [k.p0[0] + k.ux * g.t0, k.p0[1] + k.uy * g.t0]
+      const b: Xy = [k.p0[0] + k.ux * g.t1, k.p0[1] + k.uy * g.t1]
       const piece: Piece = { kind: "line", a, b, pts: [a, b] }
-      if (t1 - t0 < tol) stubs.push(piece)
+      if (g.t1 - g.t0 < tol) stubs.push(piece)
       else out.push(piece)
     }
   }
@@ -224,6 +240,8 @@ interface Seq {
   p: Piece
   a: Xy
   b: Xy
+  /** The vertices a merged straight run passed through between `a` and `b`: each still lies on the run within `EXACT_TOLERANCE`. */
+  joints?: Xy[]
 }
 
 /** The pieces of a closed chain in order, each oriented to end where the next begins, following the matched ends. */
@@ -250,25 +268,42 @@ function orderLoop(ps: Piece[], first: number, partner: Int32Array): Seq[] | nul
   return seq.length === ps.length ? seq : null
 }
 
+/** Distance from a point to the segment a to b. */
+function toSegment(p: Xy, a: Xy, b: Xy): number {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const len2 = dx * dx + dy * dy
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2))
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy))
+}
+
+/**
+ * One straight side drawn in several pieces becomes one line, but only when every joint between
+ * them lies on the merged line within `EXACT_TOLERANCE`: a joint 0.2 mm off is a corner of the
+ * outline, and merging it would move the edge. (An earlier version merged any pieces within half a
+ * degree, which made a 100 by 50 board with a 0.2 mm kink a rectangle.)
+ */
 function mergeCollinear(seq: Seq[]): Seq[] {
   const straight = (s: Seq) => s.p.kind === "line"
-  const same = (u: Seq, v: Seq) => {
-    const ux = u.b[0] - u.a[0]
-    const uy = u.b[1] - u.a[1]
-    const vx = v.b[0] - v.a[0]
-    const vy = v.b[1] - v.a[1]
-    const cross = Math.abs(ux * vy - uy * vx) / (Math.hypot(ux, uy) * Math.hypot(vx, vy))
-    return cross < 0.01 && ux * vx + uy * vy > 0
+  /** The two pieces joined: null when a joint of either leaves the merged line, or the second turns back. */
+  const join = (u: Seq, v: Seq): Seq | null => {
+    if ((u.b[0] - u.a[0]) * (v.b[0] - v.a[0]) + (u.b[1] - u.a[1]) * (v.b[1] - v.a[1]) <= 0) return null
+    const joints = [...(u.joints ?? []), u.b, ...(v.joints ?? [])]
+    if (joints.some((j) => toSegment(j, u.a, v.b) > EXACT_TOLERANCE)) return null
+    return { p: u.p, a: u.a, b: v.b, joints }
   }
   const out: Seq[] = []
   for (const s of seq) {
     const last = out[out.length - 1]
-    if (last && straight(last) && straight(s) && same(last, s)) out[out.length - 1] = { p: last.p, a: last.a, b: s.b }
+    const joined = last && straight(last) && straight(s) ? join(last, s) : null
+    if (joined) out[out.length - 1] = joined
     else out.push({ ...s })
   }
-  while (out.length > 2 && straight(out[0]) && straight(out[out.length - 1]) && same(out[out.length - 1], out[0])) {
-    const tail = out.pop()!
-    out[0] = { p: out[0].p, a: tail.a, b: out[0].b }
+  while (out.length > 2 && straight(out[0]) && straight(out[out.length - 1])) {
+    const joined = join(out[out.length - 1], out[0])
+    if (!joined) break
+    out.pop()
+    out[0] = joined
   }
   return out
 }
@@ -381,9 +416,9 @@ export function outlineOf(board: KicadBoard, tol = JOIN_TOLERANCE): OutlineResul
   const zero = { n: 0 }
   const raw = edgePieces(board, zero)
   if (!raw.length) {
-    return { status: "no outline", shape: "none", pieces: 0, loops: 0, outerLoops: 0, cutouts: 0, openChains: 0, repair: { merged: 0, dropped: 0, zeroLength: zero.n }, representable: false, box: null, cornerRadius: 0, gaps: [] }
+    return { status: "no outline", shape: "none", pieces: 0, loops: 0, outerLoops: 0, cutouts: 0, openChains: 0, repair: { merged: 0, dropped: 0, zeroLength: zero.n, moved: 0 }, representable: false, box: null, cornerRadius: 0, gaps: [] }
   }
-  const repair = { merged: 0, dropped: 0, zeroLength: zero.n }
+  const repair = { merged: 0, dropped: 0, zeroLength: zero.n, moved: 0 }
   const pieces = repairPieces(raw, tol, repair)
   const open = pieces.filter((p) => p.a)
   const loops: Loop[] = []

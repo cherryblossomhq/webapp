@@ -23,6 +23,8 @@ export interface ReportEntry {
   why: string
   /** How many objects the entry stands for, when it groups several. */
   count?: number
+  /** Every object the entry stands for, one line each, when `object` names only the first few. */
+  items?: string[]
 }
 
 /** What became of the nodes of the file, by the decision table (`decisions.ts`). */

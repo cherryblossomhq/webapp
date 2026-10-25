@@ -211,9 +211,14 @@ export const PATH_RULES: PathRule[] = [
   "decision": "native"
  },
  {
-  "source": "^(setup>(?:last_trace_width|via_size|via_drill|trace_clearance))$",
+  "source": "^(setup>last_trace_width)$",
   "decision": "not-needed",
-  "note": "KiCad 4 and 5 write the track width and via size last selected in the toolbar, and the Default net class's clearance a second time; the rules are the Default net class's, which is imported"
+  "note": "KiCad 4 and 5 write the track width last selected in the toolbar, which is a choice of the moment and not a rule"
+ },
+ {
+  "source": "^(setup>(?:via_size|via_drill|trace_clearance))$",
+  "decision": "not-needed",
+  "note": "KiCad 4 and 5 write the Default net class's via size, via drill and clearance a second time (equal to the class's own in all 1,227 corpus boards with both); the net class block, which KiCad reads after them, is what it keeps, and a board with no class block has them as the Default class, which the importer reads as the rules"
  },
  {
   "source": "^(setup>zone_45_only)$",
@@ -299,7 +304,8 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:segment|arc|via)>net)$",
   "decision": "extend",
-  "ext": "X13"
+  "ext": "X13",
+  "note": "the net the file puts a track or via on; after import it is compared with the net the editor derives from what the copper touches, and every difference is reported by item"
  },
  {
   "source": "^((?:segment|arc|via)>(?:tstamp|uuid))$",
@@ -555,10 +561,10 @@ export const PATH_RULES: PathRule[] = [
   "note": "KiCad's object identity and edit time"
  },
  {
-  "source": "^(footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups|jumper_pad_groups><layer number>))$",
+  "source": "^(footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups(?:><layer number>|>[^>]+)?))$",
   "decision": "extend",
   "ext": "X15",
-  "note": "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part"
+  "note": "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part (a group's pad numbers are the words of its own list, so its path ends in the first number)"
  },
  {
   "source": "^(footprint>(?:clearance|solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|solder_paste_ratio|zone_connect))$",
@@ -1198,28 +1204,54 @@ export const ATOM_RULES: AtomRule[] = [
   ]
  },
  {
-  "source": "^((?:.*>)?(?:tstamp|uuid|id|members|tedit|path|data|net_name|add_net|net|sheetname|sheetfile|descr|tags|status))$",
+  "source": "^((?:.*>)?(?:members|data))$",
   "values": [],
   "skip": [],
   "free": true
  },
  {
-  "source": "^(title_block>(?:title|company|rev|date|comment))$",
+  "source": "^((?:.*>)?(?:tstamp|uuid|id|tedit|path|net_name|add_net|sheetname|sheetfile|descr|tags|status))$",
   "values": [],
-  "skip": [],
-  "free": true
+  "skip": [
+   1
+  ]
+ },
+ {
+  "source": "^((?:.*>)?net)$",
+  "values": [],
+  "skip": [
+   1,
+   2
+  ]
+ },
+ {
+  "source": "^(title_block>(?:title|company|rev|date))$",
+  "values": [],
+  "skip": [
+   1
+  ]
+ },
+ {
+  "source": "^(title_block>comment)$",
+  "values": [],
+  "skip": [
+   1,
+   2
+  ]
  },
  {
   "source": "^((?:module|footprint)>pad>(?:pinfunction|pintype))$",
   "values": [],
-  "skip": [],
-  "free": true
+  "skip": [
+   1
+  ]
  },
  {
   "source": "^(dimension>gr_text|footprint>dimension>gr_text)$",
   "values": [],
-  "skip": [],
-  "free": true
+  "skip": [
+   1
+  ]
  },
  {
   "source": "^((?:gr_text_box|(?:module|footprint)>fp_text_box))$",

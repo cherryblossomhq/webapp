@@ -13,8 +13,8 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // The rules are the ones of `tests/kicad-census/slices.mjs`, which the census judged the plan by,
 // with the differences named in `Need.source`.
 
-/** The extensions the editor has built. Each slice adds its own; slice 1a builds none. */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set()
+/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties). */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X13", "X15"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -148,12 +148,13 @@ const MASK_REASON = "a pad whose solder mask opening is not the editor's (the ed
 const PASTE_REASON = "a pad whose solder paste is not the editor's (the editor puts paste on every surface-mount pad's own side and nowhere else)"
 const OTHER_LAYER_REASON = "a pad on a layer other than copper, mask, paste or silkscreen"
 const SILK_REASON = "a pad plotted on the silkscreen"
+const NPTH_REASON = "a non-plated hole whose pad is larger than its drill (copper or a mask opening around the hole)"
 const SHARED_NET_REASON = "pads that share a number but carry different nets, or a net and no net"
 const SHARED_NAME_REASON = "pads that share a number but have different pin names or pin types"
 const IMPORTER_ONLY = [
   "a through-hole pad with copper on one side only",
   "an SMD pad with copper on both sides",
-  "a non-plated hole with copper around it",
+  NPTH_REASON,
   "a slot across the pad's long side",
   "a through-hole pad with no drill",
   MASK_REASON,
@@ -182,7 +183,7 @@ function padNeeds(fp: KicadFootprint, p: KicadPad, board: KicadBoard, why: Map<s
   // The importer's own additions: what the model cannot hold that the census rules did not list.
   if (p.type === "thru_hole" && side !== "both") need("a through-hole pad with copper on one side only")
   if (smdLike && side === "both") need("an SMD pad with copper on both sides")
-  if (p.type === "np_thru_hole" && p.drill && (p.w > p.drill.w + 1e-6 || p.h > p.drill.h + 1e-6) && side !== "none") need("a non-plated hole with copper around it")
+  if (p.type === "np_thru_hole" && p.drill && (p.w > p.drill.w + 1e-6 || p.h > p.drill.h + 1e-6)) need(NPTH_REASON)
   // The layers of the pad against what the editor draws for its type and side: copper is checked above, mask and paste here.
   const want = editorPadLayers(p, fp)
   if (!sameSet(layers.mask, want.mask)) need(MASK_REASON)

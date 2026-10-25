@@ -1,4 +1,5 @@
 import { emptyBox, expandBox, pointOnSegment, round, samePoint, snap, type Box } from "../../lib/geometry"
+import { renameStoredNets } from "../copperNets"
 import { blockFrames, blocksWithout, componentTextBoxes, drawnIslands, uniqueBlockName } from "../blocks"
 import { blockPorts, readingOrder } from "../blockPorts"
 import { computeConnectivity, pinKey } from "../connectivity"
@@ -1167,13 +1168,13 @@ function stowLoose(project: Project, given: Island[], area: Box, out: Map<string
 
 // ---------- Names ----------
 
-/** Pours, stitching vias and trace widths that named a net by its old name follow it to the new one. */
+/** Pours, stitching vias, trace widths and the net of imported traces and vias that named a net by its old name follow it to the new one. */
 export function renameNets(project: Project, renamed: Record<string, string>): Project {
   const zones = project.zones.map((z) => (renamed[z.net] ? { ...z, net: renamed[z.net] } : z))
   const vias = project.vias.map((v) => (v.net && renamed[v.net] ? { ...v, net: renamed[v.net] } : v))
   const widths = project.rules.netWidths
   const netWidths = widths ? Object.fromEntries(Object.entries(widths).map(([k, v]) => [renamed[k] ?? k, v])) : undefined
-  return { ...project, zones, vias, rules: netWidths ? { ...project.rules, netWidths } : project.rules }
+  return renameStoredNets({ ...project, zones, vias, rules: netWidths ? { ...project.rules, netWidths } : project.rules }, renamed)
 }
 
 // ---------- The check ----------

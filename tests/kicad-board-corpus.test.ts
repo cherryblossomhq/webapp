@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
 import { serializeProject } from "../src/model/projectFile"
-import { buildKicadProject, importKicadBoard, needsOf, outlineOf, padWorld, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
+import { buildKicadProject, BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, padWorld, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
 import { countPaths } from "../src/model/kicad/board/account"
 import { planModels } from "../src/model/kicad/board/models"
 import { needs as censusNeeds } from "./kicad-census/needs.mjs"
-import { oracle } from "./kicad-census/pads.mjs"
+import { copperOracle, oracle } from "./kicad-census/pads.mjs"
+import { decodeNetName } from "../src/model/kicad/board"
+import { cleanFlags } from "../src/model/partFlags"
 
 // The per-board pass or fail table of slice 1a over a local corpus (not in the repo):
 //
@@ -22,7 +24,9 @@ import { oracle } from "./kicad-census/pads.mjs"
 // 0.001 mm against an oracle computed from the raw file (by a different method: matrices for the
 // flip, turn and move, the file's own net names), every pad's outline extent, every pad's net
 // through the project's own connectivity (pad by pad, not pin by pin), and the extensions each
-// board needs. With no corpus the test is skipped.
+// board needs. Slice 1b-i adds two checks of its own, each against the raw file read again by the
+// census's own reader (`copperOracle`): the flags and net ties of every footprint, and the net, the
+// lock and the length of every segment and via of every net. With no corpus the test is skipped.
 
 const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
@@ -67,6 +71,25 @@ interface Row {
   /** Pad outlines in the project against the oracle's extent of each, to 0.001 mm. */
   boxChecked: number
   boxWrong: number
+  /** Footprints with a reference of their own: their flags and net ties against the file's, and how many differ. */
+  flagsChecked: number
+  flagsWrong: number
+  /** Footprints whose no-connect pins are the pins the file puts on no net, and how many are not. */
+  ncChecked: number
+  ncWrong: number
+  ncPins: number
+  /** Footprints in the project with any flag, and with a net tie. */
+  flagged: number
+  tied: number
+  /** Track length and via count per net against the file's: whether they agree, and the lengths compared. */
+  copperNets: "ok" | "fail" | "none"
+  copperLocked: boolean
+  /** Items the importer says the editor derives another net for, and the pins whose KiCad type was folded, and the single-pad nets accepted. */
+  copperMismatches: number
+  /** Every mismatch is an item of the report entry, and no item is listed that is not one. */
+  mismatchListed: boolean
+  foldedPins: number
+  loneLabels: number
   /** The 3D models of the board: held, and not held by reason. */
   modelsKept: number
   modelsDropped: Record<string, number>
@@ -82,6 +105,8 @@ interface Row {
   switch8: boolean
   needsExtra: string[]
   status: string
+  /** A refusal for what is not built names exactly the importer's needs that are not built, and never one that is. */
+  gateExact: boolean
   messageNamed: boolean
   buildOk: boolean
   lossy: string[]
@@ -139,6 +164,19 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           netPadsWrongX7: 0,
           boxChecked: 0,
           boxWrong: 0,
+          flagsChecked: 0,
+          flagsWrong: 0,
+          ncChecked: 0,
+          ncWrong: 0,
+          ncPins: 0,
+          flagged: 0,
+          tied: 0,
+          copperNets: "none",
+          copperLocked: true,
+          copperMismatches: 0,
+          mismatchListed: true,
+          foldedPins: 0,
+          loneLabels: 0,
           modelsKept: 0,
           modelsDropped: {},
           needs: [],
@@ -150,6 +188,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           switch8: false,
           needsExtra: [],
           status: "",
+          gateExact: true,
           messageNamed: false,
           buildOk: false,
           lossy: [],
@@ -275,6 +314,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.ms.account = performance.now() - a0
           row.status = imported.status === "imported" ? "imported" : `refused:${imported.reason}`
           row.unknown = imported.report.account ? imported.report.account.unknownPaths.size + imported.report.account.unknownAtoms.size : 0
+          if (imported.status === "refused" && imported.reason === "unsupported") {
+            row.gateExact = JSON.stringify(imported.needs.map((n) => n.ext)) === JSON.stringify(row.needsActual.filter((x) => !BUILT_EXTENSIONS.has(x)))
+          }
           if (imported.status === "refused") {
             row.messageNamed = imported.reason !== "unsupported" || /^This board uses .+, which (is|are) not supported yet\.$/.test(imported.message)
           } else row.messageNamed = true
@@ -367,6 +409,89 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           }
           row.netPadsWrong = wrong
           row.netPadsWrongX7 = row.needsActual.includes("X7") ? wrong : 0
+
+          // ---- slice 1b-i: flags, net ties and the nets of copper, against the file read again ----
+          const cu = copperOracle(text)
+          const refCount = new Map<string, number>()
+          for (const f of cu.footprints) refCount.set(f.ref, (refCount.get(f.ref) ?? 0) + 1)
+          for (const comp of built.project.components) {
+            if (comp.flags) row.flagged++
+            if (comp.flags?.netTies?.length) row.tied++
+            const f = cu.footprints.find((q) => q.ref === comp.ref)
+            if (!f || refCount.get(f.ref) !== 1) continue
+            const has = (a: string) => f.attr.includes(a)
+            const legacyTie = cu.stamp !== null && cu.stamp <= 20220815 && f.tags.startsWith("net tie") && f.padNumbers.length > 0
+            const expected = cleanFlags({
+              mount: has("smd") ? "smd" : has("through_hole") || (!f.hasAttr && cu.stamp !== null && cu.stamp < 20200826) ? "through_hole" : undefined,
+              virtual: has("virtual"),
+              excludeFromBom: has("exclude_from_bom"),
+              excludeFromPos: has("exclude_from_pos_files"),
+              boardOnly: has("board_only"),
+              dnp: has("dnp"),
+              allowMissingCourtyard: has("allow_missing_courtyard"),
+              allowMaskBridges: has("allow_soldermask_bridges"),
+              jumperDuplicates: f.jumperDuplicates,
+              netTies: [...f.ties, ...(legacyTie ? [f.padNumbers] : [])],
+              jumperGroups: f.jumpers,
+            })
+            row.flagsChecked++
+            if (JSON.stringify(comp.flags ?? null) !== JSON.stringify(expected ?? null)) {
+              row.flagsWrong++
+              if (row.flagsWrong === 1) row.notes.push(`${comp.ref}: flags ${JSON.stringify(comp.flags)} in the project, ${JSON.stringify(expected)} in the file`)
+            }
+          }
+          // pins the file puts on no net are the no-connect pins of the part: every pad number that no pad of it gives a net, and no other
+          for (const comp of built.project.components) {
+            const f = o.find((q) => q.ref === comp.ref)
+            if (!f || byRef.get(f.ref) !== 1) continue
+            const numbers = [...new Set(f.pads.filter((p) => p.number && p.type !== "np_thru_hole").map((p) => p.number))]
+            const expected = numbers.filter((n) => !f.pads.some((p) => p.number === n && p.net !== null)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
+            row.ncChecked++
+            row.ncPins += comp.nc?.length ?? 0
+            if (JSON.stringify(comp.nc ?? []) !== JSON.stringify(expected)) {
+              row.ncWrong++
+              if (row.ncWrong === 1) row.notes.push(`${comp.ref}: no-connect pins ${JSON.stringify(comp.nc)} in the project, ${JSON.stringify(expected)} in the file`)
+            }
+          }
+          // copper: per net, the track length and the via count, and the locked lengths, project against file. A net's name in the project is the label text of its raw name.
+          if (cu.segments.length + cu.vias.length > 0) {
+            // (a board whose pads of one number sit on two nets has two raw names on one project net, which says nothing about a label)
+            const text = (raw: string | null) => (raw === null ? "" : ((wrong === 0 ? projectOf.get(raw)?.slice(4) : undefined) ?? decodeNetName(raw).trim()))
+            const fileLen = new Map<string, number>()
+            const fileVias = new Map<string, number>()
+            let fileLocked = 0
+            for (const s of cu.segments) {
+              if (s.layer !== board.copper.front && s.layer !== board.copper.back) continue
+              fileLen.set(text(s.net), (fileLen.get(text(s.net)) ?? 0) + s.length)
+              if (s.locked) fileLocked += s.length
+            }
+            for (const v of cu.vias) fileVias.set(text(v.net), (fileVias.get(text(v.net)) ?? 0) + 1)
+            const projLen = new Map<string, number>()
+            const projVias = new Map<string, number>()
+            let projLocked = 0
+            for (const t of built.project.traces) {
+              let len = 0
+              for (let i = 1; i < t.points.length; i++) len += Math.hypot(t.points[i].x - t.points[i - 1].x, t.points[i].y - t.points[i - 1].y)
+              projLen.set(t.net ?? "", (projLen.get(t.net ?? "") ?? 0) + len)
+              if (t.locked) projLocked += len
+            }
+            for (const v of built.project.vias) projVias.set(v.routedNet ?? "", (projVias.get(v.routedNet ?? "") ?? 0) + 1)
+            const firstDiff = (a: Map<string, number>, b: Map<string, number>, eps: number) => [...new Set([...a.keys(), ...b.keys()])].find((k) => Math.abs((a.get(k) ?? 0) - (b.get(k) ?? 0)) > eps)
+            const same = (a: Map<string, number>, b: Map<string, number>, eps: number) => firstDiff(a, b, eps) === undefined
+            // a trace is rounded to the importer's 0.001 mm grid at each end, so a length may differ by a little per segment
+            const eps = 0.002 * cu.segments.length + 1e-6
+            row.copperNets = same(fileLen, projLen, eps) && same(fileVias, projVias, 0) ? "ok" : "fail"
+            row.copperLocked = Math.abs(fileLocked - projLocked) <= eps
+            if (row.copperNets === "fail") {
+              const k = firstDiff(fileLen, projLen, eps) ?? firstDiff(fileVias, projVias, 0)
+              row.notes.push(`copper nets differ at ${JSON.stringify(k)}: file ${fileLen.get(k!) ?? 0} mm and ${fileVias.get(k!) ?? 0} vias, project ${projLen.get(k!) ?? 0} mm and ${projVias.get(k!) ?? 0} vias`)
+            }
+          }
+          row.copperMismatches = built.stats.copperNetMismatches
+          const listed = forced.entries.find((e) => e.code === "copper-net-differs")
+          row.mismatchListed = (listed?.items?.length ?? 0) === row.copperMismatches && (listed?.count ?? 0) === row.copperMismatches
+          row.foldedPins = forced.entries.find((e) => e.code === "pin-type-folded")?.count ?? 0
+          row.loneLabels = forced.entries.find((e) => e.code === "lone-labels-accepted")?.count ?? 0
           row.padsProject = fail ? "fail" : compared ? "ok" : "none"
           row.padsProjectCompared = compared
           row.padsProjectSkipped = skipped
@@ -384,6 +509,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       const bad = rows.filter((r) => r.status === "CRASH" || r.status.startsWith("FAIL"))
       expect(bad.map((r) => `${r.file}: ${r.error}`)).toEqual([])
       expect(rows.filter((r) => !r.file.endsWith(".brd") && r.status !== "refused:unreadable" && !(r.parse && r.nodes && r.counts)).map((r) => r.file)).toEqual([])
+      // slice 1b-i: flags, no-connect pins and the nets of copper equal the file's everywhere, every mismatch is listed, and the gate names only what is not built
+      expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
     3_600_000,
   )
@@ -410,10 +537,15 @@ function summarize(rows: Row[], seconds: number): string {
     ["project nets equal the file's (internal check)", (r) => r.netsProject !== "fail"],
     ["project pads on the oracle's nets, pad by pad (a board that needs X7 for pads of one number may differ)", (r) => r.netPadsWrong === 0 || r.needsActual.includes("X7")],
     ["project pad outlines within 0.001 mm of the oracle's", (r) => r.boxWrong === 0],
+    ["flags and net ties equal the file's, footprint by footprint (oracle)", (r) => r.flagsWrong === 0],
+    ["no-connect pins are the pins the file gives no net, footprint by footprint (oracle)", (r) => r.ncWrong === 0],
+    ["track length, via count and locked length per net equal the file's (oracle)", (r) => r.copperNets !== "fail" && r.copperLocked],
+    ["every copper net mismatch is listed by item in the report", (r) => r.mismatchListed],
     ["outline: same status, shape and fit as the census's (which allowed 1 % and 0.5 % of slack)", (r) => r.outline === r.outlineCensus],
     ["needs: nothing the census found is missing", (r) => r.needsMissing.length === 0],
     ["needs: nothing beyond the census's", (r) => r.needsExtra.length === 0],
     ["refusal message names the cause", (r) => r.messageNamed],
+    ["the gate names exactly the needs that are not built (X13 and X15 are built and never named)", (r) => r.gateExact],
     ["no crash", (r) => r.status !== "CRASH"],
   ]
   for (const [label, f] of cols) {
@@ -427,6 +559,20 @@ function summarize(rows: Row[], seconds: number): string {
   for (const r of board) for (const c of r.buildRefusals) refusalCodes.set(c, (refusalCodes.get(c) ?? 0) + 1)
   lines.push(`pads checked against the oracle's nets: ${board.reduce((n, r) => n + r.netPadsChecked, 0)}, wrong: ${board.reduce((n, r) => n + r.netPadsWrong, 0)} (on boards that need no X7: ${board.filter((r) => !r.needsActual.includes("X7")).reduce((n, r) => n + r.netPadsWrong, 0)}); pad outlines checked: ${board.reduce((n, r) => n + r.boxChecked, 0)}, wrong: ${board.reduce((n, r) => n + r.boxWrong, 0)}`)
   lines.push(`boards whose project build raised a refusal: ${[...refusalCodes].map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`)
+  lines.push(
+    `flags: ${board.reduce((n, r) => n + r.flagsChecked, 0)} footprints checked against the file, ${board.reduce((n, r) => n + r.flagsWrong, 0)} wrong; ${board.reduce((n, r) => n + r.flagged, 0)} footprints carry a flag, ${board.reduce((n, r) => n + r.tied, 0)} a net tie (in ${count(board, (r) => r.tied > 0)} boards)`,
+  )
+  lines.push(`no-connect pins (pads with no net in the file): ${board.reduce((n, r) => n + r.ncPins, 0)} on ${count(board, (r) => r.ncPins > 0)} boards, ${board.reduce((n, r) => n + r.ncChecked, 0)} footprints checked against the file, ${board.reduce((n, r) => n + r.ncWrong, 0)} wrong`)
+  lines.push(
+    `copper nets: ${count(board, (r) => r.copperNets === "ok")} boards agree with the file, ${count(board, (r) => r.copperNets === "fail")} differ, ${count(board, (r) => r.copperNets === "none")} have no copper; the editor derives another net for an item on ${count(board, (r) => r.copperMismatches > 0)} boards (${board.reduce((n, r) => n + r.copperMismatches, 0)} items, reported by item)`,
+  )
+  // Copper mismatches where the editor holds the geometry: real boards (pcbench, github, demos) with copper whose importer needs, after X13 and X15, include none of the listed extensions.
+  const holds = (without: string[]) => board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group) && r.copperNets !== "none" && !r.needsActual.some((x) => without.includes(x)))
+  for (const without of [["X1", "X2", "X4", "X5", "X6", "X7"], ["X1", "X2", "X3", "X4", "X5", "X6", "X7"]]) {
+    const rs = holds(without)
+    lines.push(`copper mismatches on real boards with copper that need none of ${without.join(", ")}: ${rs.length} boards, ${count(rs, (r) => r.copperMismatches > 0)} with an item the editor derives another net for, ${rs.reduce((n, r) => n + r.copperMismatches, 0)} items`)
+  }
+  lines.push(`pins whose KiCad type was folded into a role: ${board.reduce((n, r) => n + r.foldedPins, 0)} on ${count(board, (r) => r.foldedPins > 0)} boards; single-pad nets accepted in Checks: ${board.reduce((n, r) => n + r.loneLabels, 0)} on ${count(board, (r) => r.loneLabels > 0)} boards`)
   const realRows = board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group))
   const exts = [...new Set(board.flatMap((r) => [...r.censusNeeds, ...r.needsActual]))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
   lines.push("")

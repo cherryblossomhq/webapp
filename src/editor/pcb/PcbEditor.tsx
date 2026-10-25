@@ -634,7 +634,9 @@ export function PcbEditor() {
                 if (!cy) return null
                 const isSel = selected.has(`c:${c.id}`)
                 const isHover = hover?.type === "component" && hover.id === c.id
-                if (!isSel && !isHover && !layers.courtyard) return null
+                // A part marked do not populate keeps a dashed courtyard, so it reads as fitted on the board but not on the build.
+                const dnp = !!c.flags?.dnp
+                if (!isSel && !isHover && !layers.courtyard && !dnp) return null
                 return (
                   <rect
                     key={`cy${c.id}`}
@@ -646,6 +648,7 @@ export function PcbEditor() {
                     stroke={isSel || isHover ? PCB.select : PCB.courtyard}
                     strokeOpacity={isSel ? 1 : isHover ? 0.7 : 1}
                     strokeWidth={(isSel ? 1.6 : 1.2) * px}
+                    strokeDasharray={dnp ? `${5 * px} ${3 * px}` : undefined}
                   />
                 )
               })}

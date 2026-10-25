@@ -1,3 +1,5 @@
+import { followNetRenames } from "../model/copperNets"
+import { pruneImportMarks } from "../model/importMarks"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
 import type { Project } from "../model/types"
@@ -213,8 +215,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   commit: (fn) => {
     const { project, past, transientBase } = get()
     if (!project) return
-    const next = fn(project)
-    if (next === project) return
+    const made = fn(project)
+    if (made === project) return
+    // Copper that names its net follows a rename, and what an import marked that no longer holds is retired.
+    const next = pruneImportMarks(project, followNetRenames(project, made))
     // A change that lands mid-drag (the copilot works in the background) ends the drag where it
     // is: rebuilding the drag from its starting snapshot afterwards would drop the change.
     const before = transientBase && transientBase !== project ? [transientBase, project] : [project]

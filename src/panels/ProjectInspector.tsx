@@ -5,6 +5,7 @@ import { Shell } from "../kicadImport/KicadImportDialog"
 import { ReportView } from "../kicadImport/ReportView"
 import { loadReport } from "../kicadImport/reportStore"
 import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
+import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { isPhysical, valueText } from "../model/instances"
 import { findPart } from "../model/library"
 import {
@@ -31,9 +32,17 @@ const setBoard = (patch: Partial<Project["board"]>) => commitProject((p) => ({ .
 const setRules = (patch: Partial<DesignRules>) => commitProject((p) => ({ ...p, rules: { ...p.rules, ...patch } }))
 
 export function ProjectInspector({ project }: { project: Project }) {
+  const imported = importedNoConnectCount(project)
   return (
     <div>
       <ProjectSection project={project} />
+      {imported > 0 && (
+        <Section title="Imported from KiCad" id="imported-marks">
+          <Row label="No-connect pins" value={imported} />
+          <p className="text-[12px] text-ink-2">The import marked these pins no connect because the file puts no net on them, so Checks does not list each. Hand them back to be checked.</p>
+          <Button onClick={() => projectApi().commit((p) => clearImportedNoConnect(p))}>Check imported no-connect pins</Button>
+        </Section>
+      )}
       <PropertiesSection project={project} />
       <KicadReportSection projectId={project.id} />
       <BoardSection project={project} />

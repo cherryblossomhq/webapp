@@ -1,12 +1,15 @@
 import { emptyBox, expandBox, round, snap, type Box } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
-import { computeConnectivity, pinKey } from "../../connectivity"
+import { computeConnectivity, pinKey, type SchematicConnectivity } from "../../connectivity"
 import { customPartId, customPartProblems, digest, registerProjectParts } from "../../customParts"
+import { runErc } from "../../erc"
 import { labelBox } from "../../labels"
+import { cleanFlags } from "../../partFlags"
+import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
-import type { ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import type { ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
@@ -42,7 +45,7 @@ export interface BuildResult {
   project: Project
   /** What had to be approximated; always empty unless `allowLossy`. */
   lossy: string[]
-  stats: { parts: number; lands: number; pins: number; nets: number; padsWithNet: number }
+  stats: { parts: number; lands: number; pins: number; nets: number; padsWithNet: number; copperNetMismatches: number }
 }
 
 const CATEGORY_BY_PREFIX: [RegExp, PartCategory][] = [
@@ -211,6 +214,48 @@ export function pinKindOf(pintype: string, name: string): PinDef["kind"] | "unkn
   }
 }
 
+/**
+ * What the editor's role does to a KiCad pin type that it does not keep: null when the role says the
+ * same, else a few words (`tri_state as output`). The roles are seven (input, output, io, passive,
+ * power, ground, nc), so these are folded: tri-state and open collector or emitter pins are outputs,
+ * a power output is a power pin, and a pin that says nothing (free, unspecified) has no role.
+ */
+export function pinFold(pintype: string): string | null {
+  const types = pintype.split("+")
+  if (types.includes("no_connect")) return types.length > 1 ? `${pintype} as nc` : null
+  switch (types[0]) {
+    case "tri_state":
+    case "open_collector":
+    case "open_emitter":
+      return `${pintype} as output`
+    case "power_out":
+      return `${pintype} as power`
+    case "free":
+    case "unspecified":
+      return `${pintype} as no role`
+    default:
+      return types.length > 1 ? `${pintype} as ${types[0]}` : null
+  }
+}
+
+/** The flags a footprint's attributes set, and its net tie and jumper groups. */
+export function flagsOf(fp: KicadFootprint): PartFlags | undefined {
+  const has = (a: string) => fp.attr.includes(a)
+  return cleanFlags({
+    mount: has("smd") ? "smd" : fp.throughHole ? "through_hole" : undefined,
+    virtual: has("virtual"),
+    excludeFromBom: has("exclude_from_bom"),
+    excludeFromPos: has("exclude_from_pos_files"),
+    boardOnly: has("board_only"),
+    dnp: has("dnp"),
+    allowMissingCourtyard: has("allow_missing_courtyard"),
+    allowMaskBridges: has("allow_soldermask_bridges"),
+    jumperDuplicates: fp.jumperDuplicates,
+    netTies: fp.netTies,
+    jumperGroups: fp.jumperGroups,
+  })
+}
+
 /** The part's pins, and the notes about them. */
 interface PinFacts {
   name: string
@@ -239,12 +284,13 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const set = (key: NumericRule, value: number | undefined, allowZero = false) => {
     if (value !== undefined && Number.isFinite(value) && (allowZero ? value >= 0 : value > 0)) rules[key] = value
   }
-  // The rules are the Default net class's (KiCad 4 and 5 keep it in the board); `setup` repeats the toolbar's last selections, which are not rules.
+  // The rules are the Default net class's (KiCad 4 and 5 keep it in the board). `setup` writes its clearance, via size and via drill a second
+  // time, and a board with no class block has them as the Default class, as KiCad's parser reads them; `last_trace_width` is the toolbar's last choice.
   set("traceWidth", def?.traceWidth)
   set("minTraceWidth", board.setup.trace_min)
-  set("clearance", def?.clearance, true)
-  set("viaDiameter", def?.viaDiameter)
-  set("viaDrill", def?.viaDrill)
+  set("clearance", pick(def?.clearance, board.setup.trace_clearance), true)
+  set("viaDiameter", pick(def?.viaDiameter, board.setup.via_size))
+  set("viaDrill", pick(def?.viaDrill, board.setup.via_drill))
   set("minDrill", pick(board.setup.through_hole_min, board.setup.via_min_drill))
   set("holeClearance", board.setup.hole_to_hole_min, true)
   set("minAnnularRing", board.setup.via_min_annulus, true)
@@ -263,6 +309,12 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const refs = new Set<string>()
   const renamed: string[] = []
   const padless: string[] = []
+  /** Pins whose KiCad type the editor's roles fold, as `R1.2 tri_state as output`. */
+  const folded: string[] = []
+  /** Parts whose attributes say `exclude_from_sim`, which the editor has no use for. */
+  const simExcluded: string[] = []
+  /** Pins with no net in the file, marked no connect (`ComponentInstance.nc`) so Checks does not call each one a mistake. */
+  let looseCount = 0
   /** Per component: pad number -> the file's raw net name, one per pin, for the labels. */
   const padNets = new Map<string, Map<string, string>>()
   /** Per component: every numbered pad with the file's raw net name (null for none), for the check at the end, which compares pads, not pins. */
@@ -323,6 +375,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
 
     // The part: one per land and pin list. A pin is named by its pad's function (an overbar `~{RESET}` is `RESET#`, as the editor names an active-low pin) and typed by its pad's pin type.
     const pinNames = new Map<string, PinFacts>()
+    const foldsHere: string[] = []
     for (const p of fp.pads) {
       if (!p.number || p.type === "np_thru_hole") continue
       const name = cleanPinName(p.pinFunction ?? "", p.number)
@@ -330,8 +383,11 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       if (found === "unknown") lose(`a pin type that is not one of KiCad's (${p.pinType})`)
       const kind = found === "unknown" ? undefined : found
       const had = pinNames.get(p.number)
-      if (!had) pinNames.set(p.number, { name, kind })
-      else if (had.name !== name || had.kind !== kind) lose("pads that share a number but have different pin names or pin types")
+      if (!had) {
+        pinNames.set(p.number, { name, kind })
+        const fold = p.pinType === undefined || found === "unknown" ? null : pinFold(p.pinType)
+        if (fold) foldsHere.push(`pin ${p.number} ${fold}`)
+      } else if (had.name !== name || had.kind !== kind) lose("pads that share a number but have different pin names or pin types")
     }
     const letters = (fp.ref.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase().slice(0, 3)
     const prefix = letters || "U"
@@ -376,8 +432,11 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       ref = `${ref}_${n}`
     }
     refs.add(ref)
+    for (const f of foldsHere) folded.push(`${ref} ${f}`)
+    if (fp.attr.includes("exclude_from_sim")) simExcluded.push(ref)
 
     const at = frameTop(fp.at)
+    const flags = flagsOf(fp)
     const component: ComponentInstance = {
       id: uid("c"),
       partId,
@@ -386,6 +445,13 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       footprint: landName,
       sch: { x: 0, y: 0, rot: 0 },
       pcb: { x: round(at.x), y: round(at.y), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
+      ...(flags ? { flags } : {}),
+    }
+    // A pad with no net is what a pin left unconnected looks like in KiCad: Checks would say "isn't connected" of each, so it is marked no connect.
+    const loose = [...pinNames.keys()].filter((n) => !numberNet.has(n)).sort(natural.compare)
+    if (loose.length) {
+      component.nc = loose
+      looseCount += loose.length
     }
     components.push(component)
     padNets.set(component.id, numberNet)
@@ -418,6 +484,39 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   if (padless.length) {
     report.entries.push({ code: "padless-part", severity: "not-brought", object: `${padless.length} part${padless.length > 1 ? "s" : ""} with no pads (${padless.slice(0, 5).join(", ")}${padless.length > 5 ? "..." : ""})`, why: "A part with no numbered pads has no pins to draw. Its drawings need the graphics extension.", count: padless.length })
   }
+  if (folded.length) {
+    report.entries.push({
+      code: "pin-type-folded",
+      severity: "changed",
+      object: `${folded.length} pin${folded.length > 1 ? "s" : ""} (${folded.slice(0, 5).join("; ")}${folded.length > 5 ? "; ..." : ""})`,
+      why: "The editor gives a pin one of seven roles (input, output, io, passive, power, ground, no connect), so these pins' KiCad types were folded into the nearest: tri-state and open collector or emitter pins became outputs, a power output became a power pin, and a pin that says nothing has no role. The file's own type is in the board that was read.",
+      count: folded.length,
+      items: folded,
+    })
+  }
+  if (looseCount) {
+    report.entries.push({
+      code: "unconnected-pins-marked",
+      severity: "note",
+      object: `${looseCount} pad${looseCount > 1 ? "s" : ""} with no net`,
+      why: "KiCad puts no net on these pads, which is how a pin left unconnected looks. They are marked no connect, so Checks does not call each one a mistake and the schematic crosses them; clear the flag on a pin in the Inspector to have it checked, or press 'Check imported no-connect pins' (on a part, or with nothing selected for the whole board) to hand every one back to Checks at once.",
+      count: looseCount,
+    })
+  }
+  const dnpRefs = components.filter((c) => c.flags?.dnp).map((c) => c.ref)
+  if (dnpRefs.length) {
+    report.entries.push({
+      code: "dnp-parts",
+      severity: "note",
+      object: `${dnpRefs.length} part${dnpRefs.length > 1 ? "s" : ""} marked do not populate (${dnpRefs.slice(0, 5).join(", ")}${dnpRefs.length > 5 ? ", ..." : ""})`,
+      why: "The editor leaves a do not populate part out of its BOM and its position file, which is what a fab expects; KiCad keeps such a part in both by default. Its solder paste is still plotted, as KiCad plots it. Clear the flag in the Inspector to list it again.",
+      count: dnpRefs.length,
+      items: dnpRefs,
+    })
+  }
+  if (simExcluded.length) {
+    report.entries.push({ code: "attr-not-brought", severity: "not-brought", object: `exclude from simulation on ${simExcluded.length} part${simExcluded.length > 1 ? "s" : ""} (${simExcluded.slice(0, 5).join(", ")}${simExcluded.length > 5 ? ", ..." : ""})`, why: "The editor does no circuit simulation on the board, so it has nowhere to keep this flag.", count: simExcluded.length, items: simExcluded })
+  }
   if (renamed.length) {
     report.entries.push({ code: "renamed-ref", severity: "changed", object: `${renamed.length} reference${renamed.length > 1 ? "s" : ""} (${renamed.slice(0, 5).join("; ")}${renamed.length > 5 ? "; ..." : ""})`, why: "References must be unique and cannot be empty or contain `*`, so these were renamed.", count: renamed.length })
   }
@@ -430,16 +529,19 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
 
   // ---------- the schematic: a label with the net's name on every connected pin ----------
-  const labelText = netLabelNames(padNets, report)
+  // Nets that only copper is on (no pad) have no label but are named the same way, so a trace can say which net it is on.
+  const copperNetNames = [...board.segments, ...board.arcTracks, ...board.vias].flatMap((o) => (o.netRaw ? [o.netRaw] : []))
+  const labelText = netLabelNames(padNets, report, copperNetNames)
   const placed = layoutSchematic(project, padNets, labelText)
   project = placed.project
 
   // ---------- copper ----------
   const layerOf = (name: string) => (name === board.copper.front ? "top" : name === board.copper.back ? "bottom" : null)
-  const traces = joinSegments(board, layerOf, lose)
+  const traces = joinSegments(board, layerOf, lose, labelText)
   const vias: Via[] = board.vias.map((v) => {
     if (v.kind !== "through" || v.layers.length !== 2) lose("a blind, buried or micro via")
-    return { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}) }
+    const net = v.netRaw ? labelText.get(v.netRaw) : undefined
+    return { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
   })
   if (board.arcTracks.length) lose("arc tracks")
   if (board.zones.length || board.footprints.some((f) => f.zones.length)) lose("copper zones")
@@ -484,9 +586,14 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
 
   // ---------- every pad on the net the file gives it ----------
-  const nets = verifyNets(project, padFacts, labelText, report)
+  const checked = verifyNets(project, padFacts, labelText, report)
+  const copperNetMismatches = compareCopperNets(project, checked.conn, board, report)
+  project = acceptLoneLabels(project, checked.conn, report)
+  // The pins marked no connect are the importer's, recorded so they can be handed back to Checks in one action.
+  const noConnect = Object.fromEntries(components.flatMap((c) => (c.nc ? [[c.id, c.nc]] : [])))
+  if (Object.keys(noConnect).length) project = { ...project, importMarks: { ...project.importMarks, noConnect } }
   const pins = components.reduce((n, c) => n + (padNets.get(c.id)?.size ?? 0), 0)
-  return { project, lossy, stats: { parts: components.length, lands: lands.size, pins, nets, padsWithNet: withNet } }
+  return { project, lossy, stats: { parts: components.length, lands: lands.size, pins, nets: checked.nets, padsWithNet: withNet, copperNetMismatches } }
 }
 
 // ---------- nets ----------
@@ -495,29 +602,37 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
  * The text of the label for each net of the file, by the net's raw name (the file's spelling, which
  * is its identity: `/A/B` and `/A{slash}B` are two nets even though they read alike). The label reads
  * as the user reads the net, `{slash}` as `/` and trimmed, since that is how the editor compares
- * labels; two nets that would read the same keep distinct labels: the one the file spells as it reads
- * keeps the text, the other keeps its raw spelling (and a number if even that is taken).
+ * labels; two nets that would read the same keep distinct labels: the one the file spells exactly as
+ * it reads (nothing to decode, nothing to trim) keeps the text, then one with only decoding or
+ * trimming to do, and the others keep their raw spelling (and a number if even that is taken).
+ * `extra` names nets that only carry copper, so their labels are chosen the same way.
  */
-export function netLabelNames(padNets: Map<string, Map<string, string>>, report: ImportReport): Map<string, string> {
+export function netLabelNames(padNets: Map<string, Map<string, string>>, report: ImportReport, extra: Iterable<string> = []): Map<string, string> {
   const used = new Set<string>()
   const out = new Map<string, string>()
   const altered: string[] = []
-  const names = new Set<string>()
+  const names = new Set<string>(extra)
   for (const m of padNets.values()) for (const n of m.values()) names.add(n)
-  // A name the file spells as it reads goes first, so a collision never changes the name of a net that needs no decoding.
-  const plain = (raw: string) => decodeNetName(raw) === raw
-  const ordered = [...names].sort((a, b) => Number(plain(b)) - Number(plain(a)) || (a < b ? -1 : a > b ? 1 : 0))
+  // The name exactly as written goes first, so a collision never changes the name of a net that needs no decoding or trimming
+  // (the file's `GND` is `GND` even when the file also has ` GND`); a name that only needs decoding goes before one that needs more.
+  const rank = (raw: string) => (decodeNetName(raw).trim() === raw ? 0 : decodeNetName(raw) === raw ? 1 : 2)
+  const ordered = [...names].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))
   for (const raw of ordered) {
     let text = decodeNetName(raw).trim()
     if (!text || used.has(text)) {
       const fallback = raw.trim()
-      text = fallback && !used.has(fallback) ? fallback : `${fallback || "NET"} (${used.size + 1})`
-      altered.push(`${raw || "(empty)"} as ${text}`)
+      if (fallback && !used.has(fallback)) text = fallback
+      else {
+        let n = used.size + 1
+        while (used.has(`${fallback || "NET"} (${n})`)) n++
+        text = `${fallback || "NET"} (${n})`
+      }
+      altered.push(`${raw && raw === raw.trim() ? raw : JSON.stringify(raw)} as ${text}`)
     }
     used.add(text)
     out.set(raw, text)
   }
-  if (altered.length) report.entries.push({ code: "renamed-net", severity: "changed", object: `${altered.length} net${altered.length > 1 ? "s" : ""} (${altered.slice(0, 5).join("; ")})`, why: "Two nets read the same once their names are trimmed and decoded, or a name was empty, so the second keeps its raw spelling.", count: altered.length })
+  if (altered.length) report.entries.push({ code: "renamed-net", severity: "changed", object: `${altered.length} net${altered.length > 1 ? "s" : ""} (${altered.slice(0, 5).join("; ")})`, why: "Two nets read the same once their names are trimmed and decoded, or a name was empty. The net spelled exactly as the name keeps it; the other keeps its raw spelling, with a number when even that is taken.", count: altered.length })
   return out
 }
 
@@ -586,10 +701,12 @@ function layoutSchematic(project: Project, padNets: Map<string, Map<string, stri
 /**
  * Checks the generated schematic against the file, pad by pad: every pad's pin is on the net the
  * file gives that pad (and on none when the pad has none). Pads that share a number are one pin, so
- * they can only agree; a board with pads that disagree is not imported (X7). Returns the number of nets.
+ * they can only agree; a board with pads that disagree is not imported (X7). Returns the number of nets
+ * and the connectivity it computed.
  */
-function verifyNets(project: Project, padFacts: Map<string, { number: string; net: string | null }[]>, labelText: Map<string, string>, report: ImportReport): number {
-  const { pinNet } = computeConnectivity(project)
+function verifyNets(project: Project, padFacts: Map<string, { number: string; net: string | null }[]>, labelText: Map<string, string>, report: ImportReport): { nets: number; conn: SchematicConnectivity } {
+  const conn = computeConnectivity(project)
+  const { pinNet } = conn
   const bad: string[] = []
   const netOfName = new Map<string, string>()
   for (const c of project.components) {
@@ -607,29 +724,93 @@ function verifyNets(project: Project, padFacts: Map<string, { number: string; ne
   if (bad.length) {
     report.entries.push({ code: "net-mismatch", severity: "refused", object: `${bad.length} pad${bad.length > 1 ? "s" : ""}: ${bad.slice(0, 3).join("; ")}`, why: "The generated schematic does not carry the file's nets exactly, so nothing was imported.", count: bad.length })
   }
-  return netOfName.size
+  return { nets: netOfName.size, conn }
+}
+
+/**
+ * The net each trace and via is on in the file against the net the editor derives from what the
+ * copper touches (`derivedCopperNets`, which ignores the nets the items name): every difference is
+ * reported by item. The file's net stays on the item either way (`Trace.net`, `Via.routedNet`), so
+ * the editor's own checks see the difference too (a short, an unrouted connection). Returns how many differ.
+ */
+function compareCopperNets(project: Project, conn: SchematicConnectivity, board: KicadBoard, report: ImportReport): number {
+  if (!project.traces.length && !project.vias.length) return 0
+  const derived = derivedCopperNets(project, conn)
+  const nameOf = new Map(conn.nets.map((n) => [n.id, n.name]))
+  const says = (id: string | null | undefined) => (id === undefined || id === null ? "no net" : id === "short" ? "pads of more than one net" : `net ${nameOf.get(id) ?? id}`)
+  const front = board.copper.front
+  const at = (p: { x: number; y: number }) => `(${round(p.x, 3)}, ${round(-p.y, 3)})`
+  const items: string[] = []
+  const check = (what: string, file: string | undefined, id: string | null | undefined) => {
+    const got = id === undefined || id === null || id === "short" ? id : nameOf.get(id)
+    if ((file === undefined && (got === undefined || got === null)) || file === got) return
+    items.push(`${what}: the file puts it on ${file === undefined ? "no net" : `net ${file}`}, the editor derives ${file !== undefined && (got === null || got === undefined) ? "no net, since no pad of that net touches it" : says(id)}`)
+  }
+  for (const t of project.traces) {
+    const first = t.points[0]
+    const last = t.points[t.points.length - 1]
+    check(`trace on ${t.layer === "top" ? front : board.copper.back} from ${at(first)} to ${at(last)} (${t.points.length - 1} segment${t.points.length > 2 ? "s" : ""})`, t.net, derived.traceNet.get(t.id))
+  }
+  for (const v of project.vias) check(`via at ${at(v)}`, v.routedNet, derived.viaNet.get(v.id))
+  if (items.length) {
+    report.entries.push({
+      code: "copper-net-differs",
+      severity: "changed",
+      object: `${items.length} trace${items.length > 1 ? "s and vias" : " or via"} whose net the editor derives differently (${items.slice(0, 3).join("; ")}${items.length > 3 ? "; ..." : ""})`,
+      why: "The editor works out a trace's net from the pads it touches. For these the file says another net, or none. The file's net is kept on the item, so Checks shows the difference as a short or an unrouted connection.",
+      count: items.length,
+      items,
+    })
+  }
+  return items.length
+}
+
+/**
+ * A net with one pad on it shows in Checks as "goes only to a label no other pin has", which is true of
+ * the file and no mistake in it: KiCad names a lone pad's net `Net-(R1-Pad1)` or `unconnected-(R1-Pad1)`,
+ * and a net a person named by hand can have one pad too. Every one keeps its label, so no name is lost
+ * and traces can still say which net they are on, and each warning is set to ignored (`ignoredChecks`),
+ * where Checks lists it and can restore it. One note says how many.
+ */
+function acceptLoneLabels(project: Project, conn: SchematicConnectivity, report: ImportReport): Project {
+  const lone = runErc(project, conn).filter((f) => f.kind === "lone-label")
+  if (!lone.length) return project
+  const labelName = new Map(project.labels.map((l) => [l.id, l.name]))
+  const auto = lone.filter((f) => f.labelIds.some((id) => /^(?:Net-\(|unconnected-\()/.test(labelName.get(id) ?? ""))).length
+  report.entries.push({
+    code: "lone-labels-accepted",
+    severity: "note",
+    object: `${lone.length} net${lone.length > 1 ? "s" : ""} with a single pad`,
+    why: `Checks would warn that the pad goes only to a label no other pin has. In KiCad that is how a net with one pad looks (${auto} of these are KiCad's own Net-(...) or unconnected-(...) names, ${lone.length - auto} were named by hand), so the warnings are set to ignored. Every net keeps its name. They are listed under Ignored in Checks, where each can be restored.`,
+    count: lone.length,
+    items: lone.map((f) => f.message),
+  })
+  const keys = lone.map((f) => f.key)
+  return { ...project, ignoredChecks: [...new Set([...(project.ignoredChecks ?? []), ...keys])], importMarks: { ...project.importMarks, checks: keys } }
 }
 
 // ---------- tracks ----------
 
 /** Segments of one net, layer and width that meet end to end, as polylines. */
-function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bottom" | null, lose: (what: string) => void): Trace[] {
+function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bottom" | null, lose: (what: string) => void, labelText: Map<string, string>): Trace[] {
   const traces: Trace[] = []
-  const groups = new Map<string, typeof board.segments>()
+  const groups = new Map<string, { layer: "top" | "bottom"; width: number; locked: boolean; netRaw: string | null; segs: typeof board.segments }>()
   for (const s of board.segments) {
     const layer = layerOf(s.layer)
     if (!layer) {
       lose(`a track on ${s.layer}`)
       continue
     }
-    const key = `${layer}|${s.width}|${s.net ?? ""}|${s.locked ? 1 : 0}`
+    // Segments are joined only within one net, layer, width and lock; the raw name is the net's identity (`/A/B` and `/A{slash}B` are two nets).
+    const key = JSON.stringify([layer, s.width, s.locked, s.netRaw])
     const g = groups.get(key)
-    if (g) g.push(s)
-    else groups.set(key, [s])
+    if (g) g.segs.push(s)
+    else groups.set(key, { layer, width: s.width, locked: s.locked, netRaw: s.netRaw, segs: [s] })
   }
   const k = (p: { x: number; y: number }) => `${Math.round(p.x * 1e4)},${Math.round(p.y * 1e4)}`
-  for (const [key, segs] of groups) {
-    const [layer, width, , locked] = key.split("|")
+  for (const { layer, width, locked, netRaw, segs } of groups.values()) {
+    const net = netRaw ? labelText.get(netRaw) : undefined
+    const trace = (pts: { x: number; y: number }[]): Trace => ({ id: uid("t"), layer, width, points: pts.map((p) => ({ x: round(p.x), y: round(-p.y) })), ...(locked ? { locked: true } : {}), ...(net ? { net } : {}) })
     const at = new Map<string, number[]>()
     segs.forEach((s, i) => {
       for (const p of [s.start, s.end]) {
@@ -664,9 +845,9 @@ function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bot
       if ((at.get(k(s.start)) ?? []).length !== 2) starts.push([i, "start"])
       if ((at.get(k(s.end)) ?? []).length !== 2) starts.push([i, "end"])
     })
-    for (const [i, head] of starts) if (!used[i]) traces.push({ id: uid("t"), layer: layer as "top" | "bottom", width: Number(width), points: walk(i, head).map((p) => ({ x: round(p.x), y: round(-p.y) })), ...(locked === "1" ? { locked: true } : {}) })
+    for (const [i, head] of starts) if (!used[i]) traces.push(trace(walk(i, head)))
     segs.forEach((_, i) => {
-      if (!used[i]) traces.push({ id: uid("t"), layer: layer as "top" | "bottom", width: Number(width), points: walk(i, "start").map((p) => ({ x: round(p.x), y: round(-p.y) })), ...(locked === "1" ? { locked: true } : {}) })
+      if (!used[i]) traces.push(trace(walk(i, "start")))
     })
   }
   return traces

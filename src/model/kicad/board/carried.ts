@@ -37,7 +37,9 @@ const ROWS = [
   row("net_class>add_net", "derived", "every net that no other class names is in the Default class, so listing them says nothing"),
   row("net_class>(?:uvia_dia|uvia_drill)", "derived", "the micro via size of the Default class, which applies to nothing on a board with no micro via"),
   row("layers|layers><layer number>", "derived", "the editor's layers are fixed: two copper layers, mask, silkscreen and the board edge. The copper rows say which layer is front and which is back (by position, whatever they are called)"),
-  row("footprint>attr", "derived", "`smd` and `through_hole` say what kind of part a footprint is, which the editor works out from its pads; every other flag needs X15"),
+  // X15 and X13 are built: the flags, the net tie and jumper groups, and the net of each track and via are written into the project.
+  row("footprint>attr|footprint>net_tie_pad_groups|footprint>duplicate_pad_numbers_are_jumpers|footprint>jumper_pad_groups(?:><layer number>|>[^>]+)?", "built"),
+  row("(?:segment|arc|via)>net", "built"),
   row("footprint>pad>layers", "derived", "the layers a pad is on are what the editor draws for its type and side (copper, mask, and paste on surface-mount pads); a pad whose layers differ needs X7"),
   row("footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)|footprint>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)", "derived", "a zero margin or clearance in a file up to stamp 20240201 means no setting (KiCad reads it as inherit)"),
 ]

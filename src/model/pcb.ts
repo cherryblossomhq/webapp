@@ -14,6 +14,7 @@ import { findPart } from "./library"
 import { isNpth, isPhysical, pcbCourtyard, pcbPads, slotEnds, type WorldPad } from "./instances"
 import { fillTester, fillZones, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
+import { netTieGroups } from "./partFlags"
 import type { BoardDef, CopperLayer, Project, Vec2, Via } from "./types"
 
 /** componentId used for board-level copper such as mounting holes. */
@@ -31,8 +32,20 @@ export type CopperItem =
       width: number
       layers: CopperLayer[]
       box: Box
+      /** The net the trace says it is on (`Trace.net`), when it says one and the project has it. */
+      netId?: string | null
     }
-  | { kind: "via"; id: string; viaId: string; at: Vec2; diameter: number; layers: CopperLayer[]; box: Box }
+  | {
+      kind: "via"
+      id: string
+      viaId: string
+      at: Vec2
+      diameter: number
+      layers: CopperLayer[]
+      box: Box
+      /** The net the via says it is on (`Via.routedNet`), when it says one and the project has it. */
+      netId?: string | null
+    }
   | {
       kind: "zone"
       id: string
@@ -194,8 +207,16 @@ function itemCenter(item: CopperItem): Vec2 {
 /** Points that join an item to a pour when they lie inside the fill. */
 const anchorPoints = (item: CopperItem): Vec2[] => itemPoint(item)
 
-export function buildCopperItems(project: Project, sch: SchematicConnectivity): CopperItem[] {
+/**
+ * The copper of the board as items. A trace or via that names its net (a board brought in from KiCad)
+ * carries it as `netId`; `useStored: false` leaves that out, which is what the editor would derive for
+ * the same copper from the pads it touches alone.
+ */
+export function buildCopperItems(project: Project, sch: SchematicConnectivity, useStored = true): CopperItem[] {
   const items: CopperItem[] = []
+  const stored = useStored && (project.traces.some((t) => t.net) || project.vias.some((v) => v.routedNet))
+  const netByName = stored ? new Map(sch.nets.map((n) => [n.name, n.id])) : null
+  const idOf = (name: string | undefined) => (name && netByName ? (netByName.get(name.trim()) ?? null) : null)
   for (const c of project.components) {
     if (!c.pcb.placed || !isPhysical(findPart(c.partId))) continue
     pcbPads(c).forEach((pad, i) => {
@@ -217,6 +238,7 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity): 
         width: t.width,
         layers: [t.layer],
         box: segBox(a, b, t.width),
+        ...(t.net ? { netId: idOf(t.net) } : {}),
       })
     }
   }
@@ -245,6 +267,7 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity): 
       diameter: v.diameter,
       layers: ["top", "bottom"],
       box: { minX: v.x - r, minY: v.y - r, maxX: v.x + r, maxY: v.y + r },
+      ...(v.routedNet ? { netId: idOf(v.routedNet) } : {}),
     })
   }
   return items
@@ -328,9 +351,10 @@ function connectItems(items: CopperItem[]): Islands {
     else union(first, i)
   })
 
+  // A pad's net, and the net a trace or via of an imported board says it is on.
   const islandNets = new Map<number, Set<string>>()
   items.forEach((it, i) => {
-    if (it.kind !== "pad" || !it.netId) return
+    if (it.kind === "zone" || !it.netId) return
     const r = find(i)
     const s = islandNets.get(r) ?? new Set<string>()
     s.add(it.netId)
@@ -369,6 +393,67 @@ function zoneItems(fills: ZoneFill[]): CopperItem[] {
     })
   }
   return out
+}
+
+// ---------- Net ties ----------
+
+/** The net tie groups of the parts on the board, each with the nets of its pads; null when no part has one. */
+interface NetTies {
+  /** By component id: its groups, each the pad numbers (KiCad's) and the nets those pads are on. */
+  groups: Map<string, { pins: Set<string>; nets: Set<string> }[]>
+}
+
+function netTies(project: Project, items: CopperItem[]): NetTies | null {
+  const tied = project.components.filter((c) => c.flags?.netTies?.length)
+  if (!tied.length) return null
+  const groups = new Map<string, { pins: Set<string>; nets: Set<string> }[]>()
+  for (const c of tied) groups.set(c.id, netTieGroups(c).map((pins) => ({ pins, nets: new Set<string>() })))
+  for (const it of items) {
+    if (it.kind !== "pad" || !it.netId || !it.pad.padNumber) continue
+    for (const g of groups.get(it.pad.componentId) ?? []) if (g.pins.has(it.pad.padNumber)) g.nets.add(it.netId)
+  }
+  return { groups }
+}
+
+/** Whether every net in a short is joined to the others by the net ties of the parts that have a pad in it. */
+function tiedTogether(ties: NetTies, items: CopperItem[], find: (i: number) => number, root: number, nets: Set<string>): boolean {
+  const parent = new Map([...nets].map((n) => [n, n]))
+  const top = (n: string): string => (parent.get(n) === n ? n : top(parent.get(n)!))
+  const present = new Set<string>()
+  items.forEach((it, i) => {
+    if (it.kind === "pad" && find(i) === root && ties.groups.has(it.pad.componentId)) present.add(it.pad.componentId)
+  })
+  for (const id of present) {
+    for (const g of ties.groups.get(id)!) {
+      const joined = [...g.nets].filter((n) => nets.has(n))
+      for (let k = 1; k < joined.length; k++) parent.set(top(joined[k]), top(joined[0]))
+    }
+  }
+  return new Set([...nets].map(top)).size === 1
+}
+
+/** Whether `item` is a pad in a net tie group with a pad on net `net`: copper of that net may come up to it. */
+function tiedPad(ties: NetTies, item: CopperItem, net: string): boolean {
+  if (item.kind !== "pad" || !item.pad.padNumber) return false
+  return (ties.groups.get(item.pad.componentId) ?? []).some((g) => g.pins.has(item.pad.padNumber!) && g.nets.has(net))
+}
+
+/**
+ * Which net each trace and via is on from what it touches alone, ignoring the nets a trace or via
+ * says it is on: what the editor derives, to compare with what a board brought in from KiCad says.
+ * "short" for copper that touches pads of two nets, null for copper that touches none.
+ */
+export function derivedCopperNets(project: Project, sch: SchematicConnectivity): { traceNet: Map<string, string | null>; viaNet: Map<string, string | null> } {
+  const items = buildCopperItems(project, sch, false)
+  const { find, islandNet } = connectItems(items)
+  const traceNet = new Map<string, string | null>()
+  const viaNet = new Map<string, string | null>()
+  items.forEach((it, i) => {
+    const net = islandNet.get(find(i)) ?? null
+    if (it.kind === "segment" && !traceNet.has(it.traceId)) traceNet.set(it.traceId, net)
+    if (it.kind === "via") viaNet.set(it.viaId, net)
+  })
+  return { traceNet, viaNet }
 }
 
 /**
@@ -411,9 +496,14 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
   let vid = 0
   const push = (v: Omit<DrcViolation, "id">) => violations.push({ ...v, id: `drc${vid++}` })
 
+  // Net ties: pads of one group may be on different nets, and copper of those nets may touch them.
+  // KiCad exempts only the tie footprint's own copper, which is its pads' overlap; this lets any copper of the
+  // tied nets touch the pads. It must narrow to the tie's own copper when X8 brings footprint copper (slice 1b-ii).
+  const ties = netTies(project, items)
   // Shorts
   for (const [root, nets] of islandNets) {
     if (nets.size < 2) continue
+    if (ties && tiedTogether(ties, items, find, root, nets)) continue
     const names = [...nets].map((id) => sch.nets.find((x) => x.id === id)?.name ?? id)
     const idx = items.findIndex((_, i) => find(i) === root && items[i].kind === "segment")
     const at = itemCenter(items[idx >= 0 ? idx : items.findIndex((_, i) => find(i) === root)])
@@ -492,6 +582,8 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
     const ni = islandNet.get(ri)
     const nj = islandNet.get(rj)
     if (ni && nj && ni === nj && ni !== "short") return
+    // As for shorts above: wider than KiCad, which exempts only the tie footprint's own copper; narrow it with X8.
+    if (ties && ni && nj && (tiedPad(ties, x, nj) || tiedPad(ties, y, ni))) return
     const d = itemDistance(x, y)
     if (d >= clearance - 1e-6) return
     const key = `${Math.min(ri, rj)}:${Math.max(ri, rj)}`

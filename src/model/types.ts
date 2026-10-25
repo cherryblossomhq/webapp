@@ -295,6 +295,36 @@ export interface ModelAssignment {
 
 // ---------- Document ----------
 
+/**
+ * What KiCad calls a footprint's attributes, and the pad groups it keeps beside them. Every field
+ * is absent for a part drawn in the editor, which then behaves as it always did. `model/partFlags.ts`
+ * has what each one does.
+ */
+export interface PartFlags {
+  /** How the part is mounted, as the file says. Absent: neither (a fiducial, a logo, a drawing). */
+  mount?: "smd" | "through_hole"
+  /** KiCad's "virtual" (a board feature, not a part to buy or place): left out of the BOM and the position file. */
+  virtual?: true
+  /** Left out of the BOM. */
+  excludeFromBom?: true
+  /** Left out of the position (pick and place) file. */
+  excludeFromPos?: true
+  /** In the file but not in the schematic (KiCad's board only). Stays in the BOM unless it is also not in the BOM. */
+  boardOnly?: true
+  /** Do not populate: left out of the BOM and the position file (KiCad keeps it in both); its paste is still plotted. */
+  dnp?: true
+  /** The part has no courtyard and that is meant. */
+  allowMissingCourtyard?: true
+  /** Solder mask bridges between this part's pads are allowed. */
+  allowMaskBridges?: true
+  /** Pads that share a number are jumpers: connected inside the part, not a short. */
+  jumperDuplicates?: true
+  /** Groups of pad numbers connected inside the part (a solder jumper's two pads). */
+  jumperGroups?: string[][]
+  /** Groups of pad numbers whose nets may meet on this part (a net tie): copper touching them is not a short. */
+  netTies?: string[][]
+}
+
 export interface ComponentInstance {
   id: string
   partId: string
@@ -313,6 +343,8 @@ export interface ComponentInstance {
   }
   /** Pins left unconnected on purpose; checks skip them and the schematic marks them with a cross. */
   nc?: string[]
+  /** Footprint attributes and net ties, as a board brought in from KiCad has them (`PartFlags`). */
+  flags?: PartFlags
 }
 
 export interface Wire {
@@ -335,6 +367,12 @@ export interface Trace {
   points: Vec2[]
   /** Routed by hand (e.g. a fine-pitch fan-out); kept when routing is redone from scratch. */
   locked?: boolean
+  /**
+   * The net the trace is on, by name, when a board brought in from KiCad says so. Without it (every
+   * trace drawn or routed in the editor) the net is whatever the trace touches. With it the trace
+   * counts as copper of that net even where it touches nothing, and touching another net is a short.
+   */
+  net?: string
 }
 
 export interface Via {
@@ -347,6 +385,11 @@ export interface Via {
   net?: string
   /** Placed by hand as part of a fan-out; kept when routing is redone from scratch. */
   locked?: boolean
+  /**
+   * The net a routed via is on, by name, when a board brought in from KiCad says so (what `Trace.net`
+   * is for a trace). Not `net`, which makes the via a stitching via that the stitcher owns.
+   */
+  routedNet?: string
 }
 
 /** ENIG, tin-lead HASL, lead-free HASL, OSP. */
@@ -562,6 +605,12 @@ export interface Project {
   properties?: { key: string; value: string }[]
   /** Electrical check findings the user ignored, by key, e.g. "bare-led:c_4" (see model/erc.ts). */
   ignoredChecks?: string[]
+  /**
+   * What a KiCad import set by itself, so it can be undone or retired without touching the user's own
+   * choices (`model/importMarks.ts`): the keys in `ignoredChecks` it wrote, and the pins it marked no
+   * connect (`ComponentInstance.nc`) by component id.
+   */
+  importMarks?: { checks?: string[]; noConnect?: Record<string, string[]> }
 }
 
 export interface PinRef {

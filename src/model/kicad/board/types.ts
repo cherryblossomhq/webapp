@@ -171,6 +171,10 @@ export interface KicadFootprint {
   zones: KicadZone[]
   /** Net tie groups: lists of pad numbers whose nets may meet. KiCad 5 tags that say "net tie" make one group of every pad. */
   netTies: string[][]
+  /** Jumper pad groups (KiCad 9): lists of pad numbers connected inside the part. */
+  jumperGroups: string[][]
+  /** `(duplicate_pad_numbers_are_jumpers yes)` (KiCad 9): pads that share a number are jumpers. */
+  jumperDuplicates: boolean
   node: List
 }
 

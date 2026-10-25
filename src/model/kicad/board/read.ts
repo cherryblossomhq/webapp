@@ -512,6 +512,11 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const tags = strAt(kid(fp, "tags"), 1) ?? ""
     const netTies: string[][] = []
     for (const g of kids(fp, "net_tie_pad_groups")) for (const s of g.slice(1)) if (typeof s === "string") netTies.push(s.split(",").map((x) => x.trim()).filter(Boolean))
+    // Jumper pad groups: each child list is a group, its pad numbers written as the list's own words (`("1" "2")`).
+    const jumperGroups: string[][] = []
+    for (const g of kids(fp, "jumper_pad_groups")) {
+      for (const s of g.slice(1)) if (Array.isArray(s)) jumperGroups.push(s.filter((x): x is string => typeof x === "string"))
+    }
     // Switch 10: up to stamp 20220815 a footprint whose tags start "net tie" is one group of all its pads.
     if (stampAtMost(LEGACY_NET_TIES_UNTIL) && tags.startsWith("net tie") && pads.length) netTies.push(pads.map((p) => p.number))
     const models: KicadModel[] = kids(fp, "model").map((m) => {
@@ -569,6 +574,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       shapes,
       zones: kids(fp, "zone").map((z) => zoneOf(z, place)),
       netTies,
+      jumperGroups,
+      jumperDuplicates: flagOf(fp, "duplicate_pad_numbers_are_jumpers"),
       node: fp,
     })
   }

@@ -1,5 +1,6 @@
 import { isPhysical, valueText } from "../model/instances"
 import { findPart } from "../model/library"
+import { inBom } from "../model/partFlags"
 import type { Project } from "../model/types"
 
 /** Quote a CSV field when it contains separators, quotes, newlines or edge whitespace. */
@@ -20,6 +21,8 @@ export function bomCsv(project: Project): string {
   for (const c of project.components) {
     const part = findPart(c.partId)
     if (!part || !isPhysical(part)) continue
+    // A part brought in from KiCad can be marked virtual, not in the BOM, board only or do not populate.
+    if (!inBom(c)) continue
     const value = valueText(c, part)
     const mpn = c.props.mpn ?? part.mpn ?? ""
     // Every property can pick a different physical part (a 16 V and a 50 V 10uF cap), so all of

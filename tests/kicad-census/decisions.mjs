@@ -65,7 +65,8 @@ export const RULES = [
   // ---- setup ----
   rule("setup", "native", "DesignRules", { effort: "M", note: "see the setup rows" }),
   rule("setup>(?:trace_min|via_min_drill|zone_clearance|edge_clearance|pad_to_mask_clearance|pad_to_paste_clearance|user_trace_width|hole_to_hole_min|through_hole_min|via_min_annulus)", "native", "DesignRules (minTraceWidth, minDrill, pourClearance, edgeClearance, maskExpansion, pasteExpansion, preferredWidths, holeClearance, minAnnularRing)", { effort: "S" }),
-  rule("setup>(?:last_trace_width|via_size|via_drill|trace_clearance)", "not-needed", "-", { note: "KiCad 4 and 5 write the track width and via size last selected in the toolbar, and the Default net class's clearance a second time; the rules are the Default net class's, which is imported" }),
+  rule("setup>last_trace_width", "not-needed", "-", { note: "KiCad 4 and 5 write the track width last selected in the toolbar, which is a choice of the moment and not a rule" }),
+  rule("setup>(?:via_size|via_drill|trace_clearance)", "not-needed", "-", { note: "KiCad 4 and 5 write the Default net class's via size, via drill and clearance a second time (equal to the class's own in all 1,227 corpus boards with both); the net class block, which KiCad reads after them, is what it keeps, and a board with no class block has them as the Default class, which the importer reads as the rules" }),
   rule("setup>zone_45_only", "not-needed", "-", { note: "a drawing constraint of KiCad's own zone editor (outlines snap to 45 degrees); it changes no geometry already drawn, and the editor has nothing it constrains" }),
   rule("setup>(?:via_min_size|user_via)", "extend", "DesignRules has no minimum via size or list of via sizes", { ext: "X10", note: "the smallest via diameter the checks allow, and the via sizes the user offers while routing" }),
   rule("setup>(?:pad_to_paste_clearance_ratio|solder_mask_min_width|allow_soldermask_bridges_in_footprints|max_error|clearance_min|user_diff_pair|creepage)", "extend", "DesignRules has no field", { ext: "X10", note: "design rule values the checks and the fab output need: a non-zero mask sliver width or paste ratio changes the Gerbers" }),
@@ -85,7 +86,7 @@ export const RULES = [
   rule("segment", "native", "Trace polyline (consecutive same-layer, same-width segments of one net are joined)", { effort: "M" }),
   rule("segment>(?:start|end|width|layer|locked)", "native", "Trace", { effort: "S" }),
   rule("(?:segment|via|arc)>status", "native", "Trace.locked", { effort: "S", note: "bit 0x40000 is KiCad 4 and 5's track lock, which KiCad 6 and later read and drop; kept as locked. The other bits are KiCad edit flags" }),
-  rule("(?:segment|arc|via)>net", "extend", "traces take their net from what they touch", { ext: "X13" }),
+  rule("(?:segment|arc|via)>net", "extend", "Trace.net and Via.routedNet", { ext: "X13", note: "the net the file puts a track or via on; after import it is compared with the net the editor derives from what the copper touches, and every difference is reported by item" }),
   rule("(?:segment|arc|via)>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity" }),
   rule("(?:segment|arc)>(?:layers|solder_mask_margin)", "extend", "-", { ext: "X8", note: "copper exposed through the mask (KiCad 9)" }),
   rule("arc", "extend", "Trace is a polyline", { ext: "X4" }),
@@ -138,12 +139,12 @@ export const RULES = [
   rule("footprint>layer", "native", "ComponentInstance.pcb.side", { effort: "S", note: "back side means the layer table's last copper row, whatever it is called" }),
   rule("footprint>locked", "native", "ComponentInstance.pcb.locked", { effort: "S" }),
   rule("footprint>placed", "not-needed", "-", { note: "KiCad's own bookkeeping of whether a footprint was positioned after an update from the schematic; every imported part sits where the file puts it" }),
-  rule("footprint>attr", "extend", "ComponentInstance.props only", { ext: "X15", note: "smd, through_hole, virtual, board_only, exclude_from_pos_files, exclude_from_bom, dnp, allow_soldermask_bridges, allow_missing_courtyard; no attr before stamp 20200826 means through-hole" }),
+  rule("footprint>attr", "extend", "ComponentInstance.flags", { ext: "X15", note: "smd, through_hole, virtual, board_only, exclude_from_pos_files, exclude_from_bom, dnp, allow_soldermask_bridges, allow_missing_courtyard; no attr before stamp 20200826 means through-hole" }),
   rule("footprint>descr", "native", "the part's description", { effort: "S" }),
   rule("footprint>tags", "native", "the part's keywords (a KiCad 5 tag 'net tie ...' also makes a net tie, X15)", { effort: "S" }),
   rule("footprint>(?:path|sheetname|sheetfile)", "not-needed", "-", { note: "the link from a footprint to its symbol in the KiCad schematic; a board is imported alone, from its nets, and the schematic import reads the link from the schematic's side" }),
   rule("footprint>(?:tstamp|uuid|tedit|version|generator|generator_version)", "not-needed", "-", { note: "KiCad's object identity and edit time" }),
-  rule("footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups|jumper_pad_groups><layer number>)", "extend", "PartDef.padAlias for pads that share a pin", { ext: "X15", note: "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part" }),
+  rule("footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups(?:><layer number>|>[^>]+)?)", "extend", "PartFlags.netTies, jumperGroups and jumperDuplicates", { ext: "X15", note: "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part (a group's pad numbers are the words of its own list, so its path ends in the first number)" }),
   rule("footprint>(?:clearance|solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|solder_paste_ratio|zone_connect)", "extend", "-", { ext: "X7", note: "footprint-wide overrides, copied onto its pads; in files up to stamp 20240201 a zero means inherit" }),
   rule("footprint>(?:autoplace_cost180|autoplace_cost90|height)", "not-needed", "-", { note: "KiCad's legacy auto-placer hints" }),
   rule("footprint>(?:fp_text|property)", "extend", "auto-placed silk reference and value", { ext: "X9", note: "the property's value is a component property (native); its text and where it sits are X9. Before 20260616 a text angle is absolute in the board frame" }),
@@ -195,7 +196,7 @@ export function decisionFor(path) {
 
 const YES_NO = ["yes", "no", "true", "false"]
 const atoms = (path, values, skip = []) => ({ path: new RegExp(`^(${path})$`), values: new Set(values), skip, free: false })
-/** Every bare word in these lists is a name, an identity or a piece of text the file's author chose. */
+/** Every bare word in these lists, at any position, is a name or an identity the file's author chose (a group's members, an embedded file's data, the layers a pad or via lists). Other lists name their positions with `atoms(path, [], positions)`. */
 const free = (path) => ({ path: new RegExp(`^(${path})$`), values: new Set(), skip: [], free: true })
 
 /** Tokens that hold a yes or no: `(locked yes)`, `(hide)`, `(enabled no)`. */
@@ -252,10 +253,14 @@ export const ATOMS = [
   atoms("(?:module|footprint)>model", ["hide"], [1]),
   // A node the table says is not needed or is reported is accounted for as a whole, whatever its words say (account.ts), so the rows below are for the nodes that are carried or need an extension.
   // names, identities and text
-  free("(?:.*>)?(?:tstamp|uuid|id|members|tedit|path|data|net_name|add_net|net|sheetname|sheetfile|descr|tags|status)"),
-  free("title_block>(?:title|company|rev|date|comment)"),
-  free("(?:module|footprint)>pad>(?:pinfunction|pintype)"),
-  free("dimension>gr_text|footprint>dimension>gr_text"),
+  // A word is a name only at the place a name goes: `(net 1 "A" frob)` has a word nothing allows.
+  free("(?:.*>)?(?:members|data)"),
+  atoms("(?:.*>)?(?:tstamp|uuid|id|tedit|path|net_name|add_net|sheetname|sheetfile|descr|tags|status)", [], [1]),
+  atoms("(?:.*>)?net", [], [1, 2]),
+  atoms("title_block>(?:title|company|rev|date)", [], [1]),
+  atoms("title_block>comment", [], [1, 2]),
+  atoms("(?:module|footprint)>pad>(?:pinfunction|pintype)", [], [1]),
+  atoms("dimension>gr_text|footprint>dimension>gr_text", [], [1]),
   atoms("(?:gr_text_box|(?:module|footprint)>fp_text_box)", ["locked"], [1]),
   atoms("(?:module|footprint)>property", ["hide"], [1, 2]),
   atoms("property", [], [1, 2]),

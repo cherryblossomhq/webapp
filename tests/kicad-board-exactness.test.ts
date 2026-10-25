@@ -8,7 +8,7 @@ import { buildKicadProject, EXTENSION_NAMES, importKicadBoard, outlineOf, readKi
 import { accountNodes, countPaths, scanAtoms } from "../src/model/kicad/board/account"
 import { settleFor } from "../src/model/kicad/board/carried"
 import { rotK } from "../src/model/kicad/board/geometry"
-import { needsOf } from "../src/model/kicad/board/needs"
+import { needsOf, unbuilt } from "../src/model/kicad/board/needs"
 import { stockModelId } from "../src/model/kicad/board/models"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 
@@ -174,8 +174,8 @@ describe("B3: a node counted as imported is in the built project", () => {
     const outline = outlineOf(b)
     const paths = countPaths(b.tree)
     const needs = needsOf(b, { paths }, outline)
-    // nothing built: an extension node that is imported is imported only because the builder writes it
-    const account = accountNodes(b.tree, read.text, new Set(needs.map((n) => n.ext)), paths, settleFor(b))
+    // what is built: an extension node that is imported is imported only because the builder writes it
+    const account = accountNodes(b.tree, read.text, new Set(unbuilt(needs).map((n) => n.ext)), paths, settleFor(b))
     const report: ImportReport = { entries: [], account }
     const built = buildKicadProject(b, outline, report, { allowLossy: true })
     const p = built.project
@@ -197,7 +197,10 @@ describe("B3: a node counted as imported is in the built project", () => {
       [/^property$/, () => prop("Owner") === "me"],
       [/^net$/, () => p.labels.some((l) => l.name === "GND") && p.labels.some((l) => l.name === "VCC")],
       [/^segment(>start|>end|>width|>layer)?$/, () => p.traces.length === 1 && p.traces[0].width === 0.25 && p.traces[0].layer === "top" && p.traces[0].points.length === 2],
+      [/^segment>net$/, () => p.traces[0].net === "GND"],
       [/^via(>at|>size|>drill|>layers)?$/, () => p.vias.length === 1 && p.vias[0].diameter === 0.8 && p.vias[0].drill === 0.4 && p.vias[0].x === 6 && p.vias[0].y === -1],
+      [/^via>net$/, () => p.vias[0].routedNet === "GND" && p.vias[0].net === undefined],
+      [/^footprint>attr$/, () => comp.flags?.mount === "smd"],
       [/^footprint$/, () => p.components.length === 1],
       [/^footprint>at$/, () => comp.pcb.x === 10 && comp.pcb.y === -5 && comp.pcb.rot === 90],
       [/^footprint>layer$/, () => comp.pcb.side === "top"],
@@ -253,17 +256,19 @@ describe("B3: a node counted as imported is in the built project", () => {
     const reasons = [...account.notNeeded.keys()].join("\n")
     expect(reasons).toMatch(/Default net class's name and description are KiCad's own/)
     expect(reasons).toMatch(/micro via size of the Default class/)
-    expect(reasons).toMatch(/track width and via size last selected/)
+    expect(reasons).toMatch(/track width last selected in the toolbar/)
+    expect(reasons).toMatch(/via size, via drill and clearance a second time/)
   })
   it("a node of the file that the builder does not write is never counted as imported", () => {
-    // what the editor works out for itself, and the link to a schematic symbol, are "not needed" with their reasons, and are not imported
+    // what the editor works out for itself, and the link to a schematic symbol, are "not needed" with their reasons, and are not imported;
+    // a node of an extension that is not built is pending, not imported
     const read = readKicadBoard(fixture)
     const account = accountNodes(read.board.tree, read.text, new Set(["X9", "X13", "X7"]), countPaths(read.board.tree), settleFor(read.board))
-    for (const path of ["footprint>path", "footprint>sheetname", "footprint>attr", "layers"]) expect(account.importedPaths.has(path), path).toBe(false)
+    for (const path of ["footprint>path", "footprint>sheetname", "segment>net", "via>net", "layers"]) expect(account.importedPaths.has(path), path).toBe(false)
     const reasons = [...account.notNeeded.keys()].join("\n")
     expect(reasons).toMatch(/link from a footprint to its symbol/)
-    expect(reasons).toMatch(/`smd` and `through_hole` say what kind of part/)
     expect(reasons).toMatch(/editor's layers are fixed/)
+    expect(account.pending.get("X13")).toBe(2)
   })
 })
 

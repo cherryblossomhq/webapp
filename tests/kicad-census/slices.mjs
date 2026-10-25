@@ -25,7 +25,8 @@ for (const b of boards) b.estJsonBytes = estimateBytes(b)
 
 const plan = [
   ["1a reader, report, nets, generated schematic, X13 deferred", []],
-  ["1b + X9 text, X8 graphics, X15 footprint flags, X13 nets on copper", ["X9", "X8", "X15", "X13"]],
+  ["1b-i + X15 footprint flags, X13 nets on copper", ["X15", "X13"]],
+  ["1b-ii + X9 text, X8 graphics", ["X9", "X8"]],
   ["1c + X2 outline, X6 free angles, X7 pads", ["X2", "X6", "X7"]],
   ["1d + X3 zones, X10 net classes, X11 dimensions, X12 groups, X14 images", ["X3", "X10", "X11", "X12", "X14"]],
   ["1e + X16 writer and the round trip (adds no board)", []],

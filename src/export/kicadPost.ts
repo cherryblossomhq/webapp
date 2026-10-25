@@ -1,6 +1,7 @@
 import type { AnyCircuitElement } from "circuit-json"
 import { round } from "../lib/geometry"
 import { findPart } from "../model/library"
+import { kicadAttributes } from "../model/partFlags"
 import { zoneClearance } from "../model/rules"
 import type { ComponentInstance, Project } from "../model/types"
 
@@ -126,6 +127,36 @@ export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>):
     const firstPin = out.search(/\n {4}\(pin "/)
     const at2 = firstPin < 0 ? out.lastIndexOf("\n  )") : firstPin
     return `${out.slice(0, at2)}\n${added}${out.slice(at2)}`
+  })
+}
+
+// ---------- Board file: footprint attributes, net ties ----------
+
+/**
+ * The board file with each footprint's attributes (`(attr smd exclude_from_bom)`) and its net tie and
+ * jumper groups set from the project's part flags, found by reference. The converter writes a
+ * footprint's attributes from its pads alone, so a part with flags gets its own line instead, and the
+ * groups follow it. Parts with no flags are left as the converter wrote them.
+ */
+export function applyFootprintFlags(pcb: string, project: Project): string {
+  const flagged = new Map(project.components.filter((c) => c.flags).map((c) => [c.ref, c.flags!]))
+  if (!flagged.size) return pcb
+  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
+    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const flags = ref === undefined ? undefined : flagged.get(ref)
+    if (!flags) return block
+    // The converter's own words stay (it writes smd or through_hole from the pads, which a part drawn in the editor has no flag for); the flags add to them, and a mounting the flags name replaces the converter's.
+    const had = block.match(/\n {4}\(attr([^\n]*)\)/)?.[1].trim().split(/\s+/).filter(Boolean) ?? []
+    const words = [...new Set([...kicadAttributes(flags), ...had.filter((w) => !(flags.mount && (w === "smd" || w === "through_hole")))])]
+    words.sort((a, b) => Number(!/^(smd|through_hole)$/.test(a)) - Number(!/^(smd|through_hole)$/.test(b)))
+    const lines = [`\n    (attr${words.map((a) => ` ${a}`).join("")})`]
+    if (flags.jumperDuplicates) lines.push("\n    (duplicate_pad_numbers_are_jumpers yes)")
+    if (flags.netTies?.length) lines.push(`\n    (net_tie_pad_groups ${flags.netTies.map((g) => quote(g.join(","))).join(" ")})`)
+    if (flags.jumperGroups?.length) lines.push(`\n    (jumper_pad_groups ${flags.jumperGroups.map((g) => `(${g.map(quote).join(" ")})`).join(" ")})`)
+    const attr = /\n {4}\(attr[^\n]*\)/
+    if (attr.test(block)) return block.replace(attr, () => lines.join(""))
+    // No attribute line from the converter: after the position.
+    return block.replace(/(\n {4}\(at [^\n]*\))/, (m) => `${m}${lines.join("")}`)
   })
 }
 

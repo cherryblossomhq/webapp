@@ -206,7 +206,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
   return w.toString(`Soldermask,${sideName(side)}`, "Negative")
 }
 
-/** Stencil apertures for SMD pads, grown or shrunk by the paste expansion. */
+/** Stencil apertures for SMD pads, grown or shrunk by the paste expansion. Every part has its paste, do not populate parts too, as KiCad plots it. */
 export function gerberPaste(project: Project, side: PcbSide): string {
   const w = new GerberWriter()
   for (const pad of padsOn(project, side)) if (pad.holeDiameter === undefined) flashPad(w, pad, project.rules.pasteExpansion)

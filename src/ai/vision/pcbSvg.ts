@@ -154,6 +154,14 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
     }
   }
 
+  // A part marked do not populate keeps a dashed courtyard even where courtyards are off, as in the editor.
+  if (!has("courtyards")) {
+    for (const c of placed) {
+      const cy = c.flags?.dnp ? pcbCourtyard(c) : null
+      if (cy && shownSet.has(c.pcb.side)) body += outline(cy, PCB.courtyard, px, 0)
+    }
+  }
+
   if (has("ratsnest")) {
     for (const rl of pcb.ratsnest) {
       body += `<line x1="${n(rl.a.x)}" y1="${n(rl.a.y)}" x2="${n(rl.b.x)}" y2="${n(rl.b.y)}" stroke="${PCB.ratsnest}" stroke-width="${n(px)}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`

@@ -116,13 +116,13 @@ function noteRulesFile(board: KicadBoard, report: ImportReport) {
 
 /** Notes on what the outline repair did, so a repaired board says so. */
 function noteOutline(outline: OutlineResult, report: ImportReport) {
-  const { merged, dropped, zeroLength } = outline.repair
-  if (merged || dropped || zeroLength) {
+  const { merged, dropped, zeroLength, moved } = outline.repair
+  if (merged || dropped || zeroLength || moved) {
     report.entries.push({
       code: "outline-repaired",
       severity: "changed",
       object: "the board outline",
-      why: `Pieces of the outline that overlapped or touched were joined (${merged}), pieces shorter than 0.1 mm that touched nothing were dropped (${dropped}), and lines of no length were dropped (${zeroLength}).`,
+      why: `Pieces of the outline that overlapped or touched were joined (${merged}), pieces shorter than 0.1 mm that touched nothing were dropped (${dropped}), and lines of no length were dropped (${zeroLength}). Of the pieces joined, ${moved} did not lie exactly on the line they were joined into and moved to it (by at most 0.1 mm); a piece that was joined with nothing is where the file has it.`,
       count: merged + dropped + zeroLength,
     })
   }

@@ -217,3 +217,57 @@ describe("version 1, before the discrete symbols were drawn at KiCad's proportio
     expect(conn.pinNet.get("r2:1")).not.toBe(conn.wireNet.get("b"))
   })
 })
+
+/** A project as version 2 wrote it: traces and vias with no net of their own, parts with no flags. */
+const v2 = {
+  format: PROJECT_FILE_FORMAT,
+  version: 2,
+  project: {
+    name: "v2",
+    description: "",
+    components: [
+      { id: "r", partId: "resistor", ref: "R1", props: { resistance: "10k" }, footprint: "0603", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 5, y: -5, rot: 90, side: "top", placed: true, locked: true } },
+    ],
+    wires: [],
+    labels: [{ id: "l", name: "IN", x: -0.5, y: 0, rot: 180 }],
+    traces: [{ id: "t", layer: "top", width: 0.25, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], locked: true }],
+    vias: [{ id: "v", x: 1, y: 0, diameter: 0.8, drill: 0.4 }, { id: "s", x: 2, y: 0, diameter: 0.8, drill: 0.4, net: "GND" }],
+    zones: [{ id: "z", net: "GND", layer: "top" }],
+    texts: [],
+    board: { width: 30, height: 20, x: 0, y: 0, thickness: 1.6, cornerRadius: 1 },
+  },
+}
+
+describe("version 2, before footprint flags and the nets of tracks and vias", () => {
+  it("is read as it was written: no flags, no net on a trace, a stitching via still a stitching via", () => {
+    const read = parseProjectFile(v2, origin)
+    expect(read.components[0]).not.toHaveProperty("flags")
+    expect(read.traces).toEqual(v2.project.traces)
+    expect(read.vias).toEqual(v2.project.vias)
+    expect(read.vias[1].net).toBe("GND")
+    expect(read.vias[1].routedNet).toBeUndefined()
+    expect(read.components[0].pcb).toEqual(v2.project.components[0].pcb)
+  })
+  it("migrates to the current version unchanged, and is saved as version 3", () => {
+    const migrated = migrateProjectFile(v2)
+    expect(migrated).toEqual(v2.project)
+    expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(3)
+    expect(PROJECT_FILE_VERSION).toBe(3)
+  })
+  it("a reader of version 2 would refuse a version 3 file: the bump is what keeps a flag from being lost", () => {
+    const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
+    expect(written.version).toBeGreaterThan(2)
+  })
+  it("a version 3 document with flags and nets round-trips", () => {
+    const doc = JSON.parse(JSON.stringify(v2))
+    doc.version = 3
+    doc.project.components[0].flags = { mount: "smd", dnp: true, netTies: [["1", "2"]] }
+    doc.project.traces[0].net = "IN"
+    doc.project.vias[0].routedNet = "IN"
+    const read = parseProjectFile(doc, origin)
+    expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
+    expect(read.traces[0].net).toBe("IN")
+    expect(read.vias[0].routedNet).toBe("IN")
+    expect(JSON.parse(serializeProject(read)).project.components[0].flags).toEqual(read.components[0].flags)
+  })
+})

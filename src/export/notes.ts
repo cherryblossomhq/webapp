@@ -1,5 +1,6 @@
 import { boardColors, boardFinish, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
+import { inBom, inPositionFile } from "../model/partFlags"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
@@ -80,8 +81,29 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     "STACKUP",
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
+    ...assemblyNotes(project),
     "FILES",
     ...files.map((f) => `  ${f}`),
   ]
   return lines.join("\n") + "\n"
+}
+
+/** The flags on parts, and what each does to the files: only for a board that has any, so a board drawn here reads as it did. */
+function assemblyNotes(project: Project): string[] {
+  const flagged = project.components.filter((c) => c.flags)
+  if (!flagged.length) return []
+  const refs = (pick: (c: Project["components"][number]) => boolean) => {
+    const list = flagged.filter(pick).map((c) => c.ref).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    return list.length ? list.join(", ") : "none"
+  }
+  return [
+    "PART FLAGS",
+    `  Do not populate   ${refs((c) => !!c.flags?.dnp)}: left out of bom.csv and pnp.csv; their solder paste is still in the paste files`,
+    `  Not in the BOM    ${refs((c) => !!c.flags?.excludeFromBom)}: left out of bom.csv`,
+    `  Not in position   ${refs((c) => !!c.flags?.excludeFromPos)}: left out of pnp.csv`,
+    `  Virtual           ${refs((c) => !!c.flags?.virtual)}: left out of bom.csv and pnp.csv`,
+    `  Board only        ${refs((c) => !!c.flags?.boardOnly)}: no schematic symbol in KiCad; still in bom.csv unless also not in the BOM`,
+    `  In bom.csv        ${flagged.filter(inBom).length} of the ${flagged.length} flagged parts; in pnp.csv ${flagged.filter(inPositionFile).length}`,
+    "",
+  ]
 }

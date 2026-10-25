@@ -4,7 +4,7 @@ import { applyToPoint } from "transformation-matrix"
 import type { Project } from "../model/types"
 import { slugify } from "./bundle"
 import { projectToCircuitJson } from "./circuitJson"
-import { addNoConnects, addSymbolFields, applyBoardSettings, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock } from "./kicadPost"
+import { addNoConnects, addSymbolFields, applyBoardSettings, applyFootprintFlags, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
 // the user asks for them: it and the packages it needs (the KiCad file writer and tscircuit's
@@ -77,7 +77,7 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
   pro.runUntilFinished()
 
   // What the converter has no place for: put into the files it wrote.
-  const boardText = applyBoardSettings(pcb.getOutputString(), project)
+  const boardText = applyFootprintFlags(applyBoardSettings(pcb.getOutputString(), project), project)
   const footprintIds = boardFootprintIds(boardText)
   const fields = new Map(project.components.map((c) => [c.ref, symbolFields(c, footprintIds)]))
   const page = sch.ctx.c2kMatSch
@@ -100,6 +100,7 @@ export async function kicadFiles(project: Project): Promise<KicadExport> {
       "The design rules are in the KiCad project: clearance, trace width, via and drill sizes, annular ring, hole to hole, copper to the board edge, mask and paste openings, and trace widths by net as net classes. Vias in pads and via tenting have no setting there.",
       ...(settings.unmatched.length ? [`Trace widths for nets with * or ? in the name were left out, since KiCad reads those as wildcards: ${settings.unmatched.join(", ")}.`] : []),
       "The project's name, revision, company, description and other properties are in the schematic's title block and the project's text variables.",
+      ...(project.components.some((c) => c.flags) ? ["Part flags (surface mount or through-hole, not in the BOM or position file, board only, do not populate, allowed missing courtyard and mask bridges) and net ties are written as each footprint's attributes and pad groups."] : []),
     ],
   }
 }

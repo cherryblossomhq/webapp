@@ -171,3 +171,64 @@ export function oracle(text) {
   }
   return fps
 }
+
+/**
+ * What the file says about footprint flags and the nets of tracks and vias, read again from the raw
+ * text for the corpus test to compare the importer's project with: every footprint with its `attr`
+ * words, whether it has an `attr` node, its `tags`, its net tie and jumper groups and its pad numbers,
+ * and every segment and via with the file's own net name, its length and whether it is locked
+ * (`locked`, or bit 0x40000 of a KiCad 4 or 5 `status`). Segments are counted whole: arcs are another
+ * extension.
+ */
+export function copperOracle(text) {
+  const root = parseSexpr(text)
+  const board = root.find((n) => Array.isArray(n) && n[0] === "kicad_pcb")
+  const stamp = numAt(kid(board, "version"), 1, null)
+  const old = stamp !== null && stamp < 20210606
+  const named = (name) => (old ? overbarOf(name) : name)
+  const names = new Map()
+  for (const n of kids(board, "net")) names.set(n[1], named(n[2] ?? ""))
+  // `(net 1 "A")`, `(net 1)` through the table, or `(net "A")` from stamp 20251028 (a development file may still write a number there)
+  const netOf = (node) => {
+    const k = kid(node, "net")
+    if (!k) return null
+    const name = k.length >= 3 ? named(k[2]) : names.has(k[1]) ? names.get(k[1]) : stamp !== null && stamp >= 20251028 ? named(k[1]) : undefined
+    return name ? name : null
+  }
+  const locked = (node) => {
+    if (node.some((c, i) => i > 0 && c === "locked")) return true
+    const l = kid(node, "locked")
+    if (l && (l[1] === undefined || l[1] === "yes" || l[1] === "true")) return true
+    const st = kid(node, "status")
+    const v = st ? parseInt(st[1], 16) : NaN
+    return Number.isFinite(v) && (v & 0x40000) !== 0
+  }
+  const footprints = []
+  for (const fp of board.slice(1)) {
+    if (!Array.isArray(fp) || (fp[0] !== "footprint" && fp[0] !== "module")) continue
+    const attr = kid(fp, "attr")
+    const refNode = kids(fp, "fp_text").find((q) => q[1] === "reference") ?? kids(fp, "property").find((q) => q[1] === "Reference")
+    const ties = []
+    for (const g of kids(fp, "net_tie_pad_groups")) for (const s of g.slice(1)) if (typeof s === "string") ties.push(s.split(",").map((x) => x.trim()).filter(Boolean))
+    const jumpers = []
+    for (const g of kids(fp, "jumper_pad_groups")) for (const s of g.slice(1)) if (Array.isArray(s)) jumpers.push(s.filter((x) => typeof x === "string"))
+    const dup = kid(fp, "duplicate_pad_numbers_are_jumpers")
+    footprints.push({
+      ref: refNode ? (refNode[2] ?? "") : "",
+      attr: attr ? attr.slice(1).filter((a) => typeof a === "string") : [],
+      hasAttr: !!attr,
+      tags: kid(fp, "tags")?.[1] ?? "",
+      ties,
+      jumpers,
+      jumperDuplicates: !!dup && (dup[1] === undefined || dup[1] === "yes" || dup[1] === "true"),
+      padNumbers: kids(fp, "pad").map((p) => String(p[1] ?? "")),
+    })
+  }
+  const segments = kids(board, "segment").map((s) => {
+    const a = kid(s, "start")
+    const b = kid(s, "end")
+    return { net: netOf(s), length: Math.hypot(numAt(a, 1) - numAt(b, 1), numAt(a, 2) - numAt(b, 2)), locked: locked(s), layer: kid(s, "layer")?.[1] ?? "" }
+  })
+  const vias = kids(board, "via").map((v) => ({ net: netOf(v), locked: locked(v) }))
+  return { stamp, footprints, segments, vias }
+}

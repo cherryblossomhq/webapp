@@ -38,8 +38,9 @@ describe("the gate", () => {
 
   it("names every extension a board needs in the one sentence", () => {
     const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0", shape: "roundrect", extra: "(roundrect_rratio 0.25)" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }))
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7", "X9", "X13"])
-    if (r.status === "refused") expect(r.message).toMatch(/pads that are turned, rounded.+text.+nets on tracks and vias, which are not supported yet\./)
+    // X13 (nets on tracks and vias) is built: a board's tracks are no reason to refuse it
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X7", "X9"])
+    if (r.status === "refused") expect(r.message).toMatch(/pads that are turned, rounded.+text, which are not supported yet\./)
   })
 
   it("a board that needs nothing the editor lacks is imported (every extension built, for the test)", () => {

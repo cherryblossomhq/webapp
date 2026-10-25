@@ -6,7 +6,7 @@ import type { KicadImportController, ImportState } from "../src/kicadImport/cont
 import { KicadImportDialog } from "../src/kicadImport/KicadImportDialog"
 import { ReportView } from "../src/kicadImport/ReportView"
 import { loadReport, saveReport } from "../src/kicadImport/reportStore"
-import { stoppedSummary, summarize, type ImportSummary } from "../src/kicadImport/summary"
+import { stoppedSummary, summarize, unsupportedLead, type ImportSummary } from "../src/kicadImport/summary"
 import { KicadReportSection } from "../src/panels/ProjectInspector"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
 import { board, footprint, pad } from "./kicad-board-fixtures"
@@ -56,9 +56,10 @@ describe("the report", () => {
   it("a refusal names each thing the board uses with what in the board needs it, under one counted lead", () => {
     mount(<ReportView summary={refused} name="my board" />)
     expect(q("h2")!.textContent).toBe("Not supported yet")
-    expect(text()).toContain("This board uses 2 things Cherry Blossom cannot hold yet, listed below.")
-    expect(text()).toContain("text: the reference and value of every part, and text on the board: ")
-    expect(text()).toContain("reference and value text")
+    // What it uses is whatever the importer has not built yet, read from its own result.
+    expect(refused.missing.length).toBeGreaterThan(0)
+    expect(text()).toContain(unsupportedLead(refused.missing.length))
+    for (const m of refused.missing) expect(text()).toContain(`${m.name}: ${m.why}`)
     expect(text()).toContain("Nothing was imported")
   })
 

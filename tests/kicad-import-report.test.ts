@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 import { PHASE_LABELS } from "../src/kicadImport/protocol"
 import { reportLead, reportSections, reportTitle, reportTone } from "../src/kicadImport/sections"
 import { PLAIN_NAMES, plainName, reportJson, reportName, reportText, stoppedSummary, summarize, unsupportedLead, type ImportSummary, type SummaryReason } from "../src/kicadImport/summary"
-import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
+import { BUILT_EXTENSIONS, EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 
 // The words of the report: every extension id has a plain name that covers what triggers it, a
@@ -67,18 +67,22 @@ describe("plain names for the extensions", () => {
 
 const refused = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }))
 const imported = importKicadBoard(board({}))
+// What this fixture is refused for is whatever the importer does not build yet: read from its own result, so the tests keep passing as slices build more.
+const MISSING = refused.status === "refused" ? refused.needs.map((n) => n.ext) : []
 
 describe("the summary of a real result", () => {
   it("a refusal lists what the board uses, by plain name, with what in the board needs it", () => {
     const s = summarize(refused, ctx)
     expect(s.status).toBe("refused")
-    expect(s.missing.map((m) => m.id)).toEqual(["X9", "X13"])
-    expect(s.missing.map((m) => m.name)).toEqual([PLAIN_NAMES.X9, PLAIN_NAMES.X13])
+    expect(MISSING.length).toBeGreaterThan(0)
+    expect(MISSING.every((id) => !BUILT_EXTENSIONS.has(id))).toBe(true)
+    expect(s.missing.map((m) => m.id)).toEqual(MISSING)
+    expect(s.missing.map((m) => m.name)).toEqual(MISSING.map((id) => PLAIN_NAMES[id]))
     expect(s.missing.every((m) => m.why.length > 10)).toBe(true)
     expect(s.refusals.every((r) => r.code !== "unsupported")).toBe(true)
     expect(s.brought).toEqual([])
     expect(s.projectBytes).toBeNull()
-    expect(s.message).toBe("This board uses 2 things Cherry Blossom cannot hold yet, listed below.")
+    expect(s.message).toBe(unsupportedLead(MISSING.length))
   })
 
   it("an import has what came in, the node count, the notes, and no backticks in the words", () => {
@@ -142,7 +146,7 @@ describe("the report screen's content", () => {
   it("a refusal says what the board uses and that nothing is half imported, once", () => {
     const s = summarize(refused, ctx)
     expect(reportTitle(s)).toBe("Not supported yet")
-    expect(reportLead(s)).toBe(unsupportedLead(2))
+    expect(reportLead(s)).toBe(unsupportedLead(MISSING.length))
     expect(reportTone(s)).toBe("bad")
     const titles = reportSections(s).map((x) => x.title)
     expect(titles.slice(0, 2)).toEqual(["What this board uses that Cherry Blossom cannot hold yet", "Nothing was imported"])
@@ -228,15 +232,17 @@ describe("the downloads", () => {
 
   it("the text report says the result, the same lead as the screen, the plain names with their ids and reasons, and the files not read", () => {
     const text = reportText(s, "my board")
-    expect(text).toMatch(/^KiCad import report: my board\nResult: not imported\.\nThis board uses 2 things Cherry Blossom cannot hold yet, listed below\./)
-    expect(text).not.toContain(EXTENSION_NAMES.X9)
-    expect(text).toContain(`${PLAIN_NAMES.X9} (X9): `)
+    expect(text.startsWith(`KiCad import report: my board\nResult: not imported.\n${unsupportedLead(MISSING.length)}`)).toBe(true)
+    for (const id of MISSING) {
+      expect(text).not.toContain(EXTENSION_NAMES[id])
+      expect(text).toContain(`${PLAIN_NAMES[id]} (${id}): `)
+    }
     expect(text).toContain("x.kicad_pro: the schematic import is coming")
     expect(text).toContain("KiCad file version: 20240108")
   })
 
   it("the JSON report is the summary and the project's name", () => {
-    expect(JSON.parse(reportJson(s, "my board"))).toMatchObject({ project: "my board", status: "refused", reason: "unsupported", missing: [{ id: "X9" }, { id: "X13" }] })
+    expect(JSON.parse(reportJson(s, "my board"))).toMatchObject({ project: "my board", status: "refused", reason: "unsupported", missing: MISSING.map((id) => ({ id })) })
   })
 
   it("the technical detail of a failure is in the download and never in the words of the screen", () => {

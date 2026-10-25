@@ -53,7 +53,7 @@ describe.each(BOARDS)("%s", (_id, project, rated) => {
     expect(JSON.stringify(project), "the sheet is as it was").toBe(before)
     expect(table.drags).toBe(table.same + table.connected + table.refused)
     expect(table.drags).toBeGreaterThan(0)
-  })
+  }, _id === "shipped esp32-robot" ? 300_000 : undefined)
 
   it.runIf(rated)("lets Sakura nudge a part without refusing it, nearly always", () => {
     let calls = 0

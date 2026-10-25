@@ -536,11 +536,20 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const modeWord = strAt(kid(fillNode, "mode"), 1)
     const smoothWord = strAt(kid(fillNode, "smoothing"), 1)
     const teardropType = strAt(kid(kid(kid(z, "attr"), "teardrop"), "type"), 1)
-    const net = netOf(z)
+    // A copper zone is on the net its `net_name` says: KiCad takes the net of the number only while the table's name for it is the one the zone
+    // gives, and otherwise looks the zone's name up (an empty name is no net) or makes a net of that name (parser `parseZONE`, `netnameFromfile`).
+    const byNumber = netOf(z)
     const named = strAt(kid(z, "net_name"), 1)
+    const wanted = named === undefined ? undefined : overbar(named)
+    const copperZone = !keepout && !placementNode
+    let net = byNumber
+    if (copperZone && wanted !== undefined && byNumber?.raw !== wanted) {
+      const found = nets.find((n) => n.raw === wanted)
+      net = found ? { raw: found.raw, name: found.name } : wanted === "" ? null : { raw: wanted, name: decodeNetName(wanted) }
+    }
     return {
-      net: net ? net.name : named ? decodeNetName(overbar(named)) : null,
-      netRaw: net ? net.raw : named ? overbar(named) : null,
+      net: net ? net.name : null,
+      netRaw: net ? net.raw : null,
       layers: layerNames,
       name: strAt(kid(z, "name"), 1) ?? "",
       priority: numAt(kid(z, "priority"), 1, 0),

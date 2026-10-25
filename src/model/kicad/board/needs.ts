@@ -285,7 +285,10 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (outline.status !== "closed") need("X2", outline.status === "no outline" ? "no outline on Edge.Cuts" : "an outline that does not close")
   else if (!outline.representable) need("X2", `an outline that is ${outline.shape}${outline.cutouts ? " with cutouts" : ""}`)
 
-  // X3 (zones) is built: a copper zone, a keepout, a rule area or a teardrop zone of the board is imported. What is left of it is named.
+  // X3 (zones) is built: a copper zone, a keepout, a rule area or a teardrop zone of the board is imported (and named here, as every extension a board uses is, built or not). What is left of it is named.
+  const zoneCount = board.zones.length + board.footprints.reduce((n, f) => n + f.zones.length, 0)
+  if (zoneCount > 0) need("X3", "copper zones, keepouts or rule areas")
+  if (board.zones.some((z) => z.kind === "teardrop")) need("X3", "teardrops")
   if (board.zones.some((z) => z.kind !== "placement" && z.fillMode !== "polygon")) need("X24", "a zone filled with a hatch or a thieving pattern", "importer")
   if (board.zones.some((z) => z.kind !== "placement" && !zoneOnlyCopper(z, board))) need("X26", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
   if (board.footprints.some((f) => f.zones.length)) need("X27", "a zone that belongs to a part (a keepout or pour drawn inside a footprint)", "importer")

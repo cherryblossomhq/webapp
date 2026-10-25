@@ -10,7 +10,7 @@ import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
 // gap and spoke width, corner smoothing, island rule, keepout flags, teardrop), and the copper is the editor's own fill of it: KiCad's
 // stored `filled_polygon` is not kept (docs/kicad-import.md section 10).
 
-const flip = (p: Pt): Vec2 => ({ x: p.x, y: -p.y })
+const flip = (p: Pt): Vec2 => ({ x: p.x + 0, y: p.y === 0 ? 0 : -p.y })
 
 /** Where a zone's layers are in the editor: both copper layers, one, or none (inner layers and other layers are refused before this). */
 export function zoneCopperLayers(z: KicadZone, board: KicadBoard): CopperLayer[] {

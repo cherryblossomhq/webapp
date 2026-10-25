@@ -68,6 +68,9 @@ export function zoneOracle(text) {
   const front = copperNames[0] ?? "F.Cu"
   const back = copperNames[copperNames.length - 1] ?? "B.Cu"
   const zones = []
+  const table = new Map(kids(tree, "net").filter((n) => n.length >= 3).map((n) => [String(n[1]), String(n[2])]))
+  // `(net 3 "GND")`, `(net 3)` with the table's name, or (KiCad 10) `(net "GND")`.
+  const netByNumber = (k) => (!k ? "" : k.length >= 3 ? String(k[2]) : /^-?\d+$/.test(String(k[1])) ? table.get(String(k[1])) ?? "" : String(k[1]))
   const read = (z, inFootprint) => {
     const layerNames = kid(z, "layers") ? kid(z, "layers").slice(1).filter((x) => typeof x === "string") : kid(z, "layer") ? [kid(z, "layer")[1]] : []
     const keepoutNode = kid(z, "keepout")
@@ -90,8 +93,10 @@ export function zoneOracle(text) {
       onlyCopper: layerNames.length > 0 && layerNames.every(copperLayer),
       /** Which of the two surface layers it is on: 'top', 'bottom'; inner layers are not counted. */
       surface: [...new Set(layerNames.flatMap((n) => (n === "*.Cu" || n === "F&B.Cu" ? ["top", "bottom"] : n === front || n === "F.Cu" ? ["top"] : n === back || n === "B.Cu" ? ["bottom"] : [])))],
-      kind: kid(z, "placement") ? "placement" : keepoutNode ? (["tracks", "vias", "pads", "copperpour", "footprints"].some((k) => word(keepoutNode, k) === "not_allowed") ? "keepout" : "rule-area") : kid(z, "attr") && kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper",
-      netName: keepoutNode ? "" : word(z, "net_name") ?? "",
+      // A `placement` node that is switched off (KiCad 9 writes one on every rule area) places nothing.
+      kind: kid(z, "placement") && word(kid(z, "placement"), "enabled") === "yes" ? "placement" : keepoutNode ? (["tracks", "vias", "pads", "copperpour", "footprints"].some((k) => word(keepoutNode, k) === "not_allowed") ? "keepout" : "rule-area") : kid(z, "placement") ? "rule-area" : kid(z, "attr") && kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper",
+      // The zone's own `net_name`, as KiCad reads it; a zone without one is on the net its number has in the table.
+      netName: keepoutNode || kid(z, "placement") ? "" : kid(z, "net_name") ? word(z, "net_name") ?? "" : netByNumber(kid(z, "net")),
       priority: kid(z, "priority") ? numAt(kid(z, "priority"), 1) : 0,
       name: word(z, "name") ?? "",
       locked: kid(z, "locked") ? word(z, "locked") !== "no" : z.includes("locked"),

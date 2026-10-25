@@ -1,4 +1,5 @@
 import { outlineState } from "../model/outline"
+import { outlineCrossingProblem } from "../model/outlineCrossing"
 import type { Project } from "../model/types"
 
 /** An export that needs the board cut out was asked of a board whose outline does not close or is missing. */
@@ -15,7 +16,11 @@ export class OutlineNotClosedError extends Error {
  */
 export function requireClosedOutline(project: Project, what: string): void {
   const state = outlineState(project.board)
-  if (state === "closed") return
+  if (state === "closed") {
+    const crossing = outlineCrossingProblem(project.board.outline?.paths ?? [])
+    if (crossing) throw new OutlineNotClosedError(`${what} cannot be made: ${crossing.charAt(0).toLowerCase()}${crossing.slice(1)} Fix it in the PCB view and export again.`)
+    return
+  }
   const open = project.board.outline?.paths.filter((p) => !p.closed).length ?? 0
   throw new OutlineNotClosedError(
     state === "missing"

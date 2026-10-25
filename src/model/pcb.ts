@@ -9,6 +9,7 @@ import {
   type Box,
 } from "../lib/geometry"
 import { mountingHoles } from "./board"
+import { crossingSentence, outlineCrossings } from "./outlineCrossing"
 import { boxOnBoard, convexOverlap, copperEdgeClearance, outlineGeometry, outlineState, ringOnBoard } from "./outline"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
@@ -798,6 +799,8 @@ export function analyzePcb(project: Project, sch: SchematicConnectivity, opts: {
       at: { x: at.x, y: at.y },
     })
   }
+  // Edges that cross themselves or each other cannot be cut either: one error each, where they meet.
+  for (const x of outlineCrossings(b.outline?.paths ?? [])) push({ severity: "error", kind: "outline", message: `${crossingSentence(x)}, so it cannot be cut out`, at: x.at })
   for (const c of project.components) {
     const cy = c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null
     if (cy && partOutsideBoard(project, c, cy)) {

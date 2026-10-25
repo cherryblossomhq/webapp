@@ -1,6 +1,7 @@
 import { dist, pointSegmentDistance, round } from "../lib/geometry"
 import { arcCircle, flattenSeg, pathsBox, segEnd, segStart, shapePaths, type PathSeg, type ShapePath } from "./shapes"
 import { outlineGeometry } from "./outline"
+import { outlineCrossingProblem, outlineCrossings } from "./outlineCrossing"
 import type { BoardDef, Project, ShapeGeometry, Vec2 } from "./types"
 
 // Edits of a board's outline (X2), as pure functions that return a new project: drawing pieces on Edge.Cuts, joining them into
@@ -173,7 +174,7 @@ function pathInsidePath(inner: ShapePath, outer: ShapePath): boolean {
  * On a board with no outline drawn, a closed piece that lies inside the rectangle is a cutout of it, and one that does not replaces the
  * rectangle (the board is the drawn shape); an open piece keeps the rectangle and waits to be closed. Returns the project and what happened.
  */
-export function addOutlinePaths(project: Project, drawn: ShapePath[]): { project: Project; replacedRectangle: boolean; closedLoops: number; open: number } {
+export function addOutlinePaths(project: Project, drawn: ShapePath[]): { project: Project; replacedRectangle: boolean; closedLoops: number; open: number; crossing?: string } {
   const plain = isPlainBoard(project.board)
   const existing = plain ? [rectPath(project.board)] : project.board.outline!.paths
   // The board's rectangle waits as the first path until a closed shape that does not lie inside it is drawn, which replaces it.
@@ -187,6 +188,9 @@ export function addOutlinePaths(project: Project, drawn: ShapePath[]): { project
       replaced = true
     }
   }
+  // A shape that would cross the board's edge or another shape is not added: the outline stays as it was (one that crossed already may be added to).
+  const crossing = outlineCrossings(joined).length > outlineCrossings(existing).length ? outlineCrossingProblem(joined) : null
+  if (crossing) return { project, replacedRectangle: false, closedLoops: 0, open: existing.filter((p) => !p.closed).length, crossing }
   const closedBefore = existing.filter((p) => p.closed).length
   const closedLoops = joined.filter((p) => p.closed).length - closedBefore + (replaced ? 1 : 0)
   return { project: withPaths(project, joined, seeded && !replaced), replacedRectangle: replaced, closedLoops: Math.max(0, closedLoops), open: joined.filter((p) => !p.closed).length }
@@ -212,10 +216,24 @@ export function removeOutlinePath(project: Project, index: number): Project {
   return withPaths(project, rest, seed)
 }
 
-/** Back to the rectangle: the outline goes and the board is the box it had. */
-export function resetOutline(project: Project, radius = 0): Project {
+/** The corner radius of the rectangle that waits as the outline's seed (its quarter arcs' radius), 0 for square corners or when no rectangle waits. */
+function seedRadius(b: BoardDef): number {
+  const rect = b.outline?.seed ? b.outline.paths[0] : null
+  for (const s of rect?.segs ?? []) {
+    if (s.kind !== "arc") continue
+    const c = arcCircle(s.start, s.mid, s.end)
+    if (c) return round(c.r, 6)
+  }
+  return 0
+}
+
+/**
+ * Back to the rectangle: the outline goes and the board is the box it had. Its corners are the rounding the waiting rectangle had (cutouts
+ * drawn inside a rounded board keep it), unless `radius` says otherwise.
+ */
+export function resetOutline(project: Project, radius?: number): Project {
   const { outline: _outline, ...board } = project.board
-  return { ...project, board: { ...board, cornerRadius: radius } }
+  return { ...project, board: { ...board, cornerRadius: radius ?? seedRadius(project.board) } }
 }
 
 /** A stadium: the slot of `width` between two centres, as a closed loop of two lines and two half circles. */

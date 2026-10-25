@@ -1,5 +1,6 @@
 import { dist, round } from "../lib/geometry"
 import { outlineGeometry } from "./outline"
+import { outlineCrossingProblem } from "./outlineCrossing"
 import { circlePath, slotPath } from "./outlineOps"
 import { arcCircle, flattenSeg, segEnd, segStart, type PathSeg, type ShapePath } from "./shapes"
 import type { BoardDef, Vec2 } from "./types"
@@ -145,6 +146,8 @@ export function parseOutlineText(text: string): ParsedOutline | { error: string 
     return dist(a, b) < 1e-9 ? { closed: true, segs: path.segs } : path
   })
   if (!closedUp.length) return { error: "The outline text has no shape" }
+  const crossing = outlineCrossingProblem(closedUp)
+  if (crossing) return { error: crossing }
   return { paths: closedUp }
 }
 

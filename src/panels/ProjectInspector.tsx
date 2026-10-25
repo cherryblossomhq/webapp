@@ -283,7 +283,7 @@ function BoardSection({ project }: { project: Project }) {
       <Group label="Silkscreen">
         <ColorField label="Silkscreen colour" value={b.silkColor} fallback={defaultSilkColor(colors.mask)} onCommit={(silkColor) => setBoard({ silkColor })} />
       </Group>
-      {!b.outline && (
+      {(!b.outline || b.outline.seed) && (
         <Group label="Mounting holes">
           <Segmented
             size="sm"

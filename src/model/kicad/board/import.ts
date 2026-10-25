@@ -1,4 +1,5 @@
 import { serializeProject } from "../../projectFile"
+import { crossingSentence, outlineCrossings } from "../../outlineCrossing"
 import type { Project } from "../../types"
 import { accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
 import { buildKicadProject } from "./build"
@@ -150,6 +151,16 @@ function noteOutline(outline: OutlineResult, report: ImportReport) {
       object: "the board outline",
       why: `The outline is kept as the file draws it, ${outline.openChains} edge${outline.openChains === 1 ? "" : "s"} of it open. The board is marked as not closed, Checks reports it as an error, and the Gerber, drill and STEP exports say so until it is closed.`,
       count: outline.openChains,
+    })
+  }
+  const crossings = outlineCrossings(outline.paths)
+  if (crossings.length) {
+    report.entries.push({
+      code: "outline-crossing",
+      severity: "note",
+      object: "the board outline",
+      why: `${crossings.slice(0, 3).map(crossingSentence).join("; ")}${crossings.length > 3 ? ` and ${crossings.length - 3} more` : ""}. The outline is kept as the file draws it (KiCad's own checks flag it too): Checks reports it as an error, and the Gerber, drill and STEP exports say so until it is fixed.`,
+      count: crossings.length,
     })
   }
   for (const g of outline.gaps) {

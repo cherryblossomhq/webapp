@@ -35,10 +35,11 @@ import {
 } from "../model/ops"
 import { SCH_GRID } from "../model/symbols"
 import { outlineGeometry, outlineState } from "../model/outline"
+import { outlineCrossingProblem } from "../model/outlineCrossing"
 import { addOutlinePaths, explicitPaths, joinPaths, resetOutline, setOutlinePaths } from "../model/outlineOps"
 import { cutoutTexts, edgeText, parseOutlineText } from "../model/outlineText"
 import { flattenPath } from "../model/shapes"
-import { MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
+import { MOUNTING_HOLE_PRESETS, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { applyCapability, BOARD_THICKNESSES, FAB_CAPABILITIES, matchCapability, THERMAL_RELIEF_OPTIONS } from "../model/rules"
 import type { ComponentInstance, DesignRules, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
@@ -765,13 +766,15 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
   if (input.outline !== undefined) {
     if (typeof input.outline !== "string") return "outline must be text, or \"rect\""
     if (input.outline.trim().toLowerCase() === "rect") {
-      next = resetOutline(next, next.board.cornerRadius)
+      next = resetOutline(next)
       changed.push("rectangle outline")
     } else {
       const parsed = parseOutlineText(input.outline)
       if ("error" in parsed) return parsed.error
       const paths = joinPaths(parsed.paths)
       if (!paths.some((p) => p.closed)) return "The outline needs at least one closed shape: end it with Z, or bring its end back to its start"
+      const crossing = outlineCrossingProblem(paths)
+      if (crossing) return crossing
       next = setOutlinePaths(next, paths)
       changed.push(`outline of ${paths.length} shape${paths.length === 1 ? "" : "s"}`)
     }
@@ -800,7 +803,9 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
       const edges = pts.map((q, i) => [q, pts[(i + 1) % pts.length]] as const)
       if (!g || !g.rings.length || !pts.every((q) => g.contains(q)) || edges.some(([a, c]) => g.nearestToSegment(a, c, 1e-9) <= 1e-9)) return "A cutout must lie wholly inside the board, clear of its edge and of the other cutouts"
     }
-    next = addOutlinePaths(next, loops).project
+    const added = addOutlinePaths(next, loops)
+    if (added.crossing) return added.crossing
+    next = added.project
     changed.push(`${loops.length} cutout${loops.length === 1 ? "" : "s"} added`)
   }
   return { project: next, changed }
@@ -831,7 +836,8 @@ const setBoardTool: ToolSpec = {
     const b = { ...project.board }
     const changed: string[] = []
     const shaped = input.outline !== undefined || input.add_cutouts !== undefined || input.remove_cutouts !== undefined
-    if (project.board.outline?.paths.length && input.outline !== "rect" && (input.width !== undefined || input.height !== undefined || input.corner_radius !== undefined || input.mounting_holes !== undefined)) {
+    const ownOutline = !!project.board.outline?.paths.length
+    if (ownOutline && input.outline !== "rect" && (input.width !== undefined || input.height !== undefined || input.corner_radius !== undefined || (input.mounting_holes !== undefined && !project.board.outline?.seed))) {
       return fail(project, "The board has an outline of its own, so its size follows it and it has no corner radius or corner holes: pass outline \"rect\" to go back to a rectangle first")
     }
     if (input.width !== undefined || input.height !== undefined) {
@@ -884,7 +890,9 @@ const setBoardTool: ToolSpec = {
       changed.push(...shapedTo.changed)
     }
     if (!changed.length) return fail(project, "Give at least one board property to change")
-    return ok(next, `Board: ${changed.join(", ")}.`, `Board set: ${changed.join(", ")}`)
+    const lost = mountingHoles(project.board).length > 0 && mountingHoles(next.board).length === 0 && !!next.board.mountingHoles
+    const lostNote = lost ? " The corner mounting holes were removed with the rectangle; add holes back as parts, or give mounting_holes again once outline is \"rect\"." : ""
+    return ok(next, `Board: ${changed.join(", ")}.${lostNote}`, `Board set: ${changed.join(", ")}`)
   },
 }
 

@@ -1,5 +1,6 @@
 import { emptyBox, expandBox, round } from "../lib/geometry"
 import { strokeText } from "../lib/strokeFont"
+import { pathsBox } from "./shapes"
 import type { BoardDef, BoardText, MountingHoles, Rotation, SurfaceFinish, Vec2 } from "./types"
 
 /** Solder mask green, the colour fabs make by default. */
@@ -50,16 +51,25 @@ export interface MountingHole extends Vec2 {
 /** Corner mounting holes, skipped when the board is too small to hold them. */
 export function mountingHoles(b: BoardDef): MountingHole[] {
   const m = b.mountingHoles
-  // The corner holes are the corners of the rectangle: a board with an outline of its own has cutouts and parts' holes instead.
-  if (!m || b.outline?.paths.length) return []
-  const halfW = b.width / 2 - m.inset
-  const halfH = b.height / 2 - m.inset
+  if (!m) return []
+  // The corner holes are the corners of the rectangle. While the rectangle is still in place as the seed of an outline (cutouts and
+  // slots inside it leave it), they stay, at its corners; a board whose own shape replaced it has cutouts and parts' holes instead.
+  const seed = b.outline?.seed ? b.outline.paths[0] : null
+  if (b.outline?.paths.length && !seed) return []
+  // The board's own box is the rectangle's unless a piece still waiting to be closed stretches it; then the rectangle's own box says.
+  const sb = seed ? pathsBox([seed]) : null
+  const own = !sb || (Math.abs((sb.minX + sb.maxX) / 2 - b.x) < 1e-6 && Math.abs((sb.minY + sb.maxY) / 2 - b.y) < 1e-6 && Math.abs(sb.maxX - sb.minX - b.width) < 1e-6 && Math.abs(sb.maxY - sb.minY - b.height) < 1e-6)
+  const box = own ? { x: b.x, y: b.y, width: b.width, height: b.height } : { x: round((sb!.minX + sb!.maxX) / 2), y: round((sb!.minY + sb!.maxY) / 2), width: round(sb!.maxX - sb!.minX), height: round(sb!.maxY - sb!.minY) }
+  const cx = box.x
+  const cy = box.y
+  const halfW = box.width / 2 - m.inset
+  const halfH = box.height / 2 - m.inset
   if (halfW < m.diameter / 2 || halfH < m.diameter / 2) return []
   return [
-    { id: "mh-bl", x: b.x - halfW, y: b.y - halfH },
-    { id: "mh-br", x: b.x + halfW, y: b.y - halfH },
-    { id: "mh-tr", x: b.x + halfW, y: b.y + halfH },
-    { id: "mh-tl", x: b.x - halfW, y: b.y + halfH },
+    { id: "mh-bl", x: cx - halfW, y: cy - halfH },
+    { id: "mh-br", x: cx + halfW, y: cy - halfH },
+    { id: "mh-tr", x: cx + halfW, y: cy + halfH },
+    { id: "mh-tl", x: cx - halfW, y: cy + halfH },
   ].map((p) => ({ ...p, drill: m.drill, diameter: m.diameter }))
 }
 

@@ -458,3 +458,33 @@ describe("what a picture's bytes say", () => {
     expect(sha256Hex(big)).toBe(createHash("sha256").update(big).digest("hex"))
   })
 })
+
+describe("a part's own groups follow its land and its edits", () => {
+  const withLand = (): Project => {
+    const p = createProject("l")
+    const c: ComponentInstance = { id: "c1", partId: "x", ref: "U1", props: {}, footprint: "land", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot: 0, side: "top", placed: true }, groups: [{ id: "g0", name: "", members: ["s0", "s2", "p0"] }] }
+    return { ...p, components: [c], footprints: [{ name: "land", pads: [], silk: [], courtyard: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, shapes: [0, 1, 2].map((i) => ({ type: "line" as const, a: { x: i, y: 0 }, b: { x: i, y: 1 }, layer: "F.SilkS", width: 0.1 })) }] }
+  }
+  it("a removed drawing of the land shifts the places in every part drawn with it", async () => {
+    const { removeLandShapes } = await import("../src/model/shapeOps")
+    const next = removeLandShapes(withLand(), "land", [1])
+    expect(next.components[0].groups![0].members).toEqual(["s0", "s1", "p0"])
+  })
+  it("another footprint ends them, and a copy of the part in the schematic keeps its own", async () => {
+    const { updateComponent } = await import("../src/model/ops")
+    expect(updateComponent(withLand(), "c1", { footprint: "other" }).components[0].groups).toBeUndefined()
+    expect(updateComponent(withLand(), "c1", { ref: "U9" }).components[0].groups).toHaveLength(1)
+    const { pasteItems } = await import("../src/model/schematicEdit")
+    const { EXAMPLES } = await import("../src/model/examples")
+    const { isPhysical } = await import("../src/model/instances")
+    const { findPart } = await import("../src/model/library")
+    const { registerProjectParts } = await import("../src/model/customParts")
+    const base = structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project) as Project
+    registerProjectParts(base)
+    const part = base.components.find((c) => isPhysical(findPart(c.partId)))!
+    const grouped = { ...base, components: base.components.map((c) => (c.id === part.id ? { ...c, groups: [{ id: "g0", name: "", members: ["p0"] }] } : c)) }
+    const pasted = pasteItems(grouped, { project: grouped, components: [part.id], wires: [], labels: [], blocks: [] }, { x: 5, y: 5 })
+    expect(pasted.ok).toBe(true)
+    if (pasted.ok) expect(pasted.project.components[pasted.project.components.length - 1].groups).toEqual([{ id: "g0", name: "", members: ["p0"] }])
+  })
+})

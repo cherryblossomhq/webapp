@@ -35,10 +35,10 @@ function simulate(raw: KicadGroup[], refs: Map<string, string[]>, stats: GroupSt
   const held: Member[][] = raw.map(() => [])
   /** Which group holds an item (by project id) or a group (by index, as `g<i>`). */
   const parent = new Map<string, number>()
-  const keyOf = (m: Member) => ("item" in m ? m.item : `g${m.group}`)
+  const keyOf = (m: Member) => ("item" in m ? m.item : `#g${m.group}`)
   /** Whether group `inner` is inside group `outer`, at any depth (`EDA_GROUP::ContainsItem`). */
   const inside = (inner: number, outer: number): boolean => {
-    for (let at = parent.get(`g${inner}`); at !== undefined; at = parent.get(`g${at}`)) if (at === outer) return true
+    for (let at = parent.get(`#g${inner}`); at !== undefined; at = parent.get(`#g${at}`)) if (at === outer) return true
     return false
   }
   const add = (to: number, m: Member) => {

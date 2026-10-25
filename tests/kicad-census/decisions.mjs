@@ -89,7 +89,7 @@ export const RULES = [
   rule("segment>(?:start|end|width|layer|locked)", "native", "Trace", { effort: "S" }),
   rule("(?:segment|via|arc)>status", "native", "Trace.locked", { effort: "S", note: "bit 0x40000 is KiCad 4 and 5's track lock, which KiCad 6 and later read and drop; kept as locked. The other bits are KiCad edit flags" }),
   rule("(?:segment|arc|via)>net", "extend", "Trace.net and Via.routedNet", { ext: "X13", note: "the net the file puts a track or via on; after import it is compared with the net the editor derives from what the copper touches, and every difference is reported by item" }),
-  rule("(?:segment|arc|via)>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity" }),
+  rule("(?:segment|arc|via)>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity: read to say what a group's members are (X12), and not kept" }),
   rule("(?:segment|arc)>(?:layers|solder_mask_margin)", "extend", "-", { ext: "X24", note: "copper exposed through the mask on a track (KiCad 9)" }),
   rule("arc", "extend", "Trace is a polyline", { ext: "X4" }),
   rule("arc>(?:start|mid|end|width|layer|locked)", "extend", "Trace is a polyline", { ext: "X4" }),
@@ -111,7 +111,7 @@ export const RULES = [
   rule("(?:footprint>)?zone>placement(?:>(?:component_class|enabled|sheetname))?", "extend", "-", { ext: "X20", note: "placement rule area: where parts of a sheet or class may sit (KiCad 9)" }),
   rule("(?:footprint>)?zone>filled_polygon(?:>.*)?", "not-needed", "the pour is filled again by model/pour.ts", { note: "a filled polygon is KiCad's own result of its fill, which it recomputes on every refill; ours is filled the same way from the outline and rules, and the import report says so. This is the one place the format is itself an approximation" }),
   rule("(?:footprint>)?zone>fill_segments(?:>.*)?", "not-needed", "-", { note: "hatch fill segments KiCad computed" }),
-  rule("(?:footprint>)?zone>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity" }),
+  rule("(?:footprint>)?zone>(?:tstamp|uuid)", "not-needed", "-", { note: "KiCad's object identity: read to say what a group's members are (X12), and not kept" }),
 
   // ---- graphics, on the board and in footprints ----
   rule(GFX, "extend", "BoardDef is a rounded rectangle; FootprintDef has silk polylines and a courtyard box", { ext: "X8", note: "on Edge.Cuts a board line is the outline and its cutouts (X2); on every other layer a shape (X8)" }),
@@ -122,8 +122,8 @@ export const RULES = [
   rule(`${GFX}>(?:start_shape|end_shape)(?:>.*)?`, "extend", "-", { ext: "X24", note: "line end shapes (KiCad 10)" }),
   rule("gr_arc>angle|footprint>fp_arc>angle", "extend", "-", { ext: "X8", note: "the legacy arc form: (start centre) (end first end) (angle clockwise sweep), converted to start, mid and end; stamp 20210925 and older" }),
   rule("gr_line>angle", "not-needed", "-", { note: "a leftover token on KiCad 4 and 5 lines with no meaning" }),
-  rule(`${GFX}>(?:tstamp|uuid|status)`, "not-needed", "-", { note: "KiCad's object identity and edit flags" }),
-  rule("target(?:>(?:at|layer|size|tstamp|width))?", "extend", "-", { ext: "X8", note: "a board target mark, lines on its layer" }),
+  rule(`${GFX}>(?:tstamp|uuid|status)`, "not-needed", "-", { note: "KiCad's object identity (read to say what a group's members are, X12, and not kept) and edit flags" }),
+  rule("target(?:>(?:at|layer|size|tstamp|uuid|width))?", "extend", "-", { ext: "X8", note: "a board target mark, lines on its layer" }),
 
   // ---- text ----
   rule("gr_text|gr_text_box", "extend", "BoardText: quarter turns, silk only", { ext: "X9", note: "text on any layer, any angle, mirrored, justified, bold or italic, knockout; text boxes (KiCad 7 and later)" }),
@@ -147,7 +147,7 @@ export const RULES = [
   rule("footprint>descr", "native", "the part's description", { effort: "S" }),
   rule("footprint>tags", "native", "the part's keywords (a KiCad 5 tag 'net tie ...' also makes a net tie, X15)", { effort: "S" }),
   rule("footprint>(?:path|sheetname|sheetfile)", "not-needed", "-", { note: "the link from a footprint to its symbol in the KiCad schematic; a board is imported alone, from its nets, and the schematic import reads the link from the schematic's side" }),
-  rule("footprint>(?:tstamp|uuid|tedit|version|generator|generator_version)", "not-needed", "-", { note: "KiCad's object identity and edit time" }),
+  rule("footprint>(?:tstamp|uuid|tedit|version|generator|generator_version)", "not-needed", "-", { note: "KiCad's object identity (read to say what a group's members are, X12, and not kept) and edit time" }),
   rule("footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups(?:><layer number>|>[^>]+)?)", "extend", "PartFlags.netTies, jumperGroups and jumperDuplicates", { ext: "X15", note: "net ties let two nets meet at a footprint without a short; jumper groups join pads inside the part (a group's pad numbers are the words of its own list, so its path ends in the first number)" }),
   rule("footprint>(?:clearance|solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|solder_paste_ratio|zone_connect)", "extend", "-", { ext: "X7", note: "footprint-wide overrides, copied onto its pads; in files up to stamp 20240201 a zero means inherit" }),
   rule("footprint>(?:autoplace_cost180|autoplace_cost90|height)", "not-needed", "-", { note: "KiCad's legacy auto-placer hints" }),
@@ -280,6 +280,8 @@ export const ATOMS = [
   atoms("(?:.*>)?(?:start|end)_shape", ["arrow", "arrow_open", "circle", "square", "diamond", "dot", "round"]),
   atoms("(?:.*>)?chamfer", ["top_left", "top_right", "bottom_left", "bottom_right"]),
   atoms("dimension>style|footprint>dimension>style", ["keep_text_aligned"]),
+  // KiCad 6 and 7 wrote `locked` first in a dimension, which the parser frees ("Free 'locked' token from 6.0/7.0 formats")
+  atoms("dimension|footprint>dimension", ["locked"]),
   atoms("barcode>type", ["qr", "datamatrix", "code39", "code128", "micro_qr"]),
   atoms("barcode>ecc_level", ["L", "M", "Q", "H"]),
   atoms("(?:.*>)?(?:drill_chart>column>id|drill_map>span|drill_map>(?:style|origin|unit))", ["drill_diameter", "symbol", "count", "plated", "pth", "npth", "all", "size", "shape", "span", "operation", "plating", "post_machining", "slot"]),

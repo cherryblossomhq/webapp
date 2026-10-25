@@ -156,8 +156,8 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
           return gotLines.some((g) => near(g[0][0], start[0], 2e-5) && near(g[0][1], start[1], 2e-5) && Math.abs((g[1][0] - g[0][0]) * dir[1] - (g[1][1] - g[0][1]) * dir[0]) < 1e-3 * Math.hypot(...dir)) && near(p.x, start[0], 2e-5) && near(p.y, start[1], 2e-5)
         }
         if (run(f1, got.a) && run(f2, got.b)) out.featureSame++
-        // the unit the text names is the unit the dimension has
-        const unit = /\bmm\b/i.test(want.text?.raw ?? "") ? 2 : /\bin\b|"/.test(want.text?.raw ?? "") ? 0 : /\bmils?\b|\bthou\b/i.test(want.text?.raw ?? "") ? 1 : 3
+        // the unit the oracle reads from the raw text (FetchUnitsFromString) is the unit the dimension has
+        const unit = want.units
         if (got.units !== unit) {
           out.wrong++
           note(`dimension ${i + 1}: units ${got.units} for the text "${want.text?.raw}"`)

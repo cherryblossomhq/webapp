@@ -217,6 +217,8 @@ function readDimension(n, front, back) {
       case "style":
         d.keep = false
         for (const s of c.slice(1)) {
+          // a bare `keep_text_aligned` is the flag on (the file's own spelling in the first typed format)
+          if (s === "keep_text_aligned") d.keep = true
           if (!Array.isArray(s)) continue
           if (s[0] === "thickness") d.thick = at(s, 1)
           else if (s[0] === "arrow_direction") d.inward = s[1] === "inward"

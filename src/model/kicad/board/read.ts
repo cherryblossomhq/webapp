@@ -679,6 +679,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
           // In the typed format the text keeps aligned only when the style says so.
           d.keep = false
           for (const s of n.slice(1)) {
+            // KiCad's parser takes a bare `keep_text_aligned` as the flag set (`parseMaybeAbsentBool`: no parenthesis after the word means its default, on), as the files of its first typed format write it.
+            if (s === "keep_text_aligned") d.keep = true
             if (!Array.isArray(s)) continue
             if (s[0] === "thickness") d.thickness = number(s, 1, "a dimension's line width")
             else if (s[0] === "arrow_direction") d.inward = s[1] === "inward"

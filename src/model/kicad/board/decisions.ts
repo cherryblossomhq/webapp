@@ -320,7 +320,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:segment|arc|via)>(?:tstamp|uuid))$",
   "decision": "not-needed",
-  "note": "KiCad's object identity"
+  "note": "KiCad's object identity: read to say what a group's members are (X12), and not kept"
  },
  {
   "source": "^((?:segment|arc)>(?:layers|solder_mask_margin))$",
@@ -428,7 +428,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:footprint>)?zone>(?:tstamp|uuid))$",
   "decision": "not-needed",
-  "note": "KiCad's object identity"
+  "note": "KiCad's object identity: read to say what a group's members are (X12), and not kept"
  },
  {
   "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve)))$",
@@ -479,10 +479,10 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve))>(?:tstamp|uuid|status))$",
   "decision": "not-needed",
-  "note": "KiCad's object identity and edit flags"
+  "note": "KiCad's object identity (read to say what a group's members are, X12, and not kept) and edit flags"
  },
  {
-  "source": "^(target(?:>(?:at|layer|size|tstamp|width))?)$",
+  "source": "^(target(?:>(?:at|layer|size|tstamp|uuid|width))?)$",
   "decision": "extend",
   "ext": "X8",
   "note": "a board target mark, lines on its layer"
@@ -580,7 +580,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^(footprint>(?:tstamp|uuid|tedit|version|generator|generator_version))$",
   "decision": "not-needed",
-  "note": "KiCad's object identity and edit time"
+  "note": "KiCad's object identity (read to say what a group's members are, X12, and not kept) and edit time"
  },
  {
   "source": "^(footprint>(?:net_tie_pad_groups|duplicate_pad_numbers_are_jumpers|jumper_pad_groups(?:><layer number>|>[^>]+)?))$",
@@ -1402,6 +1402,13 @@ export const ATOM_RULES: AtomRule[] = [
   "source": "^(dimension>style|footprint>dimension>style)$",
   "values": [
    "keep_text_aligned"
+  ],
+  "skip": []
+ },
+ {
+  "source": "^(dimension|footprint>dimension)$",
+  "values": [
+   "locked"
   ],
   "skip": []
  },

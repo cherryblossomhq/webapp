@@ -39,6 +39,9 @@ const ROWS = [
   row(`${SHAPES}>net`, "derived", "the net a drawing names when it is not on a copper layer: only copper has a net, and KiCad draws and plots it the same without", "net"),
   row(`${SHAPES}>(?:stroke|stroke>(?:type|width)|width|fill|locked)`, "derived", "the width and style of an outline line: the board is cut along the line's centre", "edge"),
   row("target|target>(?:at|layer|size|width)", "built"),
+  // Dimensions (X11), groups (X12) and reference images (X14) are built. KiCad does not read a KiCad 5 dimension's arrows (`parseDIMENSION`: "no longer saved; no-op"): it draws its own from the points, the height and the arrow length.
+  row("dimension>arrow[12][ab]|dimension>arrow[12][ab]>pts|dimension>arrow[12][ab]>pts>xy", "derived", "a KiCad 5 dimension's arrows: KiCad does not read them and draws its own"),
+  row("dimension>gr_text>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503), and a dimension's text is a board text"),
   row("net_class>(?:clearance|trace_width|via_dia|via_drill)", "built"),
   row("net_class", "derived", "the Default net class's name and description are KiCad's own; its clearance, track width and via size are the design rules, which are imported"),
   row("net_class>add_net", "derived", "every net that no other class names is in the Default class, so listing them says nothing"),

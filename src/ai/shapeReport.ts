@@ -2,7 +2,8 @@ import { round } from "../lib/geometry"
 import { findPart } from "../model/library"
 import { BOARD_SHAPE_OWNER, shapeKind, worldShapes } from "../model/shapeItems"
 import { SHAPE_NAMES, shapeBox } from "../model/shapes"
-import { shownOf, worldTexts } from "../model/texts"
+import { dimensionDrawing } from "../model/dimensions"
+import { isDimensionText, shownOf, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 
 // What get_design says about drawings: counts per layer, the copper ones in full, and how many parts
@@ -25,7 +26,8 @@ export interface DrawingsReport {
 
 /** The report of a project's drawings, or null when it has none. */
 export function drawingsReport(project: Project): DrawingsReport | null {
-  const shapes = worldShapes(project)
+  // The lines of a dimension are reported with the dimension (`dimensionsReport`), not as drawings.
+  const shapes = worldShapes(project).filter((w) => !w.dim)
   if (!shapes.length) return null
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const board: Record<string, number> = {}
@@ -75,7 +77,7 @@ export interface TextsReport {
 
 /** What get_design says about KiCad texts, or null when the project has none, so a board drawn here says nothing new. */
 export function textsReport(project: Project): TextsReport | null {
-  const all = worldTexts(project).filter((t) => t.placed)
+  const all = worldTexts(project).filter((t) => t.placed && !isDimensionText(t))
   if (!all.length) return null
   const by: Record<string, number> = {}
   for (const t of all) if (!t.hidden) bump(by, t.layer)
@@ -98,5 +100,78 @@ export function textsReport(project: Project): TextsReport | null {
     ...(board.length > TEXT_LIST_CAP && { board_more: `and ${board.length - TEXT_LIST_CAP} more board texts` }),
     parts_with_text: parts.length,
     designators_hidden: parts.filter((c) => !c.texts!.some((t) => t.kind === "reference" && !t.hide)).length,
+  }
+}
+
+/** How many dimensions are listed before the rest are only counted. */
+export const DIMENSION_LIST_CAP = 20
+
+export interface DimensionsReport {
+  count: number
+  by_layer: Record<string, number>
+  by_kind: Record<string, number>
+  /** The first dimensions: kind, layer, the text KiCad shows and the value it measures (mm). */
+  list: { id: string; kind: string; layer: string; text: string; measured_mm: number }[]
+  more?: string
+}
+
+/** What get_design says about dimensions, or null when the board has none, so a board drawn here says nothing new. */
+export function dimensionsReport(project: Project): DimensionsReport | null {
+  const dims = project.dimensions
+  if (!dims?.length) return null
+  const byLayer: Record<string, number> = {}
+  const byKind: Record<string, number> = {}
+  for (const d of dims) {
+    bump(byLayer, d.layer)
+    bump(byKind, d.kind)
+  }
+  return {
+    count: dims.length,
+    by_layer: byLayer,
+    by_kind: byKind,
+    list: dims.slice(0, DIMENSION_LIST_CAP).map((d) => {
+      const draw = dimensionDrawing(d)
+      return { id: d.id, kind: d.kind, layer: d.layer, text: draw.text?.content ?? "", measured_mm: round(draw.measured / 1e6, 3) }
+    }),
+    ...(dims.length > DIMENSION_LIST_CAP && { more: `and ${dims.length - DIMENSION_LIST_CAP} more dimensions` }),
+  }
+}
+
+/** How many groups are listed before the rest are only counted. */
+export const GROUP_LIST_CAP = 20
+
+export interface GroupsReport {
+  count: number
+  locked: number
+  /** The first groups: name (or id when it has none), how many things are in it, and whether it is locked. */
+  list: { name: string; members: number; locked?: true }[]
+  more?: string
+}
+
+/** What get_design says about the board's groups, or null when it has none. A part's own groups (inside its footprint) are not listed. */
+export function groupsReport(project: Project): GroupsReport | null {
+  const groups = project.groups
+  if (!groups?.length) return null
+  return {
+    count: groups.length,
+    locked: groups.filter((g) => g.locked).length,
+    list: groups.slice(0, GROUP_LIST_CAP).map((g) => ({ name: g.name || g.id, members: g.members.length, ...(g.locked ? { locked: true as const } : {}) })),
+    ...(groups.length > GROUP_LIST_CAP && { more: `and ${groups.length - GROUP_LIST_CAP} more groups` }),
+  }
+}
+
+export interface ImagesReport {
+  count: number
+  /** Each image: its layer, where its centre is (mm), and its size on the board (mm). */
+  list: { layer: string; x: number; y: number; width_mm: number; height_mm: number; locked?: true }[]
+}
+
+/** What get_design says about reference images, or null when the board has none. */
+export function imagesReport(project: Project): ImagesReport | null {
+  const images = project.images
+  if (!images?.length) return null
+  return {
+    count: images.length,
+    list: images.map((m) => ({ layer: m.layer, x: round(m.x, 3), y: round(m.y, 3), width_mm: round(((m.px / m.ppi) * 25.4) * m.scale, 2), height_mm: round(((m.py / m.ppi) * 25.4) * m.scale, 2), ...(m.locked ? { locked: true as const } : {}) })),
   }
 }

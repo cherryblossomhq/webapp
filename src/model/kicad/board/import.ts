@@ -1,6 +1,7 @@
 import { serializeProject } from "../../projectFile"
 import { crossingSentence, outlineCrossings } from "../../outlineCrossing"
 import type { Project } from "../../types"
+import type { KeptFile } from "./images"
 import { accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
 import { buildKicadProject } from "./build"
 import { settleFor } from "./carried"
@@ -33,7 +34,7 @@ export interface ImportOptions {
 }
 
 export type KicadImportResult =
-  | { status: "imported"; project: Project; report: ImportReport; board: KicadBoard; bytes: number }
+  | { status: "imported"; project: Project; report: ImportReport; board: KicadBoard; bytes: number; files: KeptFile[] }
   | {
       status: "refused"
       /** `unreadable`: not a board; `unsupported`: needs an extension not built; `too-large`: over the project limit; `unknown`: the file has a node or value the importer does not know; `inexact`: the generated project does not match the file. */
@@ -101,7 +102,7 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
     report.entries.push({ code: "too-large", severity: "refused", object: "the project", why: message })
     return { status: "refused", reason: "too-large", message, report, needs: missing, board }
   }
-  return { status: "imported", project: result.project, report, board, bytes }
+  return { status: "imported", project: result.project, report, board, bytes, files: result.files }
 }
 
 /** KiCad 6 and later keep the design rules in the project file beside the board, which a board alone does not have. */

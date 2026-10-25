@@ -1,3 +1,4 @@
+import { dimensionShapes } from "./dimensions"
 import { findPart } from "./library"
 import { isPhysical, pcbShapes } from "./instances"
 import { shapeLayerInfo, type ShapeLayerKind } from "./shapeLayers"
@@ -16,12 +17,18 @@ export interface WorldShape {
   shape: BoardShape
   /** False for a part not placed on the PCB yet (its drawings are left out of every output, as its pads are of the checks). */
   placed: boolean
+  /** For a line or circle of a dimension (X11): the id of the dimension it belongs to. It is drawn and plotted as any drawing of its layer is, and is not a drawing of the project: the editor selects the dimension (`select`), and the KiCad export writes the dimension. */
+  dim?: string
+  /** What clicking it selects, when that is not `id`. */
+  select?: string
 }
 
 export const BOARD_SHAPE_OWNER = "#board"
 
 export const boardShapeId = (graphicId: string) => `g:${graphicId}`
 export const landShapeId = (componentId: string, index: number) => `s:${componentId}:${index}`
+/** The selection id of a dimension. */
+export const dimensionId = (dimension: string) => `m:${dimension}`
 
 /** What a selection id is: a board drawing, or the drawing of a part's land. */
 export function parseShapeId(id: string): { kind: "board"; graphic: string } | { kind: "land"; component: string; index: number } | null {
@@ -37,17 +44,19 @@ export function parseShapeId(id: string): { kind: "board"; graphic: string } | {
 /** The kind of layer a drawing is on (a name that is none of KiCad's counts as a user layer). */
 export const shapeKind = (s: BoardShape): ShapeLayerKind => shapeLayerInfo(s.layer)?.kind ?? "user"
 
-let cache: { components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; value: WorldShape[] } | null = null
+let cache: { components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; dimensions: Project["dimensions"]; value: WorldShape[] } | null = null
 
 /** Every drawing of the board and of its parts, in the board's frame, board drawings first. Reused while parts, drawings and lands are unchanged. */
 export function worldShapes(project: Project): WorldShape[] {
-  if (cache && cache.components === project.components && cache.graphics === project.graphics && cache.footprints === project.footprints) return cache.value
+  if (cache && cache.components === project.components && cache.graphics === project.graphics && cache.footprints === project.footprints && cache.dimensions === project.dimensions) return cache.value
   const out: WorldShape[] = []
   for (const g of project.graphics ?? []) out.push({ id: boardShapeId(g.id), owner: BOARD_SHAPE_OWNER, index: 0, shape: g, placed: true })
+  // A dimension draws its extension lines, crossbar and arrows as lines of its layer, after the board's own drawings.
+  for (const d of project.dimensions ?? []) dimensionShapes(d).forEach((shape, i) => out.push({ id: `${dimensionId(d.id)}:${i}`, owner: BOARD_SHAPE_OWNER, index: 0, shape, placed: true, dim: d.id, select: dimensionId(d.id) }))
   for (const c of project.components) {
     if (!isPhysical(findPart(c.partId))) continue
     pcbShapes(c).forEach((shape, index) => out.push({ id: landShapeId(c.id, index), owner: c.id, index, shape, placed: c.pcb.placed }))
   }
-  cache = { components: project.components, graphics: project.graphics, footprints: project.footprints, value: out }
+  cache = { components: project.components, graphics: project.graphics, footprints: project.footprints, dimensions: project.dimensions, value: out }
   return out
 }

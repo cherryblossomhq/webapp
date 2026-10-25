@@ -146,6 +146,105 @@ export type BoardShape = ShapeStyle & ShapeGeometry
 /** A drawing on the board itself (`Project.graphics`). */
 export type BoardGraphic = BoardShape & { id: string }
 
+// ---------- dimensions, groups and reference images (X11, X12, X14) ----------
+
+/** KiCad's five kinds of dimension: a measured distance along the line between two points, one along an axis, a leader with text, a centre mark, a radius. */
+export type DimensionKind = "aligned" | "orthogonal" | "leader" | "center" | "radial"
+
+/**
+ * A dimension, as KiCad holds it (`PCB_DIMENSION_BASE` and its subclasses, pcbnew/pcb_dimension.cpp), in millimetres in the frame it is
+ * held in (the board's for a board dimension, the land's for a part's, y up). What it draws (extension lines, the crossbar, arrows, the
+ * measured text) is worked out from this by KiCad's own rules (`model/dimensions.ts`) and is never stored. The numbers named "as KiCad
+ * has it" keep KiCad's own sign, which is measured in its frame (y down): `height` is positive when the extension lines point along
+ * (-dy, dx) of the vector from `a` to `b` in that frame.
+ */
+export interface BoardDimension {
+  id: string
+  kind: DimensionKind
+  /** KiCad's name of the layer, as a drawing's. */
+  layer: string
+  /** The points measured (start and end); for a centre mark its centre and the end of one arm; for a radius its centre and a point on the circle; for a leader the tip of its arrow and the end of its line. */
+  a: Vec2
+  b: Vec2
+  /** Aligned and orthogonal: the distance from the points to the crossbar, as KiCad has it. */
+  height?: number
+  /** Orthogonal: measures along y; absent is along x. */
+  vertical?: true
+  /** Aligned and orthogonal: how far the extension lines go past the crossbar. */
+  extHeight: number
+  /** How far the extension lines start from the points. */
+  extOffset: number
+  /** Radial: the length of the line past the circle. */
+  leaderLength?: number
+  /** Leader: a frame round the text, 1 a rectangle, 2 a circle, 3 a rounded rectangle; absent none. */
+  frame?: 1 | 2 | 3
+  /** The line width and the arrow's length. */
+  thickness: number
+  arrow: number
+  /** The arrows point inwards (from outside the crossbar); absent is outwards. */
+  inward?: true
+  /** Where the text sits: 1 on the crossbar, 2 where the text is put by hand; absent is outside the crossbar. */
+  textMode?: 1 | 2
+  /** The text turns with the crossbar. */
+  keep?: true
+  /** The units of the measured value (0 inches, 1 mils, 2 millimetres, 3 automatic), how they show (0 none, 1 after the value, 2 in brackets) and the digits (KiCad's `precision`, 0 to 9). */
+  units: number
+  format: number
+  precision: number
+  /** Trailing zeros are left off. */
+  zeros?: true
+  prefix?: string
+  suffix?: string
+  /** The text in place of the measured value. */
+  override?: string
+  /** The text's own attributes: where, how it turns, how big and how it is drawn; `size` is the glyph height. */
+  x: number
+  y: number
+  rot: number
+  size: number
+  w?: number
+  tw?: number
+  bold?: true
+  italic?: true
+  mirror?: true
+  hj?: "left" | "right"
+  vj?: "top" | "bottom"
+  spacing?: number
+  locked?: true
+}
+
+/**
+ * A KiCad group (`PCB_GROUP`): items that are picked, moved, turned and locked together. `members` are the ids of what is in it: on the
+ * board any object by its id (a part, a trace, a via, a drawing, a text, a dimension, an image, another group); in a part (`ComponentInstance.groups`)
+ * the part's own things by place (`p3` the land's fourth pad, `s0` its first drawing, `t2` the part's third text, `d0` its first dimension, `g1` its second group).
+ */
+export interface PcbGroup {
+  id: string
+  name: string
+  members: string[]
+  locked?: true
+  /** The design block the group was made from (KiCad 10). */
+  lib?: string
+}
+
+/** A bitmap on a layer (KiCad's reference image). Its bytes are a model file kept by the host (`store/modelFiles.ts`); the project holds only their id. */
+export interface ReferenceImage {
+  id: string
+  /** Its centre on the board. */
+  x: number
+  y: number
+  layer: string
+  /** KiCad's scale factor of the image; its size on the board is its pixels at `ppi` times this. */
+  scale: number
+  /** The model file's id (the SHA-256 of the bytes, lowercase hex), its format, and its size in pixels and resolution. */
+  file: string
+  format: "png" | "jpg"
+  px: number
+  py: number
+  ppi: number
+  locked?: true
+}
+
 export interface FootprintDef {
   name: string
   pads: PadDef[]
@@ -414,6 +513,8 @@ export interface ComponentInstance {
   flags?: PartFlags
   /** The part's reference, value and own text, where a board brought in from KiCad has them (`PartText`); absent for a part drawn in the editor. */
   texts?: PartText[]
+  /** Groups inside the footprint, of its own pads, drawings, texts and dimensions (see `PcbGroup`). */
+  groups?: PcbGroup[]
   /** The footprint's id in the KiCad board it came from, `Library:Name`, which `${FOOTPRINT_LIBRARY}` and `${FOOTPRINT_NAME}` in text show; absent for a part drawn in the editor, whose footprint name is `footprint`. */
   fpid?: string
 }
@@ -822,6 +923,12 @@ export interface Project {
   texts: BoardText[]
   /** Drawings on the board itself, on any layer (lines, arcs, circles, rectangles, polygons, curves, ellipses). */
   graphics?: BoardGraphic[]
+  /** Dimensions on the board (KiCad's), whose lines and text are worked out from them (`model/dimensions.ts`). */
+  dimensions?: BoardDimension[]
+  /** Groups of the board's items (KiCad's). */
+  groups?: PcbGroup[]
+  /** Reference images, which are bitmaps held by the host's model file store. */
+  images?: ReferenceImage[]
   board: BoardDef
   rules: DesignRules
   /** Functional blocks of the schematic, each drawn as a titled frame around its parts. */

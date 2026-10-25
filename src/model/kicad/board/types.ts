@@ -164,6 +164,80 @@ export interface KicadTarget {
   node: List
 }
 
+/**
+ * A dimension as the file has it, read as KiCad reads it (`parseDIMENSION`, pcb_io_kicad_sexpr_parser.cpp): every setting the constructor gives
+ * its kind is in place before the file's own are applied, a KiCad 5 dimension (`feature1`, `crossbar`... and a text) is an aligned dimension whose
+ * height comes from its crossbar and whose units come from its text, and its arrows and feature lines are not read (KiCad draws its own).
+ * Numbers are millimetres in KiCad's frame (y down), except where said.
+ */
+export interface KicadDimension {
+  legacy: boolean
+  kind: "aligned" | "orthogonal" | "leader" | "center" | "radial"
+  /** The layer: the dimension's own and its text's name the same layer in a file KiCad wrote; the one read last wins, as the object is both. */
+  layer: string
+  start: Pt
+  end: Pt
+  /** Aligned and orthogonal: KiCad's height, truncated to a nanometre as `UpdateHeight` makes it for a KiCad 5 dimension. */
+  height: number
+  vertical: boolean
+  /** The extension height the file gives, or null for KiCad's default for a dimension that has none. */
+  extensionHeight: number | null
+  extensionOffset: number
+  /** Radial: the leader length the file gives, or null for KiCad's default (three default arrow lengths). */
+  leaderLength: number | null
+  /** Leader: the text frame, 0 none, 1 rectangle, 2 circle, 3 rounded rectangle. */
+  frame: number
+  thickness: number
+  arrowLength: number
+  inward: boolean
+  /** 0 outside, 1 inline, 2 manual (3, which KiCad takes as manual, is 2). */
+  textMode: number
+  keep: boolean
+  /** The units mode (0 inches, 1 mils, 2 millimetres, 3 automatic), or null when the units of a KiCad 5 dimension's text are not one of those. */
+  units: number | null
+  format: number
+  precision: number
+  zeros: boolean
+  prefix: string
+  suffix: string
+  /** The text that replaces the measured value, or null. */
+  override: string | null
+  /** The dimension's text as the file has it (its place, size and flags); null for a centre mark. */
+  text: KicadText | null
+  locked: boolean
+  /** The id the file gives it: the dimension's, or its text's when that comes later (they are one object in KiCad). */
+  uuid: string | null
+  node: List
+}
+
+/** A group as the file has it: its members are the ids of other things in the file. */
+export interface KicadGroup {
+  name: string
+  uuid: string | null
+  locked: boolean
+  libId: string | null
+  members: string[]
+  node: List
+}
+
+/** A reference image as the file has it. */
+export interface KicadImage {
+  at: Pt
+  layer: string
+  scale: number
+  locked: boolean
+  uuid: string | null
+  /** The image's bytes (as the file's base64 decodes), its format, and the size and resolution KiCad reads from them. `format` is null for bytes that are neither a PNG nor a JPEG. */
+  data: Uint8Array
+  format: "png" | "jpg" | null
+  px: number
+  py: number
+  ppi: number
+  /** The resolution a KiCad before 20260623 derived (which truncated pixels per centimetre), and the file's version rescales the image by the ratio. */
+  legacyPpi: number
+  node: List
+}
+
 export interface KicadModel {
   path: string
   /** Offset in millimetres (stamps before 20171114 wrote inches). */
@@ -221,6 +295,8 @@ export interface KicadFootprint {
   texts: KicadText[]
   shapes: KicadShape[]
   zones: KicadZone[]
+  /** Groups of the footprint's own pads, drawings, texts and groups: their members are ids of the footprint's children. */
+  groups: KicadGroup[]
   /** Layers the footprint draws on that KiCad shows and plots on no board layer (`private_layers`, KiCad 7). */
   privateLayers: string[]
   /** Net tie groups: lists of pad numbers whose nets may meet. KiCad 5 tags that say "net tie" make one group of every pad. */
@@ -308,6 +384,9 @@ export interface KicadBoard {
   shapes: KicadShape[]
   targets: KicadTarget[]
   texts: KicadText[]
+  dimensions: KicadDimension[]
+  groups: KicadGroup[]
+  images: KicadImage[]
   /** Lists the typed fields do not cover, by token: dimensions, groups, images, targets, generated patterns... */
   others: Record<string, List[]>
   /** The root `(kicad_pcb ...)` list, whole. */

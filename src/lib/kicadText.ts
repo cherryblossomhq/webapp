@@ -325,6 +325,21 @@ function lineExtent(font: StrokeFontData, text: string, size: P, italic: boolean
   return drawNode(d, parseMarkup(text), { x: 0, y: 0 }, italic ? ITALIC : 0).x
 }
 
+/**
+ * The size of a text's box as KiCad measures it (`FONT::StringBoundaryLimits` with the stroke font, font.cpp:451 of 10.0.0): the line's advance
+ * less the gap after the last character, and the glyph height, each grown by one and a half pens on both sides. Nanometres; a line of
+ * plain text (a marker's own box is not measured separately).
+ */
+export function stringBoundaryLimits(text: string, a: { w: number; h: number; italic: boolean }, pen: number, font: StrokeFontData = current): { w: number; h: number } {
+  const size: P = { x: a.w, y: a.h }
+  const grow = kiRound(pen * 1.5)
+  const width = Math.abs(lineExtent(font, text, size, a.italic) - kiRound(a.w * TEXT_RULES.interChar))
+  return { w: width + 2 * grow, h: Math.abs(a.h) + 2 * grow }
+}
+
+/** The distance between the baselines of two lines at a glyph height (`STROKE_FONT::GetInterline`, with `EDA_TEXT::GetInterline`'s rounding, line spacing 1). */
+export const interlineAt = (h: number) => interlineOf(h, 1)
+
 /** `wxStringSplit`: split at a newline, a trailing empty line dropped. */
 export function splitLines(text: string): string[] {
   const out: string[] = []

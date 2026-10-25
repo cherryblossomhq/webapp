@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { componentTexts, shownOf, textInk, worldTexts, type WorldText } from "../src/model/texts"
+import { componentTexts, isDimensionText, shownOf, textInk, worldTexts, type WorldText } from "../src/model/texts"
 import type { Project } from "../src/model/types"
 import { boxCornersOracle, oracleInk, textOracle, type OracleFont, type OracleText } from "./kicad-census/texts.mjs"
 
@@ -124,7 +124,7 @@ export function checkTexts(text: string, project: Project, opts: { font?: Oracle
   }
 
   // board text
-  const boardWorld = worldTexts(project).filter((t) => t.kind === "board").map((w) => ({ w, used: false }))
+  const boardWorld = worldTexts(project).filter((t) => t.kind === "board" && !isDimensionText(t)).map((w) => ({ w, used: false }))
   for (const t of o.board) {
     if (!fileOf(t)) continue
     result.file++

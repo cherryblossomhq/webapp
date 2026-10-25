@@ -162,11 +162,11 @@ export interface PartPlacement {
  * plus the text's on the top and the part's turn minus the text's on the bottom (a mirror turns the other way), its
  * mirror flag the other way on the bottom, and its layer the other side.
  */
-export function convertPartTexts(texts: KicadText[], ref: string, place: PartPlacement, cx: TextConversion, shown: { ref: string }): PartText[] {
+export function convertPartTexts(texts: KicadText[], ref: string, place: PartPlacement, cx: TextConversion, shown: { ref: string }, origins?: number[]): PartText[] {
   const out: PartText[] = []
   const c = Math.cos((place.angle * Math.PI) / 180)
   const s = Math.sin((place.angle * Math.PI) / 180)
-  for (const t of texts) {
+  for (const [source, t] of texts.entries()) {
     if (t.box) {
       cx.lose(`a text box inside a footprint (${ref})`)
       continue
@@ -196,6 +196,7 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const layer = place.bottom ? flipShapeLayer(resolved) : resolved
     const { size, mirror: _mirror, ...rest } = attrs
     const kind = t.kind === "reference" || t.kind === "value" ? t.kind : "user"
+    origins?.push(source)
     // A reference or value says what it shows only when that is not the part's own (a part KiCad names `REF**` is renamed).
     const text = kind === "user" ? t.text : kind === "reference" && t.text !== shown.ref ? t.text : undefined
     out.push({

@@ -6,7 +6,7 @@ import { computeConnectivity } from "../model/connectivity"
 import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } from "../model/netClasses"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
-import { worldTexts } from "../model/texts"
+import { isDimensionText, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
 
@@ -92,6 +92,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...assemblyNotes(project),
     ...drawingNotes(project),
     ...textNotes(project),
+    ...dimensionNotes(project),
     "FILES",
     ...files.map((f) => `  ${f}`),
   ]
@@ -143,7 +144,8 @@ function netClassNotes(project: Project): string[] {
 
 /** Where the drawings on the board and in its parts went, and which were not plotted: only for a board that has any. */
 function drawingNotes(project: Project): string[] {
-  const all = worldShapes(project)
+  // A dimension's lines are in the DIMENSIONS block, not counted as drawings.
+  const all = worldShapes(project).filter((s) => !s.dim)
   if (!all.length) return []
   const plotted: [string, string, string][] = [
     ["F.Cu", "Top copper", "in the top copper file, after the pours, pads and traces"],
@@ -174,9 +176,42 @@ function drawingNotes(project: Project): string[] {
   ]
 }
 
+/** Where the dimensions and reference images of a board brought in from KiCad went: only for a board that has any, so a board drawn here reads as it did. */
+function dimensionNotes(project: Project): string[] {
+  const dims = project.dimensions ?? []
+  const images = project.images ?? []
+  if (!dims.length && !images.length) return []
+  const plotted = new Map([
+    ["F.Cu", "top copper"],
+    ["B.Cu", "bottom copper"],
+    ["F.Mask", "top solder mask"],
+    ["B.Mask", "bottom solder mask"],
+    ["F.Paste", "top paste"],
+    ["B.Paste", "bottom paste"],
+    ["F.SilkS", "top silkscreen"],
+    ["B.SilkS", "bottom silkscreen"],
+    ["Edge.Cuts", "board outline"],
+  ])
+  const lines: string[] = []
+  const by = new Map<string, number>()
+  for (const d of dims) by.set(d.layer, (by.get(d.layer) ?? 0) + 1)
+  const kept = [...by].filter(([layer]) => plotted.has(layer))
+  const skipped = [...by].filter(([layer]) => !plotted.has(layer)).reduce((n, [, c]) => n + c, 0)
+  if (dims.length) {
+    lines.push("DIMENSIONS")
+    for (const [layer, n] of kept) lines.push(`  ${layer.padEnd(18)}${n}: lines and text in the ${plotted.get(layer)} file`)
+    if (skipped) lines.push(`  Not plotted       ${skipped}: dimensions on fabrication, courtyard, adhesive and user layers are not in the files, as KiCad does not plot them by default`)
+    lines.push("", "")
+  }
+  if (images.length) {
+    lines.push("REFERENCE IMAGES", `  ${images.length} image${images.length > 1 ? "s" : ""} kept for the board and its export; never plotted, as KiCad plots none`, "", "")
+  }
+  return lines
+}
+
 /** Where the texts of a board brought in from KiCad went and which were not plotted: only for a board that has any, so a board drawn here reads as it did. */
 function textNotes(project: Project): string[] {
-  const all = worldTexts(project)
+  const all = worldTexts(project).filter((t) => !isDimensionText(t))
   if (!all.length) return []
   const placed = all.filter((t) => t.placed)
   const drawn = placed.filter((t) => !t.hidden)

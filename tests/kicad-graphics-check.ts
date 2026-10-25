@@ -55,7 +55,8 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
       : [[[t.at[0] - h, t.at[1]], [t.at[0] + h, t.at[1]]], [[t.at[0], t.at[1] - h], [t.at[0], t.at[1] + h]]]
     for (const seg of segs) file.push({ type: "line", layer: t.layer, width: w, filled: false, dash: null, multi: false, quarter: true, lines: [seg] })
   }
-  const world = worldShapes(project)
+  // (the lines of a dimension are checked with the dimensions, `kicad-dimensions-check.ts`)
+  const world = worldShapes(project).filter((w) => !w.dim)
   const layers: Record<string, number> = {}
   for (const s of file) layers[s.layer] = (layers[s.layer] ?? 0) + 1
   const projCounts: Record<string, number> = {}

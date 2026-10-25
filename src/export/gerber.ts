@@ -426,6 +426,7 @@ export function gerberEdgeCuts(project: Project): string {
     ]
     w.stroke([...corners, corners[0]], EDGE_WIDTH)
     plotTexts(w, project, "Edge.Cuts")
+    for (const shape of drawingsOn(project, "Edge.Cuts")) plotShape(w, shape)
     return w.toString("Profile,NP")
   }
   w.use(`C,${num(EDGE_WIDTH)}`)
@@ -442,6 +443,7 @@ export function gerberEdgeCuts(project: Project): string {
   line({ x: minX, y: maxY - r }, { x: minX, y: minY + r })
   w.arcCcwTo({ x: minX + r, y: minY }, { x: r, y: 0 })
   plotTexts(w, project, "Edge.Cuts")
+  for (const shape of drawingsOn(project, "Edge.Cuts")) plotShape(w, shape)
   return w.toString("Profile,NP")
 }
 

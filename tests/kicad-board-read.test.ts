@@ -534,12 +534,14 @@ describe("switch 18: dimensions of both forms are kept and accounted for", () =>
   it("a legacy one and a new one", () => {
     const legacy = '(dimension 10 (width 0.15) (layer Dwgs.User) (gr_text "10" (at 5 5) (layer Dwgs.User) (effects (font (size 1 1) (thickness 0.15)))) (feature1 (pts (xy 0 0) (xy 0 5))) (feature2 (pts (xy 10 0) (xy 10 5))) (crossbar (pts (xy 0 4) (xy 10 4))) (arrow1a (pts (xy 0 4) (xy 0.5 4.2))) (arrow1b (pts (xy 0 4) (xy 0.5 3.8))) (arrow2a (pts (xy 10 4) (xy 9.5 4.2))) (arrow2b (pts (xy 10 4) (xy 9.5 3.8))))'
     const modern = '(dimension (type aligned) (layer "Dwgs.User") (uuid "x") (pts (xy 0 0) (xy 10 0)) (height 3) (gr_text "10" (at 5 3 0) (layer "Dwgs.User") (uuid "y") (effects (font (size 1 1) (thickness 0.15)))) (format (units 3) (units_format 0) (precision 4)) (style (thickness 0.1) (arrow_length 1.27) (text_position_mode 0) (extension_height 0.58) (extension_offset 0.5) keep_text_aligned))'
-    expect(read(board({ version: 20171130, outline: false, body: [legacy] })).board.others.dimension).toHaveLength(1)
-    expect(read(board({ outline: false, body: [modern] })).board.others.dimension).toHaveLength(1)
+    expect(read(board({ version: 20171130, outline: false, body: [legacy] })).board.dimensions).toHaveLength(1)
+    expect(read(board({ outline: false, body: [modern] })).board.dimensions).toHaveLength(1)
     for (const text of [board({ version: 20171130, outline: false, body: [legacy] }), board({ outline: false, body: [modern] })]) {
       const r = importKicadBoard(text)
-      expect(r.status === "refused" && r.needs.some((n) => n.ext === "X11")).toBe(true)
-      if (r.status === "refused") expect(r.report.account!.unknownPaths.size).toBe(0)
+      // dimensions are built: every node is accounted for and the board comes in with one
+      expect(r.report.account!.unknownPaths.size).toBe(0)
+      // (these fixtures have no outline, which is X2's: the dimension does not keep them out)
+      expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X2"])
     }
   })
 })

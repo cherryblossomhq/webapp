@@ -1,11 +1,15 @@
 import { legacyArc, rotK } from "./geometry"
+import { decodeBase64, imageFacts } from "./imageData"
 import { newReport, type ImportReport } from "./report"
 import { atomsOf, decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "./sexpr"
 import type {
   Era,
   KicadArcTrack,
   KicadBoard,
+  KicadDimension,
   KicadFootprint,
+  KicadGroup,
+  KicadImage,
   KicadModel,
   KicadNet,
   KicadPad,
@@ -135,7 +139,7 @@ const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
 const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
-const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page"])
+const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image"])
 
 function kicadKind(text: string): string | null {
   const head = text.slice(0, 400).replace(/^﻿/, "").trimStart()
@@ -532,6 +536,225 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   const isBack = (layerName: string) => layerName === copper.back || layerName === "B.Cu"
 
   // ---- footprints ----
+  /** The id of an object: `(uuid ...)` or, before KiCad 7, `(tstamp ...)`. */
+  const uuidOf = (c: List): string | null => strAt(kid(c, "uuid"), 1) ?? strAt(kid(c, "tstamp"), 1) ?? null
+
+  /**
+   * A group (`parseGROUP`, parser line 8285 of master): a name and the word `locked` before its lists, then its id (`id` from format 20200811 to 20231214, `uuid` after),
+   * `(locked yes)`, the design block it came from (`lib_id`) and the ids of its `members`.
+   */
+  const groupOf = (c: List): KicadGroup => {
+    const members: string[] = []
+    for (const m of kids(c, "members")) for (const x of m.slice(1)) if (typeof x === "string") members.push(x)
+    return {
+      name: typeof c[1] === "string" && c[1] !== "locked" ? c[1] : "",
+      uuid: strAt(kid(c, "uuid"), 1) ?? strAt(kid(c, "id"), 1) ?? null,
+      locked: c.slice(1).some((x) => x === "locked") || flagOf(c, "locked"),
+      libId: strAt(kid(c, "lib_id"), 1)?.replace(/\{slash\}/g, "/") ?? null,
+      members,
+      node: c,
+    }
+  }
+
+  /** The units a KiCad 5 dimension's text names (`FetchUnitsFromString`): inches 0, mils 1, millimetres 2, none named 3 (automatic, shown as millimetres), another unit 4. */
+  const unitsOfText = (text: string): number => {
+    const trimmed = text.trim()
+    let at = 0
+    while (at < trimmed.length && /[0-9.,+-]/.test(trimmed[at])) at++
+    const unit = trimmed.slice(at).trimStart().slice(0, 2).toLowerCase()
+    if (unit === "um" || unit === "\u00b5m" || unit === "\u03bcm" || unit === "cm" || unit === "de" || unit === "ra" || unit === "fs" || unit === "ps") return 4
+    if (unit === "mm") return 2
+    if (unit === "mi" || unit === "th") return 1
+    if (unit === "in" || unit === "\"") return 0
+    return 3
+  }
+
+  /** A dimension: the constructor's own values for its kind, then the file's over them (`parseDIMENSION`, parser line 5593 of master; the constructors of pcb_dimension.cpp). */
+  const dimensionOf = (c: List): KicadDimension => {
+    let i = 1
+    let locked = false
+    if (c[i] === "locked") {
+      locked = true
+      i++
+    }
+    // A number before the first list is the value old files saved; it is skipped.
+    if (typeof c[i] === "string") i++
+    const first = c[i]
+    const legacy = Array.isArray(first) && first[0] === "width"
+    const typeWord = legacy ? "aligned" : (strAt(kid(c, "type"), 1) ?? "aligned")
+    const known = typeWord === "aligned" || typeWord === "orthogonal" || typeWord === "leader" || typeWord === "center" || typeWord === "radial"
+    if (!known) issues.note(`a dimension of the unknown type ${typeWord}`)
+    const kind = (known ? typeWord : "aligned") as KicadDimension["kind"]
+    const d: KicadDimension = {
+      legacy,
+      kind,
+      layer: "Dwgs.User",
+      start: { x: 0, y: 0 },
+      end: { x: 0, y: 0 },
+      height: 0,
+      vertical: false,
+      extensionHeight: null,
+      extensionOffset: 0,
+      leaderLength: null,
+      frame: 0,
+      thickness: 0.2,
+      arrowLength: 1.27,
+      inward: false,
+      textMode: 0,
+      keep: kind === "aligned" || kind === "orthogonal" || kind === "radial",
+      units: 0,
+      format: kind === "aligned" || kind === "orthogonal" ? 1 : 0,
+      precision: 4,
+      zeros: false,
+      prefix: kind === "radial" ? "R " : "",
+      suffix: "",
+      override: kind === "leader" ? "Leader" : kind === "center" ? "" : null,
+      text: null,
+      locked,
+      uuid: uuidOf(c),
+      node: c,
+    }
+    const number = (n: List | undefined, k: number, what: string) => {
+      const v = Number(strAt(n, k))
+      if (!n || !Number.isFinite(v)) {
+        issues.note(what)
+        return 0
+      }
+      return v
+    }
+    let crossbar: [Pt, Pt] | null = null
+    let feature1: Pt | null = null
+    let feature2: Pt | null = null
+    if (legacy) d.thickness = number(first as List, 1, "a dimension's width")
+    for (let k = legacy ? i + 1 : i; k < c.length; k++) {
+      const n = c[k]
+      if (!Array.isArray(n) || typeof n[0] !== "string") continue
+      switch (n[0]) {
+        case "layer":
+          d.layer = strAt(n, 1) ?? d.layer
+          break
+        case "uuid":
+        case "tstamp":
+          d.uuid = strAt(n, 1) ?? d.uuid
+          break
+        case "gr_text": {
+          const t = textOf(n, "board")
+          d.text = t
+          d.layer = t.layer || d.layer
+          d.uuid = uuidOf(n) ?? d.uuid
+          if (t.locked) d.locked = true
+          if (legacy) d.units = unitsOfText(t.text)
+          break
+        }
+        case "pts": {
+          const p = kids(n, "xy").map((x) => pt(x, "a dimension's points"))
+          if (p[0]) d.start = p[0]
+          if (p[1]) d.end = p[1]
+          break
+        }
+        case "height":
+          if (kind === "aligned" || kind === "orthogonal") d.height = number(n, 1, "a dimension's height")
+          break
+        case "leader_length":
+          if (kind === "radial") d.leaderLength = number(n, 1, "a dimension's leader length")
+          break
+        case "orientation":
+          if (kind === "orthogonal") d.vertical = Math.min(1, Math.max(0, Math.trunc(number(n, 1, "a dimension's orientation")))) === 1
+          break
+        case "format":
+          for (const f of n.slice(1)) {
+            if (!Array.isArray(f)) continue
+            if (f[0] === "prefix") d.prefix = strAt(f, 1) ?? ""
+            else if (f[0] === "suffix") d.suffix = strAt(f, 1) ?? ""
+            else if (f[0] === "units") {
+              const mode = Math.max(0, Math.min(4, Math.trunc(number(f, 1, "a dimension's units"))))
+              if (mode !== 4) d.units = mode
+            } else if (f[0] === "units_format") d.format = Math.max(0, Math.min(3, Math.trunc(number(f, 1, "a dimension's unit format"))))
+            else if (f[0] === "precision") d.precision = Math.trunc(number(f, 1, "a dimension's precision"))
+            else if (f[0] === "override_value") d.override = strAt(f, 1) ?? ""
+            else if (f[0] === "suppress_zeroes") d.zeros = f[1] === undefined || f[1] === "yes" || f[1] === "true"
+          }
+          break
+        case "style":
+          // In the typed format the text keeps aligned only when the style says so.
+          d.keep = false
+          for (const s of n.slice(1)) {
+            if (!Array.isArray(s)) continue
+            if (s[0] === "thickness") d.thickness = number(s, 1, "a dimension's line width")
+            else if (s[0] === "arrow_direction") d.inward = s[1] === "inward"
+            else if (s[0] === "arrow_length") d.arrowLength = number(s, 1, "a dimension's arrow length")
+            else if (s[0] === "text_position_mode") d.textMode = Math.min(2, Math.max(0, Math.trunc(number(s, 1, "a dimension's text position"))))
+            else if (s[0] === "extension_height") d.extensionHeight = number(s, 1, "a dimension's extension height")
+            else if (s[0] === "extension_offset") d.extensionOffset = number(s, 1, "a dimension's extension offset")
+            else if (s[0] === "keep_text_aligned") d.keep = s[1] === undefined || s[1] === "yes" || s[1] === "true"
+            else if (s[0] === "text_frame") d.frame = Math.max(0, Math.min(3, Math.trunc(number(s, 1, "a dimension's text frame"))))
+          }
+          break
+        case "feature1":
+          feature1 = pt(kids(kid(n, "pts"), "xy")[0], "a dimension's feature line")
+          break
+        case "feature2":
+          feature2 = pt(kids(kid(n, "pts"), "xy")[0], "a dimension's feature line")
+          break
+        case "crossbar": {
+          const p = kids(kid(n, "pts"), "xy").map((x) => pt(x, "a dimension's crossbar"))
+          if (p.length >= 2) crossbar = [p[0], p[1]]
+          break
+        }
+        case "locked":
+          d.locked = n[1] === undefined || n[1] === "yes" || n[1] === "true"
+          break
+        default:
+          break
+      }
+    }
+    if (legacy) {
+      if (feature1) d.start = feature1
+      if (feature2) d.end = feature2
+      if (crossbar) {
+        // `UpdateHeight( point2, point1 )` of the crossbar's two ends, backwards on purpose: its distance from the first feature point, signed by the way round.
+        const [p1, p2] = crossbar
+        const iu = (v: number) => Math.round(v * 1e6)
+        const hx = iu(p2.x) - iu(d.start.x)
+        const hy = iu(p2.y) - iu(d.start.y)
+        const bx = iu(p1.x) - iu(p2.x)
+        const by = iu(p1.y) - iu(p2.y)
+        const length = Math.trunc(Math.hypot(hx, hy))
+        d.height = (hx * by - hy * bx > 0 ? -length : length) / 1e6
+      }
+      // A KiCad 5 dimension's text keeps aligned and sits outside: the object is made before its style is known and takes the constructor's settings back.
+      d.keep = true
+      d.textMode = 0
+    }
+    return d
+  }
+
+  /** A reference image (`parsePCB_REFERENCE_IMAGE`, parser line 4322 of master): its place, layer and scale, the picture as base64, and the id. */
+  const imageOf = (c: List): KicadImage => {
+    const dataNode = kid(c, "data")
+    const bytes = dataNode ? decodeBase64(dataNode.slice(1).filter((x): x is string => typeof x === "string").join("")) : null
+    if (!bytes) issues.note("a reference image whose data does not decode")
+    const facts = imageFacts(bytes ?? new Uint8Array(0))
+    const scaleNode = kid(c, "scale")
+    const rawScale = scaleNode ? numAt(scaleNode, 1, 1) : 1
+    // `std::isnormal` of the scale: zero, infinity and a denormal are 1.
+    const scale = Number.isFinite(rawScale) && Math.abs(rawScale) >= 2.2250738585072014e-308 ? rawScale : 1
+    return {
+      at: pt(kid(c, "at"), "a reference image's place"),
+      layer: strAt(kid(c, "layer"), 1) ?? "",
+      scale,
+      locked: flagOf(c, "locked"),
+      uuid: uuidOf(c),
+      data: bytes ?? new Uint8Array(0),
+      format: facts.format,
+      px: facts.px,
+      py: facts.py,
+      ppi: facts.ppi,
+      legacyPpi: facts.legacyPpi,
+      node: c,
+    }
+  }
+
   const footprints: KicadFootprint[] = []
   for (const fp of tree) {
     if (!Array.isArray(fp) || (fp[0] !== "footprint" && fp[0] !== "module")) continue
@@ -687,6 +910,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       texts,
       shapes,
       zones: kids(fp, "zone").map((z) => zoneOf(z, place)),
+      groups: kids(fp, "group").map(groupOf),
       privateLayers: atomsOf(kid(fp, "private_layers")),
       netTies,
       jumperGroups,
@@ -753,12 +977,18 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   }))
   const shapes: KicadShape[] = []
   const texts: KicadText[] = []
+  const dimensions: KicadDimension[] = []
+  const groups: KicadGroup[] = []
+  const images: KicadImage[] = []
   const others: Record<string, List[]> = {}
   for (const c of tree) {
     if (!Array.isArray(c) || typeof c[0] !== "string") continue
     const head = c[0]
     if (head.startsWith("gr_") && SHAPE_KINDS.has(head.slice(3))) shapes.push(shapeOf(c, head.slice(3) as ShapeKind))
     else if (head === "gr_text" || head === "gr_text_box") texts.push(textOf(c, "board"))
+    else if (head === "dimension") dimensions.push(dimensionOf(c))
+    else if (head === "group") groups.push(groupOf(c))
+    else if (head === "image") images.push(imageOf(c))
     else if (!TYPED_ROOT.has(head)) (others[head] ??= []).push(c)
   }
 
@@ -806,6 +1036,9 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     shapes,
     targets,
     texts,
+    dimensions,
+    groups,
+    images,
     others,
     tree,
   }

@@ -130,7 +130,7 @@ describe("B3: every word of the file is accounted for", () => {
   it("a layer's name, a net's name and a pad's number are names, not words to know", () => {
     expect(unknown(footprint({ pads: [pad({ number: "A1", at: "0 0", net: "(net 1 SomeNet)" })] }))).toEqual([])
   })
-  it("unlocked, knockout, keep_text_aligned and a bare hide on a property are known; the text is carried and the dimension needs its extension", () => {
+  it("unlocked, knockout, keep_text_aligned and a bare hide on a property are known; the text and the dimension are carried", () => {
     const text = board({
       body: [
         `(footprint "K" (layer "F.Cu") (at 0 0) (property "Reference" "K1" (at 0 0 0 unlocked) (layer "F.SilkS" knockout) hide) ${pad({ at: "0 0" })})`,
@@ -139,8 +139,9 @@ describe("B3: every word of the file is accounted for", () => {
     })
     const r = importKicadBoard(text)
     expect(r.report.account!.unknownAtoms.size).toBe(0)
-    // text is built, so only the dimension keeps the board out
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X11"])
+    // text and dimensions are built, so nothing keeps the board out
+    expect(r.status).toBe("imported")
+    if (r.status === "imported") expect(r.project.dimensions).toHaveLength(1)
   })
   it("the words inside a node the table drops whole are not asked about", () => {
     const text = board({ setup: "(setup (pad_to_mask_clearance 0) (pcbplotparams (layerselection 0x00010fc_ffffffff) (outputdirectory gerbers/)))" })

@@ -10,10 +10,11 @@
 import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
 import { transformPoint } from "../lib/geometry"
 import { inkBox, iuToMm, kiRound, knockoutMargin, layoutText, linebreakText, mmToIu, strokeFont, type IuBox, type StrokeFontData, type TextAttrsIu, type TextStrokes } from "../lib/kicadText"
+import { dimensionDrawing } from "./dimensions"
 import { findPart } from "./library"
 import { isPhysical, valueText } from "./instances"
 import { flipShapeLayer, shapeLayerInfo, type ShapeLayerKind } from "./shapeLayers"
-import type { BoardText, ComponentInstance, PartText, Project, TextAttrs, Vec2 } from "./types"
+import type { BoardDimension, BoardText, ComponentInstance, PartText, Project, TextAttrs, Vec2 } from "./types"
 
 // Text objects on the board (X9): board text, and the reference, value and own text of each part, with
 // where each is and how it is drawn as KiCad draws it. A text is laid out by `lib/kicadText.ts` in KiCad's
@@ -317,21 +318,67 @@ export function componentTexts(c: ComponentInstance): WorldText[] {
   return hit
 }
 
-let all: { components: Project["components"]; texts: Project["texts"]; value: WorldText[] } | null = null
+/** The text of a dimension as a world text (X11): what KiCad shows for it, anchored where KiCad puts it, on the dimension's layer. Selecting it selects the dimension (`m:<id>`). */
+export function dimensionWorldText(d: BoardDimension): WorldText | null {
+  const t = dimensionDrawing(d).text
+  if (!t || t.content === "") return null
+  const hj = d.hj === "left" ? -1 : d.hj === "right" ? 1 : 0
+  const vj = d.vj === "top" ? -1 : d.vj === "bottom" ? 1 : 0
+  const source: BoardText = { id: `m:${d.id}`, layer: d.layer, text: t.content, x: t.x, y: t.y, size: d.size, rot: t.rot, side: d.layer.startsWith("B.") ? "bottom" : "top" }
+  return {
+    id: `m:${d.id}`,
+    owner: DIMENSION_TEXT_OWNER,
+    index: 0,
+    kind: "board",
+    placed: true,
+    hidden: false,
+    locked: d.locked === true,
+    layer: d.layer,
+    x: t.x,
+    y: t.y,
+    rot: t.rot,
+    drawRot: t.rot,
+    mirror: d.mirror === true,
+    size: d.size,
+    w: d.w ?? d.size,
+    thickness: d.tw ?? 0,
+    bold: d.bold === true,
+    italic: d.italic === true,
+    knockout: false,
+    hj,
+    vj,
+    spacing: d.spacing ?? 1,
+    upright: false,
+    content: t.content,
+    source,
+  }
+}
+
+/** The owner of a dimension's text among the world texts. */
+export const DIMENSION_TEXT_OWNER = "#dim"
+
+/** Whether a world text is a dimension's: the texts the project holds as texts are not (the KiCad export writes a dimension with its text, not a text). */
+export const isDimensionText = (t: WorldText) => t.owner === DIMENSION_TEXT_OWNER
+
+let all: { components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] } | null = null
 
 /** Every KiCad text of the board and of its parts, board text first. Reused while the parts and the board's text are unchanged. */
 export function worldTexts(project: Project): WorldText[] {
-  if (all && all.components === project.components && all.texts === project.texts) return all.value
+  if (all && all.components === project.components && all.texts === project.texts && all.dimensions === project.dimensions) return all.value
   const out: WorldText[] = []
   project.texts?.forEach((t, index) => {
     if (!isKicadText(t)) return
     out.push(fromAttrs({ id: boardTextId(t.id), owner: "#board", index, kind: "board", placed: true, source: t, content: t.text }, t, { x: t.x, y: t.y, rot: t.rot, mirror: t.mirror === true, layer: t.layer }, false))
   })
+  for (const d of project.dimensions ?? []) {
+    const wt = dimensionWorldText(d)
+    if (wt) out.push(wt)
+  }
   for (const c of project.components) {
     if (!isPhysical(findPart(c.partId))) continue
     out.push(...componentTexts(c))
   }
-  all = { components: project.components, texts: project.texts, value: out }
+  all = { components: project.components, texts: project.texts, dimensions: project.dimensions, value: out }
   return out
 }
 

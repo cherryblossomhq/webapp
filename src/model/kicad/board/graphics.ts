@@ -266,7 +266,7 @@ export function convertTarget(t: KicadBoard["targets"][number], cx: GraphicsCont
 }
 
 /** The shapes of one footprint as a land's, in the land's frame, and the box of those on the part's own courtyard layer. */
-export function landShapes(fp: KicadFootprint, board: KicadBoard, bottom: boolean, netName: (raw: string) => string | undefined, lose: (what: string) => void, degenerate: string[], badNets: string[]): { shapes: BoardShape[]; privateCount: number } {
+export function landShapes(fp: KicadFootprint, board: KicadBoard, bottom: boolean, netName: (raw: string) => string | undefined, lose: (what: string) => void, degenerate: string[], badNets: string[]): { shapes: BoardShape[]; privateCount: number; origins: number[] } {
   const cx: GraphicsContext = {
     board,
     // The land is the library's: the same on both sides (see `landPad`), so a bottom footprint's y is kept as it is stored and its layers are swapped.
@@ -280,12 +280,16 @@ export function landShapes(fp: KicadFootprint, board: KicadBoard, bottom: boolea
     where: `${fp.ref || fp.name || "a footprint"}`,
   }
   const shapes: BoardShape[] = []
+  /** For each drawing of the land, the place of the file's drawing it came from (a drawing may come out as none, or as several). */
+  const origins: number[] = []
   let privateCount = 0
-  for (const s of fp.shapes) {
+  fp.shapes.forEach((s, i) => {
     if (s.layers.some((n) => fp.privateLayers.includes(n))) privateCount++
-    shapes.push(...convertShape(s, cx))
-  }
-  return { shapes, privateCount }
+    const made = convertShape(s, cx)
+    shapes.push(...made)
+    for (let k = 0; k < made.length; k++) origins.push(i)
+  })
+  return { shapes, privateCount, origins }
 }
 
 /** The courtyard of a land: the box of its drawings on its own courtyard layer, or null when it has none. */

@@ -147,6 +147,25 @@ describe("Sakura and zones", () => {
     expect(runTool(both, "set_pour", { net: "GND", layer: "top", remove: true }).project.zones).toHaveLength(2)
   })
 
+  it("removing a pour by net says that polygon zones on the net stay, and names their ids", () => {
+    const poly = runTool(twoResistors(), "set_pour", { net: "GND", layer: "both", polygon: [-10, -8, 10, -8, 10, 3, -10, 3] }).project
+    const id = poly.zones[0].id
+    // Only polygon zones on the net: nothing is removed, and the answer says where they are.
+    const none = runTool(poly, "set_pour", { net: "GND", layer: "top", remove: true })
+    expect(none.isError).toBe(true)
+    expect(none.result).toContain("whole-board")
+    expect(none.result).toContain(`id ${id}`)
+    expect(none.project.zones).toHaveLength(1)
+    // A whole-board pour too: it goes, the polygon zone stays and the answer says so.
+    const both = runTool(poly, "set_pour", { net: "GND", layer: "top" }).project
+    const gone = runTool(both, "set_pour", { net: "GND", layer: "top", remove: true })
+    expect(gone.isError).toBe(false)
+    expect(gone.project.zones.map((z) => z.id)).toEqual([id])
+    expect(gone.result).toContain(`id ${id}`)
+    // A net with no polygon zone gets the answer it always got.
+    expect(runTool(twoResistors(), "set_pour", { net: "GND", layer: "top", remove: true }).result).toBe("Error: There is no GND pour on top")
+  })
+
   it("says why a polygon or a net does not work, and leaves the project alone", () => {
     const p = twoResistors()
     expect(runTool(p, "set_pour", { net: "GND", layer: "top", polygon: [0, 0, 1, 1] })).toMatchObject({ isError: true })

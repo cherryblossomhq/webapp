@@ -1,4 +1,4 @@
-import { emptyBox, expandBox, rotate90, round, snap, type Box } from "../lib/geometry"
+import { emptyBox, expandBox, normalizeAngle, rotate90, round, snap, type Box } from "../lib/geometry"
 import { uid } from "../lib/id"
 import { createBlock } from "./blocks"
 import { computeConnectivity, pinKey, UnionFind } from "./connectivity"
@@ -242,8 +242,8 @@ const ccw = (p: Point, degrees: number): Point => {
 }
 
 /** A world point into a part's own frame: the inverse of `transformPoint` for its pose. */
-function toLocal(p: Point, origin: Point, rot: Rotation, mirror: boolean): Vec2 {
-  const r = rotate90({ x: p.x - origin.x, y: p.y - origin.y }, ((360 - rot) % 360) as Rotation)
+function toLocal(p: Point, origin: Point, rot: number, mirror: boolean): Vec2 {
+  const r = rotate90({ x: p.x - origin.x, y: p.y - origin.y }, -rot)
   return { x: round(mirror ? -r.x : r.x), y: round(r.y) }
 }
 
@@ -287,7 +287,7 @@ const sizeOf = (w: number, h: number, rot: Rotation) => (rot === 90 || rot === 2
  * A pad in a part's own frame, or null for an element that isn't one. A pad keeps its turn in
  * the world, so one the part's quarter turn doesn't square up becomes a polygon of its outline.
  */
-function localPad(e: PcbPadElement, pin: string | null, origin: Point, rot: Rotation, mirror: boolean): PadDef | null {
+function localPad(e: PcbPadElement, pin: string | null, origin: Point, rot: number, mirror: boolean): PadDef | null {
   const at = toLocal(e, origin, rot, mirror)
   const polygon = (outline: Point[], hole?: Partial<PadDef>): PadDef => {
     const points = outline.map((p) => toLocal(p, origin, rot, mirror))
@@ -384,7 +384,7 @@ function localPad(e: PcbPadElement, pin: string | null, origin: Point, rot: Rota
         pin: null,
         shape: "pill",
         ...at,
-        ...sizeOf(w, h, rot),
+        ...sizeOf(w, h, quarterTurn(-rot).rot),
         holeDiameter: Math.min(w, h),
         slotLength: Math.max(w, h),
         layer: "through",
@@ -397,7 +397,7 @@ function localPad(e: PcbPadElement, pin: string | null, origin: Point, rot: Rota
 }
 
 /** Silkscreen strokes in a part's own frame. */
-function localSilk(e: PcbDrawing, origin: Point, rot: Rotation, mirror: boolean): Vec2[][] {
+function localSilk(e: PcbDrawing, origin: Point, rot: number, mirror: boolean): Vec2[][] {
   const local = (points: Point[]) => [points.map((p) => toLocal(p, origin, rot, mirror))]
   if (e.type === "pcb_silkscreen_path" && e.route && e.route.length > 1) return local(e.route)
   if (e.type === "pcb_silkscreen_line" && [e.x1, e.y1, e.x2, e.y2].every((n) => typeof n === "number")) {
@@ -419,7 +419,7 @@ function localSilk(e: PcbDrawing, origin: Point, rot: Rotation, mirror: boolean)
 }
 
 /** Courtyard bounds in a part's own frame, or null when the part draws none. */
-function localCourtyard(drawings: PcbDrawing[], origin: Point, rot: Rotation, mirror: boolean): Box | null {
+function localCourtyard(drawings: PcbDrawing[], origin: Point, rot: number, mirror: boolean): Box | null {
   const b = emptyBox()
   for (const e of drawings) {
     const points: Point[] =
@@ -709,7 +709,6 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
   const groupOf = new Map<string, string>()
   const refs = new Set<string>()
   const skipped: string[] = []
-  const turned: string[] = []
   const padless: string[] = []
   const unsupported: string[] = []
 
@@ -747,8 +746,8 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
       return null
     }
 
-    const { rot, rest } = quarterTurn(pcb.rotation)
-    if (rest) turned.push(ref)
+    // The part keeps the angle it has (X6), so its land is drawn in its own frame at any angle, and a pad the part's turn squares up stays a plain pad.
+    const rot = normalizeAngle(pcb.rotation ?? 0)
     const mirror = pcb.layer === "bottom"
     const origin = pcb.center
     const localPads: PadDef[] = []
@@ -774,7 +773,7 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
     for (const pad of localPads) if (pad.pin && !keptPins.has(pad.pin)) pad.pin = null
 
     // The land: the footprinter's when it draws these very pads, else the board's own.
-    let footprint = rest ? undefined : footprinterCandidates(cadFootprints.get(pcb.pcb_component_id)).find((f) => sameLand(f, localPads))
+    let footprint = footprinterCandidates(cadFootprints.get(pcb.pcb_component_id)).find((f) => sameLand(f, localPads))
     if (!footprint) {
       const mine = drawings.filter((d) => d.pcb_component_id === pcb.pcb_component_id)
       const land = {
@@ -1008,7 +1007,6 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
   if (skipped.length) notes.push(`Left out ${skipped.length} part${skipped.length > 1 ? "s" : ""} with no pads on the board: ${skipped.join(", ")}.`)
   if (padless.length) notes.push(`Pins with no pad were left off: ${padless.join("; ")}.`)
   if (unsupported.length) notes.push(`Pads of a shape the editor doesn't draw yet were left off: ${unsupported.join("; ")}.`)
-  if (turned.length) notes.push(`Turned by other than a quarter turn, so their land is turned instead: ${turned.join(", ")}.`)
   if (merged.length) notes.push(`Nets tscircuit joined under more than one name keep the first: ${merged.join("; ")}.`)
 
   return {

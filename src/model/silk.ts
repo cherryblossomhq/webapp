@@ -123,9 +123,11 @@ function candidates(c: ComponentInstance, cy: Box, w: number, h: number): Candid
   const right = (s: number) => horiz(cy.maxX + GAP + w / 2, cyMid + s)
   // A part turned on its side keeps its designator beside it, turned with it, the way the
   // reference above an unrotated footprint ends up after rotating it.
-  const upright = c.pcb.rot === 90 || c.pcb.rot === 270
+  // A part at another angle follows the nearest quarter turn of its real angle.
+  const quarter = Math.round((((c.pcb.rot % 360) + 360) % 360) / 90) % 4
+  const upright = quarter === 1 || quarter === 3
   const sides = upright
-    ? c.pcb.rot === 90
+    ? quarter === 1
       ? [leftUp, rightUp, above, below, left, right]
       : [rightUp, leftUp, above, below, right, left]
     : [above, below, left, right, leftUp, rightUp]

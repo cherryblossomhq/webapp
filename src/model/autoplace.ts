@@ -3,8 +3,7 @@ import { mountingHoles } from "./board"
 import { computeConnectivity, pinKey } from "./connectivity"
 import { decouplingPairs, padGap, type DecouplingPair } from "./decoupling"
 import { getFootprint } from "./footprints"
-import { isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "./instances"
-import { findPart } from "./library"
+import { isOnBoard, pcbCourtyard, pcbPads, type WorldPad } from "./instances"
 import { pointPadDistance, segmentPadDistance } from "./pcb"
 import { placeStage, powerStages, STAGE_GAP, type PowerStage } from "./powerStage"
 import { stitchVias } from "./stitch"
@@ -670,7 +669,7 @@ function improvePlacement(
  * out, which is how the measurements compare against placement without it.
  */
 export function autoPlacePcb(project: Project, all = false, options: { powerStage?: boolean } = {}): Project {
-  const physical = project.components.filter((c) => isPhysical(findPart(c.partId)) && !!c.footprint)
+  const physical = project.components.filter((c) => isOnBoard(c) && !!c.footprint)
   const held = all ? heldByLockedCopper(project, physical) : new Set<string>()
   // A part that isn't on the board yet is placed even if it is locked: a lock keeps a part where it
   // is, and a pasted copy of a locked part is nowhere. (Pasting clears the lock too.)
@@ -707,7 +706,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   for (const pair of pairs) {
     const chip = byId.get(pair.chipId)
     if (inStage.has(pair.capId)) continue
-    if (!moving.has(pair.capId) || !chip || !isPhysical(findPart(chip.partId))) continue
+    if (!moving.has(pair.capId) || !chip || !isOnBoard(chip)) continue
     if (!moving.has(chip.id) && !chip.pcb.placed) continue
     capsOf.set(chip.id, [...(capsOf.get(chip.id) ?? []), pair])
   }

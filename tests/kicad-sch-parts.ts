@@ -115,12 +115,11 @@ export const place = (lib: string, at: string, ref: string, extra: Partial<SymSp
 
 export const ALL_LIBS = [LIB_R, LIB_GND, LIB_VCC, LIB_OPAMP, LIB_GATE, LIB_MCU, LIB_JUMPER, LIB_DUPS, LIB_GROUP, LIB_SHAPES]
 
-/** The extensions a measurement run raises besides the ones this slice builds: net names are S2's. */
-export const NET_NAMES_RAISED = new Set(["S2", "S5", "S6", "S10"])
+
 
 /** A sheet of the given symbols, wires and labels imported with the extensions built, S2 raised for measurement. */
 export function importSheet(spec: SchSpec): Project {
-  const r = importKicadSchematic(schematic({ libs: ALL_LIBS, ...spec }), { built: NET_NAMES_RAISED })
+  const r = importKicadSchematic(schematic({ libs: ALL_LIBS, ...spec }))
   if (r.status !== "imported") throw new Error(`refused: ${r.message}\n${r.report.entries.map((e) => `${e.code}: ${e.why}`).join("\n")}`)
   return r.project
 }

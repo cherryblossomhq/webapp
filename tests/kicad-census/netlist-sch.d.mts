@@ -21,6 +21,8 @@ export interface Derived {
   pinsTotal: number
   instances: number
   groupOf(key: string): number | number[] | undefined
+  /** The full name KiCad gives a group's net: its driver's (a global one as written, a local one with its sheet's path), else the pin's `Net-(R1-Pad2)` or `unconnected-(...)`; null when nothing names it. */
+  netName(group: number): string | null
 }
 export function deriveNets(rootFile: string, opts?: DeriveOptions): Derived
 export interface BoardFootprintNets {

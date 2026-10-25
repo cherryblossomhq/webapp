@@ -362,7 +362,7 @@ describe("names Tidy gives", () => {
     p = createBlock(p, "PULL", [of(p, "R1").id]).project
     const r = tidySchematic(p)
     expect(r.ok).toBe(true)
-    expect(r.project.labels.map((l) => l.name)).toContain("U2_SCL")
+    expect(r.project.labels.map((l) => l.name)).toContain("Net-(U2-SCL)")
   })
 })
 
@@ -527,7 +527,7 @@ describe("the guards of an edit, with units, hidden pins and mirrors", () => {
     const pin = schematicPins(of(before, "U1", 2)).find((x) => x.pin === "6")!
     const next = withoutStubAt(before, pin.pos)
     const problems = pinsCutOff(before, next, computeConnectivity(before), computeConnectivity(next))
-    expect(problems).toEqual(["it would cut U1.7, U1.- (pin 6), and R3.1 off BUF"])
+    expect(problems).toEqual(["it would cut U1.7, U1.- (pin 6), and R3.1 off /BUF"])
   })
 
   it("names a pin of another unit once when an edit joins two nets", () => {

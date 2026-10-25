@@ -1,0 +1,51 @@
+// The items of a sheet (S4) as the raw file has them, read with the census's own s-expression reader and no
+// code of `src`: for each kind, its numbers in KiCad's millimetres (y down), in file order. The corpus test
+// compares them with the importer's items, to a thousandth of a millimetre.
+
+import { parseSexpr, kid, kids, numAt } from "./sexpr.mjs"
+
+const pair = (n) => (n ? [numAt(n, 1), numAt(n, 2)] : [0, 0])
+
+/** @returns {{ kind: string, nums: number[], rects?: number[][], anchors?: number[][], text?: string }[]} */
+export function rawItems(text) {
+  const root = parseSexpr(text).find((n) => Array.isArray(n) && n[0] === "kicad_sch")
+  if (!root) return []
+  const out = []
+  const points = (n) => kids(kid(n, "pts"), "xy").flatMap(pair)
+  for (const n of kids(root, "text")) out.push({ kind: "text", nums: pair(kid(n, "at")), text: n[1] })
+  // `rects` is the drawn box as KiCad draws it, [x0, y0, x1, y1] in the file's own frame (y down): the axis-aligned
+  // rectangle from `at` to `at + size`, whatever the angle of `at` says (the angle turns only the text).
+  const rect = (n) => {
+    const [x, y] = pair(kid(n, "at"))
+    const [w, h] = pair(kid(n, "size"))
+    return [x, y, x + w, y + h]
+  }
+  // `anchors` is where `SCH_TEXTBOX::GetDrawPos` puts the text, in the file's frame (y down): the justification names the
+  // edge. Across the box (angle 0 or 180): h sets x, v sets y. Vertical text (90 or 270): h sets y (left is the bottom edge
+  // minus the bottom margin, right the top edge plus the top margin) and v sets x (top is the left edge plus the left margin,
+  // bottom the right edge minus the right margin); centre is the middle. A box with no margins node has margins of 0.
+  const anchor = (n) => {
+    const [x, y, angle] = [...pair(kid(n, "at")), numAt(kid(n, "at"), 3, 0)]
+    const [w, h] = pair(kid(n, "size"))
+    const m = kid(n, "margins")
+    const [ml, mt, mr, mb] = m ? [numAt(m, 1), numAt(m, 2), numAt(m, 3), numAt(m, 4)] : [0, 0, 0, 0]
+    const eff = kid(n, "effects")
+    const just = ((eff && kid(eff, "justify")) || []).slice(1)
+    const hj = just.includes("left") ? "left" : just.includes("right") ? "right" : "centre"
+    const vj = just.includes("top") ? "top" : just.includes("bottom") ? "bottom" : "centre"
+    const [left, top, right, bottom] = [x, y, x + w, y + h]
+    if (Math.abs(angle) === 90 || Math.abs(angle) === 270) {
+      return [vj === "top" ? left + ml : vj === "bottom" ? right - mr : (left + right) / 2, hj === "left" ? bottom - mb : hj === "right" ? top + mt : (top + bottom) / 2]
+    }
+    return [hj === "left" ? left + ml : hj === "right" ? right - mr : (left + ml + right - mr) / 2, vj === "top" ? top + mt : vj === "bottom" ? bottom - mb : (top + mt + bottom - mb) / 2]
+  }
+  for (const n of kids(root, "text_box")) out.push({ kind: "textbox", nums: [...pair(kid(n, "at")), ...pair(kid(n, "size"))], rects: [rect(n)], anchors: [anchor(n)], text: n[1] })
+  for (const n of kids(root, "polyline")) out.push({ kind: "polyline", nums: points(n) })
+  for (const n of kids(root, "rectangle")) out.push({ kind: "rectangle", nums: [...pair(kid(n, "start")), ...pair(kid(n, "end"))] })
+  for (const n of kids(root, "circle")) out.push({ kind: "circle", nums: [...pair(kid(n, "center")), numAt(kid(n, "radius"), 1)] })
+  for (const n of kids(root, "arc")) out.push({ kind: "arc", nums: [...pair(kid(n, "start")), ...pair(kid(n, "mid")), ...pair(kid(n, "end"))] })
+  for (const n of kids(root, "bezier")) out.push({ kind: "bezier", nums: points(n) })
+  for (const n of kids(root, "image")) out.push({ kind: "image", nums: pair(kid(n, "at")) })
+  for (const t of kids(root, "table")) out.push({ kind: "table", nums: kids(kid(t, "cells"), "table_cell").flatMap((c) => [...pair(kid(c, "at")), ...pair(kid(c, "size"))]), rects: kids(kid(t, "cells"), "table_cell").map(rect), anchors: kids(kid(t, "cells"), "table_cell").map(anchor) })
+  return out
+}

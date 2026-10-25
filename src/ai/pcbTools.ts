@@ -1,11 +1,12 @@
-import { boxesOverlap, pointSegmentDistance, round, type Box } from "../lib/geometry"
+import { boxesOverlap, round, type Box } from "../lib/geometry"
 import { boardObstacles, exitCorridors } from "../model/autoplace"
 import { mountingHoles } from "../model/board"
 import { pinKey } from "../model/connectivity"
 import { padGap } from "../model/decoupling"
-import { isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
+import { isOnBoard, isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
 import { resolvePinSpec, updateComponent } from "../model/ops"
+import { copperOn, removeCopper } from "../model/boardCopper"
 import { pointPadDistance, segmentPadDistance } from "../model/pcb"
 import { findNearSpot, inflateBox, type NearAnchor } from "../model/placeNear"
 import { matchCapability } from "../model/rules"
@@ -47,32 +48,6 @@ const NEAR_REACH = 6
 const DEFAULT_MAX_GAP = 1
 
 // ---------- Copper that a move leaves behind ----------
-
-/** Unlocked and locked traces and vias whose copper touches a pad of one of these parts, as they stand now. */
-function copperOn(project: Project, parts: ComponentInstance[]) {
-  const pads = parts.flatMap((c) => (c.pcb.placed ? pcbPads(c) : []))
-  const traces = project.traces.filter((t) =>
-    t.points.slice(1).some((p, i) => pads.some((pad) => pad.layers.includes(t.layer) && segmentPadDistance(t.points[i], p, pad) <= t.width / 2 + 1e-6)),
-  )
-  const vias = project.vias.filter((v) => !v.net && pads.some((pad) => pointPadDistance(v, pad) <= v.diameter / 2 + 1e-6))
-  return { traces, vias }
-}
-
-/**
- * Delete traces and vias. A routed via that a removed trace ended on, and that no trace left standing
- * and no pad touches, joins nothing any more and goes with it.
- */
-function removeCopper(project: Project, traceIds: Set<string>, viaIds: Set<string>): Project {
-  const gone = project.traces.filter((t) => traceIds.has(t.id))
-  const traces = project.traces.filter((t) => !traceIds.has(t.id))
-  const pads = project.components.flatMap((c) => (c.pcb.placed ? pcbPads(c) : []))
-  const touches = (t: Project["traces"][number], v: Project["vias"][number]) =>
-    t.points.some((pt, i) => (i === 0 ? pointSegmentDistance(v, pt, pt) : pointSegmentDistance(v, t.points[i - 1], pt)) <= t.width / 2 + v.diameter / 2 + 1e-6)
-  const orphan = (v: Project["vias"][number]) =>
-    !v.net && !v.locked && gone.some((t) => touches(t, v)) && !traces.some((t) => touches(t, v)) && !pads.some((pad) => pointPadDistance(v, pad) <= v.diameter / 2 + 1e-6)
-  const vias = project.vias.filter((v) => !viaIds.has(v.id) && !orphan(v))
-  return { ...project, updatedAt: Date.now(), traces, vias }
-}
 
 /**
  * Unlocked routed copper, whatever net, that touches or crowds one of these parts' pads where they now
@@ -245,6 +220,10 @@ lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked
       }
       if (!isPhysical(part) || !c.footprint) {
         refused.push(`${c.ref}: has no footprint, so it is not on the PCB`)
+        continue
+      }
+      if (!isOnBoard(c)) {
+        refused.push(`${c.ref} is not on the board (on_board false)`)
         continue
       }
       const modes = [item.near !== undefined, item.x !== undefined || item.y !== undefined, item.dx !== undefined || item.dy !== undefined].filter(Boolean).length
@@ -421,7 +400,7 @@ function placeNear(
     vias: project.vias.filter((v) => !droppedVias.has(v.id) || v.locked),
   })
   const others = project.components
-    .filter((o) => o.id !== c.id && o.pcb.placed && isPhysical(findPart(o.partId)) && sideIsBlocked(o, side))
+    .filter((o) => o.id !== c.id && o.pcb.placed && isOnBoard(o) && sideIsBlocked(o, side))
     .map((o) => pcbCourtyard(o))
     .filter((b): b is Box => !!b)
     .map((b) => inflateBox(b, SPACING))

@@ -73,13 +73,22 @@ export const hasKicadSymbols = (project: Project) =>
     return !!part && (!!part.jumpers || !!part.unitOf || (part.units?.count ?? 1) > 1 || (part.units?.bodyStyles ?? 1) > 1)
   })
 
+/** What a design brought from KiCad needs to know about its net names, flags and notes; a design drawn here is not told. */
+export const KICAD_NET_NOTE = `This design came from KiCad and names its nets as KiCad does: a net a local label names is /NAME, one a global label or a power symbol names is NAME, and one nothing names is Net-(R1-Pad2) (unconnected-(R1-Pad2) for a pin alone). Use the names get_design shows. A label you add is a local one. A part can be marked do not populate, out of the BOM, off the board or out of the position file (update_component: dnp, in_bom, on_board, in_pos_files); get_design lists only the flags that are set, and the notes and drawings on the sheet as sheet_items.`
+
 /**
  * The system message for a design: the static prompt as it always was (the same bytes, so its cache
- * holds), and after it the note about units only when the design has parts that need it.
+ * holds), and after it a note about units when the design has parts that need it, and a note about KiCad's net names
+ * when the design came from KiCad.
  */
 export function systemMessageFor(project: Project): Extract<ChatMessage, { role: "system" }> {
-  if (!hasKicadSymbols(project)) return SYSTEM_MESSAGE
-  return { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }, { type: "text", text: UNITS_NOTE }] }
+  const symbols = hasKicadSymbols(project)
+  const named = !!project.netNames
+  if (!symbols && !named) return SYSTEM_MESSAGE
+  return {
+    role: "system",
+    content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }, ...(symbols ? [{ type: "text" as const, text: UNITS_NOTE }] : []), ...(named ? [{ type: "text" as const, text: KICAD_NET_NOTE }] : [])],
+  }
 }
 
 export type CopilotEvent =

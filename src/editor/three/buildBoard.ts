@@ -4,7 +4,7 @@ import { boardColors, boardFinish, finishMetal, mountingHoles } from "../../mode
 import { getFootprint } from "../../model/footprints"
 import { findPart } from "../../model/library"
 import { packageOf } from "../../model/partPackage"
-import { isNpth, isPhysical, pcbPads, slotEnds, type WorldPad } from "../../model/instances"
+import { isNpth, isOnBoard, pcbPads, slotEnds, type WorldPad } from "../../model/instances"
 import type { ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
 import { buildBoardTextures, type BoardTextureSet } from "./boardTextures"
@@ -175,7 +175,7 @@ export interface BoardBuild {
 }
 
 export function placedComponents(project: Project): ComponentInstance[] {
-  return project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
+  return project.components.filter((c) => c.pcb.placed && isOnBoard(c))
 }
 
 export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMaterials, anisotropy: number): BoardBuild {

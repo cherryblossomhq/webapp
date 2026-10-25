@@ -80,7 +80,7 @@ export function partFindings(project: Project): PartFinding[] {
     }
 
     // A checked land swapped on a component for one nobody checked.
-    if (src && src.land !== "memory") {
+    if (src && src.land !== "memory" && src.land !== "import") {
       for (const c of users) {
         if (c.footprint && c.footprint !== spec.footprint) {
           out.push({

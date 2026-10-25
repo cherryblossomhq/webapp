@@ -100,7 +100,8 @@ const MIRROR_Y = { x1: -1, y1: 0, x2: 0, y2: 1 }
 
 /** KiCad's transform of a symbol placed at `angle` with `mirror`: the turn from `(at x y angle)` first, then the mirror. */
 export function kicadTransform(angle, mirror) {
-  // KiCad 7 and later keep a symbol in its own y down frame: the matrix of an unturned symbol is the identity.
+  // From KiCad 9.0 the matrix of an unturned symbol is the identity (the symbol stays in its own y down frame). KiCad 7 and 8 default it to (1, 0, 0, -1) and
+  // compensate with a mirror in `GetBoundingBox`, so the drawn result is the same; this check works in the identity form for every release.
   let t = { x1: 1, y1: 0, x2: 0, y2: 1 }
   for (let i = 0; i < Math.round((((angle % 360) + 360) % 360) / 90); i++) t = mul(t, CCW)
   if (mirror === "x") t = mul(t, MIRROR_X)

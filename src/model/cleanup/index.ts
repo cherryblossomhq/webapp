@@ -1,5 +1,5 @@
 import { isArranged } from "../tidy/nets"
-import { keptNotes, netlistChanges, tidyNotes, tidySchematic, type TidyResult } from "../tidy"
+import { keptNotes, netlistChanges, tidyNotes, tidySchematic, withOffGridNote, type TidyResult } from "../tidy"
 import type { Project } from "../types"
 import { groupLooseParts, type Grouping } from "./group"
 
@@ -26,6 +26,8 @@ export interface CleanupResult {
   ok: boolean
   /** One or two sentences for the user. */
   message: string
+  /** When it was refused for a connection it would have changed: each pin that would have moved, and the grid's note when that is why. */
+  problems: string[]
   plan: CleanupPlan
   tidy: TidyResult | null
 }
@@ -66,6 +68,7 @@ const refused = (plan: CleanupPlan, message: string, tidy: TidyResult | null = n
   changed: false,
   ok: false,
   message,
+  problems: tidy?.problems ?? [],
   plan,
   tidy,
 })
@@ -80,13 +83,13 @@ export function finishCleanup(plan: CleanupPlan, tidy: TidyResult): CleanupResul
   if (!tidy.ok) return refused(plan, tidy.message, tidy)
   const project = tidy.changed ? tidy.project : plan.project
   const problems = netlistChanges(plan.before, project, tidy.renamed)
-  if (problems.length) return refused(plan, "Clean up would have changed a connection, so nothing was changed.", tidy)
+  if (problems.length) return { ...refused(plan, "Clean up would have changed a connection, so nothing was changed.", tidy), problems: withOffGridNote(plan.before, problems) }
   const changed = project !== plan.before
-  if (!changed) return { project: plan.before, changed: false, ok: true, message: "Already clean.", plan, tidy }
+  if (!changed) return { project: plan.before, changed: false, ok: true, message: "Already clean.", problems: [], plan, tidy }
   const extras = tidy.changed ? tidyNotes(tidy.renamed, tidy.dropped, tidy.loose) : []
   // One sentence for each block Tidy kept as it was drawn.
   extras.push(...keptNotes(tidy.kept))
-  return { project, changed, ok: true, message: [cleanupDone(plan), ...extras].join(" "), plan, tidy }
+  return { project, changed, ok: true, message: [cleanupDone(plan), ...extras].join(" "), problems: [], plan, tidy }
 }
 
 /** The whole of it on this thread: group, tidy the sheet, check. */

@@ -162,10 +162,15 @@ export function drawnPin(project: Project, ref: PinRef): WorldPin | null {
   return null
 }
 
-export function applyDrawn(project: Project, d: Drawn): Project {
+export function applyDrawn(project: Project, d: Drawn, global = false): Project {
   let next = project
   for (const w of d.wires) next = addWire(next, w).project
-  for (const l of d.labels) next = addLabel(next, l.name, l.at, l.rot).project
+  for (const l of d.labels) {
+    const added = addLabel(next, l.name, l.at, l.rot)
+    next = added.project
+    // A global label (KiCad) carries its text exactly, with no sheet path.
+    if (global && next.netNames) next = { ...next, labels: next.labels.map((x) => (x.id === added.label.id ? { ...x, kind: "global" as const, shape: "bidirectional" as const } : x)) }
+  }
   return next
 }
 
@@ -247,6 +252,10 @@ export interface ConnectOptions {
   nameFor: () => string
   /** The name of the net a pin is on now, null when it is on none. */
   netOf: (ref: PinRef) => string | null
+  /** A pin whose net already has the name by no label: it gets one anyway, so the name stays with the net. */
+  through?: PinRef
+  /** Labels drawn here are global ones (in a project named as KiCad names its nets), so a name is kept exactly. */
+  labelGlobal?: boolean
 }
 
 /**
@@ -287,7 +296,8 @@ export function planConnect(project: Project, before: SchematicConnectivity, ref
   for (const ref of refs) {
     const group = pinGroup(before, ref)
     // A pin on a net that already carries the name, or one with a pin of its own net labelled, is there.
-    if (opts.netOf(ref) === name || carrying.has(group)) {
+    const forced = !!opts.through && opts.through.componentId === ref.componentId && opts.through.pin === ref.pin
+    if ((opts.netOf(ref) === name && !forced) || carrying.has(group)) {
       onNet.push(ref)
       continue
     }
@@ -303,7 +313,7 @@ export function planConnect(project: Project, before: SchematicConnectivity, ref
         continue
       }
       drawing.accept(option, group)
-      next = applyDrawn(next, option)
+      next = applyDrawn(next, option, opts.labelGlobal)
       placed = true
       break
     }

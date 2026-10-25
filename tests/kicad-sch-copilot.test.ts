@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { hasKicadSymbols, systemMessageFor, UNITS_NOTE } from "../src/ai/copilot"
+import { hasKicadSymbols, systemMessageFor, UNITS_NOTE, KICAD_NET_NOTE } from "../src/ai/copilot"
 import { TOOL_DEFINITIONS } from "../src/ai/tools"
 import { EXAMPLES } from "../src/model/examples"
 import { importSheet, place } from "./kicad-sch-parts"
@@ -32,15 +32,20 @@ describe("Sakura's system prompt", () => {
     expect(hasKicadSymbols(p)).toBe(true)
     const msg = systemMessageFor(p)
     const blocks = text(msg.content)
-    expect(blocks).toHaveLength(2)
+    // an imported design is named as KiCad names it, which has its own note after the one about units
+    expect(blocks).toHaveLength(3)
     expect(createHash("sha1").update(blocks[0]).digest("hex")).toBe(BASE_SHA)
     expect(blocks[1]).toBe(UNITS_NOTE)
+    expect(blocks[2]).toBe(KICAD_NET_NOTE)
+    expect(KICAD_NET_NOTE.length).toBeLessThan(800)
+    // a design drawn here with KiCad symbols only gets the note about units
+    expect(text(systemMessageFor({ ...p, netNames: undefined }).content)).toHaveLength(2)
     expect(Array.isArray(msg.content) && msg.content[0].cache_control).toEqual({ type: "ephemeral" })
     expect(UNITS_NOTE.length).toBeLessThan(600)
   })
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = JSON.stringify(TOOL_DEFINITIONS).length
-    expect(size - TOOLS_BEFORE).toBeLessThan(1200)
+    expect(size - TOOLS_BEFORE).toBeLessThan(1400)
   })
 })

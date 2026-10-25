@@ -154,6 +154,13 @@ function padNumbers(raw) {
   return out.length ? out : [raw]
 }
 
+/** A unit as a reference writes it: 1 is A. */
+const unitLetter = (n) => {
+  let out = ""
+  for (let k = Math.max(1, n); k > 0; k = Math.floor((k - 1) / 26)) out = String.fromCharCode(65 + ((k - 1) % 26)) + out
+  return out
+}
+
 /** Name of the net a text names, as KiCad compares it: `{slash}` is `/`. */
 const decode = (s) => s.replace(/\{slash\}/g, "/")
 
@@ -170,11 +177,16 @@ export function deriveNets(rootFile, opts = {}) {
   const uf = new UF()
   // KiCad 6's root list: the unit, value and footprint of each use of a symbol, by the path a board writes it.
   const rootList = new Map()
-  for (const p of kids(kid(root, "symbol_instances") ?? [], "path")) rootList.set(p[1], { unit: numAt(kid(p, "unit"), 1, 0), value: kid(p, "value")?.[1] })
+  for (const p of kids(kid(root, "symbol_instances") ?? [], "path")) rootList.set(p[1], { unit: numAt(kid(p, "unit"), 1, 0), value: kid(p, "value")?.[1], reference: kid(p, "reference")?.[1] })
   const rootUuid = kid(root, "uuid")?.[1]
   const nameJoin = [] // [item, nameNode]
   let sawBuses = false
   const pinItems = [] // { item, key, pin, name }
+  const ncFlags = []
+  /** Every pin that is a driver of its net: for the names KiCad gives a net after a pin (`Net-(R1-Pad2)`). */
+  const pinDrivers = []
+  const labelItems = []
+  const ncPinItems = new Set()
 
   const sheetNames = new Map([["", ""]]) // the instance path -> the sheets' names from the root, as KiCad writes them in a net name
   const walk = (file, chain, ancestors, parentSheet) => {
@@ -231,6 +243,7 @@ export function deriveNets(rootFile, opts = {}) {
         add(numAt(at, 1), numAt(at, 2), item)
         bodyItems.push({ x: numAt(at, 1), y: numAt(at, 2), item, kind: "label", plain: true })
         labelNames.push({ item, kind, text: decode(l[1]) })
+        labelItems.push(item)
       }
     }
     for (const kind of ["netclass_flag", "directive_label"]) {
@@ -259,6 +272,9 @@ export function deriveNets(rootFile, opts = {}) {
       children.push({ file: file2, uuid, pins, name: prop(sh, "Sheetname") ?? prop(sh, "Sheet name") ?? "" })
     }
     const noConnects = kids(s, "no_connect").map((c) => keyOf(numAt(kid(c, "at"), 1), numAt(kid(c, "at"), 2)))
+    const ncSet = new Set(noConnects)
+    ncFlags.push(...noConnects.map((k) => ({ key: k, inst })))
+    void ncSet
 
     for (const sym of kids(s, "symbol")) {
       const libId = kid(sym, "lib_name")?.[1] ?? kid(sym, "lib_id")?.[1]
@@ -274,7 +290,7 @@ export function deriveNets(rootFile, opts = {}) {
       const symUuid0 = kid(sym, "uuid")?.[1]
       const instPath = `/${[rootUuid, ...chain].join("/")}`
       let own
-      for (const project of kids(kid(sym, "instances") ?? [], "project")) for (const p of kids(project, "path")) if (p[1] === instPath) own = { unit: numAt(kid(p, "unit"), 1, 0), value: kid(p, "value")?.[1] }
+      for (const project of kids(kid(sym, "instances") ?? [], "project")) for (const p of kids(project, "path")) if (p[1] === instPath) own = { unit: numAt(kid(p, "unit"), 1, 0), value: kid(p, "value")?.[1], reference: kid(p, "reference")?.[1] }
       const listed = rootList.get(`${sheetPath}/${symUuid0}`)
       const use = own ?? listed
       const u = use && use.unit > 0 ? use.unit : numAt(kid(sym, "unit"), 1, 1)
@@ -286,6 +302,19 @@ export function deriveNets(rootFile, opts = {}) {
       const legacyName = numAt(kid(root, "version"), 1, 0) < 20230221 && isPower && kid(ls, "power")?.[1] !== "local" && firstPin && firstPin[1] === "power_in" && flag(firstPin, "hide") ? tilde(kid(firstPin, "name")?.[1] ?? "") : null
       const symUuid = kid(sym, "uuid")?.[1]
       const boardPath = `${sheetPath}/${symUuid}`
+      const reference = (use?.reference ? use.reference : prop(sym, "Reference")) ?? ""
+      const unitCount = Math.max(1, ...kids(ls, "symbol").map((x) => Number(/_(\d+)_\d+$/.exec(x[1])?.[1] ?? 0)))
+      const onBoard = !(kid(sym, "on_board") && !flag(sym, "on_board"))
+      const refField = prop(ls, "Reference") ?? ""
+      /** The pins this symbol draws in the unit and body style it is placed as. */
+      const unitPins = []
+      for (const sub of kids(ls, "symbol")) {
+        const mm = /_(\d+)_(\d+)$/.exec(sub[1])
+        const su = mm ? Number(mm[1]) : 0
+        const ss = mm ? Number(mm[2]) : 0
+        if (!(su === 0 || su === u) || !(ss === 0 || ss === bs)) continue
+        for (const pin of kids(sub, "pin")) unitPins.push({ name: tilde(kid(pin, "name")?.[1] ?? ""), number: tilde(kid(pin, "number")?.[1] ?? ""), nc: pin[1] === "unconnected" || pin[1] === "no_connect" })
+      }
       for (const sub of kids(ls, "symbol")) {
         const mm = /_(\d+)_(\d+)$/.exec(sub[1])
         const su = mm ? Number(mm[1]) : 0
@@ -310,6 +339,7 @@ export function deriveNets(rootFile, opts = {}) {
           }
           out.pinsTotal++
           for (const n of padNumbers(number)) pinItems.push({ item, key: `${boardPath}#${n}`, pin: n })
+          pinDrivers.push({ item, ref: reference, refUnit: `${reference}${unitCount > 1 ? unitLetter(u) : ""}`, name, number, unitPins, nc: etype === "no_connect", eligible: onBoard && !refField.startsWith("#") && !(etype === "power_in" && isPower) && !reference.startsWith("#"), flagKey: keyOf(wx, wy) })
           const hidden = flag(pin, "hide")
           const powerIn = etype === "power_in"
           if (powerIn && isPower) {
@@ -435,6 +465,52 @@ export function deriveNets(rootFile, opts = {}) {
   }
   out.names = names
   out.driver = driver
+  // The names KiCad gives a net after its pins (SCH_PIN::GetDefaultNetName, KiCad 7 on; 6 writes every one as -PadN), for a net no label or power symbol names.
+  const rule6 = numAt(kid(root, "version"), 1, 0) <= 20211123
+  const driverCount = new Map()
+  const bump = (item) => {
+    const g = groupId.get(uf.find(item))
+    if (g !== undefined) driverCount.set(g, (driverCount.get(g) ?? 0) + 1)
+  }
+  for (const pd of pinDrivers) if (!pd.nc) bump(pd.item)
+  for (const item of labelItems) bump(item)
+  const ncGroups = new Set()
+  for (const pd of pinDrivers) if (ncFlags.some((f) => f.key === pd.flagKey)) ncGroups.add(groupId.get(uf.find(pd.item)))
+  const pinNames = new Map()
+  const byGroup = new Map()
+  for (const pd of pinDrivers) {
+    const g = groupId.get(uf.find(pd.item))
+    if (g === undefined) continue
+    ;(byGroup.get(g) ?? byGroup.set(g, []).get(g)).push(pd)
+  }
+  for (const [g, list] of byGroup) {
+    if (driver.get(g)) continue
+    const unconnected = (driverCount.get(g) ?? 0) === 1 || ncGroups.has(g) || list.some((pd) => pd.nc)
+    const cands = []
+    for (const pd of list) {
+      if (!pd.eligible) continue
+      const shown = pd.name === "~" ? "" : pd.name
+      // A stacked pin ([6,7,9-11]) is one pin, named after its smallest pad (KiCad 10: conn_pin_name.cpp, padNumber).
+      const smallest = (n) => padNumbers(n).sort((a, b) => (Number.isNaN(Number(a)) || Number.isNaN(Number(b)) ? (a < b ? -1 : 1) : Number(a) - Number(b)))[0]
+      const pad = smallest(pd.number)
+      const start = unconnected ? "unconnected-(" : "Net-("
+      let name
+      if (rule6 || shown === "" || shown === pd.number) name = `${start}${pd.ref}-Pad${pad})`
+      else {
+        const dup = pd.unitPins.some((q) => (q.name === "~" ? "" : q.name) === shown && smallest(q.number) !== pad && !q.nc)
+        name = `${start}${pd.refUnit}-${shown.replace(/\//g, "{slash}")}${unconnected || dup ? `-Pad${pad}` : ""})`
+      }
+      cands.push(name)
+    }
+    cands.sort((a, b) => Number(a.includes("-Pad")) - Number(b.includes("-Pad")) || (a < b ? -1 : a > b ? 1 : 0))
+    if (cands.length) pinNames.set(g, decode(cands[0]))
+  }
+  /** The name KiCad gives each net, as the board writes it with its escapes read: a driver's (a global one as written, a local one with its sheet's path), else a pin's. */
+  out.netName = (g) => {
+    const d = driver.get(g)
+    if (d) return d.full
+    return pinNames.get(g) ?? null
+  }
   out.groupOf = (key) => out.pins.get(key)
   return out
 }

@@ -1,6 +1,5 @@
 import { mountingHoles } from "../model/board"
-import { isNpth, isPhysical, pcbPads, slotEnds, type WorldPad } from "../model/instances"
-import { findPart } from "../model/library"
+import { isNpth, isOnBoard, pcbPads, slotEnds, type WorldPad } from "../model/instances"
 import type { Project, Vec2 } from "../model/types"
 
 export interface DrillHole {
@@ -20,7 +19,7 @@ function padHole(pad: WorldPad): DrillHole {
 export function drillHoles(project: Project): DrillHole[] {
   const holes: DrillHole[] = []
   for (const c of project.components) {
-    if (!isPhysical(findPart(c.partId))) continue
+    if (!isOnBoard(c)) continue
     for (const pad of pcbPads(c)) {
       if (pad.holeDiameter !== undefined && !isNpth(pad)) holes.push(padHole(pad))
     }
@@ -34,7 +33,7 @@ export function drillHoles(project: Project): DrillHole[] {
 export function npthHoles(project: Project): DrillHole[] {
   const holes: DrillHole[] = []
   for (const c of project.components) {
-    if (!isPhysical(findPart(c.partId))) continue
+    if (!isOnBoard(c)) continue
     for (const pad of pcbPads(c)) {
       if (pad.holeDiameter !== undefined && isNpth(pad)) holes.push(padHole(pad))
     }

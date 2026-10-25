@@ -111,7 +111,7 @@ export function powerStages(
   const stages: PowerStage[] = []
 
   for (const { c: chip, part } of parts) {
-    if (!isChip(part)) continue
+    if (!isChip(part, chip)) continue
     const pins = classifyPins(part)
     const supplyPins = part.pins.filter((p) => isSupplyPin(part, p))
     const netsOf = (numbers: string[]) => new Set(numbers.map((n) => netOf(chip, n)).filter((n): n is string => !!n && !ground.has(n)))
@@ -282,7 +282,7 @@ function resolveClaims(project: Project, stages: PowerStage[], pairs: Decoupling
     for (const a of pcbPads(cap).filter((p) => p.pin === pin)) for (const b of pcbPads(chip).filter((p) => p.pin !== null && numbers.includes(p.pin))) best = Math.min(best, padGap(a, b))
     return best
   }
-  const chips = project.components.filter((c) => isChip(findPart(c.partId)))
+  const chips = project.components.filter((c) => isChip(findPart(c.partId), c))
   const owner = new Map<string, { stage: PowerStage; d: number }>()
   const farads = (id: string) => parseFarads(byId.get(id)?.props.capacitance) ?? -Infinity
   for (const stage of stages) {

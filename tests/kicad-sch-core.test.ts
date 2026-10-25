@@ -9,7 +9,7 @@ import { addUnit, mirrorSelection, pasteItems, renameReference, rotateSelection,
 import { componentFields, fieldValue, unitLetters } from "../src/model/symbolDrawing"
 import type { Mirror, Project, Rotation } from "../src/model/types"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { ALL_LIBS, importSheet, NET_NAMES_RAISED, place } from "./kicad-sch-parts"
+import { ALL_LIBS, importSheet, place } from "./kicad-sch-parts"
 import { schematic } from "./kicad-schematic-fixtures"
 
 // Symbols with units, mirrors, hidden power pins, repeated pin numbers and alternates (S5), as the
@@ -62,7 +62,7 @@ describe("a part with several units", () => {
     const owner = p.components[0]
     const twin = p.components[1]
     const a = netOf(p, "U1", "1", 1)!
-    expect(a.name).toBe("A")
+    expect(a.name).toBe("/A")
     // pin 7 is a pin of unit 2, whose symbol is the twin: it is on A by the twin's key and by the part's
     expect(conn.pinNet.get(pinKey(twin.id, "7"))).toBe(a.id)
     expect(conn.pinNet.get(pinKey(owner.id, "7"))).toBe(a.id)
@@ -202,7 +202,7 @@ describe("hidden power pins, pins that are not connected, and pins that share a 
     // J1 pins 1a (174.92, 98.73) and 1b (174.92, 101.27) are both pin 1
     const p = importSheet({ symbols: [place("Test:JMP", "180 100", "J1")], wires: ["174.92 98.73 160 98.73"], labels: ["X 160 98.73 0"] })
     const j = p.components[0]
-    expect(netOf(p, "J1", "1")?.name).toBe("X")
+    expect(netOf(p, "J1", "1")?.name).toBe("/X")
     const conn = computeConnectivity(p)
     // the second pin 1 is on that net as well: nothing is left unconnected for it
     expect(conn.unconnectedPins.filter((q) => q.pin === "1")).toEqual([])
@@ -212,14 +212,14 @@ describe("hidden power pins, pins that are not connected, and pins that share a 
   it("pins that share a number are separate pins when it does not", () => {
     const p = physical(importSheet({ symbols: [place("Test:DUP", "180 100", "J2")], wires: ["174.92 98.73 160 98.73"], labels: ["X 160 98.73 0"] }))
     const conn = computeConnectivity(p)
-    expect(netOf(p, "J2", "1")?.name).toBe("X")
+    expect(netOf(p, "J2", "1")?.name).toBe("/X")
     // the pin 1 that is not wired is its own, floating
     expect(conn.unconnectedPins.filter((q) => q.pin === "1")).toHaveLength(1)
     expect(conn.unconnectedPins.find((q) => q.pin === "1")?.slot).toBe(1)
   })
 
   it("names a pad whose pins of one number are on different nets, since the board's pad takes the first's", () => {
-    const wired = (labels: string[]) => importKicadSchematic(schematic({ libs: ALL_LIBS, symbols: [place("Test:DUP", "180 100", "J2")], wires: ["174.92 98.73 160 98.73", "174.92 101.27 160 101.27"], labels }), { built: NET_NAMES_RAISED })
+    const wired = (labels: string[]) => importKicadSchematic(schematic({ libs: ALL_LIBS, symbols: [place("Test:DUP", "180 100", "J2")], wires: ["174.92 98.73 160 98.73", "174.92 101.27 160 101.27"], labels }))
     const split = wired(["X 160 98.73 0", "Y 160 101.27 0"])
     expect(split.status).toBe("imported")
     if (split.status !== "imported") return
@@ -233,8 +233,8 @@ describe("hidden power pins, pins that are not connected, and pins that share a 
 
   it("pins of different numbers a symbol joins inside itself are one net", () => {
     const p = importSheet({ symbols: [place("Test:GRP", "180 100", "J3")], wires: ["174.92 98.73 160 98.73"], labels: ["X 160 98.73 0"] })
-    expect(netOf(p, "J3", "1")?.name).toBe("X")
-    expect(netOf(p, "J3", "2")?.name).toBe("X")
+    expect(netOf(p, "J3", "1")?.name).toBe("/X")
+    expect(netOf(p, "J3", "2")?.name).toBe("/X")
     expect(netOf(p, "J3", "3")).toBeUndefined()
   })
 

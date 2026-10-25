@@ -91,8 +91,8 @@ describe("a board and its schematic", () => {
     const r = imported(importKicadProject(files(dividerBoard(), divider()), { built: BOARD_ALL }))
     const c = computeConnectivity(r.project)
     const id = (ref: string) => r.project.components.find((x) => x.ref === ref)!.id
-    expect(c.pinNet.get(pinKey(id("R1"), "2"))).toBe("net:MID")
-    expect(c.pinNet.get(pinKey(id("R2"), "1"))).toBe("net:MID")
+    expect(c.pinNet.get(pinKey(id("R1"), "2"))).toBe("net:/MID")
+    expect(c.pinNet.get(pinKey(id("R2"), "1"))).toBe("net:/MID")
     expect(c.pinNet.get(pinKey(id("R1"), "1"))).toBe("net:VCC")
     expect(c.pinNet.get(pinKey(id("R2"), "2"))).toBe("net:GND")
     expect(r.link?.counts).toMatchObject({ footprints: 2, path: 2, reference: 0, none: 0 })
@@ -102,19 +102,27 @@ describe("a board and its schematic", () => {
     // R2 pin 1 is on /OTHER on the board, where the schematic has it on MID with R1 pin 2
     const r = imported(importKicadProject(files(dividerBoard({ nets: ["VCC", "/MID", "/OTHER", "GND"] }), divider()), { built: BOARD_ALL }))
     expect(r.differences.map((d) => [d.ref, d.pin, d.board, d.schematic]).sort()).toEqual([
-      ["R1", "2", "/MID", "MID"],
-      ["R2", "1", "/OTHER", "MID"],
+      ["R1", "2", "/MID", "/MID"],
+      ["R2", "1", "/OTHER", "/MID"],
     ])
-    expect(r.differences[0].why).toBe("R1 pin 2: the board puts it on /MID, the schematic on MID. The board has not been updated from its schematic.")
+    // one net of the schematic is two on the board: the report names both, and does not say /MID twice as if they agreed
+    expect(r.differences[0].why).toBe("R1 pin 2: the board puts it on /MID, the schematic on /MID. The schematic net /MID is /MID and /OTHER on the board. The board has not been updated from its schematic.")
     expect(r.report.entries.filter((e) => e.code === "board-differs-from-schematic").map((e) => e.object).sort()).toEqual(["R1 pin 2", "R2 pin 1"])
     expect(r.report.entries.find((e) => e.code === "board-differs-from-schematic")?.severity).toBe("changed")
+  })
+
+  it("a board that joins two nets of the schematic names both of them", () => {
+    // the board has R2 pin 2 (GND in the schematic) on /MID with R1 pin 2 and R2 pin 1
+    const r = imported(importKicadProject(files(dividerBoard({ nets: ["VCC", "/MID", "/MID", "/MID"] }), divider()), { built: BOARD_ALL }))
+    const why = r.differences.find((d) => d.ref === "R2" && d.pin === "2")?.why
+    expect(why).toBe("R2 pin 2: the board puts it on /MID, the schematic on GND. The board net /MID is /MID and GND in the schematic. The board has not been updated from its schematic.")
   })
 
   it("a net with the same pads on both sides but another name is a difference too", () => {
     const r = imported(importKicadProject(files(dividerBoard({ nets: ["VCC", "/MIDDLE", "/MIDDLE", "GND"] }), divider()), { built: BOARD_ALL }))
     expect(r.differences.map((d) => [d.ref, d.pin, d.why])).toEqual([
-      ["R1", "2", "R1 pin 2: the net is called /MIDDLE on the board and MID in the schematic. The editor names this net by its own rule, not KiCad's (the names are S2), so the board may well be up to date."],
-      ["R2", "1", "R2 pin 1: the net is called /MIDDLE on the board and MID in the schematic. The editor names this net by its own rule, not KiCad's (the names are S2), so the board may well be up to date."],
+      ["R1", "2", "R1 pin 2: the net is called /MIDDLE on the board and /MID in the schematic. The board has not been updated from its schematic."],
+      ["R2", "1", "R2 pin 1: the net is called /MIDDLE on the board and /MID in the schematic. The board has not been updated from its schematic."],
     ])
   })
 
@@ -176,7 +184,7 @@ describe("a board and its schematic", () => {
     const r1 = r.project.components.find((c) => c.ref === "R1")!
     const id = pinNet.get(pinKey(part.id, "1"))
     expect(id).toBe(pinNet.get(pinKey(r1.id, "2")))
-    expect(nets.find((n) => n.id === id)?.name).toBe("MID")
+    expect(nets.find((n) => n.id === id)?.name).toBe("/MID")
     expect(r.differences).toEqual([])
     expect(r.project.labels.filter((l) => l.name === "/MID")).toEqual([])
   })

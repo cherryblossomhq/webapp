@@ -263,45 +263,81 @@ function lossyOf(text: string, built: ReadonlySet<string>) {
   return buildSchematicProject(gate.gate.tree, gate.gate.report, { built }).lossy.map((n) => [n.ext, n.why])
 }
 
-describe("what the board's own net names say", () => {
-  const WITHOUT_S2 = new Set(["S5", "S6", "S10"])
+/** The name of the net each pin is on, `REF.pin` to the name: the editor's, and KiCad's by the raw file. */
+function names(text: string): { mine: Record<string, string>; theirs: Record<string, string | null> } {
+  const imported = importKicadSchematic(text, { built: BUILT })
+  if (imported.status !== "imported") throw new Error(`not imported: ${imported.status === "refused" ? imported.message : ""}`)
+  const { pinNet, nets: list } = computeConnectivity(imported.project)
+  const byId = new Map(list.map((n) => [n.id, n.name]))
+  const refOf = new Map(imported.project.components.map((c) => [c.id, c.ref]))
+  const uuidOf = new Map([...imported.build.bySymbol].map(([sym, c]) => [c.id, sym.uuid]))
+  const mine: Record<string, string> = {}
+  const derived = deriveNets(write(text), { hiddenPower: true, localJoinsGlobal: "same" })
+  const theirs: Record<string, string | null> = {}
+  for (const [key, netId] of pinNet) {
+    const at = key.lastIndexOf(":")
+    const id = key.slice(0, at)
+    if (!refOf.has(id) || !byId.has(netId)) continue
+    const pin = `${refOf.get(id)}.${key.slice(at + 1)}`
+    mine[pin] = byId.get(netId)!
+    const g = ([] as number[]).concat(derived.pins.get(`/${uuidOf.get(id)}#${key.slice(at + 1)}`) ?? [])[0]
+    theirs[pin] = g === undefined ? null : derived.netName(g)
+  }
+  return { mine, theirs }
+}
 
-  it("a net with a power name and a label name is refused as S2: KiCad names it by the power symbol, the editor by alphabet", () => {
-    const text = schematic({ libs: [LIB_R, LIB_GND], symbols: [R("R1", "100 100 0", 1), P("power:GND", "#PWR01", "100 120", 2)], wires: ["100 103.81 100 120"], labels: ["CONN_GND 100 110 0"] })
-    // the gate already asks for S2 for any symbol that is not a power symbol; the build says what in this net needs it
-    const r = importKicadSchematic(text, { built: WITHOUT_S2 })
-    expect(r.status === "refused" && r.message).toBe("This schematic uses labels and net names as KiCad has them, which are not supported yet.")
-    expect(lossyOf(text, WITHOUT_S2).map(([, why]) => why)).toContainEqual(expect.stringMatching(/names of different priority \(CONN_GND and GND\)/))
+describe("the names KiCad gives nets, by the driver of the highest priority", () => {
+  const R1 = R("R1", "100 100 0", 1)
+  const wire = ["100 103.81 100 120"]
+
+  it("a power symbol beats a label: the net is GND, not CONN_GND and not /CONN_GND", () => {
+    const text = schematic({ libs: [LIB_R, LIB_GND], symbols: [R1, P("power:GND", "#PWR01", "100 120", 2)], wires: wire, labels: ["CONN_GND 100 110 0"] })
+    const r = names(text)
+    expect(r.mine["R1.2"]).toBe("GND")
+    expect(r.mine).toEqual(Object.fromEntries(Object.entries(r.theirs).filter(([k]) => k in r.mine)))
   })
 
-  it("a global label and a local label on one net differ in priority: KiCad takes the global one, the editor the first by alphabet", () => {
+  it("a global label beats a local one, and a local label is named with its sheet's path", () => {
     const global = `(global_label "ZG" (shape input) (at 100 115 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid g1))`
-    const text = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["100 103.81 100 120"], labels: ["AL 100 110 0"], body: [global] })
-    expect(lossyOf(text, BUILT).map(([, why]) => why)).toContainEqual(expect.stringMatching(/names of different priority \(ZG and AL\)|names of different priority \(AL and ZG\)/))
-    // two global labels tie, and the net is named by the global label without a sheet path: no S2 for the name
-    const two = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["100 103.81 100 120"], body: [global, global.replace('"ZG"', '"AG"').replace("100 115", "100 112").replace("g1", "g2")] })
-    expect(lossyOf(two, BUILT).filter(([, why]) => /priority|named by a label/.test(why))).toEqual([])
+    const text = schematic({ libs: [LIB_R], symbols: [R1], wires: wire, labels: ["AL 100 110 0"], body: [global] })
+    const r = names(text)
+    expect(r.mine["R1.2"]).toBe("ZG")
+    expect(r.theirs["R1.2"]).toBe("ZG")
+    const local = names(schematic({ libs: [LIB_R], symbols: [R1], wires: wire, labels: ["AL 100 110 0"] }))
+    expect(local.mine["R1.2"]).toBe("/AL")
+    expect(local.theirs["R1.2"]).toBe("/AL")
   })
 
-  it("two labels of different names on one net tie on name order in KiCad as in the editor: the net is not refused for it", () => {
-    const text = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["100 103.81 100 120"], labels: ["B_NET 100 110 0", "A_NET 100 115 0"] })
-    const r = nets(text)
-    expect(r.mine).toEqual(r.theirs)
-    const imported = importKicadSchematic(text, { built: BUILT })
-    if (imported.status !== "imported") throw new Error("not imported")
-    expect(computeConnectivity(imported.project).nets.map((n) => n.name)).toEqual(["A_NET"])
-    const d = deriveNets(write(text), {})
-    expect([...d.driver.values()].map((x) => x.name)).toEqual(["A_NET"])
+  it("two labels of different names tie on name order: the one that sorts first", () => {
+    const r = names(schematic({ libs: [LIB_R], symbols: [R1], wires: wire, labels: ["B_NET 100 110 0", "A_NET 100 115 0"] }))
+    expect(r.mine["R1.2"]).toBe("/A_NET")
+    expect(r.theirs["R1.2"]).toBe("/A_NET")
   })
 
-  it("a net named by a label, or by no name, is S2: KiCad writes /NAME and Net-(R1-Pad2)", () => {
-    const labelled = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["100 103.81 100 120"], labels: ["SIG 100 110 0"] })
-    expect(lossyOf(labelled, WITHOUT_S2)).toContainEqual(["S2", "a net named by a label or a local power symbol, which KiCad writes with its sheet's path (/NAME)"])
-    const bare = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1), R("R2", "100 120 0", 2)], wires: ["100 103.81 100 116.19"] })
-    expect(lossyOf(bare, WITHOUT_S2).map(([, why]) => why)).toContainEqual(expect.stringMatching(/Net-\(R1-Pad2\)/))
-    // power names are the same in both
-    const power = schematic({ libs: [LIB_R, LIB_GND], symbols: [R("R1", "100 100 0", 1), P("power:GND", "#PWR01", "100 120", 2)], wires: ["100 103.81 100 120"] })
-    expect(lossyOf(power, WITHOUT_S2)).toEqual([])
+  it("a net nothing names is named after a pin: Net-(R1-Pad2), unconnected-(R1-Pad2) for one pin alone, and a pin's own name when it has one", () => {
+    const two = names(schematic({ libs: [LIB_R], symbols: [R1, R("R2", "100 120 0", 2)], wires: ["100 103.81 100 116.19"] }))
+    expect(two.mine["R1.2"]).toBe("Net-(R1-Pad2)")
+    expect(two.theirs["R1.2"]).toBe("Net-(R1-Pad2)")
+    const lone = names(schematic({ libs: [LIB_R], symbols: [R1], wires: ["100 103.81 100 110"] }))
+    expect(lone.mine["R1.2"]).toBe("unconnected-(R1-Pad2)")
+    expect(lone.theirs["R1.2"]).toBe("unconnected-(R1-Pad2)")
+    const named = names(schematic({ libs: [LIB_R, LIB_U], symbols: [R1, U("U1", "140 100 0", 3)], wires: ["100 103.81 100 110", "100 110 133.65 110", "133.65 110 133.65 97.46"] }))
+    // pin 1 of U1 is `A`: the net is named after it (R1's pin has no name of its own, so its name has -Pad in it and loses)
+    expect(Object.values(named.mine)).toContain("Net-(U1-A)")
+    expect(named.mine).toEqual(Object.fromEntries(Object.entries(named.theirs).filter(([k]) => k in named.mine)))
+  })
+
+  it("KiCad 6 names every pin -PadN", () => {
+    const text = schematic({ version: 20211123, libs: [LIB_R, LIB_U], symbols: [R1, U("U1", "140 100 0", 3)], wires: ["100 103.81 100 110", "100 110 133.65 110", "133.65 110 133.65 97.46"] })
+    const r = names(text)
+    expect(Object.values(r.mine)).toContain("Net-(R1-Pad2)")
+    expect(Object.values(r.mine).some((n) => /U1-A/.test(n))).toBe(false)
+    expect(importKicadSchematic(text, { built: BUILT }).status === "imported" && (importKicadSchematic(text, { built: BUILT }) as { project: { netNames?: string } }).project.netNames).toBe("kicad6")
+  })
+
+  it("an empty power Value names nothing, which KiCad shows as <NO NET>", () => {
+    const r = names(schematic({ version: 20250114, libs: [LIB_R, LIB_GND], symbols: [R1, P("power:GND", "#PWR01", "100 120", 2, { value: "" })], wires: wire }))
+    expect(r.mine["R1.2"]).toBe("<NO NET>")
   })
 })
 
@@ -400,7 +436,7 @@ describe("the unit of a use, and the name of a power symbol, are KiCad's", () =>
       expect([...deriveNets(write(text), {}).driver.values()].map((d) => d.name)).toEqual([expected])
     }
     // from 20230221 an empty Value is an empty name, not the pin's
-    expect(name(20250114, "")).toMatch(/a power symbol with no name/)
+    expect(name(20250114, "")).toBe("")
   })
 })
 
@@ -424,13 +460,15 @@ describe("a local power symbol (KiCad 9 `(power local)`) is a net of its sheet, 
   const LIB_VCC_LOCAL = LIB_VCC.replace("(power)", "(power local)")
   const flat = () => schematic({ version: 20250318, libs: [LIB_R, LIB_VCC_LOCAL], symbols: [R("R1", "100 100 0", 1), P("power:VCC", "#PWR01", "100 96.19", 2)] })
 
-  it("a flat sheet: the pins are on one net in both readings, and the name is S2 (`/VCC`, not `VCC`)", () => {
+  it("a flat sheet: the pins are on one net in both readings, and the name is `/VCC`, not `VCC`", () => {
     const text = flat()
     expect(nets(text).mine).toEqual(nets(text).theirs)
-    expect(lossyOf(text, BUILT).map(([ext, why]) => `${ext}: ${why}`)).toContainEqual(expect.stringMatching(/^S2: a net named by a label or a local power symbol, which KiCad writes with its sheet's path/))
-    // the same symbol as a global power symbol is named VCC in both, and is exact
+    const r = names(text)
+    expect(r.mine["R1.1"]).toBe("/VCC")
+    expect(r.theirs["R1.1"]).toBe("/VCC")
+    // the same symbol as a global power symbol is named VCC in both
     const global = schematic({ version: 20250318, libs: [LIB_R, LIB_VCC], symbols: [R("R1", "100 100 0", 1), P("power:VCC", "#PWR01", "100 96.19", 2)] })
-    expect(lossyOf(global, BUILT).filter(([, why]) => /named by a label/.test(why))).toEqual([])
+    expect(names(global).mine["R1.1"]).toBe("VCC")
   })
 
   it("two sheets that each have a local VCC are two nets; with global VCC they are one", () => {

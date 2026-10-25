@@ -24,8 +24,8 @@ describe("a cached symbol as the symbol drawing the editor keeps", () => {
       ["2", 0, -0.3, "down"],
     ])
     expect(part.pins).toEqual([
-      { number: "1", name: "1", kind: "passive", type: "passive" },
-      { number: "2", name: "2", kind: "passive", type: "passive" },
+      { number: "1", name: "1", kind: "passive", type: "passive", unnamed: true },
+      { number: "2", name: "2", kind: "passive", type: "passive", unnamed: true },
     ])
     expect(drawnPart(draw(LIB_U).drawing).symbol.ports.map((p) => [p.pin, p.x, p.y, p.dir])).toEqual([
       ["1", -0.5, 0.2, "left"],

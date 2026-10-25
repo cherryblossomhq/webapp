@@ -16,9 +16,10 @@ import { readSchematicTree } from "../src/model/kicad/schematic/tree"
 import { accountPro, readKicadPro } from "../src/model/kicad/project/pro"
 import { accountRules, readKicadRules } from "../src/model/kicad/project/dru"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
-import { BUILT_EXTENSIONS } from "../src/model/kicad/schematic/needs"
 import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
 import { rawSymbols, type RawSymbol } from "./kicad-census/drawing-sch.mjs"
+import { boxCorners, boxTextAt } from "../src/model/sheetItems"
+import { rawItems } from "./kicad-census/items-sch.mjs"
 import { boardPadNets, deriveNets } from "./kicad-census/netlist-sch.mjs"
 import { needsSch } from "./kicad-census/needs-sch.mjs"
 
@@ -192,10 +193,18 @@ function samePaths(a: Map<string, number>, b: Record<string, number>) {
   return true
 }
 
+const boxOfCorners = (at: { x: number; y: number }, w: number, h: number, rot: 0 | 90 | 180 | 270) => {
+  const c = boxCorners(at, w, h, rot)
+  return { minX: Math.min(...c.map((p) => p.x)), minY: Math.min(...c.map((p) => p.y)), maxX: Math.max(...c.map((p) => p.x)), maxY: Math.max(...c.map((p) => p.y)) }
+}
+
 describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
   it(
     "reads, accounts for, links and checks every schematic and project, and agrees with the census",
     () => {
+      let itemsCompared = 0
+      let itemWorst = 0
+      const itemProblems: string[] = []
       const sidecars = JSON.parse(readFileSync(join(CENSUS, "sidecars.json"), "utf8")) as Record<string, any>[]
       const censusSch = new Map(sidecars.filter((r) => r.kind === "kicad_sch").map((r) => [r.file as string, r]))
       const links = JSON.parse(readFileSync(join(CENSUS, "links.json"), "utf8")) as Record<string, any>[]
@@ -234,7 +243,63 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           row.needsDiff = extra.length || missing.length ? [...extra.map((x) => `+${x}`), ...missing.map((x) => `-${x}`)].join(" ") : ""
           const imp = importKicadSchematic(new Uint8Array(bytes))
           row.import = imp.status === "imported" ? "imported" : `refused, ${imp.reason}`
-          const named = importKicadSchematic(new Uint8Array(bytes), { built: new Set([...BUILT_EXTENSIONS, "S2"]) })
+          if (imp.status === "imported") {
+            // S4: every item of the sheet against the raw file, number by number, by a reader that shares no code with `src`
+            const raw = rawItems(text)
+            const mine = (imp.project.items ?? []).filter((i) => i.kind !== "junction" && i.kind !== "noconnect")
+            itemsCompared += raw.length
+            if (raw.length !== mine.length) itemProblems.push(`${file}: ${mine.length} items against ${raw.length}`)
+            raw.forEach((r, i) => {
+              const it = mine[i]
+              if (!it || it.kind !== r.kind) {
+                itemProblems.push(`${file} item ${i}: ${it?.kind} against ${r.kind}`)
+                return
+              }
+              const nums =
+                it.kind === "text" ? [it.x, -it.y]
+                : it.kind === "textbox" ? [it.x, -it.y, it.w, it.h]
+                : it.kind === "polyline" || it.kind === "bezier" ? it.points.flatMap((p) => [p.x, -p.y])
+                : it.kind === "rectangle" ? [it.a.x, -it.a.y, it.b.x, -it.b.y]
+                : it.kind === "circle" ? [it.c.x, -it.c.y, it.r]
+                : it.kind === "arc" ? [it.start.x, -it.start.y, it.mid.x, -it.mid.y, it.end.x, -it.end.y]
+                : it.kind === "image" ? [it.x, -it.y]
+                : it.kind === "table" ? it.cells.flatMap((c) => [c.x, -c.y, c.w, c.h])
+                : []
+              if (nums.length !== r.nums.length) itemProblems.push(`${file} item ${i}: ${nums.length} numbers against ${r.nums.length}`)
+              nums.forEach((v, k) => {
+                const e = Math.abs(v * MM - r.nums[k])
+                itemWorst = Math.max(itemWorst, e)
+                if (e > 0.001) itemProblems.push(`${file} item ${i} number ${k}: ${v * MM} against ${r.nums[k]}`)
+              })
+              if ((it.kind === "text" || it.kind === "textbox") && it.text !== r.text) itemProblems.push(`${file} item ${i}: text`)
+              // the drawn box, not only the stored numbers: the rectangle from `at` to `at + size`, never turned
+              if (r.rects && (it.kind === "textbox" || it.kind === "table")) {
+                const drawn = it.kind === "textbox" ? [boxOfCorners(it, it.w, it.h, it.rot)] : it.cells.map((c) => boxOfCorners(c, c.w, c.h, c.rot))
+                if (drawn.length !== r.rects.length) itemProblems.push(`${file} item ${i}: ${drawn.length} drawn boxes against ${r.rects.length}`)
+                const boxes = it.kind === "textbox" ? [it] : it.cells
+                boxes.forEach((b, k) => {
+                  const want = r.anchors?.[k]
+                  if (!want) return
+                  const at = boxTextAt(b, b.margins, b.look)
+                  const e = Math.max(Math.abs(at.x * MM - want[0]), Math.abs(-at.y * MM - want[1]))
+                  itemWorst = Math.max(itemWorst, e)
+                  if (e > 0.001) itemProblems.push(`${file} item ${i} text anchor ${k}: (${at.x * MM}, ${-at.y * MM}) against (${want[0]}, ${want[1]})`)
+                })
+                drawn.forEach((d, k) => {
+                  const rr = r.rects![k]
+                  if (!rr) return
+                  const want = [Math.min(rr[0], rr[2]), Math.min(-rr[1], -rr[3]), Math.max(rr[0], rr[2]), Math.max(-rr[1], -rr[3])]
+                  const got = [d.minX * MM, d.minY * MM, d.maxX * MM, d.maxY * MM]
+                  got.forEach((v, q) => {
+                    const e = Math.abs(v - want[q])
+                    itemWorst = Math.max(itemWorst, e)
+                    if (e > 0.001) itemProblems.push(`${file} item ${i} drawn box ${k} edge ${q}: ${v} against ${want[q]}`)
+                  })
+                })
+              }
+            })
+          }
+          const named = importKicadSchematic(new Uint8Array(bytes))
           row.withNames = named.status === "imported" ? "imported" : named.needs.length ? `needs ${named.needs.map((n) => n.ext).join(" ")}` : `refused, ${named.reason}`
           // the drawings of every cached symbol against the raw cache
           const raws = rawSymbols(text)
@@ -274,7 +339,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         try {
           const bytes = new Uint8Array(readFileSync(path))
           const { schematic } = readKicadSchematic(bytes)
-          if (schematic.sheets.length || schematic.buses.length || schematic.busEntries.length || schematic.labels.some((l) => l.kind === "global" || l.kind === "hierarchical")) continue
+          if (schematic.sheets.length || schematic.buses.length || schematic.busEntries.length || schematic.labels.some((l) => l.kind === "hierarchical")) continue
           const gate = gateSchematic(bytes, { built: MEASURE })
           if ("refused" in gate) {
             row.nets = `not built: ${gate.refused.message.slice(0, 80)}`
@@ -316,8 +381,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             const keys = members.get(net.id)
             if (!keys?.length) continue
             const g = ([] as number[]).concat(derived.pins.get(keys[0]) ?? [])[0]
-            const d = g === undefined ? undefined : derived.driver.get(g)
-            if (net.named ? d?.name !== net.name : !!d) namesEqual = false
+            // KiCad's name of the net, from the raw file: its driver's, or a pin's `Net-(R1-Pad2)`; the editor's own name for it is the same
+            if ((g === undefined ? null : derived.netName(g)) !== net.name) namesEqual = false
           }
           const other = [...exts].filter((x) => x !== "S2")
           if (other.length) row.nets = `not compared: needs ${[...exts].sort().join(" ")}${partitionEqual ? " (partition equal)" : " (partition differs)"}`
@@ -411,7 +476,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             for (const [net, v] of bn) {
               if (v.size > 1) {
                 bad++
-                detail.push(`${net} is on ${v.size} nets of the schematic (${[...v].flatMap((g) => (padsOf.get(g) ?? []).slice(0, 1)).join(", ")})`)
+                detail.push(`board net ${net} is on ${v.size} nets of the schematic (${[...v].map((g) => `${(padsOf.get(g) ?? []).slice(0, 1).join("")} as ${derived.driver.get(([] as number[]).concat(g)[0])?.name ?? "an unnamed net"}`).join(", ")})`)
               }
             }
             for (const [g, v] of gn) {
@@ -442,6 +507,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             row.imported = true
             row.bytes = raised.bytes
             row.differences = mine
+            if (mine) row.detail = raised.differences.slice(0, 2).map((d) => d.why).join(" | ")
             row.lossyMeasured = raised.report.entries.some((e) => e.code === "lossy-measured")
             row.status += `, ${mine} difference${mine === 1 ? "" : "s"}`
           }
@@ -509,6 +575,9 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         importedWithNames: sum((r) => r.withNames === "imported"),
         importedRealWithNames: real.filter((r) => r.withNames === "imported").length,
         stillNeeding: Object.fromEntries([...new Set(rows.map((r) => r.withNames))].filter((k) => k && k !== "imported").map((k) => [k, rows.filter((r) => r.withNames === k).length])),
+        itemsCompared,
+        itemWorstMm: Number(itemWorst.toFixed(6)),
+        itemProblems: itemProblems.length,
         drawingSymbols: drawingCount,
         drawingBytes,
         drawingWorstMm: Number(drawingWorst.toFixed(6)),
@@ -547,6 +616,12 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(proProblems).toEqual([])
       expect(drawingProblems.slice(0, 5)).toEqual([])
       expect(summary.drawingWorstMm).toBeLessThanOrEqual(0.001)
+      expect(itemProblems.slice(0, 5)).toEqual([])
+      expect(itemWorst).toBeLessThanOrEqual(0.001)
+      expect(itemsCompared).toBeGreaterThan(300)
+      // the real gate: with S2, S4 and S7 built, the files slices-sch.mjs puts in slice 3b import (71 of the 184 real files, 38.6%)
+      expect(summary.imported3a).toBe(summary.importedWithNames)
+      expect(summary.importedReal3a).toBe(71)
       expect(summary.netsDiffer).toBe(0)
       expect(summary.netsDifferInNames).toBe(0)
       expect(summary.linksAsCensus).toBe(summary.projects)

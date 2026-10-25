@@ -12,9 +12,12 @@ import type { KicadSchematic } from "./types"
  * The extensions the editor has built. Each slice adds its own. Slice 3a built none: it read, linked and
  * checked. Slice 3b-i built the three that every symbol needs: S5 (units, body styles, alternates, mirror,
  * fields with a place of their own, hidden power pins, repeated pin numbers), S6 (the shapes, fills and
- * strokes of a symbol's drawing) and S10 (the drawings kept in the project).
+ * strokes of a symbol's drawing) and S10 (the drawings kept in the project). Slice 3b-ii built S2 (labels,
+ * their shapes, sizes and styles, and the net names KiCad gives), S4 (text, text boxes, drawings,
+ * pictures, tables, wire strokes, junction dots and no-connect flags of their own, locked groups) and
+ * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated).
  */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S5", "S6", "S10"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S2", "S4", "S5", "S6", "S7", "S10"])
 
 /** What each extension is, for the sentence "This schematic uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {

@@ -36,6 +36,7 @@ export function partSourceLine(spec: CustomPartSpec | undefined): SourceLine | n
     }
     return { label: "From memory", detail: s?.note ?? "Pins and footprint not checked against a supplier." }
   }
+  if (s.pins === "import") return { label: "KiCad file", detail: `${s.imported?.libId ?? spec.name}, as ${s.imported?.file ?? "the file"} has it` }
   const line = builtLine(s)
   // A supplier's record that disagrees with the drawing is said wherever the drawing came from.
   if (line && s.check?.verdict === "contradicted") return { ...line, detail: `${line.detail}. Disagrees with ${s.check.lcsc ? `LCSC ${s.check.lcsc}` : "the supplier's records"}` }

@@ -1,5 +1,4 @@
-import { isPhysical } from "../model/instances"
-import { findPart } from "../model/library"
+import { isOnBoard } from "../model/instances"
 import type { Project } from "../model/types"
 import { lookRenderer, type Board3dView, type LookImage, type LookRenderer } from "./vision/encode"
 import { frame, matchAspect, type FrameRequest } from "./vision/framing"
@@ -79,7 +78,7 @@ function pcbKey(side: PcbSide, extras: ReadonlySet<PcbExtra>) {
 }
 
 async function look3d(project: Project, input: ToolInput, ctx: ToolContext): Promise<Looked> {
-  if (!project.components.some((c) => c.pcb.placed && isPhysical(findPart(c.partId)))) {
+  if (!project.components.some((c) => c.pcb.placed && isOnBoard(c))) {
     throw new Error("Nothing is placed on the PCB yet, so the 3D board is empty. Run layout_pcb first.")
   }
   const side = (input.side as PcbSide | undefined) ?? "both"

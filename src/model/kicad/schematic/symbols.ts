@@ -28,7 +28,7 @@ export { expandPinNumber, MAX_STACKED_PADS } from "../../pinNumbers"
 export const MM_PER_UNIT = 12.7
 
 /** A length in millimetres as the editor holds it. */
-const u = (mm: number) => round(mm / MM_PER_UNIT, 6)
+export const u = (mm: number) => round(mm / MM_PER_UNIT, 6)
 
 /** A symbol with the `extends` of its cache entry followed: the base's pins, drawing and fields stand where it has none. `source` is the cache entry that holds the drawing (the symbol itself, or the base it inherits it from). */
 export type ResolvedLibSymbol = LibSymbol & { source: LibSymbol }
@@ -100,7 +100,7 @@ export function portDir(angle: number): "left" | "right" | "up" | "down" {
 // ---------- the drawing ----------
 
 /** A colour of a file's `(color r g b a)`, or undefined for KiCad's "none of its own" (alpha 0). */
-function colorOf(node: List | undefined): string | undefined {
+export function colorOf(node: List | undefined): string | undefined {
   if (!node) return undefined
   const [r, g, b] = [numAt(node, 1), numAt(node, 2), numAt(node, 3)]
   const a = numAt(node, 4, 1)

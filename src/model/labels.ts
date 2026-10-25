@@ -1,4 +1,5 @@
 import type { Box } from "../lib/geometry"
+import { isKicadLabel, labelGeometry } from "./labelShapes"
 import type { NetLabel } from "./types"
 
 /** Height of a net label's flag, across the wire it names. */
@@ -7,6 +8,8 @@ export const labelWidth = (name: string) => name.length * 0.08 + 0.16
 
 /** The flag of a net label: it starts at the label's point and runs away from it in the label's direction. */
 export function labelBox(l: NetLabel): Box {
+  // A label from KiCad covers what KiCad draws: its text, or its flag.
+  if (isKicadLabel(l)) return labelGeometry(l).box
   const w = labelWidth(l.name)
   switch (l.rot) {
     case 180:

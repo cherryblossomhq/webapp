@@ -1,6 +1,6 @@
 import { parseFarads } from "../lib/values"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "./connectivity"
-import { isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
+import { isOnBoard, isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
 import { findPart } from "./library"
 import type { ComponentInstance, PartDef, PinDef, Project } from "./types"
 
@@ -57,11 +57,12 @@ const isCapacitor = (part: PartDef) =>
 /**
  * A part decoupling capacitors serve: an IC, a regulator, or a bare RF module such as the
  * ESP32-WROOM, which has its supply pin and nothing else. Not a dev board, which carries its own
- * decoupling, nor a battery or passive.
+ * decoupling, nor a battery or passive. Given the instance, one marked not on the board is not a chip here.
  */
-export const isChip = (part: PartDef | undefined): part is PartDef =>
+export const isChip = (part: PartDef | undefined, c?: ComponentInstance): part is PartDef =>
   !!part &&
   isPhysical(part) &&
+  (!c || isOnBoard(c)) &&
   (part.category === "ICs" || part.category === "Power" || (part.category === "Modules" && !!part.keywords?.includes("rf"))) &&
   part.pins.length >= 3
 
@@ -153,7 +154,7 @@ export function decouplingPairs(project: Project, sch: SchematicConnectivity = c
   for (const [twin, owner] of unitOwners(project.components)) units.set(owner, [...(units.get(owner) ?? []), byId.get(twin)!])
   for (const c of project.components) {
     const part = parts.get(c.id)
-    if (!isChip(part)) continue
+    if (!isChip(part, c)) continue
     const drawn = new Map([c, ...(units.get(c.id) ?? [])].flatMap((u) => schematicPins(u, parts.get(u.id)).map((p) => [p.pin, p.pos] as const)))
     for (const pin of part.pins) {
       if (!isSupplyPin(part, pin)) continue

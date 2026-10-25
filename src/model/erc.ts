@@ -1,3 +1,4 @@
+import { round } from "../lib/geometry"
 import { numeric } from "../lib/natural"
 import { parseValue } from "../lib/values"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
@@ -20,12 +21,14 @@ import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project,
  * - **pin-conflict**: pins of an imported symbol on one net whose electrical types do not go
  *   together (two outputs), by KiCad's own table of pin pairs. Each pair KiCad calls an error or a
  *   warning is one warning here. The editor's own parts have no pin types and are never checked.
+ * - **stray-no-connect**: a no-connect flag of the sheet that is not on a pin of a part (KiCad's "no
+ *   connect flag not connected to a pin").
  *
  * Measured on the five examples, the three v1 fixtures and the eight blog boards brought in
  * from tscircuit: every hit was a real mistake and none was a false alarm.
  */
 
-export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict"
+export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict" | "stray-no-connect"
 
 export interface ErcFinding {
   kind: ErcKind
@@ -682,7 +685,15 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
     }
   }
 
-  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4 }
+  // A no-connect flag drawn where no pin is: it means nothing, and KiCad says so.
+  for (const it of project.items ?? []) {
+    if (it.kind !== "noconnect") continue
+    const pinHere = project.components.some((c) => schematicPins(c).some((p) => Math.hypot(p.pos.x - it.x, p.pos.y - it.y) < 1e-3))
+    if (pinHere) continue
+    findings.push({ kind: "stray-no-connect", key: `stray-no-connect:${it.id}`, message: `A no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)}) is not on a pin`, subject: `no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)})`, componentIds: [], labelIds: [], at: { x: it.x, y: it.y } })
+  }
+
+  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5 }
   return findings.sort(
     (x, y) =>
       order[x.kind] - order[y.kind] ||

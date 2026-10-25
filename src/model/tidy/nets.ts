@@ -1,5 +1,5 @@
 import { naturalCompare } from "../../lib/natural"
-import { computeConnectivity, pinKey, type SchematicConnectivity } from "../connectivity"
+import { bareName, computeConnectivity, pinKey, type SchematicConnectivity } from "../connectivity"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners } from "../instances"
 import { findPart } from "../library"
 import { fieldsInFrame, hasFieldPlaces } from "../symbolDrawing"
@@ -122,13 +122,15 @@ export function netInfo(project: Project): NetInfo {
     nets.set(id, {
       id,
       key: [...physical].sort()[0] ?? id,
-      name: net.name,
+      // What a label or port is typed to give the net its name: in a project named as KiCad names its nets, `NAME` for the net `/NAME`.
+      name: bareName(net),
       named: net.named,
       given: !made,
       // A pin alone on an unnamed net (a stub off a supply pin) is on nothing: never a rail, or
       // the port Tidy would draw there would name it and join it to whatever shares that name.
       // A name Tidy made up says nothing of what the net is: the pins and ports on it do.
-      rail: !net.named && pins.length < 2 ? null : railOf(made && !ports.get(id)?.size ? "" : net.name, kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
+      // A net a local label names stays one: a power port in its place would name it NAME where KiCad names it /NAME.
+      rail: (!net.named && pins.length < 2) || net.label?.kind === "local" ? null : railOf(made && !ports.get(id)?.size ? "" : bareName(net), kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
       pins,
       ...portOf(imported.get(id)),
     })

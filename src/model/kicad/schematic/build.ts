@@ -1,17 +1,21 @@
 import { round } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
 import { computeConnectivity, pinKey } from "../../connectivity"
+import { labelJustify } from "../../labelShapes"
 import { customPartId, drawingKey, registerProjectParts } from "../../customParts"
 import { schematicPins } from "../../instances"
 import { findPart, isRegistered, unitTwinId, unregisterPart } from "../../library"
 import { createProject } from "../../ops"
-import type { ComponentInstance, CustomPartSpec, FieldPlace, Mirror, NetLabel, Project, Rotation, SchematicBlock, SymbolDrawing, Vec2, Wire } from "../../types"
+import type { ComponentInstance, CustomPartSpec, FieldPlace, LabelShape, Mirror, NetLabel, Project, Rotation, SchematicBlock, SheetItem, SymbolDrawing, SymbolFlags, Vec2, Wire } from "../../types"
 import type { ImportReport } from "../board/report"
+import { kid, numAt } from "../board/sexpr"
+import { labelFields, readSheetItems, strokeOf, textLookOf } from "./annotations"
 import { symbolRecords, type SymbolRecord } from "./link"
 import type { Need } from "./needs"
-import { MM_PER_UNIT, drawingFromLib, expandPinNumber, pinsOfUnit, placeOf, resolveLibSymbol, specFromSymbol, toSheet, type ResolvedLibSymbol } from "./symbols"
+import { MM_PER_UNIT, colorOf, drawingFromLib, expandPinNumber, pinsOfUnit, placeOf, resolveLibSymbol, specFromSymbol, toSheet, type ResolvedLibSymbol } from "./symbols"
 import type { SchematicTree } from "./tree"
-import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt } from "./types"
+import { readProps } from "./read"
+import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt, SchLabel } from "./types"
 
 // A KiCad schematic as an editor project. The editor is y up and KiCad's sheet y down, so every y
 // is negated and a rotation keeps its visual sense (both are counter-clockwise). KiCad's 1.27 mm
@@ -31,8 +35,8 @@ import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt } from "./type
 //   - two KiCad points closer than the editor tells apart collapse to one (S11);
 //   - a pin of the type "no connect" is on no net whatever is drawn to it: connectivity leaves it out;
 //   - a hidden power-input pin joins the global net of its name: so it does in the editor (S5);
-//   - the names KiCad gives nets (`/NAME`, `Net-(R1-Pad2)`, the power symbol over the label) are not
-//     the editor's (S2).
+//   - the names KiCad gives nets (`/NAME`, `Net-(R1-Pad2)`, the power symbol over the label) are the
+//     project's own rule (`Project.netNames`, S2): connectivity names each net as KiCad does.
 
 /** The place of a point on the editor's sheet: to the editor's own four digits for what must meet a pin, to six for a part's origin. */
 const PX = (mm: number) => round(mm / MM_PER_UNIT, 4)
@@ -140,12 +144,12 @@ class SegGrid {
 
 /** Schematic to project. Throws nothing for a schematic the model can hold; `lossy` names every extension it needs otherwise. */
 export function buildSchematicProject(tree: SchematicTree, report: ImportReport, options: SchematicBuildOptions = {}): SchematicBuild {
-  const built = options.built ?? new Set<string>()
   const lossy: Need[] = []
   const lose = (ext: string, why: string) => {
     if (!lossy.some((n) => n.ext === ext && n.why === why)) lossy.push({ ext, why, source: "importer" })
   }
   const root = tree.files.get(tree.root)!.schematic
+  const fileName = tree.root.slice(tree.root.lastIndexOf("/") + 1)
   const title = root.titleBlock.find((t) => t.key === "Title")?.value
   let project = createProject(options.name ?? (title && title.trim() ? title : "Imported KiCad schematic"), "")
   const bySymbol = new Map<PlacedSymbol, ComponentInstance>()
@@ -164,10 +168,19 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   const pinPoints: { c: ComponentInstance; pin: string; at: Pt }[] = []
   const missing: string[] = []
   const labels: NetLabel[] = []
-  const powerNames = new Set<string>()
-  const localPowerNames = new Set<string>()
-  const globalLabelNames = new Set<string>()
   let powerPorts = 0
+
+  /** S7: the flags a placed symbol has that are not KiCad's defaults. */
+  function flagsProp(sym: PlacedSymbol): { flags?: SymbolFlags } {
+    const flags: SymbolFlags = {}
+    if (sym.dnp) flags.dnp = true
+    if (!sym.inBom) flags.inBom = false
+    if (!sym.onBoard) flags.onBoard = false
+    if (sym.excludeFromSim) flags.excludeFromSim = true
+    if (!sym.inPosFiles) flags.inPosFiles = false
+    if (sym.fieldsAutoplaced) flags.fieldsAutoplaced = true
+    return Object.keys(flags).length ? { flags } : {}
+  }
 
   // ---------- what each placed symbol is: its drawing, its part, its unit ----------
   const drawings = new Map<string, { lib: ResolvedLibSymbol; drawing: SymbolDrawing; key: string } | null>()
@@ -255,7 +268,8 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   const partFor = (p: Placed): string => {
     const isPrimary = (primaryOf.get(p) ?? p) === p
     const { spec, key } = specFromSymbol(p.lib, p.drawing, p.power || !isPrimary ? "" : (p.onBoard?.land ?? ""))
-    const full: CustomPartSpec = { ...spec, id: customPartId(spec) }
+    // The part is the file's own: its symbol and pins are what the schematic has, so Checks has no supplier to hold it against.
+    const full: CustomPartSpec = { ...spec, id: customPartId(spec), source: { pins: "import", land: "import", imported: { file: fileName, libId: p.sym.libId } } }
     symbols[key] = p.drawing
     if (!specs.has(full.id)) specs.set(full.id, full)
     return isPrimary ? full.id : unitTwinId(full.id)
@@ -276,13 +290,12 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
       // Before stamp 20230221 a global power symbol with a hidden pin is named by that pin; from it the Value is the net, and an empty one stays empty.
       const legacy = root.version !== null && root.version < MODERN_POWER_SYMBOLS_FROM && lib.power === "global" && pp.hidden
       const net = (legacy ? pp.name : record?.value || valueOf(sym)).trim()
-      if (net === "") lose("S2", "a power symbol with no name, which KiCad leaves a net with no name")
-      ;(lib.power === "local" ? localPowerNames : powerNames).add(net)
       const c: ComponentInstance = {
         id: uid("c"),
         partId,
         ref,
         props: { net },
+        ...flagsProp(sym),
         footprint: "",
         sch: { x: X(sym.at.x), y: Y(sym.at.y), rot: angle as Rotation, ...(mirror ? { mirror } : {}) },
         pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
@@ -302,6 +315,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
       partId,
       ref,
       props: {},
+      ...flagsProp(sym),
       footprint: onBoard?.land ?? "",
       sch: { x: X(sym.at.x), y: Y(sym.at.y), rot: angle as Rotation, ...(mirror ? { mirror } : {}) },
       pcb: onBoard?.pcb ?? { x: 0, y: 0, rot: 0, side: "top", placed: false },
@@ -324,8 +338,6 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     for (const q of pinsHere) {
       const at = toSheet(q.at, sym)
       for (const number of expandPinNumber(q.number)) pinPoints.push({ c, pin: number, at })
-      // A hidden power-input pin is on the global net of its name (the editor does that itself); its name ranks as a power symbol's.
-      if (q.type === "power_in" && q.hidden && q.name.trim() !== "") powerNames.add(q.name.trim())
     }
   }
 
@@ -356,9 +368,6 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     return Object.keys(out).length ? out : undefined
   }
 
-  if (textNotes.size) {
-    report.entries.push({ code: "text-style-not-brought", severity: "not-brought", object: "the texts of symbols", why: `Some texts of the symbols ask for ${[...textNotes].join(", ")}. The editor draws every text in its own font: the size, weight, colour and justification are kept.` })
-  }
   if (missing.length) {
     const names = [...new Set(missing)]
     report.entries.push({
@@ -373,6 +382,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
 
   // ---------- no-connects: the pins that lie on a flag ----------
   const flags = new Set(root.noConnects.map((n) => keyOf(n.at)))
+  const pinPlaces = new Set(pinPoints.map((p) => keyOf(p.at)))
   const ncOf = new Map<string, Set<string>>()
   for (const pp of pinPoints) {
     if (!flags.has(keyOf(pp.at))) continue
@@ -385,6 +395,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   // ---------- wires, cut at the junctions on their bodies ----------
   const junctionPts = root.junctions.map((j) => j.at)
   const junctionKeys = new Set(junctionPts.map(keyOf))
+  const wireStrokes = root.wires.filter((w) => w.pts.length >= 2).map((w) => strokeOf(w.node))
   const wiresIn = root.wires.filter((w) => w.pts.length >= 2).map((w) => ({ a: w.pts[0], b: w.pts[w.pts.length - 1] }))
   const grid = new SegGrid(wiresIn)
   const wires: Wire[] = []
@@ -433,15 +444,16 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     const chain = [w.a, ...cuts.filter((c, i) => i === 0 || keyOf(c) !== keyOf(cuts[i - 1])), w.b]
     for (let i = 0; i < chain.length - 1; i++) {
       if (keyOf(chain[i]) === keyOf(chain[i + 1])) continue
-      wires.push({ id: uid("w"), points: [editorPt(chain[i]), editorPt(chain[i + 1])] })
+      wires.push({ id: uid("w"), points: [editorPt(chain[i]), editorPt(chain[i + 1])], ...(wireStrokes[wi] ? { look: wireStrokes[wi] } : {}) })
     }
     for (const p of chain) trackPoint(p)
   })
 
   // ---------- labels ----------
   const pinAt = new Set(pinPoints.map((p) => keyOf(p.at)))
+  const stamp = root.version
+  const SHAPES = new Set(["input", "output", "bidirectional", "tri_state", "passive"])
   for (const l of root.labels) {
-    // A global label joins the nets of its name on every sheet; on one sheet that is what the editor's label does, so with S2 built it is carried as a label.
     // A hierarchical label or a directive label has nothing the editor can hold: they are S1 and S8, never dropped silently.
     if (l.kind === "hierarchical") {
       lose("S1", "a hierarchical label, which joins the sheet to its parent")
@@ -451,12 +463,9 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
       lose("S8", "a directive label")
       continue
     }
-    if (l.kind === "global" && !built.has("S2")) {
-      lose("S2", "a global label, which joins the nets of its name on every sheet")
-      continue
-    }
-    if (l.kind === "global") globalLabelNames.add(l.text.trim())
-    labels.push({ id: uid("l"), name: l.text, x: PX(l.at.x), y: PY(l.at.y), rot: (((Math.round(l.angle) % 360) + 360) % 360) as Rotation })
+    const label = labelOf(l)
+    if (!label) continue
+    labels.push(label)
     trackPoint(l.at)
     // A label on a pin is KiCad's alone with the pin, and skips a wire that only passes there (sch_label.cpp); the editor joins the wire.
     if (pinAt.has(keyOf(l.at)) && !junctionKeys.has(keyOf(l.at))) {
@@ -467,6 +476,35 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     }
     if (nearMiss(l.at)) lose("S11", "a label a hair's breadth from a wire, which the editor joins and KiCad does not")
   }
+
+  /** A label with the kind, shape, size, style and fields its file gave it. */
+  function labelOf(l: SchLabel): NetLabel | null {
+    const turn = ((Math.round(l.angle) % 360) + 360) % 360
+    if (turn % 90 !== 0 || Math.abs(l.angle - Math.round(l.angle)) > 1e-9) {
+      report.entries.push({ code: "label-not-held", severity: "refused", object: `the label ${l.text}`, why: "It is turned by other than a quarter turn, which the editor cannot draw." })
+      return null
+    }
+    const kind = l.kind === "global" ? "global" : "local"
+    if (kind === "global" && (l.shape === null || !SHAPES.has(l.shape))) {
+      report.entries.push({ code: "label-not-held", severity: "refused", object: `the global label ${l.text}`, why: `Its shape ${l.shape === null ? "is missing" : `"${l.shape}" is not one KiCad has`}.` })
+      return null
+    }
+    const rot = turn as Rotation
+    const out: NetLabel = { id: uid("l"), name: l.text, x: PX(l.at.x), y: PY(l.at.y), rot, kind }
+    if (kind === "global") out.shape = l.shape as LabelShape
+    // Size, weight, colour and a justification other than the one its turn gives.
+    const look = textLookOf(l.node, textNotes)
+    if (look) {
+      const j = labelJustify({ rot, kind, look: undefined })
+      if (look.h === j.h) delete look.h
+      if (look.v === j.v) delete look.v
+      if (Object.keys(look).length) out.look = look
+    }
+    const props = readProps(l.node, stamp)
+    if (props.length) out.fields = labelFields(l, props, textNotes)
+    if (l.node.some((c) => Array.isArray(c) && c[0] === "fields_autoplaced" && (c[1] === undefined || c[1] === "yes")) || l.node.includes("fields_autoplaced")) out.fieldsAutoplaced = true
+    return out
+  }
   for (const pp of pinPoints) trackPoint(pp.at)
 
   // ---------- groups: a block of the symbols in each ----------
@@ -475,7 +513,7 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   for (const g of root.groups) {
     const members = g.members.map((m) => bySymbolUuid.get(m)).filter((c): c is ComponentInstance => !!c && !blocks.some((b) => b.components.includes(c.id)))
     const others = g.members.length - g.members.filter((m) => bySymbolUuid.has(m)).length
-    if (members.length) blocks.push({ id: uid("b"), name: g.name || "Group", components: members.map((c) => c.id) })
+    if (members.length) blocks.push({ id: uid("b"), name: g.name || "Group", components: members.map((c) => c.id), ...(g.node.some((c) => Array.isArray(c) && c[0] === "locked" && (c[1] === undefined || c[1] === "yes")) || g.node.includes("locked") ? { locked: true as const } : {}) })
     if (others > 0) {
       report.entries.push({ code: "group-member-not-in-block", severity: "not-brought", object: `${others} member${others > 1 ? "s" : ""} of the group ${g.name ? `"${g.name}"` : "(no name)"}`, why: "A block holds symbols; the wires and other items of a group stay where they are but are not in its block.", count: others })
     }
@@ -487,11 +525,20 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     { key: "KiCad file version", value: version },
     ...root.titleBlock.filter((t) => !(options.name === undefined && t.key === "Title" && title && title.trim())),
   ]
+  const sheet = readSheetItems(root)
+  for (const n of sheet.notes) textNotes.add(n)
+  for (const why of sheet.problems) {
+    report.entries.push({ code: "item-not-held", severity: "refused", object: "something on the sheet", why: `${why[0].toUpperCase()}${why.slice(1)}, which the editor cannot draw.` })
+  }
+  if (textNotes.size) {
+    report.entries.push({ code: "text-style-not-brought", severity: "not-brought", object: "the texts of symbols", why: `Some texts of the symbols ask for ${[...textNotes].join(", ")}. The editor draws every text in its own font: the size, weight, colour and justification are kept.` })
+  }
   project = {
     ...project,
     components,
     wires,
     labels,
+    netNames: root.version !== null && root.version <= 20211123 ? ("kicad6" as const) : ("kicad" as const),
     ...(blocks.length ? { blocks } : {}),
     properties,
     ...(specs.size ? { parts: [...specs.values()] } : {}),
@@ -501,7 +548,10 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   for (const spec of specs.values()) if (!isRegistered(spec.id)) registered.push(spec.id)
   registerProjectParts(project)
   checkPinPlaces(project, pinPoints, lose)
-  checkNetNames(project, components, { power: powerNames, localPower: localPowerNames, globalLabel: globalLabelNames, label: new Set(labels.map((l) => l.name.trim())) }, lose)
+  // Junction dots of their own size or colour, and ones where the editor would draw none, and no-connect flags that are not on a pin, are items of the sheet.
+  const extra = junctionsAndFlags(project, root, pinPlaces, lose)
+  const all: SheetItem[] = [...sheet.items, ...extra]
+  if (all.length) project = { ...project, items: all }
   reportSplitPads(project, report)
   return { project, lossy, bySymbol, recordOf, registered, stats: { components: components.length, wires: wires.length, labels: labels.length, powerPorts } }
 }
@@ -535,37 +585,30 @@ function reportSplitPads(project: Project, report: ImportReport) {
 }
 
 /**
- * The names the editor gives the nets against the names KiCad does. A net that has a pin of a part
- * (a pad on a board) is checked: the editor names an unnamed net `Net-(R1-1)` where KiCad writes
- * `Net-(R1-Pad2)`, and a net named by a label by its text where KiCad adds the sheet's path
- * (`/NAME`); a power symbol's name is the same in both. Where one net has two names, KiCad takes
- * the one of the higher priority (a power symbol, then a local label: `CONNECTION_SUBGRAPH::PRIORITY`,
- * connection_graph.h) and, between names of one priority, the one that sorts first, as the editor does.
- * Every other name is S2, KiCad's own net names.
+ * The junction dots and no-connect flags of a sheet that are items of their own: a junction whose dot is
+ * not the editor's (a size or a colour of its own) or lies where the editor draws none, and a no-connect
+ * flag that is not on a pin of a part (one on a pin is that pin's `nc` mark). The rest is drawn by the
+ * editor from what meets there.
  */
-function checkNetNames(project: Project, components: ComponentInstance[], kinds: { power: ReadonlySet<string>; localPower: ReadonlySet<string>; globalLabel: ReadonlySet<string>; label: ReadonlySet<string> }, lose: (ext: string, why: string) => void) {
-  const { nets, pinNet, conflicts } = computeConnectivity(project)
-  const power = new Set(components.filter((c) => findPart(c.partId)?.powerNet).map((c) => c.id))
-  const pads = new Map<string, number>()
-  for (const [key, id] of pinNet) {
-    if (!power.has(key.slice(0, key.lastIndexOf(":")))) pads.set(id, (pads.get(id) ?? 0) + 1)
+function junctionsAndFlags(project: Project, root: KicadSchematic, flags: Set<string>, lose: (ext: string, why: string) => void): SheetItem[] {
+  void lose
+  const out: SheetItem[] = []
+  const dots = new Set(computeConnectivity(project).junctions.map((j) => `${j.x.toFixed(3)},${j.y.toFixed(3)}`))
+  for (const j of root.junctions) {
+    const diameter = numAt(kid(j.node, "diameter"), 1, 0)
+    const color = colorOf(kid(j.node, "color"))
+    const x = PX(j.at.x)
+    const y = PY(j.at.y)
+    const own = diameter > 0 || !!color
+    if (!own && dots.has(`${x.toFixed(3)},${y.toFixed(3)}`)) continue
+    out.push({ id: uid("n"), kind: "junction", x, y, ...(diameter > 0 ? { diameter: round(diameter / MM_PER_UNIT, 6) } : {}), ...(color ? { color } : {}) })
   }
-  const conflictOf = new Map(conflicts.map((c) => [c.netId, c.names]))
-  for (const net of nets) {
-    if (!pads.get(net.id)) continue
-    if (!net.named) {
-      lose("S2", "a net with no name of its own, which KiCad names Net-(R1-Pad2) and the editor Net-(R1-2)")
-      continue
-    }
-    const names = conflictOf.get(net.id) ?? [net.name]
-    // KiCad's driver priority, lowest to highest: a local label, a local power symbol, a global power symbol, a global label.
-    const rank = (n: string) => (kinds.globalLabel.has(n) ? 4 : kinds.power.has(n) ? 3 : kinds.localPower.has(n) ? 2 : 1)
-    if (new Set(names.map(rank)).size > 1) {
-      lose("S2", `a net with names of different priority (${names.slice(0, 3).join(" and ")}): KiCad takes the one of the higher priority (a global label, then a power symbol, then a local label), the editor the first by alphabet`)
-    } else if (rank(names[0]) <= 2 && names.some((n) => kinds.label.has(n) || kinds.localPower.has(n))) {
-      lose("S2", "a net named by a label or a local power symbol, which KiCad writes with its sheet's path (/NAME)")
-    }
+  const pinKeys = flags
+  for (const n of root.noConnects) {
+    if (pinKeys.has(keyOf(n.at))) continue
+    out.push({ id: uid("n"), kind: "noconnect", x: PX(n.at.x), y: PY(n.at.y) })
   }
+  return out
 }
 
 /** Every pin the editor draws is where KiCad has it, to the editor's own rounding: a pin that is off is a net that could come out wrong. */

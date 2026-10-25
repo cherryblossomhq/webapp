@@ -114,6 +114,8 @@ export interface PlacedSymbol {
   dnp: boolean
   excludeFromSim: boolean
   inPosFiles: boolean
+  /** KiCad's `fields_autoplaced`: it laid the symbol's fields out itself. */
+  fieldsAutoplaced: boolean
   /** The pins the file lists with their uuids and chosen alternates. */
   pins: { number: string; uuid: string; alternate: string | null }[]
   instances: SymbolInstance[]

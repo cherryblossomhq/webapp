@@ -28,7 +28,7 @@ interface SymbolBodyProps {
 }
 
 /** Dashes in KiCad's styles, scaled to the line width. */
-function dashArray(dash: ShapeLook["dash"], w: number): string | undefined {
+export function dashArray(dash: ShapeLook["dash"], w: number): string | undefined {
   switch (dash) {
     case "dash":
       return `${w * 6} ${w * 3}`

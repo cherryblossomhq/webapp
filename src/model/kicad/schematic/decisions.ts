@@ -152,8 +152,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^(symbol>fields_autoplaced)$",
-  "decision": "not-needed",
-  "note": "KiCad's flag that it placed the fields itself"
+  "decision": "native",
+  "note": "KiCad's flag that it placed the fields itself: kept, so an export writes it back"
  },
  {
   "source": "^(symbol>property(?:>.*)?)$",

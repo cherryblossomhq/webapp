@@ -317,12 +317,14 @@ export function drawingSymbol(d: SymbolDrawing, unit: number, body: number): Sym
   const pins = drawingPinsOf(d, unit, body)
   const primitives: SymbolPrimitive[] = []
   for (const item of d.items) if (inUnit(item, unit, body)) primitives.push(...itemPrimitives(item))
+  const bodyCount = primitives.length
   for (const p of pins) primitives.push(...pinGraphics(p))
   const ports = portsOf(pins)
   const shown = pins.filter((p) => !p.hidden)
   const maxNameSize = shown.reduce((m, p) => (p.name.trim() && p.name.trim() !== "~" ? Math.max(m, p.nameSize ?? SCH_TEXT) : m), 0)
   const pinLabels = shown.map((p) => labelOf(p, d, maxNameSize))
-  return { primitives, ports, bounds: computeBounds(primitives, ports), pinLabels, pinNameOffset: d.pinNames?.offset ?? 0.04 }
+  const bodyOnly = primitives.slice(0, bodyCount)
+  return { primitives, ports, bounds: computeBounds(primitives, ports), ...(bodyOnly.length ? { bodyBounds: computeBounds(bodyOnly, []) } : {}), pinLabels, pinNameOffset: d.pinNames?.offset ?? 0.04 }
 }
 
 /** The part's pins: one per number across every unit and body style, in the drawing's order. */
@@ -337,6 +339,7 @@ export function drawingPartPins(d: SymbolDrawing): PinDef[] {
       out.push({
         number,
         name: pinDisplayName(p.name, number),
+        ...(pinDisplayName(p.name, "") === "" ? { unnamed: true as const } : {}),
         ...(kind && kind !== "unknown" ? { kind } : {}),
         type: p.type,
         ...(p.alternates?.length ? { alternates: p.alternates.map((a) => ({ ...a, name: pinDisplayName(a.name, "") })) } : {}),
@@ -462,7 +465,7 @@ export function textOnSheet(angle: number, h: "left" | "right" | undefined, v: "
 /** The text of one field: the reference (with its unit letter when the part has several units), the value (a power port's net), or a property. */
 export function fieldValue(c: ComponentInstance, part: PartDef, name: string): string {
   if (name === "Reference") return unitCount(part) > 1 ? `${c.ref}${unitLetters(c.unit ?? 1)}` : c.ref
-  if (name === "Value") return part.powerNet ? (c.props.net?.trim() || part.powerNet) : part.valueProp ? (c.props[part.valueProp] ?? "") : ""
+  if (name === "Value") return part.powerNet ? (c.props.net?.trim() || (part.jumpers && c.props.net !== undefined ? "" : part.powerNet)) : part.valueProp ? (c.props[part.valueProp] ?? "") : ""
   return c.props[name] ?? ""
 }
 

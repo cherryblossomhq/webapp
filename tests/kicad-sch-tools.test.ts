@@ -224,7 +224,7 @@ describe("add_component with units", () => {
     const p = withFootprint(importSheet({ symbols: [OPA("101.6 101.6", 1)], wires: ["109.22 101.6 139.7 101.6"] }))
     const out = call(p, "add_component", { part_id: baseId(p), ref: "U1", unit: 3, x: 9.8, y: -8.6 })
     expect(out.isError).toBe(true)
-    expect(out.result).toBe("Error: Not added: OPA2 at (9.8, -8.6) would connect U1.V+ would sit under the wire of Net-(U1-1), which looks connected. Pick another x/y, or leave them out to place it in free space.")
+    expect(out.result).toBe("Error: Not added: OPA2 at (9.8, -8.6) would connect U1.V+ would sit under the wire of unconnected-(U1-Pad1), which looks connected. Pick another x/y, or leave them out to place it in free space.")
     expect(out.project).toBe(p)
     // A little to the side it goes in.
     expect(call(p, "add_component", { part_id: baseId(p), ref: "U1", unit: 3, x: 9.8, y: -10 }).isError).toBe(false)
@@ -356,7 +356,7 @@ describe("update_component on a symbol from KiCad", () => {
     let p = withFootprint(importSheet({ symbols: [place("Test:MCU", "100 100", "U3")] }))
     p = must(p, "connect", { pins: ["U3.1"], net_name: "SIG" }).project
     const out = must(p, "update_component", { ref: "U3", pin_function: { pin: "1", function: "VREF" } })
-    expect(design(out.project).nets.find((n) => n.name === "SIG")!.pins).toEqual(["U3.1"])
+    expect(design(out.project).nets.find((n) => n.name === "/SIG")!.pins).toEqual(["U3.1"])
   })
 
   it("shows, hides and moves fields", () => {

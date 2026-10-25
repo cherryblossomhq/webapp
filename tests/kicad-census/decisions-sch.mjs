@@ -43,7 +43,7 @@ export const RULES_SCH = [
   rule("symbol>(?:at|lib_id|lib_name|uuid)", "native", "ComponentInstance.sch, partId", { effort: "S", note: "a turn that is not a quarter turn does not occur in KiCad schematics" }),
   rule("symbol>(?:mirror|unit|body_style)", "extend", "-", { ext: "S5", note: "mirrored symbols, the unit of a multi-unit symbol, the body style" }),
   rule("symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files)", "extend", "-", { ext: "S7" }),
-  rule("symbol>fields_autoplaced", "not-needed", "-", { note: "KiCad's flag that it placed the fields itself" }),
+  rule("symbol>fields_autoplaced", "native", "ComponentInstance.flags", { effort: "S", note: "KiCad's flag that it placed the fields itself: kept, so an export writes it back" }),
   rule("symbol>property(?:>.*)?", "extend", "ComponentInstance.props", { ext: "S5", note: "value is a property (native); place, size and visibility of each field are S5" }),
   rule("symbol>pin(?:>alternate)?", "extend", "-", { ext: "S5", note: "the alternate function chosen on this instance" }),
   rule("symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "one reference per use of a sheet; the path names the sheet instance" }),

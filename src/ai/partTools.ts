@@ -713,6 +713,7 @@ From memory (no supplier record):
 export function describeSource(spec: Pick<CustomPartSpec, "source">): string {
   const s = spec.source
   const d = s?.database
+  if (s?.pins === "import") return `from the KiCad schematic ${s.imported?.file ?? "the user brought in"} (${s.imported?.libId ?? "its own symbol"}), drawn and pinned as that file has it`
   if (d?.origin === "kicad") return `from the KiCad library part ${d.key}${d.release ? ` (release ${d.release})` : ""}, pins and land from the library`
   if (d?.origin === "easyeda") return `from LCSC ${d.key}, a supplier record the parts database kept, pins and land from it`
   if (!s || !s.supplier) return "from memory"

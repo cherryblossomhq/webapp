@@ -3,7 +3,6 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { findPart } from "../src/model/library"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { BUILT_EXTENSIONS } from "../src/model/kicad/schematic/needs"
 import { componentFields, fieldBox, textOnSheet } from "../src/model/symbolDrawing"
 import { mirrorComponent, rotateComponent } from "../src/model/ops"
 import { setFieldPlace } from "../src/model/schematicEdit"
@@ -100,7 +99,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("every field of the corpus
     const wrong: string[] = []
     for (const path of walk(CORPUS!)) {
       const bytes = new Uint8Array(readFileSync(path))
-      const r = importKicadSchematic(bytes, { built: new Set([...BUILT_EXTENSIONS, "S2"]) })
+      const r = importKicadSchematic(bytes)
       if (r.status !== "imported") continue
       const text = new TextDecoder().decode(bytes)
       const byUuid = new Map([...r.build.bySymbol].map(([s, c]) => [s.uuid, c]))

@@ -366,3 +366,12 @@ export function contentsOf(project: Project, blockIds: string[]): BlockContents 
   const merged = (key: keyof BlockContents) => [...new Set(frames.flatMap((f) => f.contents[key]))]
   return { components: merged("components"), wires: merged("wires"), labels: merged("labels"), drawings: merged("drawings") }
 }
+
+/**
+ * S4: the name of the first locked group (KiCad's locked group) that holds any of these parts, or null.
+ * Its parts cannot be moved, turned or deleted on the sheet until the group is unlocked.
+ */
+export function lockedBlockOf(project: Project, componentIds: string[]): string | null {
+  const ids = new Set(componentIds)
+  return project.blocks?.find((b) => b.locked && b.components.some((id) => ids.has(id)))?.name ?? null
+}

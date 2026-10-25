@@ -153,7 +153,7 @@ function readProperty(node: List, stamp: number | null): SchProperty | null {
   return { name, value: tilde(strAt(node, 2) ?? "", stamp), hide: flagOf(kid(node, "effects"), "hide") || flagOf(node, "hide"), at: at ? pt(at) : null, node }
 }
 
-const readProps = (node: List, stamp: number | null): SchProperty[] => kids(node, "property").map((p) => readProperty(p, stamp)).filter((p): p is SchProperty => p !== null)
+export const readProps = (node: List, stamp: number | null): SchProperty[] => kids(node, "property").map((p) => readProperty(p, stamp)).filter((p): p is SchProperty => p !== null)
 
 /** A net name or label text as the user reads it (switch 4, and `{slash}` is `/`). */
 export function labelText(raw: string, stamp: number | null): string {
@@ -402,6 +402,7 @@ function readPlacedSymbol(node: List, stamp: number | null): PlacedSymbol {
     dnp: yes(node, "dnp", false),
     excludeFromSim: yes(node, "exclude_from_sim", false),
     inPosFiles: yes(node, "in_pos_files", true),
+    fieldsAutoplaced: yes(node, "fields_autoplaced", false),
     pins: kids(node, "pin").map((p) => ({ number: strAt(p, 1) ?? "", uuid: strAt(kid(p, "uuid"), 1) ?? "", alternate: strAt(kid(p, "alternate"), 1) ?? null })),
     instances: readInstances(kid(node, "instances"), stamp),
     node,

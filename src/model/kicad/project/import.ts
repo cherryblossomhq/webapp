@@ -1,6 +1,6 @@
 import { round, snap } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
-import { computeConnectivity, pinKey } from "../../connectivity"
+import { bareName, computeConnectivity, pinKey } from "../../connectivity"
 import { registerProjectParts } from "../../customParts"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { labelBox } from "../../labels"
@@ -187,7 +187,7 @@ const AUTO_NET = /^(?:Net-\(|unconnected-\()/
  * Two pads agree when the same pads are on their nets on both sides, and when a net the user named
  * has the same name.
  */
-function compareNets(project: Project, pairs: { fp: KicadFootprint; components: ComponentInstance[] }[], namesNeedS2 = false): NetDifference[] {
+function compareNets(project: Project, pairs: { fp: KicadFootprint; components: ComponentInstance[] }[]): NetDifference[] {
   const { nets, pinNet } = computeConnectivity(project)
   const netName = new Map(nets.map((n) => [n.id, n]))
   // How many pins of any part are on each net, power ports and parts with no footprint included.
@@ -222,6 +222,15 @@ function compareNets(project: Project, pairs: { fp: KicadFootprint; components: 
     if (f.boardNet) (boardMembers.get(f.boardNet) ?? boardMembers.set(f.boardNet, []).get(f.boardNet)!).push(key(f.component.id, f.pad))
     if (f.schematic) (schMembers.get(f.schematic.id) ?? schMembers.set(f.schematic.id, []).get(f.schematic.id)!).push(key(f.component.id, f.pad))
   }
+  // What each pad's net is called on the other side, so a refusal can name the two real names (`GND` and `gnd`) and not one twice.
+  const schNameOf = new Map<string, string>()
+  const boardNameOf = new Map<string, string>()
+  for (const f of facts) {
+    if (!f.hasPin) continue
+    if (f.schematic) schNameOf.set(key(f.component.id, f.pad), f.schematic.name)
+    if (f.boardNet) boardNameOf.set(key(f.component.id, f.pad), decodeNetName(f.boardNet))
+  }
+  const namesOf = (members: string[] | undefined, of: Map<string, string>) => [...new Set((members ?? []).map((m) => of.get(m)).filter((n): n is string => !!n))].sort()
   const sig = (list: string[] | undefined, self: string) => (list && list.length ? [...list].sort().join("\u0001") : self)
   const out: NetDifference[] = []
   for (const f of facts) {
@@ -237,12 +246,19 @@ function compareNets(project: Project, pairs: { fp: KicadFootprint; components: 
     const s = sig(f.schematic ? schMembers.get(f.schematic.id) : undefined, self)
     const schName = f.schematic ? f.schematic.name : null
     if (b !== s) {
-      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the board puts it ${boardName ? `on ${boardName}` : "on no net"}, the schematic ${schName ? `on ${schName}` : "on no net"}. The board has not been updated from its schematic.` })
+      // Where one net on a side is several on the other, say which: `GND` on the board is `GND` and `gnd` in the schematic.
+      const inSchematic = namesOf(f.boardNet ? boardMembers.get(f.boardNet) : undefined, schNameOf)
+      const onBoard = namesOf(f.schematic ? schMembers.get(f.schematic.id) : undefined, boardNameOf)
+      const spans = [
+        boardName && inSchematic.length > 1 ? ` The board net ${boardName} is ${inSchematic.join(" and ")} in the schematic.` : "",
+        schName && onBoard.length > 1 ? ` The schematic net ${schName} is ${onBoard.join(" and ")} on the board.` : "",
+      ].join("")
+      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the board puts it ${boardName ? `on ${boardName}` : "on no net"}, the schematic ${schName ? `on ${schName}` : "on no net"}.${spans} The board has not been updated from its schematic.` })
       continue
     }
-    // The same pads on both sides: a name the user gave must agree too (the root sheet's labels are `/NAME` on a board).
-    if (f.schematic?.named && boardName && !AUTO_NET.test(boardName) && boardName.replace(/^\//, "") !== f.schematic.name) {
-      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the net is called ${boardName} on the board and ${schName} in the schematic. ${namesNeedS2 ? "The editor names this net by its own rule, not KiCad's (the names are S2), so the board may well be up to date." : "The board has not been updated from its schematic."}` })
+    // The same pads on both sides: a name the user gave must agree too, as KiCad writes it (`/NAME` for a local label). A name KiCad made up (`Net-(R1-Pad2)`) depends on the release that wrote the board, so it is not compared.
+    if (f.schematic?.named && boardName && !AUTO_NET.test(boardName) && boardName !== f.schematic.name) {
+      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the net is called ${boardName} on the board and ${schName} in the schematic. The board has not been updated from its schematic.` })
     }
   }
   return out
@@ -369,6 +385,11 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
     if (!l.record) continue
     const c = componentOf.get(l.footprint)
     // One footprint belongs to one symbol: the other symbols of its unit group have none.
+    // A symbol marked not on the board has no footprint (S7): the board's footprint, if it has one, stays a part of the board with its own nets.
+    if (c && l.record.symbol.onBoard === false) {
+      report.entries.push({ code: "symbol-not-on-board", severity: "note", object: `${l.record.reference || "a symbol"}`, why: `The schematic marks ${l.record.reference || "this symbol"} as not on the board, but the board has its footprint. The footprint is kept as a part of the board, not linked to the symbol.` })
+      continue
+    }
     if (c && !symbolFootprint.has(l.record.symbol)) symbolFootprint.set(l.record.symbol, { land: c.footprint, pcb: c.pcb, index: l.footprint })
   }
   const sch = buildSchematicProject(gate.tree, gate.report, { name: options.name, source: options.source, built, footprintFor: (s) => symbolFootprint.get(s) })
@@ -403,7 +424,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   })
   // Every other footprint is a part of the board with its own nets, labelled as the board's generated schematic labels them: its pads are compared too.
   for (const { fp, component } of merged.loose) pairs.push({ fp, components: [component] })
-  const differences = compareNets(merged.project, pairs, sch.lossy.some((n) => n.ext === "S2"))
+  const differences = compareNets(merged.project, pairs)
   for (const d of differences) report.entries.push({ code: "board-differs-from-schematic", severity: "changed", object: `${d.ref} pin ${d.pin}`, why: d.why })
   reportLinks(report, link, kicadBoard, sch, symbolFootprint)
 
@@ -481,7 +502,7 @@ function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, 
  * pads is labelled with the name the schematic gives it (`rename`: the board's `/MID` is the schematic's `MID`),
  * so a loose pad is on the same net in the schematic as on the board.
  */
-function placeLoose(project: Project, parts: { c: ComponentInstance; fp: KicadFootprint }[], rename: ReadonlyMap<string, string>, report: ImportReport): { components: ComponentInstance[]; wires: Wire[]; labels: NetLabel[] } {
+function placeLoose(project: Project, parts: { c: ComponentInstance; fp: KicadFootprint }[], rename: ReadonlyMap<string, string>, kindOf: ReadonlyMap<string, "local" | "global">, report: ImportReport): { components: ComponentInstance[]; wires: Wire[]; labels: NetLabel[] } {
   const padNets = new Map<string, Map<string, string>>()
   for (const { c, fp } of parts) {
     const m = new Map<string, string>()
@@ -554,7 +575,9 @@ function placeLoose(project: Project, parts: { c: ComponentInstance; fp: KicadFo
       const stub = pinStubPoint(pin, SCH_GRID * 3)
       const rot: Rotation = pin.dir === "left" ? 180 : pin.dir === "up" ? 90 : pin.dir === "down" ? 270 : 0
       wires.push({ id: uid("w"), points: [pin.pos, stub] })
-      labels.push({ id: uid("l"), name: labelText.get(net) ?? net, x: round(stub.x, 4), y: round(stub.y, 4), rot })
+      const text = labelText.get(net) ?? net
+      const kind = project.netNames ? (kindOf.get(text) ?? "global") : undefined
+      labels.push({ id: uid("l"), name: text, x: round(stub.x, 4), y: round(stub.y, 4), rot, ...(kind ? { kind, ...(kind === "global" ? { shape: "bidirectional" as const } : {}) } : {}) })
     }
   }
   return { components, wires, labels }
@@ -575,8 +598,13 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const looseParts = boardProject.components.filter((c) => !linkedBoard.has(c.id) && fpOf.has(c.id)).map((c) => ({ c, fp: fpOf.get(c.id)! }))
   // The schematic's name for each board net that has a linked pad.
   const { nets: schNets, pinNet: schPinNet } = computeConnectivity(sch.project)
-  const schName = new Map(schNets.map((n) => [n.id, n.name]))
+  const schName = new Map(schNets.map((n) => [n.id, bareName(n)]))
+  // A label that joins a net of the schematic is of the kind that net's own label is (a local label joins by its text); any other is a global one, which names a net exactly as written.
+  const kindOf = new Map<string, "local" | "global">(schNets.flatMap((n) => (n.label ? [[n.label.text, n.label.kind] as const] : [])))
   const rename = new Map<string, string>()
+  /** The nets of the schematic that no label or power symbol names and that a loose pad of the board is on: each needs a label of its name on the schematic side, so the pad joins it. */
+  const anchored = new Map<string, { name: string; pin: { componentId: string; pin: string } }>()
+  const schNetOf = new Map(schNets.map((n) => [n.id, n]))
   for (const l of link.links) {
     if (!l.record) continue
     const owner = symbolFootprint.get(l.record.symbol)
@@ -588,12 +616,18 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
         const name = schName.get(schPinNet.get(pinKey(c.id, pad.number)) ?? "")
         if (name) {
           rename.set(pad.netRaw, name)
+          const id = schPinNet.get(pinKey(c.id, pad.number)) ?? ""
+          const net = schNetOf.get(id)
+          if (net && !net.named && !anchored.has(id) && looseParts.some((x) => x.fp.pads.some((q) => q.netRaw === pad.netRaw))) anchored.set(id, { name, pin: { componentId: c.id, pin: pad.number } })
           break
         }
       }
     }
   }
-  const laid = placeLoose(sch.project, looseParts, rename, report)
+  const anchors = anchorLabels(sch.project, [...anchored.values()])
+  const laid = placeLoose(anchors, looseParts, rename, kindOf, report)
+  laid.wires.unshift(...anchors.wires.slice(sch.project.wires.length))
+  laid.labels.unshift(...anchors.labels.slice(sch.project.labels.length))
   const placed = laid.components
   // Their parts are the board's: keep the specs that loose parts name.
   const used = new Set(placed.map((c) => c.partId))
@@ -624,6 +658,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     components: [...sch.project.components, ...placed],
     wires: [...sch.project.wires, ...laid.wires],
     labels: [...sch.project.labels, ...laid.labels],
+    ...(sch.project.netNames ? { netNames: sch.project.netNames } : {}),
+    ...(sch.project.items ? { items: sch.project.items } : {}),
     parts: parts.length ? parts : undefined,
     ...(sch.project.symbols ? { symbols: sch.project.symbols } : {}),
     footprints: footprints.length ? footprints : undefined,
@@ -634,3 +670,23 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   return { project, loose: placed.map((component, i) => ({ fp: looseParts[i].fp, component })) }
 }
 
+
+/**
+ * A label on a pin of each net that nothing names, in its KiCad name (`Net-(D1-K)`), on a short wire off the pin: a loose pad of the
+ * board that is on that net is labelled with the same name, and joins the net by it. The label is global, so the net keeps its name.
+ */
+function anchorLabels(project: Project, anchors: { name: string; pin: { componentId: string; pin: string } }[]): Project {
+  if (!anchors.length || !project.netNames) return project
+  const wires: Wire[] = [...project.wires]
+  const labels: NetLabel[] = [...project.labels]
+  for (const a of anchors) {
+    const c = project.components.find((x) => x.id === a.pin.componentId)
+    const pin = c && schematicPins(c).find((p) => p.pin === a.pin.pin)
+    if (!c || !pin) continue
+    const stub = pinStubPoint(pin, SCH_GRID * 3)
+    const rot: Rotation = pin.dir === "left" ? 180 : pin.dir === "up" ? 90 : pin.dir === "down" ? 270 : 0
+    wires.push({ id: uid("w"), points: [pin.pos, stub] })
+    labels.push({ id: uid("l"), name: a.name, x: round(stub.x, 4), y: round(stub.y, 4), rot, kind: "global", shape: "bidirectional" })
+  }
+  return { ...project, wires, labels }
+}

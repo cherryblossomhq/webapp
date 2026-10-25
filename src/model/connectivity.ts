@@ -2,7 +2,8 @@ import { pointOnSegment, samePoint } from "../lib/geometry"
 import { numeric, plain } from "../lib/natural"
 import { findPart } from "./library"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
-import type { Net, Project, Vec2 } from "./types"
+import { DRIVER, NO_NET, bestDriver, driverName, pinFacts, pinNetName, unitSuffix, type NameDriver, type PinFact } from "./netNames"
+import type { ComponentInstance, Net, PartDef, Project, Vec2 } from "./types"
 
 export class UnionFind {
   private parent = new Map<string, string>()
@@ -46,6 +47,23 @@ export interface SchematicConnectivity {
 }
 
 export const pinKey = (componentId: string, pin: string) => `${componentId}:${pin}`
+
+/**
+ * What to type to name a net: the text of the label or the power symbol that gives it its name, which is
+ * `NAME` for the net `/NAME` of a local label. A net nothing names, or any net of a project not named as KiCad
+ * names its nets, is named by its own name.
+ */
+export const bareName = (net: Pick<Net, "name" | "label" | "power">) => net.label?.text ?? net.power?.text ?? net.name
+
+/** The facts of the pins of a unit as they are for naming a net after one of them, kept per component object (a component is replaced, never edited). */
+const factsCache = new WeakMap<ComponentInstance, { part: PartDef; facts: PinFact[] }>()
+function factsOf(c: ComponentInstance, part: PartDef): PinFact[] {
+  const hit = factsCache.get(c)
+  if (hit && hit.part === part) return hit.facts
+  const facts = pinFacts(c, part)
+  factsCache.set(c, { part, facts })
+  return facts
+}
 
 /**
  * Wire segments by the line they run along: across ones by their height, up and down ones by
@@ -96,6 +114,15 @@ function push<T>(map: Map<number, T[]>, k: number, v: T) {
 const pk = (p: Vec2) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`
 
 export function computeConnectivity(project: Project): SchematicConnectivity {
+  // S2: a project named as KiCad names it picks each net's name by its driver (`netNames.ts`); any other by the editor's rule.
+  const kicad = project.netNames
+  /** The drivers each name text has on the sheet: labels, power symbols and hidden power pins. */
+  const drivers = new Map<string, NameDriver[]>()
+  const addDriver = (text: string, d: NameDriver) => {
+    const list = drivers.get(text)
+    if (list) list.push(d)
+    else drivers.set(text, [d])
+  }
   const uf = new UnionFind()
   const pins: WorldPin[] = []
   const pointOwners = new Map<string, string[]>()
@@ -126,9 +153,20 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       nodeOf.set(pin, key)
       here.add(pin.pin)
       addPointOwner(pin.pos, key)
-      if (power) uf.union(key, `name:${power}`)
+      // A KiCad power symbol whose Value is empty names its net nothing, which KiCad shows as `<NO NET>`.
+      const portName = power === "" && kicad && part?.powerNet && part.jumpers ? NO_NET : power
+      if (portName) {
+        uf.union(key, `name:${portName}`)
+        if (kicad) {
+          const local = !!part?.powerLocal
+          addDriver(portName, { prio: local ? DRIVER.localPower : DRIVER.globalPower, name: driverName(portName, local ? "local" : "global"), text: portName, kind: local ? "local" : "global", from: "power" })
+        }
+      }
       // A hidden power-input pin of an ordinary part is on the global net of its name (`SCH_PIN::IsGlobalPower`).
-      else if (pin.hidden && pin.type === "power_in" && pin.name.trim()) uf.union(key, `name:${pin.name.trim()}`)
+      else if (pin.hidden && pin.type === "power_in" && pin.name.trim()) {
+        uf.union(key, `name:${pin.name.trim()}`)
+        if (kicad) addDriver(pin.name.trim(), { prio: DRIVER.globalPower, name: pin.name.trim(), text: pin.name.trim(), kind: "global", from: "power" })
+      }
     }
     // Pins of different numbers that the part joins inside itself.
     for (const group of part?.jumpers?.groups ?? []) {
@@ -147,6 +185,10 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     const key = `label:${l.id}`
     uf.union(key, `name:${l.name.trim()}`)
     addPointOwner(l, key)
+    if (kicad && l.name.trim()) {
+      const kind = l.kind === "global" ? "global" : "local"
+      addDriver(l.name.trim(), { prio: kind === "global" ? DRIVER.globalLabel : DRIVER.label, name: driverName(l.name.trim(), kind), text: l.name.trim(), kind, from: "label" })
+    }
   }
   for (const owners of pointOwners.values()) {
     for (let i = 1; i < owners.length; i++) uf.union(owners[0], owners[i])
@@ -220,6 +262,9 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const labelNet = new Map<string, string>()
   const conflicts: SchematicConnectivity["conflicts"] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  const ncSet = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
+  const nodeParts = new Map(project.components.map((c) => [c.id, c]))
+  const labelCount = (members: string[]) => members.filter((m) => m.startsWith("label:")).length
   const physical = new Set(project.components.filter((c) => isSchematicPart(findPart(c.partId))).map((c) => c.id))
   /** The net of every pin node, including the second pin of a number. */
   const nodeNet = new Map<string, string>()
@@ -263,16 +308,37 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       })
 
     let name: string
-    if (names.length) {
+    let label: Net["label"]
+    let power: Net["power"]
+    let named = names.length > 0
+    if (kicad) {
+      // The driver of the highest priority names the net; with none, a pin does.
+      const here = names.flatMap((n) => drivers.get(n) ?? [])
+      const best = bestDriver(here)
+      if (best) {
+        name = best.name
+        named = true
+        if (best.from === "label") label = { text: best.text, kind: best.kind }
+        else power = { text: best.text, local: best.kind === "local" }
+      } else {
+        named = false
+        name = kicadPinName(kicad, pinMembers, labelCount(members), ownerOf, nodeParts, refOf, physical, ncSet) ?? `N$${autoIndex++}`
+      }
+    } else if (names.length) {
       name = names[0]
     } else if (netPins.length) {
       name = `Net-(${refOf.get(netPins[0].componentId)}-${netPins[0].pin})`
     } else {
       name = `N$${autoIndex++}`
     }
-    const id = `net:${name}`
-    if (names.length > 1) conflicts.push({ names, netId: id })
-    nets.push({ id, name, named: names.length > 0, pins: netPins })
+    let id = `net:${name}`
+    // Two nets that KiCad's rules give one name (a local and a global label of one text on no common wire) stay two nets.
+    for (let i = 2; kicad && nets.some((n) => n.id === id); i++) id = `net:${name}#${i}`
+    if (kicad) {
+      const texts = [...new Set(names.flatMap((n) => (drivers.get(n) ?? []).map((d) => d.text)))].sort()
+      if (texts.length > 1) conflicts.push({ names: texts, netId: id })
+    } else if (names.length > 1) conflicts.push({ names, netId: id })
+    nets.push({ id, name, named, pins: netPins, ...(label ? { label } : {}), ...(power ? { power } : {}) })
     for (const m of members) {
       if (m.startsWith("pin:")) {
         const key = m.slice(4)
@@ -298,11 +364,46 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     const net = netById.get(netId)
     return !!net && net.pins.length < 2 && !net.named
   })
-  const ncSet = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
   const isNc = (p: WorldPin) => ncSet.has(pinKey(p.componentId, p.pin))
   const unconnectedPins = floating.filter((p) => !isNc(p))
   const ncPins = floating.filter(isNc)
 
   nets.sort((a, b) => numeric.compare(a.name, b.name))
   return { nets, pinNet, wireNet, labelNet, junctions, unconnectedPins, ncPins, conflicts }
+}
+
+/**
+ * The name of a net no label or power symbol names, as KiCad makes it from its pins: the pin among the
+ * net's drivers whose `Net-(R1-Pad2)` sorts first, names with `-Pad` last (`candidate_cmp`). A net with a
+ * pin and nothing else on it, or a no-connect flag, is `unconnected-(...)`. A pin of a symbol that is not
+ * on the board, or whose reference is `#...`, is no candidate (`ResolveDrivers`).
+ */
+function kicadPinName(
+  rule: "kicad" | "kicad6",
+  pinMembers: string[],
+  labels: number,
+  ownerOf: (id: string) => string,
+  byId: Map<string, ComponentInstance>,
+  refOf: Map<string, string>,
+  physical: Set<string>,
+  ncSet: Set<string>,
+): string | null {
+  const bare = (m: string) => m.replace(/#\d+$/, "")
+  const unconnected = (pinMembers.length === 1 && labels === 0) || pinMembers.some((m) => ncSet.has(bare(m)))
+  const names: string[] = []
+  for (const m of pinMembers) {
+    const i = m.lastIndexOf(":")
+    const cid = m.slice(0, i)
+    const number = bare(m.slice(i + 1))
+    const c = byId.get(cid)
+    const part = c && findPart(c.partId)
+    if (!c || !part || !physical.has(ownerOf(cid)) || c.flags?.onBoard === false || refOf.get(cid)?.startsWith("#")) continue
+    const facts = factsOf(c, part)
+    const fact = facts.find((f) => f.number === number)
+    if (!fact) continue
+    names.push(pinNetName(rule, refOf.get(cid) ?? "", unitSuffix(c, part), fact, facts, unconnected))
+  }
+  if (!names.length) return null
+  names.sort((a, b) => Number(a.includes("-Pad")) - Number(b.includes("-Pad")) || (a < b ? -1 : a > b ? 1 : 0))
+  return names[0]
 }

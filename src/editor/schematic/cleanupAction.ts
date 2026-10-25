@@ -55,7 +55,7 @@ function conclude(result: CleanupResult) {
     renamed: result.tidy?.renamed ?? {},
     dropped: [],
     loose: { wires: 0, labels: 0, ports: 0 },
-    problems: result.tidy?.problems ?? [],
+    problems: result.problems.length ? result.problems : (result.tidy?.problems ?? []),
   })
 }
 

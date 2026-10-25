@@ -29,29 +29,33 @@ const imported = (r: SchematicImportResult) => {
   if (r.status !== "imported") throw new Error(`refused: ${r.message}\n${r.report.entries.map((e) => e.why).join("\n")}`)
   return r
 }
-const needsOf = (text: string) => refused(importKicadSchematic(text)).needs.map((n) => n.ext)
+const needsOf = (text: string) => {
+  const r = importKicadSchematic(text)
+  return r.status === "refused" ? r.needs.map((n) => n.ext) : []
+}
 const message = (text: string) => refused(importKicadSchematic(text)).message
 
 describe("the gate", () => {
-  it("builds the three extensions every symbol needs: units and fields (S5), shapes (S6), drawings in the project (S10)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S10", "S5", "S6"])
+  it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4) and symbol flags (S7)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S10", "S2", "S4", "S5", "S6", "S7"])
+  })
+
+  it("imports a divider: KiCad's net names are the project's rule now", () => {
+    expect(imported(importKicadSchematic(divider())).project.netNames).toBe("kicad")
   })
 
   it("refuses a schematic that uses what the editor cannot hold yet, naming it in plain words, and imports nothing", () => {
-    const r = refused(importKicadSchematic(divider()))
+    const r = refused(importKicadSchematic(schematic({ body: [`(hierarchical_label "IN" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid h))`] })))
     expect(r.reason).toBe("unsupported")
-    expect(r.message).toBe("This schematic uses labels and net names as KiCad has them, which are not supported yet.")
-    expect(r.needs.map((n) => n.ext)).toEqual(["S2"])
-    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S2/.test(e.why))).toBe(true)
+    expect(r.message).toBe("This schematic uses hierarchical sheets, which are not supported yet.")
+    expect(r.needs.map((n) => n.ext)).toEqual(["S1"])
+    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S1/.test(e.why))).toBe(true)
   })
 
   const one: [string, SchSpec, string, string][] = [
     ["S1", { body: [`(hierarchical_label "IN" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid h))`] }, "hierarchical sheets", "hierarchical labels"],
-    ["S2", { body: [`(global_label "VBUS" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid g))`] }, "labels and net names as KiCad has them", "global labels"],
     ["S3", { body: [`(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`] }, "buses", "buses, bus entries or bus aliases"],
     ["S3", { body: [`(bus_alias "DATA" (members "D0" "D1"))`] }, "buses", "buses, bus entries or bus aliases"],
-    ["S4", { body: [`(text "hello" (at 1 2 0) (effects (font (size 1.27 1.27))))`] }, "annotations and styled wires", "text, drawings, images or tables"],
-    ["S4", { body: [`(rectangle (start 0 0) (end 5 5) (stroke (width 0) (type default)) (fill (type none)))`] }, "annotations and styled wires", "text, drawings, images or tables"],
     ["S8", { body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`] }, "directive labels and rule areas", "directive labels or rule areas"],
     ["S9", { body: [`(symbol_variant_marker (variant (name "A")))`] }, "schematic variants", "schematic variants"],
   ]
@@ -70,12 +74,12 @@ describe("the gate", () => {
     })
   }
 
-  it("S7: a symbol marked do not populate, left out of the BOM or the board, or simulated out", () => {
+  it("S7: a symbol marked do not populate, left out of the BOM or the board, or simulated out, is imported with its flags", () => {
     const flagged = (extra: string, uuid: string) => schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid, extra }] })
-    expect(needsOf(flagged("(dnp yes)", "aaaaaaaa-0000-4000-8000-000000000001"))).toContain("S7")
-    expect(needsOf(flagged("(exclude_from_sim yes)", "aaaaaaaa-0000-4000-8000-000000000001"))).toContain("S7")
-    expect(needsOf(flagged("(dnp no)", "aaaaaaaa-0000-4000-8000-000000000001"))).not.toContain("S7")
-    expect(message(flagged("(dnp yes)", "aaaaaaaa-0000-4000-8000-000000000001"))).toContain("symbol flags such as do not populate")
+    const flags = (extra: string) => imported(importKicadSchematic(flagged(extra, "aaaaaaaa-0000-4000-8000-000000000001"))).project.components[0].flags
+    expect(flags("(dnp yes)")).toEqual({ dnp: true })
+    expect(flags("(exclude_from_sim yes) (in_pos_files no)")).toEqual({ excludeFromSim: true, inPosFiles: false })
+    expect(flags("(dnp no)")).toBeUndefined()
   })
 
   it("X19: embedded fonts", () => {
@@ -87,10 +91,10 @@ describe("the gate", () => {
 
   it("names every extension a schematic needs in the one sentence", () => {
     const text = schematic({
-      body: [`(global_label "A" (shape input) (at 1 1 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid g))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
+      body: [`(hierarchical_label "A" (shape input) (at 1 1 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid g))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
     })
-    expect(needsOf(text)).toEqual(["S2", "S3", "S4"])
-    expect(message(text)).toBe("This schematic uses labels and net names as KiCad has them, buses and annotations and styled wires, which are not supported yet.")
+    expect(needsOf(text)).toEqual(["S1", "S3"])
+    expect(message(text)).toBe("This schematic uses hierarchical sheets and buses, which are not supported yet.")
   })
 
   it("a schematic that needs nothing the editor lacks is imported: wires, junctions, labels and no-connects", () => {
@@ -104,7 +108,7 @@ describe("the gate", () => {
     ])
     expect(r.project.labels.map((l) => [l.name, l.x, l.y, l.rot])).toEqual([["SIG", 1.5748, -1.5748, 0]])
     const nets = computeConnectivity(r.project)
-    expect(nets.nets.map((n) => [n.name, n.named])).toEqual([["SIG", true]])
+    expect(nets.nets.map((n) => [n.name, n.named])).toEqual([["/SIG", true]])
     expect(nets.wireNet.size).toBe(4)
   })
 
@@ -174,29 +178,30 @@ describe("what the importer finds on top of the census's rules", () => {
   const wired = (extra: string) => schematic({ wires: ["10 10 20 10"], body: [extra] })
   const label = (size: string, justify = "left bottom") => `(label "A" (at 10 10 0) (effects (font (size ${size} ${size})) (justify ${justify})) (uuid l))`
 
-  it("S2: a local label of its own size, justification, italic or bold, or with fields", () => {
-    expect(needsOf(wired(label("1.524")))).toEqual(["S2"])
-    expect(needsOf(wired(label("1.27", "right bottom")))).toEqual(["S2"])
-    expect(needsOf(wired(`(label "A" (at 10 10 0) (effects (font (size 1.27 1.27) italic) (justify left bottom)) (uuid l))`))).toEqual(["S2"])
-    expect(needsOf(wired(`(label "A" (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid l) (property "Netclass" "x" (at 0 0 0)))`))).toEqual(["S2"])
-    expect(importKicadSchematic(wired(label("1.27"))).status).toBe("imported")
-    const why = refused(importKicadSchematic(wired(label("1.524")))).needs[0]
-    expect([why.ext, why.source, why.why]).toEqual(["S2", "importer", `the node "label>effects"`])
+  it("S2: a local label of its own size, justification, italic or bold, or with fields, is imported with them", () => {
+    const l = (text: string) => imported(importKicadSchematic(wired(text))).project.labels[0]
+    expect(l(label("1.524")).look?.size).toBeCloseTo(1.524 / 12.7, 9)
+    // a justification the turn gives is the default and is not kept; another is
+    expect(l(label("1.27", "left bottom")).look).toBeUndefined()
+    expect(l(label("1.27", "right bottom")).look).toEqual({ h: "right" })
+    expect(l(`(label "A" (at 10 10 0) (effects (font (size 1.27 1.27) italic bold) (justify left bottom)) (uuid l))`).look).toEqual({ bold: true, italic: true })
+    const withField = l(`(label "A" (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid l) (property "Netclass" "x" (at 12.7 10 0) (effects (font (size 1.27 1.27)))))`)
+    expect(withField.fields?.[0]).toMatchObject({ name: "Netclass", value: "x", place: { x: expect.closeTo(2.7 / 12.7, 5), y: 0 } })
+    expect(withField.kind).toBe("local")
   })
 
-  it("S4: a wire of its own width, line style or colour", () => {
-    const wire = (stroke: string) => schematic({ body: [`(wire (pts (xy 0 0) (xy 5 0)) ${stroke} (uuid w))`] })
-    expect(needsOf(wire("(stroke (width 0.5) (type default))"))).toEqual(["S4"])
-    expect(needsOf(wire("(stroke (width 0) (type dash))"))).toEqual(["S4"])
-    expect(needsOf(wire("(stroke (width 0) (type default) (color 255 0 0 1))"))).toEqual(["S4"])
-    expect(importKicadSchematic(wire("(stroke (width 0) (type default) (color 0 0 0 0))")).status).toBe("imported")
-    expect(importKicadSchematic(wire("(stroke (width 0) (type solid))")).status).toBe("imported")
+  it("S4: a wire of its own width, line style or colour is imported with it", () => {
+    const wire = (stroke: string) => imported(importKicadSchematic(schematic({ body: [`(wire (pts (xy 0 0) (xy 5 0)) ${stroke} (uuid w))`] }))).project.wires[0].look
+    expect(wire("(stroke (width 0.5) (type default))")?.width).toBeCloseTo(0.5 / 12.7, 5)
+    expect(wire("(stroke (width 0) (type dash))")).toEqual({ dash: "dash" })
+    expect(wire("(stroke (width 0) (type default) (color 255 0 0 1))")).toEqual({ color: "#ff0000" })
+    expect(wire("(stroke (width 0) (type default) (color 0 0 0 0))")).toBeUndefined()
+    expect(wire("(stroke (width 0) (type solid))")).toBeUndefined()
   })
 
-  it("S7: a symbol left out of the position files", () => {
+  it("S7: a symbol left out of the position files keeps it", () => {
     const text = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001", extra: "(in_pos_files no)" }] })
-    const r = refused(importKicadSchematic(text))
-    expect(r.needs.find((n) => n.ext === "S7")?.source).toBe("importer")
+    expect(imported(importKicadSchematic(text)).project.components[0].flags).toEqual({ inPosFiles: false })
   })
 
   it("S1: a symbol used on a sheet other than this one, or used twice", () => {
@@ -208,8 +213,7 @@ describe("what the importer finds on top of the census's rules", () => {
     expect(needsOf(own.replace(`(instances`, `(instances (project "demo" (path "/${ROOT_UUID}/sheet2" (reference "R9") (unit 1)))`))).toContain("S1")
     // the instance of another project that shares the sheet is not this project's, and is a note
     const foreign = own.replace(`(instances`, `(instances (project "other" (path "/ffffffff-0000-4000-8000-000000000009" (reference "R7") (unit 1)))`)
-    const r = refused(importKicadSchematic(foreign))
-    expect(r.needs.map((n) => n.ext)).not.toContain("S1")
+    const r = imported(importKicadSchematic(foreign))
     expect(r.report.entries.find((e) => e.code === "other-projects-instances")?.count).toBe(1)
   })
 
@@ -231,7 +235,7 @@ describe("what the importer finds on top of the census's rules", () => {
 })
 
 describe("the accounting of every node", () => {
-  const account = (text: string) => refused(importKicadSchematic(text)).report.account!
+  const account = (text: string) => importKicadSchematic(text).report.account!
   const total = (a: ReturnType<typeof account>) =>
     a.imported + [...a.notNeeded.values(), ...a.pending.values(), ...a.unknownPaths.values()].reduce((x, y) => x + y, 0) + a.reported
 
@@ -240,7 +244,7 @@ describe("the accounting of every node", () => {
     expect(a.unknownPaths.size).toBe(0)
     expect(a.unknownAtoms.size).toBe(0)
     expect(total(a)).toBe(a.total)
-    expect(a.pending.get("S2")).toBeGreaterThan(0)
+    expect(a.pending.size).toBe(0)
     expect(a.pending.get("S5")).toBeUndefined()
     expect(a.imported).toBeGreaterThan(0)
     expect(a.notNeeded.get("sheet size of KiCad's drawing frame")).toBe(1)
@@ -405,7 +409,7 @@ describe("the build", () => {
   it("KiCad 6 keeps a symbol's real value and footprint in the root list: they stand in place of the fields, and the list does not make the file need S1", () => {
     const sym = { lib: "Device:R", at: "50.8 50.8", ref: "D5", value: "", uuid: "aaaaaaaa-0000-4000-8000-000000000001", footprint: "" }
     const text = schematic({ version: 20211123, libs: [LIB_R], symbols: [sym], rootEntries: [`/${sym.uuid}|D5|red|Local:LED_D3.0mm`] })
-    expect(needsOf(text)).toEqual(["S2"])
+    expect(needsOf(text)).toEqual([])
     const r = imported(importKicadSchematic(text, { built: SYMBOLS }))
     expect(r.project.components[0].props).toEqual({ value: "red", Footprint: "Local:LED_D3.0mm" })
     // before 20230221 a global power symbol is named by its hidden pin, whatever the instance's value says
@@ -490,8 +494,8 @@ describe("the build", () => {
     const byNet = new Map<string, string[]>()
     for (const [key, net] of c.pinNet) byNet.set(net, [...(byNet.get(net) ?? []), ref(key)].sort())
     expect([...byNet].sort()).toEqual([
+      ["net:/MID", ["R1.2", "R2.1"]],
       ["net:GND", ["#PWR02.1", "R2.2"]],
-      ["net:MID", ["R1.2", "R2.1"]],
       ["net:VCC", ["#PWR01.1", "R1.1"]],
     ])
     expect(c.pinNet.get(pinKey(r.project.components.find((x) => x.ref === "R2")!.id, "2"))).toBe("net:GND")
@@ -501,16 +505,22 @@ describe("the build", () => {
 describe("what each flag and field of the file needs, so that nothing imported is lost", () => {
   const node = (text: string) => schematic({ body: [text] })
 
-  it("a junction with a size or colour of its own is S4; the default dot is imported", () => {
-    expect(needsOf(node(`(junction (at 10 10) (diameter 1) (color 0 0 0 0) (uuid j))`))).toEqual(["S4"])
-    expect(needsOf(node(`(junction (at 10 10) (diameter 0) (color 255 0 0 1) (uuid j))`))).toEqual(["S4"])
-    expect(importKicadSchematic(node(`(junction (at 10 10) (diameter 0) (color 0 0 0 0) (uuid j))`)).status).toBe("imported")
+  it("a junction with a size or colour of its own is an item of the sheet; the default dot is the editor's own", () => {
+    const items = (text: string) => imported(importKicadSchematic(node(text))).project.items
+    expect(items(`(junction (at 10 10) (diameter 1) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ kind: "junction", diameter: expect.closeTo(1 / 12.7, 5) }])
+    expect(items(`(junction (at 10 10) (diameter 0) (color 255 0 0 1) (uuid j))`)).toMatchObject([{ kind: "junction", color: "#ff0000" }])
+    // a default dot where no wires meet is still drawn by KiCad, so it is an item too; one the editor draws itself is not
+    expect(items(`(junction (at 10 10) (diameter 0) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ kind: "junction" }])
+    const wires = schematic({ wires: ["10 10 20 10", "15 10 15 5"], junctions: ["15 10"] })
+    expect(imported(importKicadSchematic(wires)).project.items).toBeUndefined()
   })
 
-  it("a no-connect flag that is not on a pin of a placed symbol is S4, and one on a pin is imported", () => {
-    expect(needsOf(schematic({ noConnects: ["10 10"] }))).toEqual(["S4"])
+  it("a no-connect flag that is not on a pin of a placed symbol is an item, and one on a pin is that pin's mark", () => {
+    expect(imported(importKicadSchematic(schematic({ noConnects: ["10 10"] }))).project.items).toMatchObject([{ kind: "noconnect" }])
     const on = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }], noConnects: ["50.8 46.99"] })
-    expect(imported(importKicadSchematic(on, { built: SYMBOLS })).project.components[0].nc).toEqual(["1"])
+    const r = imported(importKicadSchematic(on, { built: SYMBOLS }))
+    expect(r.project.components[0].nc).toEqual(["1"])
+    expect(r.project.items).toBeUndefined()
   })
 
   it("a symbol that jumpers pins of one number is kept with that in its drawing, even when no symbol is placed from it", () => {
@@ -519,9 +529,11 @@ describe("what each flag and field of the file needs, so that nothing imported i
     expect(Object.values(r.project.symbols ?? {})[0].jumpers).toEqual({ duplicates: true })
   })
 
-  it("a locked group is S4: the editor's blocks cannot be locked", () => {
-    expect(needsOf(node(`(group "G" (uuid g1) (locked yes) (members))`))).toEqual(["S4"])
-    expect(importKicadSchematic(node(`(group "G" (uuid g1) (members))`)).status).toBe("imported")
+  it("a locked group is a locked block", () => {
+    const sym = { lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }
+    const group = (extra: string) => imported(importKicadSchematic(schematic({ libs: [LIB_R], symbols: [sym], body: [`(group "G" (uuid g1) ${extra} (members ${sym.uuid}))`] }))).project.blocks
+    expect(group("(locked yes)")).toMatchObject([{ name: "G", locked: true }])
+    expect(group("")?.[0].locked).toBeUndefined()
   })
 
   it("a page number other than 1 on the root sheet is S1", () => {

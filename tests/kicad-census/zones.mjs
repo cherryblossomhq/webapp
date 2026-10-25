@@ -98,6 +98,8 @@ export function zoneOracle(text) {
       // The zone's own `net_name`, as KiCad reads it; a zone without one is on the net its number has in the table.
       netName: keepoutNode || kid(z, "placement") ? "" : kid(z, "net_name") ? word(z, "net_name") ?? "" : netByNumber(kid(z, "net")),
       priority: kid(z, "priority") ? numAt(kid(z, "priority"), 1) : 0,
+      /** The zone's identity as the file writes it: `uuid` since KiCad 7, `tstamp` in KiCad 6 and before. */
+      uuid: word(z, "uuid") ?? word(z, "tstamp") ?? null,
       name: word(z, "name") ?? "",
       locked: kid(z, "locked") ? word(z, "locked") !== "no" : z.includes("locked"),
       clearance: connect && kid(connect, "clearance") ? numAt(kid(connect, "clearance"), 1) : null,

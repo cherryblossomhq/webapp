@@ -1,7 +1,9 @@
 import { uid } from "../../../lib/id"
 import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
+import { kicadUuid } from "../../zones"
 import { layerClass } from "./needs"
+import { eraOf } from "./read"
 import type { ImportReport } from "./report"
 import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
 
@@ -98,6 +100,13 @@ export function convertZones(cx: ZoneContext): ZoneResult {
     if (layers.length > 1) zone.layers = layers
     if (z.name) zone.name = z.name
     if (z.priority > 0) zone.priority = z.priority
+    // KiCad 6 and later order zones of equal priority by uuid (zone.cpp, `HigherPriority`, 6.0 to 10.0); KiCad 5 and earlier cut a zone only out of
+    // zones of strictly higher priority (zone_filler.cpp of 5.1), so two zones of equal priority overlap.
+    if (["kicad3", "kicad4", "kicad5", "pre6-nightly"].includes(eraOf(board.version))) zone.unordered = true
+    else {
+      const uuid = z.uuid ? kicadUuid(z.uuid) : undefined
+      if (uuid) zone.uuid = uuid
+    }
     if (z.locked) zone.locked = true
     if (z.kind === "keepout" || z.kind === "rule-area") {
       zone.keepout = {

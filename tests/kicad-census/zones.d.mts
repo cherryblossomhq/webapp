@@ -6,6 +6,7 @@ export interface OracleZone {
   kind: "copper" | "keepout" | "rule-area" | "teardrop" | "placement"
   netName: string
   priority: number
+  uuid: string | null
   name: string
   locked: boolean
   clearance: number | null

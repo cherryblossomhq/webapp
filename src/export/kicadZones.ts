@@ -73,7 +73,7 @@ function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber: (name
   o.push(`    (net_name ${quote(rule ? "" : z.net)})`)
   if (z.locked) o.push(`    (locked yes)`)
   o.push(layers.length > 1 ? `    (layers ${layers.map((l) => quote(LAYER[l])).join(" ")})` : `    (layer ${quote(LAYER[layers[0]])})`)
-  o.push(`    (uuid ${uuidOf(z.id)})`)
+  o.push(`    (uuid ${z.uuid ? `${z.uuid.slice(0, 8)}-${z.uuid.slice(8, 12)}-${z.uuid.slice(12, 16)}-${z.uuid.slice(16, 20)}-${z.uuid.slice(20)}` : uuidOf(z.id)})`)
   if (z.name) o.push(`    (name ${quote(z.name)})`)
   o.push(`    (hatch edge 0.5)`)
   if ((z.priority ?? 0) > 0) o.push(`    (priority ${z.priority})`)

@@ -31,7 +31,9 @@ export function isWholeBoardPour(z: Zone): boolean {
     z.islands === undefined &&
     z.edgeGap === undefined &&
     z.holeGap === undefined &&
-    z.locked === undefined
+    z.locked === undefined &&
+    z.uuid === undefined &&
+    z.unordered === undefined
   )
 }
 
@@ -119,7 +121,22 @@ export function zoneSettings(project: Pick<Project, "rules">, z: Zone): ZoneSett
   }
 }
 
-/** Whether `a` is filled before `b` and cuts into it (KiCad's `HigherPriority`): teardrops first, then the higher priority, then the later zone. */
+/**
+ * A KiCad uuid as the 32 lowercase hex digits KiCad compares it by (`KIID::operator>` compares the sixteen bytes, `kiid.h`), or undefined for a
+ * word that is not one. A KiCad 6 file's `tstamp` is eight digits, which KiCad reads into the last four bytes (`KIID( const wxString& )`).
+ */
+export function kicadUuid(raw: string): string | undefined {
+  const h = raw.replace(/-/g, "").toLowerCase()
+  if (!/^[0-9a-f]+$/.test(h) || (h.length !== 32 && h.length !== 8)) return undefined
+  return h.padStart(32, "0")
+}
+
+/**
+ * Whether `a` is filled before `b` and cuts into it (KiCad's `HigherPriority`, `zone.cpp` of 6.0 to 10.0): teardrops first, then the higher
+ * priority, then the greater uuid. Two zones of a board from KiCad 5 or earlier (`unordered`) have no tie-break, as 5.1's filler (`zone_filler.cpp`)
+ * cut a zone only out of zones of strictly higher priority: neither is higher. A zone without a uuid that is not one of those (drawn here) goes by
+ * file order, the later one first.
+ */
 export function higherPriority(project: Pick<Project, "zones">, a: Zone, b: Zone): boolean {
   const ta = a.teardrop !== undefined
   const tb = b.teardrop !== undefined
@@ -127,6 +144,8 @@ export function higherPriority(project: Pick<Project, "zones">, a: Zone, b: Zone
   const pa = a.priority ?? 0
   const pb = b.priority ?? 0
   if (pa !== pb) return pa > pb
+  if (a.uuid !== undefined && b.uuid !== undefined && a.uuid !== b.uuid) return a.uuid > b.uuid
+  if (a.unordered && b.unordered) return false
   return project.zones.indexOf(a) > project.zones.indexOf(b)
 }
 

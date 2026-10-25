@@ -48,6 +48,13 @@ export function checkZoneSettings(text: string, project: Project): { compared: n
     const bad = (what: string) => out.push({ zone: i, what })
     const layers = zoneLayers(z).slice().sort()
     if (layers.join() !== f.surface.slice().sort().join()) bad(`layers ${layers.join("+")} against ${f.surface.join("+")}`)
+    // The tie-break between zones of equal priority (KiCad 6 and later compare the uuid's sixteen bytes; a tstamp is the last four): kept from file version 20211014 (KiCad 6) on.
+    const stamp = Number(/\(version\s+(\d+)\)/.exec(text)?.[1] ?? 0)
+    const digits = f.uuid === null ? "" : f.uuid.replace(/-/g, "").toLowerCase()
+    const wantUuid = stamp >= 20211014 && /^([0-9a-f]{8}|[0-9a-f]{32})$/.test(digits) ? digits.padStart(32, "0") : undefined
+    if (z.uuid !== wantUuid) bad(`uuid ${z.uuid} against ${wantUuid}`)
+    // KiCad 5 and earlier have no order between zones of equal priority (their filler cuts only out of strictly higher priority).
+    if ((z.unordered === true) !== (stamp < 20211014)) bad(`unordered ${z.unordered} against a file of version ${stamp}`)
     const rule = f.kind === "keepout" || f.kind === "rule-area"
     if (rule !== !!z.keepout) bad("rule area")
     if (rule) {

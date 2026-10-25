@@ -258,6 +258,8 @@ export interface KicadZone {
   layers: string[]
   name: string
   priority: number
+  /** The zone's `uuid` (KiCad 7 and later) or `tstamp` (6), as written; absent in a file that gives none. */
+  uuid?: string
   /** `copper`, `keepout`, `rule-area`, `teardrop` or `placement`. */
   kind: string
   keepout: { tracks: boolean; vias: boolean; pads: boolean; copperpour: boolean; footprints: boolean } | null

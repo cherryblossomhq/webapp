@@ -668,6 +668,10 @@ export interface Zone {
   outline?: ShapePath[]
   /** Every layer it is on, `layer` first: a zone on both copper layers. Absent is the one layer. */
   layers?: CopperLayer[]
+  /** KiCad's identity of the zone as 32 lowercase hex digits (`kicadUuid`): what orders two zones of equal priority, as KiCad's `HigherPriority` does (the greater one is filled first). Absent for a zone drawn here and for a board of KiCad 5 or earlier, which had no such order: file order then. */
+  uuid?: string
+  /** From a board of KiCad 5 or earlier, whose fill cut a zone only out of zones of strictly higher priority (`zone_filler.cpp` of 5.1): two such zones of equal priority cut neither, and overlap. */
+  unordered?: true
   /** Which of two overlapping zones wins: the higher one is filled first and the lower keeps out of it. Absent is 0. */
   priority?: number
   /** The thinnest copper the fill keeps (mm); necks and slivers under it are removed. Defaults to the pour minimum width rule. */

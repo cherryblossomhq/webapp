@@ -553,6 +553,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       layers: layerNames,
       name: strAt(kid(z, "name"), 1) ?? "",
       priority: numAt(kid(z, "priority"), 1, 0),
+      uuid: strAt(kid(z, "uuid"), 1) ?? strAt(kid(z, "tstamp"), 1),
       kind,
       keepout,
       polygon,

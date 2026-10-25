@@ -1,6 +1,7 @@
 import { boxesOverlap, normBox, pointOnSegment, polylineSegments, round, type Box } from "../lib/geometry"
 import { SpatialHash, pointBox } from "../lib/spatialHash"
-import { dirVector, powerNetName, schematicPins, type WorldPin } from "./instances"
+import { dirVector, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
+import { findPart } from "./library"
 import { AUTO_NET_NAME, describeGroups, groupOf, harmlessGroups, pinGroup, pinText } from "./merges"
 import { addLabel, addWire, findPin, wireRoute } from "./ops"
 import type { SchematicConnectivity } from "./connectivity"
@@ -55,9 +56,13 @@ export class Drawing {
     this.harmless = harmlessGroups(before)
     for (const c of project.components) {
       const power = powerNetName(c)
+      const part = findPart(c.partId)
+      // The second pin of a number in a symbol that keeps them apart has a net the connectivity does not
+      // give by pin number: it is a group of its own, so nothing is ever drawn onto it by mistake.
+      const apart = !!part?.jumpers && !part.jumpers.duplicates
       for (const pin of schematicPins(c)) {
         const key = `${c.id}:${pin.pin}`
-        const group = groupOf(before, key)
+        const group = apart && pin.slot ? `solo:${key}#${pin.slot}` : groupOf(before, key)
         this.own(pin.pos, group)
         this.pins.insert({ ...pin, key }, pointBox(pin.pos))
         if (power) this.name(power, group)
@@ -140,6 +145,21 @@ export class Drawing {
     for (const w of d.wires) this.addWire(w, group)
     for (const l of d.labels) this.addLabel(l.at, l.name, group)
   }
+}
+
+/**
+ * Where a pin is drawn. A pin of a part with several units is drawn by the component that is that
+ * unit, which may not be the one the reference names (the part's own): then the unit that draws it.
+ */
+export function drawnPin(project: Project, ref: PinRef): WorldPin | null {
+  const own = findPin(project, ref)
+  if (own) return own
+  for (const [twin, owner] of unitOwners(project.components)) {
+    if (owner !== ref.componentId) continue
+    const pin = findPin(project, { componentId: twin, pin: ref.pin })
+    if (pin) return pin
+  }
+  return null
 }
 
 export function applyDrawn(project: Project, d: Drawn): Project {
@@ -247,10 +267,10 @@ export function planConnect(project: Project, before: SchematicConnectivity, ref
   let wireNote = ""
   if (!opts.netName && refs.length === 2) {
     const [a, b] = refs
-    const pa = findPin(project, a)
-    const pb = findPin(project, b)
-    if (pa && pb) {
-      const self = new Set([keyOf(a), keyOf(b)])
+    const pa = drawnPin(project, a)
+    const pb = drawnPin(project, b)
+    if (pa && pb && !pa.hidden && !pb.hidden) {
+      const self = new Set([`${pa.componentId}:${pa.pin}`, `${pb.componentId}:${pb.pin}`])
       for (const route of wireOptions(pa, pb)) {
         const block = drawing.check(route, self, allowed)
         if (!block) return { project: settleNames(applyDrawn(project, route), before, [a, b], ""), name: "", wired: true, onNet: [a, b], failed: [], wireNote: "", allowed }
@@ -271,12 +291,13 @@ export function planConnect(project: Project, before: SchematicConnectivity, ref
       onNet.push(ref)
       continue
     }
-    const pin = findPin(project, ref)
+    const pin = drawnPin(project, ref)
     let last: Block | null = null
     let placed = false
-    for (const option of pin ? labelOptions(pin, name) : []) {
+    // A pin that is not drawn (a hidden power pin) is on its net by its name: nothing is wired or labelled to it.
+    for (const option of pin && !pin.hidden ? labelOptions(pin, name) : []) {
       // A label on the pin itself is the last way out, so it may stand in the way of a neighbour's stub.
-      const block = drawing.check(option, new Set([keyOf(ref)]), allowed, option.wires.length > 0)
+      const block = drawing.check(option, new Set([pin ? `${pin.componentId}:${pin.pin}` : keyOf(ref)]), allowed, option.wires.length > 0)
       if (block) {
         last = block
         continue
@@ -290,7 +311,7 @@ export function planConnect(project: Project, before: SchematicConnectivity, ref
       onNet.push(ref)
       if (!group.startsWith("solo:")) carrying.add(group)
     } else {
-      failed.push({ ref, why: last ? blockText(project, before, last) : "the pin was not found" })
+      failed.push({ ref, why: last ? blockText(project, before, last) : pin?.hidden ? "the pin is not drawn, and is on the net its name gives it" : "the pin was not found" })
     }
   }
 

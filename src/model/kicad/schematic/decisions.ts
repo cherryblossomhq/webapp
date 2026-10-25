@@ -79,6 +79,12 @@ export const PATH_RULES: PathRule[] = [
   "note": "pins that share a number are one pin when this is yes; KiCad's default (no) says nothing"
  },
  {
+  "source": "^(lib_symbols>symbol>jumper_pin_groups(?:>.*)?)$",
+  "decision": "extend",
+  "ext": "S5",
+  "note": "groups of pin numbers the symbol joins inside itself (KiCad 10)"
+ },
+ {
   "source": "^(lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files))$",
   "decision": "extend",
   "ext": "S7"

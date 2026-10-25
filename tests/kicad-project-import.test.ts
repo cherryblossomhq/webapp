@@ -288,7 +288,7 @@ describe("refused whole when one half is", () => {
     expect(fullBytes).toBeGreaterThan(boardBytes)
     const merged = refused(importKicadProject(files(dividerBoard(), divider()), { built: BOARD_ALL, limitBytes: Math.floor((boardBytes + fullBytes) / 2) }))
     expect(merged.reason).toBe("too-large")
-    expect(merged.message).toMatch(/^This project needs \d+ KB and projects hold up to \d+ KB\.$/)
+    expect(merged.message).toMatch(/^This (project|schematic) needs \d+ KB and projects hold up to \d+ KB\./)
   })
 
   it("no board among the files is a refusal that says so", () => {

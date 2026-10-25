@@ -2,10 +2,9 @@ import { round, type Box } from "../../lib/geometry"
 import { componentTextBoxes } from "../blocks"
 import { schematicBounds, schematicPins } from "../instances"
 import { labelBox } from "../labels"
-import { getPart } from "../library"
 import { SCH_GRID } from "../symbols"
 import type { ComponentInstance, NetLabel, Project, Vec2 } from "../types"
-import { labelTurn, portShape, VEC, type Dir, type RailKind } from "./shapes"
+import { labelTurn, portInstance, portShape, VEC, type Dir, type RailKind } from "./shapes"
 
 // Room on a drawn sheet for a label or port Tidy adds outside the blocks it lays out: at a cut a
 // one-block tidy made, at a pin of another part left with nothing, or for a net's other name. What
@@ -114,16 +113,6 @@ function terminalAt(path: Vec2[], dir: Dir, rail: RailKind | null, name: string)
     const label: NetLabel = { id: "", name, x: at.x, y: at.y, rot: labelTurn(dir) }
     return { boxes: [labelBox(label)], label }
   }
-  const shape = portShape(rail, name, dir)
-  const part = getPart(shape.partId)
-  const port: ComponentInstance = {
-    id: "",
-    partId: shape.partId,
-    ref: "",
-    props: { ...part.defaultProps, net: name },
-    footprint: "",
-    sch: { x: round(at.x + shape.ox * SCH_GRID), y: round(at.y + shape.oy * SCH_GRID), rot: shape.rot },
-    pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
-  }
+  const port = portInstance(portShape(rail, name, dir), name, at)
   return { boxes: [schematicBounds(port), ...componentTextBoxes(port)], port }
 }

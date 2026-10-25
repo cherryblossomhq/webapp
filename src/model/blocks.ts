@@ -5,6 +5,7 @@ import { drawnInside } from "./drawings"
 import { findPart } from "./library"
 import { powerNetName, schematicBounds, schematicPins, valueText } from "./instances"
 import { labelBox } from "./labels"
+import { componentFields, fieldBox, hasFieldPlaces } from "./symbolDrawing"
 import { anchorToExtent, rotateExtent, SCH_GRID, SCH_TEXT } from "./symbols"
 import type { ComponentInstance, Project, SchematicBlock, Vec2 } from "./types"
 
@@ -176,6 +177,7 @@ export function ungroupSelection(project: Project, componentIds: string[], block
 export function componentTextBoxes(c: ComponentInstance): Box[] {
   const part = findPart(c.partId)
   if (!part) return []
+  if (hasFieldPlaces(part)) return fieldBoxes(c, part)
   const ref = powerNetName(c, part) ?? c.ref
   const value = part.powerNet ? "" : valueText(c, part)
   const out: Box[] = []
@@ -192,6 +194,15 @@ export function componentTextBoxes(c: ComponentInstance): Box[] {
     out.push({ minX: x0, minY: y0, maxX: x0 + width, maxY: y0 + size })
   }
   return out
+}
+
+/**
+ * The text of an imported part: a box for each field it shows, where the field says, however the
+ * symbol is turned or mirrored (a field's place is its own, as KiCad has it). A text that reads up
+ * the sheet is tall, not wide. The width is estimated as for the editor's own texts.
+ */
+function fieldBoxes(c: ComponentInstance, part: NonNullable<ReturnType<typeof findPart>>): Box[] {
+  return componentFields(c, part).map((f) => fieldBox(c, f, f.name === "Reference" ? MONO_ADVANCE : SANS_ADVANCE))
 }
 
 /**

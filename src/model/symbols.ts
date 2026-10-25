@@ -1,4 +1,5 @@
 import { emptyBox, expandBox, round } from "../lib/geometry"
+import { samplePrimitive } from "./primitiveGeometry"
 import type { Rotation, SymbolDef, SymbolPort, SymbolPrimitive, TextAnchor } from "./types"
 
 /** The schematic grid. 0.1 is KiCad's 50 mil, so its symbols' dimensions carry over in tenths. */
@@ -179,11 +180,12 @@ export function makeBoxSymbol(layout: BoxLayout): SymbolDef {
   return symbolDef(primitives, ports)
 }
 
-function computeBounds(primitives: SymbolPrimitive[], ports: SymbolPort[]) {
+export function computeBounds(primitives: SymbolPrimitive[], ports: SymbolPort[]) {
   const b = emptyBox()
   for (const p of primitives) {
     if (p.type === "path") for (const pt of p.points) expandBox(b, pt)
     else if (p.type === "circle") expandBox(b, p, p.radius)
+    else if (p.type !== "text") for (const pt of samplePrimitive(p)) expandBox(b, pt)
   }
   for (const p of ports) expandBox(b, p)
   if (!Number.isFinite(b.minX)) return { minX: -0.2, minY: -0.2, maxX: 0.2, maxY: 0.2 }

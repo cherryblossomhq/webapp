@@ -190,7 +190,7 @@ function symbol(primitives: SymbolPrimitive[], ports: SymbolPort[], offset = { x
   const mx = (x: number) => round(x + offset.x)
   const my = (y: number) => round(y + offset.y)
   return symbolDef(
-    primitives.map((p) => (p.type === "path" ? { ...p, points: p.points.map((pt) => ({ x: mx(pt.x), y: my(pt.y) })) } : { ...p, x: mx(p.x), y: my(p.y) })),
+    primitives.map((p) => (p.type === "path" ? { ...p, points: p.points.map((pt) => ({ x: mx(pt.x), y: my(pt.y) })) } : p.type === "circle" || p.type === "text" ? { ...p, x: mx(p.x), y: my(p.y) } : p)),
     ports.map((p) => ({ ...p, x: mx(p.x), y: my(p.y) })),
   )
 }

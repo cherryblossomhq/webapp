@@ -49,7 +49,7 @@ export function findSafeSpot(args: {
   let tried = 0
   for (const spot of ordered) {
     if (spot.x === c.sch.x && spot.y === c.sch.y) continue
-    const box = schematicBounds({ ...c, sch: { x: spot.x, y: spot.y, rot } })
+    const box = schematicBounds({ ...c, sch: { ...c.sch, x: spot.x, y: spot.y, rot } })
     const grown = { minX: box.minX - MARGIN, maxX: box.maxX + MARGIN, minY: box.minY - MARGIN, maxY: box.maxY + MARGIN }
     if (others.some((o) => boxesOverlap(grown, schematicBounds(o)))) continue
     if (accepts(build(spot))) return spot

@@ -1,14 +1,15 @@
 import { round } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
-import { computeConnectivity } from "../../connectivity"
+import { computeConnectivity, pinKey } from "../../connectivity"
+import { customPartId, drawingKey, registerProjectParts } from "../../customParts"
 import { schematicPins } from "../../instances"
-import { findPart, isRegistered, registerPart, unregisterPart } from "../../library"
+import { findPart, isRegistered, unitTwinId, unregisterPart } from "../../library"
 import { createProject } from "../../ops"
-import type { ComponentInstance, NetLabel, PartDef, Project, Rotation, SchematicBlock, Vec2, Wire } from "../../types"
+import type { ComponentInstance, CustomPartSpec, FieldPlace, Mirror, NetLabel, Project, Rotation, SchematicBlock, SymbolDrawing, Vec2, Wire } from "../../types"
 import type { ImportReport } from "../board/report"
 import { symbolRecords, type SymbolRecord } from "./link"
 import type { Need } from "./needs"
-import { MM_PER_UNIT, expandPinNumber, partFromSymbol, pinsOfUnit, portDir, resolveLibSymbol, toSheet } from "./symbols"
+import { MM_PER_UNIT, drawingFromLib, expandPinNumber, pinsOfUnit, placeOf, resolveLibSymbol, specFromSymbol, toSheet, type ResolvedLibSymbol } from "./symbols"
 import type { SchematicTree } from "./tree"
 import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt } from "./types"
 
@@ -28,8 +29,8 @@ import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt } from "./type
 //     body, and a wire end or label a hair's breadth from a wire (the editor's tolerance is 1.27 um)
 //     are joined by the editor and not by KiCad: the connectivity extension (S11);
 //   - two KiCad points closer than the editor tells apart collapse to one (S11);
-//   - a pin of the type "no connect" is on no net whatever is drawn to it: its port is left out;
-//   - a hidden power-input pin joins the global net of its name: the editor has no such pin (S5);
+//   - a pin of the type "no connect" is on no net whatever is drawn to it: connectivity leaves it out;
+//   - a hidden power-input pin joins the global net of its name: so it does in the editor (S5);
 //   - the names KiCad gives nets (`/NAME`, `Net-(R1-Pad2)`, the power symbol over the label) are not
 //     the editor's (S2).
 
@@ -48,7 +49,7 @@ export interface SchematicBuildOptions {
   source?: string
   /** The footprint a symbol is linked to on the board (the project import): the land's name, and where the part is on the board. */
   footprintFor?: (symbol: PlacedSymbol) => { land: string; pcb: ComponentInstance["pcb"] } | undefined
-  /** The extensions that are built. With S5 a hidden power-input pin is carried by a label of its name on the pin (for measurement: it is net-equal, and it draws what KiCad does not). */
+  /** The extensions that are built; defaults to what the editor has. Measurement runs name more. */
   built?: ReadonlySet<string>
 }
 
@@ -78,23 +79,6 @@ const valueOf = (s: PlacedSymbol) => s.props.find((p) => p.name === "Value")?.va
 
 /** Modern power symbols (stamp 20230221 on): the editable Value is the net (sch_file_versions.h). Before it a global power symbol is named by its hidden power pin (`FixLegacyPowerSymbolMismatches`, sch_screen.cpp). */
 export const MODERN_POWER_SYMBOLS_FROM = 20230221
-
-const DIRS = ["right", "up", "left", "down"] as const
-type Dir = (typeof DIRS)[number]
-
-/** The direction a wire leaves a pin once the symbol is turned and mirrored. */
-function worldDir(dir: Dir, sym: Pick<PlacedSymbol, "angle" | "mirror">): Dir {
-  const turns = ((Math.round(sym.angle / 90) % 4) + 4) % 4
-  let d = DIRS[(DIRS.indexOf(dir) + turns) % 4]
-  if (sym.mirror === "x") d = d === "up" ? "down" : d === "down" ? "up" : d
-  else if (sym.mirror === "y") d = d === "left" ? "right" : d === "right" ? "left" : d
-  return d
-}
-
-const rotate = (p: Vec2, rot: Rotation): Vec2 => (rot === 0 ? p : rot === 90 ? { x: -p.y, y: p.x } : rot === 180 ? { x: -p.x, y: -p.y } : { x: p.y, y: -p.x })
-
-/** The editor's own power ports: their one pin, and the way a wire leaves it. */
-const POWER_PARTS = { power: { id: "power", port: { x: 0, y: -0.2 }, dir: "down" as Dir }, ground: { id: "ground", port: { x: 0, y: 0.3 }, dir: "up" as Dir } }
 
 /** A power symbol: from a library symbol with the `(power)` flag and one power-input pin. */
 function powerPin(lib: LibSymbol): LibPin | null {
@@ -180,46 +164,115 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
   const pinPoints: { c: ComponentInstance; pin: string; at: Pt }[] = []
   const missing: string[] = []
   const labels: NetLabel[] = []
-  /** Labels the build adds for a hidden power-input pin: a power name, not a label of the user's. */
-  const emulated = new Set<string>()
   const powerNames = new Set<string>()
   const localPowerNames = new Set<string>()
   const globalLabelNames = new Set<string>()
   let powerPorts = 0
 
-  for (const sym of root.symbols) {
+  // ---------- what each placed symbol is: its drawing, its part, its unit ----------
+  const drawings = new Map<string, { lib: ResolvedLibSymbol; drawing: SymbolDrawing; key: string } | null>()
+  /** What a text of a symbol asks for that the editor draws its own way: a font, a line spacing, a link. */
+  const textNotes = new Set<string>()
+  const drawingOf = (sym: Pick<PlacedSymbol, "cacheKey">) => {
+    const had = drawings.get(sym.cacheKey)
+    if (had !== undefined) return had
     const base = lookup(sym.cacheKey)
-    if (!base) {
-      missing.push(sym.cacheKey)
-      continue
+    let out: { lib: ResolvedLibSymbol; drawing: SymbolDrawing; key: string } | null = null
+    if (!base) missing.push(sym.cacheKey)
+    else {
+      try {
+        const lib = resolveLibSymbol(base, lookup)
+        const { drawing, problems, notes } = drawingFromLib(lib)
+        for (const n of notes) textNotes.add(n)
+        const power = lib.power ? powerPin(lib) : null
+        // A power symbol names the net of its power-input pins by its Value. One that is one pin (`power:GND`) is a power port; one with other pins, power inputs among them, is not something the editor holds. A flag (`PWR_FLAG`: a power output) is an ordinary part.
+        if (lib.power && !power && lib.pins.some((p) => p.type === "power_in")) problems.push("a power symbol with other pins than one power input")
+        if (problems.length) {
+          report.entries.push({ code: "symbol-not-held", severity: "refused", object: `the symbol ${sym.cacheKey}`, why: `The editor cannot hold ${[...new Set(problems)].join(", ")} of this symbol exactly, so the schematic is not imported.` })
+        } else out = { lib, drawing, key: drawingKey(drawing) }
+      } catch (e) {
+        lose("S12", `a symbol whose cache entry cannot be read (${e instanceof Error ? e.message : String(e)})`)
+      }
     }
-    let lib: LibSymbol
-    try {
-      lib = resolveLibSymbol(base, lookup)
-    } catch (e) {
-      lose("S12", `a symbol whose cache entry cannot be read (${e instanceof Error ? e.message : String(e)})`)
-      continue
-    }
+    drawings.set(sym.cacheKey, out)
+    return out
+  }
+  interface Placed {
+    sym: PlacedSymbol
+    lib: ResolvedLibSymbol
+    drawing: SymbolDrawing
+    ref: string
+    unit: number
+    angle: number
+    onBoard: ReturnType<NonNullable<SchematicBuildOptions["footprintFor"]>>
+    power: LibPin | null
+  }
+  const placed: Placed[] = []
+  for (const sym of root.symbols) {
+    const d = drawingOf(sym)
+    if (!d) continue
     const record = recordFor.get(sym)
     if (record) recordOf.set(sym, record)
-    const ref = (record?.reference || referenceOf(sym) || "?").trim()
-    // The unit is the instance's: a symbol whose own `(unit N)` says 1 may be used as unit 3 (connection_graph.cpp: `SetUnit( GetUnitSelection( &sheet ) )`).
-    const unit = record?.unit ?? sym.unit
     const angle = ((Math.round(sym.angle) % 360) + 360) % 360
     if (angle % 90 !== 0) {
       lose("S5", "a symbol turned by other than a quarter turn")
       continue
     }
+    placed.push({
+      sym,
+      lib: d.lib,
+      drawing: d.drawing,
+      ref: (record?.reference || referenceOf(sym) || "?").trim(),
+      // The unit is the instance's: a symbol whose own `(unit N)` says 1 may be used as unit 3 (connection_graph.cpp: `SetUnit( GetUnitSelection( &sheet ) )`).
+      unit: record?.unit ?? sym.unit,
+      angle,
+      onBoard: options.footprintFor?.(sym),
+      power: d.lib.power ? powerPin(d.lib) : null,
+    })
+  }
+
+  // A part with several units is several symbols of one reference. One is the part, with the footprint: the one the board's
+  // footprint is linked to, else the first. The others are placements of its twin.
+  // The units of a reference are one part (KiCad names a symbol's cached copy after its instance when the copies differ, so a part can have a copy for each unit: they are one part all the same).
+  const byRef = new Map<string, Placed[]>()
+  for (const p of placed) {
+    // An unannotated symbol (`U?`) is not a unit of the next one, and a power symbol is never a unit.
+    if (p.power || p.lib.units < 2 || p.ref === "" || /[?*]$/.test(p.ref)) continue
+    ;(byRef.get(p.ref) ?? byRef.set(p.ref, []).get(p.ref)!).push(p)
+  }
+  const primaryOf = new Map<Placed, Placed>()
+  for (const g of byRef.values()) {
+    // Each unit once: a second symbol of the same unit and reference is another part that shares the name.
+    const members: Placed[] = []
+    for (const p of g) if (!members.some((m) => m.unit === p.unit)) members.push(p)
+    const primary = members.find((p) => p.onBoard) ?? members[0]
+    for (const p of members) primaryOf.set(p, primary)
+  }
+
+  // The parts (one per drawing and footprint) and the drawings, each kept once.
+  const specs = new Map<string, CustomPartSpec>()
+  const symbols: Record<string, SymbolDrawing> = {}
+  const partFor = (p: Placed): string => {
+    const isPrimary = (primaryOf.get(p) ?? p) === p
+    const { spec, key } = specFromSymbol(p.lib, p.drawing, p.power || !isPrimary ? "" : (p.onBoard?.land ?? ""))
+    const full: CustomPartSpec = { ...spec, id: customPartId(spec) }
+    symbols[key] = p.drawing
+    if (!specs.has(full.id)) specs.set(full.id, full)
+    return isPrimary ? full.id : unitTwinId(full.id)
+  }
+
+  for (const p of placed) {
+    const { sym, lib, ref, unit, angle } = p
+    const partId = partFor(p)
+    const mirror: Mirror | undefined = sym.mirror === "x" || sym.mirror === "y" ? sym.mirror : undefined
+    const record = recordOf.get(sym)
+    const isPrimary = (primaryOf.get(p) ?? p) === p
+    const onBoard = isPrimary ? p.onBoard : undefined
     const pinsHere = pinsOfUnit(lib, unit, sym.bodyStyle)
 
-    // ---------- a power symbol: one of the editor's own power ports, turned so its pin is where KiCad's is ----------
-    const pp = powerPin(lib)
-    if (pp) {
-      const pinAt = toSheet(pp.at, sym)
-      const dir = worldDir(portDir(pp.angle), sym)
-      const kind = pp.angle === 270 ? POWER_PARTS.ground : POWER_PARTS.power
-      const rot = ((((DIRS.indexOf(dir) - DIRS.indexOf(kind.dir)) % 4) + 4) % 4) * 90 as Rotation
-      const off = rotate(kind.port, rot)
+    // ---------- a power symbol: its net is its Value ----------
+    if (p.power) {
+      const pp = p.power
       // Before stamp 20230221 a global power symbol with a hidden pin is named by that pin; from it the Value is the net, and an empty one stays empty.
       const legacy = root.version !== null && root.version < MODERN_POWER_SYMBOLS_FROM && lib.power === "global" && pp.hidden
       const net = (legacy ? pp.name : record?.value || valueOf(sym)).trim()
@@ -227,63 +280,84 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
       ;(lib.power === "local" ? localPowerNames : powerNames).add(net)
       const c: ComponentInstance = {
         id: uid("c"),
-        partId: kind.id,
+        partId,
         ref,
         props: { net },
         footprint: "",
-        sch: { x: round(X(pinAt.x) - off.x, 4), y: round(Y(pinAt.y) - off.y, 4), rot },
+        sch: { x: X(sym.at.x), y: Y(sym.at.y), rot: angle as Rotation, ...(mirror ? { mirror } : {}) },
         pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
       }
+      const fields = fieldsOf(sym)
+      if (fields) c.fields = fields
       components.push(c)
       bySymbol.set(sym, c)
       powerPorts++
-      pinPoints.push({ c, pin: "1", at: pinAt })
+      pinPoints.push({ c, pin: pp.number, at: toSheet(pp.at, sym) })
       continue
     }
 
-    // ---------- any other symbol: a part made from its cached drawing ----------
-    const numbers = pinsHere.flatMap((p) => expandPinNumber(p.number))
-    if (new Set(numbers).size !== numbers.length) lose("S5", "pins that share a number: one pin to KiCad when they are jumpered, an error when not")
-    if (pinsHere.some((p) => p.number.trim() === "")) lose("S5", "a pin with no number, which no pad can be paired with")
-    const mirrored = sym.mirror !== ""
-    const onBoard = options.footprintFor?.(sym)
-    const part = partFromSymbol(lib, unit, sym.bodyStyle, mirrored ? { at: { x: 0, y: 0 }, angle: sym.angle, mirror: sym.mirror } : undefined, onBoard ? [onBoard.land] : [])
-    // A pin of the type "no connect" is on no net, whatever is drawn to it: the editor gets no port for it.
-    const nc = new Set(pinsHere.filter((p) => p.type === "no_connect").flatMap((p) => expandPinNumber(p.number)))
-    const ported: PartDef = nc.size ? { ...part, id: `${part.id}n`, symbol: { ...part.symbol, ports: part.symbol.ports.filter((p) => !nc.has(p.pin)) } } : part
-    if (!isRegistered(ported.id)) registered.push(ported.id)
-    registerPart(ported)
+    // ---------- any other symbol: a placement of its part ----------
     const c: ComponentInstance = {
       id: uid("c"),
-      partId: ported.id,
+      partId,
       ref,
       props: {},
       footprint: onBoard?.land ?? "",
-      sch: { x: X(sym.at.x), y: Y(sym.at.y), rot: (mirrored ? 0 : angle) as Rotation },
+      sch: { x: X(sym.at.x), y: Y(sym.at.y), rot: angle as Rotation, ...(mirror ? { mirror } : {}) },
       pcb: onBoard?.pcb ?? { x: 0, y: 0, rot: 0, side: "top", placed: false },
     }
+    if (lib.units > 1 && unit > 1) c.unit = unit
+    if (lib.bodyStyles > 1 && sym.bodyStyle > 1) c.bodyStyle = sym.bodyStyle
+    const alts = Object.fromEntries(sym.pins.filter((q) => q.alternate).map((q) => [q.number, q.alternate as string]))
+    if (Object.keys(alts).length) c.pinAlt = alts
     // The instance's own value and footprint, where it has them, stand in place of the symbol's fields (KiCad 6 keeps the real ones there).
-    for (const p of sym.props) {
-      if (p.name === "Reference") continue
-      const value = p.name === "Value" ? record?.value || p.value : p.name === "Footprint" ? record?.footprint || p.value : p.value
-      if (p.name === "Value") c.props.value = value
-      else if (value !== "") c.props[p.name] = value
+    for (const q of sym.props) {
+      if (q.name === "Reference") continue
+      const value = q.name === "Value" ? record?.value || q.value : q.name === "Footprint" ? record?.footprint || q.value : q.value
+      if (q.name === "Value") c.props.value = value
+      else if (value !== "") c.props[q.name] = value
     }
+    const fields = fieldsOf(sym)
+    if (fields) c.fields = fields
     components.push(c)
     bySymbol.set(sym, c)
-    for (const p of pinsHere) {
-      const at = toSheet(p.at, sym)
-      for (const number of expandPinNumber(p.number)) pinPoints.push({ c, pin: number, at })
-      // A hidden power-input pin is on the global net of its name. With S5 built the pin carries a label of that name.
-      if (p.type === "power_in" && p.hidden) {
-        if (built.has("S5") && p.name.trim() !== "") {
-          const id = uid("l")
-          emulated.add(id)
-          powerNames.add(p.name.trim())
-          labels.push({ id, name: p.name.trim(), x: PX(at.x), y: PY(at.y), rot: 0 })
-        } else lose("S5", "a hidden power-input pin, which joins the global net of its name")
-      }
+    for (const q of pinsHere) {
+      const at = toSheet(q.at, sym)
+      for (const number of expandPinNumber(q.number)) pinPoints.push({ c, pin: number, at })
+      // A hidden power-input pin is on the global net of its name (the editor does that itself); its name ranks as a power symbol's.
+      if (q.type === "power_in" && q.hidden && q.name.trim() !== "") powerNames.add(q.name.trim())
     }
+  }
+
+  // The cache's other symbols (one that nothing places, a base another symbol extends) are kept as stored drawings, so the project keeps every drawing the file has. They are not listed as parts: a part nobody placed would crowd the library panel.
+  const unplaced: string[] = []
+  for (const lib of root.libSymbols) {
+    if (drawings.has(lib.name)) continue
+    const d = drawingOf({ cacheKey: lib.name })
+    if (!d) continue
+    const { key } = specFromSymbol(d.lib, d.drawing, "")
+    symbols[key] = d.drawing
+    unplaced.push(lib.name)
+  }
+  if (unplaced.length) {
+    report.entries.push({
+      code: "unplaced-symbols-kept",
+      severity: "note",
+      object: `${unplaced.length} symbol${unplaced.length > 1 ? "s" : ""} of the file's cache that no symbol is placed from (${unplaced.slice(0, 4).join(", ")}${unplaced.length > 4 ? ", ..." : ""})`,
+      why: "Their drawings are kept in the project, but they are not listed as parts until one is placed.",
+      count: unplaced.length,
+    })
+  }
+
+  /** The place and look of every field a placed symbol lists, as KiCad wrote them (in sheet coordinates), relative to the symbol. */
+  function fieldsOf(sym: PlacedSymbol): Record<string, FieldPlace> | undefined {
+    const out: Record<string, FieldPlace> = {}
+    for (const q of sym.props) out[q.name] = placeOf(q, sym.at, textNotes)
+    return Object.keys(out).length ? out : undefined
+  }
+
+  if (textNotes.size) {
+    report.entries.push({ code: "text-style-not-brought", severity: "not-brought", object: "the texts of symbols", why: `Some texts of the symbols ask for ${[...textNotes].join(", ")}. The editor draws every text in its own font: the size, weight, colour and justification are kept.` })
   }
   if (missing.length) {
     const names = [...new Set(missing)]
@@ -413,10 +487,51 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     { key: "KiCad file version", value: version },
     ...root.titleBlock.filter((t) => !(options.name === undefined && t.key === "Title" && title && title.trim())),
   ]
-  project = { ...project, components, wires, labels, ...(blocks.length ? { blocks } : {}), properties }
+  project = {
+    ...project,
+    components,
+    wires,
+    labels,
+    ...(blocks.length ? { blocks } : {}),
+    properties,
+    ...(specs.size ? { parts: [...specs.values()] } : {}),
+    ...(Object.keys(symbols).length ? { symbols } : {}),
+  }
+  // The parts are in memory from here: the checks below read them as the editor does.
+  for (const spec of specs.values()) if (!isRegistered(spec.id)) registered.push(spec.id)
+  registerProjectParts(project)
   checkPinPlaces(project, pinPoints, lose)
-  checkNetNames(project, components, { power: powerNames, localPower: localPowerNames, globalLabel: globalLabelNames, label: new Set(labels.filter((l) => !emulated.has(l.id)).map((l) => l.name.trim())) }, lose)
+  checkNetNames(project, components, { power: powerNames, localPower: localPowerNames, globalLabel: globalLabelNames, label: new Set(labels.map((l) => l.name.trim())) }, lose)
+  reportSplitPads(project, report)
   return { project, lossy, bySymbol, recordOf, registered, stats: { components: components.length, wires: wires.length, labels: labels.length, powerPorts } }
+}
+
+/**
+ * A symbol that keeps the pins of one number apart can have them on different nets. A pad on a board is
+ * on one net, so the board's pad of that number takes the net of the first of them: the report names the
+ * pins, since the editor cannot hold more than that.
+ */
+function reportSplitPads(project: Project, report: ImportReport) {
+  const { pinNet } = computeConnectivity(project)
+  const split: string[] = []
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    if (!part?.jumpers || part.jumpers.duplicates) continue
+    for (const w of schematicPins(c, part)) {
+      if (!w.slot) continue
+      const first = pinNet.get(pinKey(c.id, w.pin))
+      const here = pinNet.get(`${pinKey(c.id, w.pin)}#${w.slot}`)
+      if (first && here && first !== here) split.push(`${c.ref} pin ${w.pin}`)
+    }
+  }
+  if (!split.length) return
+  report.entries.push({
+    code: "split-pad",
+    severity: "not-brought",
+    object: `${split.length} pad${split.length > 1 ? "s" : ""} with pins of one number on different nets (${split.slice(0, 4).join(", ")}${split.length > 4 ? ", ..." : ""})`,
+    why: "A pad on the board is on one net: it takes the net of the first of the pins of its number. The schematic keeps each pin on its own net.",
+    count: split.length,
+  })
 }
 
 /**

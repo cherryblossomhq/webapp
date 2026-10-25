@@ -1,4 +1,4 @@
-import { CircuitBoard, FlipHorizontal2, Group, MousePointer2, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
+import { CircuitBoard, Eye, EyeOff, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
 import { useState } from "react"
 import { groupSelected, ungroupSelected } from "../editor/schematic/blockActions"
 import type { Box } from "../lib/geometry"
@@ -11,7 +11,8 @@ import { clearImportedNoConnect, importedNoConnectCount } from "../model/importM
 import { cleanFlags, setFlags } from "../model/partFlags"
 import { removeItems, updateComponent } from "../model/ops"
 import { partSourceLine } from "../model/partSource"
-import { rotateSelection } from "../model/schematicEdit"
+import { addUnit, mirrorSelection, renameReference, rotateSelection, setFieldPlace, setSymbolVariant } from "../model/schematicEdit"
+import { bodyStyleCount, fieldPlaceOf, hasFieldPlaces, unitCount, unitLetters } from "../model/symbolDrawing"
 import { formatLength } from "../model/rules"
 import type { ComponentInstance, CopperLayer, PartFlags, Project, Rotation, SchematicBlock, Trace, Vec2, Via } from "../model/types"
 import { getConnectivity, getPcbAnalysis } from "../store/analysis"
@@ -339,6 +340,18 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
       if (res.note) uiApi().showNotice(res.note)
     } else uiApi().showNotice(res.message)
   }
+  const mirror = (axis: "x" | "y") => {
+    uiApi().clearNotice()
+    const res = mirrorSelection(projectApi().project!, { components: [c.id] }, axis, { conn: getConnectivity })
+    if (res.ok) projectApi().commit(() => res.project)
+    else uiApi().showNotice(res.message)
+  }
+  const setFunction = (pin: string, alternate: string | null) => {
+    uiApi().clearNotice()
+    const res = setSymbolVariant(projectApi().project!, c.id, { pinAlt: { pin, alternate } }, { conn: getConnectivity })
+    if (res.ok) projectApi().commit(() => res.project)
+    else uiApi().showNotice(res.message)
+  }
   const pins = schematicPins(c, part)
   const isPower = !!part.powerNet
   const setNc = (pin: string, on: boolean) =>
@@ -391,7 +404,9 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
               value={c.ref}
               onCommit={(v) => {
                 const ref = v.trim()
-                if (ref && !project.components.some((x) => x.ref === ref && x.id !== c.id)) update({ ref })
+                // The units of one part share its designator, so they are not another part that has it.
+                const mine = (x: ComponentInstance) => unitCount(part) > 1 && x.ref === c.ref && !!findPart(x.partId)?.units
+                if (ref && !project.components.some((x) => x.ref === ref && x.id !== c.id && !mine(x))) projectApi().commit((p) => renameReference(p, c.id, ref))
               }}
             />
           </Field>
@@ -474,11 +489,25 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
       {/* Keyed so a search, a problem or a busy button doesn't carry over to the next part selected. */}
       {physical && <ModelSection key={c.id} c={c} part={part} project={project} />}
 
+      {view === "schematic" && (unitCount(part) > 1 || bodyStyleCount(part) > 1 || hasFieldPlaces(part)) && (
+        <SymbolSection c={c} part={part} project={project} />
+      )}
+
       <Section title="Placement">
         <div className="flex flex-wrap gap-1.5">
           <Button onClick={() => turnSymbol(c.id)}>
             <RotateCw size={14} /> Rotate symbol
           </Button>
+          <Tooltip label="Flip top to bottom" shortcut="X">
+            <Button onClick={() => mirror("x")} aria-label="Mirror top to bottom">
+              <FlipVertical2 size={14} />
+            </Button>
+          </Tooltip>
+          <Tooltip label="Flip left to right" shortcut="Y">
+            <Button onClick={() => mirror("y")} aria-label="Mirror left to right">
+              <FlipHorizontal2 size={14} />
+            </Button>
+          </Tooltip>
           <Button onClick={() => focusOn("schematic", c.sch, schematicBounds(c, part))}>
             <Spline size={14} /> Schematic
           </Button>
@@ -540,7 +569,21 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
                   return (
                     <tr key={pin.pin} className="border-b border-chrome-2 last:border-0">
                       <td className="mono w-8 py-1 text-ink-3">{pin.pin}</td>
-                      <td className="mono py-1 text-ink">{pin.name}</td>
+                      <td className="mono py-1 text-ink">
+                        {part.pins.find((q) => q.number === pin.pin)?.alternates?.length ? (
+                          <select className="field mono h-7" value={c.pinAlt?.[pin.pin] ?? ""} aria-label={`Function of pin ${pin.pin}`} onChange={(e) => setFunction(pin.pin, e.target.value || null)}>
+                            <option value="">{part.pins.find((q) => q.number === pin.pin)?.name}</option>
+                            {part.pins.find((q) => q.number === pin.pin)?.alternates?.map((a) => (
+                              <option key={a.name} value={a.name}>
+                                {a.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          pin.name
+                        )}
+                        {pin.hidden && <span className="ml-1 text-[11px] text-ink-3" title="Not drawn: a hidden power pin is on the net of its name">hidden</span>}
+                      </td>
                       <td className="py-1 text-right">
                         {net ? (
                           <button className="mono text-brand hover:underline" onClick={() => uiApi().setHighlightNet(useUi.getState().highlightNet === net.id ? null : net.id)}>
@@ -568,6 +611,94 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
         </Section>
       )}
     </div>
+  )
+}
+
+/** Unit, body style and fields of a symbol that has them: what KiCad's symbols add to a part. */
+function SymbolSection({ c, part, project }: { c: ComponentInstance; part: NonNullable<ReturnType<typeof findPart>>; project: Project }) {
+  const units = unitCount(part)
+  const styles = bodyStyleCount(part)
+  const change = (patch: { unit?: number; bodyStyle?: number }) => {
+    uiApi().clearNotice()
+    const res = setSymbolVariant(projectApi().project!, c.id, patch, { conn: getConnectivity })
+    if (res.ok) projectApi().commit(() => res.project)
+    else uiApi().showNotice(res.message)
+  }
+  const names = part.units
+  const placed = new Set(project.components.filter((x) => x.ref === c.ref && !!findPart(x.partId)?.units).map((x) => x.unit ?? 1))
+  const missing = Array.from({ length: units }, (_, i) => i + 1).filter((u) => !placed.has(u))
+  const fieldNames = [...new Set([...Object.keys(part.fieldPlaces ?? {}), ...Object.keys(c.fields ?? {})])]
+  const place = (name: string) => fieldPlaceOf(c, part, name)
+  const put = (name: string, patch: Parameters<typeof setFieldPlace>[3]) => projectApi().commit((p) => setFieldPlace(p, c.id, name, patch))
+  return (
+    <Section title="Symbol">
+      {units > 1 && (
+        <Field label="Unit">
+          <select className="field h-8" value={c.unit ?? 1} onChange={(e) => change({ unit: Number(e.target.value) })} aria-label="Unit">
+            {Array.from({ length: units }, (_, i) => i + 1).map((u) => (
+              <option key={u} value={u}>
+                {unitLetters(u)}
+                {names?.unitNames?.[u] ? `: ${names.unitNames[u]}` : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {units > 1 && missing.length > 0 && (
+        <Button
+          onClick={() => {
+            uiApi().clearNotice()
+            const b = schematicBounds(c, part)
+            const res = addUnit(projectApi().project!, c.id, missing[0], { x: Math.round((b.maxX + 0.6) * 10) / 10, y: c.sch.y }, { conn: getConnectivity })
+            if (res.ok) {
+              projectApi().commit(() => res.project)
+              uiApi().select([`c:${res.component.id}`])
+            } else uiApi().showNotice(res.message)
+          }}
+        >
+          <Plus size={14} /> Place unit {unitLetters(missing[0])}
+        </Button>
+      )}
+      {styles > 1 && (
+        <Field label="Body style">
+          <select className="field h-8" value={c.bodyStyle ?? 1} onChange={(e) => change({ bodyStyle: Number(e.target.value) })} aria-label="Body style">
+            {Array.from({ length: styles }, (_, i) => i + 1).map((b) => (
+              <option key={b} value={b}>
+                {names?.bodyStyleNames?.[b - 1] ?? (b === 1 ? "Normal" : b === 2 ? "Alternate (De Morgan)" : `Style ${b}`)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {fieldNames.length > 0 && (
+        <table className="w-full text-[12.5px]">
+          <tbody>
+            {fieldNames.map((name) => {
+              const f = place(name)
+              if (!f) return null
+              return (
+                <tr key={name} className="border-b border-chrome-2 last:border-0">
+                  <td className="py-1 text-ink-2">{name}</td>
+                  <td className="py-1">
+                    <CommitInput mono value={String(f.x)} onCommit={(v) => Number.isFinite(Number(v)) && put(name, { x: Number(v) })} aria-label={`${name} x`} />
+                  </td>
+                  <td className="py-1">
+                    <CommitInput mono value={String(f.y)} onCommit={(v) => Number.isFinite(Number(v)) && put(name, { y: Number(v) })} aria-label={`${name} y`} />
+                  </td>
+                  <td className="py-1 text-right">
+                    <Tooltip label={f.hidden ? "Show on the sheet" : "Hide on the sheet"}>
+                      <button className="rounded p-1 text-ink-3 hover:text-ink" aria-label={f.hidden ? `Show ${name}` : `Hide ${name}`} onClick={() => put(name, { hidden: f.hidden ? undefined : true })}>
+                        {f.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </Tooltip>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </Section>
   )
 }
 

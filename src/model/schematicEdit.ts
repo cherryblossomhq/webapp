@@ -5,20 +5,24 @@ import { createBlock } from "./blocks"
 import { copyDrawings } from "./drawings"
 import { withPartsFrom } from "./customParts"
 import { withModelsFrom } from "./models3d"
-import { isPhysical, schematicPins } from "./instances"
-import { findPart } from "./library"
+import { isSchematicPart, schematicPins } from "./instances"
+import { findPart, unitTwinId } from "./library"
 import { moveProblems } from "./merges"
 import {
   addComponent,
   cleanupWires,
   dragPlan,
+  mirrorComponent,
   moveSchematicItems,
   nextRef,
   partFollowers,
   rotateComponent,
+  updateComponent,
   type AddComponentOptions,
 } from "./ops"
-import type { ComponentInstance, Project, Rotation, Vec2, Wire } from "./types"
+import { bodyStyleCount, fieldPlaceOf, fieldPlacesOf, unitCount } from "./symbolDrawing"
+import { repairUnits } from "./units"
+import type { ComponentInstance, FieldPlace, Mirror, Project, Rotation, Vec2, Wire } from "./types"
 
 /**
  * The canvas edits that move things without meaning to connect them: turning a part (R, the
@@ -84,7 +88,7 @@ export function spliceInline(project: Project, ids: string[]): { project: Projec
   const cut: string[] = []
   for (const id of ids) {
     const c = project.components.find((x) => x.id === id)
-    const pins = c && isPhysical(findPart(c.partId)) ? schematicPins(c) : []
+    const pins = c && isSchematicPart(findPart(c.partId)) ? schematicPins(c) : []
     if (pins.length !== 2) continue
     const [a, b] = pins.map((p) => p.pos)
     const free = (p: Vec2) =>
@@ -139,7 +143,8 @@ function turnBy(project: Project, ids: { components: string[]; labels: string[] 
     const c = next.components.find((x) => x.id === id)
     if (!c) continue
     for (const l of partFollowers(next, [id]).labels) carried.add(l)
-    next = rotateComponent(next, id, ((c.sch.rot + by) % 360) as Rotation, next === project ? o.conn?.(project) : undefined)
+    // A mirrored part's own turn runs the other way: what goes counter-clockwise on screen is a step back in its placement.
+    next = rotateComponent(next, id, ((((c.sch.mirror ? c.sch.rot - by : c.sch.rot + by) % 360) + 360) % 360) as Rotation, next === project ? o.conn?.(project) : undefined)
   }
   const turned = new Set(ids.labels.filter((l) => !carried.has(l)))
   if (turned.size) next = { ...next, labels: next.labels.map((l) => (turned.has(l.id) ? { ...l, rot: ((l.rot + 90) % 360) as Rotation } : l)) }
@@ -163,6 +168,106 @@ export function rotateSelection(project: Project, ids: { components: string[]; l
     return { ok: true, project: other.project, note: turnNote(refsOf(project, ids.components), by, first.reasons ?? []) }
   }
   return first
+}
+
+/**
+ * Mirror each selected part, `x` top to bottom and `y` left to right, in place; what hangs off a
+ * part's pins alone goes with it. Refused, with nothing changed, when that would change what is connected.
+ */
+export function mirrorSelection(project: Project, ids: { components: string[] }, axis: Mirror, o: Guard = {}): EditResult {
+  let next = project
+  for (const id of ids.components) {
+    if (!next.components.some((x) => x.id === id)) continue
+    next = mirrorComponent(next, id, axis, next === project ? o.conn?.(project) : undefined)
+  }
+  if (next === project) return { ok: true, project }
+  return check(project, cleanupWires(next), `mirror ${refsOf(project, ids.components)}`, o)
+}
+
+// ---------- units, body styles and alternates ----------
+
+/**
+ * Change which unit or body style a placed symbol is, or which function one of its pins has. The symbol
+ * is redrawn with its pins where the new drawing has them; wires do not follow, so this is refused,
+ * with nothing changed, when it would cut a pin off its net or put one on another.
+ */
+export function setSymbolVariant(project: Project, id: string, change: { unit?: number; bodyStyle?: number; pinAlt?: { pin: string; alternate: string | null } }, o: Guard = {}): EditResult {
+  const c = project.components.find((x) => x.id === id)
+  const part = c && findPart(c.partId)
+  if (!c || !part) return { ok: false, message: "That part is gone." }
+  const patch: Partial<ComponentInstance> = {}
+  if (change.unit !== undefined) {
+    if (!Number.isInteger(change.unit) || change.unit < 1 || change.unit > unitCount(part)) return { ok: false, message: `${c.ref} has ${unitCount(part)} unit${unitCount(part) === 1 ? "" : "s"}, so there is no unit ${change.unit}.` }
+    patch.unit = change.unit > 1 ? change.unit : undefined
+  }
+  if (change.bodyStyle !== undefined) {
+    if (!Number.isInteger(change.bodyStyle) || change.bodyStyle < 1 || change.bodyStyle > bodyStyleCount(part)) return { ok: false, message: `${c.ref} has ${bodyStyleCount(part)} body style${bodyStyleCount(part) === 1 ? "" : "s"}, so there is no style ${change.bodyStyle}.` }
+    patch.bodyStyle = change.bodyStyle > 1 ? change.bodyStyle : undefined
+  }
+  if (change.pinAlt) {
+    const pin = part.pins.find((p) => p.number === change.pinAlt!.pin)
+    if (!pin) return { ok: false, message: `${c.ref} has no pin ${change.pinAlt.pin}.` }
+    const alt = change.pinAlt.alternate
+    if (alt !== null && !pin.alternates?.some((a) => a.name === alt)) return { ok: false, message: `Pin ${pin.number} of ${c.ref} has no function called ${alt}.` }
+    const alts = { ...c.pinAlt }
+    if (alt === null) delete alts[pin.number]
+    else alts[pin.number] = alt
+    patch.pinAlt = Object.keys(alts).length ? alts : undefined
+  }
+  const comps = project.components.map((x) => {
+    if (x.id !== id) return x
+    const next: ComponentInstance = { ...x, ...patch }
+    for (const key of ["unit", "bodyStyle", "pinAlt"] as const) if (next[key] === undefined) delete next[key]
+    return next
+  })
+  const next = { ...project, components: comps, updatedAt: Date.now() }
+  return check(project, next, `change ${c.ref}`, o)
+}
+
+/**
+ * Put another unit of a part on the sheet, as a symbol of the same reference with no footprint of its own, `at` a place.
+ * `from` is a component of the part, or one of its other units.
+ */
+export function addUnit(project: Project, from: string, unit: number, at: Vec2, o: Guard = {}): { ok: true; project: Project; component: ComponentInstance } | { ok: false; message: string } {
+  const c = project.components.find((x) => x.id === from)
+  const part = c && findPart(c.partId)
+  if (!c || !part) return { ok: false, message: "That part is gone." }
+  const base = part.unitOf ?? part.id
+  const twin = findPart(unitTwinId(base)) ?? part
+  if (unitCount(part) < 2) return { ok: false, message: `${c.ref} has one unit.` }
+  if (!Number.isInteger(unit) || unit < 1 || unit > unitCount(part)) return { ok: false, message: `${c.ref} has ${unitCount(part)} units, so there is no unit ${unit}.` }
+  if (project.components.some((x) => x.ref === c.ref && (x.unit ?? 1) === unit && findPart(x.partId)?.units)) return { ok: false, message: `Unit ${unit} of ${c.ref} is already on the sheet.` }
+  const res = placeComponent(project, twin.id, { ref: c.ref, sch: { ...at, rot: 0 }, props: { ...c.props } }, o)
+  if (!res.ok) return res
+  const placed = { ...res.component, ...(unit > 1 ? { unit } : {}), footprint: "" }
+  return { ok: true, component: placed, project: { ...res.project, components: res.project.components.map((x) => (x.id === placed.id ? placed : x)) } }
+}
+
+/** Where the fields of a placed symbol are written: change the place of one, its size, whether it shows. */
+export function setFieldPlace(project: Project, id: string, name: string, patch: Partial<FieldPlace> | null): Project {
+  const c = project.components.find((x) => x.id === id)
+  const part = c && findPart(c.partId)
+  if (!c || !part) return project
+  const was = fieldPlaceOf(c, part, name)
+  // The part's places are in the symbol's frame: a symbol that has none of its own takes them as they are drawn.
+  const fields = fieldPlacesOf(c, part)
+  if (patch === null) delete fields[name]
+  else {
+    const merged: FieldPlace = { x: 0, y: 0, angle: 0, ...was, ...patch }
+    // An absent flag is false: a field that is shown again drops `hidden`.
+    for (const key of ["hidden", "bold", "italic", "showName"] as const) if (patch[key] === undefined && key in patch) delete merged[key]
+    fields[name] = merged
+  }
+  return updateComponent(project, id, { fields: Object.keys(fields).length ? fields : undefined })
+}
+
+/** Rename a part's reference: every unit of it shares the name. */
+export function renameReference(project: Project, id: string, ref: string): Project {
+  const c = project.components.find((x) => x.id === id)
+  const part = c && findPart(c.partId)
+  if (!c || !part) return project
+  const same = new Set(unitCount(part) > 1 ? project.components.filter((x) => x.ref === c.ref && !!findPart(x.partId)?.units).map((x) => x.id) : [c.id])
+  return { ...project, components: project.components.map((x) => (same.has(x.id) ? { ...x, ref } : x)), updatedAt: Date.now() }
 }
 
 // ---------- dragging ----------
@@ -221,6 +326,7 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
   const selection: string[] = []
   const added: string[] = []
   const copies = new Map<string, string>()
+  const unitRefs = new Map<string, string>()
   const sh = (pt: Vec2) => ({ x: round(pt.x + offset.x), y: round(pt.y + offset.y) })
   for (const id of clip.components) {
     const c = clip.project.components.find((x) => x.id === id)
@@ -228,10 +334,14 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
     if (!c || !part) continue
     next = withPartsFrom(next, clip.project, part.custom ? [c.partId] : [], [c.footprint])
     next = withModelsFrom(next, clip.project, [{ part: c.partId, footprint: c.footprint }])
+    // The units of one part are copied under one new reference.
+    const unitsRef = part.units ? `${part.unitOf ?? part.id}|${c.ref}` : null
+    const ref = (unitsRef && unitRefs.get(unitsRef)) || nextRef(next, part.refPrefix)
+    if (unitsRef) unitRefs.set(unitsRef, ref)
     const copy = {
       ...c,
       id: uid("c"),
-      ref: nextRef(next, part.refPrefix),
+      ref,
       props: { ...c.props },
       sch: { ...c.sch, ...sh(c.sch) },
       // A copy is not on the board yet, and a lock keeps a part in place, so the copy starts unlocked.
@@ -271,6 +381,8 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
     next = made.project
     selection.push(`b:${made.block.id}`)
   }
+  // A unit copied without its part is a part of its own.
+  next = { ...next, components: repairUnits(next.components) }
   const res = checkAdded(project, { ...next, updatedAt: Date.now() }, added, what, o)
   return res.ok ? { ok: true, project: res.project, selection, inline: res.inline } : res
 }

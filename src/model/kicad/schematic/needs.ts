@@ -8,8 +8,13 @@ import type { KicadSchematic } from "./types"
 // partly. The rules are the ones of `tests/kicad-census/slices-sch.mjs`, which the census judged
 // the plan by, with the differences named in `Need.source` and listed in the doc.
 
-/** The extensions the editor has built. Each slice adds its own; slice 3a builds none: it reads, links and checks. */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set()
+/**
+ * The extensions the editor has built. Each slice adds its own. Slice 3a built none: it read, linked and
+ * checked. Slice 3b-i built the three that every symbol needs: S5 (units, body styles, alternates, mirror,
+ * fields with a place of their own, hidden power pins, repeated pin numbers), S6 (the shapes, fills and
+ * strokes of a symbol's drawing) and S10 (the drawings kept in the project).
+ */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S5", "S6", "S10"])
 
 /** What each extension is, for the sentence "This schematic uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {

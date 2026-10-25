@@ -28,6 +28,7 @@ export const RULES_SCH = [
   rule("lib_symbols>symbol", "extend", "one SymbolDef per part", { ext: "S5", note: "units, body styles, power flag, inheritance (extends) resolved on read" }),
   rule("lib_symbols>symbol>(?:power|extends|embedded_fonts)", "native", "PartDef.powerNet", { effort: "S" }),
   rule("lib_symbols>symbol>duplicate_pin_numbers_are_jumpers", "extend", "PartDef.padAlias", { ext: "S5", note: "pins that share a number are one pin when this is yes; KiCad's default (no) says nothing" }),
+  rule("lib_symbols>symbol>jumper_pin_groups(?:>.*)?", "extend", "PartDef.jumpers", { ext: "S5", note: "groups of pin numbers the symbol joins inside itself (KiCad 10)" }),
   rule("lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files)", "extend", "-", { ext: "S7" }),
   rule("lib_symbols>symbol>body_styles", "extend", "-", { ext: "S5", note: "De Morgan and named body styles" }),
   rule("lib_symbols>symbol>(?:pin_names|pin_numbers)(?:>(?:hide|offset))?", "extend", "-", { ext: "S6", note: "whether pin names and numbers are drawn, and their offset" }),

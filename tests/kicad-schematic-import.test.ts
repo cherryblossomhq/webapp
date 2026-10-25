@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
+import { schematicPins } from "../src/model/instances"
 import { findPart } from "../src/model/library"
 import { importKicadSchematic, type SchematicImportResult } from "../src/model/kicad/schematic"
 import { buildSchematicProject, releaseBuild } from "../src/model/kicad/schematic/build"
@@ -32,16 +33,16 @@ const needsOf = (text: string) => refused(importKicadSchematic(text)).needs.map(
 const message = (text: string) => refused(importKicadSchematic(text)).message
 
 describe("the gate", () => {
-  it("builds nothing of the extensions yet: slice 3a reads, links and checks", () => {
-    expect(BUILT_EXTENSIONS.size).toBe(0)
+  it("builds the three extensions every symbol needs: units and fields (S5), shapes (S6), drawings in the project (S10)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S10", "S5", "S6"])
   })
 
   it("refuses a schematic that uses what the editor cannot hold yet, naming it in plain words, and imports nothing", () => {
     const r = refused(importKicadSchematic(divider()))
     expect(r.reason).toBe("unsupported")
-    expect(r.message).toBe("This schematic uses labels and net names as KiCad has them, symbols as KiCad draws them (units, mirrors, hidden power pins, repeated pin numbers), symbol drawings beyond lines and circles and symbols kept in the project, which are not supported yet.")
-    expect(r.needs.map((n) => n.ext)).toEqual(["S2", "S5", "S6", "S10"])
-    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S5/.test(e.why))).toBe(true)
+    expect(r.message).toBe("This schematic uses labels and net names as KiCad has them, which are not supported yet.")
+    expect(r.needs.map((n) => n.ext)).toEqual(["S2"])
+    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S2/.test(e.why))).toBe(true)
   })
 
   const one: [string, SchSpec, string, string][] = [
@@ -212,13 +213,14 @@ describe("what the importer finds on top of the census's rules", () => {
     expect(r.report.entries.find((e) => e.code === "other-projects-instances")?.count).toBe(1)
   })
 
-  it("S5, S6 and S10 also for symbols in the cache that no symbol is placed from", () => {
-    const r = refused(importKicadSchematic(schematic({ libs: [LIB_R] })))
-    expect(r.needs.map((n) => [n.ext, n.source])).toEqual([
-      ["S5", "importer"],
-      ["S6", "importer"],
-      ["S10", "importer"],
-    ])
+  it("a symbol in the cache that no symbol is placed from is kept as a stored drawing, not listed as a part, and named once in the report", () => {
+    const r = imported(importKicadSchematic(schematic({ libs: [LIB_R] })))
+    expect(r.project.components).toEqual([])
+    expect(r.project.parts ?? []).toEqual([])
+    expect(Object.values(r.project.symbols ?? {}).map((d) => d.name)).toEqual(["Device:R"])
+    const notes = r.report.entries.filter((e) => e.code === "unplaced-symbols-kept")
+    expect(notes).toHaveLength(1)
+    expect(notes[0].object).toContain("Device:R")
   })
 
   it("the root's own sheet_instances, in the spelling of either release, say nothing", () => {
@@ -238,7 +240,8 @@ describe("the accounting of every node", () => {
     expect(a.unknownPaths.size).toBe(0)
     expect(a.unknownAtoms.size).toBe(0)
     expect(total(a)).toBe(a.total)
-    expect(a.pending.get("S5")).toBeGreaterThan(0)
+    expect(a.pending.get("S2")).toBeGreaterThan(0)
+    expect(a.pending.get("S5")).toBeUndefined()
     expect(a.imported).toBeGreaterThan(0)
     expect(a.notNeeded.get("sheet size of KiCad's drawing frame")).toBe(1)
   })
@@ -380,15 +383,17 @@ describe("every node counted as imported is one the builder writes", () => {
 })
 
 describe("the build", () => {
-  it("makes the editor's own power ports of power symbols, turned so their pin is where KiCad has it", () => {
+  it("makes power ports of power symbols that keep KiCad's drawing, with the symbol where KiCad has it", () => {
     const r = imported(importKicadSchematic(divider(), { built: SYMBOLS }))
     const gnd = r.project.components.find((c) => c.ref === "#PWR02")!
     const vcc = r.project.components.find((c) => c.ref === "#PWR01")!
-    expect([gnd.partId, gnd.props.net, gnd.sch.rot]).toEqual(["ground", "GND", 0])
-    expect([vcc.partId, vcc.props.net, vcc.sch.rot]).toEqual(["power", "VCC", 0])
+    expect([gnd.props.net, gnd.sch.rot, vcc.props.net, vcc.sch.rot]).toEqual(["GND", 0, "VCC", 0])
     expect(findPart(gnd.partId)!.powerNet).toBe("GND")
-    // the pin of VCC at (50.8, 43.18) mm: the editor's power port is 0.2 below its origin
-    expect([vcc.sch.x, vcc.sch.y]).toEqual([4, -3.2])
+    expect(findPart(vcc.partId)!.powerNet).toBe("VCC")
+    expect(r.project.parts?.find((p) => p.id === vcc.partId)?.drawing).toBeTruthy()
+    // the symbol of VCC is at (50.8, 43.18) mm, its pin at its origin
+    expect([vcc.sch.x, vcc.sch.y]).toEqual([4, -3.4])
+    expect(schematicPins(vcc)[0].pos).toEqual({ x: 4, y: -3.4 })
   })
 
   it("takes a symbol's reference from its instance, and its other fields as properties", () => {
@@ -400,7 +405,7 @@ describe("the build", () => {
   it("KiCad 6 keeps a symbol's real value and footprint in the root list: they stand in place of the fields, and the list does not make the file need S1", () => {
     const sym = { lib: "Device:R", at: "50.8 50.8", ref: "D5", value: "", uuid: "aaaaaaaa-0000-4000-8000-000000000001", footprint: "" }
     const text = schematic({ version: 20211123, libs: [LIB_R], symbols: [sym], rootEntries: [`/${sym.uuid}|D5|red|Local:LED_D3.0mm`] })
-    expect(needsOf(text)).toEqual(["S2", "S5", "S6", "S10"])
+    expect(needsOf(text)).toEqual(["S2"])
     const r = imported(importKicadSchematic(text, { built: SYMBOLS }))
     expect(r.project.components[0].props).toEqual({ value: "red", Footprint: "Local:LED_D3.0mm" })
     // before 20230221 a global power symbol is named by its hidden pin, whatever the instance's value says
@@ -417,17 +422,19 @@ describe("the build", () => {
     expect(r.report.entries.find((e) => e.code === "symbol-not-in-cache")?.object).toBe("1 symbol (Device:C)")
   })
 
-  it("a symbol with a pin that has no number needs S5: no pad can be paired with it", () => {
+  it("a pin with no number is a pin of the part like any other: it joins a wire, and no pad is paired with it", () => {
     const lib = `(symbol "T:V" (property "Reference" "V" (at 0 0 0)) (symbol "V_1_1" (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "~"))))`
     const text = schematic({ libs: [lib], symbols: [{ lib: "T:V", at: "50.8 50.8", ref: "V1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }] })
-    expect(lossy(text)).toContainEqual(["S5", "a pin with no number, which no pad can be paired with"])
+    expect(lossy(text).filter(([ext]) => ext === "S5")).toEqual([])
+    const r = imported(importKicadSchematic(text, { built: SYMBOLS }))
+    expect(findPart(r.project.components[0].partId)!.pins.map((p) => p.number)).toEqual([""])
   })
 
-  it("pins that share a number need S5, whether KiCad jumpers them or flags them", () => {
+  it("pins that share a number are separate pins, whatever the build says: a net is KiCad's", () => {
     const lib = `(symbol "T:D" (property "Reference" "D" (at 0 0 0)) (symbol "D_1_1" (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "12")) (pin passive line (at 5 0 0) (length 2.54) (name "B") (number "12"))))`
     const text = schematic({ libs: [lib], symbols: [{ lib: "T:D", at: "50.8 50.8", ref: "U1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }] })
-    expect(lossy(text)).toContainEqual(["S5", "pins that share a number: one pin to KiCad when they are jumpered, an error when not"])
-    expect(lossy(text).filter(([ext]) => ext === "S11")).toEqual([])
+    expect(lossy(text)).toEqual([])
+    expect(imported(importKicadSchematic(text, { built: SYMBOLS })).project.components).toHaveLength(1)
   })
 
   it("a symbol turned by other than a quarter turn is unreadable, as KiCad's parser rejects it", () => {
@@ -437,15 +444,18 @@ describe("the build", () => {
     expect(r.message).toBe("A symbol is turned by 45 degrees, which KiCad does not read: a symbol turns 0, 90, 180 or 270 degrees.")
   })
 
-  it("a mirrored symbol is built as a part of its own, so the editor's pins are where KiCad's are", () => {
+  it("a mirrored symbol is the same part, placed mirrored, so the editor's pins are where KiCad's are", () => {
     const text = schematic({ libs: [LIB_U], symbols: [{ lib: "Test:U", at: "100 100", ref: "U1", uuid: "aaaaaaaa-0000-4000-8000-000000000001", mirror: "y" }, { lib: "Test:U", at: "130 100", ref: "U2", uuid: "aaaaaaaa-0000-4000-8000-000000000002" }] })
     const r = imported(importKicadSchematic(text, { built: SYMBOLS }))
     const [u1, u2] = r.project.components
-    expect(u1.partId).not.toBe(u2.partId)
-    expect(u1.sch.rot).toBe(0)
-    // the part with no pin 3: it is a no-connect pin and has no port
-    expect(findPart(u1.partId)!.symbol.ports.map((p) => p.pin)).toEqual(["1", "2"])
+    expect(u1.partId).toBe(u2.partId)
+    expect([u1.sch.rot, u1.sch.mirror, u2.sch.mirror]).toEqual([0, "y", undefined])
+    // pin 3 is a no-connect pin: it has a port, and connectivity leaves it out
+    expect(findPart(u1.partId)!.symbol.ports.map((p) => p.pin)).toEqual(["1", "2", "3"])
     expect(findPart(u1.partId)!.pins.map((p) => p.number)).toEqual(["1", "2", "3"])
+    // mirrored left to right: pin 1 (left of the body) is on the right of U1 and on the left of U2
+    expect(schematicPins(u1)[0].pos.x).toBeGreaterThan(u1.sch.x)
+    expect(schematicPins(u2)[0].pos.x).toBeLessThan(u2.sch.x)
   })
 
   it("a group becomes a block of its symbols, and says what of the group is not in it", () => {
@@ -503,9 +513,10 @@ describe("what each flag and field of the file needs, so that nothing imported i
     expect(imported(importKicadSchematic(on, { built: SYMBOLS })).project.components[0].nc).toEqual(["1"])
   })
 
-  it("a symbol that jumpers pins of one number is S5 even when no symbol is placed from it", () => {
+  it("a symbol that jumpers pins of one number is kept with that in its drawing, even when no symbol is placed from it", () => {
     const lib = `(symbol "T:J" (duplicate_pin_numbers_are_jumpers yes) (symbol "J_1_1" (pin passive line (at 0 0 0) (length 2.54) (name "A") (number "1"))))`
-    expect(needsOf(schematic({ libs: [lib] }))).toContain("S5")
+    const r = imported(importKicadSchematic(schematic({ libs: [lib] })))
+    expect(Object.values(r.project.symbols ?? {})[0].jumpers).toEqual({ duplicates: true })
   })
 
   it("a locked group is S4: the editor's blocks cannot be locked", () => {

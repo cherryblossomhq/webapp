@@ -1,8 +1,10 @@
+import { numeric } from "../lib/natural"
 import { parseValue } from "../lib/values"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
-import { isPhysical, schematicPins } from "./instances"
-import type { ComponentInstance, CustomPartSpec, Net, PartDef, Project, Vec2 } from "./types"
+import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
+import { unitCount, unitLetters } from "./symbolDrawing"
+import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project, Vec2 } from "./types"
 
 /**
  * Electrical rule checks: is the circuit right, as opposed to drawn right. Schematic only, and
@@ -13,12 +15,17 @@ import type { ComponentInstance, CustomPartSpec, Net, PartDef, Project, Vec2 } f
  *   misspelt label. Connectivity counts a named net as connected, so nothing else sees it.
  * - **bare-led**: an LED with nothing in series to limit its current (ported from PR #88).
  * - **shorted**: a two-pin part with both pins on one net, so it does nothing (from PR #97).
+ * - **missing-unit**: a part with several units (a dual op-amp) with some of them not placed
+ *   (KiCad's "Symbol has unplaced units").
+ * - **pin-conflict**: pins of an imported symbol on one net whose electrical types do not go
+ *   together (two outputs), by KiCad's own table of pin pairs. Each pair KiCad calls an error or a
+ *   warning is one warning here. The editor's own parts have no pin types and are never checked.
  *
  * Measured on the five examples, the three v1 fixtures and the eight blog boards brought in
  * from tscircuit: every hit was a real mistake and none was a false alarm.
  */
 
-export type ErcKind = "lone-label" | "bare-led" | "shorted"
+export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict"
 
 export interface ErcFinding {
   kind: ErcKind
@@ -215,13 +222,105 @@ function pinText(ref: string, part: PartDef | undefined, pin: string) {
   return name && name !== pin ? `${ref} pin ${pin} (${name})` : `${ref} pin ${pin}`
 }
 
+// ---------- Pin types that meet on one net ----------
+
+/** KiCad's order of electrical pin types, the order of its table of pin pairs. */
+const PIN_ORDER: PinType[] = ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect"]
+
+/**
+ * KiCad's default table of what two pin types on one net make (`ERC_SETTINGS::m_defaultPinMap`):
+ * O fine, W a warning, E an error. Rows and columns follow `PIN_ORDER`.
+ */
+const PIN_PAIRS = [
+  /* input          */ "OOOOOOWOOOOE",
+  /* output         */ "OEOWOOWOEEEE",
+  /* bidirectional  */ "OOOOOOWOWOWE",
+  /* tri-state      */ "OWOOOOWWEWWE",
+  /* passive        */ "OOOOOOWOOOOE",
+  /* free           */ "OOOOOOOOOOOE",
+  /* unspecified    */ "WWWWWOWWWWWE",
+  /* power input    */ "OOOWOOWOOOOE",
+  /* power output   */ "OEWEOOWOEEEE",
+  /* open collector */ "OEOWOOWOEOOE",
+  /* open emitter   */ "OEWWOOWOEOOE",
+  /* no connect     */ "EEEEEEEEEEEE",
+]
+
+/** What two pin types on one net make: "ok", a "warning" or an "error" by KiCad's table. */
+export function pinPairLevel(a: PinType, b: PinType): "ok" | "warning" | "error" {
+  const c = PIN_PAIRS[PIN_ORDER.indexOf(a)][PIN_ORDER.indexOf(b)]
+  return c === "E" ? "error" : c === "W" ? "warning" : "ok"
+}
+
+/**
+ * KiCad's weights of the pin types (`m_PinTypeWeights`): of the pins in a conflict it reports the
+ * heaviest first, which clears the conflicts of that pin so that one bad pin is one finding.
+ */
+const PIN_WEIGHT: Record<PinType, number> = {
+  free: 11,
+  unspecified: 10,
+  passive: 9,
+  open_collector: 8,
+  open_emitter: 7,
+  input: 6,
+  tri_state: 5,
+  bidirectional: 4,
+  output: 3,
+  power_in: 2,
+  power_out: 1,
+  no_connect: 0,
+}
+
+/** A pin type as a sentence names it. */
+const PIN_TYPE_TEXT: Record<PinType, string> = {
+  input: "an input",
+  output: "an output",
+  bidirectional: "a bidirectional pin",
+  tri_state: "a tri-state pin",
+  passive: "a passive pin",
+  free: "a free pin",
+  unspecified: "an unspecified pin",
+  power_in: "a power input",
+  power_out: "a power output",
+  open_collector: "an open collector",
+  open_emitter: "an open emitter",
+  no_connect: "a no-connect pin",
+}
+
+/** One pin of an imported symbol that sits on a net, with the component that draws it. */
+interface TypedPin {
+  c: ComponentInstance
+  part: PartDef
+  pin: WorldPin
+  type: PinType
+}
+
 /** Find electrical mistakes in the schematic. Pure; `store/analysis.ts` caches it beside connectivity. */
 export function runErc(project: Project, conn: SchematicConnectivity): ErcFinding[] {
   const byId = new Map(project.components.map((c) => [c.id, c]))
   const specs = new Map((project.parts ?? []).map((s) => [s.id, s]))
   const nets = new Map(conn.nets.map((n) => [n.id, n]))
   const netOf = (componentId: string, pin: string) => conn.pinNet.get(pinKey(componentId, pin))
-  const ncOf = (c: ComponentInstance) => new Set(c.nc ?? [])
+  // A unit of a part with several is a symbol of its own whose pins are the part's: its owner is the component on the board.
+  const owners = unitOwners(project.components)
+  const twinsOf = new Map<string, ComponentInstance[]>()
+  for (const c of project.components) {
+    const owner = owners.get(c.id)
+    if (owner) twinsOf.set(owner, [...(twinsOf.get(owner) ?? []), c])
+  }
+  /** Pins marked no-connect, across every unit of the part (a pin number is the part's, not one unit's). */
+  const ncOf = (c: ComponentInstance) => {
+    const twins = twinsOf.get(owners.get(c.id) ?? c.id)
+    return new Set([...(c.nc ?? []), ...(twins ?? []).flatMap((t) => t.nc ?? [])])
+  }
+  /** The part a component's pins are checked as: its own when it is on the board, its owner's when it is another unit. */
+  const physicalPartOf = (c: ComponentInstance) => {
+    const part = findPart(c.partId)
+    if (isSchematicPart(part)) return part
+    const owner = owners.get(c.id)
+    const ownerPart = owner ? findPart(byId.get(owner)?.partId ?? "") : undefined
+    return part?.unitOf && isSchematicPart(ownerPart) ? part : undefined
+  }
 
   // Nets with a power or ground port are supply rails; ground also by its name.
   const rails = new Set<string>()
@@ -234,6 +333,18 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
       if (!id) continue
       rails.add(id)
       if (p.kind === "ground") grounds.add(id)
+    }
+  }
+  // A hidden power-input pin of an ordinary part is on the global net of its name: a supply rail, ground by its name.
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    if (!part || part.powerNet) continue
+    for (const pin of schematicPins(c, part)) {
+      if (!pin.hidden || pin.type !== "power_in") continue
+      const id = netOf(c.id, pin.pin)
+      if (!id) continue
+      rails.add(id)
+      if (GROUND_NAME.test(pin.name.trim())) grounds.add(id)
     }
   }
   for (const n of conn.nets) if (GROUND_NAME.test(n.name)) grounds.add(n.id)
@@ -260,8 +371,8 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   }
   const labelName = new Map(project.labels.map((l) => [l.id, l.name.trim()]))
   for (const c of project.components) {
-    const part = findPart(c.partId)
-    if (!isPhysical(part)) continue
+    const part = physicalPartOf(c)
+    if (!part) continue
     const nc = ncOf(c)
     for (const pin of schematicPins(c, part)) {
       if (nc.has(pin.pin)) continue
@@ -285,7 +396,7 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   // ---------- Two-pin parts with both pins on one net ----------
   for (const c of project.components) {
     const part = findPart(c.partId)
-    if (!part || !isPhysical(part) || part.pins.length !== 2) continue
+    if (!part || !isSchematicPart(part) || part.pins.length !== 2) continue
     // A connector or test point exposes nets, so two of its contacts on one net is ordinary;
     // so is a part whose two pins are both declared supply or ground pads (a shield, say), and
     // one with a pin declared unused, which is a one-pin part.
@@ -294,6 +405,8 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
     if (a.kind === b.kind && (a.kind === "power" || a.kind === "ground")) continue
     if (a.kind === "nc" || b.kind === "nc") continue
     if (ncOf(c).has(a.number) || ncOf(c).has(b.number)) continue
+    // Two pins the symbol joins inside itself are on one net by design.
+    if (part.jumpers?.groups?.some((g) => g.includes(a.number) && g.includes(b.number))) continue
     const id = netOf(c.id, a.number)
     if (!id || id !== netOf(c.id, b.number)) continue
     const net = nets.get(id)
@@ -317,7 +430,7 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   const elementsOfPin = new Map<string, LedElement[]>()
   for (const c of project.components) {
     const part = findPart(c.partId)
-    if (!part || !isPhysical(part)) continue
+    if (!part || !isSchematicPart(part)) continue
     for (const e of ledElements(c, part, specs.get(part.id))) {
       elements.push(e)
       for (const leg of e.legs) {
@@ -459,7 +572,117 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
     })
   }
 
-  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2 }
+  // ---------- A part with units not all placed ----------
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    if (!part || part.unitOf || part.powerNet || unitCount(part) < 2) continue
+    // The units of this part on the sheet: this component and the twins that name it as their owner.
+    const placed = [c, ...(twinsOf.get(c.id) ?? [])]
+    const have = new Set(placed.map((x) => x.unit ?? 1))
+    const missing: number[] = []
+    for (let u = 1; u <= unitCount(part); u++) if (!have.has(u)) missing.push(u)
+    if (!missing.length) continue
+    const letters = missing.map(unitLetters)
+    findings.push({
+      kind: "missing-unit",
+      key: `missing-unit:${c.id}`,
+      message: `${c.ref} has ${letters.length === 1 ? "an unplaced unit" : "unplaced units"}: ${letters.length === 1 ? letters[0] : `${letters.slice(0, -1).join(", ")} and ${letters[letters.length - 1]}`}`,
+      subject: c.ref,
+      componentIds: placed.map((x) => x.id),
+      labelIds: [],
+      at: { x: c.sch.x, y: c.sch.y },
+    })
+  }
+
+  // ---------- Pin types that do not go together on one net ----------
+  // KiCad's `ERC_TESTER::TestPinToPin`: the pins of a net are taken in order of reference and pin
+  // number and each pair is looked up in the table. Pins of one symbol that stand at one place with
+  // one name are stacked and never conflict. KiCad then reports the heaviest pin of the conflicts
+  // first, paired with the nearest pin it conflicts with, and that clears every conflict of that
+  // pin, so a pin is named once. A pin with no type (the editor's own parts) is not checked.
+  const typed = new Map<string, TypedPin[]>()
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    if (!part) continue
+    // A symbol that keeps pins of one number apart has no net for the second of them in the connectivity.
+    const apart = !!part.jumpers && !part.jumpers.duplicates
+    for (const pin of schematicPins(c, part)) {
+      if (!pin.type || (pin.slot && apart)) continue
+      const net = netOf(c.id, pin.pin)
+      if (!net) continue
+      const list = typed.get(net)
+      const entry = { c, part, pin, type: pin.type }
+      if (list) list.push(entry)
+      else typed.set(net, [entry])
+    }
+  }
+  const pinSubject = (t: TypedPin) => {
+    if (t.part.powerNet) return `the ${powerNetName(t.c, t.part)} power symbol`
+    const name = t.pin.name.trim()
+    return name && name !== t.pin.pin ? `${t.c.ref} pin ${t.pin.pin} (${name})` : `${t.c.ref} pin ${t.pin.pin}`
+  }
+  for (const list of typed.values()) {
+    if (list.length < 2) continue
+    const pins = list
+      .map((t, at) => ({ t, at }))
+      .sort((a, b) => numeric.compare(a.t.c.ref, b.t.c.ref) || numeric.compare(a.t.pin.pin, b.t.pin.pin) || a.at - b.at)
+      .map((x) => x.t)
+    const clashes: { a: number; b: number; level: "warning" | "error" }[] = []
+    const weight = new Map<number, number>()
+    for (let i = 0; i < pins.length; i++) {
+      for (let j = i + 1; j < pins.length; j++) {
+        const a = pins[i]
+        const b = pins[j]
+        const stacked =
+          a.c.id === b.c.id &&
+          a.pin.pos.x === b.pin.pos.x &&
+          a.pin.pos.y === b.pin.pos.y &&
+          a.pin.name === b.pin.name &&
+          (a.type === b.type || a.type === "passive" || a.type === "free" || b.type === "passive" || b.type === "free")
+        if (stacked) continue
+        const level = pinPairLevel(a.type, b.type)
+        if (level === "ok") continue
+        clashes.push({ a: i, b: j, level })
+        weight.set(i, PIN_WEIGHT[a.type])
+        weight.set(j, PIN_WEIGHT[b.type])
+      }
+    }
+    const byWeight = [...weight].sort((x, y) => y[1] - x[1] || x[0] - y[0])
+    for (const [i] of byWeight) {
+      if (!clashes.length) break
+      let nearest = -1
+      let level: "warning" | "error" = "warning"
+      let best = Infinity
+      for (let k = clashes.length - 1; k >= 0; k--) {
+        const m = clashes[k]
+        if (m.a !== i && m.b !== i) continue
+        clashes.splice(k, 1)
+        const other = m.a === i ? m.b : m.a
+        const d = Math.hypot(pins[i].pin.pos.x - pins[other].pin.pos.x, pins[i].pin.pos.y - pins[other].pin.pos.y)
+        // KiCad walks its list from the front: the first conflict is the start, a nearer one replaces it.
+        if (best === Infinity || d < best) {
+          best = d
+          nearest = other
+          level = m.level
+        }
+      }
+      if (nearest < 0) continue
+      const a = pins[i]
+      const b = pins[nearest]
+      const slot = (t: TypedPin) => `${t.c.id}:${t.pin.pin}${t.pin.slot ? `#${t.pin.slot}` : ""}`
+      findings.push({
+        kind: "pin-conflict",
+        key: `pin-conflict:${slot(a)}:${slot(b)}`,
+        message: `${pinSubject(a)} is ${PIN_TYPE_TEXT[a.type]} and ${pinSubject(b)} is ${PIN_TYPE_TEXT[b.type]}, ${level === "error" ? "which cannot share a net" : "which may not work on one net"}`,
+        subject: `${pinSubject(a)} and ${pinSubject(b)}`,
+        componentIds: a.c.id === b.c.id ? [a.c.id] : [a.c.id, b.c.id],
+        labelIds: [],
+        at: a.pin.pos,
+      })
+    }
+  }
+
+  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4 }
   return findings.sort(
     (x, y) =>
       order[x.kind] - order[y.kind] ||

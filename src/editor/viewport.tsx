@@ -312,6 +312,20 @@ export function isTyping(e: KeyboardEvent): boolean {
 
 // ---------- World-space text ----------
 
+/** KiCad's text markup: `~{RESET}` is overlined, `V_{IN}` is a subscript, `x^{2}` a superscript. */
+function markupRuns(text: string): { text: string; kind: "plain" | "over" | "sub" | "sup" }[] {
+  const out: { text: string; kind: "plain" | "over" | "sub" | "sup" }[] = []
+  const re = /([~_^])\{([^{}]*)\}/g
+  let last = 0
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index), kind: "plain" })
+    out.push({ text: m[2], kind: m[1] === "~" ? "over" : m[1] === "_" ? "sub" : "sup" })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push({ text: text.slice(last), kind: "plain" })
+  return out
+}
+
 export function WorldText({
   x,
   y,
@@ -323,6 +337,8 @@ export function WorldText({
   weight = 500,
   mono = false,
   opacity,
+  italic = false,
+  markup = false,
 }: {
   x: number
   y: number
@@ -334,6 +350,9 @@ export function WorldText({
   weight?: number
   mono?: boolean
   opacity?: number
+  italic?: boolean
+  /** Draw KiCad's `~{overbar}`, `_{sub}` and `^{super}` markup instead of showing it. */
+  markup?: boolean
 }) {
   // In the text's own frame: forward is +x (or world up when vertical), up is world up (or world left).
   const forward = vertical ? extent.y : extent.x
@@ -348,10 +367,17 @@ export function WorldText({
       dominantBaseline={baseline}
       fill={fill}
       fontWeight={weight}
+      fontStyle={italic ? "italic" : undefined}
       opacity={opacity}
       style={{ fontVariationSettings: mono ? '"MONO" 1' : '"MONO" 0', pointerEvents: "none" }}
     >
-      {text}
+      {markup && /[~_^]\{/.test(text)
+        ? markupRuns(text).map((r, i) => (
+            <tspan key={i} textDecoration={r.kind === "over" ? "overline" : undefined} baselineShift={r.kind === "sub" ? "sub" : r.kind === "sup" ? "super" : undefined} fontSize={r.kind === "sub" || r.kind === "sup" ? size * 0.75 : undefined}>
+              {r.text}
+            </tspan>
+          ))
+        : text}
     </text>
   )
 }

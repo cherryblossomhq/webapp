@@ -57,7 +57,9 @@ function nets(text: string, opts: { hiddenPower?: boolean } = {}): Groups {
     const id = key.slice(0, at)
     if (!refOf.has(id)) continue
     const list = byNet.get(netId) ?? []
-    list.push(`${refOf.get(id)}.${key.slice(at + 1)}`)
+    // A pin of another unit is also listed under the component that is the part: one pin, once.
+    const pin = `${refOf.get(id)}.${key.slice(at + 1)}`
+    if (!list.includes(pin)) list.push(pin)
     byNet.set(netId, list)
   }
   const derived = deriveNets(write(text), { hiddenPower: opts.hiddenPower ?? true, localJoinsGlobal: "same" })
@@ -343,7 +345,7 @@ describe("what the editor joins that KiCad does not, or the other way, is the co
       (property "Value" "H" (at 0 0 0) (effects (font (size 1.27 1.27))))
       (symbol "H_1_1" (pin power_in line (at 0 0 90) (length 2.54) hide (name "VDD" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))))`
 
-  it("a hidden power-input pin is S5 until it is built, and then carried by a label of its name: the nets are KiCad's, hidden pin included", () => {
+  it("a hidden power-input pin is on the global net of its name: the nets are KiCad's, hidden pin included", () => {
     const text = schematic({
       libs: [hidden],
       symbols: [
@@ -351,8 +353,9 @@ describe("what the editor joins that KiCad does not, or the other way, is the co
         { lib: "Test:H", at: "100 120 0", ref: "U2", uuid: "55555555-0000-4000-8000-000000000002" },
       ],
     })
-    expect(lossyOf(text, new Set(["S2", "S6", "S10"]))).toContainEqual(["S5", "a hidden power-input pin, which joins the global net of its name"])
     expect(lossyOf(text, new Set(["S2", "S5", "S6", "S10"])).filter(([ext]) => ext === "S5")).toEqual([])
+    // the editor does it by the pin itself: no label is made
+    expect(importKicadSchematic(text, { built: BUILT }).status === "imported" && (importKicadSchematic(text, { built: BUILT }) as { project: { labels: unknown[] } }).project.labels).toEqual([])
     const r2 = nets(text, { hiddenPower: true })
     expect(r2.theirs).toEqual([["U1.1", "U2.1"]])
     expect(r2.mine).toEqual(r2.theirs)

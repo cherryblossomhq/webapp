@@ -597,7 +597,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const placed = laid.components
   // Their parts are the board's: keep the specs that loose parts name.
   const used = new Set(placed.map((c) => c.partId))
-  const parts = (boardProject.parts ?? []).filter((p) => used.has(p.id))
+  // The schematic's parts and the drawings they are drawn from, then the board's parts that loose footprints use.
+  const parts = [...(sch.project.parts ?? []), ...(boardProject.parts ?? []).filter((p) => used.has(p.id))]
   const lands = new Set([...placed, ...sch.project.components].map((c) => c.footprint).filter(Boolean))
   const footprints = (boardProject.footprints ?? []).filter((f) => lands.has(f.name))
   const blocks: SchematicBlock[] | undefined = sch.project.blocks
@@ -624,6 +625,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     wires: [...sch.project.wires, ...laid.wires],
     labels: [...sch.project.labels, ...laid.labels],
     parts: parts.length ? parts : undefined,
+    ...(sch.project.symbols ? { symbols: sch.project.symbols } : {}),
     footprints: footprints.length ? footprints : undefined,
     models: models.length ? models : undefined,
     properties,

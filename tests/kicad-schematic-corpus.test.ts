@@ -16,6 +16,9 @@ import { readSchematicTree } from "../src/model/kicad/schematic/tree"
 import { accountPro, readKicadPro } from "../src/model/kicad/project/pro"
 import { accountRules, readKicadRules } from "../src/model/kicad/project/dru"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
+import { BUILT_EXTENSIONS } from "../src/model/kicad/schematic/needs"
+import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
+import { rawSymbols, type RawSymbol } from "./kicad-census/drawing-sch.mjs"
 import { boardPadNets, deriveNets } from "./kicad-census/netlist-sch.mjs"
 import { needsSch } from "./kicad-census/needs-sch.mjs"
 
@@ -77,6 +80,8 @@ interface FileRow {
   /** What `importKicadSchematic` does with the file as slice 3a is: it imports it, or refuses it for a reason. */
   import: string
   lossy: string[]
+  /** What `importKicadSchematic` does with the file with S2 (net names) raised as well: the extensions still missing, or it imports. */
+  withNames: string
   ms: number
   error?: string
 }
@@ -99,12 +104,86 @@ interface ProjectRow {
   /** The raised build is not exact by its own account (it names extensions built that it cannot hold), so its differences are not counted against the board. */
   lossyMeasured?: boolean
   padsWithoutPin?: number
+  /** The size of the project as it would be stored, when the raised import made one. */
+  bytes?: number
   differences: number
   /** The project import alone, plain and raised: read, account, link, build, compare. */
   importMs: number
   status: string
   ms: number
   error?: string
+}
+
+const MM = 12.7
+const near = (units: number, mm: number) => Math.abs(units * MM - mm)
+
+/** A drawing the importer keeps against the raw cache, number by number: the differences, and the largest, in millimetres. */
+function compareDrawing(d: ReturnType<typeof drawingFromLib>["drawing"], raw: RawSymbol): { problems: string[]; worst: number } {
+  const problems: string[] = []
+  let worst = 0
+  const check = (what: string, units: number, mm: number) => {
+    const e = near(units, mm)
+    worst = Math.max(worst, e)
+    if (e > 0.001) problems.push(`${what}: ${units * MM} against ${mm}`)
+  }
+  if (d.items.length !== raw.shapes.length) problems.push(`${d.items.length} items against ${raw.shapes.length}`)
+  d.items.forEach((item, i) => {
+    const r = raw.shapes[i]
+    if (!r) return
+    const kind = r.kind === "ellipse_arc" ? "ellipse" : r.kind
+    if (item.kind !== kind) {
+      problems.push(`item ${i}: ${item.kind} against ${r.kind}`)
+      return
+    }
+    if ((item.unit ?? 0) !== r.unit || (item.body ?? 0) !== r.body) problems.push(`item ${i}: unit and style`)
+    if (!!item.private !== r.private) problems.push(`item ${i}: private`)
+    if (item.kind !== "text" && (item.fill ?? "none") !== r.fill) problems.push(`item ${i}: fill ${item.fill ?? "none"} against ${r.fill}`)
+    check(`item ${i} width`, item.width ?? 0, r.width)
+    const flat =
+      item.kind === "polyline" || item.kind === "bezier"
+        ? item.points.flatMap((q) => [q.x, q.y])
+        : item.kind === "rectangle"
+          ? [item.a.x, item.a.y, item.b.x, item.b.y]
+          : item.kind === "circle"
+            ? [item.c.x, item.c.y, item.r]
+            : item.kind === "arc"
+              ? [item.start.x, item.start.y, item.mid.x, item.mid.y, item.end.x, item.end.y]
+              : item.kind === "text"
+                ? [item.at.x, item.at.y]
+                : [item.c.x, item.c.y, item.rx, item.ry]
+    if (flat.length !== r.nums.length) {
+      problems.push(`item ${i}: ${flat.length} numbers against ${r.nums.length}`)
+      return
+    }
+    flat.forEach((v, k) => {
+      // A symbol arc of more than a half turn in a file up to stamp 20230121 is replaced by KiCad's parser: its middle point is not the file's.
+      if (item.kind === "arc" && (k === 2 || k === 3) && raw.version <= 20230121) return
+      check(`item ${i} number ${k}`, v, r.nums[k])
+    })
+  })
+  if (d.pins.length !== raw.pins.length) problems.push(`${d.pins.length} pins against ${raw.pins.length}`)
+  d.pins.forEach((p, i) => {
+    const r = raw.pins[i]
+    if (!r) return
+    if (p.type !== r.type || p.shape !== r.shape || p.number !== r.number.replace(/ /g, "_") || (p.unit ?? 0) !== r.unit || (p.body ?? 0) !== r.body || !!p.hidden !== r.hidden || p.angle !== (((Math.round(r.angle) % 360) + 360) % 360)) problems.push(`pin ${i}: ${p.number} fields`)
+    // names are KiCad's as written from stamp 20250318; before, a lone ~ is empty and an old overbar is converted
+    if (raw.version >= 20250318 && p.name !== r.name) problems.push(`pin ${i}: name ${p.name} against ${r.name}`)
+    check(`pin ${i} x`, p.x, r.at[0])
+    check(`pin ${i} y`, p.y, r.at[1])
+    check(`pin ${i} length`, p.length, r.length)
+    if ((p.alternates?.length ?? 0) !== r.alternates.length) problems.push(`pin ${i}: alternates`)
+  })
+  const fields = d.fields.filter((f) => !/^ki_/.test(f.name))
+  const rawFields = raw.fields.filter((f) => !/^ki_/.test(f.name))
+  if (fields.length !== rawFields.length) problems.push(`${fields.length} fields against ${rawFields.length}`)
+  fields.forEach((f, i) => {
+    const r = rawFields[i]
+    if (!r) return
+    if (f.name !== r.name) problems.push(`field ${i}: ${f.name} against ${r.name}`)
+    check(`field ${r.name} x`, f.place.x, r.at[0])
+    check(`field ${r.name} y`, f.place.y, r.at[1])
+  })
+  return { problems, worst }
 }
 
 function samePaths(a: Map<string, number>, b: Record<string, number>) {
@@ -124,12 +203,16 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       const files = walk(CORPUS!).sort()
       const rows: FileRow[] = []
       const t0 = Date.now()
+      let drawingCount = 0
+      let drawingBytes = 0
+      let drawingWorst = 0
+      const drawingProblems: string[] = []
 
       // ---------- every .kicad_sch ----------
       for (const path of files.filter((f) => f.endsWith(".kicad_sch") && (!ONLY.length || ONLY.some((o) => f.includes(o))))) {
         const file = rel(path)
         const c = censusSch.get(file)
-        const row: FileRow = { file, group: groupOf(file), stamp: null, era: "", bytes: statSync(path).size, parse: false, nodes: false, unknown: 0, needs: [], census: [], needsDiff: "", needsWhy: [], nets: "-", import: "", lossy: [], ms: 0 }
+        const row: FileRow = { file, group: groupOf(file), stamp: null, era: "", bytes: statSync(path).size, parse: false, nodes: false, unknown: 0, needs: [], census: [], needsDiff: "", needsWhy: [], nets: "-", import: "", lossy: [], withNames: "", ms: 0 }
         rows.push(row)
         const t1 = Date.now()
         try {
@@ -151,6 +234,25 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           row.needsDiff = extra.length || missing.length ? [...extra.map((x) => `+${x}`), ...missing.map((x) => `-${x}`)].join(" ") : ""
           const imp = importKicadSchematic(new Uint8Array(bytes))
           row.import = imp.status === "imported" ? "imported" : `refused, ${imp.reason}`
+          const named = importKicadSchematic(new Uint8Array(bytes), { built: new Set([...BUILT_EXTENSIONS, "S2"]) })
+          row.withNames = named.status === "imported" ? "imported" : named.needs.length ? `needs ${named.needs.map((n) => n.ext).join(" ")}` : `refused, ${named.reason}`
+          // the drawings of every cached symbol against the raw cache
+          const raws = rawSymbols(text)
+          const cache = new Map(schematic.libSymbols.map((l) => [l.name, l]))
+          for (const lib of schematic.libSymbols) {
+            let resolved
+            try {
+              resolved = resolveLibSymbol(lib, (n) => cache.get(n))
+            } catch {
+              continue
+            }
+            const drawing = drawingFromLib(resolved).drawing
+            const cmp = compareDrawing(drawing, raws.get(lib.name)!)
+            drawingCount++
+            drawingBytes += JSON.stringify(drawing).length
+            drawingWorst = Math.max(drawingWorst, cmp.worst)
+            if (cmp.problems.length) drawingProblems.push(`${file} ${lib.name}: ${cmp.problems.slice(0, 2).join("; ")}`)
+          }
           const account = accountNodes(schematic.tree, text, new Set(row.needs), paths, settleFor(plain))
           row.unknown = account.unknownPaths.size + account.unknownAtoms.size
           // the totals add up: every node is in exactly one state
@@ -338,6 +440,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             const mine = raised.differences.filter((d) => !/the symbol has no pin/.test(d.why)).length
             row.padsWithoutPin = raised.differences.length - mine
             row.imported = true
+            row.bytes = raised.bytes
             row.differences = mine
             row.lossyMeasured = raised.report.entries.some((e) => e.code === "lossy-measured")
             row.status += `, ${mine} difference${mine === 1 ? "" : "s"}`
@@ -387,8 +490,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       const real = rows.filter((r) => REAL.includes(r.group))
       const lines: string[] = []
       lines.push(`# Schematic corpus, ${rows.length} files, ${projects.length} projects, ${Date.now() - t0} ms\n`)
-      lines.push("| file | group | stamp | read | nodes | unknown | needs (importer) | needs (census) | difference | why | nets | 3a | ms |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-      for (const r of rows) lines.push(`| ${r.file} | ${r.group} | ${r.stamp ?? ""} | ${r.error ? `ERROR ${r.error}` : r.parse ? "ok" : "no"} | ${r.nodes ? "ok" : "NO"} | ${r.unknown} | ${r.needs.join(" ")} | ${r.census.join(" ")} | ${r.needsDiff} | ${r.needsWhy.join("; ")} | ${r.nets}${r.lossy.length ? ` (${r.lossy.join("; ")})` : ""} | ${r.import} | ${r.ms} |`)
+      lines.push("| file | group | stamp | read | nodes | unknown | needs (importer) | needs (census) | difference | why | nets | now | with S2 | ms |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+      for (const r of rows) lines.push(`| ${r.file} | ${r.group} | ${r.stamp ?? ""} | ${r.error ? `ERROR ${r.error}` : r.parse ? "ok" : "no"} | ${r.nodes ? "ok" : "NO"} | ${r.unknown} | ${r.needs.join(" ")} | ${r.census.join(" ")} | ${r.needsDiff} | ${r.needsWhy.join("; ")} | ${r.nets}${r.lossy.length ? ` (${r.lossy.join("; ")})` : ""} | ${r.import} | ${r.withNames} | ${r.ms} |`)
       lines.push("", "| project | group | stamp | sheets | footprints | by path | by reference | none | links as link.mjs | nets of board and schematic | pads | import (plain / raised) | ms |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|")
       for (const p of projects) lines.push(`| ${p.project} | ${p.group} | ${p.stamp ?? ""} | ${p.sheets} | ${p.footprints} | ${p.linkPath} | ${p.linkReference} | ${p.linkNone} | ${p.error ? `ERROR ${p.error}` : p.linkOk ? "yes" : "NO"} | ${p.boardNets}${p.detail ? ` (${p.detail})` : ""} | ${p.pads} | ${p.status} | ${p.ms} |`)
       writeFileSync(join(OUT, "schematic-corpus.md"), lines.join("\n"))
@@ -403,6 +506,13 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         unknown: rows.reduce((a, r) => a + r.unknown, 0),
         imported3a: sum((r) => r.import === "imported"),
         importedReal3a: real.filter((r) => r.import === "imported").length,
+        importedWithNames: sum((r) => r.withNames === "imported"),
+        importedRealWithNames: real.filter((r) => r.withNames === "imported").length,
+        stillNeeding: Object.fromEntries([...new Set(rows.map((r) => r.withNames))].filter((k) => k && k !== "imported").map((k) => [k, rows.filter((r) => r.withNames === k).length])),
+        drawingSymbols: drawingCount,
+        drawingBytes,
+        drawingWorstMm: Number(drawingWorst.toFixed(6)),
+        drawingProblems: drawingProblems.length,
         needsEqualCensus: sum((r) => !r.needsDiff),
         needsDiffering: rows.filter((r) => r.needsDiff).length,
         netsEqual: sum((r) => r.nets === "equal"),
@@ -419,6 +529,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         projectsImportedForMeasurement: projects.filter((p) => p.imported).length,
         projectsMeasuredNamesNeedS2: projects.filter((p) => p.imported && p.lossyMeasured).length,
         projectsMeasuredPadsWithoutPin: projects.filter((p) => p.imported && (p.padsWithoutPin ?? 0) > 0).length,
+        largestProjectBytes: Math.max(0, ...projects.map((p) => p.bytes ?? 0)),
+        projectsOver900KiB: projects.filter((p) => (p.bytes ?? 0) > 900 * 1024).length,
         projectsMeasuredNoDifference: projects.filter((p) => p.imported && p.differences === 0).length,
         pros,
         drus,
@@ -433,6 +545,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(summary.nodesEqual).toBe(summary.files)
       expect(summary.unknown).toBe(0)
       expect(proProblems).toEqual([])
+      expect(drawingProblems.slice(0, 5)).toEqual([])
+      expect(summary.drawingWorstMm).toBeLessThanOrEqual(0.001)
       expect(summary.netsDiffer).toBe(0)
       expect(summary.netsDifferInNames).toBe(0)
       expect(summary.linksAsCensus).toBe(summary.projects)

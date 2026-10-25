@@ -27,7 +27,8 @@ export interface Cluster {
   parts: ComponentInstance[]
 }
 
-const byRef = (a: ComponentInstance, b: ComponentInstance) => naturalCompare(a.ref, b.ref)
+/** By designator; the units of one part share it, so those go in the order of their units. */
+const byRef = (a: ComponentInstance, b: ComponentInstance) => naturalCompare(a.ref, b.ref) || (a.unit ?? 1) - (b.unit ?? 1)
 const pinCount = (c: ComponentInstance) => findPart(c.partId)?.pins.length ?? 0
 const compOf = (key: string) => key.slice(0, key.lastIndexOf(":"))
 

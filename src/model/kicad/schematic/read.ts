@@ -238,7 +238,7 @@ export function readArc(node: List, stamp: number | null): NonNullable<LibGraphi
 
 const UNIT_NAME = /_(\d+)_(\d+)$/
 
-const GRAPHIC_KINDS: Record<string, LibGraphicKind> = { polyline: "polyline", rectangle: "rectangle", circle: "circle", arc: "arc", bezier: "bezier", ellipse: "ellipse", text: "text", text_box: "text_box" }
+const GRAPHIC_KINDS: Record<string, LibGraphicKind> = { polyline: "polyline", rectangle: "rectangle", circle: "circle", arc: "arc", bezier: "bezier", ellipse: "ellipse", ellipse_arc: "ellipse", text: "text", text_box: "text_box" }
 
 function readPin(node: List, unit: number, bodyStyle: number, stamp: number | null): LibPin {
   const at = kid(node, "at")
@@ -321,7 +321,11 @@ function readLibSymbol(node: List, stamp: number | null): LibSymbol {
   const power = kid(node, "power")
   // Body styles are also declared by `(body_styles ...)` (KiCad 10) and by a `convert` of the unit; the nested names are the source of truth for De Morgan.
   const declared = kid(node, "body_styles")
-  if (declared) bodyStyles = Math.max(bodyStyles, declared.length - 1, 1)
+  if (declared) {
+    // `(body_styles demorgan)` is two styles; `(body_styles "A" "B")` names each of them.
+    const words = declared.slice(1).filter((w): w is string => typeof w === "string")
+    bodyStyles = Math.max(bodyStyles, words.includes("demorgan") ? 2 : 0, words.filter((w) => w !== "demorgan").length, 1)
+  }
   const names = kid(node, "pin_names")
   const numbers = kid(node, "pin_numbers")
   return {

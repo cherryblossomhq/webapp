@@ -1,34 +1,48 @@
-import { digest } from "../../customParts"
 import { round } from "../../../lib/geometry"
-import type { PartCategory, PartDef, PinDef, SymbolDef, SymbolPort, SymbolPrimitive, Vec2 } from "../../types"
-import { symbolDef } from "../../symbols"
-import { pinKindOf } from "../board/build"
-import { cleanPinName } from "../symbol"
-import type { LibGraphic, LibPin, LibSymbol, PlacedSymbol, Pt } from "./types"
+import { digest, drawingKey } from "../../customParts"
+import type {
+  CustomPartSpec,
+  DrawingItem,
+  DrawingPin,
+  FieldPlace,
+  PartCategory,
+  PinAlternate,
+  PinShape,
+  PinType,
+  StrokeDash,
+  SymbolDrawing,
+} from "../../types"
+import { flagOf, kid, kids, numAt, strAt, type List } from "../board/sexpr"
+import type { LibGraphic, LibPin, LibSymbol, PlacedSymbol, Pt, SchProperty } from "./types"
 
 // Symbol sources (section 5 of docs/kicad-import-schematic.md): the symbols a schematic embeds in
-// its `lib_symbols` cache, as the editor's `SymbolDef` and `PinDef`. The pins are exact: their
-// places, numbers, names and directions are KiCad's, scaled to the editor's grid (KiCad's 1.27 mm
-// is the editor's 0.1). The drawing is not: the editor draws paths, circles and text, so arcs,
-// curves, fills and strokes are what extensions S6 and S10 add, and `needs` says which of them a
-// symbol uses. A project never holds such a symbol until those are built; the builder registers it
-// in memory for measurement and tests only.
+// its `lib_symbols` cache, as the symbol drawings the editor holds (S10). A drawing is KiCad's own
+// data in the editor's units (KiCad's 1.27 mm is the editor's 0.1): every shape with its width,
+// dash, colour and fill, every pin with its type, shape, alternates and visibility, every unit and
+// body style, and the place and look of each field. Nothing of a symbol is left out, and what the
+// editor draws is worked out from this, never the other way round.
+
+export { expandPinNumber, MAX_STACKED_PADS } from "../../pinNumbers"
 
 /** Millimetres per editor unit: KiCad's 1.27 mm grid is the editor's 0.1. */
 export const MM_PER_UNIT = 12.7
 
-const mm = (v: number) => round(v / MM_PER_UNIT, 6)
+/** A length in millimetres as the editor holds it. */
+const u = (mm: number) => round(mm / MM_PER_UNIT, 6)
 
-/** A symbol with the `extends` of its cache entry followed: the base's pins, drawing and fields stand where it has none. */
-export function resolveLibSymbol(symbol: LibSymbol, lookup: (name: string) => LibSymbol | undefined): LibSymbol {
+/** A symbol with the `extends` of its cache entry followed: the base's pins, drawing and fields stand where it has none. `source` is the cache entry that holds the drawing (the symbol itself, or the base it inherits it from). */
+export type ResolvedLibSymbol = LibSymbol & { source: LibSymbol }
+
+export function resolveLibSymbol(symbol: LibSymbol, lookup: (name: string) => LibSymbol | undefined): ResolvedLibSymbol {
   const seen = new Set<string>([symbol.name])
-  let merged = symbol
+  let merged: ResolvedLibSymbol = { ...symbol, source: symbol }
   let current = symbol
   while (current.extendsName) {
     const base = lookup(current.extendsName)
     if (!base || seen.has(base.name)) throw new Error(`symbol ${symbol.name} extends ${current.extendsName}, which is ${base ? "a cycle" : "not in its library"}`)
     seen.add(base.name)
     const own = new Set(merged.props.map((p) => p.name))
+    const inherits = !merged.pins.length
     merged = {
       ...merged,
       props: [...merged.props, ...base.props.filter((p) => !own.has(p.name))],
@@ -37,96 +51,11 @@ export function resolveLibSymbol(symbol: LibSymbol, lookup: (name: string) => Li
       units: merged.pins.length ? merged.units : base.units,
       bodyStyles: merged.pins.length ? merged.bodyStyles : base.bodyStyles,
       power: merged.power ?? base.power,
+      source: inherits ? base : merged.source,
     }
     current = base
   }
   return merged
-}
-
-/** The most pads one drawn pin may stand for: KiCad has no limit, a file that asks for more is not a schematic. */
-export const MAX_STACKED_PADS = 10000
-
-const isSpecial = (c: string) => c === "[" || c === "]" || c === "," || c === "-" || c === "\\"
-/** A backslash is an escape only before one of the notation's own characters (`ExpandStackedPinNotation`, common/string_utils.cpp). */
-const isEscapeAt = (t: string, i: number) => t[i] === "\\" && i + 1 < t.length && isSpecial(t[i + 1])
-
-function splitUnescaped(inner: string): string[] {
-  const parts: string[] = []
-  let current = ""
-  for (let i = 0; i < inner.length; i++) {
-    if (isEscapeAt(inner, i)) {
-      current += inner[i] + inner[i + 1]
-      i++
-    } else if (inner[i] === ",") {
-      parts.push(current)
-      current = ""
-    } else current += inner[i]
-  }
-  parts.push(current)
-  return parts
-}
-
-function unescapeItem(item: string): string {
-  let out = ""
-  for (let i = 0; i < item.length; i++) {
-    if (isEscapeAt(item, i)) out += item[++i]
-    else out += item[i]
-  }
-  return out
-}
-
-function findUnescaped(text: string, ch: string): number {
-  for (let i = 0; i < text.length; i++) {
-    if (isEscapeAt(text, i)) i++
-    else if (text[i] === ch) return i
-  }
-  return -1
-}
-
-/** A pin number as a prefix and its trailing digits, or -1 when it has none: `A12` is `A` and 12. */
-function alphaNumeric(pin: string): [string, number] {
-  let numStart = pin.length
-  for (let i = pin.length - 1; i >= 0; i--) {
-    if (!/[0-9]/.test(pin[i])) {
-      numStart = i + 1
-      break
-    }
-    if (i === 0) numStart = 0
-  }
-  if (numStart < pin.length) return [pin.slice(0, numStart), Number(pin.slice(numStart))]
-  return [pin.slice(0, 0), -1]
-}
-
-/**
- * The pad numbers one drawn pin stands for: KiCad's `ExpandStackedPinNotation`. KiCad 9 lets a pin
- * be `[1,2,3]`, `[1-5]` or `[6,7,9-11]`, and `[A1-A4]` for a run with a common prefix; a dash, comma or
- * bracket inside one number is written with a backslash. A notation KiCad cannot read (a bracket with
- * no partner, a range whose ends have other prefixes or run backwards, an empty list) is the one pin
- * that has the text as its number, and so is anything not in brackets.
- */
-export function expandPinNumber(raw: string): string[] {
-  const open = raw.includes("[")
-  const close = raw.includes("]")
-  const bracketed = raw.startsWith("[") && raw.endsWith("]")
-  if ((open || close) && !bracketed) return [raw]
-  if (!bracketed) return [raw]
-  const out: string[] = []
-  for (let part of splitUnescaped(raw.slice(1, -1))) {
-    part = part.trim()
-    if (part === "") continue
-    const dash = findUnescaped(part, "-")
-    if (dash < 0) {
-      out.push(unescapeItem(part))
-      continue
-    }
-    const start = unescapeItem(part.slice(0, dash)).trim()
-    const end = unescapeItem(part.slice(dash + 1)).trim()
-    const [sp, sv] = alphaNumeric(start)
-    const [ep, ev] = alphaNumeric(end)
-    if (sp !== ep || sv === -1 || ev === -1 || sv > ev || out.length + (ev - sv + 1) > MAX_STACKED_PADS) return [raw]
-    for (let n = sv; n <= ev; n++) out.push(`${sp}${n}`)
-  }
-  return out.length ? out : [raw]
 }
 
 /** The pins a placed symbol has: those of its unit and body style, and those shared by every unit or style. */
@@ -163,161 +92,239 @@ export function toSheet(p: Pt, sym: Pick<PlacedSymbol, "at" | "angle" | "mirror"
 }
 
 /** The direction a wire leaves a pin: opposite to the way the pin points at its body, in the symbol's frame. */
-export function portDir(angle: number): SymbolPort["dir"] {
+export function portDir(angle: number): "left" | "right" | "up" | "down" {
   const a = ((Math.round(angle / 90) * 90) % 360 + 360) % 360
   return a === 0 ? "left" : a === 90 ? "down" : a === 180 ? "right" : "up"
 }
 
 // ---------- the drawing ----------
 
-const hasText = (s: string) => s.trim() !== "" && s.trim() !== "~"
-
-/** What of a symbol's drawing the editor cannot draw: each reason once. Empty when it can all be drawn. */
-export function drawingNeeds(lib: LibSymbol): string[] {
-  const out = new Set<string>()
-  for (const g of lib.graphics) {
-    if (g.kind === "arc") out.add("an arc")
-    else if (g.kind === "bezier") out.add("a curve")
-    else if (g.kind === "ellipse") out.add("an ellipse")
-    else if (g.kind === "text_box") out.add("a text box")
-    else if (g.kind === "other") out.add("a drawing the editor does not know")
-    if (g.fill && g.fill !== "none") out.add(`a ${g.fill} fill`)
-    if (g.strokeWidth > 0) out.add("a stroke width of its own")
-    if (g.strokeType !== "default" && g.strokeType !== "solid") out.add(`a ${g.strokeType} line`)
-  }
-  for (const p of lib.pins) {
-    if (p.shape !== "line") out.add(`a ${p.shape} pin`)
-    if (p.alternates.length) out.add("alternate pin functions")
-  }
-  return [...out]
+/** A colour of a file's `(color r g b a)`, or undefined for KiCad's "none of its own" (alpha 0). */
+function colorOf(node: List | undefined): string | undefined {
+  if (!node) return undefined
+  const [r, g, b] = [numAt(node, 1), numAt(node, 2), numAt(node, 3)]
+  const a = numAt(node, 4, 1)
+  if (a <= 0) return undefined
+  const hex = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0")
+  return a >= 1 ? `#${hex(r)}${hex(g)}${hex(b)}` : `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${round(a, 3)})`
 }
 
-const path = (points: Vec2[], fill = false): SymbolPrimitive => ({ type: "path", points, fill })
+const DASHES = new Set(["dash", "dot", "dash_dot", "dash_dot_dot"])
 
-function graphicPrimitives(g: LibGraphic): SymbolPrimitive[] {
-  const fill = g.fill !== null && g.fill !== "none"
-  const v = (p: Pt): Vec2 => ({ x: mm(p.x), y: mm(p.y) })
-  switch (g.kind) {
-    case "polyline":
-      return g.pts.length >= 2 ? [path(g.pts.map(v), fill && g.pts.length > 2)] : []
-    case "rectangle": {
-      const [a, b] = g.pts
-      return a && b ? [path([v(a), v({ x: b.x, y: a.y }), v(b), v({ x: a.x, y: b.y }), v(a)], fill)] : []
-    }
-    case "circle":
-      return g.pts[0] && g.radius ? [{ type: "circle", x: mm(g.pts[0].x), y: mm(g.pts[0].y), radius: mm(g.radius), fill }] : []
-    case "arc": {
-      if (!g.arc || g.arc.radius <= 0) return g.arc ? [path([v(g.arc.start), v(g.arc.end)])] : []
-      // Sampled as a path: an approximation, which `drawingNeeds` names.
-      const { center, radius, start, mid, end } = g.arc
-      const ang = (p: Pt) => Math.atan2(p.y - center.y, p.x - center.x)
-      const aS = ang(start)
-      const aM = ang(mid)
-      const aE = ang(end)
-      const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
-      const ccw = norm(aM - aS) < norm(aE - aS)
-      const sweep = ccw ? norm(aE - aS) : -norm(aS - aE)
-      const steps = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI / 12)))
-      const pts: Vec2[] = []
-      for (let i = 0; i <= steps; i++) {
-        const a = aS + (sweep * i) / steps
-        pts.push(v({ x: center.x + radius * Math.cos(a), y: center.y + radius * Math.sin(a) }))
-      }
-      return [path(pts)]
-    }
-    case "bezier":
-      return g.pts.length >= 2 ? [path(g.pts.map(v))] : []
-    case "text":
-      return g.text && hasText(g.text) && g.pts[0] ? [{ type: "text", text: g.text, x: mm(g.pts[0].x), y: mm(g.pts[0].y), anchor: "center", size: 0.1 }] : []
-    default:
-      return []
-  }
-}
+type Look = { width?: number; dash?: StrokeDash; color?: string; fill?: "outline" | "background" | "color"; fillColor?: string }
 
-const ANCHOR_BY_DIR = { left: "middle_left", right: "middle_right", up: "middle_bottom", down: "middle_top" } as const
-
-function pinPrimitives(p: LibPin, hideNames: boolean, hideNumbers: boolean): SymbolPrimitive[] {
-  const out: SymbolPrimitive[] = []
-  const dir = portDir(p.angle)
-  // The wire leaves opposite to `dir`'s inverse: the body is toward `p.angle`.
-  const toward = { x: Math.round(Math.cos((p.angle * Math.PI) / 180)), y: Math.round(Math.sin((p.angle * Math.PI) / 180)) }
-  const a = { x: mm(p.at.x), y: mm(p.at.y) }
-  const b = { x: mm(p.at.x + toward.x * p.length), y: mm(p.at.y + toward.y * p.length) }
-  if (p.length > 0) out.push(path([a, b]))
-  if (!hideNames && hasText(p.name) && !p.hidden) {
-    // The name sits inside the body, past the end of the pin.
-    const inside = { x: mm(p.at.x + toward.x * (p.length + 0.762)), y: mm(p.at.y + toward.y * (p.length + 0.762)) }
-    out.push({ type: "text", text: cleanPinName(p.name, p.number), x: inside.x, y: inside.y, anchor: ANCHOR_BY_DIR[dir], size: 0.1, role: "pin" })
-  }
-  if (!hideNumbers && hasText(p.number) && !p.hidden) {
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + (toward.x !== 0 ? 0.03 : 0) }
-    out.push({ type: "text", text: p.number, x: mid.x, y: mid.y, anchor: "middle_bottom", size: 0.08, role: "pinNumber" })
+function lookOf(g: LibGraphic): Look {
+  const out: Look = {}
+  // A width that is not positive is KiCad's "default" and is drawn so; it is kept as the file has it.
+  if (g.strokeWidth !== 0) out.width = u(g.strokeWidth)
+  if (DASHES.has(g.strokeType)) out.dash = g.strokeType as StrokeDash
+  const color = colorOf(kid(kid(g.node, "stroke"), "color"))
+  if (color) out.color = color
+  if (g.fill === "outline" || g.fill === "background") out.fill = g.fill
+  else if (g.fill === "color") {
+    out.fill = "color"
+    const fc = colorOf(kid(kid(g.node, "fill"), "color"))
+    if (fc) out.fillColor = fc
   }
   return out
 }
 
-/** The editor's symbol for a placed symbol's unit and body style: KiCad's pins at KiCad's places, and the drawing the editor can draw. */
-export function convertCachedSymbol(lib: LibSymbol, unit: number, bodyStyle: number, bake?: Pick<PlacedSymbol, "at" | "angle" | "mirror">): { symbol: SymbolDef; pins: PinDef[] } {
-  const pins = pinsOfUnit(lib, unit, bodyStyle)
-  // A mirrored symbol cannot be turned by the editor (S5); for measurement it is baked into the ports, with the turn.
-  const place = (p: Pt): Pt => {
-    if (!bake) return p
-    const w = toSheet(p, { ...bake, at: { x: 0, y: 0 } })
-    return { x: w.x, y: -w.y }
+interface TextEffects {
+  size?: number
+  thickness?: number
+  bold?: true
+  italic?: true
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+  hidden?: true
+  color?: string
+}
+
+/** The size, style and justification of a text's `(effects ...)`; KiCad's default (50 mil, centred) is left out. */
+function effectsOf(node: List | undefined, notes?: Set<string>): TextEffects {
+  const effects = kid(node, "effects")
+  const out: TextEffects = {}
+  if (!effects) return out
+  const font = kid(effects, "font")
+  const thickness = numAt(kid(font, "thickness"), 1, 0)
+  if (thickness > 0) out.thickness = u(thickness)
+  if (kid(font, "face")) notes?.add("a font of its own")
+  if (kid(font, "line_spacing")) notes?.add("a line spacing")
+  if (kid(effects, "href")) notes?.add("a link")
+  const size = numAt(kid(font, "size"), 1, 1.27)
+  if (Math.abs(size - 1.27) > 1e-9) out.size = u(size)
+  if (flagOf(font, "bold")) out.bold = true
+  if (flagOf(font, "italic")) out.italic = true
+  const color = colorOf(kid(font, "color"))
+  if (color) out.color = color
+  for (const w of kid(effects, "justify")?.slice(1) ?? []) {
+    if (w === "left" || w === "right") out.h = w
+    else if (w === "top" || w === "bottom") out.v = w
   }
-  const ports: SymbolPort[] = []
-  const primitives: SymbolPrimitive[] = []
-  const seen = new Set<string>()
+  if (flagOf(effects, "hide")) out.hidden = true
+  return out
+}
+
+const yes = (n: List | undefined) => !!n && (n[1] === "yes" || n[1] === "true" || n[1] === undefined)
+
+const pt = (p: Pt) => ({ x: u(p.x), y: u(p.y) })
+const unitBody = (g: { unit: number; bodyStyle: number }) => ({ ...(g.unit ? { unit: g.unit } : {}), ...(g.bodyStyle ? { body: g.bodyStyle } : {}) })
+
+/** One graphic of a cached symbol as a drawing item, or a note saying why it is not one. */
+function itemOf(g: LibGraphic, notes: Set<string>): DrawingItem | string {
+  const base = { ...unitBody(g), ...lookOf(g), ...(flagOf(g.node, "private") ? { private: true as const } : {}) }
+  switch (g.kind) {
+    case "polyline":
+      return { kind: "polyline", points: g.pts.map(pt), ...base }
+    case "rectangle": {
+      const radius = numAt(kid(g.node, "radius"), 1, 0)
+      return { kind: "rectangle", a: pt(g.pts[0]), b: pt(g.pts[1]), ...(radius > 0 ? { radius: u(radius) } : {}), ...base }
+    }
+    case "circle":
+      return { kind: "circle", c: pt(g.pts[0]), r: u(g.radius ?? 0), ...base }
+    case "arc":
+      if (!g.arc) return "an arc with no ends"
+      return { kind: "arc", start: pt(g.arc.start), mid: pt(g.arc.mid), end: pt(g.arc.end), ...base }
+    case "bezier":
+      return { kind: "bezier", points: g.pts.map(pt), ...base }
+    case "ellipse": {
+      const isArc = g.node[0] === "ellipse_arc"
+      return {
+        kind: "ellipse",
+        c: pt({ x: numAt(kid(g.node, "center"), 1), y: numAt(kid(g.node, "center"), 2) }),
+        rx: u(numAt(kid(g.node, "major_radius"), 1, 1)),
+        ry: u(numAt(kid(g.node, "minor_radius"), 1, 1)),
+        rotation: numAt(kid(g.node, "rotation_angle"), 1, 0),
+        ...(isArc ? { from: numAt(kid(g.node, "start_angle"), 1, 0), to: numAt(kid(g.node, "end_angle"), 1, 90) } : {}),
+        ...base,
+      }
+    }
+    case "text": {
+      // A text of a cached symbol has its angle in tenths of a degree, as KiCad's parser reads it.
+      const angle = numAt(kid(g.node, "at"), 3) / 10
+      return { kind: "text", text: g.text ?? "", at: pt(g.pts[0]), angle: ((angle % 360) + 360) % 360, ...effectsOf(g.node, notes), ...base }
+    }
+    default:
+      return `a drawing of a kind the editor does not know (${String(g.node[0])})`
+  }
+}
+
+const PIN_TYPES = new Set<string>(["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect"])
+const PIN_SHAPES = new Set<string>(["line", "inverted", "clock", "inverted_clock", "input_low", "clock_low", "output_low", "edge_clock_high", "non_logic"])
+
+function pinOf(p: LibPin): DrawingPin | string {
+  if (!PIN_TYPES.has(p.type)) return `a pin of the type "${p.type}"`
+  if (!PIN_SHAPES.has(p.shape)) return `a pin of the shape "${p.shape}"`
+  const angle = ((Math.round(p.angle) % 360) + 360) % 360
+  if (angle % 90 !== 0) return "a pin that does not point along an axis"
+  const fontSize = (field: string) => {
+    const size = numAt(kid(kid(kid(kid(p.node, field), "effects"), "font"), "size"), 1, 1.27)
+    return Math.abs(size - 1.27) > 1e-9 ? u(size) : undefined
+  }
+  const nameS = fontSize("name")
+  const numberS = fontSize("number")
+  const alternates: PinAlternate[] = p.alternates.filter((a) => PIN_TYPES.has(a.type) && PIN_SHAPES.has(a.shape)).map((a) => ({ name: a.name, type: a.type as PinType, shape: a.shape as PinShape }))
+  return {
+    number: p.number,
+    name: p.name,
+    type: p.type as PinType,
+    shape: p.shape as PinShape,
+    x: u(p.at.x),
+    y: u(p.at.y),
+    angle,
+    length: u(p.length),
+    ...(p.hidden ? { hidden: true as const } : {}),
+    ...(p.unit ? { unit: p.unit } : {}),
+    ...(p.bodyStyle ? { body: p.bodyStyle } : {}),
+    ...(alternates.length ? { alternates } : {}),
+    ...(nameS !== undefined ? { nameSize: nameS } : {}),
+    ...(numberS !== undefined ? { numberSize: numberS } : {}),
+  }
+}
+
+/**
+ * A field's place and look. `origin` is where the symbol sits in KiCad's sheet (y down) for a placed
+ * symbol, whose fields are written in sheet coordinates; absent for a cached symbol's own fields,
+ * which are in the symbol's frame (y up).
+ */
+export function placeOf(prop: SchProperty, origin?: Pt, notes?: Set<string>): FieldPlace {
+  const at = prop.at ?? { x: 0, y: 0 }
+  const angle = numAt(kid(prop.node, "at"), 3, 0)
+  const e = effectsOf(prop.node, notes)
+  const place: FieldPlace = {
+    x: origin ? u(at.x - origin.x) : u(at.x),
+    y: origin ? u(-(at.y - origin.y)) : u(at.y),
+    // KiCad turns a field's text to lie across or up, never upside down.
+    angle: Math.round(((angle % 180) + 180) % 180) === 90 ? 90 : 0,
+    ...(e.size !== undefined ? { size: e.size } : {}),
+    ...(prop.hide || e.hidden ? { hidden: true as const } : {}),
+    ...(e.h ? { h: e.h } : {}),
+    ...(e.v ? { v: e.v } : {}),
+    ...(e.bold ? { bold: true as const } : {}),
+    ...(e.italic ? { italic: true as const } : {}),
+    ...(e.color ? { color: e.color } : {}),
+    ...(e.thickness ? { thickness: e.thickness } : {}),
+  }
+  if (yes(kid(prop.node, "do_not_autoplace"))) place.noAutoplace = true
+  const show = kid(prop.node, "show_name")
+  if (show && (show[1] === undefined || show[1] === "yes" || show[1] === "true")) place.showName = true
+  return place
+}
+
+export interface DrawingResult {
+  drawing: SymbolDrawing
+  /** What of the symbol the drawing cannot hold, in words. The importer refuses a symbol with any. */
+  problems: string[]
+  /** What the editor draws its own way and the drawing does not keep: the importer says so in its report. */
+  notes: string[]
+}
+
+/** The drawing of a cached symbol, whole. */
+export function drawingFromLib(lib: ResolvedLibSymbol): DrawingResult {
+  const problems: string[] = []
+  const notes = new Set<string>()
+  const source = lib.source
+  const items: DrawingItem[] = []
   for (const g of lib.graphics) {
-    if ((g.unit !== 0 && g.unit !== unit) || (g.bodyStyle !== 0 && g.bodyStyle !== bodyStyle)) continue
-    primitives.push(...graphicPrimitives(g))
+    const item = itemOf(g, notes)
+    if (typeof item === "string") problems.push(item)
+    else items.push(item)
   }
-  for (const p of pins) {
-    primitives.push(...pinPrimitives(p, lib.pinNamesHidden, lib.pinNumbersHidden))
-    for (const number of expandPinNumber(p.number)) {
-      if (seen.has(number)) continue
-      seen.add(number)
-      const at = place(p.at)
-      const dir = bake ? rotateDirBy(portDir(p.angle), bake) : portDir(p.angle)
-      ports.push({ pin: number, x: mm(at.x), y: mm(at.y), dir })
-    }
+  const pins: DrawingPin[] = []
+  for (const p of lib.pins) {
+    const pin = pinOf(p)
+    if (typeof pin === "string") problems.push(pin)
+    else pins.push(pin)
   }
-  const def = bake
-    ? symbolDef(primitives.map((q) => bakePrimitive(q, bake)), ports)
-    : symbolDef(primitives, ports)
-  const pinDefs: PinDef[] = []
-  const done = new Set<string>()
-  for (const p of pins) {
-    const kind = pinKindOf(p.type, p.name)
-    for (const number of expandPinNumber(p.number)) {
-      if (done.has(number)) continue
-      done.add(number)
-      // The name as the library import writes it: an overbar is a trailing `#`, a subscript is dropped, an empty name is the number.
-      pinDefs.push({ number, name: cleanPinName(p.name, number), ...(kind && kind !== "unknown" ? { kind } : {}) })
-    }
+  const names = kid(source.node, "pin_names")
+  const offset = names ? kid(names, "offset") : undefined
+  const unitNames: Record<number, string> = {}
+  for (const sub of kids(source.node, "symbol")) {
+    const m = /_(\d+)_(\d+)$/.exec(strAt(sub, 1) ?? "")
+    const name = strAt(kid(sub, "unit_name"), 1)
+    if (m && name) unitNames[Number(m[1])] = name
   }
-  return { symbol: def, pins: pinDefs }
-}
-
-const DIRS: SymbolPort["dir"][] = ["right", "up", "left", "down"]
-
-function rotateDirBy(dir: SymbolPort["dir"], s: Pick<PlacedSymbol, "angle" | "mirror">): SymbolPort["dir"] {
-  const turns = ((Math.round(s.angle / 90) % 4) + 4) % 4
-  let d = DIRS[(DIRS.indexOf(dir) + turns) % 4]
-  // In the editor's y-up frame `mirror x` flips up and down, `mirror y` flips left and right.
-  if (s.mirror === "x") d = d === "up" ? "down" : d === "down" ? "up" : d
-  else if (s.mirror === "y") d = d === "left" ? "right" : d === "right" ? "left" : d
-  return d
-}
-
-function bakePrimitive(q: SymbolPrimitive, bake: Pick<PlacedSymbol, "angle" | "mirror">): SymbolPrimitive {
-  const t = (p: Vec2): Vec2 => {
-    const w = toSheet({ x: p.x * MM_PER_UNIT, y: p.y * MM_PER_UNIT }, { ...bake, at: { x: 0, y: 0 } })
-    return { x: mm(w.x), y: mm(-w.y) }
+  const styleNames = (kid(source.node, "body_styles")?.slice(1) ?? []).filter((w): w is string => typeof w === "string" && w !== "demorgan")
+  const groups = (kid(source.node, "jumper_pin_groups")?.slice(1) ?? [])
+    .filter(Array.isArray)
+    .map((g) => (g as unknown[]).filter((w): w is string => typeof w === "string"))
+    .filter((g) => g.length > 1)
+  const duplicates = yes(kid(source.node, "duplicate_pin_numbers_are_jumpers")) && kid(source.node, "duplicate_pin_numbers_are_jumpers")?.[1] !== undefined
+  const drawing: SymbolDrawing = {
+    name: lib.name,
+    ...(lib.units > 1 ? { units: lib.units } : {}),
+    ...(Object.keys(unitNames).length ? { unitNames } : {}),
+    ...(lib.bodyStyles > 1 ? { bodyStyles: lib.bodyStyles } : {}),
+    ...(styleNames.length ? { bodyStyleNames: styleNames } : {}),
+    items,
+    pins,
+    ...(offset || lib.pinNamesHidden ? { pinNames: { ...(offset ? { offset: u(numAt(offset, 1)) } : {}), ...(lib.pinNamesHidden ? { hidden: true as const } : {}) } } : {}),
+    ...(lib.pinNumbersHidden ? { pinNumbersHidden: true as const } : {}),
+    ...(lib.power ? { power: lib.power } : {}),
+    ...(duplicates || groups.length ? { jumpers: { ...(duplicates ? { duplicates: true as const } : {}), ...(groups.length ? { groups } : {}) } } : {}),
+    fields: lib.props.filter((p) => !/^ki_/.test(p.name)).map((p) => ({ name: p.name, value: p.value, place: placeOf(p, undefined, notes) })),
   }
-  if (q.type === "path") return { ...q, points: q.points.map(t) }
-  if (q.type === "circle") return { ...q, ...t({ x: q.x, y: q.y }) }
-  return { ...q, ...t({ x: q.x, y: q.y }) }
+  return { drawing, problems, notes: [...notes] }
 }
 
 // ---------- parts ----------
@@ -335,30 +342,33 @@ const CATEGORY_BY_PREFIX: [RegExp, PartCategory][] = [
 const prop = (lib: LibSymbol, name: string) => lib.props.find((p) => p.name === name)?.value ?? ""
 
 /**
- * The part a symbol is in the editor: its pins and drawing, no footprint until the project import
- * gives it one. `variant` names the unit, body style and bake the part was made for, so one cached
- * symbol used in several ways is several parts.
+ * The spec of the part a cached symbol is, naming its drawing by `key` in the project's symbols.
+ * The part's id is a hash of its definition (the drawing's key, name and footprint), so one symbol
+ * on one footprint is one part, however many times it is placed.
  */
-export function partFromSymbol(lib: LibSymbol, unit: number, bodyStyle: number, bake?: Pick<PlacedSymbol, "at" | "angle" | "mirror">, footprints: string[] = []): PartDef {
-  const { symbol, pins } = convertCachedSymbol(lib, unit, bodyStyle, bake)
+export function specFromSymbol(lib: LibSymbol, drawing: SymbolDrawing, footprint: string): { spec: Omit<CustomPartSpec, "id">; key: string } {
+  const key = drawingKey(drawing)
   const reference = prop(lib, "Reference")
-  const letters = (PREFIX.exec(reference.replace(/^#/, ""))?.[0] ?? "U").toUpperCase()
-  const category = CATEGORY_BY_PREFIX.find(([re]) => re.test(letters))?.[1] ?? "ICs"
-  const bakeKey = bake ? `${bake.angle}${bake.mirror}` : ""
-  const key = JSON.stringify([lib.name, unit, bodyStyle, bakeKey, footprints])
+  const power = !!lib.power
+  // A reference that begins with # (`#PWR`, `#FLG`) is a symbol with no part behind it.
+  const virtual = power || reference.startsWith("#")
+  const letters = power ? "#PWR" : (virtual ? "#" : "") + (PREFIX.exec(reference.replace(/^#/, ""))?.[0] ?? "U").toUpperCase()
+  const category: PartCategory = virtual ? "Symbols" : (CATEGORY_BY_PREFIX.find(([re]) => re.test(letters))?.[1] ?? "ICs")
   const description = prop(lib, "Description") || prop(lib, "ki_description")
   return {
-    id: `kicad-${digest(key)}`,
-    name: lib.name.includes(":") ? lib.name.slice(lib.name.indexOf(":") + 1) : lib.name,
-    category,
-    description: description || "From a KiCad schematic",
-    refPrefix: letters,
-    pins,
-    symbol,
-    footprints,
-    defaultProps: {},
-    valueProp: "value",
-    custom: true,
+    key,
+    spec: {
+      name: lib.name.includes(":") ? lib.name.slice(lib.name.indexOf(":") + 1) : lib.name,
+      description: description || "From a KiCad schematic",
+      category,
+      refPrefix: letters,
+      footprint,
+      pins: [],
+      drawing: key,
+      props: {},
+      valueProp: "value",
+    },
   }
 }
 
+export { digest }

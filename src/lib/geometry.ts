@@ -1,4 +1,4 @@
-import type { Rotation, Vec2 } from "../model/types"
+import type { Mirror, Rotation, Vec2 } from "../model/types"
 
 export const EPS = 1e-6
 
@@ -54,6 +54,18 @@ export function transformPoint(
   return { x: origin.x + r.x, y: origin.y + r.y }
 }
 
+/**
+ * A point of a schematic symbol's own frame in the sheet's, about the symbol's origin: the turn
+ * first, counter-clockwise, then the mirror (`x` flips top to bottom, `y` left to right), the order
+ * KiCad applies them in (`SCH_SYMBOL::SetOrientation`).
+ */
+export function orientPoint(p: Vec2, rot: Rotation, mirror?: Mirror): Vec2 {
+  const r = rotate90(p, rot)
+  if (mirror === "x") return { x: r.x, y: -r.y === 0 ? 0 : -r.y }
+  if (mirror === "y") return { x: -r.x === 0 ? 0 : -r.x, y: r.y }
+  return r
+}
+
 export interface Box {
   minX: number
   minY: number
@@ -87,6 +99,16 @@ export function transformBox(b: Box, origin: Vec2, rot: Rotation, mirrorX = fals
     v(b.minX, b.maxY),
   ]) {
     expandBox(out, transformPoint(c, origin, rot, mirrorX))
+  }
+  return out
+}
+
+/** A box of a symbol's frame as it lies on the sheet: turned, mirrored, then moved to `origin`. */
+export function orientBox(b: Box, origin: Vec2, rot: Rotation, mirror?: Mirror): Box {
+  const out = emptyBox()
+  for (const c of [v(b.minX, b.minY), v(b.maxX, b.minY), v(b.maxX, b.maxY), v(b.minX, b.maxY)]) {
+    const p = orientPoint(c, rot, mirror)
+    expandBox(out, { x: origin.x + p.x, y: origin.y + p.y })
   }
   return out
 }

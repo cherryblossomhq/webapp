@@ -1,4 +1,5 @@
-import type { Box } from "../../lib/geometry"
+import { orientPoint, type Box } from "../../lib/geometry"
+import type { Mirror, Rotation, TextAnchor } from "../../model/types"
 import type { PixelSize } from "./limits"
 
 // Small helpers the picture renderers share: SVG as strings, in the editor's world space (y up).
@@ -36,6 +37,7 @@ export interface TextOptions {
   halo?: string
   /** Degrees counter-clockwise, in world space. */
   angle?: number
+  italic?: boolean
 }
 
 /** World-space text, upright on screen: the same anchoring rules as the editor's `WorldText`. */
@@ -54,6 +56,7 @@ export function text(x: number, y: number, value: string, o: TextOptions): strin
       "dominant-baseline": baseline,
       fill: o.fill,
       "font-weight": o.weight ?? 500,
+      "font-style": o.italic ? "italic" : undefined,
       "font-family": o.mono ? MONO : SANS,
       stroke: o.halo,
       "stroke-width": o.halo ? o.size * 0.24 : undefined,
@@ -74,4 +77,61 @@ export function svgDocument(box: Box, size: PixelSize, background: string, body:
     `<rect x="${n(box.minX)}" y="${n(-box.maxY)}" width="${n(w)}" height="${n(h)}" fill="${background}"/>` +
     `<g transform="scale(1,-1)">${body}</g></svg>`
   )
+}
+
+/**
+ * Text of an imported symbol on the sheet. Its angle and justification are in the symbol's own
+ * frame; the symbol is turned and mirrored, and the text follows, but is kept readable as KiCad
+ * keeps it: across or upward, never upside down. When the way it reads flips, its justification flips with it.
+ * The anchor is where the point sits on the text (`middle_left` is at the left end), as `TextAnchor` says.
+ */
+export function orientText(angle: number, anchor: TextAnchor, sch: { rot: Rotation; mirror?: Mirror }): { angle: 0 | 90; anchor: TextAnchor } {
+  const a = (angle * Math.PI) / 180
+  const sn = (v: number) => (Math.abs(v) < 0.5 ? 0 : Math.sign(v))
+  const turn = (p: { x: number; y: number }) => {
+    const q = orientPoint(p, sch.rot, sch.mirror)
+    return { x: sn(q.x), y: sn(q.y) }
+  }
+  let f = turn({ x: Math.cos(a), y: Math.sin(a) })
+  let u = turn({ x: -Math.sin(a), y: Math.cos(a) })
+  let [ax, ay] = ANCHOR_AXES[anchor]
+  if (f.x < 0 || (f.x === 0 && f.y < 0)) {
+    f = { x: -f.x, y: -f.y }
+    u = { x: -u.x, y: -u.y }
+    ax = -ax
+    ay = -ay
+  }
+  // A mirror turns the text's up the other way round from the way its direction says.
+  if (u.x * -f.y + u.y * f.x < 0) ay = -ay
+  return { angle: f.x ? 0 : 90, anchor: anchorFromAxes(ax, ay) }
+}
+
+/** Where the point sits on the text, along its direction then its up: -1 at the start or the bottom, 1 at the end or the top. */
+const ANCHOR_AXES: Record<TextAnchor, [number, number]> = {
+  middle: [0, 0],
+  center: [0, 0],
+  middle_left: [-1, 0],
+  middle_right: [1, 0],
+  middle_top: [0, 1],
+  middle_bottom: [0, -1],
+  top_left: [-1, 1],
+  top_right: [1, 1],
+  bottom_left: [-1, -1],
+  bottom_right: [1, -1],
+}
+
+export function anchorFromAxes(ax: number, ay: number): TextAnchor {
+  if (!ax && !ay) return "center"
+  if (!ay) return ax < 0 ? "middle_left" : "middle_right"
+  if (!ax) return ay > 0 ? "middle_top" : "middle_bottom"
+  return `${ay > 0 ? "top" : "bottom"}_${ax < 0 ? "left" : "right"}` as TextAnchor
+}
+
+/** The anchor of a KiCad justification: `h` left or right, `v` top or bottom, absent centred. */
+export const justifyAnchor = (h: "left" | "right" | undefined, v: "top" | "bottom" | undefined): TextAnchor => anchorFromAxes(h === "left" ? -1 : h === "right" ? 1 : 0, v === "top" ? 1 : v === "bottom" ? -1 : 0)
+
+/** The KiCad justification of an anchor: left or right, top or bottom, absent centred. */
+export function justifyOf(anchor: TextAnchor): { h?: "left" | "right"; v?: "top" | "bottom" } {
+  const [ax, ay] = ANCHOR_AXES[anchor]
+  return { ...(ax < 0 ? { h: "left" as const } : ax > 0 ? { h: "right" as const } : {}), ...(ay > 0 ? { v: "top" as const } : ay < 0 ? { v: "bottom" as const } : {}) }
 }

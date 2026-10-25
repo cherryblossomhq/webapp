@@ -2,7 +2,8 @@ import { getFootprint, isValidFootprint, registerProjectFootprints } from "./foo
 import { CATEGORIES, findPart, isRegistered, registerPart } from "./library"
 import { discreteSymbol, type DiscreteSymbolName } from "./discreteSymbols"
 import { makeBoxSymbol, type BoxPin } from "./symbols"
-import type { CustomPartSpec, FootprintDef, PartCategory, PartDef, PinDef, PinSide, Project, SymbolDef } from "./types"
+import { drawnPart } from "./symbolDrawing"
+import type { CustomPartSpec, FootprintDef, PartCategory, PartDef, PinDef, PinSide, Project, SymbolDef, SymbolDrawing } from "./types"
 
 // Parts the library doesn't have, made for one project (by the copilot) and stored in it.
 // A spec is plain data; this module validates it and builds the PartDef the editor renders.
@@ -151,10 +152,21 @@ function buildSymbol(spec: CustomPartSpec): SymbolDef {
   return makeBoxSymbol(boxLayout(spec.pins))
 }
 
-/** Every reason the spec can't be built, or an empty list. */
-export function customPartProblems(spec: CustomPartSpec): string[] {
+/** The drawings a spec may name: the project's own. */
+type Drawings = Project["symbols"]
+
+/** Every reason the spec can't be built, or an empty list. `symbols` are the project's drawings, which a spec with a `drawing` needs. */
+export function customPartProblems(spec: CustomPartSpec, symbols?: Drawings): string[] {
   const problems: string[] = []
   if (!spec.name.trim()) problems.push("name is empty")
+  if (spec.drawing !== undefined) {
+    // A part with a drawing takes its pins and symbols from it. KiCad does not promise that the pads of a footprint and the pins of its symbol match, so that is not checked here.
+    if (!symbols?.[spec.drawing]) problems.push(`its drawing "${spec.drawing}" is not in the project`)
+    if (!CATEGORIES.includes(spec.category)) problems.push("category is not one of the library's")
+    if (!/^#?[A-Z]{1,4}$/.test(spec.refPrefix)) problems.push("ref_prefix must be 1-4 capital letters, e.g. U, J, Q, or #PWR")
+    if (spec.footprint && !isValidFootprint(spec.footprint)) problems.push(`unknown footprint "${spec.footprint}"`)
+    return problems
+  }
   if (!CATEGORIES.includes(spec.category) || spec.category === "Symbols") {
     problems.push(`category must be one of ${CUSTOM_CATEGORIES.join(", ")}`)
   }
@@ -217,8 +229,43 @@ const byNumber = (a: PinDef, b: PinDef) => {
   return Number.isFinite(na) && Number.isFinite(nb) ? na - nb : a.number.localeCompare(b.number)
 }
 
+/** A part made from a symbol drawing: the drawing's pins, units and fields, the footprint the spec names, if any. */
+function buildDrawnPart(spec: CustomPartSpec, drawing: SymbolDrawing): PartDef {
+  const d = drawnPart(drawing)
+  return {
+    id: spec.id,
+    name: spec.name,
+    category: spec.category,
+    description: spec.description,
+    refPrefix: spec.refPrefix,
+    pins: d.pins,
+    symbol: d.symbol,
+    footprints: spec.footprint ? [spec.footprint] : [],
+    // A part placed from the library starts with the value its symbol has (`R`, `74LS125`).
+    defaultProps: { ...(d.fieldValues.Value && !drawing.power ? { [spec.valueProp ?? "value"]: d.fieldValues.Value } : {}), ...spec.props },
+    valueProp: spec.valueProp,
+    keywords: spec.keywords,
+    padAlias: spec.padAlias,
+    mpn: spec.props.mpn,
+    body3d: BODY[spec.category] ?? { height: 1.4, color: "#1c1c1f" },
+    custom: true,
+    units: d.units,
+    ...(d.jumpers ? { jumpers: d.jumpers } : {}),
+    fieldPlaces: d.fieldPlaces,
+    // A power symbol of one power-input pin is a power port: its pin is on the net its Value names.
+    ...(drawing.power && drawing.pins.length === 1 && drawing.pins[0].type === "power_in"
+      ? { powerNet: (d.fieldValues.Value ?? "").trim() || spec.props.net || spec.name, ...(drawing.power === "local" ? { powerLocal: true } : {}) }
+      : {}),
+  }
+}
+
 /** Build the PartDef for a spec. Throws when the spec can't be drawn; validate with customPartProblems first. */
-export function buildCustomPart(spec: CustomPartSpec): PartDef {
+export function buildCustomPart(spec: CustomPartSpec, symbols?: Drawings): PartDef {
+  if (spec.drawing !== undefined) {
+    const drawing = symbols?.[spec.drawing]
+    if (!drawing) throw new Error(`The part ${spec.name} names the drawing ${spec.drawing}, which is not in the project`)
+    return buildDrawnPart(spec, drawing)
+  }
   return {
     id: spec.id,
     name: spec.name,
@@ -242,12 +289,12 @@ export function buildCustomPart(spec: CustomPartSpec): PartDef {
  * Register a project's parts so findPart resolves them, and its land patterns before them, which
  * its parts may use; specs that can't be built are skipped.
  */
-export function registerProjectParts(project: Pick<Project, "parts" | "footprints">) {
+export function registerProjectParts(project: Pick<Project, "parts" | "footprints" | "symbols">) {
   registerProjectFootprints(project)
   for (const spec of project.parts ?? []) {
     if (isRegistered(spec.id)) continue
     try {
-      registerPart(buildCustomPart(spec))
+      registerPart(buildCustomPart(spec, project.symbols))
     } catch {
       // A hand-edited spec that no longer builds: its components show as unknown parts.
     }
@@ -255,7 +302,7 @@ export function registerProjectParts(project: Pick<Project, "parts" | "footprint
 }
 
 /** The project's own parts, in the order they were made. */
-export function projectPartDefs(project: Pick<Project, "parts"> | null | undefined): PartDef[] {
+export function projectPartDefs(project: Pick<Project, "parts" | "symbols"> | null | undefined): PartDef[] {
   if (!project?.parts?.length) return []
   registerProjectParts(project)
   return project.parts.map((s) => findPart(s.id)).filter((p): p is PartDef => !!p?.custom)
@@ -269,6 +316,12 @@ export function digest(text: string) {
     h = Math.imul(h, 0x01000193)
   }
   return (h >>> 0).toString(36).padStart(6, "0").slice(0, 6)
+}
+
+/** The key a drawing is kept under in `Project.symbols`: a hash of the drawing, so the same symbol is stored once whoever brings it. */
+export function drawingKey(drawing: SymbolDrawing): string {
+  const text = JSON.stringify(drawing)
+  return `sym-${digest(text)}${digest(`${text.length}:${text}`)}`
 }
 
 /**
@@ -290,7 +343,8 @@ export function customPartId(spec: Omit<CustomPartSpec, "id">): string {
 export function withPartsFrom(target: Project, source: Project, partIds: Iterable<string>, footprints: Iterable<string> = []): Project {
   const have = new Set((target.parts ?? []).map((s) => s.id))
   const add: CustomPartSpec[] = []
-  for (const id of new Set(partIds)) {
+  // A lone unit of a part is a placement of its `@sub` twin, which is never stored: the part it stands for is what is copied.
+  for (const id of new Set([...partIds].map((p) => (p.endsWith("@sub") ? p.slice(0, -4) : p)))) {
     if (have.has(id)) continue
     const spec = source.parts?.find((s) => s.id === id)
     if (spec) add.push(spec)
@@ -302,9 +356,12 @@ export function withPartsFrom(target: Project, source: Project, partIds: Iterabl
     const def = source.footprints?.find((f) => f.name === name)
     if (def) addFootprints.push(def)
   }
+  const addSymbols: NonNullable<Project["symbols"]> = {}
+  for (const spec of add) if (spec.drawing && !target.symbols?.[spec.drawing] && source.symbols?.[spec.drawing]) addSymbols[spec.drawing] = source.symbols[spec.drawing]
   if (!add.length && !addFootprints.length) return target
   return {
     ...target,
+    ...(Object.keys(addSymbols).length ? { symbols: { ...target.symbols, ...addSymbols } } : {}),
     ...(add.length ? { parts: [...(target.parts ?? []), ...add] } : {}),
     ...(addFootprints.length ? { footprints: [...(target.footprints ?? []), ...addFootprints] } : {}),
   }

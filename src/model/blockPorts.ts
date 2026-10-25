@@ -1,5 +1,7 @@
 import { naturalCompare } from "../lib/natural"
+import { schematicPins } from "./instances"
 import { findPart } from "./library"
+import { pinKindOfType } from "./pinKinds"
 import { netInfo } from "./tidy/nets"
 import { flowOrder } from "./tidy/flow"
 import type { Project } from "./types"
@@ -70,7 +72,11 @@ export function blockPorts(project: Project, blockId: string, info = netInfo(pro
     const kinds = new Set(
       inside.map((k) => {
         const c = byId.get(k.slice(0, k.lastIndexOf(":")))!
-        return findPart(c.partId)?.pins.find((p) => p.number === k.slice(k.lastIndexOf(":") + 1))?.kind ?? "passive"
+        const number = k.slice(k.lastIndexOf(":") + 1)
+        // A pin switched to another function is what that function is.
+        const alt = c.pinAlt?.[number] ? schematicPins(c).find((p) => p.pin === number) : undefined
+        const kind = alt?.type ? pinKindOfType(alt.type, alt.name) : undefined
+        return (kind && kind !== "unknown" ? kind : undefined) ?? findPart(c.partId)?.pins.find((p) => p.number === number)?.kind ?? "passive"
       }),
     )
     let direction: PortDirection
@@ -86,7 +92,7 @@ export function blockPorts(project: Project, blockId: string, info = netInfo(pro
     const pins = inside.map((k) => {
       const c = byId.get(k.slice(0, k.lastIndexOf(":")))!
       const pin = k.slice(k.lastIndexOf(":") + 1)
-      const name = findPart(c.partId)?.pins.find((p) => p.number === pin)?.name ?? pin
+      const name = (c.pinAlt?.[pin] ? schematicPins(c).find((p) => p.pin === pin)?.name : undefined) ?? findPart(c.partId)?.pins.find((p) => p.number === pin)?.name ?? pin
       return `${c.ref}.${name}`
     })
     ports.push({ net: net.id, name: net.name, direction, pins, reaches })

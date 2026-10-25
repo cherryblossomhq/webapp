@@ -1,6 +1,6 @@
 import { parseFarads } from "../lib/values"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "./connectivity"
-import { isPhysical, pcbPads, schematicPins, type WorldPad } from "./instances"
+import { isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
 import { findPart } from "./library"
 import type { ComponentInstance, PartDef, PinDef, Project } from "./types"
 
@@ -50,7 +50,9 @@ export interface DecouplingPair {
   supplyPins: string[]
 }
 
-const isCapacitor = (part: PartDef) => part.valueProp === "capacitance" && part.pins.length === 2
+/** A two-pin capacitor: the editor's (its value is the capacitance), or one brought in from KiCad, which a symbol's designator C says. */
+const isCapacitor = (part: PartDef) =>
+  part.pins.length === 2 && (part.valueProp === "capacitance" || (!!part.jumpers && part.category === "Passives" && part.refPrefix === "C"))
 
 /**
  * A part decoupling capacitors serve: an IC, a regulator, or a bare RF module such as the
@@ -72,7 +74,7 @@ export function isSupplyPin(part: PartDef, pin: PinDef): boolean {
 /** The capacitance of a capacitor in farads when it is in the decoupling band, else null. */
 export function decouplingFarads(c: ComponentInstance, part = findPart(c.partId)): number | null {
   if (!part || !isCapacitor(part)) return null
-  const f = parseFarads(c.props.capacitance)
+  const f = parseFarads(c.props[part.valueProp ?? "capacitance"])
   if (f === null || f < DECOUPLING_MIN_F * (1 - 1e-9) || f > DECOUPLING_MAX_F * (1 + 1e-9)) return null
   return f
 }
@@ -145,10 +147,14 @@ export function decouplingPairs(project: Project, sch: SchematicConnectivity = c
 
   // Chip supply pins by net, with where each is drawn.
   const supplies = new Map<string, { chip: ComponentInstance; pin: string; pos: { x: number; y: number } }[]>()
+  // A pin of another unit of a chip (the power unit of an op-amp) is drawn by that unit's component, and is the chip's all the same.
+  const units = new Map<string, ComponentInstance[]>()
+  const byId = new Map(project.components.map((c) => [c.id, c]))
+  for (const [twin, owner] of unitOwners(project.components)) units.set(owner, [...(units.get(owner) ?? []), byId.get(twin)!])
   for (const c of project.components) {
     const part = parts.get(c.id)
     if (!isChip(part)) continue
-    const drawn = new Map(schematicPins(c, part).map((p) => [p.pin, p.pos]))
+    const drawn = new Map([c, ...(units.get(c.id) ?? [])].flatMap((u) => schematicPins(u, parts.get(u.id)).map((p) => [p.pin, p.pos] as const)))
     for (const pin of part.pins) {
       if (!isSupplyPin(part, pin)) continue
       const net = netOf(c, pin.number)

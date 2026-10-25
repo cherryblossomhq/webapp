@@ -2,6 +2,7 @@ import { copilotAccess, copilotModel, useAccount } from "../store/accountStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
+import { findPart } from "../model/library"
 import type { Project } from "../model/types"
 import { supplierParts } from "./supplierParts"
 import { createRepeatGuard } from "./repeatGuard"
@@ -56,10 +57,29 @@ Looking (the look tool shows you the schematic, the PCB or the 3D board as a pic
 
 Replies are shown in a narrow side panel: keep them short and concrete. Say what you changed and any assumptions, as a sentence or two or a short list. No preamble.`
 
+/** What a design with parts drawn from KiCad symbols needs to know; a design without any is not told. */
+export const UNITS_NOTE = `Parts drawn from KiCad symbols can have several units (a dual op-amp's two amplifiers and its power pins): each unit is a symbol with the part's designator, and one footprint is on the board. get_design lists units_placed and units_missing; add a unit with add_component (part_id, ref, unit). connect takes REF.PIN with the part's own pin and finds its unit. update_component can mirror a symbol, change its unit, switch a pin's function and move its fields. A hidden power pin (hidden, joins_net) is already on its net: do not connect it.`
+
 /** The static prompt carries a cache breakpoint: tools and system are the same on every request. */
-const SYSTEM_MESSAGE: ChatMessage = {
+const SYSTEM_MESSAGE: Extract<ChatMessage, { role: "system" }> = {
   role: "system",
   content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+}
+
+/** Whether the design has a part drawn from a KiCad symbol or one with several units. */
+export const hasKicadSymbols = (project: Project) =>
+  project.components.some((c) => {
+    const part = findPart(c.partId)
+    return !!part && (!!part.jumpers || !!part.unitOf || (part.units?.count ?? 1) > 1 || (part.units?.bodyStyles ?? 1) > 1)
+  })
+
+/**
+ * The system message for a design: the static prompt as it always was (the same bytes, so its cache
+ * holds), and after it the note about units only when the design has parts that need it.
+ */
+export function systemMessageFor(project: Project): Extract<ChatMessage, { role: "system" }> {
+  if (!hasKicadSymbols(project)) return SYSTEM_MESSAGE
+  return { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }, { type: "text", text: UNITS_NOTE }] }
 }
 
 export type CopilotEvent =
@@ -185,7 +205,7 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
       const turn = await streamChat(
         {
           model,
-          messages: [SYSTEM_MESSAGE, ...history],
+          messages: [systemMessageFor(working), ...history],
           tools: tools?.definitions ?? TOOL_DEFINITIONS,
           tool_choice: "auto",
           max_tokens: MAX_TOKENS,

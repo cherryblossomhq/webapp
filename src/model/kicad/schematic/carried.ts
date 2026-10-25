@@ -69,6 +69,7 @@ const ROWS: Row[] = [
   row(`(?:label|hierarchical_label)>${TEXT}`, "derived", "a label is drawn at the editor's text size and turned with its angle", "labels"),
   row("symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files)", "derived", "every symbol has KiCad's default flags: in the BOM, on the board, populated, simulated", "flags"),
   row("lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files)", "derived", "a cached symbol's flags are read from each symbol placed from it"),
+  row("(?:lib_symbols>)?symbol>property>id", "derived", "the number KiCad 6's development files gave a field, which its name says"),
 ]
 
 /** What the builder does with an `extend` node whose extension the project does not need, from its path and the project's plainness. */

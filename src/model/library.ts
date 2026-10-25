@@ -904,16 +904,24 @@ const byId = new Map(PARTS.map((p) => [p.id, p]))
 const projectParts = new Map<string, PartDef>()
 
 export function registerPart(part: PartDef) {
-  if (!byId.has(part.id)) projectParts.set(part.id, part)
+  if (byId.has(part.id)) return
+  projectParts.set(part.id, part)
+  // A part with several units is placed as several symbols of one reference; only one of them is on the board.
+  // The others are placements of its twin, which has the same pins and drawings and no footprint (`unitOf`).
+  if (part.units && part.units.count > 1 && !part.powerNet && !part.unitOf) projectParts.set(unitTwinId(part.id), { ...part, id: unitTwinId(part.id), footprints: [], unitOf: part.id })
 }
+
+/** The id of the twin a part's other units are placed as (see `registerPart`). */
+export const unitTwinId = (id: string) => `${id}@sub`
 
 /** Takes a project part out of memory again: for an import that registered parts to check a project and then refused it. */
 export function unregisterPart(id: string) {
   projectParts.delete(id)
+  projectParts.delete(unitTwinId(id))
 }
 
 /** The ids of the project parts in memory, so that an import can tell which parts it registered. */
-export const projectPartIds = (): string[] => [...projectParts.keys()]
+export const projectPartIds = (): string[] => [...projectParts.keys()].filter((id) => !id.endsWith("@sub"))
 
 export const isRegistered = (id: string) => byId.has(id) || projectParts.has(id)
 

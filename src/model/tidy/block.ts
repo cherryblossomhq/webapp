@@ -1,6 +1,8 @@
 import type { Box } from "../../lib/geometry"
 import { naturalCompare } from "../../lib/natural"
+import { schematicPins } from "../instances"
 import { findPart } from "../library"
+import { symbolOf } from "../symbolDrawing"
 import type { ComponentInstance, Rotation, Vec2 } from "../types"
 import type { NetInfo } from "./nets"
 import { along, BEND, corners, Heap, route, type RouteStart, type RouteTarget } from "./route"
@@ -15,6 +17,7 @@ import {
   partShape,
   portShape,
   shift,
+  tidyPinId,
   VEC,
   world,
   type Dir,
@@ -69,7 +72,10 @@ export interface DrawnLabel {
 }
 
 export interface DrawnPort {
-  partId: "power" | "ground"
+  /** The editor's own port, or the power symbol from KiCad the net's ports are drawn as. */
+  partId: string
+  /** The field places of that symbol, where it has them. */
+  fields?: ComponentInstance["fields"]
   /** The net, by id, and the name the port shows. */
   net: string
   name: string
@@ -216,7 +222,8 @@ const growth = (a: Box | null, b: Box) => {
 }
 const ptBox = (x: number, y: number): Box => ({ minX: x, minY: y, maxX: x, maxY: y })
 const sq = (x: number, y: number, r: number): Box => ({ minX: x - r, minY: y - r, maxX: x + r, maxY: y + r })
-const byRef = (a: ComponentInstance, b: ComponentInstance) => naturalCompare(a.ref, b.ref)
+/** By designator; the units of one part share it, so those go in the order of their units. */
+const byRef = (a: ComponentInstance, b: ComponentInstance) => naturalCompare(a.ref, b.ref) || (a.unit ?? 1) - (b.unit ?? 1)
 
 /** Every order of a few items; just the given order past three. */
 function permutations<T>(items: T[]): T[][] {
@@ -312,9 +319,21 @@ export class BlockLayout {
   private pinKind(c: ComponentInstance, pin: string): { net: string | null; kind: PinState["kind"] } {
     const key = `${c.id}:${pin}`
     let hit = this.kinds.get(key)
-    if (!hit) this.kinds.set(key, (hit = this.kindOf(key)))
+    if (!hit) this.kinds.set(key, (hit = this.isHidden(c, pin) ? { net: null, kind: "free" } : this.kindOf(key)))
     return hit
   }
+
+  /** A pin the symbol doesn't draw (a hidden power pin): it is on its net by its name, so nothing is wired to it, and it keeps its place. */
+  private isHidden(c: ComponentInstance, pin: string): boolean {
+    let set = this.hiddenPins.get(c.id)
+    if (!set) {
+      const all = schematicPins(c)
+      const part = findPart(c.partId)
+      this.hiddenPins.set(c.id, (set = new Set(all.filter((p) => p.hidden).map((p) => tidyPinId(part, p, all)))))
+    }
+    return set.has(pin)
+  }
+  private hiddenPins = new Map<string, Set<string>>()
 
   private kindOf(key: string): { net: string | null; kind: PinState["kind"] } {
     const net = this.ctx.nets.pinNet.get(key) ?? null
@@ -1832,7 +1851,9 @@ export class BlockLayout {
     for (const c of parts) for (const n of this.links(c)) byNet.set(n, [...(byNet.get(n) ?? []), c])
     for (const list of byNet.values()) list.sort((a, b) => linkCount.get(b.id)! - linkCount.get(a.id)! || byRef(a, b))
     const visit = (c: ComponentInstance) => {
-      for (const port of findPart(c.partId)?.symbol.ports ?? []) {
+      // The pins of the unit and body style this placement draws (the part's one drawing for the editor's own parts).
+      const part = findPart(c.partId)
+      for (const port of part ? symbolOf(part, c).ports : []) {
         const { net, kind } = this.pinKind(c, port.pin)
         if (kind !== "signal" || !net) continue
         for (const o of byNet.get(net) ?? []) {
@@ -2126,7 +2147,7 @@ export class BlockLayout {
         const info = this.ctx.nets.nets.get(net)!
         if (info.rail) {
           const ps = portShape(info.rail, info.name, dir)
-          ports.push({ partId: ps.partId, net, name: info.name, x: world(lx + ps.ox), y: world(ly + ps.oy), rot: ps.rot })
+          ports.push({ partId: ps.partId, ...(ps.fields ? { fields: ps.fields } : {}), net, name: info.name, x: world(lx + ps.ox), y: world(ly + ps.oy), rot: ps.rot })
         } else labels.push({ net, name: this.ctx.labelName(net), x: world(lx), y: world(ly), rot: labelTurn(dir) })
       }
     }
@@ -2145,7 +2166,7 @@ export class BlockLayout {
       for (const w of r.wires) wires.push({ net: r.net, points: toWorld(w) })
       if (r.port) {
         const ps = portShape(r.port.kind, name, r.port.out)
-        ports.push({ partId: ps.partId, net: r.net, name, x: world(r.port.at[0] + ps.ox), y: world(r.port.at[1] + ps.oy), rot: ps.rot })
+        ports.push({ partId: ps.partId, ...(ps.fields ? { fields: ps.fields } : {}), net: r.net, name, x: world(r.port.at[0] + ps.ox), y: world(r.port.at[1] + ps.oy), rot: ps.rot })
       }
     }
     const b = this.space.bounds() ?? { minX: 0, minY: 0, maxX: 0, maxY: 0 }

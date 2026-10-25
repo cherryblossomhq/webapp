@@ -9,9 +9,21 @@ import type { ComponentInstance, PartDef } from "../types"
 /** The fewest pins a connector needs to be drawn about rather than beside another part. */
 const CONNECTOR_PINS = 3
 
+/**
+ * A part drawn from a KiCad symbol (it keeps its pins of one number apart, `jumpers`) that is a
+ * two-pin passive of the kind its designator says: a resistor R, a capacitor C. The editor's own
+ * parts are known by their ids, which a brought-in symbol does not have.
+ */
+const kicadPassive = (part: PartDef | undefined, prefix: string) => !!part?.jumpers && part.category === "Passives" && part.refPrefix === prefix && part.pins.length === 2
+
+/** The editor's resistor, or a resistor brought in from KiCad. */
+export const isResistorPart = (part: PartDef | undefined) => part?.id === "resistor" || kicadPassive(part, "R")
+
 /** Whether a part can be the main part of a block. Everything else serves one. */
 export function isMainPart(part: PartDef | undefined): boolean {
   if (!part) return false
+  // A symbol from KiCad with one pin or none is a flag or a marker (PWR_FLAG), not a chip.
+  if (part.jumpers && part.pins.length < 2) return false
   switch (part.category) {
     case "ICs":
     case "Modules":
@@ -72,12 +84,13 @@ function pinsOfRegulator(part: PartDef): boolean {
 /** The pins of a regulator that carry its switch node, for finding its inductor. */
 export const switchPins = (part: PartDef | undefined) => (part?.pins ?? []).filter((p) => SWITCH_PIN.test(p.name.trim()))
 
-export const isLed = (part: PartDef | undefined) => part?.id === "led" || part?.id === "ws2812b"
+export const isLed = (part: PartDef | undefined) =>
+  part?.id === "led" || part?.id === "ws2812b" || (!!part?.jumpers && part.category === "Diodes" && part.pins.length === 2 && /led/i.test(`${part.refPrefix} ${part.name}`))
 
 /** Farads in a capacitor's value ("100nF", "4u7", "10 uF"), or null when it isn't one. */
 export function capacitance(c: ComponentInstance): number | null {
   const part = findPart(c.partId)
-  if (!part || !/^capacitor/.test(part.id)) return null
+  if (!part || !(/^capacitor/.test(part.id) || kicadPassive(part, "C"))) return null
   const m = valueText(c, part).trim().match(/^(\d+(?:[.,]\d+)?)\s*([pnuµm]?)\s*(\d*)\s*f?$/i)
   if (!m) return null
   const unit = { p: 1e-12, n: 1e-9, u: 1e-6, µ: 1e-6, m: 1e-3, "": 1 }[m[2].toLowerCase() as "p" | "n" | "u" | "µ" | "m" | ""]
@@ -86,13 +99,14 @@ export function capacitance(c: ComponentInstance): number | null {
   return Number.isFinite(number) ? number * unit : null
 }
 
-export const isCapacitor = (c: ComponentInstance) => /^capacitor/.test(c.partId)
+export const isCapacitor = (c: ComponentInstance) => /^capacitor/.test(c.partId) || kicadPassive(findPart(c.partId), "C")
 
 /** A capacitor that holds a rail up rather than decouples a pin: electrolytic, tantalum or 4.7 uF and up. */
 export function isBulkCap(c: ComponentInstance): boolean {
   const part = findPart(c.partId)
-  if (!part || !/^capacitor/.test(part.id)) return false
-  if (part.id !== "capacitor") return true
+  if (!part || !isCapacitor(c)) return false
+  // A capacitor from KiCad says what it is by its value alone.
+  if (part.id !== "capacitor" && !kicadPassive(part, "C")) return true
   return (capacitance(c) ?? 0) >= 4.7e-6
 }
 

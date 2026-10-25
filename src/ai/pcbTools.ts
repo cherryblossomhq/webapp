@@ -27,8 +27,12 @@ interface PcbToolSpec {
 const ok = (project: Project, result: string, summary: string): ToolOutcome => ({ project, result, summary, isError: false })
 const fail = (project: Project, message: string): ToolOutcome => ({ project, result: `Error: ${message}`, summary: message, isError: true })
 
-const findByRef = (project: Project, ref: unknown) =>
-  typeof ref === "string" ? project.components.find((c) => c.ref.toLowerCase() === ref.trim().toLowerCase()) : undefined
+/** The part with this reference: of the symbols of a part with several units, the one that is on the board. */
+const findByRef = (project: Project, ref: unknown) => {
+  if (typeof ref !== "string") return undefined
+  const same = project.components.filter((c) => c.ref.toLowerCase() === ref.trim().toLowerCase())
+  return same.find((c) => !findPart(c.partId)?.unitOf) ?? same[0]
+}
 
 const mm = (n: number) => n.toFixed(2)
 /** A gap in mm: two decimals, three when it is tiny so a near miss doesn't read as "0.00". */

@@ -3,9 +3,10 @@ import { pinKey } from "../connectivity"
 import { addToBlock, createBlock } from "../blocks"
 import { schematicBounds, schematicPins, valueText } from "../instances"
 import { findPart } from "../library"
+import { unitCount, unitLetters } from "../symbolDrawing"
 import { isArranged, netInfo } from "../tidy/nets"
 import type { ComponentInstance, Project, SchematicBlock } from "../types"
-import { isBulkCap, isCapacitor, isHelper, isLed, isMainPart, isPowerChip, mainRank, roleOf, switchPins } from "./roles"
+import { isBulkCap, isCapacitor, isHelper, isLed, isMainPart, isPowerChip, isResistorPart, mainRank, roleOf, switchPins } from "./roles"
 
 // Grouping: the parts that are in no block put into blocks, from how they are wired.
 //
@@ -88,7 +89,10 @@ interface Link {
 /** A new block's name: its main part's role and designator, and its value while it fits. */
 export function blockName(c: ComponentInstance, withValue = true): string {
   const part = findPart(c.partId)
-  const base = `${roleOf(part)} ${c.ref}`
+  // A part with several units is drawn as several symbols that share a designator, each in a block
+  // of its own: U1A, U1B, as KiCad writes them, so the blocks have different names.
+  const ref = part && unitCount(part) > 1 ? `${c.ref}${unitLetters(c.unit ?? 1)}` : c.ref
+  const base = `${roleOf(part)} ${ref}`
   const value = withValue ? valueText(c, part).trim().toUpperCase() : ""
   return value && value !== c.ref && base.length + 1 + value.length <= NAME_LENGTH ? `${base} ${value}` : base
 }
@@ -137,7 +141,7 @@ export function groupLooseParts(project: Project): Grouping {
   const drawn = drawnPositions(project, parts)
   const info = netInfo(project)
   const main = (id: string) => isMainPart(findPart(byId.get(id)!.partId))
-  const isResistor = (id: string) => byId.get(id)!.partId === "resistor"
+  const isResistor = (id: string) => isResistorPart(findPart(byId.get(id)!.partId))
 
   // ---------- What joins what ----------
   const links: Link[] = []

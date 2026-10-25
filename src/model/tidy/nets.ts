@@ -1,9 +1,10 @@
 import { naturalCompare } from "../../lib/natural"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "../connectivity"
-import { isPhysical, powerNetName } from "../instances"
+import { isSchematicPart, powerNetName, schematicPins, unitOwners } from "../instances"
 import { findPart } from "../library"
+import { fieldsInFrame, hasFieldPlaces } from "../symbolDrawing"
 import type { ComponentInstance, Project } from "../types"
-import type { RailKind } from "./shapes"
+import { portProblem, type PortVia, type RailKind } from "./shapes"
 
 // The nets as Tidy needs them: which pin is on which, which are supply rails (drawn with power
 // and ground ports), and names for the unnamed ones that end up needing a label.
@@ -21,6 +22,13 @@ export interface TidyNet {
    */
   given: boolean
   rail: RailKind | null
+  /**
+   * The power symbol brought in from KiCad that the net's ports are drawn as, when it has one: the
+   * ports Tidy draws for the net are that part, not the editor's own (`withPortVias`).
+   */
+  port?: PortVia
+  /** Why Tidy can't draw that symbol (`portProblem`); then Tidy leaves the sheet as it is. */
+  portProblem?: string
   /** Pins of every component on it, ports included, as "componentId:pin". */
   pins: string[]
   /**
@@ -62,7 +70,14 @@ function railOf(name: string, kinds: Set<string>, ports: Set<string>): RailKind 
 /** The nets of a project, with their rails. */
 export function netInfo(project: Project): NetInfo {
   const conn = computeConnectivity(project)
-  const pinNet = new Map(conn.pinNet)
+  let pinNet = new Map(conn.pinNet)
+  // A pin of a unit is listed under the part's own component as well (`unitOwners`); Tidy works with
+  // what each component draws, so a pin is on the component that draws it and on no other.
+  if (unitOwners(project.components).size) {
+    const drawn = new Set<string>()
+    for (const c of project.components) for (const p of schematicPins(c)) drawn.add(pinKey(c.id, p.pin))
+    pinNet = new Map([...pinNet].filter(([k]) => drawn.has(k)))
+  }
   const nets = new Map<string, TidyNet>()
   const byId = new Map(conn.nets.map((n) => [n.id, n]))
   const pinsOf = new Map<string, string[]>()
@@ -72,6 +87,8 @@ export function netInfo(project: Project): NetInfo {
   const portIds = new Set(project.components.filter((c) => findPart(c.partId)?.powerNet).map((c) => c.id))
   const kinds = new Map<string, Set<string>>()
   const ports = new Map<string, Set<string>>()
+  /** The power symbols from KiCad on each net, by part, with the first one of each: what its ports are drawn as. */
+  const imported = new Map<string, Map<string, { count: number; first: ComponentInstance }>>()
   for (const c of project.components) {
     const part = findPart(c.partId)
     if (!part) continue
@@ -81,6 +98,12 @@ export function netInfo(project: Project): NetInfo {
       if (part.powerNet) {
         const set = ports.get(id) ?? new Set()
         ports.set(id, set.add(part.id === "ground" ? "ground" : "power"))
+        if (hasFieldPlaces(part)) {
+          const byPart = imported.get(id) ?? new Map()
+          const seen = byPart.get(part.id)
+          byPart.set(part.id, { count: (seen?.count ?? 0) + 1, first: seen?.first ?? c })
+          imported.set(id, byPart)
+        }
       } else if (p.kind) {
         const set = kinds.get(id) ?? new Set()
         kinds.set(id, set.add(p.kind))
@@ -107,9 +130,19 @@ export function netInfo(project: Project): NetInfo {
       // A name Tidy made up says nothing of what the net is: the pins and ports on it do.
       rail: !net.named && pins.length < 2 ? null : railOf(made && !ports.get(id)?.size ? "" : net.name, kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
       pins,
+      ...portOf(imported.get(id)),
     })
   }
   return { pinNet, nets, conn }
+}
+
+/** The imported power symbol a net's ports are drawn as: the one most of them are, the first by part id on a tie. */
+function portOf(found: Map<string, { count: number; first: ComponentInstance }> | undefined): Pick<TidyNet, "port" | "portProblem"> {
+  if (!found) return {}
+  const [partId, { first }] = [...found].sort((a, b) => b[1].count - a[1].count || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0]
+  const problem = portProblem(partId)
+  // The places are kept in the symbol's frame: a port Tidy draws is turned its own way, and its fields turn with it.
+  return { port: { partId, ...(first.fields ? { fields: fieldsInFrame(first.fields, first.sch) } : {}) }, ...(problem ? { portProblem: problem } : {}) }
 }
 
 /** Physical components: what Tidy arranges. Ports are drawn anew at the pins they serve. */
@@ -121,7 +154,7 @@ export const isArranged = (partId: string) => {
 export const isPort = (partId: string) => !!findPart(partId)?.powerNet
 
 /** True for a component a netlist counts: a physical part. */
-export const countsInNetlist = (partId: string) => isPhysical(findPart(partId))
+export const countsInNetlist = (partId: string) => isSchematicPart(findPart(partId))
 
 /** A port's net name. */
 export { powerNetName }
@@ -146,7 +179,8 @@ function baseName(byId: Map<string, ComponentInstance>, pins: string[]): string 
       const c = byId.get(key.slice(0, i))
       const part = c && findPart(c.partId)
       const pin = key.slice(i + 1)
-      const pinName = part?.pins.find((p) => p.number === pin)?.name ?? pin
+      // The function the pin is switched to, where the symbol has alternates, names its net.
+      const pinName = (part && c.pinAlt?.[pin] ? schematicPins(c, part).find((p) => p.pin === pin)?.name : undefined) ?? part?.pins.find((p) => p.number === pin)?.name ?? pin
       return c && part && !part.powerNet ? { ref: c.ref, pin, pinName, count: part.pins.length } : null
     })
     .filter((x): x is { ref: string; pin: string; pinName: string; count: number } => !!x)

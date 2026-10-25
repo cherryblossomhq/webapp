@@ -1,12 +1,31 @@
 import { pointOnSegment } from "../lib/geometry"
 import { SpatialHash, pointBox } from "../lib/spatialHash"
 import { findPart } from "./library"
-import { isPhysical, powerNetName, schematicPins } from "./instances"
+import { isSchematicPart, powerNetName, schematicPins, unitOwners } from "./instances"
 import type { SchematicConnectivity } from "./connectivity"
 import type { Net, PinRef, Project } from "./types"
 
 /** The names connect gives a net it labels itself: they stand for no one's choice and may be replaced. */
 export const AUTO_NET_NAME = /^NET\d+$/
+
+/**
+ * The pins each component draws, as "componentId:pin", for a sheet that has parts with several
+ * units; null for one that has none. The connectivity lists a pin of a unit under the part's own
+ * component too, which does not draw it: a loop over `pinNet` would take that for a second pin.
+ */
+function drawnKeys(project: Project): Set<string> | null {
+  if (!unitOwners(project.components).size) return null
+  const keys = new Set<string>()
+  for (const c of project.components) for (const p of schematicPins(c)) keys.add(`${c.id}:${p.pin}`)
+  return keys
+}
+
+/** Whether a component's pins are checked as physical ones: a part on the board, or a unit of one. */
+function countsAsPhysical(project: Project, c: Project["components"][number]): boolean {
+  if (isSchematicPart(findPart(c.partId))) return true
+  const owner = unitOwners(project.components).get(c.id)
+  return !!owner && isSchematicPart(findPart(project.components.find((x) => x.id === owner)?.partId ?? ""))
+}
 
 /** The net a pin was on before an edit; a pin on no net is a group of its own. */
 export const groupOf = (before: SchematicConnectivity, key: string) => before.pinNet.get(key) ?? `solo:${key}`
@@ -98,7 +117,8 @@ export function unrequestedMerges(
     groups.add(group)
     byNet.set(netId, groups)
   }
-  for (const [key, netId] of after.pinNet) add(netId, groupOf(before, key))
+  const drawn = drawnKeys(project)
+  for (const [key, netId] of after.pinNet) if (!drawn || drawn.has(key)) add(netId, groupOf(before, key))
   for (const w of project.wires) add(after.wireNet.get(w.id), before.wireNet.get(w.id))
   for (const l of project.labels) add(after.labelNet.get(l.id), before.labelNet.get(l.id))
 
@@ -143,7 +163,10 @@ export function pinsUnderOtherNets(project: Project, conn: SchematicConnectivity
 
   const out: { pin: string; net: string }[] = []
   for (const c of project.components) {
+    // The second pin of a number in a symbol that keeps them apart is on a net the connectivity does not name by pin: it is not judged by the first one's.
+    const apart = !!findPart(c.partId)?.jumpers && !findPart(c.partId)!.jumpers!.duplicates
     for (const pin of schematicPins(c)) {
+      if (apart && pin.slot) continue
       const key = `${c.id}:${pin.pin}`
       const own = conn.pinNet.get(key)
       const box = pointBox(pin.pos)
@@ -203,9 +226,10 @@ export function connectionsLost(
   after: SchematicConnectivity,
 ): string[] {
   const alive = new Set(next.components.map((c) => c.id))
+  const drawn = drawnKeys(project)
   const byNet = new Map<string, string[]>()
   for (const [key, netId] of before.pinNet) {
-    if (!alive.has(key.slice(0, key.lastIndexOf(":")))) continue
+    if (!alive.has(key.slice(0, key.lastIndexOf(":"))) || (drawn && !drawn.has(key))) continue
     byNet.set(netId, [...(byNet.get(netId) ?? []), key])
   }
   const out: string[] = []
@@ -263,7 +287,8 @@ export function pinsCutOff(
   const mates = (conn: SchematicConnectivity, netId: string | undefined) => new Set(conn.nets.find((n) => n.id === netId)?.pins.map((p) => `${p.componentId}:${p.pin}`))
   const lostBy = new Map<string, string[]>()
   for (const c of next.components) {
-    if (!isPhysical(findPart(c.partId))) continue
+    // The units of a part with several are components of their own, and their pins are the part's.
+    if (!countsAsPhysical(next, c)) continue
     for (const pin of schematicPins(c)) {
       const key = `${c.id}:${pin.pin}`
       const was = before.pinNet.get(key)

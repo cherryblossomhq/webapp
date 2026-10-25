@@ -1,7 +1,7 @@
 import { pointOnSegment, samePoint } from "../lib/geometry"
 import { numeric, plain } from "../lib/natural"
 import { findPart } from "./library"
-import { isPhysical, powerNetName, schematicPins, type WorldPin } from "./instances"
+import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import type { Net, Project, Vec2 } from "./types"
 
 export class UnionFind {
@@ -106,15 +106,34 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     else pointOwners.set(key, [owner])
   }
 
+  // A unit of a part with several is a symbol of its own; its pins are the part's pins (see `unitOwners`).
+  const owners = unitOwners(project.components)
+  const ownerOf = (id: string) => owners.get(id) ?? id
+  /** The node of each pin, by "componentId:pin" or, for the second pin of a number that is not jumpered, "componentId:pin#1". */
+  const nodeOf = new Map<WorldPin, string>()
   for (const c of project.components) {
     const part = findPart(c.partId)
     const power = powerNetName(c, part)
+    // The editor's own parts join the pins that share a number; a KiCad symbol keeps them apart unless it says they are jumpered.
+    const jumpered = !part?.jumpers || part.jumpers.duplicates
+    const here = new Set<string>()
     for (const pin of schematicPins(c, part)) {
-      const key = `pin:${pinKey(c.id, pin.pin)}`
+      // A pin of the type "no connect" is on no net, whatever is drawn to it (KiCad does not connect it).
+      if (pin.type === "no_connect") continue
+      const key = `pin:${pinKey(c.id, pin.pin)}${pin.slot && !jumpered ? `#${pin.slot}` : ""}`
       uf.find(key)
       pins.push(pin)
+      nodeOf.set(pin, key)
+      here.add(pin.pin)
       addPointOwner(pin.pos, key)
       if (power) uf.union(key, `name:${power}`)
+      // A hidden power-input pin of an ordinary part is on the global net of its name (`SCH_PIN::IsGlobalPower`).
+      else if (pin.hidden && pin.type === "power_in" && pin.name.trim()) uf.union(key, `name:${pin.name.trim()}`)
+    }
+    // Pins of different numbers that the part joins inside itself.
+    for (const group of part?.jumpers?.groups ?? []) {
+      const present = group.filter((n) => here.has(n))
+      for (let i = 1; i < present.length; i++) uf.union(`pin:${pinKey(c.id, present[0])}`, `pin:${pinKey(c.id, present[i])}`)
     }
   }
 
@@ -201,10 +220,24 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const labelNet = new Map<string, string>()
   const conflicts: SchematicConnectivity["conflicts"] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
-  const physical = new Set(project.components.filter((c) => isPhysical(findPart(c.partId))).map((c) => c.id))
+  const physical = new Set(project.components.filter((c) => isSchematicPart(findPart(c.partId))).map((c) => c.id))
+  /** The net of every pin node, including the second pin of a number. */
+  const nodeNet = new Map<string, string>()
+  const split = (k: string) => {
+    const idx = k.lastIndexOf(":")
+    const pin = k.slice(idx + 1)
+    const hash = pin.indexOf("#")
+    return { componentId: k.slice(0, idx), pin: hash < 0 ? pin : pin.slice(0, hash), second: hash >= 0 }
+  }
   let autoIndex = 1
 
   const sortedGroups = [...groups.values()].sort((a, b) => plain.compare(a[0], b[0]))
+  /** A unit's pins are the part's: a pin of a unit is listed under the component that is on the board. */
+  const listed = (k: string) => {
+    const { componentId, pin } = split(k)
+    return { componentId: ownerOf(componentId), pin }
+  }
+  const aliased: [string, string][] = []
   for (const members of sortedGroups) {
     const pinMembers = members.filter((m) => m.startsWith("pin:")).map((m) => m.slice(4))
     const hasWire = members.some((m) => m.startsWith("wire:") || m.startsWith("label:"))
@@ -214,12 +247,15 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     if (pinMembers.length === 0 && !hasWire) continue
     if (pinMembers.length === 1 && !hasWire && names.length === 0) continue
 
+    const seenPins = new Set<string>()
     const netPins = pinMembers
-      .map((k) => {
-        const idx = k.lastIndexOf(":")
-        return { componentId: k.slice(0, idx), pin: k.slice(idx + 1) }
+      .map(listed)
+      .filter((p) => {
+        const k = pinKey(p.componentId, p.pin)
+        if (seenPins.has(k)) return false
+        seenPins.add(k)
+        return physical.has(p.componentId)
       })
-      .filter((p) => physical.has(p.componentId))
       .sort((a, b) => {
         const ra = refOf.get(a.componentId) ?? ""
         const rb = refOf.get(b.componentId) ?? ""
@@ -238,16 +274,26 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     if (names.length > 1) conflicts.push({ names, netId: id })
     nets.push({ id, name, named: names.length > 0, pins: netPins })
     for (const m of members) {
-      if (m.startsWith("pin:")) pinNet.set(m.slice(4), id)
-      else if (m.startsWith("wire:")) wireNet.set(m.slice(5), id)
+      if (m.startsWith("pin:")) {
+        const key = m.slice(4)
+        nodeNet.set(key, id)
+        const { componentId, pin, second } = split(key)
+        // The second pin of a number a symbol keeps apart has a key of its own, `<id>:<pin>#<slot>`.
+        pinNet.set(key, id)
+        if (second) continue
+        // The pin of a unit is also a pin of the part on the board.
+        if (ownerOf(componentId) !== componentId) aliased.push([pinKey(ownerOf(componentId), pin), id])
+      } else if (m.startsWith("wire:")) wireNet.set(m.slice(5), id)
       else if (m.startsWith("label:")) labelNet.set(m.slice(6), id)
     }
   }
+  // A pin the part's own symbol does not draw is the pin of the unit that does. Where both draw it, its own net stands.
+  for (const [key, id] of aliased) if (!pinNet.has(key)) pinNet.set(key, id)
 
   const netById = new Map(nets.map((n) => [n.id, n]))
   const floating = pins.filter((p) => {
-    if (!physical.has(p.componentId)) return false
-    const netId = pinNet.get(pinKey(p.componentId, p.pin))
+    if (!physical.has(ownerOf(p.componentId))) return false
+    const netId = nodeNet.get(nodeOf.get(p)!.slice(4))
     if (!netId) return true
     const net = netById.get(netId)
     return !!net && net.pins.length < 2 && !net.named

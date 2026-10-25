@@ -44,7 +44,10 @@ export function decodeLegacy(bytes: Uint8Array): { text: string; encoding: "utf-
   const notes: string[] = []
   // A byte order mark is not part of the text.
   let start = 0
-  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) start = 3
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    start = 3
+    notes.push("The file begins with a UTF-8 byte order mark. KiCad 5.1 refuses such a file (\"does not appear to be an Eeschema file\"), but the text is valid UTF-8, so it was read.")
+  }
   const body = start ? bytes.subarray(start) : bytes
   try {
     return { text: new TextDecoder("utf-8", { fatal: true }).decode(body), encoding: "utf-8", notes }

@@ -14,7 +14,9 @@ import { LegacyParseError, decodeLegacy } from "./text"
 
 /** Whether the data is a legacy schematic: it begins with `EESchema Schematic File Version`. */
 export function isLegacySchematic(data: string | Uint8Array): boolean {
-  const head = typeof data === "string" ? data.slice(0, 120) : new TextDecoder("latin1").decode(data.subarray(0, 120))
+  // A UTF-8 byte order mark in front is not part of the text (KiCad 5.1 refuses such a file, `loadHeader` of `sch_legacy_plugin.cpp:781`; it is valid UTF-8 and is read here).
+  const bom = typeof data !== "string" && data.length >= 3 && data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf ? 3 : 0
+  const head = typeof data === "string" ? data.slice(0, 120) : new TextDecoder("latin1").decode(data.subarray(bom, bom + 120))
   return legacySchematicVersion(head) !== null
 }
 

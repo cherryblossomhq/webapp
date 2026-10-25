@@ -387,6 +387,17 @@ describe("encodings", () => {
     const bytes = Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(HEAD() + END)])
     expect(decodeLegacy(bytes).text.startsWith("EESchema")).toBe(true)
   })
+
+  it("a UTF-8 file with a byte order mark is read, and the report says KiCad 5.1 would refuse it", () => {
+    const sheet = Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(HEAD() + twoParts + END)])
+    const r = imp(files({ "t.sch": sheet, "t-cache.lib": CACHE(LIB_R, LIB_GND) }))
+    expect(r.status === "refused" ? r.message : r.status).toBe("imported")
+    if (r.status === "imported") {
+      const note = r.report.entries.find((e) => e.code === "encoding" && /byte order mark/.test(e.why))
+      expect(note?.why).toMatch(/KiCad 5\.1 refuses such a file/)
+      expect(note?.severity).toBe("note")
+    }
+  })
 })
 
 describe("the library format", () => {

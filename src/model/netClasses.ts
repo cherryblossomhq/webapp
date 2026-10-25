@@ -85,33 +85,62 @@ function resolved(cls: NetClass, base: ClassValues): ClassValues {
 
 // ---------- Patterns ----------
 
-const WILDCARD_ESCAPED = ".*+?^${}()|[]/\\"
+/** The longest pattern read as a regular expression, and the longest net name it is tried on: a pattern is user text, and a regular expression has no time limit. */
+const MAX_REGEX_PATTERN = 120
+const MAX_REGEX_NAME = 256
 
 /**
- * KiCad's net class pattern (`EDA_COMBINED_MATCHER` in `CTX_NETCLASS`, eda_pattern_match.cpp:405 to 412): two
+ * Whether a pattern is safe to run as a regular expression: it is short, has no back reference, and repeats no group (`(a+)+` and `(a|a)*` take
+ * exponential time to fail). A pattern that is not safe has only the wildcard matcher, which takes linear time whatever it says.
+ */
+function regexIsSafe(pattern: string): boolean {
+  // `a*a*a*a*b` fails in time that grows with the name to the power of the repeats, so a pattern with more than two is not run
+  const repeats = (pattern.match(/[*+]|\{\d/g) ?? []).length
+  return pattern.length <= MAX_REGEX_PATTERN && repeats <= 2 && !/\\[1-9]/.test(pattern) && !/\)[*+{]/.test(pattern)
+}
+
+/** `?` is one character and `*` any run (also none), everything else itself, over the whole name: a linear scan with one place to go back to, as in any glob matcher. */
+function wildcardMatches(pattern: string[], name: string[]): boolean {
+  let p = 0
+  let n = 0
+  let star = -1
+  let mark = 0
+  while (n < name.length) {
+    if (p < pattern.length && pattern[p] === "*") {
+      star = p++
+      mark = n
+    } else if (p < pattern.length && (pattern[p] === "?" || pattern[p] === name[n])) {
+      p++
+      n++
+    } else if (star >= 0) {
+      p = star + 1
+      n = ++mark
+    } else return false
+  }
+  while (p < pattern.length && pattern[p] === "*") p++
+  return p === pattern.length
+}
+
+/**
+ * KiCad's net class pattern (`EDA_COMBINED_MATCHER` in `CTX_NETCLASS`, eda_pattern_match.cpp:413 of 9.0.0 and 10.0.0): two
  * matchers, and a net matches if either does. The wildcard one reads `?` as one character and `*` as any
  * run and everything else literally, anchored at both ends; the other reads the pattern as a regular
  * expression, anchored at both ends. A pattern that is not a valid regular expression only has the first
- * matcher, as in KiCad. (KiCad's expressions are wxWidgets' advanced ones and these are JavaScript's: they
- * agree on the classes, groups, alternations and repeats that net names use.)
+ * matcher, as in KiCad, and so has one that is not safe to run (`regexIsSafe`). (KiCad's expressions are
+ * wxWidgets' advanced ones and these are JavaScript's: they agree on the classes, groups, alternations and
+ * repeats that net names use.)
  */
 export function patternMatcher(pattern: string): (net: string) => boolean {
-  let wild = "^"
-  for (const c of pattern) wild += c === "?" ? "." : c === "*" ? ".*" : WILDCARD_ESCAPED.includes(c) ? `\\${c}` : c
-  wild += "$"
-  let a: RegExp | null = null
-  let b: RegExp | null = null
-  try {
-    a = new RegExp(wild, "s")
-  } catch {
-    a = null
+  const wild = Array.from(pattern)
+  let re: RegExp | null = null
+  if (regexIsSafe(pattern)) {
+    try {
+      re = new RegExp(`${pattern.startsWith("^") ? "" : "^"}${pattern}${pattern.endsWith("$") ? "" : "$"}`, "s")
+    } catch {
+      re = null
+    }
   }
-  try {
-    b = new RegExp(`${pattern.startsWith("^") ? "" : "^"}${pattern}${pattern.endsWith("$") ? "" : "$"}`, "s")
-  } catch {
-    b = null
-  }
-  return (net) => !!(a?.test(net) || b?.test(net))
+  return (net) => wildcardMatches(wild, Array.from(net)) || (re !== null && net.length <= MAX_REGEX_NAME && re.test(net))
 }
 
 // ---------- The index ----------

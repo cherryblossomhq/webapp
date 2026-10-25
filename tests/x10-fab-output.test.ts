@@ -13,6 +13,7 @@ import { migrateProjectFile, parseProjectFile, PROJECT_FILE_FORMAT, PROJECT_FILE
 import type { DesignRules, NetClass, Project } from "../src/model/types"
 import { built } from "./built"
 
+const DASHES = new RegExp(String.fromCharCode(0x2013) + "|" + String.fromCharCode(0x2014))
 const cls = (name: string, extra: Partial<NetClass> = {}): NetClass => ({ name, nets: [], ...extra })
 const rect = (x: number, y: number, w = 1, h = 1): WorldPad => ({ componentId: "c", pin: "1", padNumber: "1", shape: "rect", x, y, width: w, height: h, layers: ["top"] })
 const withRules = (p: Project, rules: Partial<DesignRules>): Project => ({ ...p, rules: { ...p.rules, ...rules } })
@@ -203,7 +204,7 @@ describe("the KiCad export writes the classes", () => {
     expect(pro.net_settings.classes.map((c: { name: string }) => c.name)).toEqual(expect.arrayContaining(["Default", "Power", "Fine", "Bus"]))
     expect(Object.entries(files).find(([k]) => k.endsWith(".kicad_pcb"))![1]).toMatch(/solder_mask_min_width 0\.1/)
     expect(notes.join(" ")).toMatch(/Net classes are in the KiCad project/)
-    expect(notes.every((n) => !/[–—]/.test(n))).toBe(true)
+    expect(notes.every((n) => !DASHES.test(n))).toBe(true)
   }, 120_000)
 })
 
@@ -227,7 +228,7 @@ describe("the fabrication notes list what a fab needs", () => {
     expect(text).toMatch(/Via drill +0\.15 mm minimum \(through holes: 0\.2 mm\)/)
     expect(text).toMatch(/Minimum clearance +0\.05 mm/)
     expect(text).toMatch(/Curve accuracy +0\.002 mm/)
-    expect(/[–—]/.test(text)).toBe(false)
+    expect(DASHES.test(text)).toBe(false)
   })
 })
 

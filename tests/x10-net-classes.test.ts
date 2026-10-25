@@ -64,6 +64,22 @@ describe("which class a net is in", () => {
     // a pattern that is no regular expression has only the wildcard matcher
     expect(m("a[", "a[")).toBe(true)
     expect(m("a[", "a")).toBe(false)
+    expect(m("*", "")).toBe(true)
+    expect(m("a*b*c", "aXXbYYc")).toBe(true)
+    expect(m("a*b*c", "aXXbYY")).toBe(false)
+    expect(m("??", "\u00e9\u{1F600}")).toBe(true)
+  })
+  it("a hostile pattern cannot hang a lookup: stars take linear time, and a regular expression that repeats a group is not run", () => {
+    const name = "a".repeat(200)
+    const t0 = performance.now()
+    expect(patternMatcher("a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b")(name)).toBe(false)
+    // (a+)+$ would take exponential time on a name that ends in b; it is read as a wildcard pattern only
+    expect(patternMatcher("(a+)+$")("a".repeat(40) + "b")).toBe(false)
+    expect(patternMatcher("(a|a)*b")("a".repeat(40) + "c")).toBe(false)
+    // a back reference and a pattern over the limit are not run either
+    expect(patternMatcher("(a)\\1")("aa")).toBe(false)
+    expect(patternMatcher("a".repeat(500))("a".repeat(500))).toBe(true)
+    expect(performance.now() - t0).toBeLessThan(500)
   })
   it("the Default class takes the rules' sizes, and a class's own sizes override them", () => {
     const r = rules({ clearance: 0.2, traceWidth: 0.25, viaDiameter: 0.6, viaDrill: 0.3, netClasses: [cls("HV", { nets: ["HV"], clearance: 0.6, traceWidth: 0.4 })], defaultClass: { diffPairWidth: 0.2 } })
@@ -395,3 +411,42 @@ function segSeg(a: { x: number; y: number }, b: { x: number; y: number }, c: { x
   if (intersects) return 0
   return Math.min(pt(a, c, d), pt(b, c, d), pt(c, a, b), pt(d, a, b))
 }
+
+describe("the fine-pitch router uses classes too", () => {
+  it("routes the USB-C board with the supply nets in classes of their own: no clearance error, each net at its class's width and via size", async () => {
+    const { firstRequest } = await import("./sakura-session")
+    const { drcErrors } = await import("./finePitch")
+    const s = firstRequest()
+    s.must("layout_pcb")
+    s.must("set_pour", { net: "GND", layer: "both" })
+    const base = s.project
+    const p: Project = {
+      ...base,
+      rules: {
+        ...base.rules,
+        netClasses: [
+          cls("Supply", { nets: ["VBUS", "3V3"], traceWidth: 0.45, clearance: 0.25, viaDiameter: 0.7, viaDrill: 0.35 }),
+          cls("Fine", { nets: ["USB_DP", "USB_DM"], clearance: 0.15, traceWidth: 0.2 }),
+        ],
+      },
+    }
+    const t0 = performance.now()
+    const res = autoroute(p, { timeLimitMs: Infinity })
+    const ms = performance.now() - t0
+    expect(drcErrors(res.project).map((v) => v.message)).toEqual([])
+    const pcb = analyzePcb(res.project, computeConnectivity(res.project))
+    const conn = computeConnectivity(res.project)
+    const id = (name: string) => conn.nets.find((n) => n.name === name)?.id
+    const widths = (name: string) => res.project.traces.filter((t) => pcb.traceNet.get(t.id) === id(name)).map((t) => t.width)
+    // the supply nets are laid at their class's width or narrower where a pad is too small, never wider
+    for (const w of [...widths("VBUS"), ...widths("3V3")]) expect(w).toBeLessThanOrEqual(0.45 + 1e-9)
+    expect(Math.max(...widths("VBUS"))).toBeCloseTo(0.45, 6)
+    // vias on those nets are the class's, and every other via is the rules'
+    for (const v of res.project.vias) {
+      const net = pcb.viaNet.get(v.id)
+      const own = net === id("VBUS") || net === id("3V3")
+      expect([v.diameter, v.drill]).toEqual(own ? [0.7, 0.35] : [base.rules.viaDiameter, base.rules.viaDrill])
+    }
+    console.log("classed fine-pitch route", { ms: Math.round(ms), remaining: res.remaining, routed: res.routed })
+  }, 240_000)
+})

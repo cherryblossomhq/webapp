@@ -19,6 +19,8 @@ import { importKicadProject, type ProjectFile } from "../src/model/kicad/project
 import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
 import { rawSymbols, type RawSymbol } from "./kicad-census/drawing-sch.mjs"
 import { boxCorners, boxTextAt } from "../src/model/sheetItems"
+import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { isDeepStrictEqual } from "node:util"
 import { rawItems } from "./kicad-census/items-sch.mjs"
 import { boardPadNets, deriveNets } from "./kicad-census/netlist-sch.mjs"
 import { needsSch } from "./kicad-census/needs-sch.mjs"
@@ -205,6 +207,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       let itemsCompared = 0
       let itemWorst = 0
       const itemProblems: string[] = []
+      let savedAndLoaded = 0
+      const saveProblems: string[] = []
       const sidecars = JSON.parse(readFileSync(join(CENSUS, "sidecars.json"), "utf8")) as Record<string, any>[]
       const censusSch = new Map(sidecars.filter((r) => r.kind === "kicad_sch").map((r) => [r.file as string, r]))
       const links = JSON.parse(readFileSync(join(CENSUS, "links.json"), "utf8")) as Record<string, any>[]
@@ -244,6 +248,12 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           const imp = importKicadSchematic(new Uint8Array(bytes))
           row.import = imp.status === "imported" ? "imported" : `refused, ${imp.reason}`
           if (imp.status === "imported") {
+            // saved and loaded back: the project file keeps what the import built, every list of it, exactly (a drawing a KiCad sheet gave that the reader would drop is a loss)
+            const back = parseProjectFile(serializeProject(imp.project), { id: imp.project.id })
+            savedAndLoaded++
+            for (const k of ["components", "wires", "labels", "drawings", "blocks", "netNames", "parts", "symbols", "footprints", "properties"] as const) {
+              if (!isDeepStrictEqual(back[k], imp.project[k])) saveProblems.push(`${file}: ${k} differ after a save and a load${k === "drawings" ? ` (${imp.project.drawings?.length ?? 0} drawings, ${back.drawings?.length ?? 0} after)` : ""}`)
+            }
             // S4: every item of the sheet against the raw file, number by number, by a reader that shares no code with `src`
             const raw = rawItems(text)
             const mine = (imp.project.items ?? []).filter((i) => i.kind !== "junction" && i.kind !== "noconnect")
@@ -578,6 +588,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         itemsCompared,
         itemWorstMm: Number(itemWorst.toFixed(6)),
         itemProblems: itemProblems.length,
+        savedAndLoaded,
+        saveProblems: saveProblems.length,
         drawingSymbols: drawingCount,
         drawingBytes,
         drawingWorstMm: Number(drawingWorst.toFixed(6)),
@@ -617,6 +629,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(drawingProblems.slice(0, 5)).toEqual([])
       expect(summary.drawingWorstMm).toBeLessThanOrEqual(0.001)
       expect(itemProblems.slice(0, 5)).toEqual([])
+      expect(saveProblems.slice(0, 5)).toEqual([])
+      expect(savedAndLoaded).toBe(summary.imported3a)
       expect(itemWorst).toBeLessThanOrEqual(0.001)
       expect(itemsCompared).toBeGreaterThan(300)
       // the real gate: with S2, S4 and S7 built, the files slices-sch.mjs puts in slice 3b import (71 of the 184 real files, 38.6%)

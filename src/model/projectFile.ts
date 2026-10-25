@@ -391,7 +391,10 @@ function normalizeDrawing(item: Record<string, unknown> & { id: string }): Schem
     return clean({ ...item, ...style, type: "line", points, closed: item.closed === true && points.length > 2, arrows } as DrawingLine)
   }
   if (item.type === "rect") {
-    if (!finite(item.x, item.y, item.width, item.height) || !((item.width as number) > 0 && (item.height as number) > 0)) return null
+    // A rectangle KiCad drew can have no width or no height (a line or a point drawn as a box): it carries a stroke or a fill of its own and stays. One the tools made has a size.
+    const kicadLook = exactOwn.stroke !== undefined || exactOwn.paint !== undefined
+    const [w, h] = [item.width as number, item.height as number]
+    if (!finite(item.x, item.y, item.width, item.height) || !(kicadLook ? w >= 0 && h >= 0 : w > 0 && h > 0)) return null
     const radius = finite(item.radius) && (item.radius as number) > 0 ? (item.radius as number) : undefined
     return clean({ ...item, ...style, type: "rect", radius } as DrawingBox)
   }

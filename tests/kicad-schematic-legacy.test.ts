@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { kid, numAt } from "../src/model/kicad/board/sexpr"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { schematicPins } from "../src/model/instances"
 import { importKicadProject, pickProjectFiles } from "../src/model/kicad/project"
@@ -129,6 +130,37 @@ describe("the records of a legacy schematic", () => {
     }
     expect(seen.size).toBe(8)
     expect(orientationOf([1, 1, 1, 1])).toBeNull()
+  })
+
+  it("a field is drawn at P + T(F - P): its stored place is turned and mirrored with the symbol, its angle and justification are not", () => {
+    // The symbol is at (1000, 2000) mils. The reference is stored at +100, 0, the value at +100, +100, the hidden footprint (vertical) at -70, 0.
+    // The offsets drawn are worked out by hand from the matrix: x' = x1 dx + y1 dy, y' = x2 dx + y2 dy (5.1 `SCH_FIELD::GetPosition`, which 6.0 saves).
+    const table: [string, [number, number], [number, number], [number, number]][] = [
+      ["1 0 0 -1", [100, 0], [100, -100], [-70, 0]],
+      ["0 1 1 0", [0, 100], [100, 100], [0, -70]],
+      ["-1 0 0 1", [-100, 0], [-100, 100], [70, 0]],
+      ["0 -1 -1 0", [0, -100], [-100, -100], [0, 70]],
+      ["1 0 0 1", [100, 0], [100, 100], [-70, 0]],
+      ["-1 0 0 -1", [-100, 0], [-100, -100], [70, 0]],
+      ["0 1 -1 0", [0, -100], [100, -100], [0, 70]],
+      ["0 -1 1 0", [0, 100], [-100, 100], [0, -70]],
+    ]
+    for (const [matrix, ref, val, fp] of table) {
+      const t = HEAD() + comp({ lib: "Device:R", ref: "R1", ts: R1, at: [1000, 2000], matrix }) + END
+      const sym = readKicadSchematic(legacyToKicadText(readLegacySchematicText(t))).schematic.symbols[0]
+      const prop = (name: string) => sym.props.find((p) => p.name === name)!
+      const place = (name: string, off: [number, number]) => {
+        expect(prop(name).at!.x, `${matrix} ${name} x`).toBeCloseTo((1000 + off[0]) * 0.0254, 6)
+        expect(prop(name).at!.y, `${matrix} ${name} y`).toBeCloseTo((2000 + off[1]) * 0.0254, 6)
+      }
+      place("Reference", ref)
+      place("Value", val)
+      place("Footprint", fp)
+      // the angle and the justification are saved as stored, whatever the turn (`EDA_TEXT::Format`, `saveField` of 6.0)
+      expect(numAt(kid(prop("Reference").node, "at"), 3), matrix).toBe(0)
+      expect(numAt(kid(prop("Footprint").node, "at"), 3), matrix).toBe(90)
+      expect(JSON.stringify(kid(kid(prop("Reference").node, "effects"), "justify")), matrix).toContain("left")
+    }
   })
 
   it("the identity is a plain symbol, a flip of the y axis a mirror", () => {

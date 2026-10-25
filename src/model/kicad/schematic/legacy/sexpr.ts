@@ -80,11 +80,23 @@ const font = (sizeMil: number, italic: boolean, bold: boolean) => {
   return `(font (size ${s} ${s})${bold ? ` (thickness ${boldPen(sizeMil)})` : ""}${italic ? " italic" : ""}${bold ? " bold" : ""})`
 }
 
-/** A symbol's field as a property, as KiCad 6 writes it. */
-function property(f: LegacyField): string {
+/**
+ * A symbol's field as a property, as KiCad 6 writes it.
+ *
+ * KiCad 5 stores a field's place before the symbol's turn and mirror, and draws it at
+ * `P + T(F - P)` (5.1 `SCH_FIELD::GetPosition`). KiCad 6.0 loads the stored place with `SetTextPos`
+ * and saves `GetPosition()`, which is the same transform, so a converted file has the drawn place.
+ * The angle and the justification are saved as stored (`EDA_TEXT::Format`, `saveField` of 6.0).
+ */
+function property(f: LegacyField, c: LegacyComp): string {
+  const [x1, y1, x2, y2] = c.matrix
+  const dx = f.x - c.x
+  const dy = f.y - c.y
+  const px = c.x + x1 * dx + y1 * dy
+  const py = c.y + x2 * dx + y2 * dy
   const name = f.name !== null && f.index >= 4 ? f.name : defaultFieldName(f.index)
   const just = [f.hjust === "L" ? "left" : f.hjust === "R" ? "right" : "", f.vjust === "T" ? "top" : f.vjust === "B" ? "bottom" : ""].filter(Boolean)
-  return `(property ${q(name)} ${q(f.text)} (at ${xy(f.x, f.y)} ${f.orient === "V" ? 90 : 0}) (effects ${font(f.size, f.italic, f.bold)}${just.length ? ` (justify ${just.join(" ")})` : ""}${f.attrs ? " hide" : ""}))`
+  return `(property ${q(name)} ${q(f.text)} (at ${xy(px, py)} ${f.orient === "V" ? 90 : 0}) (effects ${font(f.size, f.italic, f.bold)}${just.length ? ` (justify ${just.join(" ")})` : ""}${f.attrs ? " hide" : ""}))`
 }
 
 /** The angle of a text and its justification, from a legacy orientation (`SetLabelSpinStyle` of KiCad 6.0, with `loadText`'s change of numbering for local labels). */
@@ -129,7 +141,7 @@ function symbolNode(c: LegacyComp): string {
   if (!o) throw new LegacyParseError("bad-value", `Line ${c.line}: the symbol ${c.libName} has an orientation matrix (${c.matrix.join(" ")}) that is no turn or mirror of KiCad's.`, c.line, "$Comp>orientation")
   const parts = [
     `(symbol (lib_id ${q(c.libName)}) (at ${xy(c.x, c.y)} ${o.angle})${o.mirror ? ` (mirror ${o.mirror})` : ""} (unit ${c.unit}) (body_style ${c.convert}) (uuid ${q(timestampUuid(c.ts))})`,
-    ...c.fields.map(property),
+    ...c.fields.map((f) => property(f, c)),
   ]
   if (c.ar.length) {
     parts.push(`(instances (project "" ${c.ar.map((a) => `(path ${q(instancePath(a.path))} (reference ${q(a.reference)}) (unit ${a.part}))`).join(" ")}))`)

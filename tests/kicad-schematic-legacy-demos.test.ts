@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { legacyPartToSymbolText, readLegacyLibraryText } from "../src/model/kicad/schematic/legacy/lib"
 import { readLegacySchematicText } from "../src/model/kicad/schematic/legacy/sch"
 import { legacyToKicadText } from "../src/model/kicad/schematic/legacy/sexpr"
+import { kid, numAt } from "../src/model/kicad/board/sexpr"
 import { readKicadSchematic } from "../src/model/kicad/schematic/read"
 import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
 import type { LibSymbol } from "../src/model/kicad/schematic/types"
@@ -163,6 +164,16 @@ describe.skipIf(!CORPUS || !existsSync(LEGACY))("the KiCad demos as the importer
     const bad: string[] = []
     const byClass = new Map<string, [number, number]>()
     const turnBad: string[] = []
+    let fieldsCompared = 0
+    let fieldsBad = 0
+    let fieldsTurned = 0
+    let fieldsReplaced = 0
+    let fieldsRelaid = 0
+    let fieldsUnplaced = 0
+    let fieldsMoved = 0
+    let fieldsMovedRight = 0
+    let fieldsMovedRaw = 0
+    const fieldBad: string[] = []
     for (const dir of readdirSync(LEGACY)) {
       const modernDir = join(MODERN, dir)
       if (!existsSync(modernDir)) continue
@@ -171,7 +182,8 @@ describe.skipIf(!CORPUS || !existsSync(LEGACY))("the KiCad demos as the importer
         const stem = lf.replace(/\.sch$/, "")
         const m = modern.find((x) => x.f === `${stem}.kicad_sch`)
         if (!m) continue
-        const mine = readKicadSchematic(legacyToKicadText(readLegacySchematicText(readFileSync(join(LEGACY, dir, lf)).toString("latin1")))).schematic
+        const leg = readLegacySchematicText(readFileSync(join(LEGACY, dir, lf)).toString("latin1"))
+        const mine = readKicadSchematic(legacyToKicadText(leg)).schematic
         const near = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01
         for (const sym of mine.symbols) {
           const name = sym.libId.slice(sym.libId.indexOf(":") + 1)
@@ -188,7 +200,36 @@ describe.skipIf(!CORPUS || !existsSync(LEGACY))("the KiCad demos as the importer
           for (const p of sym.props) {
             const t = their.props.find((q) => q.name === p.name)
             if (!t || !t.at || !p.at) continue
-            // the places of the fields are not compared: KiCad's own conversion of the demos laid them out again (a reference and a value swap places, a hidden field moves)
+            // A field is stored before the symbol's turn and mirror and drawn at `P + T(F - P)` (5.1 `SCH_FIELD::GetPosition`), and KiCad 6.0 saves that place: the places are compared.
+            // Only the shown fields are compared (a hidden field may sit anywhere and a later save may have moved it), and not these, which KiCad's later editing explains:
+            //  - a symbol that was turned by hand after the conversion (its turn differs), whose fields went with it;
+            //  - a field whose text was turned from vertical to horizontal, or back (a field laid out again by hand);
+            //  - a field the legacy file never placed (stored at 0 0 while shown), which a later save put somewhere.
+            if (!p.hide && !t.hide && p.value !== "") {
+              const comp = leg.comps.find((c) => near({ x: c.x * 0.0254, y: c.y * 0.0254 }, sym.at) && c.libName === name && c.unit === sym.unit)
+              const idx = ["Reference", "Value", "Footprint", "Datasheet"].indexOf(p.name)
+              const f = comp?.fields.find((x) => (idx >= 0 ? x.index === idx : x.name === p.name))
+              const myAngle = numAt(kid(p.node, "at"), 3)
+              const theirAngle = numAt(kid(t.node, "at"), 3)
+              if (their.angle !== sym.angle || their.mirror !== sym.mirror) fieldsTurned++
+              else if (their.uuid !== sym.uuid) fieldsReplaced++
+              else if (myAngle !== theirAngle) fieldsRelaid++
+              else if (f && f.x === 0 && f.y === 0) fieldsUnplaced++
+              else {
+                fieldsCompared++
+                const raw = f ? { x: f.x * 0.0254, y: f.y * 0.0254 } : null
+                if (raw && !near(raw, p.at)) {
+                  // the fields where the drawn place and the stored one are not the same: this is what the transform decides
+                  fieldsMoved++
+                  if (near(p.at, t.at)) fieldsMovedRight++
+                  if (near(raw, t.at)) fieldsMovedRaw++
+                }
+                if (!near(p.at, t.at)) {
+                  fieldsBad++
+                  fieldBad.push(`${dir}/${lf} ${sym.props[0]?.value} ${p.name}: ${p.at.x},${p.at.y} against ${t.at.x},${t.at.y}`)
+                }
+              }
+            }
             if (p.hide !== t.hide && p.name !== "Datasheet" && p.name !== "Footprint") prob.push(`${p.name} hidden ${p.hide} against ${t.hide}`)
             if (p.value !== t.value && p.name === "Reference") prob.push(`reference ${p.value} against ${t.value}`)
           }
@@ -207,6 +248,15 @@ describe.skipIf(!CORPUS || !existsSync(LEGACY))("the KiCad demos as the importer
     console.log(JSON.stringify([...byClass]))
     console.log(`compared the placing of ${symbols} symbols (${turned} turned, ${mirrored} mirrored) and ${labels} labels with KiCad's conversion; ${bad.length} differ`)
     console.log(`turn or mirror differs for ${turnBad.length}: ${turnBad.join("; ")}`)
+    console.log(`fields: ${fieldsCompared} shown fields compared, ${fieldsBad} differ; ${fieldsMoved} of them are placed by the transform (${fieldsMovedRight} agree with KiCad, ${fieldsMovedRaw} agree with the stored place); left out: ${fieldsTurned} of symbols turned by hand, ${fieldsReplaced} of symbols added later, ${fieldsRelaid} with text turned, ${fieldsUnplaced} never placed:\n${fieldBad.join("\n")}`)
+    // The place of a field: KiCad draws it at `P + T(F - P)`, and the conversion saves that. Of the fields where this differs from the stored place, none agrees with the stored one.
+    // The 15 that differ are fields of symbols that kept their timestamp but were edited by hand afterwards, one field of a pair moved while the other agrees
+    // (`R1` of interf_u: the value at the centre agrees, the reference sits 2.5 mm on the other side of the symbol; `D6` of graphic: the value agrees, the reference moved 10 mm)
+    // or a field of a part moved with a later change of its symbol (`U2` of pic_programmer, four units, each value 1.3 to 3.8 mm off).
+    expect(fieldsMoved).toBeGreaterThan(100)
+    expect(fieldsMovedRaw).toBe(0)
+    expect(fieldsMovedRight / fieldsMoved).toBeGreaterThan(0.85)
+    expect(fieldsBad / fieldsCompared).toBeLessThan(0.1)
     expect(symbols).toBeGreaterThan(100)
     expect(turned).toBeGreaterThan(5)
     expect(mirrored).toBeGreaterThan(0)

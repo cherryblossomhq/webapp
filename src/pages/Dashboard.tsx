@@ -4,6 +4,10 @@ import { openProjectRoute } from "../App"
 import { EXAMPLES, type Example } from "../model/examples"
 import { createProject } from "../model/ops"
 import type { Project } from "../model/types"
+import { entriesFromDrop, entriesFromFiles, isProjectFileDrop } from "../kicadImport/dropped"
+import { KicadImportDialog } from "../kicadImport/KicadImportDialog"
+import { ACCEPTED_EXTENSIONS } from "../kicadImport/pick"
+import { useKicadImport } from "../kicadImport/useKicadImport"
 import { ThemeButton } from "../panels/ThemeButton"
 import {
   actionFailure,
@@ -340,6 +344,8 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
   const [dropping, setDropping] = useState(false)
   const view = useUi((s) => s.settings.projectsView)
   const fileRef = useRef<HTMLInputElement>(null)
+  const kicadRef = useRef<HTMLInputElement>(null)
+  const kicad = useKicadImport(storage)
   const searchRef = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
 
@@ -427,12 +433,14 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
         e.preventDefault()
         dragDepth.current = 0
         setDropping(false)
-        const file = e.dataTransfer.files[0]
-        if (file) importFile(file)
+        const dropped = e.dataTransfer.files
+        // Project files of ours (`.json`) as they always went; anything else is KiCad's, folders included.
+        if (isProjectFileDrop(dropped)) return importFile(dropped[0])
+        kicad.controller.startFromDrop(entriesFromDrop(e.dataTransfer))
       }}
     >
       <header className="sticky top-0 z-20 border-b border-line bg-paper/85 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-[1200px] items-center gap-2 px-6">
+        <div className="mx-auto flex min-h-14 max-w-[1200px] flex-wrap items-center gap-2 px-6 py-2">
           <a href="/" className="flex items-center gap-2 text-[15px] font-[750] tracking-[-0.01em] text-ink hover:opacity-90">
             <img src="/logo.svg" alt="" className="size-[22px]" />
             Cherry Blossom
@@ -441,6 +449,9 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
           <ThemeButton />
           <Button onClick={() => fileRef.current?.click()}>
             <Upload size={15} /> Import
+          </Button>
+          <Button onClick={() => kicadRef.current?.click()}>
+            <CircuitBoard size={15} /> Import KiCad
           </Button>
           <Button variant="primary" onClick={newProject}>
             <Plus size={15} /> New project
@@ -453,6 +464,18 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
             onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) importFile(f)
+              e.target.value = ""
+            }}
+          />
+          <input
+            ref={kicadRef}
+            type="file"
+            multiple
+            accept={ACCEPTED_EXTENSIONS.join(",")}
+            className="hidden"
+            aria-label="KiCad files"
+            onChange={(e) => {
+              if (e.target.files?.length) kicad.controller.start(entriesFromFiles(e.target.files))
               e.target.value = ""
             }}
           />
@@ -538,7 +561,7 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
               </span>
               <p className="mt-3 font-[650] text-ink">No projects yet</p>
               <p className="mt-1 max-w-[46ch] text-[13px] text-ink-2">
-                Start a blank project or open an example above. To bring in a project file, use Import or drop it on this page.
+                Start a blank project or open an example above. To bring in a project file, use Import or drop it on this page; a KiCad board or project goes in with Import KiCad.
               </p>
             </div>
           ) : shown.length === 0 ? (
@@ -587,10 +610,18 @@ export function Dashboard({ storage }: { storage: ProjectStorage }) {
           <div className="flex flex-col items-center rounded-[16px] border-2 border-dashed border-brand/60 bg-surface px-12 py-10 text-center shadow-dialog">
             <FileUp size={26} className="text-brand" />
             <p className="mt-3 text-[15px] font-[650] text-ink">Drop to import</p>
-            <p className="mt-1 text-[13px] text-ink-2">A Cherry Blossom project file (.json)</p>
+            <p className="mt-1 text-[13px] text-ink-2">A Cherry Blossom project file (.json), or a KiCad board, project or folder</p>
           </div>
         </div>
       )}
+      <KicadImportDialog
+        state={kicad.state}
+        controller={kicad.controller}
+        onOpen={(id) => {
+          kicad.controller.close()
+          openProjectRoute(id)
+        }}
+      />
       {deleting && <ConfirmDelete meta={deleting} location={storage.location} onCancel={cancelDelete} onConfirm={confirmDelete} />}
     </div>
   )

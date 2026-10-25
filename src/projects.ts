@@ -19,5 +19,16 @@ export {
   removeStoredProject,
   renameStoredProject,
 } from "./store/projectActions"
+// The KiCad import, for a projects page with a look of its own: the same controller the editor's
+// dashboard runs, and the report as data to draw (`src/kicadImport/`, AGENTS.md).
+export { connectAnalytics, type EventSink } from "./kicadImport/analytics"
+export { KicadImportController, type ImportState } from "./kicadImport/controller"
+export { downloadReport } from "./kicadImport/download"
+export { entriesFromDrop, entriesFromFiles, isProjectFileDrop } from "./kicadImport/dropped"
+export { useModal } from "./kicadImport/focus"
+export { ACCEPTED_EXTENSIONS } from "./kicadImport/pick"
+export { PHASE_LABELS } from "./kicadImport/protocol"
+export { sizeText } from "./kicadImport/save"
+export { reportLead, reportSections, reportTitle, reportTone, saveNextStep, type ReportSection } from "./kicadImport/sections"
 export { moveBrowserProjects } from "./store/storage"
 export type { ProjectStorage, StoredProjectSummary } from "./store/storage"

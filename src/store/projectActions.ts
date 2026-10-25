@@ -1,4 +1,5 @@
 import { downloadText, projectFileName } from "../export/bundle"
+import { forgetReport } from "../kicadImport/reportStore"
 import { parseProjectFile, ProjectFileError, serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { openStoredProject, projectRecord, type ProjectStorage, type SaveRefusal, type StoredProjectSummary } from "./storage"
@@ -66,6 +67,7 @@ export async function renameStoredProject(storage: ProjectStorage, m: StoredProj
 export async function removeStoredProject(storage: ProjectStorage, id: string) {
   await storage.remove(id)
   previews.delete(id)
+  forgetReport(id)
 }
 
 /** Stored projects for previews, read again only once a project has changed. */

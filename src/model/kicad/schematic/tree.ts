@@ -110,8 +110,8 @@ export function readSchematicTree(files: KicadFiles, rootPath: string): Schemati
   const tried = new Map<string, "ok" | "bad">()
 
   const load = (path: string, data: string | Uint8Array): KicadSchematic => {
-    // A KiCad 5 or older sheet is read with the libraries of the project the root sheet is in.
-    const read = isLegacySchematic(data) ? readLegacySchematic(data, (tree.legacy ??= new LegacySources(index, rootFound.path))) : readKicadSchematic(data)
+    // A KiCad 5 or older sheet (a `.sch`) is read with the libraries of the project the root sheet is in; a `.kicad_sch` that holds one is not a file KiCad wrote, and the KiCad 6 reader says so.
+    const read = !path.toLowerCase().endsWith(".kicad_sch") && isLegacySchematic(data) ? readLegacySchematic(data, (tree.legacy ??= new LegacySources(index, rootFound.path))) : readKicadSchematic(data)
     for (const e of read.report.entries) tree.report.entries.push({ ...e, object: `${path}: ${e.object}` })
     tree.files.set(path, { path, schematic: read.schematic, text: read.text })
     return read.schematic

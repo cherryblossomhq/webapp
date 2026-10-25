@@ -50,10 +50,9 @@ import { emptyContext, reportText, summarize as summarizeImport } from "../src/k
 
 /** The boards that import whose copper differs from KiCad's stored fill by more than a tenth of it and 5 mm2: kept as a list so a change that moves another board in is seen. Filled in after the run. */
 const ZONE_FILL_OUTLIERS: string[] = [
-  // Two copies of one KiCad 4 board and an ESP-12 board, kept as a list so a change that moves another board in is seen. Their diff images show
-  // KiCad copper where the editor has none or the other way round with no rule of the fill behind it that was found; the stored fill may be older than the board.
-  "pcbench/PCBs/Inkjet_InkjetDriver/raw.kicad_pcb",
-  "pcbench/PCBs/Inkjet__autosave-InkjetDriver/raw.kicad_pcb",
+  // One ESP-12 board, kept as a list so a change that moves another board in is seen. Its diff image shows KiCad copper where the editor has none
+  // or the other way round with no rule of the fill behind it that was found; the stored fill may be older than the board. (The two copies of one
+  // KiCad 4 board that were here are in: their zones of equal priority overlap in KiCad 5 and earlier, which cut only out of strictly higher ones.)
   "pcbench/PCBs/esp8266_link_test_esp12e-generics/raw.kicad_pcb",
 ]
 

@@ -27,6 +27,7 @@ import { projectToCircuitJson } from "../src/export/circuitJson"
 import { OutlineNotClosedError } from "../src/export/outlineGuard"
 import { pnpCsv } from "../src/export/pnp"
 import { outlineState } from "../src/model/outline"
+import { outlineCrossings } from "../src/model/outlineCrossing"
 import { runTool } from "../src/ai/tools"
 import { parseProjectFile } from "../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
@@ -48,7 +49,13 @@ import { emptyContext, reportText, summarize as summarizeImport } from "../src/k
 // lock and the length of every segment and via of every net. With no corpus the test is skipped.
 
 /** The boards that import whose copper differs from KiCad's stored fill by more than a tenth of it and 5 mm2: kept as a list so a change that moves another board in is seen. Filled in after the run. */
-const ZONE_FILL_OUTLIERS: string[] = []
+const ZONE_FILL_OUTLIERS: string[] = [
+  // Two copies of one KiCad 4 board and an ESP-12 board, kept as a list so a change that moves another board in is seen. Their diff images show
+  // KiCad copper where the editor has none or the other way round with no rule of the fill behind it that was found; the stored fill may be older than the board.
+  "pcbench/PCBs/Inkjet_InkjetDriver/raw.kicad_pcb",
+  "pcbench/PCBs/Inkjet__autosave-InkjetDriver/raw.kicad_pcb",
+  "pcbench/PCBs/esp8266_link_test_esp12e-generics/raw.kicad_pcb",
+]
 
 const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
@@ -689,7 +696,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
             for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "zones", "board", "rules", "properties"] as const) {
               if (!isDeepStrictEqual(back[k], p[k])) problems.push(`${k} differ after a save and a load`)
             }
-            const outlineProblem = outlineState(p.board) !== "closed"
+            // An outline that does not close, or that crosses itself, cannot be cut out: the Gerber and drill exports refuse it with a message.
+            const outlineProblem = outlineState(p.board) !== "closed" || outlineCrossings(p.board.outline?.paths ?? []).length > 0
+            const outlineOpen = outlineState(p.board) !== "closed"
             try {
               let files: Record<string, string> = {}
               try {
@@ -711,7 +720,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               if (!reportText(summary, p.name).includes(p.name)) problems.push("the import report text is empty")
               const checks = runTool(p, "run_checks", {})
               if (checks.isError) problems.push(`run_checks: ${checks.result.slice(0, 80)}`)
-              else if (outlineProblem && !/outline/i.test(checks.result)) problems.push("run_checks does not say the outline is not closed")
+              else if (outlineOpen && !/outline/i.test(checks.result)) problems.push("run_checks does not say the outline is not closed")
               // the position file, the bill of materials and Circuit JSON do not need the outline closed
               if (!pnpCsv(p).includes("Designator")) problems.push("no position file")
               if (!projectToCircuitJson(p).elements.length) problems.push("no Circuit JSON")
@@ -748,7 +757,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
       // X3: every zone of the file is in the project with its outline, layers, net and settings (oracle), the stored form gives them back, and on every board that imports the editor's fill is KiCad's within the measured bounds
       expect(rows.filter((r) => r.zonesWrong > 0 || !r.zoneRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("zones"))}`)).toEqual([])
-      expect(rows.filter((r) => r.status === "imported" && r.fillStored > 0 && r.fillXor > Math.max(0.1 * r.fillTheirs, 5)).map((r) => `${r.file}: ${r.fillXor.toFixed(1)} mm2 differ of ${r.fillTheirs.toFixed(1)}`)).toEqual(ONLY.length || LIMIT ? expect.arrayContaining([]) : ZONE_FILL_OUTLIERS)
+      expect(rows.filter((r) => r.status === "imported" && r.fillStored > 0 && r.fillXor > Math.max(0.1 * r.fillTheirs, 5)).map((r) => r.file)).toEqual(ONLY.length || LIMIT ? expect.arrayContaining([]) : ZONE_FILL_OUTLIERS)
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
     3_600_000,

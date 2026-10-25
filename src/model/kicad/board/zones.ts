@@ -86,7 +86,8 @@ export function convertZones(cx: ZoneContext): ZoneResult {
   const loose: string[] = []
   const widest = edgeWidth(board)
   for (const z of board.zones) {
-    if (z.kind === "placement") continue
+    // A zone with a layer that is not copper among its layers is X26 (the board is refused for it before it gets here).
+    if (z.kind === "placement" || !zoneOnlyCopper(z, board)) continue
     const layers = zoneCopperLayers(z, board)
     const paths = z.rings.map(ringPath).filter((p): p is ShapePath => p !== null)
     if (!layers.length || paths.length === 0 || z.rings[0].length < 3) {

@@ -623,7 +623,16 @@ class Router {
     const snapEnd = (p: Vec2, shapes: Shape[], layer: CopperLayer): Vec2 => {
       for (const sh of shapes) {
         if (!sh.layers.includes(layer)) continue
-        if (sh.kind === "pad" && pointPadDistance(p, sh.pad) === 0) return { x: sh.pad.x, y: sh.pad.y }
+        if (sh.kind === "pad" && pointPadDistance(p, sh.pad) === 0) {
+          // A trace wider than its pad would run from the pad's centre, and the keepouts around the other nets' copper were made for cell centres, not for that point:
+          // with classes, where the cell at the centre is in another net's keepout, the trace starts where the search did, still inside the pad.
+          if (this.rr.classed) {
+            const [cx, cy] = this.cellOf({ x: sh.pad.x, y: sh.pad.y })
+            const v = this.inGrid(cx, cy) ? owner[layer === "top" ? 0 : 1][cy * nx + cx] : FREE
+            if (v !== FREE && v !== net) return p
+          }
+          return { x: sh.pad.x, y: sh.pad.y }
+        }
         if (sh.kind === "via" && Math.hypot(p.x - sh.at.x, p.y - sh.at.y) <= sh.diameter / 2) return sh.at
         if (sh.kind === "segment" && pointSegmentDistance(p, sh.a, sh.b) <= sh.width / 2) {
           const q = closestPointOnSegment(p, sh.a, sh.b)

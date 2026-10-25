@@ -61,6 +61,9 @@ export function NetClassesSection({ project }: { project: Project }) {
   )
 }
 
+/** The tooltip on a class entry that matches no net of the board. */
+export const STALE_NET_HINT = "No net on this board has this name, so this entry does nothing. A net may have been renamed. Take it out, or add the net under its new name."
+
 const FIELD_ROWS: { field: ClassField; label: string; hint: string; group: "main" | "pair" | "micro" }[] = [
   { field: "clearance", label: "Clearance", hint: "Copper to copper of another net", group: "main" },
   { field: "traceWidth", label: "Trace width", hint: "Width of new traces and the autorouter's on these nets", group: "main" },
@@ -119,14 +122,23 @@ function ClassCard({ cls, rules, nets }: { cls: NetClass; rules: DesignRules; ne
         <div className="space-y-1">
           {cls.nets.length === 0 && <p className="text-[12px] text-ink-3">No nets yet.</p>}
           <ul className="flex flex-wrap gap-1">
-            {cls.nets.map((n) => (
-              <li key={n} className="flex items-center gap-1 rounded-[6px] bg-chrome px-1.5 py-0.5 text-[12px]">
-                <span className="mono">{n}</span>
-                <button type="button" aria-label={`Take ${n} out of ${cls.name}`} className="text-ink-3 hover:text-ink" onClick={() => commitRules((r) => assignNet(r, n, null))}>
-                  <X size={12} />
-                </button>
-              </li>
-            ))}
+            {cls.nets.map((n) => {
+              // a net the board no longer has (after a label rename, say) is listed but changes nothing
+              const stale = !nets.includes(n)
+              return (
+                <li
+                  key={n}
+                  data-stale={stale ? "true" : undefined}
+                  title={stale ? STALE_NET_HINT : undefined}
+                  className={`flex items-center gap-1 rounded-[6px] bg-chrome px-1.5 py-0.5 text-[12px] ${stale ? "opacity-50" : ""}`}
+                >
+                  <span className={`mono ${stale ? "line-through" : ""}`}>{n}</span>
+                  <button type="button" aria-label={`Take ${n} out of ${cls.name}`} className="text-ink-3 hover:text-ink" onClick={() => commitRules((r) => assignNet(r, n, null))}>
+                    <X size={12} />
+                  </button>
+                </li>
+              )
+            })}
           </ul>
           {available.length > 0 && (
             <select

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { classIndex } from "../src/model/netClasses"
-import { NetClassesSection, NetClassField } from "../src/panels/NetClassesSection"
+import { NetClassesSection, NetClassField, STALE_NET_HINT } from "../src/panels/NetClassesSection"
 import type { Project } from "../src/model/types"
 import { projectApi } from "../src/store/projectStore"
 
@@ -125,6 +125,20 @@ describe("the Net classes section", () => {
     expect(live().rules.netClasses![0].patterns).toEqual([`${net.slice(0, 1)}*`])
     mount(view())
     expect(document.body.textContent).toMatch(/Also takes \d+ nets? by pattern/)
+  })
+  it("dims a listed net the board no longer has, with a tooltip saying so, and leaves the nets it has alone", () => {
+    const net = computeConnectivity(live()).nets.find((n) => n.pins.length > 1)!.name
+    projectApi().commit((p) => ({ ...p, rules: { ...p.rules, netClasses: [{ name: "Power", nets: [net, "OLD_LABEL"] }] } }))
+    mount(view())
+    const chips = [...document.querySelectorAll<HTMLElement>("li")]
+    const gone = chips.find((li) => li.textContent === "OLD_LABEL")!
+    const kept = chips.find((li) => li.textContent === net)!
+    expect(gone.dataset.stale).toBe("true")
+    expect(gone.title).toBe(STALE_NET_HINT)
+    expect(gone.className).toMatch(/opacity-50/)
+    expect(kept.dataset.stale).toBeUndefined()
+    expect(kept.title).toBe("")
+    expect(kept.className).not.toMatch(/opacity-50/)
   })
   it("deleting the last class leaves a board with no classes at all", () => {
     add()

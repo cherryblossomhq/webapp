@@ -536,6 +536,37 @@ export function buildSchematicProject(tree: SchematicTree, report: ImportReport,
     if (nearMiss(l.at)) lose("S11", "a label a hair's breadth from a wire, which the editor joins and KiCad does not")
   }
 
+  // KiCad 5 joins two labels only through something that starts a join (`NETLIST_OBJECT_LIST::BuildNetListInfo`): a wire a label is on (`segmentToPointConnect`), or a pin, a
+  // wire end, a pin label, a sheet pin or a no-connect flag at its point (`pointToPointConnect`, which starts from those and from nothing else). Two labels of different
+  // names stacked on an empty point stay two nets in KiCad 5. KiCad 6 joins them (`SCH_LABEL::CanConnect`), and so does the editor, which puts what touches on one net.
+  if (root.legacy) {
+    const textOf = (l: SchLabel) => l.raw
+    const named = root.labels.filter((l) => l.kind === "local" || l.kind === "global")
+    const wireEnds = new Set<string>()
+    for (const w of wiresIn) {
+      wireEnds.add(keyOf(w.a))
+      wireEnds.add(keyOf(w.b))
+    }
+    const onWire = (p: Pt) => wireEnds.has(keyOf(p)) || grid.near(p).some((i) => strictlyInside(q(p.x), q(p.y), q(wiresIn[i].a.x), q(wiresIn[i].a.y), q(wiresIn[i].b.x), q(wiresIn[i].b.y)))
+    const stacked = new Map<string, SchLabel[]>()
+    for (const l of named) (stacked.get(keyOf(l.at)) ?? stacked.set(keyOf(l.at), []).get(keyOf(l.at))!).push(l)
+    for (const [k, here] of stacked) {
+      if (here.length < 2 || new Set(here.map(textOf)).size < 2) continue
+      if (wireEnds.has(k) || pinAt.has(k) || flags.has(k) || onWire(here[0].at)) continue
+      lose("S11", `labels of different names stacked on a point with no wire, pin or no-connect flag (${[...new Set(here.map(textOf))].slice(0, 3).join(", ")}), which KiCad 5 keeps as separate nets and the editor joins`)
+      break
+    }
+    // KiCad 5 compares label names as written: `~A~` and `~A` are two nets. The editor reads both as the name with an overbar on A.
+    const written = new Map<string, Set<string>>()
+    for (const l of named) (written.get(l.text) ?? written.set(l.text, new Set()).get(l.text)!).add(l.raw)
+    for (const [text, raws] of written) {
+      if (raws.size > 1) {
+        lose("S11", `labels written differently (${[...raws].slice(0, 3).join(", ")}) that the editor reads as one name (${text}), which KiCad 5 keeps as separate nets`)
+        break
+      }
+    }
+  }
+
   /** A label with the kind, shape, size, style and fields its file gave it. */
   function labelOf(l: SchLabel): NetLabel | null {
     const turn = ((Math.round(l.angle) % 360) + 360) % 360

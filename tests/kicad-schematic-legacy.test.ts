@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { deriveLegacyNets, newOverbar } from "./kicad-census/netlist-legacy.mjs"
 import { kid, numAt } from "../src/model/kicad/board/sexpr"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { schematicPins } from "../src/model/instances"
@@ -583,6 +587,54 @@ describe("KiCad 5's rules", () => {
     const body = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + wire(4000, 3850, 6000, 3850) + "Text Label 5000 3850 0    60   ~ 0\nSIG\n" + "Text Label 4000 3850 0    60   ~ 0\nOTHER\n"
     const r = imp(mini(body))
     expect(r.status).toBe("imported")
+  })
+
+  it("two labels of different names stacked on an empty point stay two nets in KiCad 5 and are joined by the editor: refused naming S11", () => {
+    // label A on pin 1 of R1, label B on pin 1 of R2, and A and B stacked at a point with nothing else there (5.1 `BuildNetListInfo`: a label joins only through `segmentToPointConnect`)
+    const two = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] })
+    const labels = (a: string, b: string) => `Text Label 5000 3850 0    60   ~ 0\nA\nText Label 7000 3850 0    60   ~ 0\nB\nText Label 9000 9000 0    60   ~ 0\n${a}\nText Label 9000 9000 0    60   ~ 0\n${b}\n`
+    const r = imp(mini(two + labels("A", "B")))
+    expect(r.status).toBe("refused")
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11")
+    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11")?.why).toMatch(/stacked/)
+    // the same name twice is one net either way; two names on a pin, a wire end or a wire's side are joined by that item in KiCad 5 too
+    expect(imp(mini(two + labels("A", "A"))).status).toBe("imported")
+    expect(imp(mini(two + wire(9000, 9000, 9500, 9000) + labels("A", "B"))).status).toBe("imported")
+    expect(imp(mini(two + wire(8500, 9000, 9500, 9000) + labels("A", "B"))).status).toBe("imported")
+    const onPin = `Text Label 5000 3850 0    60   ~ 0\nA\nText Label 5000 3850 0    60   ~ 0\nB\n`
+    expect(imp(mini(two + onPin)).status).toBe("imported")
+  })
+
+  it("labels written differently that the editor reads as one name (~A~ and ~A) stay two nets in KiCad 5: refused naming S11", () => {
+    const two = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] })
+    const r = imp(mini(two + "Text Label 5000 3850 0    60   ~ 0\n~A~\nText Label 7000 3850 0    60   ~ 0\n~A\n"))
+    expect(r.status).toBe("refused")
+    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11")?.why).toMatch(/written differently/)
+    expect(imp(mini(two + "Text Label 5000 3850 0    60   ~ 0\n~A~\nText Label 7000 3850 0    60   ~ 0\n~A~\n")).status).toBe("imported")
+  })
+
+  it("the oracle joins labels as KiCad 5 does: through a wire or a pin, never to each other at an empty point; ~A~ and ~A are two names", () => {
+    const dir = mkdtempSync(join(tmpdir(), "legacy-oracle-"))
+    try {
+      const run = (body: string) => {
+        writeFileSync(join(dir, "t.sch"), HEAD() + body + END)
+        writeFileSync(join(dir, "t-cache.lib"), CACHE(LIB_R, LIB_GND))
+        return deriveLegacyNets(join(dir, "t.sch"))
+      }
+      const two = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] })
+      const lab = (x: number, y: number, t: string) => `Text Label ${x} ${y} 0    60   ~ 0\n${t}\n`
+      const apart = run(two + lab(5000, 3850, "A") + lab(7000, 3850, "B") + lab(9000, 9000, "A") + lab(9000, 9000, "B"))
+      expect(apart.groupOf(`/${R1}#1`)).not.toBe(apart.groupOf(`/${R2}#1`))
+      // the same two labels on a wire end are joined by the wire
+      const joined = run(two + lab(5000, 3850, "A") + lab(7000, 3850, "B") + wire(9000, 9000, 9500, 9000) + lab(9000, 9000, "A") + lab(9000, 9000, "B"))
+      expect(joined.groupOf(`/${R1}#1`)).toBe(joined.groupOf(`/${R2}#1`))
+      // `~A~` and `~A` are two names, shown the same
+      const bar = run(two + lab(5000, 3850, "~A~") + lab(7000, 3850, "~A") + lab(9000, 9000, "~A~") + lab(9000, 9000, "~A"))
+      expect(bar.groupOf(`/${R1}#1`)).not.toBe(bar.groupOf(`/${R2}#1`))
+      expect(newOverbar("~A~")).toBe(newOverbar("~A"))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("a wire end on another wire's side with no junction is not what KiCad 5 joins: refused naming S11", () => {

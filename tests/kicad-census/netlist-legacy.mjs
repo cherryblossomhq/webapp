@@ -235,7 +235,7 @@ function readSheet(file) {
       let kind = t[1]
       if (kind === "GLabel" && version === 1) kind = "HLabel"
       out.labels.push({ kind, x: Number(t[2]), y: Number(t[3]), text: lines[++i].replace(/\\n/g, "\n").replace(/\{slash\}/g, "/") })
-      out.labels[out.labels.length - 1].text = newOverbar(out.labels[out.labels.length - 1].text)
+      // KiCad 5 compares the names as written (`~A~` and `~A` are two nets); the name shown is the converted one (`shown`)
     }
   }
   return out
@@ -346,7 +346,10 @@ export function deriveLegacyNets(rootFile, opts = {}) {
       }
     }
     // coinciding ends: segments, pins, labels, junctions, no-connects, sheet pins and pin labels; a bus-only item is not here
-    for (const group of at.values()) for (let i = 1; i < group.length; i++) uf.union(group[0].id, group[i].id)
+    // Only a segment, a pin, a pin label, a sheet pin or a no-connect flag starts a join (`BuildNetListInfo`, `pointToPointConnect`); labels and junctions are joined by them, never
+    // to each other: two labels (or a label and a junction) at a point where nothing starts one are two items.
+    const starts = (it) => ["segment", "pin", "pinlabel", "sheetpin", "noconn"].includes(it.type)
+    for (const group of at.values()) if (group.some(starts)) for (let i = 1; i < group.length; i++) uf.union(group[0].id, group[i].id)
     const segs = list.filter((s) => s.type === "segment")
     // a junction or a label on the body of a wire
     for (const it of list) {
@@ -357,6 +360,7 @@ export function deriveLegacyNets(rootFile, opts = {}) {
   // names: labels of one text on one sheet; global labels everywhere; pin labels everywhere, and a local label picks up other sheets' pin labels
   const named = items.filter((i) => ["label", "glabel", "hlabel", "pinlabel"].includes(i.type))
   const textKey = (t) => t.text
+  const shown = (t) => newOverbar(t)
   for (const a of named) {
     for (const b of named) {
       if (a === b || textKey(a) !== textKey(b)) continue
@@ -400,7 +404,7 @@ export function deriveLegacyNets(rootFile, opts = {}) {
   for (const [r, list] of byGroup) {
     let best = null
     for (const it of list) if (["label", "glabel", "hlabel", "pinlabel"].includes(it.type) && (!best || better(it, best))) best = it
-    if (best) driver.set(r, { name: isGlobal(best.type) ? best.text : `${sheetName.get(best.sheet) ?? ""}/${best.text}`.replace(/^\/\//, "/"), bare: best.text, prio: prio[best.type] })
+    if (best) driver.set(r, { name: isGlobal(best.type) ? shown(best.text) : `${sheetName.get(best.sheet) ?? ""}/${shown(best.text)}`.replace(/^\/\//, "/"), bare: shown(best.text), prio: prio[best.type] })
   }
   const netName = (r) => {
     const d = driver.get(r)

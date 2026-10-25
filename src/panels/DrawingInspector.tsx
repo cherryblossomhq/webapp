@@ -21,7 +21,7 @@ import { Group, Section, Switch } from "../ui/form"
 type TextPatch = Partial<Pick<DrawingText, "text" | "size" | "align" | "bold" | "italic" | "mono" | "border">>
 type LinePatch = Partial<Pick<DrawingLine, "arrows" | "closed">>
 
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+export const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 /** The value every drawing shares, or undefined when they differ or there are none. */
 function shared<D extends SchematicDrawing, T>(drawings: D[], get: (d: D) => T): T | undefined {
@@ -230,7 +230,7 @@ function TextContent({ text, onCommit }: { text: string; onCommit: (text: string
 }
 
 /** A row of the drawing colours, as they show on this sheet; `none` adds a swatch for no colour at all. */
-function Swatches({
+export function Swatches({
   label,
   value,
   colors,

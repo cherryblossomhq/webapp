@@ -35,13 +35,18 @@ describe("the exact look and the editor's styles", () => {
     expect(isExact(tool)).toBe(false)
     expect(isExact(kicad)).toBe(true)
     expect(applyStyle(tool, { color: "blue" })).toMatchObject({ color: "blue" })
+    // a colour changes the stroke's colour and nothing else of the file's look: the width and the dash stay (and so does the drawing's exactness, so the KiCad export writes it as it is)
     const restyled = applyStyle(kicad, { color: "green" }) as DrawingLine
-    expect(restyled.color).toBe("green")
-    expect(restyled.stroke).toBeUndefined()
+    expect(restyled.stroke).toEqual({ width: 0.02, color: SCH_LIGHT.drawing.green, dash: "dash" })
+    expect(restyled.color).toBeUndefined()
+    expect(isExact(restyled)).toBe(true)
     // a fill replaces the file's fill, nothing else
-    const filled = applyStyle({ ...kicad, paint: { kind: "background" as const } }, { fill: "blue" }) as DrawingLine
-    expect(filled.paint).toBeUndefined()
+    const closed = { ...kicad, points: [...kicad.points, { x: 1, y: 3 }], closed: true as const }
+    const filled = applyStyle({ ...closed, paint: { kind: "background" as const } }, { fill: "blue" }) as DrawingLine
+    expect(filled.paint).toEqual({ kind: "color", color: "rgba(58,81,194,0.13)" })
     expect(filled.stroke).toEqual(kicad.stroke)
+    // an open line takes no fill: asking for one only clears the file's
+    expect((applyStyle({ ...kicad, paint: { kind: "background" as const } }, { fill: "blue" }) as DrawingLine).paint).toBeUndefined()
   })
 
   it("an empty stroke says KiCad's own line: 6 mil wide in wire blue; a named look is the editor's medium ink", () => {
@@ -174,9 +179,10 @@ describe("the exports", () => {
     const sch = Object.entries(files).find(([k]) => k.endsWith(".kicad_sch"))![1]
     expect(sch).toMatch(/\(text "Power"[\s\S]*?\(justify left top\)/)
     expect(sch).toMatch(/\(text_box "Boxed"/)
-    // the line, its arrowhead, the rectangle and the circle
-    expect((sch.match(/\n {2}\(polyline\n/g) ?? []).length).toBe(2)
-    expect(sch).toMatch(/\(rectangle\n[\s\S]*?\(radius 1\.27\)/)
+    // the line, its arrowhead, and the rounded rectangle as KiCad 9 reads it: four lines and four arcs, and its fill as a polygon behind them (no radius, which KiCad 9 does not read)
+    expect((sch.match(/\n {2}\(polyline\n/g) ?? []).length).toBe(7)
+    expect((sch.match(/\n {2}\(arc\n/g) ?? []).length).toBe(4)
+    expect(sch).not.toMatch(/\(rectangle|\(radius 1\.27\)/)
     expect(sch).toMatch(/\(circle\n[\s\S]*?\(color 0 0 255 1\)/)
     expect(sch).toMatch(/\(stroke \(width [\d.]+\) \(type dash\) \(color 31 127 67 1\)\)/)
     expect(notes.join(" ")).toMatch(/no arrowheads/)
@@ -190,7 +196,8 @@ describe("the exports", () => {
     expect(back.status).toBe("imported")
     if (back.status !== "imported") return
     const types = back.project.drawings?.map((d) => d.type).sort()
-    expect(types).toEqual(["circle", "line", "line", "rect", "text", "textbox"].sort())
+    // the rounded rectangle is its eight pieces and a fill polygon now (KiCad 9 has no rounded rectangle)
+    expect(types).toEqual(["arc", "arc", "arc", "arc", "circle", ...Array(7).fill("line"), "text", "textbox"].sort())
   })
 
   it("Circuit JSON still leaves out the drawings the tools made, and says so, and writes the ones a KiCad sheet drew", () => {

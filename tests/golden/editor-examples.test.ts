@@ -65,7 +65,7 @@ const KEEP_TEXT_UP_TO = 6000
 
 const MASKS = [
   "project.file, project.roundtrip, and every edit's project: the file's \"version\" digit, so a format bump alone does not change a hash (the migration is tested in project-file.test.ts). The id, createdAt and updatedAt are not in the file at all.",
-  "kicad.*: every uuid (8-4-4-4-12 hex, wherever written, so which element shares which uuid is not checked) and every ISO timestamp (the .kicad_pro \"created\" and \"modified\"), since the converter makes them from random numbers and the clock. Nothing else.",
+  "kicad.*: every uuid (8-4-4-4-12 hex, wherever written, so which element shares which uuid is not checked) and every ISO timestamp (the .kicad_pro \"created\" and \"modified\") and the title block date (an edit stamps today, in UTC), since the converter makes them from random numbers and the clock. Nothing else.",
   "edits (tidy, clean up, paste, delete, rotate, autoroute): ids the edit makes are numbered from zero (withStableIds), as the shipped examples are built, since a real id carries the time and a random number.",
 ]
 
@@ -96,11 +96,12 @@ function stable(value: unknown): string {
 
 const maskVersion = (text: string) => text.replace(/^(\{"format":"cherryblossom\.project","version":)\d+/, "$1V")
 
-/** The converter's uuids (any 8-4-4-4-12 hex id, wherever it is written) and ISO timestamps. */
+/** The converter's uuids (any 8-4-4-4-12 hex id, wherever it is written), ISO timestamps and the title block date. */
 const maskKicad = (text: string) =>
   text
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "UUID")
     .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "TIMESTAMP")
+    .replace(/\(date "\d{4}-\d\d-\d\d"\)/g, '(date "DATE")')
 
 const file = (p: Project) => maskVersion(serializeProject(p))
 

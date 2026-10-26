@@ -1080,7 +1080,7 @@ const routePcbTool: ToolSpec = {
     const tail = res.remaining ? unroutedAdvice(res) : ""
     return ok(
       res.project,
-      `Routed ${res.routed} connection(s) with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${tail}`,
+      `Routed ${res.routed} connection(s) with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${copperLayers(project.board).length > 2 ? " The router uses the two outer layers only; the inner layers are as they were." : ""}${tail}`,
       res.remaining ? `Routed ${res.routed}, ${res.remaining} left` : `Routed ${res.routed} connections`,
     )
   },

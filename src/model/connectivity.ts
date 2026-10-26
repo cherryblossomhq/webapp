@@ -5,6 +5,7 @@ import { findPart } from "./library"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import { DRIVER, NO_NET, bestDriver, driverName, pinFacts, pinNetName, unitSuffix, type NameDriver, type PinFact } from "./netNames"
 import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses, symbolsOnSheet, useAt, useOfSymbol, type SheetUse } from "./sheets"
+import { aliasLookup, analyzeSheet, mayHaveBuses, memberPairs, type SheetBuses } from "./busConnectivity"
 import type { ComponentInstance, Net, NetLabel, PartDef, Project, Vec2, Wire } from "./types"
 
 export class UnionFind {
@@ -51,6 +52,8 @@ export interface SchematicConnectivity {
    * twice has the same wire ids in both uses, so the plain maps above hold only the first. Absent for a project of one sheet.
    */
   byUse?: { wireNet: Map<string, Map<string, string>>; labelNet: Map<string, Map<string, string>>; junctions: Map<string, Vec2[]> }
+  /** S3: the buses of each sheet (by sheet id), for the checks; absent for a project with no bus, bus alias or label that could name one. */
+  buses?: Map<string, SheetBuses>
 }
 
 export const pinKey = (componentId: string, pin: string) => `${componentId}:${pin}`
@@ -141,6 +144,19 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   } else {
     wiresOf.set(ROOT_SHEET, project.wires)
     labelsOf.set(ROOT_SHEET, project.labels)
+  }
+  // S3: the buses of each sheet, found once however many uses it has.
+  const busy = mayHaveBuses(project)
+  const busesOf = new Map<string, SheetBuses>()
+  const aliases = busy ? aliasLookup(project.busAliases) : undefined
+  const sheetBuses = (sheet: string): SheetBuses | undefined => {
+    if (!busy) return undefined
+    let b = busesOf.get(sheet)
+    if (!b) {
+      b = analyzeSheet(project, sheet, wiresOf.get(sheet) ?? [], labelsOf.get(sheet) ?? [], symbolsOnSheet(project, sheet), aliases)
+      busesOf.set(sheet, b)
+    }
+    return b
   }
   /** Where an item of a use is a node: the root's keep the plain key, so a project with one sheet is worked out as it always was. */
   const wk = (inst: string, id: string) => (inst ? `wire:${inst}|${id}` : `wire:${id}`)
@@ -242,9 +258,18 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       uf.find(key)
       for (const p of w.points) addPointOwner(p, key, use.path)
     }
+    // S3: a bus entry joins what is at its ends, except at an end on a bus: there a net turns into a member and joins nothing (`SCH_BUS_WIRE_ENTRY::ConnectionPropagatesTo`).
+    for (const e of sheetBuses(use.sheet)?.entries ?? []) {
+      const key = `entry:${use.path}|${e.id}`
+      uf.find(key)
+      for (let k = 0; k < 2; k++) if (!e.onBus[k]) addPointOwner(e.ends[k], key, use.path)
+    }
   }
   for (const use of uses) {
+    const sb = sheetBuses(use.sheet)
     for (const l of labelsOf.get(use.sheet) ?? []) {
+      // S3: a label that names a bus is not a net's name: it names the members of its bus.
+      if (sb?.busLabels.has(l.id)) continue
       const key = lk(use.path, l.id)
       itemOf.set(key, { inst: use.path, id: l.id })
       const text = l.name.trim()
@@ -266,6 +291,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       for (const sym of symbolsOnSheet(project, use.sheet)) {
         const childPath = useOfSymbol(use.path, sym)
         for (const pin of sym.pins) {
+          // S3: a pin that names a bus joins the members of its bus (below), not a net of its name.
+          if (sheetBuses(use.sheet)?.busPins.has(`${sym.id}:${pin.id}`)) continue
           const key = `sheetpin:${use.path}|${sym.id}|${pin.id}`
           const text = pin.name.trim()
           uf.find(key)
@@ -277,6 +304,90 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
           uf.union(key, `name:${nameKey}`)
           // KiCad 5 names a net by a label, never by a sheet pin.
           if (useDrivers && kicad !== "kicad5") addDriver(nameKey, { prio: DRIVER.sheetPin, name: driverName(text, "local", humanOf(use.path)), text, kind: "local", from: "pin", depth: use.depth })
+        }
+      }
+    }
+  }
+  // S3: the members of a bus. A net joins a bus by its name, which the names already join; what is left is where one bus is named more than once, and where
+  // sheets meet. The names on one bus, and on the buses a sheet pin and a hierarchical label of one name join through the hierarchy (a chain), are the same
+  // members: KiCad takes the name of the strongest of them for each (the chain's driver, `propagateToNeighbors`) and renames the nets that name a member
+  // another way to it (`matchBusMember`: a vector's by position, a group's by the member's own name without its prefix). So the members of every name
+  // in a chain are the same nets as the driver's, and a net on one is named by the driver's member, as a driver of its own (below a global name).
+  if (busy) {
+    const exact = kicad === "kicad5"
+    const member = (inst: string, kind: "local" | "global" | "hierarchical" | "pin", name: string) => {
+      if (kind === "global") {
+        const on = globalsOn.get(name)
+        if (on) on.add(inst)
+        else globalsOn.set(name, new Set([inst]))
+        return `name:${name}`
+      }
+      localNames.push({ inst, text: name })
+      return `name:${localName(inst, name)}`
+    }
+    // The chain of buses each bus is in: the buses of two uses that a sheet pin and a hierarchical label of one name join.
+    const chain = new UnionFind()
+    const at = (path: string, g: number) => `${path}#${g}`
+    for (const use of uses) sheetBuses(use.sheet)!.groups.forEach((_, gi) => chain.find(at(use.path, gi)))
+    for (const use of uses) {
+      const sb = sheetBuses(use.sheet)!
+      for (const pin of sb.busPins.values()) {
+        const childPath = useOfSymbol(use.path, pin.symbol!)
+        // As for a plain sheet pin, it joins the labels of its name below only where that sheet has a hierarchical label of the name (a view holds one sheet and cannot tell).
+        const below = sheetBuses(pin.symbol!.child)
+        const label = below && [...below.busLabels.values()].find((l) => l.kind === "hierarchical" && l.text === pin.text)
+        if (!scoped && !label) continue
+        for (const m of pin.name.names) uf.union(member(use.path, "pin", m), member(childPath, "hierarchical", m))
+        if (label) chain.union(at(use.path, pin.group), at(childPath, label.group))
+      }
+    }
+    const chains = new Map<string, { path: string; sb: SheetBuses; group: number }[]>()
+    for (const use of uses) {
+      const sb = sheetBuses(use.sheet)!
+      sb.groups.forEach((g, gi) => {
+        if (!g.items.length) return
+        const root = chain.find(at(use.path, gi))
+        const list = chains.get(root)
+        const entry = { path: use.path, sb, group: gi }
+        if (list) list.push(entry)
+        else chains.set(root, [entry])
+      })
+    }
+    for (const list of chains.values()) {
+      // The driver of the chain: a strong one (a hierarchical label or above) over a weak one, then the higher priority, the shorter sheet path, the name that sorts first.
+      type Cand = { path: string; item: SheetBuses["groups"][number]["items"][number]; strong: boolean; prio: number; depth: number; full: string }
+      let best: Cand | undefined
+      for (const e of list) {
+        const d = e.sb.groups[e.group].driver
+        if (!d) continue
+        const prio = d.kind === "global" ? DRIVER.globalLabel : d.kind === "local" ? DRIVER.label : d.kind === "hierarchical" ? DRIVER.hierLabel : DRIVER.sheetPin
+        // KiCad compares the names with their sheet paths in front (`Name()`): a global name as written.
+        const cand: Cand = { path: e.path, item: d, strong: prio >= DRIVER.hierLabel, prio, depth: depthOf(e.path), full: d.kind === "global" ? d.text : `${humanOf(e.path)}${d.text}` }
+        const better = !best || (cand.strong !== best.strong ? cand.strong : cand.prio !== best.prio ? cand.prio > best.prio : cand.depth !== best.depth ? cand.depth < best.depth : cand.full < best.full)
+        if (better) best = cand
+      }
+      if (!best) continue
+      const d = best.item
+      // The driver's own members are names of the sheet too: a net of a member's name on the same sheet joins a global member (a local name joins the global of its text).
+      for (const m of d.name.names) member(best.path, d.kind, m)
+      for (const e of list) {
+        for (const it of e.sb.groups[e.group].items) {
+          if (it === d && e.path === best.path) continue
+          for (const [x, y] of memberPairs(d.name, it.name, exact)) {
+            const a = member(best.path, d.kind, x)
+            const b = member(e.path, it.kind, y)
+            if (a !== b) uf.union(a, b)
+          }
+        }
+      }
+      // A net on a member is named by the driver's member, whatever label of its own it has (but a global name or a power symbol).
+      if (useDrivers && !exact) {
+        const global = d.kind === "global"
+        for (const m of d.name.names) {
+          const key = global ? m : localName(best.path, m)
+          // The member is a name a net can have now (a net with no label of its own on it is named by it).
+          if (!textOfName.has(key)) textOfName.set(key, m)
+          addDriver(key, { prio: global ? DRIVER.globalLabel : DRIVER.label + 0.5, name: driverName(m, global ? "global" : "local", humanOf(best.path)), text: m, kind: global ? "global" : "local", from: "label", depth: best.depth })
         }
       }
     }
@@ -307,9 +418,12 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       probes.push({ p: w.points[0], owner: wk(inst, w.id), isWireEnd: true })
       probes.push({ p: w.points[w.points.length - 1], owner: wk(inst, w.id), isWireEnd: true })
     }
-    for (const l of labelsOf.get(use.sheet) ?? []) probes.push({ p: l, owner: lk(inst, l.id), isWireEnd: false })
+    const sb = sheetBuses(use.sheet)
+    for (const l of labelsOf.get(use.sheet) ?? []) if (!sb?.busLabels.has(l.id)) probes.push({ p: l, owner: lk(inst, l.id), isWireEnd: false })
+    // An end of a bus entry that is not on a bus, on a wire's side, joins it as a wire end does.
+    for (const e of sb?.entries ?? []) for (let k = 0; k < 2; k++) if (!e.onBus[k]) probes.push({ p: e.ends[k], owner: `entry:${inst}|${e.id}`, isWireEnd: false })
     // A sheet pin on the side of a wire joins it, as a label does.
-    if (hierDriver) for (const sym of symbolsOnSheet(project, use.sheet)) for (const pin of sym.pins) probes.push({ p: pin, owner: `sheetpin:${inst}|${sym.id}|${pin.id}`, isWireEnd: false })
+    if (hierDriver) for (const sym of symbolsOnSheet(project, use.sheet)) for (const pin of sym.pins) if (!sb?.busPins.has(`${sym.id}:${pin.id}`)) probes.push({ p: pin, owner: `sheetpin:${inst}|${sym.id}|${pin.id}`, isWireEnd: false })
 
     // Wire segments by the line they run along (`SegmentIndex`), so a probe only looks at wires
     // near it. Wires are still visited in order, and each wire's segments in order, as a plain scan
@@ -484,7 +598,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const ncPins = floating.filter(isNc)
 
   nets.sort((a, b) => numeric.compare(a.name, b.name))
-  return { nets, pinNet, wireNet, labelNet, junctions, unconnectedPins, ncPins, conflicts, ...(hier || scoped ? { byUse: { wireNet: useWireNet, labelNet: useLabelNet, junctions: junctionsByUse } } : {}) }
+  return { nets, pinNet, wireNet, labelNet, junctions, unconnectedPins, ncPins, conflicts, ...(hier || scoped ? { byUse: { wireNet: useWireNet, labelNet: useLabelNet, junctions: junctionsByUse } } : {}), ...(busy ? { buses: busesOf } : {}) }
 }
 
 /**

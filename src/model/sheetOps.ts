@@ -111,6 +111,12 @@ function dropUnusedSheets(project: Project): Project {
     ...(project.drawings ? { drawings: project.drawings.filter((d) => live.has(sheetOf(d))) } : {}),
   }
   if (project.drawings && !next.drawings?.length) delete next.drawings
+  // S3: a bus alias belongs to its sheet's file and goes with it.
+  if (project.busAliases) {
+    const aliases = project.busAliases.filter((a) => live.has(sheetOf(a)))
+    if (aliases.length) next = { ...next, busAliases: aliases }
+    else delete next.busAliases
+  }
   const symbols = (project.sheetSymbols ?? []).filter((s) => live.has(s.sheet) && live.has(s.child))
   const sheets = (project.sheets ?? []).filter((x) => x.id === ROOT_SHEET || live.has(x.id))
   // A project with no sheet left but a plain root is a project of one sheet.

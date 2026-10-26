@@ -1,5 +1,5 @@
 import { computeConnectivity, pinKey } from "../model/connectivity"
-import { schematicBounds, schematicPins } from "../model/instances"
+import { powerNetName, schematicBounds, schematicPins } from "../model/instances"
 import { labelBox } from "../model/labels"
 import { findPart } from "../model/library"
 import { ROOT_SHEET, isHierarchical, sheetUses, useOf, withSheetFlags, type SheetUse } from "../model/sheets"
@@ -41,17 +41,24 @@ export function flattenHierarchy(project: Project): FlatProject {
   let cursor = 0
   for (const use of uses) {
     const box = boxOf(use)
-    shift.set(use.path, cursor - box.minX)
+    // To a thousandth, so a pin and a label moved by it still coincide at the connectivity's three-decimal grid (a shift of 4.4425 put them on either side of a rounding edge).
+    shift.set(use.path, Math.round((cursor - box.minX) * 1000) / 1000)
     cursor += box.maxX - box.minX + GAP
   }
   const dx = (path: string) => shift.get(path) ?? 0
 
+  const humanOf = new Map(uses.map((u) => [u.path, u.human]))
   const components: ComponentInstance[] = withSheetFlags(project).components.map((c) => {
     const d = dx(useOf(c))
     const { inst: _inst, tpl: _tpl, ...rest } = c
     void _inst
     void _tpl
-    return d === 0 ? (rest as ComponentInstance) : ({ ...rest, sch: { ...c.sch, x: c.sch.x + d } } as ComponentInstance)
+    let out = d === 0 ? (rest as ComponentInstance) : ({ ...rest, sch: { ...c.sch, x: c.sch.x + d } } as ComponentInstance)
+    // A local power symbol is a net of its use of a sheet; the flat project has one scope, so its name carries the use's path (two uses never share a net).
+    const part = findPart(c.partId)
+    const power = part?.powerLocal && useOf(c) !== "" ? powerNetName(c, part) : null
+    if (power) out = { ...out, props: { ...out.props, net: `${humanOf.get(useOf(c)) ?? ""}${power}` } }
+    return out
   })
   const wires: Wire[] = []
   const labels: NetLabel[] = []
@@ -66,7 +73,9 @@ export function flattenHierarchy(project: Project): FlatProject {
       const { sheet: _s, ...rest } = l
       void _s
       // A hierarchical label joins nothing in the flat project (its nets are joined below), so it is a local label.
-      labels.push({ ...rest, id: id(l.id), x: l.x + d, ...(l.kind === "hierarchical" ? { kind: "local" as const, shape: undefined } : {}) } as NetLabel)
+      // A local name is per use of a sheet (`/A/VIN`), and the flat project has one scope, so a label below the root carries its use's path: two uses of a sheet never join through the same name.
+      const scoped = l.kind !== "global" && use.path !== "" ? { name: `${use.human}${l.name.trim()}` } : {}
+      labels.push({ ...rest, id: id(l.id), x: l.x + d, ...scoped, ...(l.kind === "hierarchical" ? { kind: "local" as const, shape: undefined } : {}) } as NetLabel)
     }
     for (const dr of project.drawings ?? []) {
       if ((dr.sheet ?? ROOT_SHEET) !== use.sheet) continue

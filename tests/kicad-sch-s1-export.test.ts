@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { kicadFiles } from "../src/export/kicad"
+import { flattenHierarchy } from "../src/export/flatten"
 import type { Project } from "../src/model/types"
 import { LIB_GND, LIB_R, ROOT_UUID, schematic } from "./kicad-schematic-fixtures"
 
@@ -125,4 +126,29 @@ describe("S1 export: a local power symbol stays local", () => {
     expect(all).not.toMatch(/\(power (?:global|local)\)/)
     expect(Object.entries(flat).find(([n]) => n.endsWith(".kicad_sch"))![1]).toMatch(/\(version 20250114\)/)
   })
+})
+
+describe("S1 export: the board's nets are the schematic's, pin by pin", () => {
+  /** The net name of every pin, by reference and pin number. */
+  const pinNets = (p: Project) => {
+    const c = computeConnectivity(p)
+    const name = new Map(c.nets.map((n) => [n.id, n.name]))
+    return Object.fromEntries(p.components.filter((x) => !x.ref.startsWith("#")).flatMap((x) => ["1", "2"].map((pin) => [`${x.ref}.${pin}`, name.get(c.pinNet.get(`${x.id}:${pin}`) ?? "") ?? null])))
+  }
+  for (const withGlobal of [false, true]) {
+    for (const reversed of [false, true]) {
+      it(`a sheet used twice with a local power symbol${withGlobal ? " and a global GND" : ""}${reversed ? ", created in reverse order" : ""}: the flat project the board is written from has each pin on the net the sheets give it`, async () => {
+        const drawn = drawnInEditor(hierarchy("hierarchical", withGlobal))
+        const p = reversed ? { ...drawn, components: [...drawn.components].reverse() } : drawn
+        const want = pinNets(p)
+        expect(want["R2.2"]).toBe("/A/GNDL")
+        expect(want["R3.2"]).toBe("/B/GNDL")
+        expect(want["R3.1"]).toBe("/B/VIN")
+        expect(pinNets(flattenHierarchy(p).project)).toEqual(want)
+        const pcb = Object.entries((await kicadFiles(p)).files).find(([n]) => n.endsWith(".kicad_pcb"))![1]
+        const rows = [...pcb.matchAll(/\(net \d+ "([^"]*)"\)/g)].map((m) => m[1])
+        for (const n of ["/A/GNDL", "/B/GNDL", "/A/VIN", "/B/VIN"]) expect(rows).toContain(n)
+      })
+    }
+  }
 })

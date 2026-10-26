@@ -21,14 +21,15 @@ function sameProps(a: Record<string, string>, b: Record<string, string>) {
  * flag on the PCB changes none of these, so it is not a schematic edit.
  */
 export function sameSchematic(a: Project, b: Project): boolean {
-  if (a.wires !== b.wires || a.labels !== b.labels || a.parts !== b.parts) return false
+  // S1: the sheets and their symbols name nets and join them, and a view is a different part of the schematic.
+  if (a.wires !== b.wires || a.labels !== b.labels || a.parts !== b.parts || a.sheetSymbols !== b.sheetSymbols || a.sheets !== b.sheets || a.scope !== b.scope) return false
   if (a.components === b.components) return true
   if (a.components.length !== b.components.length) return false
   for (let i = 0; i < a.components.length; i++) {
     const x = a.components[i]
     const y = b.components[i]
     if (x === y) continue
-    if (x.id !== y.id || x.partId !== y.partId || x.ref !== y.ref || x.sch.x !== y.sch.x || x.sch.y !== y.sch.y || x.sch.rot !== y.sch.rot || !sameList(x.nc, y.nc) || !sameProps(x.props, y.props)) return false
+    if (x.id !== y.id || x.inst !== y.inst || x.partId !== y.partId || x.ref !== y.ref || x.sch.x !== y.sch.x || x.sch.y !== y.sch.y || x.sch.rot !== y.sch.rot || !sameList(x.nc, y.nc) || !sameProps(x.props, y.props)) return false
   }
   return true
 }

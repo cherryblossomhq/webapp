@@ -90,6 +90,8 @@ interface FileRow {
 }
 
 interface ProjectRow {
+  /** A sheet used by more than one sheet symbol. */
+  reusedSheets?: boolean
   project: string
   group: string
   stamp: number | null
@@ -251,7 +253,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             // saved and loaded back: the project file keeps what the import built, every list of it, exactly (a drawing a KiCad sheet gave that the reader would drop is a loss)
             const back = parseProjectFile(serializeProject(imp.project), { id: imp.project.id })
             savedAndLoaded++
-            for (const k of ["components", "wires", "labels", "drawings", "blocks", "netNames", "parts", "symbols", "footprints", "properties"] as const) {
+            for (const k of ["components", "wires", "labels", "drawings", "blocks", "netNames", "parts", "symbols", "footprints", "properties", "sheets", "sheetSymbols"] as const) {
               if (!isDeepStrictEqual(back[k], imp.project[k])) saveProblems.push(`${file}: ${k} differ after a save and a load${k === "drawings" ? ` (${imp.project.drawings?.length ?? 0} drawings, ${back.drawings?.length ?? 0} after)` : ""}`)
             }
             // S4: every item of the sheet against the raw file, number by number, by a reader that shares no code with `src`
@@ -527,6 +529,12 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           const word = (r: typeof plainRun) => (r.status === "imported" ? "imported" : `refused, ${r.reason}${r.needs.length ? ` (${r.needs.map((n) => n.ext).join(" ")})` : r.reason === "inexact" ? ` (${r.message.replace(/^This (board|schematic) cannot be imported exactly: /, "").split(";")[0].slice(0, 60)})` : ""}`)
           row.status = `${word(plainRun)} / ${word(raised)}`
           if (raised.status === "imported") {
+            // a project with sheets is saved and loaded back with its sheets, sheet symbols, uses and copies exactly
+            if (raised.project.sheetSymbols?.length) {
+              const back = parseProjectFile(serializeProject(raised.project), { id: raised.project.id })
+              for (const k of ["components", "wires", "labels", "blocks", "sheets", "sheetSymbols"] as const) if (!isDeepStrictEqual(back[k], raised.project[k])) saveProblems.push(`${name}: ${k} differ after a save and a load`)
+              row.reusedSheets = new Set(raised.project.sheetSymbols.map((x) => x.child)).size < raised.project.sheetSymbols.length
+            }
             // the project's own comparison must agree with the independent one
             // a pad the symbol has no pin for is a real difference the independent comparison (which walks the symbols' pins) cannot see, so it is counted on its own
             const mine = raised.differences.filter((d) => !/the symbol has no pin/.test(d.why)).length
@@ -630,6 +638,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         hierarchicalProjectsRefused: Object.fromEntries([...new Set(projects.filter((p) => p.sheets > 1 && !p.status.startsWith("imported")).map((p) => p.status))].map((k) => [k, projects.filter((p) => p.sheets > 1 && p.status === k).length])),
         hierarchicalBoardAgree: projects.filter((p) => p.sheets > 1 && p.boardNets === "agree").length,
         hierarchicalBoardStale: projects.filter((p) => p.sheets > 1 && p.boardNets.startsWith("stale")).length,
+        hierarchicalReusedSheets: projects.filter((p) => p.reusedSheets).length,
         hierarchicalMeasured: projects.filter((p) => p.sheets > 1 && p.imported).length,
         hierarchicalNoDifference: projects.filter((p) => p.sheets > 1 && p.imported && p.differences === 0).length,
         hierarchicalPads: projects.filter((p) => p.sheets > 1 && p.imported).reduce((n, p) => n + p.pads, 0),

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { isKicadBoardProject } from "../src/export/kicadBoard"
 import { importKicadBoard, readKicadBoard } from "../src/model/kicad/board"
+import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
+import { addComponent, addTrace, labelPin } from "../src/model/ops"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { diffProjects } from "./kicad-roundtrip-check"
@@ -272,5 +274,28 @@ describe("parts' flags and groups, and zones of every kind", () => {
     expect(p.zones.length).toBe(5)
     const { differences } = await roundTrip(p)
     expect(differences).toEqual([])
+  })
+})
+
+describe("a part and a trace added to an imported board", () => {
+  it("are written natively too: a library part with its reference and value, its pads on the nets the schematic gives them, and a trace on the net it touches", async () => {
+    const p0 = imported(board({ nets: ['(net 0 "")', '(net 1 "A")'], body: [footprint({ ref: "R1", at: "5 5", pads: [pad({ at: "0 0", net: '(net 1 "A")' })] })] }))
+    let p = addComponent(p0, "resistor", { sch: { x: 30, y: 0 }, pcb: { x: 12, y: -6, placed: true } }).project
+    const added = p.components[p.components.length - 1]
+    p = labelPin(p, { componentId: added.id, pin: "1" }, "A")
+    const pads = pcbPads(added)
+    const first = pads.find((x) => x.pin === "1")!
+    p = addTrace(p, { layer: "top", width: 0.25, points: [{ x: first.x, y: first.y }, { x: first.x + 3, y: first.y }] }).project
+    const out = await pcbOf(p)
+    expect(out).toContain(`(property "Reference" "${added.ref}"`)
+    expect(out).toMatch(/\(segment[\s\S]*?\(net 1\)/)
+    const again = importKicadBoard(out)
+    if (again.status !== "imported") throw new Error(again.message)
+    expect(again.project.components.map((c) => c.ref).sort()).toEqual(p.components.map((c) => c.ref).sort())
+    const pinNet = (project: Project, ref: string) => {
+      const c = project.components.find((x) => x.ref === ref)!
+      return computeConnectivity(project).pinNet.get(pinKey(c.id, "1"))
+    }
+    expect(pinNet(again.project, added.ref)?.length).toBeGreaterThan(0)
   })
 })

@@ -73,8 +73,8 @@ describe("KiCad export of zones", () => {
     expect(text).toContain("(keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed))")
     expect(text).toContain("(smoothing chamfer) (radius 1.5)")
     expect(text).toContain("(island_removal_mode 1) (island_area_min 10)")
-    // The file's y runs down: the polygon's corner (-12, -8) is written at y 8.
-    expect(text).toMatch(/\(polygon \(pts \(xy -12 8\) \(xy 12 8\) \(xy 12 -4\) \(xy -12 -4\)\)\)/)
+    // The converter puts the editor's origin at (100, 100) of the page, as it does for the parts, and the file's y runs down: the corner (-12, -8) is written at (88, 108).
+    expect(text).toMatch(/\(polygon \(pts \(xy 88 108\) \(xy 112 108\) \(xy 112 96\) \(xy 88 96\)\)\)/)
     expect(text).toMatch(/\(filled_polygon \(layer "F\.Cu"\) \(pts /)
     expect(text).toMatch(/\(filled_polygon \(layer "B\.Cu"\) \(pts /)
     expect(notes.join(" ")).toContain("Zones are written")

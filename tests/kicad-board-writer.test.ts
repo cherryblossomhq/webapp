@@ -4,11 +4,13 @@ import { isKicadBoardProject } from "../src/export/kicadBoard"
 import { importKicadBoard, readKicadBoard } from "../src/model/kicad/board"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
-import { addComponent, addTrace, labelPin } from "../src/model/ops"
+import { addComponent, addTrace, labelPin, updateComponent } from "../src/model/ops"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { kicadNetName } from "../src/export/kicadNetName"
 import { diffProjects } from "./kicad-roundtrip-check"
-import { twoResistors } from "./zones-fixtures"
+import { unknownNodes } from "./kicad9-nodes"
+import { rectangle, twoResistors, withZone } from "./zones-fixtures"
 import { rememberImage } from "../src/store/imageFiles"
 
 // X16: the board writer for the round trip. A board is imported, written by the native writer, imported again, and the two projects are compared
@@ -24,6 +26,8 @@ const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).
 /** The differences between a project and the one its written board imports as. */
 const roundTrip = async (p: Project) => {
   const text = await pcbOf(p)
+  // KiCad 9.0's parser aborts on a node it does not have: every file written here has only the nodes of its own boards.
+  expect(unknownNodes(text)).toEqual([])
   const again = importKicadBoard(text)
   if (again.status !== "imported") throw new Error(`the written board is refused: ${again.message}`)
   return { text, differences: diffProjects(p, again.project), again: again.project }
@@ -90,6 +94,8 @@ describe("the board writer, native, in KiCad 9's format", () => {
     expect(out).toContain("(drill 0.3 (offset 0.3 0))")
     expect(out).toContain("(roundrect_rratio 0.2)")
     expect(out).toContain('(layers "*.Cu" "*.Mask")')
+    // a pad is a child of its footprint: its nodes are one level in, as the footprint's own are
+    expect(out.includes(["", "    (pad \"1\" thru_hole roundrect", "      (at "].join(String.fromCharCode(10)))).toBe(true)
   })
 
   it("writes the editor's note for what KiCad 9 cannot say, and the project's own for the rest", async () => {
@@ -230,8 +236,11 @@ describe("text", () => {
     const p = imported(board({ version: 20241229, body, outline: '(gr_rect (start 0 0) (end 30 30) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' }))
     expect(p.texts.length).toBe(6)
     const { text: out, differences } = await roundTrip(p)
-    expect(differences).toEqual([])
-    expect(out).toContain('(href "https://example.com")')
+    // a hyperlink is KiCad 10's: the project keeps it, the KiCad 9 file has none, and a note says so
+    expect(differences.every((d) => d.kind === "project.texts[].href")).toBe(true)
+    expect(differences.length).toBe(1)
+    expect(out).not.toContain("href")
+    expect((await kicadFiles(p)).notes.join(" ")).toContain("hyperlink")
     expect(out).toContain('(layer "F.Cu" knockout)')
     expect(out).toContain("(unlocked yes)")
     expect(out).toContain("(justify left bottom mirror)")
@@ -254,9 +263,12 @@ describe("parts' flags and groups, and zones of every kind", () => {
     const p = imported(board({ nets: NETS, body: [part1] }))
     expect(p.components[0].groups).toHaveLength(1)
     const { text, differences } = await roundTrip(p)
-    expect(differences).toEqual([])
+    // KiCad 10's jumper groups are kept in the project and left out of the KiCad 9 file, with a note
+    expect([...new Set(differences.map((d) => d.kind))].sort()).toEqual(["project.components[].flags.jumperDuplicates", "project.components[].flags.jumperGroups"])
+    expect(text).not.toContain("jumper_pad_groups")
+    expect(text).not.toContain("duplicate_pad_numbers_are_jumpers")
+    expect((await kicadFiles(p)).notes.join(" ")).toContain("Jumper pad groups")
     expect(text).toContain('(net_tie_pad_groups "1,2")')
-    expect(text).toContain('(jumper_pad_groups ("1" "3"))')
     expect(text).toContain("(locked yes)")
     expect(text).toMatch(/\(group "inner"/)
   })
@@ -297,5 +309,69 @@ describe("a part and a trace added to an imported board", () => {
       return computeConnectivity(project).pinNet.get(pinKey(c.id, "1"))
     }
     expect(pinNet(again.project, added.ref)?.length).toBeGreaterThan(0)
+  })
+})
+
+
+describe("the fix round: what KiCad 9 refuses, parts added to an imported board, and the gate", () => {
+  const withPart = () => {
+    const p0 = imported(board({ nets: ['(net 0 "")', '(net 1 "A")', '(net 2 "B")'], body: [footprint({ ref: "R1", at: "5 5", pads: [pad({ number: "1", at: "0 0", net: '(net 1 "A")' }), pad({ number: "2", at: "2 0", net: '(net 2 "B")' })] }), `(segment (start 5 5) (end 5 9) (width 0.25) (layer "F.Cu") (net 1) (uuid "${U(70)}"))`] }))
+    let p = addComponent(p0, "resistor", { sch: { x: 30, y: 0 }, pcb: { x: 12, y: -6, placed: true } }).project
+    const added = p.components[p.components.length - 1]
+    p = labelPin(p, { componentId: added.id, pin: "1" }, "B")
+    return { p, added }
+  }
+  it("tracks and vias added in the editor get the net each touches, one by one, beside tracks the file already put on a net", async () => {
+    const { p: p0, added } = withPart()
+    const pad1 = pcbPads(added).find((x) => x.pin === "1")!
+    let p = addTrace(p0, { layer: "top", width: 0.25, points: [{ x: pad1.x, y: pad1.y }, { x: pad1.x + 3, y: pad1.y }] }).project
+    p = { ...p, vias: [{ id: "v9", x: pad1.x + 3, y: pad1.y, diameter: 0.8, drill: 0.4 }] }
+    const out = await pcbOf(p)
+    const segs = [...out.matchAll(/\(segment[\s\S]*?\(net (\d+)\)/g)].map((m) => m[1])
+    const nets = new Map([...out.matchAll(/\(net (\d+) "([^"]*)"\)/g)].map((m) => [m[1], m[2]]))
+    expect(segs.map((n) => nets.get(n))).toEqual(["A", "B"])
+    expect(nets.get(/\(via[\s\S]*?\(net (\d+)\)/.exec(out)![1])).toBe("B")
+  })
+  it("a footprint swapped for another is named and drawn by its land, with its attribute, and not as the file's", async () => {
+    const { p: p0, added } = withPart()
+    const swapped = updateComponent(p0, p0.components[0].id, { footprint: added.footprint })
+    expect(swapped.components[0].fpid).toBeUndefined()
+    const out = await pcbOf(swapped)
+    expect(out).toContain(`(footprint "${added.footprint}"`)
+    expect(out).not.toContain('(footprint ""')
+  })
+  it("a part added to the board has its reference beside the part, not on its pads, upright, mirrored on the bottom", async () => {
+    const { p, added } = withPart()
+    const out = await pcbOf(p)
+    const m = new RegExp(`\\(property "Reference" "${added.ref}"\\s+\\(at ([-\\d.]+) ([-\\d.]+) 0\\)`).exec(out)!
+    expect(Math.abs(Number(m[2]))).toBeGreaterThan(1)
+    const bottom = updateComponent(p, added.id, { pcb: { side: "bottom" } })
+    expect(await pcbOf(bottom)).toMatch(/\(layer "B\.SilkS"\)[\s\S]{0,200}\(justify mirror\)/)
+  })
+  it("the gate is a board's, not a schematic import's: the same properties with no board in the project stay on the converter's path", () => {
+    const sheet = { ...twoResistors(), traces: [], vias: [], zones: [], properties: [{ key: "Imported from", value: "KiCad 9.0" }, { key: "KiCad file version", value: "KiCad 9.0, file version 20250114" }] }
+    expect(isKicadBoardProject(sheet)).toBe(false)
+    expect(isKicadBoardProject({ ...sheet, traces: [] , vias: [], zones: [], texts: [], graphics: undefined, board: { ...sheet.board, outline: { paths: [] } } })).toBe(true)
+  })
+  it("a net a local power symbol names has one name in both files", () => {
+    expect(kicadNetName({ name: "/GND", power: { text: "GND", local: true } })).toBe("GND")
+    expect(kicadNetName({ name: "GND", power: { text: "GND", local: false } })).toBe("GND")
+    expect(kicadNetName({ name: "/CLK" })).toBe("/CLK")
+  })
+  it("says a pour from an old board will be refilled by KiCad 9's own distances", async () => {
+    const old = imported(board({ version: 20171130, nets: ['(net 0 "")', '(net 1 "A")'], body: [footprint({ token: "module", ref: "R1", at: "5 5", pads: [pad({ at: "0 0", net: '(net 1 A)' })] }), `(zone (net 1) (net_name A) (layer F.Cu) (tstamp 5) (hatch edge 0.5) (connect_pads (clearance 0.5)) (min_thickness 0.25) (fill yes (arc_segments 16) (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 0 0) (xy 20 0) (xy 20 10) (xy 0 10))))`] }))
+    expect(old.zones[0].unordered).toBe(true)
+    expect((await kicadFiles(old)).notes.join(" ")).toContain("KiCad 9 refills it by its own rules")
+  })
+})
+
+describe("the converter's zones sit where its parts do", () => {
+  it("a zone's corner and a part are on one page: the polygon is offset as the footprints are", async () => {
+    const p = withZone(twoResistors(), rectangle(-12, -8, 12, 4), { net: "GND", layers: ["top"] }, "g")
+    const out = await pcbOf(p)
+    const at = /\(footprint[\s\S]*?\(at ([-\d.]+) ([-\d.]+)/.exec(out)!
+    // the first part is at x -6, y 0 in the editor: (94, 100) on the page; the zone's corner (-12, -8) is (88, 108)
+    expect([Number(at[1]), Number(at[2])]).toEqual([94, 100])
+    expect(out).toContain("(xy 88 108)")
   })
 })

@@ -12,7 +12,14 @@ import { fractureRings } from "./fracture"
 // the file has one writer for its zones; a project of whole-board pours alone still goes through the converter, as it always did.
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
-const xy = (p: Vec2) => `(xy ${mm6(p.x)} ${mm6(-p.y)})`
+/** Where the converter puts the editor's origin on KiCad's page (`CircuitJsonToKicadPcbConverter`); the native writer's frame has none. */
+const PAGE_ORIGIN = 100
+export type ToFile = (p: Vec2) => Vec2
+const toPage: ToFile = (p) => ({ x: PAGE_ORIGIN + p.x, y: PAGE_ORIGIN - p.y })
+const xyOf = (to: ToFile) => (p: Vec2) => {
+  const q = to(p)
+  return `(xy ${mm6(q.x)} ${mm6(q.y)})`
+}
 const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 const LAYER: Record<CopperLayer, string> = { top: "F.Cu", bottom: "B.Cu" }
 
@@ -33,7 +40,12 @@ function uuidOf(text: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`
 }
 
-function pts(path: ShapePath): string {
+function pts(path: ShapePath, to: ToFile): string {
+  const xy = xyOf(to)
+  const at = (p: Vec2) => {
+    const q = to(p)
+    return `${mm6(q.x)} ${mm6(q.y)}`
+  }
   const out: string[] = []
   const lineTo = (p: Vec2) => out.push(xy(p))
   let first = true
@@ -43,7 +55,7 @@ function pts(path: ShapePath): string {
       lineTo(s.b)
     } else if (s.kind === "arc") {
       if (first) lineTo(s.start)
-      out.push(`(arc (start ${mm6(s.start.x)} ${mm6(-s.start.y)}) (mid ${mm6(s.mid.x)} ${mm6(-s.mid.y)}) (end ${mm6(s.end.x)} ${mm6(-s.end.y)}))`)
+      out.push(`(arc (start ${at(s.start)}) (mid ${at(s.mid)}) (end ${at(s.end)}))`)
     } else {
       // KiCad has no curve in a zone: it is written as the straight pieces it is flattened to.
       const flat = flattenPath({ closed: false, segs: [s] })
@@ -57,7 +69,8 @@ function pts(path: ShapePath): string {
 }
 
 /** The zone as one `(zone ...)` list of KiCad 9. */
-export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber: (name: string) => number, boardRings: ShapePath[] | null, fallbackUuid?: () => string): string {
+export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber: (name: string) => number, boardRings: ShapePath[] | null, fallbackUuid?: () => string, to: ToFile = toPage): string {
+  const xy = xyOf(to)
   const rule = z.keepout !== undefined
   const layers = zoneLayers(z)
   const set = {
@@ -94,7 +107,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   if (z.smoothing) fill.push(` (smoothing ${z.smoothing.kind}) (radius ${mm6(z.smoothing.radius)})`)
   if (z.islands !== undefined) fill.push(` (island_removal_mode ${z.islands === "never" ? 1 : 2}) (island_area_min ${mm6(z.islands === "never" ? 10 : z.islands)})`)
   o.push(`    (fill${fill.join("")})`)
-  for (const ring of z.outline ?? boardRings ?? []) o.push(`    (polygon ${pts(ring)})`)
+  for (const ring of z.outline ?? boardRings ?? []) o.push(`    (polygon ${pts(ring, to)})`)
   if (!rule) {
     for (const layer of layers) {
       const f = fills.find((x) => x.zoneId === z.id && x.layer === layer)

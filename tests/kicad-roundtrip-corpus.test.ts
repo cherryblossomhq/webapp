@@ -5,6 +5,7 @@ import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { rememberImage } from "../src/store/imageFiles"
 import { diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
+import { unknownNodes } from "./kicad9-nodes"
 
 // The round trip over a local corpus (not in the repo): every board that imports is written out by the KiCad export, read again, and the two
 // projects are compared item for item (`kicad-roundtrip-check.ts`). The table says how many have no difference and counts every kind of difference.
@@ -24,11 +25,14 @@ const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
 /**
  * What differs on purpose, because a KiCad 9 file cannot say it: a zone of a board of KiCad 5 or earlier has no uuid and is not ordered by one (a file of
  * KiCad 9 gives every zone a uuid, which orders zones of equal priority), and its fill keeps that release's distances to the edge and to a hole; KiCad 9 has no
- * `virtual` attribute (it reads it as "not in the BOM" and "not in the position file"). Everything else that differs is a finding.
+ * `virtual` attribute (it reads it as "not in the BOM" and "not in the position file"), and jumper pad groups and a text's hyperlink are KiCad 10's, which the 9.0
+ * parser refuses (they stay in the project and are not written). Everything else that differs is a finding.
  */
 export const BY_DESIGN = [
   /^project\.zones\[\]\.(edgeGap|holeGap|unordered|uuid)$/,
   /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
+  /^project\.components\[\]\.flags\.(jumperDuplicates|jumperGroups)$/,
+  /^project\.(texts|components\[\]\.texts)\[\]\.href$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */
@@ -72,6 +76,9 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
         }
         const pro = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pro"))![1]
         const diffs = [...diffProjects(a.project, b.project, 400), ...proRulesDifferences(a.project, pro)]
+        // KiCad 9.0's parser aborts on a node it does not have, so no file may be written with one.
+        const strange = unknownNodes(pcb)
+        if (strange.length) diffs.push({ kind: `written nodes KiCad 9.0 does not have: ${strange.join(" ")}`, path: "the written file", first: "", second: strange.join(" ") })
         const ks = [...new Set(diffs.map((d) => d.kind))]
         for (const d of diffs) {
           if (!kinds.has(d.kind)) kinds.set(d.kind, { boards: 0, example: `${rel} ${d.path}: ${d.first} / ${d.second}`, byDesign: [...BY_DESIGN, ...REPAIRED].some((re) => re.test(d.kind)) })

@@ -1,6 +1,7 @@
-import { pointOnSegment, samePoint } from "../lib/geometry"
+import { normBox, pointOnSegment, samePoint } from "../lib/geometry"
 import { uid } from "../lib/id"
-import { ROOT_SHEET, useAt } from "./sheets"
+import { SpatialHash, pointBox } from "../lib/spatialHash"
+import { ROOT_SHEET, sheetIdOf, useAt } from "./sheets"
 import type { Project, Vec2, Wire } from "./types"
 
 // S11: what a sheet joined by KiCad's rules (`SchematicSheet.kicadRules`) is, and how it is edited. KiCad's schematic points are integers of 100 nm
@@ -105,4 +106,101 @@ export function cutAtTs(wires: Wire[], added: Wire): Wire[] {
     }
   }
   return out
+}
+
+// ---------- settling an edit ----------
+
+/** The signature of a wire's points in KiCad's integer units: two wires with one are the same wire for the joining rules. */
+const shape = (w: Wire) => w.points.map(pkx).join(";")
+
+/** A vertex of one wire that lies on the side of another (a T): the host wire, and where. A T is told by its place alone, so cutting wires (which gives pieces new ids) does not make an old T look new. */
+interface Contact {
+  key: string
+  host: string
+  at: Vec2
+}
+
+/**
+ * Every T among the wires of one sheet that involves a wire of `focus`: a vertex of a wire lying on the side of another. A pair of wires neither of which is in
+ * `focus` is not looked at, so a sheet's old T's (which KiCad leaves alone) cost nothing.
+ */
+function contactsOf(wires: Wire[], focus: ReadonlySet<string>): Contact[] {
+  const all = new SpatialHash<{ id: string; a: Vec2; b: Vec2 }>()
+  const own = new SpatialHash<{ id: string; a: Vec2; b: Vec2 }>()
+  for (const w of wires) {
+    for (let i = 1; i < w.points.length; i++) {
+      const seg = { id: w.id, a: w.points[i - 1], b: w.points[i] }
+      const box = normBox(seg.a, seg.b)
+      all.insert(seg, box)
+      if (focus.has(w.id)) own.insert(seg, box)
+    }
+  }
+  const out: Contact[] = []
+  for (const w of wires) {
+    const hash = focus.has(w.id) ? all : own
+    for (const p of w.points) {
+      for (const seg of hash.query(pointBox(p, 2e-4))) {
+        if (seg.id === w.id || !onSideDrawn(p, seg.a, seg.b)) continue
+        out.push({ key: pkx(p), host: seg.id, at: p })
+      }
+    }
+  }
+  return out
+}
+
+/** The wire cut at each of `at` (points on its sides): the first piece keeps the wire's id, the others are new. */
+function splitAt(w: Wire, at: Vec2[]): Wire[] {
+  const left = [...at]
+  const runs: Vec2[][] = []
+  let cur: Vec2[] = []
+  w.points.forEach((p, i) => {
+    cur.push(p)
+    if (i === w.points.length - 1) return
+    const next = w.points[i + 1]
+    const here: Vec2[] = []
+    for (let k = left.length - 1; k >= 0; k--) if (onSideDrawn(left[k], p, next)) here.push(...left.splice(k, 1))
+    here.sort((m, n) => Math.hypot(m.x - p.x, m.y - p.y) - Math.hypot(n.x - p.x, n.y - p.y))
+    for (const c of here) {
+      cur.push(c)
+      runs.push(cur)
+      cur = [c]
+    }
+  })
+  runs.push(cur)
+  return runs.map((points, k) => (k === 0 ? { ...w, points } : { ...w, id: uid("w"), points }))
+}
+
+/**
+ * What an edit of a sheet joined by KiCad's rules is made to be before it is kept: a wire's vertex that the edit has put on another wire's side is cut there, as
+ * KiCad does when it finishes an edit (`SCH_COMMIT`, which breaks the wires at the new T), so the edit makes the join it shows and never a T that joins nothing; and
+ * a T that was there before is left as it was, since KiCad joins nothing there. A project with no sheet of KiCad's rules, or an edit that changed no wire's points,
+ * is returned as it is, so a sheet drawn in the editor is edited as ever.
+ *
+ * `before` is the project (or view of one sheet) the edit started from and `after` what it made. Cutting is idempotent: settling a settled edit changes nothing.
+ */
+export function settleKicadSheet(before: Project, after: Project): Project {
+  if (!after.sheets?.some((s) => s.kicadRules) || after.wires === before.wires) return after
+  const flagged = new Set(after.sheets.filter((s) => s.kicadRules).map((s) => s.id))
+  const was = new Map(before.wires.map((w) => [w.id, w]))
+  const cuts = new Map<string, Vec2[]>()
+  const bySheet = new Map<string, Wire[]>()
+  for (const w of after.wires) {
+    const s = sheetIdOf(w)
+    if (flagged.has(s) && w.points.length >= 2) (bySheet.get(s) ?? bySheet.set(s, []).get(s)!).push(w)
+  }
+  for (const [sheet, wires] of bySheet) {
+    const focus = new Set(wires.filter((w) => {
+      const b = was.get(w.id)
+      return !b || shape(b) !== shape(w)
+    }).map((w) => w.id))
+    if (!focus.size) continue
+    const had = new Set(contactsOf(before.wires.filter((w) => sheetIdOf(w) === sheet && w.points.length >= 2), focus).map((c) => c.key))
+    for (const c of contactsOf(wires, focus)) {
+      if (had.has(c.key)) continue
+      const list = cuts.get(c.host) ?? cuts.set(c.host, []).get(c.host)!
+      if (!list.some((q) => pkx(q) === pkx(c.at))) list.push(c.at)
+    }
+  }
+  if (!cuts.size) return after
+  return { ...after, wires: after.wires.flatMap((w) => (cuts.has(w.id) ? splitAt(w, cuts.get(w.id)!) : [w])) }
 }

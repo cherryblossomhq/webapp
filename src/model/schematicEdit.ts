@@ -7,6 +7,7 @@ import { withPartsFrom } from "./customParts"
 import { withModelsFrom } from "./models3d"
 import { isSchematicPart, schematicPins } from "./instances"
 import { findPart, unitTwinId } from "./library"
+import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { moveProblems } from "./merges"
 import {
   addComponent,
@@ -149,7 +150,7 @@ function turnBy(project: Project, ids: { components: string[]; labels: string[] 
   const turned = new Set(ids.labels.filter((l) => !carried.has(l)))
   if (turned.size) next = { ...next, labels: next.labels.map((l) => (turned.has(l.id) ? { ...l, rot: ((l.rot + 90) % 360) as Rotation } : l)) }
   if (next === project) return { ok: true, project }
-  return check(project, cleanupWires(next), `turn ${refsOf(project, ids.components)}`, o)
+  return check(project, settleKicadSheet(project, cleanupWires(next)), `turn ${refsOf(project, ids.components)}`, o)
 }
 
 /**
@@ -181,7 +182,7 @@ export function mirrorSelection(project: Project, ids: { components: string[] },
     next = mirrorComponent(next, id, axis, next === project ? o.conn?.(project) : undefined)
   }
   if (next === project) return { ok: true, project }
-  return check(project, cleanupWires(next), `mirror ${refsOf(project, ids.components)}`, o)
+  return check(project, settleKicadSheet(project, cleanupWires(next)), `mirror ${refsOf(project, ids.components)}`, o)
 }
 
 // ---------- units, body styles and alternates ----------
@@ -279,7 +280,7 @@ export function renameReference(project: Project, id: string, ref: string): Proj
 export function guardDrop(start: Project, dropped: Project, picked: { components: string[] }, o: Guard = {}): EditResult {
   const conn = o.conn ?? computeConnectivity
   const before = conn(start)
-  let next = cleanupWires(dropped)
+  let next = settleKicadSheet(start, cleanupWires(dropped))
   // Only a part that was on nothing goes in line; one with wires on it keeps them and is checked as it is.
   const loose = picked.components.filter((id) => {
     const c = start.components.find((x) => x.id === id)
@@ -314,6 +315,8 @@ export type PasteResult = { ok: true; project: Project; selection: string[]; inl
 function checkAdded(before: Project, added: Project, newParts: string[], what: string, o: Guard): EditResult {
   const conn = o.conn ?? computeConnectivity
   const spliced = spliceInline(added, newParts)
+  // S11: on a sheet joined by KiCad's rules the wires an edit put on another's side are cut there before the edit is judged, as KiCad cuts them.
+  spliced.project = settleKicadSheet(before, spliced.project)
   return check(before, spliced.project, what, { ...o, adds: true, cutOnPurpose: netsOfWires(conn(before), spliced.cut), inline: spliced.cut.length > 0 })
 }
 
@@ -327,7 +330,10 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
   const added: string[] = []
   const copies = new Map<string, string>()
   const unitRefs = new Map<string, string>()
-  const sh = (pt: Vec2) => ({ x: round(pt.x + offset.x), y: round(pt.y + offset.y) })
+  // S11: a sheet joined by KiCad's rules keeps its points at six digits, so a copy keeps what was at one point at one point.
+  const digits = kicadRulesShown(project) ? 6 : 4
+  const by = digits > 4 ? { x: round(offset.x), y: round(offset.y) } : offset
+  const sh = (pt: Vec2) => ({ x: round(pt.x + by.x, digits), y: round(pt.y + by.y, digits) })
   for (const id of clip.components) {
     const c = clip.project.components.find((x) => x.id === id)
     const part = c && findPart(c.partId)

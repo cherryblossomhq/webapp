@@ -1,4 +1,5 @@
 import { round } from "../lib/geometry"
+import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { removeItems, stretchEnd } from "./ops"
 import { ROOT_SHEET, hasUse, sheetUses, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
 import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2 } from "./types"
@@ -137,6 +138,8 @@ export function removeSheetSymbols(project: Project, ids: string[]): Project {
 /** Sheet symbols moved by `delta`, with their pins and the wires and labels at the pins (their ends follow). */
 export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): Project {
   const move = new Set(ids)
+  // S11: a sheet joined by KiCad's rules keeps its points to six digits, so what was at one point stays at one.
+  const digits = kicadRulesShown(project) ? 6 : 4
   const symbols = (project.sheetSymbols ?? []).filter((s) => move.has(s.id))
   if (!symbols.length || (delta.x === 0 && delta.y === 0)) return project
   const sameSheet = (a: string | undefined, b: string) => (a ?? ROOT_SHEET) === b
@@ -149,22 +152,22 @@ export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): 
     // A wire that is moved with the symbol on both ends is not stretched.
     const first = at(points[0], list)
     const last = points.length > 1 && at(points[points.length - 1], list)
-    if (first && last) return { ...w, points: points.map((p) => ({ x: round(p.x + delta.x, 4), y: round(p.y + delta.y, 4) })) }
-    if (first) points = stretchEnd(points, 0, { x: round(points[0].x + delta.x, 4), y: round(points[0].y + delta.y, 4) })
-    if (last) points = stretchEnd(points, points.length - 1, { x: round(points[points.length - 1].x + delta.x, 4), y: round(points[points.length - 1].y + delta.y, 4) })
+    if (first && last) return { ...w, points: points.map((p) => ({ x: round(p.x + delta.x, digits), y: round(p.y + delta.y, digits) })) }
+    if (first) points = stretchEnd(points, 0, { x: round(points[0].x + delta.x, digits), y: round(points[0].y + delta.y, digits) }, digits > 4)
+    if (last) points = stretchEnd(points, points.length - 1, { x: round(points[points.length - 1].x + delta.x, digits), y: round(points[points.length - 1].y + delta.y, digits) }, digits > 4)
     return points === w.points ? w : { ...w, points }
   })
   const labels = project.labels.map((l) => {
     const list = ends(l.sheet ?? ROOT_SHEET)
-    return list.length && at(l, list) ? { ...l, x: round(l.x + delta.x, 4), y: round(l.y + delta.y, 4) } : l
+    return list.length && at(l, list) ? { ...l, x: round(l.x + delta.x, digits), y: round(l.y + delta.y, digits) } : l
   })
   void sameSheet
-  return touch({
+  return settleKicadSheet(project, touch({
     ...project,
     wires,
     labels,
-    sheetSymbols: project.sheetSymbols!.map((s) => (move.has(s.id) ? { ...s, x: round(s.x + delta.x, 4), y: round(s.y + delta.y, 4), pins: s.pins.map((p) => ({ ...p, x: round(p.x + delta.x, 4), y: round(p.y + delta.y, 4) })) } : s)),
-  })
+    sheetSymbols: project.sheetSymbols!.map((s) => (move.has(s.id) ? { ...s, x: round(s.x + delta.x, digits), y: round(s.y + delta.y, digits), pins: s.pins.map((p) => ({ ...p, x: round(p.x + delta.x, digits), y: round(p.y + delta.y, digits) })) } : s)),
+  }))
 }
 
 /** What a person may change about a sheet symbol: its name and file (the sheet's too), its flags and its look. */

@@ -1,5 +1,6 @@
 import { round } from "../lib/geometry"
 import { ROOT_SHEET, copyKey, sheetsOf, sheetUses, symbolsOnSheet, usesOfSheet, type SheetUse } from "../model/sheets"
+import { activeVariant, variantSheetFlags } from "../model/variants"
 import { colorNode } from "./kicadSheet"
 import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, TextLook, Vec2 } from "../model/types"
 
@@ -99,10 +100,11 @@ function effects(look: TextLook | undefined, place?: FieldPlace): string {
 const yn = (b: boolean) => (b ? "yes" : "no")
 
 /** A sheet symbol as KiCad 9 writes it, with a pin for each of its pins and the page of each use of its parent. */
-export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: Vec2) => Vec2, files: Map<string, string>): string {
+export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: Vec2) => Vec2, files: Map<string, string>, variants: "keep" | "apply" = "apply"): string {
   const top = toPage({ x: sym.x, y: sym.y + sym.h })
   const origin = toPage({ x: sym.x, y: sym.y })
-  const flags = sym.flags ?? {}
+  // S9: KiCad 9 has no variants, so a sheet symbol's flags are the active variant's on its first use; a project written as KiCad 10 files keeps the variants in each use.
+  const flags = (variants === "keep" ? sym.flags : variantSheetFlags(sym, usesOfSheet(project, sym.sheet)[0]?.path ?? "", activeVariant(project))) ?? {}
   const stroke = sym.stroke
   const out: string[] = ["  (sheet", `    (at ${mm6(top.x)} ${mm6(top.y)})`, `    (size ${mm6(sym.w * MM)} ${mm6(sym.h * MM)})`]
   out.push(`    (exclude_from_sim ${yn(!!flags.excludeFromSim)})`, `    (in_bom ${yn(!flags.excludeFromBom)})`, `    (on_board ${yn(!flags.notOnBoard)})`, `    (dnp ${yn(!!flags.dnp)})`)
@@ -122,7 +124,8 @@ export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: 
   const uses = sheetUses(project)
   const entries = parents.map((u) => {
     const child = uses.find((x) => x.path === `${u.path}/${sym.id}`)
-    return `        (path ${quote(instancePath(project, u))}\n          (page ${quote(child?.page ?? "1")}))`
+    const own = variants === "keep" ? Object.entries(sym.variants?.[u.path] ?? {}).map(([name, o]) => `\n          ${variantNode(name, o)}`).join("") : ""
+    return `        (path ${quote(instancePath(project, u))}\n          (page ${quote(child?.page ?? "1")})${own})`
   })
   out.push("    (instances", '      (project ""', ...entries, "      )", "    )", "  )")
   return out.join("\n")
@@ -175,3 +178,42 @@ export function spreadInstances(text: string, project: Project, sheet: string, c
 
 /** What is written for a sheet: its symbols, which are the ones drawn on it. */
 export const symbolsOf = (project: Project, sheet: string) => symbolsOnSheet(project, sheet)
+
+
+/** The version stamp of a KiCad 10 file that keeps schematic variants: from it `in_bom` in a variant is the positive logic KiCad writes (`sch_io_kicad_sexpr_parser.cpp`, 10.0: `m_requiredVersion >= 20260306`). */
+export const VARIANT_FILE_VERSION = 20260306
+
+/** One variant of one symbol as KiCad 10 writes it (`sch_io_kicad_sexpr.cpp`, 10.0): only what differs from the symbol's own, then its field values. */
+export function variantNode(name: string, o: NonNullable<ComponentInstance["variants"]>[string]): string {
+  const parts = [`(name ${quote(name)})`]
+  if (o.dnp !== undefined) parts.push(`(dnp ${yn(o.dnp)})`)
+  if (o.excludeFromSim !== undefined) parts.push(`(exclude_from_sim ${yn(o.excludeFromSim)})`)
+  if (o.excludeFromBom !== undefined) parts.push(`(in_bom ${yn(!o.excludeFromBom)})`)
+  if (o.notOnBoard !== undefined) parts.push(`(on_board ${yn(!o.notOnBoard)})`)
+  if (o.excludeFromPos !== undefined) parts.push(`(in_pos_files ${yn(!o.excludeFromPos)})`)
+  for (const [field, value] of Object.entries(o.fields ?? {})) parts.push(`(field (name ${quote(field)}) (value ${quote(value)}))`)
+  return `(variant ${parts.join(" ")})`
+}
+
+/**
+ * The variants of the symbols of one sheet file, written into each symbol's instance data, and the file stamped so KiCad 10 reads them as they are.
+ * `sheet` is the sheet's id in a hierarchical project (each use has its own instance path) and null for a project of one sheet.
+ */
+export function writeVariants(text: string, project: Project, sheet: string | null): string {
+  const byKey = new Map<string, ComponentInstance>()
+  if (sheet === null) {
+    for (const c of project.components) if (c.variants) byKey.set(`${c.ref}|${c.unit ?? 1}`, c)
+  } else {
+    for (const u of usesOfSheet(project, sheet)) {
+      const path = instancePath(project, u)
+      for (const c of project.components) if (c.variants && (c.inst ?? "") === u.path) byKey.set(`${path}|${c.ref}|${c.unit ?? 1}`, c)
+    }
+  }
+  const out = text.replace(/\(path "([^"]*)"(\s*)\(reference "([^"]*)"\)(\s*)\(unit (\d+)\)/g, (whole, path: string, _a: string, ref: string, _b: string, unit: string) => {
+    const c = byKey.get(sheet === null ? `${ref}|${unit}` : `${path}|${ref}|${unit}`)
+    if (!c?.variants) return whole
+    return `${whole}${Object.entries(c.variants).map(([name, o]) => `
+          ${variantNode(name, o)}`).join("")}`
+  })
+  return out.replace(/^(\(kicad_sch\s+\(version )(\d+)\)/, (_w, head: string, v: string) => `${head}${Math.max(Number(v), VARIANT_FILE_VERSION)})`)
+}

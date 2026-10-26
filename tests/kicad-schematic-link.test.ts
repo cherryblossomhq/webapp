@@ -42,7 +42,7 @@ describe("by path", () => {
       })
     // KiCad 6 lists the symbol once at the root, with the sheet in its path
     const six = sub(20211123)
-    six.files.get("root.kicad_sch")!.schematic.rootInstances.push({ project: "", path: `/sheet1/${U1}`, reference: "R5", unit: 1, value: null, footprint: null, from: "root-list" })
+    six.files.get("root.kicad_sch")!.schematic.rootInstances.push({ project: "", path: `/sheet1/${U1}`, reference: "R5", unit: 1, value: null, footprint: null, from: "root-list", variants: [] })
     for (const t of [six, sub(20230121)]) {
       expect(symbolRecords(t).map((r) => [r.path, r.sheetPath])).toEqual([[`/sheet1/${U1}`, "/sheet1"]])
       const r = linkFootprints(t, [fp("R5", `/sheet1/${U1}`)])

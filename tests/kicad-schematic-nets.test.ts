@@ -341,7 +341,7 @@ describe("the names KiCad gives nets, by the driver of the highest priority", ()
   })
 })
 
-describe("what the editor joins that KiCad does not, or the other way, is the connectivity extension (S11) or another, never an approximation", () => {
+describe("before S11 is built: what the editor joins that KiCad does not is the connectivity extension (S11) or another, never an approximation", () => {
   const refusal = (text: string, built: ReadonlySet<string> = BUILT) => {
     const r = importKicadSchematic(text, { built })
     if (r.status !== "refused") throw new Error("imported")
@@ -353,7 +353,7 @@ describe("what the editor joins that KiCad does not, or the other way, is the co
     const text = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["80 120 120 120", "100 103.81 100 120"] })
     const r = refusal(text)
     expect([r.reason, r.message]).toEqual(["unsupported", S11])
-    expect(lossyOf(text, BUILT).map(([, why]) => why)).toContain("a wire end that touches another wire's side with no junction")
+    expect(lossyOf(text, BUILT).map(([, why]) => why)).toContain("a wire end touches another wire's side with no junction")
   })
 
   it("two points closer together than the editor can tell apart", () => {
@@ -364,16 +364,16 @@ describe("what the editor joins that KiCad does not, or the other way, is the co
   it("a label on a pin that lies on a wire's side: KiCad attaches it to the pin alone", () => {
     // R1 turned 90 at (100,100): pin 1 at (96.19,100) is on the side of a wire from 90 to 110, and the label sits on the pin.
     const text = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 90", 1)], wires: ["90 100 110 100"], labels: ["SIG 96.19 100 0"] })
-    expect(lossyOf(text, BUILT).map(([, why]) => why)).toContain("a label on a pin that lies on a wire's side, which the editor joins to the wire and KiCad does not")
+    expect(lossyOf(text, BUILT).map(([, why]) => why)).toContain("a label on a pin that lies on a wire's side joins the pin alone")
     // with a junction there KiCad joins the wire to the pin, and the label is with both: nothing differs
     expect(importKicadSchematic(schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 90", 1)], wires: ["90 100 110 100"], junctions: ["96.19 100"], labels: ["SIG 96.19 100 0"] }), { built: BUILT }).status).toBe("imported")
   })
 
   it("a wire end or a label a hair's breadth from a wire, which the editor joins within 1.27 um", () => {
     const wire = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["80 120 120 120", "100 103.81 100 119.9999"] })
-    expect(lossyOf(wire, BUILT).map(([, why]) => why)).toContain("a wire end a hair's breadth from another wire, which the editor joins and KiCad does not")
+    expect(lossyOf(wire, BUILT).map(([, why]) => why)).toContain("a wire end lies a hair's breadth from another wire")
     const label = schematic({ libs: [LIB_R], symbols: [R("R1", "100 100 0", 1)], wires: ["100 103.81 100 120"], labels: ["SIG 100.0009 110 0"] })
-    expect(lossyOf(label, BUILT).map(([, why]) => why)).toContain("a label a hair's breadth from a wire, which the editor joins and KiCad does not")
+    expect(lossyOf(label, BUILT).map(([, why]) => why)).toContain("a label lies a hair's breadth from a wire")
   })
 
   const hidden = `(symbol "Test:H" (in_bom yes) (on_board yes)

@@ -180,6 +180,12 @@ export const PATH_RULES: PathRule[] = [
   "note": "per-variant DNP and BOM flags and field overrides (KiCad 10)"
  },
  {
+  "source": "^(sheet>instances>project>path>variant(?:>.*)?)$",
+  "decision": "extend",
+  "ext": "S9",
+  "note": "per-variant DNP and BOM flags and field overrides of a sheet (KiCad 10)"
+ },
+ {
   "source": "^(symbol_instances(?:>path(?:>(?:reference|unit|value|footprint))?)?)$",
   "decision": "extend",
   "ext": "S1",
@@ -582,7 +588,7 @@ export const ATOM_RULES: AtomRule[] = [
   "skip": []
  },
  {
-  "source": "^(symbol>instances>project>path>variant>(?:dnp|in_bom|on_board|in_pos_files))$",
+  "source": "^((?:symbol|sheet)>instances>project>path>variant>(?:dnp|exclude_from_sim|in_bom|on_board|in_pos_files))$",
   "values": [
    "yes",
    "no",
@@ -697,15 +703,22 @@ export const TOKEN_RULES: TokenRule[] = [
  },
  {
   "names": [
+   "variant"
+  ],
+  "decision": "extend",
+  "ext": "S9",
+  "note": "schematic variants (KiCad 10)"
+ },
+ {
+  "names": [
    "delegate",
    "symbol_override",
-   "variant",
    "custom_property",
    "default_instance"
   ],
   "decision": "extend",
-  "ext": "S9",
-  "note": "schematic variants and symbol overrides (KiCad 10 and 11 development)"
+  "ext": "S9X",
+  "note": "symbol overrides and custom properties (KiCad 11 development)"
  },
  {
   "names": [

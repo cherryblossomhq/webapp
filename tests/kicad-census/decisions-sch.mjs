@@ -48,6 +48,7 @@ export const RULES_SCH = [
   rule("symbol>pin(?:>alternate)?", "extend", "-", { ext: "S5", note: "the alternate function chosen on this instance" }),
   rule("symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "one reference per use of a sheet; the path names the sheet instance" }),
   rule("symbol>instances>project>path>variant(?:>.*)?", "extend", "-", { ext: "S9", note: "per-variant DNP and BOM flags and field overrides (KiCad 10)" }),
+  rule("sheet>instances>project>path>variant(?:>.*)?", "extend", "-", { ext: "S9", note: "per-variant DNP and BOM flags and field overrides of a sheet (KiCad 10)" }),
   rule("symbol_instances(?:>path(?:>(?:reference|unit|value|footprint))?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "KiCad 6 keeps all instance data in one root list" }),
 
   // ---- wires, buses, junctions, flags ----
@@ -120,7 +121,7 @@ export const ATOMS_SCH = [
   atoms("(?:.*>)?effects", ["hide"]),
   atoms("(?:.*>)?property>(?:hide|do_not_autoplace|show_name)", YES_NO),
   atoms("(?:label|global_label|hierarchical_label|netclass_flag)>fields_autoplaced", YES_NO),
-  atoms("symbol>instances>project>path>variant>(?:dnp|in_bom|on_board|in_pos_files)", YES_NO),
+  atoms("(?:symbol|sheet)>instances>project>path>variant>(?:dnp|exclude_from_sim|in_bom|on_board|in_pos_files)", YES_NO),
   atoms("rule_area>(?:dnp|exclude_from_sim|in_bom|on_board)", YES_NO),
   atoms("text>exclude_from_sim|text_box>exclude_from_sim", YES_NO),
   atoms("table>border>(?:external|header)", YES_NO),
@@ -137,7 +138,8 @@ export const TOKENS_SCH = [
   token("kicad_sch kicad_symbol_lib", "native", "", "root lists of a schematic and of a symbol library"),
   token("ellipse ellipse_arc major_radius minor_radius rotation_angle start_angle end_angle", "extend", "S6", "ellipses (KiCad 11 development)"),
   token("pin_map pin_map_override pin_maps pin_merge pin_rename pin_del hint_alt_swap hint_pin_swap jumper_pin_groups named_map map property_del", "extend", "S5", "pin-to-pad maps, merged and renamed pins and jumper pin groups (KiCad 10 and 11 development)"),
-  token("delegate symbol_override variant custom_property default_instance", "extend", "S9", "schematic variants and symbol overrides (KiCad 10 and 11 development)"),
+  token("variant", "extend", "S9", "schematic variants (KiCad 10)"),
+  token("delegate symbol_override custom_property default_instance", "extend", "S9X", "symbol overrides and custom properties (KiCad 11 development)"),
   token("net_chain nets from to net_class", "report", "", "net chains (KiCad 11 development)"),
   token("body_style body_styles demorgan convert", "extend", "S5", "De Morgan and body styles"),
   token("alternate", "extend", "S5", "pin alternate functions"),

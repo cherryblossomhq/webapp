@@ -63,8 +63,10 @@ describe("plain names for the extensions", () => {
     S7: [/flags/, /do not populate/, /not on the board/, /simulation/],
     S8: [/directive labels/, /rule areas/],
     S9: [/variants/],
+    S9X: [/overrides/, /custom properties/],
     S10: [/kept inside the project/],
     S11: [/wire joins/, /label on a pin/],
+    S11L: [/KiCad 5/, /no-connect/, /label names/],
     S12: [/libraries/, /parts database/],
   }
 

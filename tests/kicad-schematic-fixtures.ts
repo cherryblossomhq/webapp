@@ -54,6 +54,8 @@ export interface SymSpec {
   instanceUnit?: number
   /** Instance data as `path|reference` (KiCad 7 and later), where the default is the root sheet and `ref`. An empty list writes none. */
   instances?: string[]
+  /** S9: variant nodes inside each instance's `path`, written as given: `(variant (name "A") (dnp yes))`. */
+  variants?: string
 }
 
 export interface SchSpec {
@@ -89,7 +91,7 @@ function placed(s: SymSpec, spec: SchSpec): string {
   const version = stampOf(spec)
   const root = spec.uuid ?? ROOT_UUID
   const own = s.instances ?? [`/${root}|${s.ref}`]
-  const instances = version >= 20221002 && own.length ? `(instances (project "${spec.project ?? "demo"}" ${own.map((i) => `(path "${i.split("|")[0]}" (reference "${i.split("|")[1]}") (unit ${s.instanceUnit ?? s.unit ?? 1}))`).join(" ")}))` : ""
+  const instances = version >= 20221002 && own.length ? `(instances (project "${spec.project ?? "demo"}" ${own.map((i) => `(path "${i.split("|")[0]}" (reference "${i.split("|")[1]}") (unit ${s.instanceUnit ?? s.unit ?? 1})${s.variants ? ` ${s.variants}` : ""})`).join(" ")}))` : ""
   const yn = (v: boolean) => (version >= 20241004 ? (v ? "yes" : "no") : v ? "yes" : "no")
   return `(symbol (lib_id "${s.lib}") (at ${s.at}${s.at.split(/\s+/).length === 2 ? " 0" : ""})${s.mirror ? ` (mirror ${s.mirror})` : ""} (unit ${s.unit ?? 1}) (in_bom ${yn(true)}) (on_board ${yn(true)}) ${s.extra ?? ""}
     (uuid ${s.uuid})

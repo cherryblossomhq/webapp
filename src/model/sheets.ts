@@ -1,5 +1,6 @@
 import { uid } from "../lib/id"
 import type { ComponentInstance, NetLabel, Project, SchematicBlock, SchematicDrawing, SchematicSheet, SheetSymbol, Wire } from "./types"
+import { activeVariant, resolveVariant, variantSheetFlags } from "./variants"
 
 // S1: hierarchical sheets.
 //
@@ -384,13 +385,16 @@ export function commitOnUse(project: Project, path: string, fn: (view: Project) 
  * sheet below them, as KiCad has them mean (the flag of a sheet is the flag of everything on it). The project itself keeps the flag
  * on the sheet symbol only; a project with no flagged sheet symbol is returned as it is. The BOM, the position file and the exports read this.
  */
-export function withSheetFlags(project: Project): Project {
-  if (!project.sheetSymbols?.some((s) => s.flags && Object.keys(s.flags).length)) return project
+export function withSheetFlags(source: Project): Project {
+  // S9: the active variant first: its changes to a symbol, and to a sheet symbol's flags on each use, are what the flags below are inherited from.
+  const variant = activeVariant(source)
+  const project = resolveVariant(source)
+  if (!project.sheetSymbols?.some((s) => (s.flags && Object.keys(s.flags).length) || (variant !== undefined && s.variants))) return project
   const uses = new Map(sheetUses(project).map((u) => [u.path, u]))
   const inherited = (path: string) => {
     const out: NonNullable<SheetSymbol["flags"]> = {}
     for (let at = uses.get(path); at?.symbol; at = uses.get(at.parent ?? "")) {
-      const f = at.symbol.flags
+      const f = variantSheetFlags(at.symbol, at.parent ?? "", variant)
       if (f?.dnp) out.dnp = true
       if (f?.excludeFromBom) out.excludeFromBom = true
       if (f?.notOnBoard) out.notOnBoard = true

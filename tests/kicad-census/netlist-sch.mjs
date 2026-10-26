@@ -14,7 +14,14 @@
 //   - a power symbol's power-input pin, and any power-input pin the symbol does not draw, is on the
 //     global net named by the symbol's Value (power symbol) or the pin's name (hidden pin);
 //   - a symbol is placed by its turn, then its mirror (SCH_SYMBOL::SetOrientation, the order the
-//     parser applies them in).
+//     parser applies them in);
+//   - points are KiCad's integers of 100 nm (SCH_IU), and "on the body of a wire" is exact in them: the cross product of
+//     the integers is zero and the point is strictly between the ends (no tolerance: KiCad has none, and the editor's
+//     1.27 um is what the importer's S11 flag takes away).
+// It also reports where the editor's own rules and KiCad's part (`out.cases`, per sheet file): a wire end on another wire's
+// side with no junction, a label on a pin on a wire's side, a point within 1.27 um of a wire it is not on, two points
+// the editor's four digits cannot tell apart, and a pin the editor's two roundings move; the corpus test compares them
+// with the sheets the importer flagged.
 // Buses are derived only on one sheet, where they join nothing a label does not: a project with buses
 // and several sheets reports it (`unsupported`) and its nets are left out.
 
@@ -177,7 +184,7 @@ const netclassFields = (node) => [...new Set(kids(node, "property").filter((p) =
  */
 export function deriveNets(rootFile, opts = {}) {
   const o = { bodyConnects: "junction", powerNameFrom: "value", hiddenPower: true, localJoinsGlobal: "same", ...opts }
-  const out = { pins: new Map(), names: new Map(), unsupported: new Set(), symbols: 0, pinsTotal: 0, instances: 0 }
+  const out = { pins: new Map(), names: new Map(), unsupported: new Set(), symbols: 0, pinsTotal: 0, instances: 0, cases: [] }
   const rootText = read(rootFile)
   const root = sch(rootText)
   if (!root) throw new Error("no kicad_sch")
@@ -222,6 +229,9 @@ export function deriveNets(rootFile, opts = {}) {
     const id = (kind) => `${inst}|${kind}${n++}`
     const bodyItems = [] // items that may sit on a wire body: { x, y, item, kind }
     const allPins = new Set() // the point of every pin, of every electrical type
+    const rawPoints = [] // every point of the sheet in KiCad's integers, for the cases
+    const rounded4 = (v) => Math.round(v * 1e4) / 1e4
+    const rounded6 = (v) => Math.round(v * 1e6) / 1e6
 
     for (const w of kids(s, "wire")) {
       const pts = kids(kid(w, "pts"), "xy")
@@ -349,6 +359,13 @@ export function deriveNets(rootFile, opts = {}) {
           const item = id("pin")
           uf.find(item)
           allPins.add(keyOf(wx, wy))
+          rawPoints.push([wx, wy])
+          {
+            // The editor's pin: the symbol's place and the pin's offset each to six digits of 12.7 mm, summed and rounded to four; KiCad's own is the integer point.
+            const ex = rounded4(rounded6(x0 / 12.7) + rounded6((m.x1 * px + m.y1 * py) / 12.7))
+            const ey = rounded4(rounded6(-y0 / 12.7) + rounded6(-(m.x2 * px + m.y2 * py) / 12.7))
+            if (Math.abs(ex - rounded4(wx / 12.7)) > 1e-9 || Math.abs(ey - rounded4(-wy / 12.7)) > 1e-9) out.cases.push({ file, kind: "pin-rounding" })
+          }
           // A pin of the electrical type "no connect" is on no net, whatever is drawn to it.
           if (etype !== "no_connect") {
             add(wx, wy, item)
@@ -377,14 +394,15 @@ export function deriveNets(rootFile, opts = {}) {
     for (const items of points.values()) for (let i = 1; i < items.length; i++) uf.union(items[0], items[i])
     // items on the body of a wire
     const onBody = (w, x, y) => {
-      const { a, b } = w
-      const cross = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
-      if (Math.abs(cross) > 1e-6 * Math.max(1, Math.hypot(b.x - a.x, b.y - a.y))) return false
-      const dot = (x - a.x) * (b.x - a.x) + (y - a.y) * (b.y - a.y)
-      const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2
-      if (len2 === 0) return false
-      const t = dot / len2
-      return t > 1e-9 && t < 1 - 1e-9
+      const ax = unit(w.a.x)
+      const ay = unit(w.a.y)
+      const bx = unit(w.b.x)
+      const by = unit(w.b.y)
+      const px = unit(x)
+      const py = unit(y)
+      if ((bx - ax) * (py - ay) - (by - ay) * (px - ax) !== 0) return false
+      const dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay)
+      return dot > 0 && dot < (bx - ax) ** 2 + (by - ay) ** 2
     }
     const junctionKeys = new Set(junctions.map((j) => keyOf(j.x, j.y)))
     // A label with a pin or a no-connect flag at its point is attached to that and skips a wire merely passing there (sch_label.cpp, ConnectionPropagatesTo scan).
@@ -405,6 +423,39 @@ export function deriveNets(rootFile, opts = {}) {
                 ? false
                 : j
         if (ok) uf.union(w.item, it.item)
+      }
+    }
+    // where the editor's rules and KiCad's part (for the importer's S11 flag)
+    {
+      const note = (kind) => out.cases.push({ file, kind })
+      const iuOf = (x, y) => [unit(x), unit(y)]
+      for (const w of wires) {
+        for (const it of bodyItems) {
+          if (it.kind === "wireEnd" && it.wire !== w.item && onBody(w, it.x, it.y) && !junctionKeys.has(keyOf(it.x, it.y))) note("wire-end-on-side")
+          if (it.kind === "label" && it.plain && pinPoints.has(keyOf(it.x, it.y)) && onBody(w, it.x, it.y) && !junctionKeys.has(keyOf(it.x, it.y))) note("label-pin-side")
+          // a wire end or a label less than the editor's tolerance (1.27 um, 12.7 of KiCad's 0.1 um) from a wire it is not on, and not at an end of
+          if ((it.kind === "wireEnd" && it.wire !== w.item) || (it.kind === "label" && it.plain)) {
+            const [px, py] = iuOf(it.x, it.y)
+            const [ax, ay] = iuOf(w.a.x, w.a.y)
+            const [bx, by] = iuOf(w.b.x, w.b.y)
+            if ((px === ax && py === ay) || (px === bx && py === by) || onBody(w, it.x, it.y)) continue
+            const len2 = (bx - ax) ** 2 + (by - ay) ** 2
+            const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / len2))
+            if (Math.hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay))) < 12.7 * 1.0001) note("near-miss")
+          }
+        }
+      }
+      // two points that are two in KiCad's integers and one in the editor's three digits of 12.7 mm (it joins points that agree to 12.7 um)
+      for (const it of bodyItems) rawPoints.push([it.x, it.y])
+      const seen = new Map()
+      for (const [x, y] of rawPoints) {
+        const e = `${(x / 12.7).toFixed(3)},${(-y / 12.7).toFixed(3)}`
+        const k = keyOf(x, y)
+        if (seen.has(e) && seen.get(e) !== k) {
+          note("close-points")
+          break
+        }
+        seen.set(e, k)
       }
     }
     // names

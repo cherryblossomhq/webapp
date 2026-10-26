@@ -83,6 +83,22 @@ export interface LibSymbol {
   node: List
 }
 
+/**
+ * S9: one variant of one instance of a symbol or a sheet (`(variant (name "A") (dnp yes) (field ...))` in its `path`, KiCad 10). A flag the file does not state is
+ * null: KiCad starts a variant from the symbol's own attributes (`SCH_SYMBOL_VARIANT::InitializeAttributes`), so a word that is not there changes nothing.
+ * The flags are KiCad's own senses, the editor's: `excludeFromBom` is true where the BOM leaves the symbol out (`in_bom no`, read as KiCad 10 reads it for the
+ * stamp of the file: see `readVariant`).
+ */
+export interface VariantRead {
+  name: string
+  dnp: boolean | null
+  excludeFromSim: boolean | null
+  excludeFromBom: boolean | null
+  notOnBoard: boolean | null
+  excludeFromPos: boolean | null
+  fields: { name: string; value: string }[]
+}
+
 export interface SymbolInstance {
   project: string
   /** The instance path of the sheet the symbol is on: `/<root uuid>/<sheet uuid>` from KiCad 7, the board's form (no root uuid) in KiCad 6's root list. */
@@ -93,6 +109,8 @@ export interface SymbolInstance {
   footprint: string | null
   /** The path was written by the symbol (KiCad 7 and later) or by the root list (KiCad 6). */
   from: "symbol" | "root-list"
+  /** S9: the variants this instance has, in file order. */
+  variants: VariantRead[]
 }
 
 export interface PlacedSymbol {
@@ -167,6 +185,8 @@ export interface SheetInstance {
   project: string
   path: string
   page: string
+  /** S9: the variants this instance of the sheet has. */
+  variants: VariantRead[]
 }
 
 export interface SchSheet {

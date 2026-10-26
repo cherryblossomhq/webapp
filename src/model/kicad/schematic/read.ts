@@ -23,6 +23,7 @@ import type {
   SheetInstance,
   SheetPin,
   SymbolInstance,
+  VariantRead,
 } from "./types"
 
 // The reader: a KiCad schematic file of any release from KiCad 6 on (stamps 20200310 to 11) into
@@ -387,6 +388,37 @@ const instanceText = (path: List, name: string, stamp: number | null): string | 
   return v === undefined ? null : tilde(v, stamp)
 }
 
+/** The stamp from which `in_bom` in a variant is the positive logic KiCad writes (`sch_io_kicad_sexpr_parser.cpp`, 10.0: `m_requiredVersion >= 20260306`). */
+export const VARIANT_IN_BOM_FROM = 20260306
+
+/**
+ * S9: the variants of an instance. `in_bom` is read as KiCad 10's parser reads it: from stamp 20260306 `(in_bom yes)` is in the BOM; before it the parser stores
+ * the word's value as "excluded from the BOM" without inverting it (its own comment calls that "the incorrect logic from prior file versions"), so
+ * `(in_bom yes)` of an older file leaves the symbol out of the BOM. `on_board` and `in_pos_files` are positive in every file.
+ */
+function readVariants(node: List | undefined, stamp: number | null): VariantRead[] {
+  const out: VariantRead[] = []
+  for (const v of kids(node, "variant")) {
+    const word = (name: string): boolean | null => {
+      const c = kid(v, name)
+      return c ? c[1] === undefined || c[1] === "yes" || c[1] === "true" : null
+    }
+    const inBom = word("in_bom")
+    const onBoard = word("on_board")
+    const inPos = word("in_pos_files")
+    out.push({
+      name: strAt(kid(v, "name"), 1) ?? "",
+      dnp: word("dnp"),
+      excludeFromSim: word("exclude_from_sim"),
+      excludeFromBom: inBom === null ? null : stamp !== null && stamp >= VARIANT_IN_BOM_FROM ? !inBom : inBom,
+      notOnBoard: onBoard === null ? null : !onBoard,
+      excludeFromPos: inPos === null ? null : !inPos,
+      fields: kids(v, "field").map((f) => ({ name: strAt(kid(f, "name"), 1) ?? "", value: strAt(kid(f, "value"), 1) ?? "" })),
+    })
+  }
+  return out
+}
+
 function readInstances(node: List | undefined, stamp: number | null): SymbolInstance[] {
   const out: SymbolInstance[] = []
   for (const project of kids(node, "project")) {
@@ -399,6 +431,7 @@ function readInstances(node: List | undefined, stamp: number | null): SymbolInst
         value: instanceText(path, "value", stamp),
         footprint: instanceText(path, "footprint", stamp),
         from: "symbol",
+        variants: readVariants(path, stamp),
       })
     }
   }
@@ -468,7 +501,7 @@ function readSheet(node: List, stamp: number | null): SchSheet {
   })
   const instances: SheetInstance[] = []
   for (const project of kids(kid(node, "instances"), "project")) {
-    for (const path of kids(project, "path")) instances.push({ project: strAt(project, 1) ?? "", path: strAt(path, 1) ?? "", page: strAt(kid(path, "page"), 1) ?? "" })
+    for (const path of kids(project, "path")) instances.push({ project: strAt(project, 1) ?? "", path: strAt(path, 1) ?? "", page: strAt(kid(path, "page"), 1) ?? "", variants: readVariants(path, stamp) })
   }
   return { at: pt(kid(node, "at")), size: pt(kid(node, "size")), uuid: strAt(kid(node, "uuid"), 1) ?? "", name, file, pins, instances, node }
 }
@@ -564,8 +597,9 @@ function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): K
     value: instanceText(p, "value", stamp),
     footprint: instanceText(p, "footprint", stamp),
     from: "root-list" as const,
+    variants: [],
   }))
-  const sheetInstances: SheetInstance[] = kids(kid(tree, "sheet_instances"), "path").map((p) => ({ project: "", path: strAt(p, 1) ?? "", page: strAt(kid(p, "page"), 1) ?? "" }))
+  const sheetInstances: SheetInstance[] = kids(kid(tree, "sheet_instances"), "path").map((p) => ({ project: "", path: strAt(p, 1) ?? "", page: strAt(kid(p, "page"), 1) ?? "", variants: [] }))
   const embeddedFiles: EmbeddedFileRef[] = kids(kid(tree, "embedded_files"), "file").map((f) => ({ name: strAt(kid(f, "name"), 1) ?? "(no name)", type: strAt(kid(f, "type"), 1) ?? "" }))
 
   const others: Record<string, List[]> = {}

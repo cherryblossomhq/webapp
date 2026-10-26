@@ -9,7 +9,7 @@ import { autoroute } from "../src/model/autoroute"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { layerContent, makeArcTrace, makeVia, moveArcPoint, reverseArc, setArc, setCopperLayer, setCopperLayerCount, setStackup, setViaKind, setViaSpan, defaultStackup } from "../src/model/layerOps"
 import { analyzePcb } from "../src/model/pcb"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import { copperLayers, viaLayers } from "../src/model/stack"
 import { makeZone } from "../src/model/zoneOps"
 import type { Project } from "../src/model/types"
@@ -326,7 +326,7 @@ describe("the project file", () => {
     expect(again.board.stack).toEqual(p.board.stack)
     expect(again.traces).toEqual(p.traces)
     expect(again.vias).toEqual(p.vias)
-    expect(JSON.parse(text).version).toBe(11)
+    expect(JSON.parse(text).version).toBe(PROJECT_FILE_VERSION)
   })
 
   it("a document of version 10 opens as it was written, and a project of two layers has no trace of any of it", () => {
@@ -335,7 +335,7 @@ describe("the project file", () => {
     expect(read.traces[0]).toEqual(old.project.traces[0])
     expect(read.vias[0]).toEqual(old.project.vias[0])
     const written = JSON.parse(serializeProject(read))
-    expect(written.version).toBe(11)
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
     expect(written.project.board.stack).toBeUndefined()
     expect(JSON.stringify(written.project.traces)).not.toContain("arc")
   })

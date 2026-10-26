@@ -1,6 +1,7 @@
 import { boardColors, boardFinish, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { boardAreaMm2, describeOutline } from "../model/outline"
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
+import { activeVariant, variantNames } from "../model/variants"
 import { inBom, inPositionFile } from "../model/partFlags"
 import { computeConnectivity } from "../model/connectivity"
 import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } from "../model/netClasses"
@@ -90,7 +91,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     "STACKUP",
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
-    ...assemblyNotes(project),
+    ...variantNotes(project), ...assemblyNotes(project),
     ...drawingNotes(project),
     ...textNotes(project),
     ...dimensionNotes(project),
@@ -246,6 +247,13 @@ function textNotes(project: Project): string[] {
     ...(all.length > placed.length ? [`  Not on the PCB    ${all.length - placed.length}: text of parts not placed on the board is left out`] : []),
     "",
   ]
+}
+
+/** The schematic variant the files are made for, when the project has variants: its flags and field values are already on the parts below. */
+function variantNotes(project: Project): string[] {
+  const active = activeVariant(project)
+  if (!project.variants?.list.length) return []
+  return ["SCHEMATIC VARIANT", active === undefined ? `  Variant           none active: the symbols as they are (the project has ${variantNames(project).length}: ${variantNames(project).join(", ")})` : `  Variant           ${active}: bom.csv, pnp.csv, the drill and Gerber files are for this variant`, ""]
 }
 
 /** The flags on parts, and what each does to the files: only for a board that has any, so a board drawn here reads as it did. */

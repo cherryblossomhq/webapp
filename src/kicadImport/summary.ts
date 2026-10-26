@@ -45,6 +45,8 @@ export const PLAIN_NAMES: Record<string, string> = {
   S8: "directive labels and rule areas",
   S9: "schematic variants",
   S10: "symbols kept inside the project",
+  S9X: "symbol overrides and custom properties in a KiCad 11 development file",
+  S11L: "KiCad 5's own rules for a no-connect pin and for label names",
   S11: "KiCad's own rules for what a wire joins (a wire end on the side of another wire, a label on a pin, points a hair apart)",
   S12: "symbols from the project's own libraries or the parts database",
 }

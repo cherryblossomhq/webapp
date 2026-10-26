@@ -654,14 +654,14 @@ describe("KiCad 5's rules", () => {
     expect(r.status).toBe("imported")
   })
 
-  it("two labels of different names stacked on an empty point stay two nets in KiCad 5 and are joined by the editor: refused naming S11", () => {
+  it("two labels of different names stacked on an empty point stay two nets in KiCad 5 and are joined by the editor: refused naming S11L, KiCad 5's own rules", () => {
     // label A on pin 1 of R1, label B on pin 1 of R2, and A and B stacked at a point with nothing else there (5.1 `BuildNetListInfo`: a label joins only through `segmentToPointConnect`)
     const two = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] })
     const labels = (a: string, b: string) => `Text Label 5000 3850 0    60   ~ 0\nA\nText Label 7000 3850 0    60   ~ 0\nB\nText Label 9000 9000 0    60   ~ 0\n${a}\nText Label 9000 9000 0    60   ~ 0\n${b}\n`
     const r = imp(mini(two + labels("A", "B")))
     expect(r.status).toBe("refused")
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11")
-    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11")?.why).toMatch(/stacked/)
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11L")
+    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11L")?.why).toMatch(/stacked/)
     // the same name twice is one net either way; two names on a pin, a wire end or a wire's side are joined by that item in KiCad 5 too
     expect(imp(mini(two + labels("A", "A"))).status).toBe("imported")
     expect(imp(mini(two + wire(9000, 9000, 9500, 9000) + labels("A", "B"))).status).toBe("imported")
@@ -670,11 +670,11 @@ describe("KiCad 5's rules", () => {
     expect(imp(mini(two + onPin)).status).toBe("imported")
   })
 
-  it("labels written differently that the editor reads as one name (~A~ and ~A) stay two nets in KiCad 5: refused naming S11", () => {
+  it("labels written differently that the editor reads as one name (~A~ and ~A) stay two nets in KiCad 5: refused naming S11L", () => {
     const two = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [7000, 4000] })
     const r = imp(mini(two + "Text Label 5000 3850 0    60   ~ 0\n~A~\nText Label 7000 3850 0    60   ~ 0\n~A\n"))
     expect(r.status).toBe("refused")
-    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11")?.why).toMatch(/written differently/)
+    expect(r.status === "refused" && r.needs.find((n) => n.ext === "S11L")?.why).toMatch(/written differently/)
     expect(imp(mini(two + "Text Label 5000 3850 0    60   ~ 0\n~A~\nText Label 7000 3850 0    60   ~ 0\n~A~\n")).status).toBe("imported")
   })
 
@@ -702,18 +702,43 @@ describe("KiCad 5's rules", () => {
     }
   })
 
-  it("a wire end on another wire's side with no junction is not what KiCad 5 joins: refused naming S11", () => {
-    const body = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + wire(4000, 3000, 6000, 3000) + wire(5000, 3000, 5000, 3850)
+  it("a wire end on another wire's side with no junction is not what KiCad 5 joins: the sheet is joined by KiCad's rules (S11) and its nets are the legacy oracle's", () => {
+    // R2's pin 2 is on the end of a wire along y = 3000; R1's pin 1 is on the end of a wire that ends on that wire's side, with no junction
+    const body = comp({ lib: "Device:R", ref: "R1", ts: R1, at: [5000, 4000] }) + comp({ lib: "Device:R", ref: "R2", ts: R2, at: [4000, 2850] }) + wire(4000, 3000, 6000, 3000) + wire(5000, 3000, 5000, 3850)
     const r = imp(mini(body))
-    expect(r.status).toBe("refused")
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11")
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.project.sheets?.some((x) => x.kicadRules)).toBe(true)
+    const groups = (project: typeof r.project) => {
+      const { pinNet } = computeConnectivity(project)
+      const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+      const by = new Map<string, string[]>()
+      for (const [key, net] of pinNet) by.set(net, [...(by.get(net) ?? []), `${refOf.get(key.slice(0, key.lastIndexOf(":")))}.${key.slice(key.lastIndexOf(":") + 1)}`])
+      return [...by.values()].filter((g) => g.length > 1)
+    }
+    // KiCad 5 (`segmentToPointConnect`: only a junction and a label join a wire's side) does not join them; the editor's own rule would
+    expect(groups(r.project)).toEqual([])
+    expect(groups({ ...r.project, sheets: undefined })).toEqual([["R1.1", "R2.2"]])
+    const dir = mkdtempSync(join(tmpdir(), "legacy-s11-"))
+    try {
+      writeFileSync(join(dir, "t.sch"), HEAD() + body + END)
+      writeFileSync(join(dir, "t-cache.lib"), CACHE(LIB_R, LIB_GND))
+      const o = deriveLegacyNets(join(dir, "t.sch"))
+      expect(o.groupOf(`/${R1}#1`)).not.toBe(o.groupOf(`/${R2}#2`))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+    // a label on a pin on a wire's side joins both in KiCad 5 (the editor's rule): a sheet that needs the flag for another case and has this is refused, naming S11L
+    const both = body + comp({ lib: "Device:R", ref: "R3", ts: "5A000003", at: [8000, 4000] }) + wire(7900, 3850, 8100, 3850) + "Text Label 8000 3850 0    60   ~ 0\nL\n"
+    const refused = imp(mini(both))
+    expect(refused.status === "refused" && refused.needs.map((n) => n.ext)).toContain("S11L")
   })
 
-  it("a pin of the type no connect with a wire on it is joined by KiCad 5 and left out here: refused naming S11, not approximated", () => {
+  it("a pin of the type no connect with a wire on it is joined by KiCad 5 and left out here: refused naming S11L, not approximated", () => {
     const lib = `${LIB_R}DEF Test_U U 0 40 Y Y 1 F N\nF0 "U" 0 0 50 H V C CNN\nF1 "U" 0 0 50 H V C CNN\nDRAW\nX EP 1 0 0 100 D 50 50 1 1 N\nENDDRAW\nENDDEF\n`
     const body = comp({ lib: "Test:U", ref: "U1", ts: R1, at: [5000, 4000] }) + wire(5000, 4000, 5000, 4500)
     const r = imp(mini(body, lib))
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11")
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toContain("S11L")
     const flagOnly = imp(mini(comp({ lib: "Test:U", ref: "U1", ts: R1, at: [5000, 4000] }) + "NoConn ~ 5000 4000\n", lib))
     expect(flagOnly.status).toBe("imported")
   })

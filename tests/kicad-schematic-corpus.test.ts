@@ -64,7 +64,7 @@ const REAL = ["pcbench", "github", "kicad-demos"]
 /** Projects whose sheets carry the references of another KiCad project too: link.mjs takes those for a match by reference, the importer does not. */
 const FOREIGN_REFERENCES = ["ESP32_S3_PCB_TEMPLATE", "USB Module/USB Switch"]
 
-const MEASURE = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "X19"])
+const MEASURE = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "X19"])
 
 interface FileRow {
   file: string
@@ -345,6 +345,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       /** The files with sheet symbols whose nets are compared with the oracle's, whole hierarchy at once. */
       const hierNets: FileRow[] = []
       const netNameProblems: string[] = []
+      /** S11: per file, the sheets built with KiCad's joining rules, what the oracle finds, and whether the nets agree. */
+      const joinRows: { file: string; flagged: number; oracle: string[]; partitionEqual: boolean }[] = []
       const sheetProblems: string[] = []
       let sheetsCompared = 0
       // ---------- the nets of the schematics (a hierarchy whole, with every use of a reused sheet) ----------
@@ -431,6 +433,10 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             return g === undefined ? k : [...new Set(byGroup.get(g)!)].sort().join(" ")
           }
           const partitionEqual = universe.every((k) => mine(k) === theirs(k))
+          // S11: the sheets the importer joined by KiCad's rules, against the sheets where the oracle (which shares no code with `src`) finds the editor's rules and KiCad's part.
+          const flaggedSheets = built.project.sheets?.filter((x) => x.kicadRules).length ?? 0
+          const oracleCases = [...new Set(derived.cases.map((c) => c.kind))].sort()
+          joinRows.push({ file: row.file, flagged: flaggedSheets, oracle: oracleCases, partitionEqual })
           // names: the editor's net name against the driver KiCad picks, wherever either has one
           let namesEqual = true
           for (const net of nets) {
@@ -655,6 +661,12 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         needsEqualCensus: sum((r) => !r.needsDiff),
         needsDiffering: rows.filter((r) => r.needsDiff).length,
         netsEqual: sum((r) => r.nets === "equal"),
+        // S11: sheets built with KiCad's joining rules; files where the oracle finds a case; files where the two disagree; and whether the nets of every file with one equal KiCad's
+        joinFlaggedFiles: joinRows.filter((r) => r.flagged > 0).length,
+        joinOracleCaseFiles: joinRows.filter((r) => r.oracle.length > 0).map((r) => `${r.file}: ${r.oracle.join(", ")}`),
+        // a pin the editor's four digits put 1.27 um off is not a case for the flag: the wire end is put on the pin (`kicad-pins-snapped`)
+        joinFlagDisagreements: joinRows.filter((r) => (r.flagged > 0) !== r.oracle.some((k) => k !== "pin-rounding")).map((r) => `${r.file}: flagged ${r.flagged}, oracle ${r.oracle.join(", ") || "none"}`),
+        joinNetsDiffer: joinRows.filter((r) => (r.flagged > 0 || r.oracle.length > 0) && !r.partitionEqual).map((r) => r.file),
         netNameProblems,
         sheetsCompared,
         sheetProblems: sheetProblems.slice(0, 20),
@@ -712,6 +724,9 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(summary.importedReal3a).toBeGreaterThanOrEqual(71)
       expect(summary.netsDiffer).toBe(0)
       expect(summary.netsDifferInNames).toBe(0)
+      // S11: the importer flags a sheet exactly where the independent oracle finds the editor's rules and KiCad's apart, and those nets are KiCad's
+      expect(summary.joinFlagDisagreements).toEqual([])
+      expect(summary.joinNetsDiffer).toEqual([])
       expect(summary.linksAsCensus).toBe(summary.projects)
       // the project import's own comparison agrees with the independent one wherever it ran
       expect(projects.filter((p) => p.imported && !p.lossyMeasured && ((p.boardNets === "agree") !== (p.differences === 0)) && !p.boardNets.startsWith("skipped"))).toEqual([])

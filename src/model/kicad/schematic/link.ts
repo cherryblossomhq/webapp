@@ -1,5 +1,5 @@
 import type { SchematicTree } from "./tree"
-import type { PlacedSymbol } from "./types"
+import type { PlacedSymbol, VariantRead } from "./types"
 
 // Linking a footprint on the board to its symbol on the schematic (section 4 of
 // docs/kicad-import-schematic.md), in this order:
@@ -30,6 +30,8 @@ export interface SymbolRecord {
   sheetPath: string
   /** The instance data came from the symbol itself, the root list, or was made up from the sheet's place (a file with no instance data). */
   from: "symbol" | "root-list" | "none"
+  /** S9: the variants this use of the symbol has (KiCad 10 writes them in the symbol's instance data). */
+  variants: VariantRead[]
 }
 
 const referenceOf = (s: PlacedSymbol) => s.props.find((p) => p.name === "Reference")?.value ?? ""
@@ -76,13 +78,13 @@ function recordsOf(tree: SchematicTree): SymbolRecord[] {
       for (const i of sym.instances) {
         const sheetPath = boardForm(i.path)
         if (sheetPath === null) continue
-        out.push({ file: file.path, symbol: sym, reference: i.reference, unit: i.unit, value: i.value, footprint: i.footprint, path: `${sheetPath === "/" ? "" : sheetPath}/${sym.uuid}`, sheetPath, from: "symbol" })
+        out.push({ file: file.path, symbol: sym, reference: i.reference, unit: i.unit, value: i.value, footprint: i.footprint, path: `${sheetPath === "/" ? "" : sheetPath}/${sym.uuid}`, sheetPath, from: "symbol", variants: i.variants })
       }
       // KiCad 6.
-      for (const i of listed.get(sym.uuid) ?? []) out.push({ file: file.path, symbol: sym, reference: i.reference, unit: i.unit, value: i.value, footprint: i.footprint, path: i.path, sheetPath: i.sheetPath, from: "root-list" })
+      for (const i of listed.get(sym.uuid) ?? []) out.push({ file: file.path, symbol: sym, reference: i.reference, unit: i.unit, value: i.value, footprint: i.footprint, path: i.path, sheetPath: i.sheetPath, from: "root-list", variants: [] })
       if (out.length === before) {
         // No instance data at all: the symbol's own reference stands at every place its sheet is used.
-        for (const sheetPath of sheetPaths) out.push({ file: file.path, symbol: sym, reference: referenceOf(sym), unit: sym.unit, value: null, footprint: null, path: `${sheetPath === "/" ? "" : sheetPath}/${sym.uuid}`, sheetPath, from: "none" })
+        for (const sheetPath of sheetPaths) out.push({ file: file.path, symbol: sym, reference: referenceOf(sym), unit: sym.unit, value: null, footprint: null, path: `${sheetPath === "/" ? "" : sheetPath}/${sym.uuid}`, sheetPath, from: "none", variants: [] })
       }
     }
   }

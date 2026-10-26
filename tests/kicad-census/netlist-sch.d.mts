@@ -19,6 +19,8 @@ export interface Derived {
   netClasses: Map<string, Set<string>>
   /** What was left out of the derivation: `buses`. */
   unsupported: Set<string>
+  /** Where the editor's own rules and KiCad's part, per sheet file: the cases of the importer's S11 flag. */
+  cases: { file: string; kind: "wire-end-on-side" | "label-pin-side" | "near-miss" | "close-points" | "pin-rounding" }[]
   symbols: number
   pinsTotal: number
   instances: number

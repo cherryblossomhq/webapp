@@ -270,7 +270,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
           uf.find(key)
           addPointOwner(pin, key, use.path)
           if (!text) continue
-          // A sheet pin joins the labels of its name on the sheet below its symbol; it names the net as a label on the sheet it is drawn on would.
+          // A sheet pin joins the labels of its name on the sheet below its symbol, but only where that sheet has a hierarchical label of the name (KiCad does not join it to a local label; a view holds one sheet, so it cannot tell); it names the net as a label on the sheet it is drawn on would.
+          if (!scoped && !(labelsOf.get(sym.child) ?? []).some((l) => l.kind === "hierarchical" && l.name.trim() === text)) continue
           const nameKey = local(childPath, text)
           uf.union(key, `name:${nameKey}`)
           // KiCad 5 names a net by a label, never by a sheet pin.

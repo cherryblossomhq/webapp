@@ -43,7 +43,7 @@ export const commitFor = (id: string, fn: (view: Project) => Project) => project
 export function removalNote(p: Project, ids: string[]): string | null {
   const next = removeSheetSymbols(p, ids)
   const parts = p.components.length - next.components.length
-  const sheets = (p.sheets?.length ?? 0) - (next.sheets?.length ?? 0)
+  const sheets = (p.sheets ?? []).filter((x) => x.id !== "root").length - (next.sheets ?? []).filter((x) => x.id !== "root").length
   if (!parts && !sheets) return null
   const names = (p.sheetSymbols ?? []).filter((s) => ids.includes(s.id)).map((s) => s.name)
   return `Deleted ${names.length > 1 ? "the sheets" : "the sheet"} ${names.join(", ")}${parts ? ` with ${parts} part${parts > 1 ? "s" : ""}` : ""}${sheets > 0 ? `, and ${sheets} sheet${sheets > 1 ? "s" : ""} that nothing else uses` : ""}. Undo brings ${parts > 1 || sheets > 1 ? "them" : "it"} back.`

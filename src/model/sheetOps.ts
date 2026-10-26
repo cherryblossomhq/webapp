@@ -167,8 +167,12 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   if (!sym) return project
   const next: SheetSymbol = { ...sym }
   if (patch.name !== undefined) {
-    next.name = patch.name
-    if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetname" ? { ...f, value: patch.name! } : f))
+    // Sheets on one sheet have names of their own: two of one name would make two nets of one name below them.
+    const taken = new Set((project.sheetSymbols ?? []).filter((s) => s.id !== id && s.sheet === sym.sheet).map((s) => s.name.toLowerCase()))
+    let name = patch.name
+    for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${patch.name}${i}`
+    next.name = name
+    if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetname" ? { ...f, value: name } : f))
   }
   if (patch.file !== undefined) {
     next.file = patch.file

@@ -1,0 +1,193 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource/geist-mono";
+/* Scan this package only. Under the host's bundler, automatic detection starts at the
+   host's root and would generate a utility for every class the host itself uses. */
+@import "tailwindcss" source(none);
+@source ".";
+
+/*
+  Cherry Blossom's palette: the neutrals are the marketing site's warm paper-cream by
+  day and plum-dark at night, with the brand cherry as the one accent. Chrome stays quiet so the board itself carries
+  the colour. The dark theme below swaps the same tokens; canvas colours live in
+  src/editor/theme.ts.
+*/
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+
+  --color-paper: #faf7f0;
+  --color-surface: #fffdf7;
+  --color-chrome: #f2eee4;
+  --color-chrome-2: #e9e4d8;
+  /* The selected segment of a segmented control, raised off its chrome-2 track. */
+  --color-raised: #fffdf7;
+  --color-hover: #f7f3ea;
+  --color-field: #fffdf7;
+  --color-line: #ddd6c8;
+  --color-ink: #1f1c18;
+  --color-ink-2: #6f6a60;
+  --color-ink-3: #a29b8f;
+
+  /* The brand cherry (#e0335e, the app icon's colour). */
+  --color-brand: oklch(0.6 0.206 12.4);
+  --color-brand-soft: #fbe5eb;
+  --color-silk: #f3f0f9;
+  --color-top: #ff3b3b;
+  --color-bottom: #4a5bff;
+
+  --color-select: #2f6bff;
+  --color-select-soft: #dfe7ff;
+  /* The active tool in a toolbar. */
+  --color-active: #1f1c18;
+  --color-on-active: #fffdf7;
+  --color-danger: #cf3a3d;
+  --color-danger-soft: #fbe9e9;
+  --color-warn: #b97c12;
+  --color-ok: #2f8a57;
+
+  --shadow-chip: 0 1px 2px rgba(31, 28, 24, 0.12);
+  --shadow-float: 0 4px 14px rgba(31, 28, 24, 0.1);
+  --shadow-menu: 0 12px 32px rgba(31, 28, 24, 0.18);
+  --shadow-dialog: 0 18px 48px rgba(31, 28, 24, 0.22);
+
+  --radius-ctl: 6px;
+  --radius-panel: 10px;
+
+  --animate-fade-in: fade-in 180ms ease-out;
+  --animate-pop-in: pop-in 140ms ease-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+}
+
+:root {
+  color-scheme: light;
+}
+
+/*
+  Dark: the plum-dark neutrals. Surfaces step up in lightness
+  (paper < chrome < surface < raised) so panels separate without heavy borders.
+*/
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper: #171419;
+  --color-chrome: #1b181c;
+  --color-surface: #201c20;
+  --color-chrome-2: #2a262a;
+  --color-raised: #3a353a;
+  --color-hover: #262226;
+  --color-field: #141115;
+  --color-line: #332e33;
+  --color-ink: #f8f5ee;
+  --color-ink-2: #a5a39d;
+  --color-ink-3: #7d7871;
+
+  --color-brand: oklch(0.63 0.205 13);
+  --color-brand-soft: #3a1d26;
+  --color-silk: #f3f0f9;
+
+  --color-select: #6b97ff;
+  --color-select-soft: #1f2a48;
+  --color-active: oklch(0.63 0.205 13);
+  --color-on-active: #ffffff;
+  --color-danger: #ff6b6b;
+  --color-danger-soft: #3a1e22;
+  --color-warn: #e9aa3c;
+  --color-ok: #4cc583;
+
+  --shadow-chip: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-menu: 0 14px 36px rgba(0, 0, 0, 0.55);
+  --shadow-dialog: 0 22px 56px rgba(0, 0, 0, 0.6);
+}
+
+/* The dark stage board previews sit on, in both themes, with a faint grid like the PCB canvas's. */
+.studio {
+  background:
+    radial-gradient(circle, rgb(255 255 255 / 0.07) 0.75px, transparent 1.25px) center / 14px 14px,
+    radial-gradient(120% 90% at 50% 35%, #2a2832 0%, #17161b 100%);
+}
+
+/* Designators, net names and coordinates. */
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-chrome);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-select);
+    outline-offset: 1px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: default;
+  }
+
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+@layer components {
+  .field {
+    width: 100%;
+    border: 1px solid var(--color-line);
+    background: var(--color-field);
+    border-radius: var(--radius-ctl);
+    padding: 5px 8px;
+    outline: none;
+  }
+
+  .field:focus {
+    border-color: var(--color-select);
+    box-shadow: 0 0 0 3px var(--color-select-soft);
+  }
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

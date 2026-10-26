@@ -253,7 +253,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       addPointOwner(l, key, use.path)
       if (useDrivers && text) {
         const kind = isGlobal ? "global" : "local"
-        const prio = isGlobal ? DRIVER.globalLabel : l.kind === "hierarchical" ? DRIVER.hierLabel : DRIVER.label
+        // KiCad 5 ranks a hierarchical label above a local one (KiCad 6 on, below it).
+        const prio = isGlobal ? DRIVER.globalLabel : l.kind === "hierarchical" ? DRIVER.hierLabel : kicad === "kicad5" ? DRIVER.hierLabel - 0.5 : DRIVER.label
         addDriver(nameKey, { prio, name: driverName(text, kind, humanOf(use.path)), text, kind, from: "label", depth: use.depth, ...(l.kind === "hierarchical" ? { labelKind: "hierarchical" as const } : {}) })
       }
     }
@@ -272,7 +273,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
           // A sheet pin joins the labels of its name on the sheet below its symbol; it names the net as a label on the sheet it is drawn on would.
           const nameKey = local(childPath, text)
           uf.union(key, `name:${nameKey}`)
-          if (useDrivers) addDriver(nameKey, { prio: DRIVER.sheetPin, name: driverName(text, "local", humanOf(use.path)), text, kind: "local", from: "pin", depth: use.depth })
+          // KiCad 5 names a net by a label, never by a sheet pin.
+          if (useDrivers && kicad !== "kicad5") addDriver(nameKey, { prio: DRIVER.sheetPin, name: driverName(text, "local", humanOf(use.path)), text, kind: "local", from: "pin", depth: use.depth })
         }
       }
     }
@@ -415,7 +417,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     let power: Net["power"]
     let named = names.length > 0
     // The driver of the highest priority names the net; with none, a pin does (S2). A project drawn in the editor with several sheets is named the same way where a driver is.
-    const best = useDrivers ? bestDriver(nameKeys.flatMap((n) => drivers.get(n) ?? [])) : undefined
+    const best = useDrivers ? bestDriver(nameKeys.flatMap((n) => drivers.get(n) ?? []), kicad === "kicad5") : undefined
     if (kicad) {
       if (best) {
         name = best.name
@@ -490,7 +492,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
  * on the board, or whose reference is `#...`, is no candidate (`ResolveDrivers`).
  */
 function kicadPinName(
-  rule: "kicad" | "kicad6",
+  rule: "kicad" | "kicad6" | "kicad5",
   pinMembers: string[],
   labels: number,
   ownerOf: (id: string) => string,

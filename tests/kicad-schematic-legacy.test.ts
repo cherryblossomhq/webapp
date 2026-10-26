@@ -620,7 +620,7 @@ describe("KiCad 5's rules", () => {
     const p1 = pins.find((p) => p.pin === "1")!
     expect(p1.pos.x).toBeCloseTo(5000 / 500, 6)
     expect(p1.pos.y).toBeCloseTo(-(4000 - 150) / 500, 6)
-    expect(r.project.netNames).toBe("kicad6")
+    expect(r.project.netNames).toBe("kicad5")
     expect(c.nets.some((n) => n.name === "GND")).toBe(true)
   })
 

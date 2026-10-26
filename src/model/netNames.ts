@@ -34,11 +34,23 @@ export interface NameDriver {
   depth?: number
 }
 
-/** The driver KiCad picks among those of a net: the highest priority, then `-Pad` names last, then the name that sorts first. */
-export function bestDriver(drivers: readonly NameDriver[]): NameDriver | undefined {
+/**
+ * The driver KiCad picks among those of a net: the highest priority, then the sheet nearer the root, then `-Pad` names last, then the name that sorts
+ * first. KiCad 5 (`legacy`) takes the nearer sheet first, for every driver but a global one (`evalLabelsPriority`, netlist_object_list.cpp).
+ */
+export function bestDriver(drivers: readonly NameDriver[], legacy = false): NameDriver | undefined {
   let best: NameDriver | undefined
+  const nearer = (d: NameDriver, b: NameDriver) => legacy && d.kind === "local" && b.kind === "local" && (d.depth ?? 0) !== (b.depth ?? 0)
   for (const d of drivers) {
-    if (!best || d.prio > best.prio) {
+    if (!best) {
+      best = d
+      continue
+    }
+    if (nearer(d, best)) {
+      if ((d.depth ?? 0) < (best.depth ?? 0)) best = d
+      continue
+    }
+    if (d.prio > best.prio) {
       best = d
       continue
     }
@@ -92,7 +104,7 @@ export interface PinFact {
  * An unannotated symbol (`U?`) has its uuid in place of its reference.
  */
 export function pinNetName(
-  rule: "kicad" | "kicad6",
+  rule: "kicad" | "kicad6" | "kicad5",
   ref: string,
   unitLetter: string,
   pin: PinFact,
@@ -102,10 +114,10 @@ export function pinNetName(
 ): string {
   const start = unconnected || pin.noConnect ? "unconnected-(" : "Net-("
   const lone = unconnected || !!pin.noConnect
-  if (/\?$/.test(ref) || ref === "") return `${start}${rule === "kicad6" ? ref : ""}${uuid}-Pad${pin.pad ?? pin.number})`
+  if (/\?$/.test(ref) || ref === "") return `${start}${rule !== "kicad" ? ref : ""}${uuid}-Pad${pin.pad ?? pin.number})`
   const name = shown(pin.name)
   const pad = pin.pad ?? pin.number
-  if (rule === "kicad6" || name === "" || name === pin.number) return `${start}${ref}-Pad${pad})`
+  if (rule !== "kicad" || name === "" || name === pin.number) return `${start}${ref}-Pad${pad})`
   const has = sameUnit.some((q) => shown(q.name) === name && (q.pad ?? q.number) !== pad && !q.noConnect)
   return `${start}${ref}${unitLetter}-${name}${lone || has ? `-Pad${pad}` : ""})`
 }

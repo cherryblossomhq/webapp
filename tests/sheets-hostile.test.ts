@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
-import { createProject } from "../src/model/ops"
+import { addComponent, createProject } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { setSheetSymbol } from "../src/model/sheetOps"
-import { MAX_SHEET_DEPTH, MAX_SHEET_USES, refusedSheetSymbols, sheetUses } from "../src/model/sheets"
+import { addSheet, addSheetUse, setSheetSymbol } from "../src/model/sheetOps"
+import { MAX_SHEET_DEPTH, commitOnUse, MAX_SHEET_USES, refusedSheetSymbols, sheetUses } from "../src/model/sheets"
 import type { Project, SheetSymbol } from "../src/model/types"
 import { projectApi } from "../src/store/projectStore"
 import { imp } from "./kicad-sheets-fixtures"
@@ -79,5 +79,25 @@ describe("what is keyed by a net's name follows a renamed sheet", () => {
     projectApi().commit((p) => setSheetSymbol(p, p.sheetSymbols![0].id, { name: "Pwr" }))
     expect(computeConnectivity(projectApi().project!).nets.some((n) => n.name === "/Pwr/VIN")).toBe(true)
     expect(projectApi().project!.traces[0].net).toBe("/Pwr/VIN")
+  })
+})
+
+describe("a big sheet used many times", () => {
+  it("an edit on one use is made in the other nineteen in a moment, and the references stay one to a part", () => {
+    let p = createProject("big")
+    const added = addSheet(p, "", { minX: 0, minY: -2, maxX: 2, maxY: -1 }, "Cell")
+    p = added.project
+    // 100 parts on the sheet, in its only use
+    const child = `/${added.symbol.id}`
+    for (let i = 0; i < 100; i++) p = addComponent(p, "resistor", { sch: { x: (i % 10) * 2, y: -Math.floor(i / 10) * 2, rot: 0 } }).project
+    p = { ...p, components: p.components.map((c) => ({ ...c, inst: child })) }
+    for (let i = 0; i < 19; i++) p = addSheetUse(p, "", added.symbol.child, { minX: 3 + i * 2.2, minY: -2, maxX: 5 + i * 2.2, maxY: -1 })!.project
+    expect(p.components).toHaveLength(2000)
+    expect(new Set(p.components.map((c) => c.ref)).size).toBe(2000)
+    const started = Date.now()
+    const moved = commitOnUse(p, child, (v) => ({ ...v, components: v.components.map((c, i) => (i === 0 ? { ...c, sch: { ...c.sch, x: 99 } } : c)) }))
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(moved.components.filter((c) => c.sch.x === 99)).toHaveLength(20)
+    expect(computeConnectivity(moved).nets).toEqual([])
   })
 })

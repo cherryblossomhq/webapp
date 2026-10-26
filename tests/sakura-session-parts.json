@@ -1,0 +1,1027 @@
+{
+ "parts": [
+  {
+   "id": "esp32_c3_mini_1-cd0vhh",
+   "name": "ESP32-C3-MINI-1",
+   "description": "ESP32-C3-MINI-1 Wi-Fi + BLE module",
+   "category": "ICs",
+   "refPrefix": "U",
+   "footprint": "land_c5290152-1w3i38",
+   "pins": [
+    {
+     "number": "1",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "2",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "3",
+     "name": "3V3",
+     "kind": "power"
+    },
+    {
+     "number": "4",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "5",
+     "name": "IO2"
+    },
+    {
+     "number": "6",
+     "name": "IO3"
+    },
+    {
+     "number": "7",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "8",
+     "name": "EN"
+    },
+    {
+     "number": "9",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "10",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "11",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "12",
+     "name": "IO0"
+    },
+    {
+     "number": "13",
+     "name": "IO1"
+    },
+    {
+     "number": "14",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "15",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "16",
+     "name": "IO10"
+    },
+    {
+     "number": "17",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "18",
+     "name": "IO4"
+    },
+    {
+     "number": "19",
+     "name": "IO5"
+    },
+    {
+     "number": "20",
+     "name": "IO6"
+    },
+    {
+     "number": "21",
+     "name": "IO7"
+    },
+    {
+     "number": "22",
+     "name": "IO8"
+    },
+    {
+     "number": "23",
+     "name": "IO9"
+    },
+    {
+     "number": "24",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "25",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "26",
+     "name": "IO18"
+    },
+    {
+     "number": "27",
+     "name": "IO19"
+    },
+    {
+     "number": "28",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "29",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "30",
+     "name": "RXD0"
+    },
+    {
+     "number": "31",
+     "name": "TXD0"
+    },
+    {
+     "number": "32",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "33",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "34",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "35",
+     "name": "NC",
+     "kind": "nc"
+    },
+    {
+     "number": "36",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "37",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "38",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "39",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "40",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "41",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "42",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "43",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "44",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "45",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "46",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "47",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "48",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "49",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "50",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "51",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "52",
+     "name": "GND",
+     "kind": "ground"
+    },
+    {
+     "number": "53",
+     "name": "GND",
+     "kind": "ground"
+    }
+   ],
+   "props": {
+    "mpn": "ESP32-C3-MINI-1-N4",
+    "manufacturer": "Espressif Systems",
+    "lcsc": "C5290152"
+   },
+   "valueProp": "mpn",
+   "source": {
+    "pins": "supplier",
+    "land": "supplier",
+    "supplier": {
+     "lcsc": "C5290152",
+     "mpn": "ESP32-C3-MINI-1-N4",
+     "confidence": "single_source",
+     "vendors": 1,
+     "fetchedAt": "2026-10-20T08:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "bme280-m9ppl4",
+   "name": "BME280",
+   "description": "3-in-1 sensor, humidity, pressure, temperature, I2C and SPI interface, 1.71-3.6V, LGA-8",
+   "category": "ICs",
+   "refPrefix": "U",
+   "footprint": "land_kicad_sensor_bme280-1qcteb",
+   "pins": [
+    {
+     "number": "5",
+     "name": "SDO",
+     "kind": "io",
+     "side": "right"
+    },
+    {
+     "number": "4",
+     "name": "SCK",
+     "kind": "input",
+     "side": "right"
+    },
+    {
+     "number": "3",
+     "name": "SDI",
+     "kind": "io",
+     "side": "right"
+    },
+    {
+     "number": "2",
+     "name": "CSB",
+     "kind": "input",
+     "side": "right"
+    },
+    {
+     "number": "6",
+     "name": "VDDIO",
+     "kind": "power",
+     "side": "top"
+    },
+    {
+     "number": "8",
+     "name": "VDD",
+     "kind": "power",
+     "side": "top"
+    },
+    {
+     "number": "1",
+     "name": "GND",
+     "kind": "ground",
+     "side": "bottom"
+    },
+    {
+     "number": "7",
+     "name": "GND",
+     "kind": "ground",
+     "side": "bottom"
+    }
+   ],
+   "props": {
+    "mpn": "BME280",
+    "datasheet": "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf"
+   },
+   "valueProp": "mpn",
+   "keywords": [
+    "Bosch",
+    "pressure",
+    "humidity",
+    "temperature",
+    "environment",
+    "environmental",
+    "measurement",
+    "digital"
+   ],
+   "source": {
+    "pins": "database",
+    "land": "database",
+    "database": {
+     "id": "kicad:Sensor:BME280",
+     "origin": "kicad",
+     "verification": "kicad_library",
+     "release": "10.0.7",
+     "library": "Sensor",
+     "symbol": "BME280",
+     "footprint": "Package_LGA:Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering",
+     "licence": "CC-BY-SA 4.0 with the KiCad libraries exception for designs",
+     "attribution": "Symbol and footprint from the KiCad Official Libraries (kicad.org/libraries), by the KiCad Library Team and contributors, licensed CC-BY-SA 4.0 with the KiCad libraries exception."
+    },
+    "check": {
+     "at": "2026-10-21T18:08:46.389Z",
+     "lcsc": "C92489",
+     "verdict": "agrees",
+     "findings": []
+    }
+   }
+  }
+ ],
+ "footprints": [
+  {
+   "name": "land_c5290152-1w3i38",
+   "pads": [
+    {
+     "pin": "1",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "2",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 3.1999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "3",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 2.4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "4",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 1.5999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "5",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 0.8001,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "6",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": 0,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "7",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": -0.8001,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "8",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": -1.5999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "9",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": -2.4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "10",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": -3.1999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "11",
+     "shape": "rect",
+     "x": -5.8999,
+     "y": -4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "12",
+     "shape": "rect",
+     "x": -4.8001,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "13",
+     "shape": "rect",
+     "x": -4,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "14",
+     "shape": "rect",
+     "x": -3.1999,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "15",
+     "shape": "rect",
+     "x": -2.4,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "16",
+     "shape": "rect",
+     "x": -1.5999,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "17",
+     "shape": "rect",
+     "x": -0.8001,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "18",
+     "shape": "rect",
+     "x": 0,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "19",
+     "shape": "rect",
+     "x": 0.8001,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "20",
+     "shape": "rect",
+     "x": 1.5999,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "21",
+     "shape": "rect",
+     "x": 2.4,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "22",
+     "shape": "rect",
+     "x": 3.1999,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "23",
+     "shape": "rect",
+     "x": 4,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "24",
+     "shape": "rect",
+     "x": 4.8001,
+     "y": -4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "25",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": -4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "26",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": -3.1999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "27",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": -2.4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "28",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": -1.5999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "29",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": -0.8001,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "30",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 0,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "31",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 0.8001,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "32",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 1.5999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "33",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 2.4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "34",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 3.1999,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "35",
+     "shape": "rect",
+     "x": 5.8999,
+     "y": 4,
+     "width": 0.8,
+     "height": 0.4,
+     "layer": "top"
+    },
+    {
+     "pin": "36",
+     "shape": "rect",
+     "x": 4.8001,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "37",
+     "shape": "rect",
+     "x": 4,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "38",
+     "shape": "rect",
+     "x": 3.1999,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "39",
+     "shape": "rect",
+     "x": 2.4,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "40",
+     "shape": "rect",
+     "x": 1.5999,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "41",
+     "shape": "rect",
+     "x": 0.8001,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "42",
+     "shape": "rect",
+     "x": 0,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "43",
+     "shape": "rect",
+     "x": -0.8001,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "44",
+     "shape": "rect",
+     "x": -1.5999,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "45",
+     "shape": "rect",
+     "x": -2.4,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "46",
+     "shape": "rect",
+     "x": -3.1999,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "47",
+     "shape": "rect",
+     "x": -4,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "48",
+     "shape": "rect",
+     "x": -4.8001,
+     "y": 4.8999,
+     "width": 0.4,
+     "height": 0.8,
+     "layer": "top"
+    },
+    {
+     "pin": "50",
+     "shape": "rect",
+     "x": 5.95,
+     "y": 4.95,
+     "width": 0.7,
+     "height": 0.7,
+     "layer": "top"
+    },
+    {
+     "pin": "51",
+     "shape": "rect",
+     "x": 5.95,
+     "y": -4.95,
+     "width": 0.7,
+     "height": 0.7,
+     "layer": "top"
+    },
+    {
+     "pin": "52",
+     "shape": "rect",
+     "x": -5.95,
+     "y": -4.95,
+     "width": 0.7,
+     "height": 0.7,
+     "layer": "top"
+    },
+    {
+     "pin": "53",
+     "shape": "rect",
+     "x": -5.95,
+     "y": 4.95,
+     "width": 0.7,
+     "height": 0.7,
+     "layer": "top"
+    },
+    {
+     "pin": "49",
+     "shape": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 5.4,
+     "height": 5.4,
+     "layer": "top",
+     "exposed": true
+    }
+   ],
+   "silk": [],
+   "courtyard": {
+    "minX": -6.55,
+    "minY": -5.55,
+    "maxX": 6.55,
+    "maxY": 5.55
+   }
+  },
+  {
+   "name": "land_kicad_sensor_bme280-1qcteb",
+   "pads": [
+    {
+     "pin": "1",
+     "shape": "rect",
+     "x": -0.975,
+     "y": 1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "2",
+     "shape": "rect",
+     "x": -0.325,
+     "y": 1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "3",
+     "shape": "rect",
+     "x": 0.325,
+     "y": 1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "4",
+     "shape": "rect",
+     "x": 0.975,
+     "y": 1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "5",
+     "shape": "rect",
+     "x": 0.975,
+     "y": -1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "6",
+     "shape": "rect",
+     "x": 0.325,
+     "y": -1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "7",
+     "shape": "rect",
+     "x": -0.325,
+     "y": -1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    },
+    {
+     "pin": "8",
+     "shape": "rect",
+     "x": -0.975,
+     "y": -1.025,
+     "width": 0.35,
+     "height": 0.5,
+     "layer": "top"
+    }
+   ],
+   "silk": [
+    [
+     {
+      "x": -1.35,
+      "y": -1.35
+     },
+     {
+      "x": -1.35,
+      "y": -1.2
+     }
+    ],
+    [
+     {
+      "x": -1.35,
+      "y": -1.36
+     },
+     {
+      "x": -1.2,
+      "y": -1.36
+     }
+    ],
+    [
+     {
+      "x": 1.2,
+      "y": 1.35
+     },
+     {
+      "x": 1.35,
+      "y": 1.35
+     },
+     {
+      "x": 1.35,
+      "y": 1.2
+     }
+    ],
+    [
+     {
+      "x": 1.35,
+      "y": -1.35
+     },
+     {
+      "x": 1.2,
+      "y": -1.35
+     }
+    ],
+    [
+     {
+      "x": 1.35,
+      "y": -1.35
+     },
+     {
+      "x": 1.35,
+      "y": -1.2
+     }
+    ],
+    [
+     {
+      "x": -1.35,
+      "y": 1.35
+     },
+     {
+      "x": -1.71,
+      "y": 1.35
+     },
+     {
+      "x": -1.35,
+      "y": 1.71
+     },
+     {
+      "x": -1.35,
+      "y": 1.35
+     },
+     {
+      "x": -1.35,
+      "y": 1.35
+     }
+    ]
+   ],
+   "courtyard": {
+    "minX": -1.41,
+    "minY": -1.54,
+    "maxX": 1.41,
+    "maxY": 1.54
+   }
+  }
+ ]
+}

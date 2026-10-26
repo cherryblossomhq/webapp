@@ -121,6 +121,17 @@ function boardLibraryIds(pcb: string): Map<string, string> {
   return ids
 }
 
+describe("KiCad 9 compatibility", () => {
+  it("writes power symbols as a bare (power), the only form KiCad 9's parser reads", async () => {
+    const project = EXAMPLES.find((e) => e.id === "blinker")!.project
+    const sch = (await kicadFiles(project)).files["555-led-blinker.kicad_sch"]
+    expect(sch).toMatch(/\(version 20250114\)/)
+    const tokens = sch.match(/\(power[^)]*\)/g) ?? []
+    expect(tokens.length).toBeGreaterThan(0)
+    for (const token of tokens) expect(token).toBe("(power)")
+  }, 120_000)
+})
+
 describe("KiCad no-connect flags", () => {
   for (const id of ["mcu", "node", "esp32-robot"]) {
     it(`flags every pin ${id} marks as unused, at the pin`, async () => {

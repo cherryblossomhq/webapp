@@ -95,6 +95,11 @@ describe("S1 export: a local power symbol stays local", () => {
     const child = files.get([...files.keys()].find((n) => n.startsWith("child"))!)!
     expect(child).toMatch(/\(power local\)/)
     expect(child).not.toMatch(/\(power global\)/)
+    // KiCad 10 is the first version with (power local), so every sheet file carries its stamp, and the globals are bare.
+    for (const text of files.values()) expect(text).toMatch(/\(version 20250227\)/)
+    expect([...files.values()].join("")).toMatch(/\(power\)/)
+    expect([...files.values()].join("").match(/\(power[^)]*\)/g)!.every((t) => t === "(power)" || t === "(power local)")).toBe(true)
+    expect((await kicadFiles(p)).notes.some((n) => /needs KiCad 10|only KiCad 10/.test(n))).toBe(true)
     const back = load(files, rootOf(files))
     expect(netNamesOf(back)).toEqual(["/A/GNDL", "/B/GNDL"])
     // the board does not merge the uses either
@@ -103,11 +108,11 @@ describe("S1 export: a local power symbol stays local", () => {
     expect(boardNets).toEqual(["/A/GNDL", "/B/GNDL"])
   })
 
-  it("a global power symbol is still written as a global one", async () => {
-    const files = schFiles(await kicadFiles(drawnInEditor(hierarchy())))
-    expect([...files.values()].join("")).not.toMatch(/\(power global\)\s*\)\s*\(power local\)/)
+  it("a global power symbol is written bare, and a flat project with only globals keeps KiCad 9's stamp", async () => {
     const { files: flat } = await kicadFiles(drawnInEditor(new Map([["root.kicad_sch", schematic({ version: VERSION, libs: [LIB_R, LIB_GND], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }, { lib: "power:GND", at: "50.8 54.61", ref: "#PWR01", uuid: "aaaaaaaa-0000-4000-8000-000000000002" }] })]])))
-    expect(Object.values(flat).join("")).toMatch(/\(power global\)/)
-    expect(Object.values(flat).join("")).not.toMatch(/\(power local\)/)
+    const all = Object.values(flat).join("")
+    expect(all).toMatch(/\(power\)/)
+    expect(all).not.toMatch(/\(power (?:global|local)\)/)
+    expect(Object.entries(flat).find(([n]) => n.endsWith(".kicad_sch"))![1]).toMatch(/\(version 20250114\)/)
   })
 })

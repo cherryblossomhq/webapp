@@ -357,3 +357,23 @@ export function titleBlock(project: Project): TitleBlock {
     comments: lines.map((text, i) => ({ index: i + 1, text })),
   }
 }
+
+/** The first file version that has `(power local)`: KiCad 10's. */
+export const LOCAL_POWER_VERSION = 20250227
+
+/**
+ * The schematic files of a project with their power symbols written as the file's version reads
+ * them. The converter writes `(power global)` and stamps KiCad 9's version (20250114), whose parser
+ * reads `power` and then expects the closing bracket, so anything after it fails to open: bare
+ * `(power)` means global in every version, and is what is written. `(power local)` exists only from
+ * version 20250227 (KiCad 10), so when any file has a local power symbol every file is stamped with
+ * that version (KiCad 10 reads bare `(power)` too); `kicad10` says so.
+ */
+export function finishPower(texts: string[]): { texts: string[]; kicad10: boolean } {
+  const kicad10 = texts.some((t) => /\(power local\)/.test(t))
+  const out = texts.map((t) => {
+    const bare = t.replace(/\(power global\)/g, "(power)")
+    return kicad10 ? bare.replace(/^(\(kicad_sch\s+\(version )\d+\)/, `$1${LOCAL_POWER_VERSION})`) : bare
+  })
+  return { texts: out, kicad10 }
+}

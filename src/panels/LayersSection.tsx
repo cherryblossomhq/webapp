@@ -79,18 +79,18 @@ export function LayersSection({ project }: { project: Project }) {
       {wanted !== stack.length && (
         <p className="text-[12px] text-ink-3">The stackup rows describe the board as it is now: they are dropped when the layers change, and the standard stackup below writes them again.</p>
       )}
-      <ul className="-mx-1.5 space-y-0.5">
+      <ul className="-mx-1.5 max-h-[320px] space-y-0.5 overflow-y-auto overflow-x-hidden">
         {stack.map((l, i) => {
           const content = layerContent(project, l)
           const n = content.traces
           return (
-            <li key={l} className="flex items-center gap-1.5 px-1.5 py-0.5">
+            <li key={l} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap px-1.5 py-0.5">
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: copperColor(l) }} data-layer-swatch={l} aria-hidden />
               <button type="button" className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-2 hover:text-ink" aria-label={`${copperShown({ layers, hiddenCopper }, l) ? "Hide" : "Show"} ${layerLabel(project.board, l)} copper`} aria-pressed={copperShown({ layers, hiddenCopper }, l)} title="Show or hide this layer on the board" onClick={() => toggleCopper(l)}>
                 {copperShown({ layers, hiddenCopper }, l) ? <Eye size={14} /> : <EyeOff size={14} />}
               </button>
               <CommitInput ariaLabel={`Name of copper layer ${i + 1}`} value={project.board.stack?.copper[i]?.label ?? ""} placeholder={layerLabel({}, l)} onCommit={(v) => commit((p) => setCopperLayer(p, l, { label: v }))} className="min-w-0 flex-1" />
-              <select aria-label={`Type of copper layer ${i + 1}`} className="field h-8 w-[84px]" value={layerType(project.board, l)} onChange={(e) => commit((p) => setCopperLayer(p, l, { type: e.target.value as CopperLayerType }))}>
+              <select aria-label={`Type of copper layer ${i + 1}`} className="field h-8 w-[84px] shrink-0" value={layerType(project.board, l)} onChange={(e) => commit((p) => setCopperLayer(p, l, { type: e.target.value as CopperLayerType }))}>
                 {TYPES.map((t) => (
                   <option key={t.value} value={t.value} title={t.title}>
                     {t.label}
@@ -98,7 +98,7 @@ export function LayersSection({ project }: { project: Project }) {
                 ))}
               </select>
               {n > 0 && (
-                <span className="w-9 text-right text-[11px] text-ink-3" title={`${n} traces on this layer`}>
+                <span className="w-9 shrink-0 whitespace-nowrap text-right text-[11px] text-ink-3" title={`${n} traces on this layer`}>
                   {n}
                 </span>
               )}
@@ -130,19 +130,19 @@ function StackupEditor({ project }: { project: Project }) {
         </div>
       ) : (
         <div className="space-y-1.5">
-          <table className="w-full text-[12px]">
+          <table className="w-full table-fixed text-[12px]">
             <thead>
               <tr className="text-left text-[11px] text-ink-3">
-                <th className="pb-1 font-normal">Layer</th>
+                <th className="w-[84px] pb-1 font-normal">Layer</th>
                 <th className="pb-1 font-normal">Material</th>
-                <th className="pb-1 text-right font-normal">Thickness</th>
-                <th className="pb-1 text-right font-normal">εr</th>
+                <th className="w-[72px] pb-1 text-right font-normal">Thickness</th>
+                <th className="w-[58px] pb-1 text-right font-normal">εr</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r: StackRow, i: number) => (
                 <tr key={`${r.name}${i}`} className="border-b border-chrome-2 last:border-0">
-                  <td className="py-1 pr-1.5 text-ink" title={r.type}>
+                  <td className="max-w-[88px] truncate whitespace-nowrap py-1 pr-1.5 text-ink" title={`${r.name} (${r.type})`}>
                     {r.name}
                   </td>
                   <td className="py-1 pr-1.5">

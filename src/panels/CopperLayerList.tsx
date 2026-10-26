@@ -15,17 +15,17 @@ export function CopperLayerList({ board, pick, onPicked }: { board: Pick<BoardDe
   const active = useUi((s) => s.activeLayer)
   const setActive = useUi((s) => s.setActiveLayer)
   return (
-    <ul className="space-y-0.5" aria-label="Copper layers">
+    <ul className="max-h-[260px] min-w-0 space-y-0.5 overflow-y-auto overflow-x-hidden" aria-label="Copper layers">
       {copperLayers(board).map((l) => {
         const shown = copperShown({ layers, hiddenCopper }, l)
         const name = layerLabel(board, l)
         return (
-          <li key={l} className={`flex items-center gap-2 rounded-[6px] px-2 py-1 text-[12.5px] ${pick && l === active ? "bg-chrome font-[600]" : "hover:bg-chrome"}`}>
+          <li key={l} className={`flex min-w-0 items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1 text-[12.5px] ${pick && l === active ? "bg-chrome font-[600]" : "hover:bg-chrome"}`}>
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${shown ? "" : "opacity-30"}`} style={{ background: copperColor(l) }} data-layer-swatch={l} aria-hidden />
             {pick ? (
               <button
                 type="button"
-                className={`min-w-0 flex-1 truncate text-left ${shown ? "" : "text-ink-3"}`}
+                className={`min-w-0 flex-1 truncate whitespace-nowrap text-left ${shown ? "" : "text-ink-3"}`}
                 aria-current={l === active ? "true" : undefined}
                 title={`Work on ${name} copper`}
                 onClick={() => {
@@ -36,7 +36,7 @@ export function CopperLayerList({ board, pick, onPicked }: { board: Pick<BoardDe
                 {name}
               </button>
             ) : (
-              <span className={`min-w-0 flex-1 truncate ${shown ? "" : "text-ink-3"}`}>{name}</span>
+              <span className={`min-w-0 flex-1 truncate whitespace-nowrap ${shown ? "" : "text-ink-3"}`} title={name}>{name}</span>
             )}
             <button type="button" className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-2 hover:text-ink" aria-label={`${shown ? "Hide" : "Show"} ${name} copper`} aria-pressed={shown} title={shown ? "Hide this layer" : "Show this layer"} onClick={() => toggleCopper(l)}>
               {shown ? <Eye size={14} /> : <EyeOff size={14} />}

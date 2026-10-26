@@ -319,24 +319,24 @@ function Stackup({ project }: { project: Project }) {
         </span>
       </button>
       {open && (
-        <table className="mt-1.5 w-full text-[12px]">
+        <table className="mt-1.5 w-full table-fixed text-[12px]">
           <thead>
             <tr className="text-left text-[11px] text-ink-3">
-              <th className="pb-1 font-normal">Layer</th>
+              <th className="w-[44%] pb-1 font-normal">Layer</th>
               <th className="pb-1 font-normal">Material</th>
-              <th className="pb-1 text-right font-normal">{unit}</th>
+              <th className="w-[56px] pb-1 text-right font-normal">{unit}</th>
             </tr>
           </thead>
           <tbody>
             {layers.map((l) => (
               <tr key={l.name} className="border-b border-chrome-2 last:border-0">
                 <td className="py-[5px] pr-2">
-                  <span className="flex items-center gap-2 text-ink">
+                  <span className="flex min-w-0 items-center gap-2 whitespace-nowrap text-ink" title={l.name}>
                     <span className="h-2.5 w-2.5 shrink-0 rounded-[2px] shadow-[inset_0_0_0_1px_rgb(0_0_0/0.25)]" style={{ background: swatch[l.kind] }} />
-                    {l.name}
+                    <span className="min-w-0 truncate">{l.name}</span>
                   </span>
                 </td>
-                <td className="py-[5px] pr-2 text-ink-3">{l.material}</td>
+                <td className="max-w-[90px] truncate whitespace-nowrap py-[5px] pr-2 text-ink-3" title={l.material}>{l.material}</td>
                 <td className="mono py-[5px] text-right text-ink-2">{l.thickness === null ? "" : formatLength(l.thickness, unit)}</td>
               </tr>
             ))}

@@ -249,16 +249,19 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     })
 
     // The part's own groups, by place in the land.
-    for (const g of c.groups ?? []) {
+    // (a group can hold another group of the part: it is named by its place in the list, `g<k>`)
+    const groupIds = (c.groups ?? []).map(() => newUuid())
+    ;(c.groups ?? []).forEach((g, gi) => {
       const ids = g.members.flatMap((m) => {
         const k = Number(m.slice(1))
         if (m[0] === "p") return padIds[k] ? [padIds[k]] : []
         if (m[0] === "s") return shapeIds[k] ?? []
         if (m[0] === "t") return textIds[k] ?? []
+        if (m[0] === "g") return k !== gi && groupIds[k] ? [groupIds[k]] : []
         return []
       })
-      if (ids.length) lines.push(...indent(groupBlock(g, newUuid(), ids), "  "))
-    }
+      if (ids.length) lines.push(...indent(groupBlock(g, groupIds[gi], ids), "  "))
+    })
 
     const model = modelOf.get(`${c.partId}\n${c.footprint}`)
     if (model?.source === "kicad") {

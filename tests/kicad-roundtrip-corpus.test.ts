@@ -34,6 +34,8 @@ export const BY_DESIGN = [
   /^project\.components\[\]\.flags\.(jumperDuplicates|jumperGroups)$/,
   /^project\.(texts|components\[\]\.texts)\[\]\.href$/,
   /^project\.(traces\[\]\.net|vias\[\]\.routedNet)$/,
+  // X1: a stackup's `castellated_pads` is a word of later KiCad releases than 9.0, whose parser stops at a node it does not have, so it is kept in the project and not written
+  /^project\.board\.stack\.castellated$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */

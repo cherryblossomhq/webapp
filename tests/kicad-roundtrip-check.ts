@@ -28,6 +28,18 @@ export function canonicalProject(project: Project): Json {
   const all = [...ids.keys()].sort((a, b) => b.length - a.length)
   const idRe = all.length ? new RegExp(all.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g") : null
   const walk = (v: any): any => {
+    // A drawn arc whose middle point is within 0.0002 mm of the chord (a legacy `fp_arc` of a few thousandths of a degree) is a straight line at the precision of the file: it is written with its
+    // three points and read again as the line it is, so both are compared as that line.
+    if (v && typeof v === "object" && !Array.isArray(v) && v.type === "arc" && v.start && v.mid && v.end) {
+      const dx = v.end.x - v.start.x
+      const dy = v.end.y - v.start.y
+      const len = Math.hypot(dx, dy)
+      const off = len > 0 ? Math.abs((v.mid.x - v.start.x) * dy - (v.mid.y - v.start.y) * dx) / len : Math.hypot(v.mid.x - v.start.x, v.mid.y - v.start.y)
+      if (off < 2e-4) {
+        const { start, mid, end, ...rest } = v
+        v = { ...rest, type: "line", a: start, b: end }
+      }
+    }
     if (v && typeof v === "object" && !Array.isArray(v) && v.type === "polygon" && Array.isArray(v.pts)) v = { ...v, pts: dedupeCorners(v.pts) }
     if (typeof v === "string") {
       if (lands.has(v)) return lands.get(v)

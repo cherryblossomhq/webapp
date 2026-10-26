@@ -134,6 +134,8 @@ export function tidySchematic(project: Project, options: TidyOptions = {}): Tidy
 }
 
 function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
+  // S3: Tidy redraws every wire and leaves the drawings where they are, so a bus entry would stay where it was and the wire that met it would go: a sheet with buses is left as drawn, and the nets are the same by name either way.
+  if (project.drawings?.some((d) => d.type === "bus" || d.type === "busentry")) return fail(project, "Tidy can't arrange a sheet with buses yet: it redraws the wires, and a bus entry would be left where it was with its wire gone, so nothing was changed.")
   const info = netInfo(project)
   const byId = new Map(project.components.map((c) => [c.id, c]))
   const arranged = (id: string) => {

@@ -126,6 +126,18 @@ export function itemNode(item: SheetItem, toPage: ToPage, n: number): string {
     }
     case "noconnect":
       return `  (no_connect\n    (at ${at(item)})\n    ${uuid}\n  )`
+    case "bus": {
+      // KiCad's bus is one segment each: a polyline of several is written as several.
+      const segs: string[] = []
+      for (let k = 0; k + 1 < item.points.length; k++) segs.push(`  (bus\n    (pts ${xy(item.points[k])} ${xy(item.points[k + 1])})\n    ${strokeNode(item.stroke)}\n    (uuid ${uuidOf(n * 1000 + k + 700)})\n  )`)
+      return segs.join("\n")
+    }
+    case "busentry": {
+      // KiCad 6 and later have one kind of bus entry in the file, from a wire to a bus; a bus-to-bus entry (KiCad 5's) joins two buses, which a short bus segment does too.
+      if (item.toBus) return `  (bus\n    (pts ${xy(item)} ${xy({ x: item.x + item.dx, y: item.y + item.dy })})\n    ${strokeNode(item.stroke)}\n    ${uuid}\n  )`
+      // `(size x y)` is the run to the far end on the page, y down: the editor's dy is up.
+      return `  (bus_entry\n    (at ${at(item)})\n    (size ${mm6(item.dx * MM)} ${mm6(-item.dy * MM)})\n    ${strokeNode(item.stroke)}\n    ${uuid}\n  )`
+    }
     case "table": {
       const cells = item.cells
         .map((c, i) => {
@@ -146,6 +158,20 @@ export function addSheetItems(sch: string, items: SheetItem[], toPage: ToPage): 
   const text = items.map((it, i) => itemNode(it, toPage, i + 1)).join("\n") + "\n"
   const end = sch.lastIndexOf("\n)")
   return end < 0 ? sch : `${sch.slice(0, end + 1)}${text}${sch.slice(end + 1)}`
+}
+
+/** A bus alias's name or member as the file keeps it: a `/` is `{slash}`, the label's own escape (which the reader undoes). */
+const escapeName = (text: string) => text.replace(/\//g, "{slash}")
+
+/**
+ * S3: the labels that name a bus, which the converter does not write (it writes a label for each net a label names, and a bus is no net), and
+ * the bus aliases of the sheet (`(bus_alias "NAME" (members "A" "B"))`, what KiCad 9's `saveBusAlias` writes), before the closing bracket.
+ */
+export function addBusItems(sch: string, labels: NetLabel[], aliases: { name: string; members: string[] }[], toPage: ToPage): string {
+  if (!labels.length && !aliases.length) return sch
+  const lines = [...aliases.map((a) => `  (bus_alias ${quote(escapeName(a.name))} (members ${a.members.map((m) => quote(escapeName(m))).join(" ")}))`), ...labels.map((l, i) => labelNode(l, toPage, uuidOf(900000 + i)))]
+  const end = sch.lastIndexOf("\n)")
+  return end < 0 ? sch : `${sch.slice(0, end + 1)}${lines.join("\n")}\n${sch.slice(end + 1)}`
 }
 
 const GLOBAL_LABEL = /\n {2}\(global_label [^\n]*\n[\s\S]*?\n {2}\)(?=\n)/g

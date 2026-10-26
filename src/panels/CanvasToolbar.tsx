@@ -51,6 +51,12 @@ export function SchematicToolbar() {
         <IconButton label="Net label" shortcut="L" active={tool === "label"} onClick={() => setTool("label")}>
           <Tag size={16} />
         </IconButton>
+        <IconButton label="Bus" shortcut="U" hint="A line that carries several nets: name it with a label like D[0..7] or {A B}" active={tool === "bus"} onClick={() => setTool("bus")}>
+          <Waypoints size={16} />
+        </IconButton>
+        <IconButton label="Bus entry" shortcut="/" hint="The short diagonal where a wire leaves a bus; the wire's label names the member it is" active={tool === "busentry"} onClick={() => setTool("busentry")}>
+          <Slash size={16} />
+        </IconButton>
         <span className="mx-1 h-5 w-px bg-line" />
         <IconButton label="Block" shortcut="B" hint="Drag around parts to frame them as a named block" active={tool === "block"} onClick={() => setTool("block")}>
           <SquareDashed size={16} />

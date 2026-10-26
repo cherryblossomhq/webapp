@@ -1,3 +1,4 @@
+import { copperLayers, MAX_COPPER_LAYERS, viaBetween, withCopperCount } from "./stack"
 import { emptyBox, expandBox, normalizeAngle, rotate90, round, snap, type Box } from "../lib/geometry"
 import { uid } from "../lib/id"
 import { createBlock } from "./blocks"
@@ -16,6 +17,7 @@ import type {
   FootprintDef,
   MountingHoles,
   PadDef,
+  CopperLayer,
   PartCategory,
   PinSide,
   Project,
@@ -35,8 +37,8 @@ import type {
 //
 // The pads are the board's own, so a part lands exactly where it was: a part's land is the
 // footprinter's when that draws the very same pads, and the project's own (Project.footprints)
-// when it doesn't. Copper on the two outer layers comes too; a board routed on more is left
-// unrouted, since the editor routes two.
+// when it doesn't. Copper comes too, on every layer the board has (X1: `inner1` is the layer after
+// the front one; a via between two layers is a blind or a buried via, X5).
 
 interface Point {
   x: number
@@ -168,6 +170,9 @@ interface PcbTrace {
 interface PcbVia extends Point {
   outer_diameter?: number
   hole_diameter?: number
+  from_layer?: string
+  to_layer?: string
+  layers?: string[]
 }
 
 interface PcbCopperPour {
@@ -933,36 +938,45 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
       else cornerRadius = radius
     }
     const outline = { ...project.board, width: round(width), height: round(height), x: round(center.x), y: round(center.y) }
-    project.board = {
+    project.board = withCopperCount({
       ...outline,
       thickness: board.thickness ?? 1.6,
       cornerRadius,
       mountingHoles: cornerHoles([...of<PcbPadElement>("pcb_hole"), ...of<PcbPadElement>("pcb_plated_hole")].filter((h) => !h.pcb_component_id), outline, notes),
-    }
+    }, Number.isFinite(layers) ? layers : 2)
+  }
+  // The board's copper layers (X1): `inner1` is the layer after the front one, and a name past the board's last inner layer is no layer of it.
+  const stackIds = new Set<string>(copperLayers(project.board))
+  const layerOf = (name: string | undefined): CopperLayer | undefined => {
+    if (name === "top" || name === "bottom") return name
+    const k = /^inner(\d+)$/.exec(name ?? "")
+    return k && stackIds.has(`in${k[1]}`) ? (`in${k[1]}` as CopperLayer) : undefined
   }
 
   // Pours of whole nets on the outer layers.
   const zones: Zone[] = []
   const netByRoot = new Map(nets.map((n) => [n.root, n.name]))
   for (const pour of of<PcbCopperPour>("pcb_copper_pour")) {
-    if ((pour.layer !== "top" && pour.layer !== "bottom") || !pour.source_net_id) continue
+    const pourLayer = layerOf(pour.layer)
+    if (!pourLayer || !pour.source_net_id) continue
     const net = netByRoot.get(uf.find(`net:${pour.source_net_id}`)) ?? sourceNets.get(pour.source_net_id)?.name
-    if (net && !zones.some((z) => z.net === net && z.layer === pour.layer)) zones.push({ id: uid("z"), net, layer: pour.layer })
+    if (net && !zones.some((z) => z.net === net && z.layer === pourLayer)) zones.push({ id: uid("z"), net, layer: pourLayer })
   }
 
-  // Copper, unless it used layers the editor doesn't have.
+  // Copper, on the layers the board has.
   const traces: Trace[] = []
   const vias: Via[] = []
   const pcbTraces = of<PcbTrace>("pcb_trace")
-  if (layers > 2 && pcbTraces.length) {
-    notes.push(`The board was routed on ${layers} layers and the editor routes two, so its traces and vias were left behind: route it again in the PCB view.`)
+  if (layers > copperLayers(project.board).length && pcbTraces.length) {
+    notes.push(`The board has ${layers} copper layers and the editor has ${MAX_COPPER_LAYERS} at most, so its traces and vias were left behind: route it again in the PCB view.`)
   } else {
     for (const t of pcbTraces) {
       // A route is runs of wire, each on one layer at one width, between vias.
       let run: RoutePoint[] = []
       const flush = () => {
-        const { layer, width } = run[run.length - 1] ?? {}
-        if (run.length > 1 && (layer === "top" || layer === "bottom")) {
+        const { layer: named, width } = run[run.length - 1] ?? {}
+        const layer = layerOf(named)
+        if (run.length > 1 && layer) {
           traces.push({ id: uid("t"), layer, width: width ?? project.rules.traceWidth, points: run.map((p) => ({ x: round(p.x), y: round(p.y) })) })
         }
       }
@@ -979,12 +993,16 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
       flush()
     }
     for (const v of of<PcbVia>("pcb_via")) {
+      const ends = [layerOf(v.from_layer ?? v.layers?.[0]), layerOf(v.to_layer ?? v.layers?.[v.layers.length - 1])]
+      // A via with two ends that are layers of the board and not the outer two is a blind or a buried one; any other is through the board.
+      const span = ends[0] && ends[1] && ends[0] !== ends[1] ? viaBetween(project.board, ends[0], ends[1]) : {}
       vias.push({
         id: uid("v"),
         x: round(v.x),
         y: round(v.y),
         diameter: v.outer_diameter ?? project.rules.viaDiameter,
         drill: v.hole_diameter ?? project.rules.viaDrill,
+        ...span,
       })
     }
   }

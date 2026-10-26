@@ -208,12 +208,20 @@ describe("projectFromCircuitJson", () => {
     expect(notes).toEqual([])
   })
 
-  it("leaves copper on inner layers behind, and says so", () => {
-    const elements = board(parts, connections, extra).map((e) => (e.type === "pcb_board" ? { ...e, num_layers: 4 } : e))
+  it("keeps a board of four layers as one, with its copper on every layer", () => {
+    const four = board(parts, connections, extra).map((e) => (e.type === "pcb_board" ? { ...e, num_layers: 4 } : e))
+    const { project, notes } = projectFromCircuitJson(four, { name: "Blinky" })
+    expect(project.board.stack?.copper.length).toBe(4)
+    expect(project.traces.map((t) => t.layer).every((l) => ["top", "in1", "in2", "bottom"].includes(l))).toBe(true)
+    expect(notes).toEqual([])
+  })
+
+  it("leaves copper behind, and says so, on a board of more layers than the editor has", () => {
+    const elements = board(parts, connections, extra).map((e) => (e.type === "pcb_board" ? { ...e, num_layers: 40 } : e))
     const { project, notes } = projectFromCircuitJson(elements, { name: "Blinky" })
     expect(project.traces).toEqual([])
     expect(project.vias).toEqual([])
-    expect(notes).toEqual([expect.stringContaining("routed on 4 layers")])
+    expect(notes).toEqual([expect.stringContaining("has 40 copper layers")])
   })
 
   it("takes a turned part's slots and courtyard back into its frame, and pads tied to a port by name", () => {

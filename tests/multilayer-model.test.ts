@@ -3,6 +3,7 @@ import { buildFabricationFiles } from "../src/export/bundle"
 import { excellonDrill, drillSets } from "../src/export/excellon"
 import { gerberLayers } from "../src/export/gerber"
 import { projectToCircuitJson } from "../src/export/circuitJson"
+import { projectFromCircuitJson } from "../src/model/circuitJsonImport"
 import { computeConnectivity } from "../src/model/connectivity"
 import { autoroute } from "../src/model/autoroute"
 import { importKicadBoard } from "../src/model/kicad/board"
@@ -236,6 +237,16 @@ describe("the outputs of a board of more than two layers", () => {
     expect(vias.map((v) => [v.from_layer, v.to_layer])).toEqual([["top", "inner1"], ["inner1", "inner2"], ["top", "inner1"], ["top", "bottom"]])
     expect(notes.join(" ")).toMatch(/arc track/)
   })
+
+  it("brings a board of four layers back with its inner traces and the span of each via", () => {
+    const { elements } = projectToCircuitJson(p) as unknown as { elements: unknown[] }
+    const back = projectFromCircuitJson(JSON.parse(JSON.stringify(elements)), { name: "back" }).project
+    expect(copperLayers(back.board)).toEqual(["top", "in1", "in2", "bottom"])
+    expect(back.traces.some((t) => t.layer === "in1")).toBe(true)
+    // Circuit JSON has no micro via: a micro via comes back as the blind via it is between those layers
+    expect(back.vias.map((v) => (v.kind ? `${v.kind}:${v.from}>${v.to}` : "through"))).toEqual(p.vias.map((v) => (v.kind ? `${v.kind === "micro" ? "blind" : v.kind}:${v.from}>${v.to}` : "through")))
+  })
+
 })
 
 describe("the editor's operations on layers", () => {

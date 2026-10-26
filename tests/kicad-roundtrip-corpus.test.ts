@@ -26,13 +26,14 @@ const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
  * What differs on purpose, because a KiCad 9 file cannot say it: a zone of a board of KiCad 5 or earlier has no uuid and is not ordered by one (a file of
  * KiCad 9 gives every zone a uuid, which orders zones of equal priority), and its fill keeps that release's distances to the edge and to a hole; KiCad 9 has no
  * `virtual` attribute (it reads it as "not in the BOM" and "not in the position file"), and jumper pad groups and a text's hyperlink are KiCad 10's, which the 9.0
- * parser refuses (they stay in the project and are not written). Everything else that differs is a finding.
+ * parser refuses (they stay in the project and are not written). Copper the file put on no net that touches a net is written on that net (the editor cannot tell it from copper added in it). Everything else that differs is a finding.
  */
 export const BY_DESIGN = [
   /^project\.zones\[\]\.(edgeGap|holeGap|unordered|uuid)$/,
   /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
   /^project\.components\[\]\.flags\.(jumperDuplicates|jumperGroups)$/,
   /^project\.(texts|components\[\]\.texts)\[\]\.href$/,
+  /^project\.(traces\[\]\.net|vias\[\]\.routedNet)$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */

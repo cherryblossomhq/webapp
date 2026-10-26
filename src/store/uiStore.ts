@@ -73,6 +73,8 @@ interface UiState {
   panelOpen: boolean
   /** The copilot (Sakura), a column of its own between the parts library and the canvas. */
   copilotOpen: boolean
+  /** The tree of the schematic's sheets, the leftmost column; it has nothing to show for a project of one sheet. */
+  sheetsOpen: boolean
   cursor: { x: number; y: number } | null
   /**
    * Where a view should go when it next draws: a point at the current zoom, or a box to frame with
@@ -105,6 +107,7 @@ interface UiState {
   togglePanel: () => void
   setCopilotOpen: (open: boolean) => void
   toggleCopilot: () => void
+  toggleSheets: () => void
   setCursor: (c: { x: number; y: number } | null) => void
   focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
   updateSettings: (s: Partial<Settings>) => void
@@ -128,6 +131,7 @@ export const useUi = create<UiState>((set, get) => ({
   libraryOpen: wide(),
   panelOpen: wide(),
   copilotOpen: false,
+  sheetsOpen: false,
   cursor: null,
   focusRequest: null,
   settings: loadSettings(),
@@ -163,6 +167,7 @@ export const useUi = create<UiState>((set, get) => ({
   togglePanel: () => set({ panelOpen: !get().panelOpen }),
   setCopilotOpen: (copilotOpen) => set({ copilotOpen }),
   toggleCopilot: () => set({ copilotOpen: !get().copilotOpen }),
+  toggleSheets: () => set({ sheetsOpen: !get().sheetsOpen }),
   setCursor: (cursor) => set({ cursor }),
   focus: (view, x, y, box, fit) =>
     set({ view, ...(view !== get().view && { selection: [] }), focusRequest: { view, x, y, box, ...(fit && { fit }), n: (get().focusRequest?.n ?? 0) + 1 } }),

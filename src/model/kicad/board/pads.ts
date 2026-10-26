@@ -2,11 +2,15 @@ import { normalizeAngle, rotate90, round } from "../../../lib/geometry"
 import { defaultFaces } from "../../padFaces"
 import { flipShapeLayer } from "../../shapeLayers"
 import { DEFAULT_SHAPE_WIDTH, isClosedShape, mapShape } from "../../shapes"
-import type { BoardShape, PadDef, PadLayers, PadProperty, PadSides, Vec2, ZoneConnect } from "../../types"
+import { flipLayer } from "../../stack"
+import type { BoardShape, CopperLayer, PadDef, PadLayerShape, PadLayers, PadProperty, PadSides, Vec2, ZoneConnect } from "../../types"
+import { layerMapOf, layersOfNames } from "./layers"
 import { quarterTurns, rotK } from "./geometry"
 import { rawGeometry } from "./graphics"
 import { padLayers, type Face } from "./needs"
-import type { KicadBoard, KicadFootprint, KicadPad, KicadShape, PadLocal } from "./types"
+import type { KicadBoard, KicadFootprint, KicadPad, KicadPadLayer, KicadShape, PadLocal } from "./types"
+import { kid } from "./sexpr"
+import { padUnusedOf } from "./read"
 
 // X7: a KiCad pad as a pad of the land of its footprint (`PadDef`), in the editor's frame, exactly.
 //
@@ -103,7 +107,15 @@ function layersOf(pad: KicadPad, board: KicadBoard, bottom: boolean): PadLayers 
   }
   const out: PadLayers = {}
   for (const k of ["copper", "mask", "paste", "silk"] as const) if (got[k] !== kind[k]) out[k] = got[k]
-  const other = lay.other.map((n) => (bottom ? flipShapeLayer(n) : n))
+  // X1: the inner copper layers the pad is on, by the part's own side. A through-hole pad with copper on both sides has every one unless it says otherwise.
+  const map = layerMapOf(board)
+  const innerOf = (ids: CopperLayer[]) => ids.filter((l) => l !== "top" && l !== "bottom")
+  const inner = innerOf(layersOfNames(map, pad.layers))
+  const own = (bottom ? inner.map((l) => flipLayer(l, map.count)) : inner).sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)))
+  const all = innerOf(map.ids)
+  const byDefault = kind.copper === "both" && got.copper === "both" ? all : []
+  if (own.length !== byDefault.length || own.some((l, i) => l !== byDefault[i])) out.inner = own
+  const other = lay.other.map((n) => (bottom ? flipShapeLayer(n, map.count) : n))
   if (other.length) out.other = other
   return Object.keys(out).length ? out : undefined
 }
@@ -140,6 +152,83 @@ function primitive(s: KicadShape, sgn: number): BoardShape | null {
  * whose shape word KiCad does not know). `bottom` is whether the footprint is on the bottom of the board; `board` brings the layers.
  */
 export function landPad(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: PadIds, board?: KicadBoard): LandPad {
+  return pad.stack && board ? landPadStacked(fp, pad, bottom, ids, board) : landPadPlain(fp, pad, bottom, ids, board)
+}
+
+const GEOMETRY = ["shape", "x", "y", "width", "height", "points", "rot", "round", "chamfer", "custom"] as const
+const POUR = ["clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle"] as const
+
+/** The pad as one layer of its pad stack has it: the pad's own (front) properties, over which the layer's entry puts what it says (a layer reads through to the front for what it does not say, padstack.cpp 9.0.0 `:830-870`). */
+function layerPad(pad: KicadPad, l: KicadPadLayer): KicadPad {
+  const out: KicadPad = { ...pad, stack: null, padstack: false }
+  if (l.shape !== undefined) out.shape = l.shape
+  if (l.w !== undefined) out.w = l.w
+  if (l.h !== undefined) out.h = l.h
+  if (l.rectDelta) out.rectDelta = l.rectDelta
+  if (l.roundrectRatio !== undefined) out.roundrectRatio = l.roundrectRatio
+  if (l.chamferRatio !== undefined) out.chamferRatio = l.chamferRatio
+  if (l.chamferCorners !== undefined) out.chamferCorners = l.chamferCorners
+  if (l.anchor) out.anchor = l.anchor
+  if (l.hull) out.hull = true
+  if (kid(l.node, "primitives")) {
+    out.primitives = l.primitives
+    out.proxies = l.proxies
+  }
+  if (l.offset) out.drill = pad.drill ? { ...pad.drill, offset: l.offset } : { oval: false, w: 0, h: 0, offset: l.offset }
+  const local: PadLocal = { ...pad.local }
+  if (l.clearance !== undefined) local.clearance = l.clearance
+  if (l.zoneConnect !== undefined) local.zoneConnect = l.zoneConnect
+  if (l.thermalGap !== undefined) local.thermalGap = l.thermalGap
+  if (l.thermalWidth !== undefined) local.thermalWidth = l.thermalWidth
+  if (l.thermalAngle !== undefined) local.thermalAngle = l.thermalAngle
+  out.local = local
+  return out
+}
+
+/** What a layer's pad has that the base pad does not: its geometry whole when any of it differs, and each pour setting that differs. Absent when it is the same pad. */
+function variantOf(def: PadDef, base: PadDef): PadLayerShape | null {
+  const out: Record<string, unknown> = {}
+  const d = def as unknown as Record<string, unknown>
+  const b = base as unknown as Record<string, unknown>
+  if (GEOMETRY.some((k) => JSON.stringify(d[k]) !== JSON.stringify(b[k]))) for (const k of GEOMETRY) if (d[k] !== undefined) out[k] = d[k]
+  for (const k of POUR) if (JSON.stringify(d[k]) !== JSON.stringify(b[k]) && d[k] !== undefined) out[k] = d[k]
+  return Object.keys(out).length ? (out as PadLayerShape) : null
+}
+
+/**
+ * A pad with a pad stack (X1, KiCad 9's `padstack`): the pad of the part's own side, and the shape of each other layer where it differs. The file's
+ * front layer is the top-level shape and size; a part on the bottom has its own side there at the file's back layer, so its base is that entry and
+ * the file's front layer is its far side.
+ */
+function landPadStacked(fp: KicadFootprint, pad0: KicadPad, bottom: boolean, ids: PadIds | undefined, board: KicadBoard): LandPad {
+  const map = layerMapOf(board)
+  const stack = pad0.stack!
+  // An entry for the front layer itself changes the front's own properties (a file KiCad does not write).
+  const frontEntry = stack.layers.find((l) => map.of(l.name) === "top")
+  const pad = frontEntry ? layerPad(pad0, frontEntry) : { ...pad0, stack: null, padstack: false }
+  const keyed = stack.layers.filter((l) => l !== frontEntry).map((l) => ({ l, id: l.name === "Inner" ? ("inner" as const) : map.of(l.name) }))
+  const backEntry = bottom ? keyed.find((k) => k.id === "bottom") : undefined
+  const base = landPadPlain(fp, backEntry ? layerPad(pad, backEntry.l) : pad, bottom, ids, board)
+  const notes = [...base.notes]
+  const layers: Record<string, PadLayerShape> = {}
+  const add = (key: string, from: KicadPad) => {
+    const made = landPadPlain(fp, from, bottom, ids, board)
+    for (const n of made.notes) if (!notes.includes(n)) notes.push(n)
+    const v = variantOf(made.def, base.def)
+    if (v) layers[key] = v
+  }
+  for (const k of keyed) {
+    if (k === backEntry || k.id === null) continue
+    const own: string = k.id === "inner" ? "inner" : bottom ? flipLayer(k.id, map.count) : k.id
+    add(own, layerPad(pad, k.l))
+  }
+  // On the bottom the file's front layer is the part's far side.
+  if (bottom && backEntry) add("bottom", pad)
+  const def: PadDef = { ...base.def, stack: { mode: stack.mode, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
+  return { def, ...(base.lossy ? { lossy: base.lossy } : {}), notes }
+}
+
+function landPadPlain(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: PadIds, board?: KicadBoard): LandPad {
   const notes: string[] = []
   let lossy: string | undefined
   const sgn = bottom ? 1 : -1
@@ -285,5 +374,13 @@ export function landPad(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?
   if (pad.local.thermalAngle !== undefined) out.thermalAngle = r6(pad.local.thermalAngle)
   const prop = pad.properties.map((p) => PROPERTY[p]).find(Boolean)
   if (prop) out.property = prop
+  // X1 and X5: what becomes of the copper on layers nothing connects to, and the pad's own tenting of the mask (sides as the part has them: the file's front is the far side of a part on the bottom).
+  const unused = padUnusedOf(pad.node)
+  if (unused) out.unused = unused
+  if (pad.tenting && (pad.tenting.front !== undefined || pad.tenting.back !== undefined)) {
+    const own = bottom ? pad.tenting.back : pad.tenting.front
+    const far = bottom ? pad.tenting.front : pad.tenting.back
+    out.tent = { ...(own !== undefined ? { top: own } : {}), ...(far !== undefined ? { bottom: far } : {}) }
+  }
   return { def: out, ...(lossy ? { lossy } : {}), notes }
 }

@@ -1,14 +1,14 @@
 import { pathsSvgPath } from "../../model/shapes"
 import { zoneLayers } from "../../model/zones"
 import { zoneCorners } from "../../model/zoneOps"
-import type { Project, Vec2 } from "../../model/types"
+import type { CopperLayer, Project, Vec2 } from "../../model/types"
 import { PCB } from "../theme"
 
 /**
  * The outlines of the zones with a polygon (a dashed line on the layer's colour, a rule area tinted and hatched), and the corners and edge
  * middles of the selected ones. The copper of the pours is drawn with the layers, where it belongs.
  */
-export function ZoneOutlines({ project, selected, px, active }: { project: Project; selected: Set<string>; px: number; active: "top" | "bottom" }) {
+export function ZoneOutlines({ project, selected, px, active }: { project: Project; selected: Set<string>; px: number; active: CopperLayer }) {
   const zones = project.zones.filter((z) => z.outline)
   if (!zones.length) return null
   return (

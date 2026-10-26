@@ -163,7 +163,7 @@ export function applyFootprintFlags(pcb: string, project: Project): string {
 
 // ---------- Board file: pours and mask ----------
 
-const KICAD_LAYER = { top: "F.Cu", bottom: "B.Cu" } as const
+const KICAD_LAYER = { top: "F.Cu", bottom: "B.Cu" } as Record<string, string>
 
 /** The board file with each pour's clearance, thinnest neck and thermal relief set from the project, and the mask and paste openings. */
 export function applyBoardSettings(pcb: string, project: Project): string {

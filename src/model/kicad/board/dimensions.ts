@@ -36,7 +36,7 @@ export function convertDimension(k: KicadDimension, cx: DimensionConversion, id:
     return null
   }
   if (r.kind === "inner") {
-    cx.lose(`a dimension on the inner copper layer ${k.layer}`)
+    cx.lose(`a dimension on ${k.layer}, a copper layer the board's layer table does not list`)
     return null
   }
   if (!isTextLayer(r.name)) {

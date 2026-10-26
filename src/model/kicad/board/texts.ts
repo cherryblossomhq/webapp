@@ -82,7 +82,7 @@ function layerOf(t: KicadText, cx: TextConversion): string | null {
     return null
   }
   if (r.kind === "inner") {
-    cx.lose(`text on the inner copper layer ${t.layer} (${cx.where})`)
+    cx.lose(`text on ${t.layer}, a copper layer the board's layer table does not list (${cx.where})`)
     return null
   }
   return isTextLayer(r.name) ? r.name : null
@@ -193,7 +193,7 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const world = norm360(t.angle)
     const landAngle = place.bottom ? place.rot - world : world - place.rot
     const mirror = place.bottom ? !t.mirror : t.mirror
-    const layer = place.bottom ? flipShapeLayer(resolved) : resolved
+    const layer = place.bottom ? flipShapeLayer(resolved, cx.board.copper.names.length || 2) : resolved
     const { size, mirror: _mirror, ...rest } = attrs
     const kind = t.kind === "reference" || t.kind === "value" ? t.kind : "user"
     origins?.push(source)

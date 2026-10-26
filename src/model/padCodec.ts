@@ -1,7 +1,8 @@
 import { isShapeLayer } from "./shapeLayers"
 import { isCompactShapes, packShapes, unpackShapes } from "./shapeCodec"
 import { normalizeShape } from "./shapes"
-import type { BoardShape, PadDef, PadLayers, PadSides, Vec2 } from "./types"
+import { isCopperLayerId } from "./stack"
+import type { BoardShape, CopperLayer, PadDef, PadLayers, PadLayerShape, PadSides, PadStack, Vec2 } from "./types"
 
 // How a land's pads are stored and read back (X7). A pad that has none of X7's fields is stored as it always was, one object with its
 // place, size, shape and hole: the same bytes as before the pad model grew, so the shipped examples and every project drawn here are
@@ -16,17 +17,22 @@ const SIDES = new Set<string>(["top", "bottom", "both", "none"])
 const ZONE = new Set<string>(["none", "thermal", "solid", "tht"])
 const PROPS = new Set<string>(["bga", "fiducial_glob", "fiducial_loc", "testpoint", "castellated", "heatsink", "mechanical", "pressfit"])
 const SHAPES = new Set(["rect", "circle", "pill", "polygon"])
-const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property"] as const
+const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property", "stack"] as const
 
-/** A pad as it is stored: its custom drawings compact. */
+function packCustom(custom: NonNullable<PadDef["custom"]>): unknown {
+  const { shapes, proxy, ...rest } = custom
+  return { ...rest, g: packShapes(shapes), ...(proxy?.length ? { p: packShapes(proxy) } : {}) }
+}
+
+/** A pad as it is stored: its custom drawings compact, and those of its pad stack's layers too. */
 export function packPad(pad: PadDef): unknown {
-  if (!pad.custom) return pad
-  const { shapes, proxy, ...rest } = pad.custom
-  return { ...pad, custom: { ...rest, g: packShapes(shapes), ...(proxy?.length ? { p: packShapes(proxy) } : {}) } }
+  const stack = pad.stack && Object.values(pad.stack.layers).some((v) => v?.custom) ? { ...pad.stack, layers: Object.fromEntries(Object.entries(pad.stack.layers).map(([k, v]) => [k, v?.custom ? { ...v, custom: packCustom(v.custom) } : v])) } : pad.stack
+  if (!pad.custom && stack === pad.stack) return pad
+  return { ...pad, ...(pad.custom ? { custom: packCustom(pad.custom) } : {}), ...(stack ? { stack } : {}) }
 }
 
 /** Whether a land has a pad that is stored differently from the plain one. */
-export const needsPadPacking = (pads: PadDef[]) => pads.some((p) => p.custom)
+export const needsPadPacking = (pads: PadDef[]) => pads.some((p) => p.custom || (p.stack && Object.values(p.stack.layers).some((v) => v?.custom)))
 
 function readShapes(raw: unknown, compact: unknown): BoardShape[] | null {
   if (compact !== undefined) {
@@ -52,6 +58,10 @@ function readLayers(raw: unknown): PadLayers | null | undefined {
     if (v === undefined) continue
     if (typeof v !== "string" || !SIDES.has(v)) return null
     out[k] = v as PadSides
+  }
+  if (raw.inner !== undefined) {
+    if (!Array.isArray(raw.inner) || !raw.inner.every(isCopperLayerId) || raw.inner.includes("top") || raw.inner.includes("bottom") || new Set(raw.inner).size !== raw.inner.length) return null
+    out.inner = raw.inner as CopperLayer[]
   }
   if (raw.other !== undefined) {
     if (!Array.isArray(raw.other) || !raw.other.every((n) => typeof n === "string" && n.length > 0 && n.length < 64)) return null
@@ -89,15 +99,81 @@ export function normalizePad(raw: unknown): PadDef | null {
   if (layers === null) return null
   if (layers) out.layers = layers
   if (raw.custom !== undefined) {
-    const c = raw.custom
-    if (!isObject(c) || (c.anchor !== "circle" && c.anchor !== "rect")) return null
-    const shapes = readShapes(c.shapes, c.g)
-    const proxy = readShapes(c.proxy, c.p)
-    if (!shapes || !proxy) return null
-    const { g: _g, p: _p, shapes: _s, proxy: _x, ...rest } = c
-    out.custom = { ...rest, anchor: c.anchor, shapes, ...(proxy.length ? { proxy } : {}), ...(c.hull === true ? { hull: true } : {}) }
-    if (c.hull !== true) delete (out.custom as Record<string, unknown>).hull
+    const custom = readCustom(raw.custom)
+    if (!custom) return null
+    out.custom = custom
+  }
+  if (raw.stack !== undefined) {
+    const stack = readStack(raw.stack)
+    if (!stack) return null
+    out.stack = stack
   }
   return out as unknown as PadDef
+}
+
+function readCustom(c: unknown): PadDef["custom"] | null {
+  if (!isObject(c) || (c.anchor !== "circle" && c.anchor !== "rect")) return null
+  const shapes = readShapes(c.shapes, c.g)
+  const proxy = readShapes(c.proxy, c.p)
+  if (!shapes || !proxy) return null
+  const { g: _g, p: _p, shapes: _s, proxy: _x, ...rest } = c
+  const out = { ...rest, anchor: c.anchor, shapes, ...(proxy.length ? { proxy } : {}), ...(c.hull === true ? { hull: true } : {}) } as NonNullable<PadDef["custom"]>
+  if (c.hull !== true) delete (out as unknown as Record<string, unknown>).hull
+  return out
+}
+
+const LAYER_SHAPE_NUMBERS = ["x", "y", "width", "height", "rot", "clearance", "thermalGap", "thermalWidth", "thermalAngle"] as const
+
+/** One layer of a pad stack: its shape and size, and its pour settings, each read as a pad's own are. Null when any does not read. */
+function readLayerShape(raw: unknown): PadLayerShape | null {
+  if (!isObject(raw)) return null
+  const out: Record<string, unknown> = {}
+  if (raw.shape !== undefined) {
+    if (!(typeof raw.shape === "string" && SHAPES.has(raw.shape))) return null
+    out.shape = raw.shape
+  }
+  for (const k of LAYER_SHAPE_NUMBERS) {
+    if (raw[k] === undefined) continue
+    if (!finite(raw[k])) return null
+    out[k] = raw[k]
+  }
+  if (raw.points !== undefined) {
+    if (!(Array.isArray(raw.points) && raw.points.every(isPoint))) return null
+    out.points = raw.points
+  }
+  if (raw.round !== undefined) {
+    if (!(finite(raw.round) && (raw.round as number) >= 0 && (raw.round as number) <= 0.5)) return null
+    out.round = raw.round
+  }
+  if (raw.chamfer !== undefined) {
+    const c = raw.chamfer
+    if (!isObject(c) || !finite(c.ratio, c.corners) || !Number.isInteger(c.corners) || (c.corners as number) < 0 || (c.corners as number) > 15 || (c.ratio as number) < 0) return null
+    out.chamfer = c
+  }
+  if (raw.zoneConnect !== undefined) {
+    if (!(typeof raw.zoneConnect === "string" && ZONE.has(raw.zoneConnect))) return null
+    out.zoneConnect = raw.zoneConnect
+  }
+  if (raw.custom !== undefined) {
+    const custom = readCustom(raw.custom)
+    if (!custom) return null
+    out.custom = custom
+  }
+  return out as PadLayerShape
+}
+
+/** A pad stack as stored; null when it does not read (the land is then dropped, as for any malformed pad). */
+function readStack(raw: unknown): PadStack | null {
+  if (!isObject(raw) || (raw.mode !== "front_inner_back" && raw.mode !== "custom") || !isObject(raw.layers)) return null
+  const layers: Record<string, PadLayerShape> = {}
+  for (const [k, v] of Object.entries(raw.layers)) {
+    if (k !== "inner" && !isCopperLayerId(k)) return null
+    if (k === "top") return null
+    if (k === "inner" && raw.mode !== "front_inner_back") return null
+    const shape = readLayerShape(v)
+    if (!shape) return null
+    layers[k] = shape
+  }
+  return { mode: raw.mode, layers: layers as PadStack["layers"] }
 }
 

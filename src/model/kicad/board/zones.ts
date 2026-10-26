@@ -3,6 +3,7 @@ import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
 import { kicadUuid } from "../../zones"
 import { layerClass } from "./needs"
+import { layerMapOf, layersOfNames } from "./layers"
 import { eraOf } from "./read"
 import type { ImportReport } from "./report"
 import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
@@ -14,17 +15,9 @@ import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
 
 const flip = (p: Pt): Vec2 => ({ x: p.x + 0, y: p.y === 0 ? 0 : -p.y })
 
-/** Where a zone's layers are in the editor: both copper layers, one, or none (inner layers and other layers are refused before this). */
+/** Where a zone's layers are in the editor (X1): the board's copper layers it is on, in stack order; `*.Cu` is all of them, `F&B.Cu` the two outer ones. */
 export function zoneCopperLayers(z: KicadZone, board: KicadBoard): CopperLayer[] {
-  const out = new Set<CopperLayer>()
-  for (const n of z.layers) {
-    if (n === "*.Cu" || n === "F&B.Cu") {
-      out.add("top")
-      out.add("bottom")
-    } else if (n === board.copper.front || n === "F.Cu") out.add("top")
-    else if (n === board.copper.back || n === "B.Cu") out.add("bottom")
-  }
-  return (["top", "bottom"] as const).filter((l) => out.has(l))
+  return layersOfNames(layerMapOf(board), z.layers)
 }
 
 /** Whether every layer of a zone is a copper layer (a zone on mask, paste, silkscreen or a user layer is a different thing, X26). */

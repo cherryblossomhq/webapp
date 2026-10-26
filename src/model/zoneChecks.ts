@@ -1,5 +1,6 @@
 import { areaTouches, hasPolygon, zoneArea, zoneLayers } from "./zones"
 import { hasCourtyard, pcbCourtyard, pcbCourtyardRing } from "./instances"
+import { trackPoints } from "./arcTracks"
 import type { CopperItem, DrcViolation } from "./pcb"
 import type { Project, Vec2 } from "./types"
 
@@ -29,7 +30,7 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
     const layers = zoneLayers(z)
     const name = z.name ? `the keepout ${z.name}` : "a keepout"
     for (const it of items) {
-      if (it.kind === "segment" && z.keepout!.tracks && it.layers.some((l) => layers.includes(l)) && areaTouches(area, [it.a, it.b], it.width / 2)) {
+      if (it.kind === "segment" && z.keepout!.tracks && it.layers.some((l) => layers.includes(l)) && areaTouches(area, trackPoints(it), it.width / 2)) {
         say(z.id, `t:${it.traceId}`, `A trace is inside ${name} that keeps tracks out`, { x: (it.a.x + it.b.x) / 2, y: (it.a.y + it.b.y) / 2 })
       } else if (it.kind === "via" && z.keepout!.vias && areaTouches(area, [it.at], it.diameter / 2)) {
         say(z.id, `v:${it.viaId}`, `A via is inside ${name} that keeps vias out`, it.at)

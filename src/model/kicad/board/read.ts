@@ -13,7 +13,11 @@ import type {
   KicadModel,
   KicadNet,
   KicadPad,
+  KicadPadLayer,
+  KicadPadStack,
   KicadSegment,
+  KicadStackup,
+  KicadStackupRow,
   KicadShape,
   KicadTarget,
   KicadText,
@@ -192,6 +196,151 @@ class Issues {
   note(what: string) {
     this.bad.set(what, (this.bad.get(what) ?? 0) + 1)
   }
+}
+
+
+/** The newest stamp whose `tenting` words are an explicit choice for each side (KiCad 9 and earlier: `(tenting front)` says the back is not tented, `(tenting none)` says neither is). Later files write `(front yes) (back no)`, where a side not named follows the board. */
+export const TENTING_WORDS_UNTIL = 20241229
+
+/**
+ * A `tenting` node of a via or a pad: each side as the file says it. KiCad's parser reads the words (`front`, `back`, `none`) up to KiCad 9
+ * as a choice for both sides (parseTenting, 9.0.0 `:5799-5813`: a side not named is false), and a later file as `(front yes) (back no)`, where a
+ * side that is not named is no choice (parseFrontBackOptBool, 10.0.0 `:6315-6321`). The stamp tells which a file is.
+ */
+export function tentingOf(node: List | undefined, stamp: number | null): { front?: boolean; back?: boolean } | undefined {
+  if (!node) return undefined
+  const parts = node.slice(1)
+  const lists = parts.filter((x): x is List => Array.isArray(x))
+  if (lists.length) {
+    const out: { front?: boolean; back?: boolean } = {}
+    for (const l of lists) {
+      if (l[0] !== "front" && l[0] !== "back") continue
+      out[l[0]] = l[1] === undefined || l[1] === "yes" || l[1] === "true"
+    }
+    return out
+  }
+  const words = parts.filter((x): x is string => typeof x === "string")
+  if (stamp === null || stamp <= TENTING_WORDS_UNTIL) return { front: words.includes("front"), back: words.includes("back") }
+  const out: { front?: boolean; back?: boolean } = {}
+  if (words.includes("front")) out.front = true
+  if (words.includes("back")) out.back = true
+  return out
+}
+
+/** The board's `setup (tenting ...)`: the sides the file tents, or null when it has none (KiCad's default is both). A side not named is not tented (10.0.0 `:2717-2722`, and what the writer meant). */
+export function setupTenting(setup: List | undefined): { front: boolean; back: boolean } | null {
+  const node = kid(setup, "tenting")
+  if (!node) return null
+  const t = tentingOf(node, 0)
+  return { front: t?.front === true, back: t?.back === true }
+}
+
+const yesOf = (w: string | List | undefined) => w === undefined || w === "yes" || w === "true"
+
+/** The stackup of `setup (stackup ...)`, read as KiCad reads it (parseBoardStackup, 10.0.0 `:2090`): rows in order, a layer listed twice is a stackup appended twice and ends the rows, at most 128. */
+export function readStackup(setup: List | undefined): KicadStackup | null {
+  const node = kid(setup, "stackup")
+  if (!node) return null
+  const out: KicadStackup = { rows: [], dropped: 0, node }
+  const seen = new Set<string>()
+  let duplicated = false
+  const sublayer = (fields: List[]): Omit<KicadStackupRow, "name" | "type" | "sub"> => {
+    const r: Omit<KicadStackupRow, "name" | "type" | "sub"> = {}
+    for (const f of fields) {
+      switch (f[0]) {
+        case "thickness": {
+          const v = numAt(f, 1, NaN)
+          if (Number.isFinite(v)) r.thickness = v
+          if (f.includes("locked")) r.locked = true
+          break
+        }
+        case "material":
+          if (strAt(f, 1) !== undefined) r.material = strAt(f, 1)
+          break
+        case "epsilon_r":
+          if (Number.isFinite(numAt(f, 1, NaN))) r.epsilonR = numAt(f, 1)
+          break
+        case "loss_tangent":
+          if (Number.isFinite(numAt(f, 1, NaN))) r.lossTangent = numAt(f, 1)
+          break
+        case "spec_frequency":
+          if (Number.isFinite(numAt(f, 1, NaN))) r.specFreq = numAt(f, 1)
+          break
+        case "dielectric_model":
+          if (f[1] === "constant" || f[1] === "djordjevic_sarkar") r.model = f[1]
+          break
+        case "color":
+          if (strAt(f, 1) !== undefined) r.color = strAt(f, 1)
+          break
+      }
+    }
+    return r
+  }
+  for (const c of node.slice(1)) {
+    if (!Array.isArray(c) || typeof c[0] !== "string") continue
+    if (c[0] === "copper_finish") out.finish = strAt(c, 1) ?? ""
+    else if (c[0] === "edge_plating") out.edgePlating = yesOf(c[1])
+    else if (c[0] === "dielectric_constraints") out.dielectricConstraints = yesOf(c[1])
+    else if (c[0] === "edge_connector") out.edgeConnector = c[1] === "yes" ? "yes" : c[1] === "bevelled" ? "bevelled" : "none"
+    else if (c[0] === "castellated_pads") out.castellated = yesOf(c[1])
+    else if (c[0] === "layer") {
+      const name = strAt(c, 1) ?? ""
+      if (seen.has(name) && /\.(Cu|SilkS|Mask|Paste)$/.test(name)) duplicated = true
+      else seen.add(name)
+      if (duplicated || out.rows.length >= 128) {
+        out.dropped++
+        continue
+      }
+      // The first sublayer is the fields before the first `addsublayer`; each later one follows one.
+      const parts: List[][] = [[]]
+      let type = ""
+      for (const f of c.slice(2)) {
+        if (f === "addsublayer") parts.push([])
+        else if (Array.isArray(f) && f[0] === "type") type = strAt(f, 1) ?? ""
+        else if (Array.isArray(f) && typeof f[0] === "string") parts[parts.length - 1].push(f)
+      }
+      const [first, ...rest] = parts.map(sublayer)
+      out.rows.push({ name, type, ...first, sub: rest })
+    }
+  }
+  return out
+}
+
+/** The layers a via's `padstack` gives a diameter: `Inner` is the inner layers, any other is a copper layer's own name. */
+export function viaStackOf(node: List | undefined): KicadVia["stack"] | undefined {
+  if (!node) return undefined
+  const mode = strAt(kid(node, "mode"), 1)
+  const sizes: { name: string; size: number }[] = []
+  for (const l of kids(node, "layer")) {
+    const size = numAt(kid(l, "size"), 1, NaN)
+    if (Number.isFinite(size)) sizes.push({ name: strAt(l, 1) ?? "", size })
+  }
+  return { mode: mode === "custom" ? "custom" : "front_inner_back", sizes }
+}
+
+/** The mode a via's words leave its copper in, as KiCad's parser applies them in order: `remove_unused_layers` (on) removes all, `keep_end_layers` (on) keeps the ends, `start_end_only` is KiCad 10's own mode; a word that says no changes nothing. */
+export function viaUnusedOf(via: List): KicadVia["unused"] | undefined {
+  let mode: KicadVia["unused"] | undefined
+  for (const w of via) {
+    if (!Array.isArray(w)) continue
+    const on = yesOf(w[1])
+    if (w[0] === "remove_unused_layers" && on) mode = "remove"
+    else if (w[0] === "keep_end_layers" && on) mode = "keepEnds"
+    else if (w[0] === "start_end_only" && on) mode = "startEnd"
+  }
+  return mode
+}
+
+/** The mode a pad's words leave its copper in: each word sets it (`remove_unused_layers` yes removes all, no keeps all; `keep_end_layers` yes keeps the ends, no removes all), the later word wins (parsePAD, 10.0.0 `:6300-6313`). */
+export function padUnusedOf(pad: List): "remove" | "keepEnds" | undefined {
+  let mode: "remove" | "keepEnds" | undefined
+  for (const w of pad) {
+    if (!Array.isArray(w)) continue
+    const on = yesOf(w[1])
+    if (w[0] === "remove_unused_layers") mode = on ? "remove" : undefined
+    else if (w[0] === "keep_end_layers") mode = on ? "keepEnds" : "remove"
+  }
+  return mode
 }
 
 function readBoard(tree: List, report: ImportReport): KicadBoard {
@@ -882,6 +1031,49 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         if (kid(c, "at") || kid(c, "layer") || kid(c, "effects")) texts.push(textOf(c, key === "Reference" ? "reference" : key === "Value" ? "value" : "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
       }
     }
+    function padStackOf(node: List, number: string): KicadPadStack {
+      const mode = strAt(kid(node, "mode"), 1) === "custom" ? "custom" : "front_inner_back"
+      const layers: KicadPadLayer[] = kids(node, "layer").map((l) => {
+        const what = `pad ${number} of ${ref || "a footprint"}`
+        const size = kid(l, "size")
+        const off = kid(l, "offset")
+        const rd = kid(l, "rect_delta")
+        const options = kid(l, "options")
+        const anchorWord = strAt(kid(options, "anchor"), 1)
+        const chamferNode = kid(l, "chamfer")
+        const primitives: KicadShape[] = []
+        const proxies: KicadShape[] = []
+        for (const g of kid(l, "primitives")?.slice(1) ?? []) {
+          if (!Array.isArray(g) || typeof g[0] !== "string" || !g[0].startsWith("gr_")) continue
+          const kind = g[0].slice(3)
+          if (kind === "bbox" || kind === "vector") proxies.push(shapeOf(g, kind === "vector" ? "line" : "bbox"))
+          else if (["line", "arc", "circle", "rect", "poly", "curve"].includes(kind)) primitives.push(shapeOf(g, kind as ShapeKind))
+        }
+        const layer: KicadPadLayer = { name: strAt(l, 1) ?? "", primitives, proxies, node: l }
+        if (strAt(kid(l, "shape"), 1) !== undefined) layer.shape = strAt(kid(l, "shape"), 1)
+        if (size) {
+          layer.w = numAt(size, 1, 0)
+          layer.h = numAt(size, 2, 0)
+        }
+        if (off) layer.offset = pt(off, what)
+        if (rd) layer.rectDelta = pt(rd, what)
+        if (kid(l, "roundrect_rratio")) layer.roundrectRatio = numAt(kid(l, "roundrect_rratio"), 1, 0)
+        if (kid(l, "chamfer_ratio")) layer.chamferRatio = numAt(kid(l, "chamfer_ratio"), 1, 0)
+        if (chamferNode) {
+          const corners = atomsOf(chamferNode)
+          layer.chamferCorners = (corners.includes("top_left") ? 1 : 0) | (corners.includes("top_right") ? 2 : 0) | (corners.includes("bottom_right") ? 4 : 0) | (corners.includes("bottom_left") ? 8 : 0)
+        }
+        if (anchorWord === "circle" || anchorWord === "rect") layer.anchor = anchorWord
+        if (strAt(kid(options, "clearance"), 1) === "convexhull") layer.hull = true
+        if (kid(l, "thermal_gap")) layer.thermalGap = numAt(kid(l, "thermal_gap"), 1, 0)
+        if (kid(l, "thermal_bridge_width")) layer.thermalWidth = numAt(kid(l, "thermal_bridge_width"), 1, 0)
+        if (kid(l, "thermal_bridge_angle")) layer.thermalAngle = numAt(kid(l, "thermal_bridge_angle"), 1, 0)
+        if (kid(l, "zone_connect")) layer.zoneConnect = numAt(kid(l, "zone_connect"), 1, 0)
+        if (kid(l, "clearance")) layer.clearance = numAt(kid(l, "clearance"), 1, 0)
+        return layer
+      })
+      return { mode, layers }
+    }
     function padOf(c: List): KicadPad {
       const number = strAt(c, 1) ?? ""
       const at = kid(c, "at")
@@ -942,8 +1134,10 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         local: localOf(c),
         properties: atomsOf(kid(c, "property")),
         padstack: !!kid(c, "padstack"),
+        stack: kid(c, "padstack") ? padStackOf(kid(c, "padstack")!, number) : null,
         zoneLayers: !!kid(c, "zone_layer_connections"),
         tented: !!kid(c, "tenting") && (kid(c, "tenting") as List).slice(1).some((t) => (Array.isArray(t) ? t[1] !== undefined && t[1] !== "none" : true)),
+        ...(kid(c, "tenting") ? { tenting: tentingOf(kid(c, "tenting"), version) } : {}),
         node: c,
       }
       if (removeUnused !== undefined) pad.removeUnused = removeUnused
@@ -1085,6 +1279,11 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       drill: numAt(kid(c, "drill"), 1, 0),
       layers: atomsOf(kid(c, "layers")),
       kind,
+      free: flagOf(c, "free"),
+      ...(viaUnusedOf(c) ? { unused: viaUnusedOf(c) } : {}),
+      ...(kid(c, "zone_layer_connections") ? { zoneLayers: atomsOf(kid(c, "zone_layer_connections")) } : {}),
+      ...(kid(c, "tenting") ? { tenting: tentingOf(kid(c, "tenting"), version) } : {}),
+      ...(kid(c, "padstack") ? { stack: viaStackOf(kid(c, "padstack")) } : {}),
       ...copperNet(c),
       locked: flagOf(c, "locked") || lockedBit(c),
       node: c,
@@ -1144,6 +1343,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     layers,
     copper,
     copperLayerCount: declared,
+    stackup: readStackup(kid(tree, "setup")),
+    tenting: setupTenting(kid(tree, "setup")),
     setup,
     setupWords,
     userTraceWidths,

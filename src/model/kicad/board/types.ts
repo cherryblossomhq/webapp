@@ -86,12 +86,45 @@ export interface KicadPad {
   properties: string[]
   /** The pad has a `padstack` node (KiCad 9), and its `(remove_unused_layers)` and `(keep_end_layers)`. */
   padstack: boolean
+  /** The pad stack's layers when it has one (`(padstack (mode ...) (layer ...))`, X1); null for a pad whose layers all share the pad's own shape. */
+  stack: KicadPadStack | null
+  /** `(tenting (front yes) (back no))` of the pad, each side as written; absent for a side it does not say (X5). `none` is both sides unset. */
+  tenting?: { front?: boolean; back?: boolean }
   removeUnused?: boolean
   keepEnds?: boolean
   zoneLayers: boolean
   /** A `tenting` that says yes or no for a side (`none` is no setting). */
   tented: boolean
   node: List
+}
+
+/** One layer of a pad stack as the file writes it: the shape, the size, the offset, the corner and pour settings, and the drawings of a custom shape. Absent is what the layer does not say. */
+export interface KicadPadLayer {
+  /** The layer's name as the file writes it: `Inner` or a copper layer's. */
+  name: string
+  shape?: string
+  w?: number
+  h?: number
+  offset?: Pt
+  rectDelta?: Pt
+  roundrectRatio?: number
+  chamferRatio?: number
+  chamferCorners?: number
+  anchor?: "circle" | "rect"
+  hull?: boolean
+  primitives: KicadShape[]
+  proxies: KicadShape[]
+  thermalGap?: number
+  thermalWidth?: number
+  thermalAngle?: number
+  zoneConnect?: number
+  clearance?: number
+  node: List
+}
+
+export interface KicadPadStack {
+  mode: "front_inner_back" | "custom"
+  layers: KicadPadLayer[]
 }
 
 /** What a pad or a footprint sets for itself: margins, clearance and how a pour joins it. Absent is no setting. */
@@ -400,11 +433,50 @@ export interface KicadVia {
   /** The two layers it joins, front first as the file lists them. */
   layers: string[]
   kind: "through" | "blind" | "micro" | "buried"
+  /** `(free)`: KiCad keeps the net of the via when a track is dragged. */
+  free: boolean
+  /** What becomes of the via's copper on layers nothing connects to: `remove_unused_layers` with `keep_end_layers` or without, or KiCad 10's `start_end_only`; absent keeps every layer. */
+  unused?: "remove" | "keepEnds" | "startEnd"
+  /** `(zone_layer_connections L1 L2 ...)`: the layers a pour joins the via on; the layer names as written. Absent when the node is. */
+  zoneLayers?: string[]
+  /** `(tenting (front yes) (back no))` of the via, or the older `(tenting front back)` words; absent for a side it does not say. */
+  tenting?: { front?: boolean; back?: boolean }
+  /** `(padstack (mode ...) (layer "Inner" (size d)) ...)`: the via's diameter per layer. Absent for a via with one diameter. */
+  stack?: { mode: "front_inner_back" | "custom"; sizes: { name: string; size: number }[] }
   net: string | null
   netRaw: string | null
   badNet?: string
   locked: boolean
   node: List
+}
+
+/** The board's physical stackup (`setup (stackup ...)`, X1), as the rows and settings the file lists. */
+export interface KicadStackup {
+  rows: KicadStackupRow[]
+  /** `copper_finish` as written. */
+  finish?: string
+  edgePlating?: boolean
+  dielectricConstraints?: boolean
+  edgeConnector?: "none" | "yes" | "bevelled"
+  castellated?: boolean
+  /** Rows KiCad does not keep (a layer listed twice, which it takes for a stackup appended twice, or more than 128): how many. */
+  dropped: number
+  node: List
+}
+
+/** One `(layer ...)` of a stackup; the sublayers of a dielectric (`addsublayer`) come with it. */
+export interface KicadStackupRow {
+  name: string
+  type: string
+  thickness?: number
+  locked?: boolean
+  material?: string
+  epsilonR?: number
+  lossTangent?: number
+  color?: string
+  specFreq?: number
+  model?: "constant" | "djordjevic_sarkar"
+  sub: Omit<KicadStackupRow, "name" | "type" | "sub">[]
 }
 
 export interface KicadBoard {
@@ -421,6 +493,10 @@ export interface KicadBoard {
   copper: { names: string[]; front: string; back: string }
   /** The number of copper layers the board declares. */
   copperLayerCount: number
+  /** The board's stackup when its setup has one. */
+  stackup: KicadStackup | null
+  /** `setup (tenting ...)`: the sides vias are tented on, or null when the file has none (KiCad's default is both). */
+  tenting: { front: boolean; back: boolean } | null
   /** Numeric `setup` values by token: `last_trace_width`, `pad_to_mask_clearance`... */
   setup: Record<string, number>
   /** `setup` entries that are one word, not a number: `allow_soldermask_bridges_in_footprints yes`. */

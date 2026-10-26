@@ -171,12 +171,16 @@ describe("layers", () => {
     expect(imp(text).project.graphics!.map((s) => s.layer)).toEqual(["F.Cu", "B.Cu"])
   })
 
-  it("refuses a layer that is none of KiCad's, naming it, and a drawing on an inner copper layer as X1", () => {
+  it("refuses a layer that is none of KiCad's, naming it, and keeps a drawing on an inner copper layer the board has", () => {
     const r = importKicadBoard(board({ body: [gr("line", "(start 0 0) (end 1 0)", "Weird.Layer")] }), { built: ALL })
     expect(r.status).toBe("refused")
     if (r.status === "refused") expect(r.message).toMatch(/Weird\.Layer/)
     const inner = importKicadBoard(board({ layers: '(layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))', body: [gr("line", "(start 0 0) (end 1 0)", "In1.Cu")] }))
-    expect(inner.status === "refused" && inner.needs.some((n) => n.ext === "X1")).toBe(true)
+    // the board has the layer, so the drawing is on it (X1)
+    expect(inner.status === "imported" && inner.project.graphics?.[0].layer).toBe("In1.Cu")
+    // a layer the table lacks is refused, named
+    const lacks = importKicadBoard(board({ body: [gr("line", "(start 0 0) (end 1 0)", "In1.Cu")] }))
+    expect(lacks.status === "refused" && lacks.message).toMatch(/In1\.Cu/)
   })
 
   it("does not carry drawings on Edge.Cuts: they are the outline", () => {

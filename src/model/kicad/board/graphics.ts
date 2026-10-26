@@ -74,8 +74,12 @@ export function resolveLayer(board: Pick<KicadBoard, "copper">, name: string): R
   if (name === board.copper.front) return { kind: "layer", name: "F.Cu" }
   if (name === board.copper.back) return { kind: "layer", name: "B.Cu" }
   if (name === "Edge.Cuts") return { kind: "edge", name }
-  if (isShapeLayer(name)) return { kind: "layer", name }
-  if (board.copper.names.includes(name) || /^In\d+\.Cu$/.test(name)) return { kind: "inner", name }
+  // The copper layers the table lists, by place (X1): the third one is `In2.Cu` whatever the file calls it.
+  const at = board.copper.names.indexOf(name)
+  if (at > 0 && at < board.copper.names.length - 1) return { kind: "layer", name: `In${at}.Cu` }
+  if (isShapeLayer(name) && !/^In\d+\.Cu$/.test(name)) return { kind: "layer", name }
+  // A name that is KiCad's own for an inner layer the board has none of is nothing.
+  if (/^In\d+\.Cu$/.test(name)) return { kind: "inner", name }
   const t = TRANSLATED_LAYER_NAMES[name]
   if (t === "Edge.Cuts") return { kind: "edge", name: t, translatedEdge: true }
   if (t) return { kind: "layer", name: t }
@@ -195,7 +199,10 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
       cx.lose(`a drawing on the layer "${file}", which is not one of KiCad's`)
       continue
     }
-    if (r.kind === "inner") continue
+    if (r.kind === "inner") {
+      cx.lose(`a drawing on ${file}, a copper layer the board's layer table does not list`)
+      continue
+    }
     layers.push(r.name)
   }
   if (!layers.length) return out
@@ -242,9 +249,9 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
 /** A `target` mark as shapes: a circle, and a cross or an X through it, as KiCad plots one (`PlotPcbTarget`). */
 export function convertTarget(t: KicadBoard["targets"][number], cx: GraphicsContext): BoardShape[] {
   const r = resolveLayer(cx.board, t.layer)
-  if (r.kind === "edge" || r.kind === "inner") return []
-  if (r.kind === "unknown") {
-    cx.lose(`a target on the layer "${t.layer}", which is not one of KiCad's`)
+  if (r.kind === "edge") return []
+  if (r.kind === "unknown" || r.kind === "inner") {
+    cx.lose(r.kind === "inner" ? `a target on ${t.layer}, a copper layer the board's layer table does not list` : `a target on the layer "${t.layer}", which is not one of KiCad's`)
     return []
   }
   const width = t.width <= 0 ? DEFAULT_SHAPE_WIDTH : t.width
@@ -271,7 +278,7 @@ export function landShapes(fp: KicadFootprint, board: KicadBoard, bottom: boolea
     board,
     // The land is the library's: the same on both sides (see `landPad`), so a bottom footprint's y is kept as it is stored and its layers are swapped.
     map: bottom ? (p) => ({ x: p.x, y: p.y }) : (p) => ({ x: p.x, y: -p.y }),
-    layerOf: bottom ? flipShapeLayer : (l) => l,
+    layerOf: bottom ? (l) => flipShapeLayer(l, board.copper.names.length || 2) : (l) => l,
     netName,
     lose,
     degenerate,

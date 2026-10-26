@@ -1,5 +1,6 @@
 import { normalizeOutline, packOutline, unpackOutline } from "./outlineCodec"
 import { segStart, type ShapePath } from "./shapes"
+import { isCopperLayerId } from "./stack"
 import type { CopperLayer, Zone, ZoneConnection, ZoneKeepout } from "./types"
 
 // Zones stored compactly and exactly (X3). A zone of the editor's own whole-board kind is stored as it always was. A zone with a polygon
@@ -64,7 +65,7 @@ export function packZones(zones: Zone[]): unknown[] {
   })
 }
 
-const layerOf = (v: unknown): CopperLayer | null => (v === "top" || v === "bottom" ? v : null)
+const layerOf = (v: unknown): CopperLayer | null => (isCopperLayerId(v) ? v : null)
 
 /** The zones a stored project holds: an old-style zone as it is, one with X3 fields read field by field, anything damaged dropped or repaired. */
 export function normalizeZones(raw: unknown): Zone[] {

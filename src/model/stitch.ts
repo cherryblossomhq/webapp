@@ -7,6 +7,7 @@ import { textsOnLayer } from "./texts"
 import { pcbCourtyard, pcbSilk } from "./instances"
 import type { AutorouteResult } from "./autoroute"
 import { analyzePcb, pointPadDistance } from "./pcb"
+import { isInner } from "./stack"
 import { fillTester } from "./pour"
 import { isWholeBoardPour } from "./zones"
 import { placeDesignators } from "./silk"
@@ -86,6 +87,17 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
     })
   }
   const others = base.vias.map((v) => ({ at: { x: v.x, y: v.y }, r: v.diameter / 2, keep: r + gapTo(pcb.viaNet.get(v.id)) }))
+  // X1: a stitching via is a through via, which has copper on every layer: it keeps out of the pours of other nets on the inner layers too.
+  const innerFills = pcb.zoneFills.filter((f) => isInner(f.layer) && f.netName !== net).map((f) => ({ testers: f.polygons.map(fillTester), keep: r + gapTo(f.netId) }))
+  const inInnerFill = (p: Vec2) =>
+    innerFills.some(({ testers, keep }) => {
+      for (let i = 0; i < SAMPLES; i++) {
+        const a = (i / SAMPLES) * Math.PI * 2
+        const q = { x: p.x + Math.cos(a) * keep, y: p.y + Math.sin(a) * keep }
+        if (testers.some((t) => t(q) || t(p))) return true
+      }
+      return false
+    })
 
   const solid = (p: Vec2, around = ring) => {
     for (let i = 0; i <= SAMPLES; i++) {
@@ -99,6 +111,7 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
   const clear = (p: Vec2, underParts = false) =>
     (underParts ? outlines.every(([a, b]) => pointSegmentDistance(p, a, b) >= r + 0.1) : !bodies.some((b) => pointInBox(p, b))) &&
     !silk.some((b) => pointInBox(p, b)) &&
+    !inInnerFill(p) &&
     pads.every((o) => pointPadDistance(p, o.pad) >= o.keep) &&
     segments.every((s) => pointSegmentDistance(p, s.a, s.b) >= s.keep + s.width / 2) &&
     others.every((o) => Math.hypot(p.x - o.at.x, p.y - o.at.y) >= o.r + o.keep)

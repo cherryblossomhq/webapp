@@ -1,4 +1,8 @@
 import { fp } from "@tscircuit/footprinter"
+import { copperCount, copperLayers, viaLayers } from "../model/stack"
+import { arcPolyline, isArcTrace } from "../model/arcTracks"
+import { viaTentedOn } from "../model/viaRules"
+import type { CopperLayer } from "../model/types"
 import type {
   AnyCircuitElement,
   BRepShape,
@@ -212,10 +216,20 @@ function portHints(part: PartDef, pin: PinDef): string[] {
   return [...new Set(hints)]
 }
 
+/** Circuit JSON's layer for a copper layer: `inner1` to `inner8` (its enum stops there), or null for one beyond them. */
+const CJ_INNER = 8
+type CjLayer = "top" | "bottom" | "inner1" | "inner2" | "inner3" | "inner4" | "inner5" | "inner6" | "inner7" | "inner8"
+function cjLayer(l: CopperLayer): CjLayer | null {
+  if (l === "top" || l === "bottom") return l
+  const k = Number(l.slice(2))
+  return k >= 1 && k <= CJ_INNER ? (`inner${k}` as CjLayer) : null
+}
+const cjLayers = (ls: readonly CopperLayer[]): CjLayer[] => ls.map(cjLayer).filter((l): l is CjLayer => l !== null)
+
 /** Pads of a part's footprint, one element each, tied to the port of the pin they carry. */
-function padElements(c: ComponentInstance, pcbComponentId: string, portIds: Map<string, string>, ids: { next: (prefix: string) => string }): (PcbSmtPad | PcbPlatedHole | PcbHole)[] {
+function padElements(c: ComponentInstance, pcbComponentId: string, portIds: Map<string, string>, ids: { next: (prefix: string) => string }, count: number): (PcbSmtPad | PcbPlatedHole | PcbHole)[] {
   const out: (PcbSmtPad | PcbPlatedHole | PcbHole)[] = []
-  for (const pad of pcbPads(c)) {
+  for (const pad of pcbPads(c, count)) {
     if (isNpth(pad)) {
       out.push(npthElement(pad, pcbComponentId, ids.next("pcb_hole")))
       continue
@@ -229,7 +243,7 @@ function padElements(c: ComponentInstance, pcbComponentId: string, portIds: Map<
       // A hole whose pad has no copper at all is a bare hole in Circuit JSON.
       if (pad.layers.length === 0) out.push(npthElement(pad, pcbComponentId, ids.next("pcb_hole")))
       else out.push(platedHole(pad, link, ids.next("pcb_plated_hole")))
-    } else for (const layer of pad.layers) out.push(smtPad(pad, link, layer, ids.next("pcb_smtpad")))
+    } else for (const layer of cjLayers(pad.layers)) out.push(smtPad(pad.variants?.[layer as CopperLayer] ?? pad, link, layer, ids.next("pcb_smtpad")))
   }
   return out
 }
@@ -243,7 +257,7 @@ interface PadLink {
 /** A pad's own mask and paste margins, where Circuit JSON has a field for them (a pad of the board's margins says none). */
 const padMargins = (pad: WorldPad) => ({ ...(pad.maskMargin !== undefined ? { soldermask_margin: mm(pad.maskMargin) } : {}), ...(pad.pasteMargin !== undefined ? { solderpaste_margin: mm(pad.pasteMargin) } : {}) })
 
-function smtPad(pad: WorldPad, link: PadLink, layer: "top" | "bottom", id: string): PcbSmtPad {
+function smtPad(pad: WorldPad, link: PadLink, layer: CjLayer, id: string): PcbSmtPad {
   const at = { x: mm(pad.x), y: mm(pad.y) }
   const common = { pcb_smtpad_id: id, layer, ...link, is_covered_with_solder_mask: false, ...padMargins(pad) }
   if (pad.oriented) {
@@ -267,7 +281,7 @@ function smtPad(pad: WorldPad, link: PadLink, layer: "top" | "bottom", id: strin
 function platedHole(pad: WorldPad, link: PadLink, id: string): PcbPlatedHole {
   const at = { x: mm(pad.x), y: mm(pad.y) }
   const drill = pad.holeDiameter!
-  const common = { pcb_plated_hole_id: id, layers: (pad.x7 ? pad.layers : ["top", "bottom"]) as ("top" | "bottom")[], ...link, is_covered_with_solder_mask: false, ...(pad.maskMargin !== undefined ? { soldermask_margin: mm(pad.maskMargin) } : {}) }
+  const common = { pcb_plated_hole_id: id, layers: cjLayers(pad.x7 || pad.layers.length > 2 ? pad.layers : ["top", "bottom"]), ...link, is_covered_with_solder_mask: false, ...(pad.maskMargin !== undefined ? { soldermask_margin: mm(pad.maskMargin) } : {}) }
   const slot = slotEnds(pad)
   // A pad whose hole is not at its centre, with rounded corners, or of a shape of its own: its outline round the hole, exactly.
   if (pad.x7 && (pad.hole || pad.corner || pad.rings || (pad.shape === "polygon" && !pad.oriented))) {
@@ -448,15 +462,15 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     width: mm(b.width),
     height: mm(b.height),
     thickness: b.thickness,
-    num_layers: 2,
+    num_layers: copperCount(b),
     material: "fr4",
     ...(roundedBoard ? { outline: roundedOutline(b.x - b.width / 2, b.y - b.height / 2, b.x + b.width / 2, b.y + b.height / 2, r) } : {}),
     ...(customRegions.length ? { outline: customRegions[0].outer.map((q) => ({ x: round(q.x), y: round(q.y) })) } : {}),
     solder_mask_color: colors.mask,
     silkscreen_color: colors.silk,
     is_via_in_pad_allowed: rules.viaInPad,
-    default_via_tented_on_top: rules.tentVias,
-    default_via_tented_on_bottom: rules.tentVias,
+    default_via_tented_on_top: rules.tentSides ? rules.tentSides.front : rules.tentVias,
+    default_via_tented_on_bottom: rules.tentSides ? rules.tentSides.back : rules.tentVias,
     min_trace_width: rules.minTraceWidth,
     min_board_edge_clearance: rules.edgeClearance,
     min_via_hole_diameter: rules.minDrill,
@@ -483,7 +497,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       y: mm(hole.y),
       outer_diameter: hole.diameter,
       hole_diameter: hole.drill,
-      layers: ["top", "bottom"],
+      layers: cjLayers(copperLayers(b)),
       pcb_component_id: undefined,
       is_covered_with_solder_mask: false,
     } as PcbPlatedHole)
@@ -533,11 +547,11 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
         pcb_component_id: pcbId,
         x: mm(owned[0].x),
         y: mm(owned[0].y),
-        layers: [...new Set(owned.flatMap((p) => p.layers))],
+        layers: cjLayers([...new Set(owned.flatMap((p) => p.layers))]),
       }
       elements.push(port)
     }
-    elements.push(...padElements(c, pcbId, pcbPortIds, ids))
+    elements.push(...padElements(c, pcbId, pcbPortIds, ids, copperCount(project.board)))
 
     if (fpDef) {
       for (const path of pcbSilk(c)) {
@@ -612,18 +626,30 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
 
   // ---------- Copper ----------
   const netNameOf = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const layerNotes: string[] = []
+  let flattenedArcs = 0
+  let beyond = 0
   for (const t of project.traces) {
+    const layer = cjLayer(t.layer)
+    if (!layer) {
+      beyond++
+      continue
+    }
     const netId = pcb.traceNet.get(t.id)
+    // X4: Circuit JSON has no arc in a route, so an arc track is the points of its curve, within 0.0002 mm.
+    const points = isArcTrace(t) ? arcPolyline(t.points) : t.points
+    if (isArcTrace(t)) flattenedArcs++
     const trace: PcbTrace = {
       type: "pcb_trace",
       pcb_trace_id: ids.next("pcb_trace"),
       ...(netId && traceIds.has(netId) ? { source_trace_id: traceIds.get(netId) } : {}),
-      route: t.points.map((p) => ({ route_type: "wire" as const, x: mm(p.x), y: mm(p.y), width: t.width, layer: t.layer })),
+      route: points.map((p) => ({ route_type: "wire" as const, x: mm(p.x), y: mm(p.y), width: t.width, layer })),
     }
     elements.push(trace)
   }
   for (const v of project.vias) {
     const netId = pcb.viaNet.get(v.id)
+    const span = viaLayers(project.board, v)
     const via: PcbVia = {
       type: "pcb_via",
       pcb_via_id: ids.next("pcb_via"),
@@ -631,12 +657,17 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       y: mm(v.y),
       outer_diameter: v.diameter,
       hole_diameter: v.drill,
-      layers: ["top", "bottom"],
-      from_layer: "top",
-      to_layer: "bottom",
+      layers: cjLayers(span),
+      from_layer: cjLayer(span[0]) ?? "top",
+      to_layer: cjLayer(span[span.length - 1]) ?? "bottom",
+      ...(v.tent ? { is_tented: viaTentedOn(rules, v, "top") && viaTentedOn(rules, v, "bottom") } : {}),
       ...(netId && netIds.has(netId) ? { source_net_id: netIds.get(netId) } : {}),
-    }
+    } as PcbVia
     elements.push(via)
+  }
+  if (flattenedArcs) layerNotes.push(`${flattenedArcs} arc track${flattenedArcs === 1 ? "" : "s"} ${flattenedArcs === 1 ? "is" : "are"} written as ${flattenedArcs === 1 ? "its" : "their"} points (within 0.0002 mm of the curve): a Circuit JSON route has no arc.`)
+  const layerNotesAfter = () => {
+    if (beyond) layerNotes.push(`${beyond} trace${beyond === 1 ? "" : "s"} and pour${beyond === 1 ? "" : "s"} on inner layers beyond inner${CJ_INNER} ${beyond === 1 ? "is" : "are"} left out: Circuit JSON has no layer past inner${CJ_INNER}.`)
   }
   const emptyZones: string[] = []
   // The KiCad export writes the zones of a project that has polygon zones itself, so they are not in the circuit it converts.
@@ -648,13 +679,17 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       emptyZones.push(`${fill.netName} (${fill.layer})`)
       continue
     }
+    if (!cjLayer(fill.layer)) {
+      beyond++
+      continue
+    }
     for (const polygon of fill.polygons) {
       const ring = (points: Vec2[]) => ({ vertices: points.map(pt) })
       const brep: BRepShape = { outer_ring: ring(polygon[0]), inner_rings: polygon.slice(1).map(ring) }
       const pour: PcbCopperPour = {
         type: "pcb_copper_pour",
         pcb_copper_pour_id: ids.next("pcb_copper_pour"),
-        layer: fill.layer,
+        layer: cjLayer(fill.layer)!,
         shape: "brep",
         brep_shape: brep,
         covered_with_solder_mask: true,
@@ -680,7 +715,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
         type: "pcb_keepout",
         shape: "outline",
         pcb_keepout_id: ids.next("pcb_keepout"),
-        layers: zoneLayers(z),
+        layers: cjLayers(zoneLayers(z)),
         outline: outer.map(pt),
         stroke_width: 0,
         ...(z.name ? { description: z.name } : {}),
@@ -854,6 +889,8 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   const kicad = options.forKicad === true
   if (unknown.length) notes.push(`Left out ${unknown.length === 1 ? "a part" : `${unknown.length} parts`} the library no longer has: ${unknown.join(", ")}.`)
   if (droppedProps.size && !kicad) notes.push(`Part properties with no field in Circuit JSON were left out: ${[...droppedProps].sort().join(", ")}. Values, part numbers and LCSC numbers are kept.`)
+  layerNotesAfter()
+  notes.push(...layerNotes)
   if (project.zones.length && !kicad) notes.push("Copper pours are exported as the copper they fill, not as pours that refill: change a pour's settings in Cherry Blossom, not after the export.")
   if (emptyZones.length) notes.push(`Pours that fill nothing were left out: ${emptyZones.join(", ")}.`)
   if (project.drawings?.length) notes.push("The schematic's drawings (texts, lines and shapes) are left out.")

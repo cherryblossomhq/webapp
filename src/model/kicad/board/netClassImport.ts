@@ -66,6 +66,19 @@ export function importRulesX10(board: KicadBoard, labelText: Map<string, string>
   }
   if (positive(setup.max_error) && Math.abs(setup.max_error - KICAD_MAX_ERROR) > 1e-12) out.maxError = setup.max_error
   if (setupWords.allow_soldermask_bridges_in_footprints === "yes" || setupWords.allow_soldermask_bridges_in_footprints === "true") out.maskBridgesInParts = true
+  // ---- X5: micro vias, and the sides vias are tented on ----
+  // Their numbers say nothing on a board with no via that is not a through via (`carried.ts` counts them as derived there), so they are written for a board that has one.
+  const anyMicro = board.vias.some((v) => v.kind !== "through")
+  if (anyMicro) {
+    if (positive(setup.uvia_size) && positive(setup.uvia_drill)) out.microVia = { diameter: setup.uvia_size, drill: setup.uvia_drill }
+    if (positive(setup.uvia_min_size) && positive(setup.uvia_min_drill)) out.minMicroVia = { diameter: setup.uvia_min_size, drill: setup.uvia_min_drill }
+    if (setupWords.uvias_allowed === "yes" || setupWords.uvias_allowed === "no") out.microViasAllowed = setupWords.uvias_allowed === "yes"
+    if (setupWords.blind_buried_vias_allowed === "yes" || setupWords.blind_buried_vias_allowed === "no") out.blindBuriedViasAllowed = setupWords.blind_buried_vias_allowed === "yes"
+  }
+  if (board.tenting) {
+    out.tentVias = board.tenting.front && board.tenting.back
+    if (board.tenting.front !== board.tenting.back) out.tentSides = { ...board.tenting }
+  }
   const { through_hole_min: holeMin, via_min_drill: viaMin } = setup
   if (positive(holeMin) && positive(viaMin) && Math.abs(holeMin - viaMin) > 1e-9) out.minViaDrill = viaMin
 

@@ -10,7 +10,12 @@ export interface Vec2 {
 
 export type Rotation = 0 | 90 | 180 | 270
 export type PcbSide = "top" | "bottom"
-export type CopperLayer = "top" | "bottom"
+/**
+ * A copper layer by its place in the board's stack: `top` is the front, `bottom` the back, and the layers between are
+ * `in1` (the one under the front) to `in30`, in order (X1). A board has two to 32 copper layers (`BoardDef.stack`): without
+ * a stack it has `top` and `bottom` only, as every board drawn in the editor does.
+ */
+export type CopperLayer = "top" | "bottom" | `in${number}`
 
 // ---------- Library definitions ----------
 
@@ -150,6 +155,33 @@ export interface PadDef {
   thermalAngle?: number
   /** KiCad's fabrication property (`bga`, `fiducial_glob`, `fiducial_loc`, `testpoint`, `castellated`, `heatsink`, `mechanical`, `pressfit`). */
   property?: PadProperty
+  /**
+   * X1, a pad stack (KiCad 9's `padstack`): the copper shape of a layer that is not the pad's own. The fields above are the part's own side
+   * (KiCad's front layer); `stack` says what the other layers have where it differs, in the pad's frame about its place. The hole is the
+   * pad's alone.
+   */
+  stack?: PadStack
+  /** X1, KiCad's `remove_unused_layers` and `keep_end_layers`: what becomes of the pad's copper on a layer nothing connects to on it. Absent keeps every layer. */
+  unused?: "remove" | "keepEnds"
+  /**
+   * X5, KiCad's pad `tenting`: whether the mask is closed over the pad on its own side (`top`) and on the far one (`bottom`), where the pad says. A side it does not say
+   * follows the mask layers of the pad (`layers.mask`) as ever.
+   */
+  tent?: { top?: boolean; bottom?: boolean }
+}
+
+/** What one layer of a pad stack has where it is not the pad's own: its shape and size and the pour settings that go with them. */
+export type PadLayerShape = Partial<Pick<PadDef, "shape" | "x" | "y" | "width" | "height" | "points" | "rot" | "round" | "chamfer" | "custom" | "clearance" | "zoneConnect" | "thermalGap" | "thermalWidth" | "thermalAngle">>
+
+/**
+ * KiCad's two kinds of pad stack: `front_inner_back`, one shape for the front (the pad's own), one for every inner layer (`inner`) and one for
+ * the back (`far`), and `custom`, a shape for every layer on its own. A layer is named by its id in a board seen from the part's own side
+ * (`in1` is the first inner layer under the part's face, `bottom` the far side), as `PadLayers.inner` is, and a layer that is not named has
+ * the pad's own shape.
+ */
+export interface PadStack {
+  mode: "front_inner_back" | "custom"
+  layers: { inner?: PadLayerShape } & Partial<Record<CopperLayer, PadLayerShape>>
 }
 
 /** The sides a layer of a pad is on, relative to the part's own side (a part on the bottom turns them over). */
@@ -161,6 +193,13 @@ export interface PadLayers {
   mask?: PadSides
   paste?: PadSides
   silk?: PadSides
+  /**
+   * X1: the inner copper layers the pad has copper on, as ids of a board seen from the part's own side (`in1` is the one under the
+   * part's own face; a part on the bottom turns them over). Absent is what the pad's kind has: every inner layer for a through-hole
+   * pad whose copper is on both sides (KiCad's `*.Cu`), none for any other. `[]` is none on a pad that would have them (a through-hole
+   * pad whose layers name `F.Cu` and `B.Cu` only).
+   */
+  inner?: CopperLayer[]
   /** Other layers of the part the pad is on (fabrication, courtyard, user), by KiCad's name with `F.` the part's own side: kept and written back, drawn nowhere. */
   other?: string[]
 }
@@ -620,6 +659,11 @@ export interface Trace {
    * counts as copper of that net even where it touches nothing, and touching another net is a short.
    */
   net?: string
+  /**
+   * An arc track (X4), KiCad's `arc`: `points` are its three points, start, a point on the arc between and end, as KiCad stores
+   * it, so the circle and the way round follow from them and nothing is rounded to an angle. A trace without it is a polyline.
+   */
+  arc?: true
 }
 
 export interface Via {
@@ -637,7 +681,31 @@ export interface Via {
    * is for a trace). Not `net`, which makes the via a stitching via that the stitcher owns.
    */
   routedNet?: string
+  /**
+   * X5: a via that does not run the board's whole stack. A blind via joins an outer layer to an inner one, a buried via two inner
+   * layers, a micro via is a short blind via between neighbouring layers (KiCad's `blind`, `buried` and `micro`). Absent is a through
+   * via, which reaches every copper layer, as every via was. `from` is the layer nearer the front; both are set whenever this is.
+   */
+  kind?: ViaKind
+  from?: CopperLayer
+  to?: CopperLayer
+  /** Whether the via's mask is closed over its pad on the front and the back (KiCad's `tenting`); a side it does not say follows the board's rule. */
+  tent?: { front?: boolean; back?: boolean }
+  /** What becomes of the via's copper on layers nothing connects to (KiCad's `remove_unused_layers`, `keep_end_layers`, `start_end_only`): absent keeps every layer. */
+  unused?: "remove" | "keepEnds" | "startEnd"
+  /** The copper layers a pour joins the via on when its unused layers are removed (KiCad's `zone_layer_connections`); the others get no connection. */
+  zoneLayers?: CopperLayer[]
+  /** A via that is not on a net KiCad would route (KiCad's `free`): its net is not changed when a track is dragged. */
+  free?: true
+  /**
+   * A via stack (KiCad's `padstack`): the diameter on each layer where it is not the via's `diameter`. `inner` and `back` are KiCad's
+   * front, inner and back mode (the front is `diameter`); `layers` is its custom mode, a diameter for every copper layer but the front.
+   */
+  stack?: { inner: number; back: number } | { layers: Partial<Record<CopperLayer, number>> }
 }
+
+/** How a via that is not a through via is told apart: a blind one has an outer end, a buried one has two inner ends, a micro via is a short blind one. */
+export type ViaKind = "blind" | "buried" | "micro"
 
 /** ENIG, tin-lead HASL, lead-free HASL, OSP. */
 export type SurfaceFinish = "enig" | "hasl" | "lf-hasl" | "osp"
@@ -694,6 +762,62 @@ export interface BoardDef {
   copperWeight?: CopperWeight
   /** Plated holes in the four corners; null or absent for none. */
   mountingHoles?: MountingHoles | null
+  /**
+   * X1: the board's copper layers and its physical stackup. Absent is the two layers every board drawn in the editor has, with no
+   * stackup of its own (`boardStackup`, `model/rules.ts`, describes them). See `model/stack.ts` for what reads it.
+   */
+  stack?: BoardStack
+}
+
+/** What a copper layer is for, in KiCad's words: a signal layer, a power plane, either (mixed), or a jumper layer. */
+export type CopperLayerType = "signal" | "power" | "mixed" | "jumper"
+
+/** The board's copper layers and stackup (X1). */
+export interface BoardStack {
+  /**
+   * The copper layers from the front to the back, two or more (KiCad has 2 to 32). The first is `top`, the last is `bottom` and the ones
+   * between are `in1`, `in2`... in order, so a layer's id is its place and this holds only what each is called and for.
+   */
+  copper: StackCopper[]
+  /** The physical stackup as KiCad's board setup lists it, front to back, when the board has one (a board of KiCad 6 or later may); absent is none. */
+  rows?: StackRow[]
+  /** KiCad's `copper_finish` as written (`ENIG`, `HASL`, `None`, `Immersion tin`...), the board's `finish` where one of the editor's four fits it. */
+  finish?: string
+  /** `edge_plating yes`: the board's edge is plated. */
+  edgePlating?: boolean
+  /** `dielectric_constraints yes`: the dielectric thicknesses are held to the manufacturer's constraints. */
+  dielectricConstraints?: boolean
+  /** `edge_connector`: `yes` or `bevelled` (absent or `none` is none). */
+  edgeConnector?: "yes" | "bevelled"
+  /** KiCad 6 and 7's `castellated_pads yes`, which KiCad 8 and later read and drop. */
+  castellated?: boolean
+}
+
+export interface StackCopper {
+  /** The name the user gave the layer (`(31 B.Cu signal "Back")`); absent is KiCad's own (`F.Cu`, `In1.Cu`, `B.Cu`). */
+  label?: string
+  /** Absent is a signal layer. */
+  type?: CopperLayerType
+}
+
+/** One layer of the stackup, as KiCad's `(layer ...)` of `setup (stackup ...)` says it. */
+export interface StackRow {
+  /** KiCad's name for it: `F.Cu`, `In1.Cu`, `B.Cu`, `F.SilkS`, `F.Mask`, `F.Paste`, `B.Mask`..., or a dielectric's own name (`dielectric 1`). */
+  name: string
+  /** KiCad's type word as written: `copper`, `core`, `prepreg`, `Top Solder Mask`, `Top Silk Screen`... */
+  type: string
+  thickness?: number
+  /** The thickness is held (impedance control). */
+  locked?: true
+  material?: string
+  epsilonR?: number
+  lossTangent?: number
+  color?: string
+  /** KiCad 11's dielectric model and the frequency its figures are for. */
+  model?: "constant" | "djordjevic_sarkar"
+  specFreq?: number
+  /** The further sublayers of a dielectric (`addsublayer`), each with the same fields. */
+  sub?: Omit<StackRow, "name" | "type" | "sub">[]
 }
 
 /**
@@ -997,6 +1121,14 @@ export interface DesignRules {
   maxError?: number
   /** Parts of the board may let the mask bridge between their own pads (KiCad's `allow_soldermask_bridges_in_footprints`); the editor has no mask bridge check, so it is kept and exported. */
   maskBridgesInParts?: boolean
+  /** X5: a board that tents vias on one side only, or tents each side by its own rule (KiCad's `setup (tenting ...)`). Absent: `tentVias` is both sides or neither. A via's own `tent` still decides for that via. */
+  tentSides?: { front: boolean; back: boolean }
+  /** X5, micro vias: the size a new one has (KiCad 5's `uvia_size` and `uvia_drill`), and the smallest the checks allow (`uvia_min_size`, `uvia_min_drill`). */
+  microVia?: ViaSize
+  minMicroVia?: ViaSize
+  /** X5: what the board allows (KiCad 5's `uvias_allowed` and `blind_buried_vias_allowed`). Absent: allowed, as KiCad starts a board. A via of a kind the board does not allow is a check error. */
+  microViasAllowed?: boolean
+  blindBuriedViasAllowed?: boolean
 }
 
 /** A via size: pad diameter and drill, in mm. */

@@ -103,11 +103,11 @@ describe("switch 1: copper layers by position in the table", () => {
     expect(bottom.footprints[0].side).toBe("bottom")
   })
 
-  it("an inner layer is neither front nor back, and a layer the table lacks is X1 for the importer", () => {
+  it("an inner layer is neither front nor back, and a layer the table lacks is refused by the importer, named", () => {
     const b = read(board({ body: ['(segment (start 1 1) (end 2 1) (width 0.2) (layer "In1.Cu") (net 0))'] })).board
     expect(b.copper.names).toEqual(["F.Cu", "B.Cu"])
     const r = importKicadBoard(board({ body: ['(segment (start 1 1) (end 2 1) (width 0.2) (layer "In1.Cu") (net 0))'] }))
-    expect(r.status === "refused" && r.needs.some((n) => n.ext === "X1")).toBe(true)
+    expect(r.status === "refused" && r.message).toMatch(/In1\.Cu/)
   })
 })
 
@@ -597,9 +597,9 @@ describe("switches 4 and 22: via spans", () => {
     expect(b.vias.map((v) => v.kind)).toEqual(["through", "blind", "micro", "buried"])
     expect(b.vias[1].layers).toEqual(["F.Cu", "In1.Cu"])
   })
-  it("a board with a blind via is refused as needing X5, never imported as a through via", () => {
+  it("a board with a blind via imports it as a blind via between its two layers, never as a through via (X5)", () => {
     const r = importKicadBoard(board({ layers: '(layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))', body: ['(via blind (at 5 5) (size 0.8) (drill 0.4) (layers "F.Cu" "In1.Cu") (net 0))'] }))
-    expect(r.status === "refused" && r.needs.some((n) => n.ext === "X5")).toBe(true)
+    expect(r.status === "imported" && r.project.vias[0]).toMatchObject({ kind: "blind", from: "top", to: "in1" })
   })
 })
 

@@ -48,6 +48,8 @@ export interface ToolContext {
   selection?: () => string[]
   /** The project as it was when the user sent the request, before any tool ran. */
   start?: Project
+  /** The schematic's view of the sheet tree: the use shown (a path of sheet symbols, "" for the root), and a way to show another. Absent where no editor shows one. */
+  sheet?: { shown(): string; show(path: string): void }
 }
 
 export interface ToolSpec<Prepared = unknown> {

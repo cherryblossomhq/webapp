@@ -154,17 +154,31 @@ export const PCB = {
   warn: "#ffb547",
 }
 
-// Inner copper layers (X1): a colour for each, in the stack's order, so a four layer board reads at a glance with its two inner layers apart from each other and
-// from the red top and the blue bottom. The pour is the same hue, darker.
-const INNER_COPPER = ["#37d67a", "#ffb02e", "#c26bff", "#27d3e6", "#f0e14a", "#ff6fb1", "#9bd13f", "#ff8a4c", "#5ab0ff", "#d4a5ff"]
-const INNER_POUR = ["#1a9150", "#bf7f10", "#8a3ec9", "#12909e", "#b0a31a", "#c24a82", "#6c9422", "#c0561f", "#2f77c4", "#9a6ec2"]
+// Inner copper layers (X1, and the 32 layer boards): a colour for each of the thirty inner layers a board can have, in the stack's order, so a board reads at a
+// glance whatever its layer count and every layer is told from the red top and the blue bottom. The first ten are the colours the editor began with; the other
+// twenty were chosen one after another, each the colour farthest (in CIELAB) from all the ones before it and from the top and bottom, so no two of the 32 are
+// closer than a clear difference (about 23 in CIELAB, `tests/layer-colors.test.ts`) and a layer's neighbours in the stack are never alike. The pour is the same hue, darker.
+const INNER_COPPER = [
+  "#37d67a", "#ffb02e", "#c26bff", "#27d3e6", "#f0e14a", "#ff6fb1", "#9bd13f", "#ff8a4c", "#5ab0ff", "#d4a5ff",
+  "#10f910", "#e3cca0", "#1010f9", "#f910ca", "#da8581", "#4163c8", "#94f0c6", "#bf10f9", "#f9106d", "#d9f094",
+  "#d6f910", "#a0c5e3", "#c84148", "#60fb68", "#e3a0c9", "#c89241", "#d161c6", "#f9109c", "#90f910", "#10f9ed",
+]
+/** A copper colour with its light taken down by a third, for the pour that lies under the traces. */
+const darker = (hex: string) => `#${[1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * 0.68).toString(16).padStart(2, "0")).join("")}`
+const INNER_POUR = [
+  "#1a9150", "#bf7f10", "#8a3ec9", "#12909e", "#b0a31a", "#c24a82", "#6c9422", "#c0561f", "#2f77c4", "#9a6ec2",
+  ...INNER_COPPER.slice(10).map(darker),
+]
 
-/** The colour of a copper layer's tracks and pads. `in1` is the first of the inner colours, and they repeat past the tenth. */
+/** The inner layers a colour is made for: KiCad's limit of 32 copper layers less the two outer ones. */
+export const COLOURED_INNER_LAYERS = INNER_COPPER.length
+
+/** The colour of a copper layer's tracks and pads, the one function every place that draws or lists a layer asks. `in1` is the first of the inner colours. */
 export function copperColor(layer: string): string {
   if (layer === "top") return PCB.topCopper
   if (layer === "bottom") return PCB.bottomCopper
   const k = Number(layer.slice(2))
-  return INNER_COPPER[(Math.max(1, k) - 1) % INNER_COPPER.length]
+  return INNER_COPPER[(Math.max(1, Number.isFinite(k) ? k : 1) - 1) % INNER_COPPER.length]
 }
 
 /** The colour of a copper layer's pour. */
@@ -172,5 +186,5 @@ export function pourColor(layer: string): string {
   if (layer === "top") return PCB.topPour
   if (layer === "bottom") return PCB.bottomPour
   const k = Number(layer.slice(2))
-  return INNER_POUR[(Math.max(1, k) - 1) % INNER_POUR.length]
+  return INNER_POUR[(Math.max(1, Number.isFinite(k) ? k : 1) - 1) % INNER_POUR.length]
 }

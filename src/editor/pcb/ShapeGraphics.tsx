@@ -1,14 +1,16 @@
 import { dashShape, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { shapeLayerInfo } from "../../model/shapeLayers"
 import type { BoardShape } from "../../model/types"
-import { PCB } from "../theme"
+import { layerOfKicadName } from "../../model/stack"
+import { copperColor, PCB } from "../theme"
 
 /** The colour a drawing layer is drawn in, for the board and the layer menu. */
 export function shapeLayerColor(name: string): string {
   const info = shapeLayerInfo(name)
   switch (info?.kind) {
     case "copper":
-      return info.side === "bottom" ? PCB.bottomCopper : PCB.topCopper
+      // Copper is in the colour of its own layer, the inner ones too (`In3.Cu`).
+      return copperColor(layerOfKicadName(name) ?? (info.side === "bottom" ? "bottom" : "top"))
     case "silk":
       return info.side === "bottom" ? PCB.silkBottom : PCB.silk
     case "mask":

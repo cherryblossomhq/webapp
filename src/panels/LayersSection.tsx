@@ -1,9 +1,11 @@
+import { Eye, EyeOff } from "lucide-react"
 import { useMemo, useState } from "react"
 import { copperColor } from "../editor/theme"
 import { defaultStackup, layerContent, setCopperLayer, setCopperLayerCount, setStackSettings, setStackup, updateStackRow, type LayerContent } from "../model/layerOps"
 import { copperLayers, innerLayers, layerLabel, layerType, MAX_COPPER_LAYERS } from "../model/stack"
 import type { CopperLayerType, Project, StackRow } from "../model/types"
 import { projectApi } from "../store/projectStore"
+import { copperShown, useUi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, Group, LengthInput, Row, Section } from "../ui/form"
 
@@ -43,6 +45,9 @@ export function LayersSection({ project }: { project: Project }) {
     return innerLayers({ stack: smaller.project.board.stack }).length < innerLayers(project.board).length ? smaller.removed : null
   }, [project, wanted])
   const sentence = losing ? contentSentence(losing) : ""
+  const layers = useUi((s) => s.layers)
+  const hiddenCopper = useUi((s) => s.hiddenCopper)
+  const toggleCopper = useUi((s) => s.toggleCopper)
   return (
     <Section title="Copper layers" id="copper-layers" action={<span className="text-[12px] text-ink-3">{stack.length}</span>}>
       <div className="grid grid-cols-2 gap-2">
@@ -80,7 +85,10 @@ export function LayersSection({ project }: { project: Project }) {
           const n = content.traces
           return (
             <li key={l} className="flex items-center gap-1.5 px-1.5 py-0.5">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: copperColor(l) }} aria-hidden />
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: copperColor(l) }} data-layer-swatch={l} aria-hidden />
+              <button type="button" className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-2 hover:text-ink" aria-label={`${copperShown({ layers, hiddenCopper }, l) ? "Hide" : "Show"} ${layerLabel(project.board, l)} copper`} aria-pressed={copperShown({ layers, hiddenCopper }, l)} title="Show or hide this layer on the board" onClick={() => toggleCopper(l)}>
+                {copperShown({ layers, hiddenCopper }, l) ? <Eye size={14} /> : <EyeOff size={14} />}
+              </button>
               <CommitInput ariaLabel={`Name of copper layer ${i + 1}`} value={project.board.stack?.copper[i]?.label ?? ""} placeholder={layerLabel({}, l)} onCommit={(v) => commit((p) => setCopperLayer(p, l, { label: v }))} className="min-w-0 flex-1" />
               <select aria-label={`Type of copper layer ${i + 1}`} className="field h-8 w-[84px]" value={layerType(project.board, l)} onChange={(e) => commit((p) => setCopperLayer(p, l, { type: e.target.value as CopperLayerType }))}>
                 {TYPES.map((t) => (

@@ -2,7 +2,7 @@ import { pathsSvgPath } from "../../model/shapes"
 import { zoneLayers } from "../../model/zones"
 import { zoneCorners } from "../../model/zoneOps"
 import type { CopperLayer, Project, Vec2 } from "../../model/types"
-import { PCB } from "../theme"
+import { copperColor, PCB } from "../theme"
 
 /**
  * The outlines of the zones with a polygon (a dashed line on the layer's colour, a rule area tinted and hatched), and the corners and edge
@@ -22,7 +22,7 @@ export function ZoneOutlines({ project, selected, px, active }: { project: Proje
         const d = pathsSvgPath(z.outline!)
         const sel = selected.has(`z:${z.id}`)
         const here = zoneLayers(z).includes(active)
-        const color = z.keepout ? "#ff5470" : z.layer === "top" ? PCB.topCopper : PCB.bottomCopper
+        const color = z.keepout ? "#ff5470" : copperColor(here ? active : zoneLayers(z)[0] ?? z.layer)
         return (
           <g key={z.id} opacity={here ? 1 : 0.45}>
             {z.keepout && <path d={d} fill="url(#keepout-hatch)" fillOpacity={0.5} fillRule="evenodd" />}

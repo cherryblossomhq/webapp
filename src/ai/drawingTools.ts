@@ -19,6 +19,7 @@ import {
 import { schematicBounds } from "../model/instances"
 import { SCH_GRID } from "../model/symbols"
 import type { DrawingColor, DrawingStyle, DrawingText, LineDash, LineWeight, Project, SchematicDrawing, Vec2 } from "../model/types"
+import { SHEET_ARG } from "./sheetTools"
 import { fail, ok, type JsonSchema, type ToolInput, type ToolSpec } from "./toolKit"
 
 // The copilot's drawing tools: titles, notes, callouts, arrows and boxes on the schematic, the same
@@ -196,7 +197,7 @@ const drawTool: ToolSpec = {
     "Draw on the schematic, as the user does with the toolbar's drawing tools: text (a sheet title, a note, a callout), lines and arrows, polygons and rectangles. Drawings are graphics only: they connect nothing, and blocks already frame their parts. Schematic units, y up, on a 0.1 grid. Several shapes in one call; each result gives the drawing's id for edit_drawings.",
   input_schema: {
     type: "object",
-    properties: { shapes: { type: "array", items: SHAPE, minItems: 1 } },
+    properties: { shapes: { type: "array", items: SHAPE, minItems: 1 }, sheet: SHEET_ARG },
     required: ["shapes"],
   },
   run: (project, input) => {

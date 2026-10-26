@@ -275,3 +275,15 @@ export function addMissingPins(project: Project, symbolId: string): Project {
 /** Whether a path names a use of a sheet the project has: what the editor checks before it shows one. */
 export const knownUse = (project: Project, path: string): SheetUse | null => (hasUse(project, path) ? useAt(project, path) : null)
 
+/**
+ * What deleting sheet symbols takes with them, in words: a sheet no other symbol stands for goes with everything drawn on it, and so do the
+ * parts of the uses that go. Null when only the symbols go.
+ */
+export function removalNote(p: Project, ids: string[]): string | null {
+  const next = removeSheetSymbols(p, ids)
+  const parts = p.components.length - next.components.length
+  const sheets = (p.sheets ?? []).filter((x) => x.id !== "root").length - (next.sheets ?? []).filter((x) => x.id !== "root").length
+  if (!parts && !sheets) return null
+  const names = (p.sheetSymbols ?? []).filter((s) => ids.includes(s.id)).map((s) => s.name)
+  return `Deleted ${names.length > 1 ? "the sheets" : "the sheet"} ${names.join(", ")}${parts ? ` with ${parts} part${parts > 1 ? "s" : ""}` : ""}${sheets > 0 ? `, and ${sheets} sheet${sheets > 1 ? "s" : ""} that nothing else uses` : ""}. Undo brings ${parts > 1 || sheets > 1 ? "them" : "it"} back.`
+}

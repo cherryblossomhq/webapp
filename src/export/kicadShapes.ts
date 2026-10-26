@@ -4,7 +4,7 @@ import { isPhysical } from "../model/instances"
 import { shapeLayerInfo } from "../model/shapeLayers"
 import { dashShape, flattenPath, mapShape, segStart, shapePaths, shapeRings, type PathSeg, type ShapePath } from "../model/shapes"
 import { worldShapes, BOARD_SHAPE_OWNER } from "../model/shapeItems"
-import type { BoardShape, ComponentInstance, Project, Vec2 } from "../model/types"
+import type { BoardShape, ComponentInstance, Project, ShapePoint, Vec2 } from "../model/types"
 import { fractureRings } from "./fracture"
 
 // The board's drawings and each footprint's drawings, written into the board file the converter
@@ -45,7 +45,9 @@ export interface KicadDrawings {
   uuids: Map<string, string[]>
 }
 
-interface Out {
+export interface Out {
+  /** The native board writer: a polygon's corners are written in the order the project has them (the converter's path starts a ring at its closing edge). */
+  exact?: boolean
   uuid: () => string
   flattened: Set<string>
   netCode: (name: string) => number
@@ -72,8 +74,19 @@ export function ringItems(path: ShapePath): string[] {
 
 const pointItems = (ring: Vec2[]) => ring.map((p) => `(xy ${xy(p)})`)
 
+/**
+ * A polygon's corners as `pts` items in the order the shape has them: a corner is `xy`, a corner reached by an arc (`mid`) is the `arc` into it
+ * (a first corner with a `mid` is reached by the arc from the last, written after it), which is how a KiCad polygon with arcs is read.
+ */
+export function polygonItems(pts: ShapePoint[]): string[] {
+  const items = pts.map((p, i) => (i > 0 && p.mid ? `(arc (start ${xy(pts[i - 1])}) (mid ${xy(p.mid)}) (end ${xy(p)}))` : `(xy ${xy(p)})`))
+  const first = pts[0]
+  if (first?.mid) items.push(`(arc (start ${xy(pts[pts.length - 1])}) (mid ${xy(first.mid)}) (end ${xy(first)}))`)
+  return items
+}
+
 /** The blocks (each a list of lines) one drawing is written as. */
-function drawing(shape: BoardShape, fp: boolean, out: Out): string[][] {
+export function drawing(shape: BoardShape, fp: boolean, out: Out): string[][] {
   const tag = (kind: string) => `${fp ? "fp" : "gr"}_${kind}`
   const type = shape.dash ? STROKE_TYPE[shape.dash] : "solid"
   const net = shape.net && shapeLayerInfo(shape.layer)?.kind === "copper" ? out.netCode(shape.net) : 0
@@ -102,6 +115,7 @@ function drawing(shape: BoardShape, fp: boolean, out: Out): string[][] {
     }
     case "polygon": {
       const paths = shapePaths(shape)
+      if (out.exact && !shape.holes?.length) return [polyBlock(polygonItems(shape.pts), shape.width, filled)]
       if (paths.length === 1) return [polyBlock(ringItems(paths[0]), shape.width, filled)]
       // KiCad's polygon has no holes: the fill is one outline joined to its holes by bridges, which cover no area, and the edge is each ring on its own.
       const blocks: string[][] = []

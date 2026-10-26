@@ -7,7 +7,7 @@ import { flipShapeLayer } from "../model/shapeLayers"
 import { shapePaths } from "../model/shapes"
 import { onBoard } from "../model/partFlags"
 import type { BoardShape, ComponentInstance, PadDef, PadSides, Project, Vec2 } from "../model/types"
-import { localFrame, ringItems } from "./kicadShapes"
+import { localFrame, polygonItems, ringItems } from "./kicadShapes"
 
 // The pads of a part that has X7 features, written into the board file the converter made, exactly as KiCad has them: the shape (rectangle,
 // rounded or chamfered rectangle, oval, circle, custom pad), its size and turn, the hole (round or oval, with its offset), the layers, the
@@ -48,7 +48,7 @@ function layerNames(sides: PadSides, kind: "Cu" | "Mask" | "Paste" | "SilkS", pa
 }
 
 /** The primitives of a custom pad as KiCad's `primitives` node holds them, in the pad's stored frame. */
-function primitiveBlock(shape: BoardShape, map: (v: Vec2) => Vec2): string | null {
+function primitiveBlock(shape: BoardShape, map: (v: Vec2) => Vec2, exact = false): string | null {
   const width = mm6(shape.width)
   const fill = `(fill ${shape.fill ? "yes" : "no"})`
   const p = (v: Vec2) => map(v)
@@ -66,6 +66,7 @@ function primitiveBlock(shape: BoardShape, map: (v: Vec2) => Vec2): string | nul
     case "curve":
       return `(gr_curve (pts (xy ${xy(p(shape.p0))}) (xy ${xy(p(shape.c1))}) (xy ${xy(p(shape.c2))}) (xy ${xy(p(shape.p1))})) (width ${width}))`
     case "polygon":
+      if (exact && !shape.holes?.length) return `(gr_poly (pts ${polygonItems(shape.pts.map((q) => ({ ...q, ...p(q), ...(q.mid ? { mid: p(q.mid) } : {}) }))).join(" ")}) (width ${width}) ${fill})`
       return polyOf(shape, p, width, fill)
     default:
       return null
@@ -90,19 +91,27 @@ function polyOf(shape: BoardShape, map: (v: Vec2) => Vec2, width: string, fill: 
 }
 
 /** One pad of a part, as KiCad's pad node. */
-function writePad(def: PadDef, world: WorldPad, c: ComponentInstance, frame: (p: Vec2) => Vec2, footprintAngle: number, net: { code: number; name: string } | null, uuid: string): string {
+/** What the native board writer (`kicadBoard.ts`) says about a pad that the converter's path does not: where the hole is in the footprint's file frame, exactly, and the part's pin function and type. */
+export interface PadWriteOptions {
+  /** A custom pad's polygons are written with their corners in the order the land has them. */
+  exact?: boolean
+  at?: Vec2
+  pinfunction?: string
+  pintype?: string
+}
+
+export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstance, frame: (p: Vec2) => Vec2, footprintAngle: number, net: { code: number; name: string } | null, uuid: string, opts?: PadWriteOptions): string {
   const bottom = c.pcb.side === "bottom"
   const own = def.rot ?? 0
   const fixed = def.shape === "polygon" && !def.custom
   // The pad's own frame: the land's vectors as KiCad stores them (y down, the library's flipped on the bottom), turned by the part of the pad's turn the frame is to carry.
-  const hole = world.hole ?? world
   const slot = def.holeDiameter !== undefined && def.slotLength !== undefined && def.slotLength > def.holeDiameter + 1e-9
   const slotAxis = def.holeAxis ?? (def.width >= def.height ? 0 : 90)
   // A slot runs along x of the pad's frame in KiCad; for a pad whose frame is not its own (a polygon) the frame is turned to it.
   const extra = slot && fixed ? slotAxis : slot && slotAxis % 90 !== 0 ? slotAxis : 0
   const store = (v: Vec2): Vec2 => turnVec({ x: v.x, y: bottom ? v.y : -v.y }, -extra)
   const angle = normalizeAngle((bottom ? footprintAngle - own + 180 : footprintAngle + own) + extra)
-  const at = frame(hole)
+  const at = opts?.at ?? frame(world!.hole ?? world!)
   const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : "smd"
   const lines: string[] = []
   const w = def.width
@@ -124,11 +133,11 @@ function writePad(def: PadDef, world: WorldPad, c: ComponentInstance, frame: (p:
       prims.push(`(gr_poly (pts ${pts.map((q) => `(xy ${xy(q)})`).join(" ")}) (width 0) (fill yes))`)
     } else {
       for (const s of def.custom!.shapes) {
-        const b = primitiveBlock(s, store)
+        const b = primitiveBlock(s, store, opts?.exact)
         if (b) prims.push(b)
       }
       for (const s of def.custom!.proxy ?? []) {
-        const b = primitiveBlock(s, store)
+        const b = primitiveBlock(s, store, opts?.exact)
         if (b) prims.push(b.replace(/^\(gr_line/, "(gr_vector").replace(/^\(gr_rect/, "(gr_bbox").replace(/ \(width [^)]*\)/, " (width 0)"))
       }
     }
@@ -175,6 +184,8 @@ function writePad(def: PadDef, world: WorldPad, c: ComponentInstance, frame: (p:
   if (def.thermalGap !== undefined) lines.push(`  (thermal_gap ${mm6(def.thermalGap)})`)
   if (def.thermalAngle !== undefined) lines.push(`  (thermal_bridge_angle ${mm6(def.thermalAngle)})`)
   if (net) lines.push(`  (net ${net.code} ${quote(net.name)})`)
+  if (opts?.pinfunction !== undefined) lines.push(`  (pinfunction ${quote(opts.pinfunction)})`)
+  if (opts?.pintype !== undefined) lines.push(`  (pintype ${quote(opts.pintype)})`)
   if (def.property) lines.push(`  (property pad_prop_${def.property})`)
   lines.push(`  (uuid ${uuid})`)
   lines.push(")")

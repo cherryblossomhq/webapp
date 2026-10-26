@@ -58,7 +58,7 @@ function writtenThickness(t: WorldText): number | null {
   return (t.bold ? kiRound(iu * 1.6) : iu) / 1e6
 }
 
-export function effects(t: WorldText, mirror: boolean, hide: boolean): string[] {
+export function effects(t: WorldText, mirror: boolean, hide: boolean, href?: string): string[] {
   const thickness = writtenThickness(t)
   const justify = [t.hj === -1 ? "left" : t.hj === 1 ? "right" : "", t.vj === -1 ? "top" : t.vj === 1 ? "bottom" : "", mirror ? "mirror" : ""].filter(Boolean)
   return [
@@ -72,6 +72,7 @@ export function effects(t: WorldText, mirror: boolean, hide: boolean): string[] 
     "  )",
     ...(justify.length ? [`  (justify ${justify.join(" ")})`] : []),
     ...(hide ? ["  (hide yes)"] : []),
+    ...(href ? [`  (href ${quote(href)})`] : []),
     ")",
   ]
 }

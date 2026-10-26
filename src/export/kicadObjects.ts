@@ -23,7 +23,8 @@ import { KICAD_PAGE_ORIGIN, userLayerNumber } from "./kicadShapes"
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
-const toBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
+const pageToBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
+const toBoard = pageToBoard
 const key = (n: number) => n.toFixed(4)
 const uuidAt = (kind: string, n: number) => `00000000-0000-4000-${kind}-${n.toString(16).padStart(12, "0")}`
 
@@ -35,7 +36,7 @@ export interface KicadObjects {
 /** KiCad's `%g`: six significant digits. */
 const formatG = (n: number) => String(Number(n.toPrecision(6)))
 
-function dimensionBlock(d: BoardDimension, uuid: string): string[] {
+export function dimensionBlock(d: BoardDimension, uuid: string, toBoard: (p: Vec2) => Vec2 = pageToBoard): string[] {
   const a = toBoard(d.a)
   const b = toBoard(d.b)
   const aligned = d.kind === "aligned" || d.kind === "orthogonal"
@@ -61,7 +62,7 @@ function dimensionBlock(d: BoardDimension, uuid: string): string[] {
   return lines
 }
 
-function imageBlock(m: ReferenceImage, bytes: Uint8Array, uuid: string): string[] {
+export function imageBlock(m: ReferenceImage, bytes: Uint8Array, uuid: string, toBoard: (p: Vec2) => Vec2 = pageToBoard): string[] {
   // KiCad 9 (and 10) derive the resolution without the fix of 20260623, so a file whose scale was made with the exact one is written with the scale that draws the same size there.
   const legacy = imageFacts(bytes).legacyPpi
   const scale = (m.scale * m.ppi) / legacy
@@ -71,7 +72,7 @@ function imageBlock(m: ReferenceImage, bytes: Uint8Array, uuid: string): string[
   return ["(image", `  (at ${xy(toBoard({ x: m.x, y: m.y }))})`, `  (layer ${quote(m.layer)})`, ...(scale !== 1 ? [`  (scale ${formatG(scale)})`] : []), ...(m.locked ? ["  (locked yes)"] : []), "  (data", ...chunks, "  )", `  (uuid ${uuid})`, ")"]
 }
 
-function groupBlock(g: PcbGroup, uuid: string, members: string[]): string[] {
+export function groupBlock(g: PcbGroup, uuid: string, members: string[]): string[] {
   return [`(group ${quote(g.name)}`, `  (uuid ${uuid})`, ...(g.locked ? ["  (locked yes)"] : []), `  (members ${[...members].sort().map(quote).join(" ")})`, ")"]
 }
 

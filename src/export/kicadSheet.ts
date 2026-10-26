@@ -65,9 +65,10 @@ const sim = (on: boolean | undefined) => `(exclude_from_sim ${on ? "yes" : "no"}
 export function labelNode(l: NetLabel, toPage: ToPage, uuid: string): string {
   const p = toPage(l)
   const global = l.kind === "global"
+  const hierarchical = l.kind === "hierarchical"
   const j = labelJustify(l)
-  const out: string[] = [`  (${global ? "global_label" : "label"} ${quote(l.name)}`]
-  if (global) out.push(`    (shape ${l.shape ?? "bidirectional"})`)
+  const out: string[] = [`  (${global ? "global_label" : hierarchical ? "hierarchical_label" : "label"} ${quote(hierarchical ? l.name.replace(/\//g, "{slash}") : l.name)}`]
+  if (global || hierarchical) out.push(`    (shape ${l.shape ?? "bidirectional"})`)
   out.push(`    (at ${mm6(p.x)} ${mm6(p.y)} ${l.rot})`)
   if (l.fieldsAutoplaced) out.push("    (fields_autoplaced yes)")
   out.push(`    ${effects(l.look, { h: j.h, v: j.v })}`)

@@ -3,6 +3,7 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { ROOT_SHEET, sheetUses, sheetView, mergeSheetView, syncCopies, commitOnUse, usesOfSheet } from "../src/model/sheets"
 import { addWire } from "../src/model/ops"
+import { kicadFiles } from "../src/export/kicad"
 import { LIB_GND, LIB_R, ROOT_UUID, schematic } from "./kicad-schematic-fixtures"
 
 // S1: hierarchical sheets, end to end, from the files KiCad writes.
@@ -147,5 +148,29 @@ describe("S1: editing a view", () => {
     expect(made.wires.filter((w) => w.sheet === undefined)).toHaveLength(project.wires.length)
     expect(mergeSheetView(project, sheetView(project, ""), sheetView(project, ""))).toBe(project)
     expect(syncCopies(project, "/h1")).toBe(project)
+  })
+})
+
+describe("S1: the KiCad export", () => {
+  const two = [
+    { uuid: S1, name: "A", y: 60.96 },
+    { uuid: S2, name: "B", y: 90 },
+  ]
+  it("writes a file for each sheet, drawn once, with the reference of every use, and reads back as the same hierarchy", async () => {
+    const { project } = imp(two)
+    const out = await kicadFiles(project)
+    const names = Object.keys(out.files).filter((n) => n.endsWith(".kicad_sch"))
+    expect(names).toHaveLength(2)
+    const root = Object.entries(out.files).find(([n]) => n.endsWith(".kicad_sch") && !n.startsWith("child"))!
+    expect((out.files[names.find((n) => n.startsWith("child"))!].match(/\(symbol\n/g) ?? []).length).toBe(1)
+    expect(root[1].match(/\(sheet\n/g)).toHaveLength(2)
+    expect(out.notes.join(" ")).toMatch(/2 files/)
+    const files = new Map(Object.entries(out.files).filter(([n]) => n.endsWith(".kicad_sch")))
+    const back = importKicadSchematic({ files, root: root[0] })
+    if (back.status !== "imported") throw new Error(`${back.message}\n${back.report.entries.map((e) => e.why).join("\n")}`)
+    expect(back.project.sheetSymbols?.map((s) => s.name).sort()).toEqual(["A", "B"])
+    expect(back.project.components.map((c) => c.ref).sort()).toEqual(["R1", "R2", "R3"])
+    expect(sheetUses(back.project).map((u) => u.human)).toEqual(["/", "/A/", "/B/"])
+    expect(back.project.labels.filter((l) => l.kind === "hierarchical")).toHaveLength(1)
   })
 })

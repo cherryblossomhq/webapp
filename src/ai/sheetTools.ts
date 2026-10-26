@@ -1,9 +1,11 @@
 import { round } from "../lib/geometry"
 import { schematicBounds } from "../model/instances"
+import { kicadRulesShown } from "../model/kicadJoin"
 import { addLabel } from "../model/ops"
-import { addMissingPins, addSheet, addSheetPin, addSheetUse, moveSheetSymbols, removalNote, removeSheetPin, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol } from "../model/sheetOps"
+import { addMissingPins, addSheet, addSheetPin, addSheetUse, moveSheetSymbols, removalNote, removeSheetPin, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol, sheetEditProblems } from "../model/sheetOps"
 import { ROOT_SHEET, isHierarchical, mergeSheetView, sheetUses, sheetView, syncCopies, useAt, type SheetUse } from "../model/sheets"
 import type { LabelShape, Project, SheetSymbol } from "../model/types"
+import { getConnectivity } from "../store/analysis"
 import { fail, ok, type JsonSchema, type ToolContext, type ToolInput, type ToolOutcome, type ToolSpec } from "./toolKit"
 
 // S1 and Sakura: `get_design`, `connect` and `tidy_schematic` take an optional sheet. A project with sheets is read and edited one use of a
@@ -271,8 +273,18 @@ const editSheetTool: ToolSpec = {
     const y = num(input.y)
     if (x !== undefined || y !== undefined) {
       const to = { x: onGrid(x ?? sym.x), y: onGrid(y ?? sym.y) }
-      next = moveSheetSymbols(next, [sym.id], { x: round(to.x - sym.x, 4), y: round(to.y - sym.y, 4) })
+      // S11: on a sheet joined by KiCad's rules the symbol may be off the grid, and it lands on the grid point asked for to six digits.
+      const digits = kicadRulesShown(next) ? 6 : 4
+      next = moveSheetSymbols(next, [sym.id], { x: round(to.x - sym.x, digits), y: round(to.y - sym.y, digits) })
       done.push(`moved to x ${to.x}, y ${to.y}`)
+    }
+    // The wires follow the pins of a sheet that is resized or moved; what that still cannot keep (a wire that would run onto another net) is refused, with nothing changed.
+    if (w !== undefined || h !== undefined || x !== undefined || y !== undefined) {
+      const problems = sheetEditProblems(project, next, getConnectivity)
+      if (problems.length) {
+        const shown = problems.slice(0, 3).join("; ") + (problems.length > 3 ? `; and ${problems.length - 3} more` : "")
+        return fail(project, `Didn't ${w !== undefined || h !== undefined ? "resize" : "move"} the sheet ${sym.name}: ${shown}. Nothing was changed. Resize or move it where the wires at its pins can follow, or delete those wires first.`)
+      }
     }
     const have = () => next.sheetSymbols!.find((s) => s.id === sym.id)!
     for (const n of (input.remove_pins as string[] | undefined) ?? []) {

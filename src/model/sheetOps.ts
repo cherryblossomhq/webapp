@@ -1,8 +1,10 @@
 import { round } from "../lib/geometry"
+import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
+import { moveProblems } from "./merges"
 import { removeItems, stretchEnd } from "./ops"
 import { ROOT_SHEET, hasUse, sheetUses, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
-import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2 } from "./types"
+import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
 
 // S1: editing the sheets of a schematic: adding a sheet (a sheet symbol on a sheet, with the sheet it stands for), using a sheet again,
 // moving, resizing and deleting sheet symbols, and their pins. Every function takes and returns a whole project and works by ids, so it
@@ -155,6 +157,50 @@ export function removeSheetSymbols(project: Project, ids: string[]): Project {
   return touch(dropUnusedSheets({ ...project, sheetSymbols: left.length ? left : undefined }))
 }
 
+/** A sheet pin that is going from one place to another: the wires and labels at it follow. */
+interface PinMove {
+  sheet: string
+  from: Vec2
+  to: Vec2
+}
+
+const samePlace = (p: Vec2, q: Vec2) => Math.abs(q.x - p.x) < 1e-4 && Math.abs(q.y - p.y) < 1e-4
+
+/**
+ * The wires and labels of the sheets after sheet pins have moved: a wire that ends on a pin is stretched to its new place (`stretchEnd`, the stretch a part's pin makes
+ * of the wires on it, so a wire stays upright and a sheet joined by KiCad's rules keeps its points, S11: six digits and the exact stretch), and a label that sits on a pin goes with it. A wire
+ * with both ends on pins that move the same way is moved whole.
+ */
+function followPins(project: Project, moves: PinMove[], digits: number): { wires: Wire[]; labels: NetLabel[] } {
+  const exact = digits > 4
+  const bySheet = new Map<string, PinMove[]>()
+  for (const m of moves) (bySheet.get(m.sheet) ?? bySheet.set(m.sheet, []).get(m.sheet)!).push(m)
+  const at = (sheet: string, p: Vec2) => bySheet.get(sheet)?.find((m) => samePlace(m.from, p))
+  const wires = project.wires.map((w) => {
+    const list = bySheet.get(w.sheet ?? ROOT_SHEET)
+    if (!list || w.points.length < 2) return w
+    const first = at(w.sheet ?? ROOT_SHEET, w.points[0])
+    const last = at(w.sheet ?? ROOT_SHEET, w.points[w.points.length - 1])
+    if (!first && !last) return w
+    const to = (m: PinMove) => ({ x: round(m.to.x, digits), y: round(m.to.y, digits) })
+    // A wire that is moved with the symbol on both ends is not stretched.
+    if (first && last && Math.abs(first.to.x - first.from.x - (last.to.x - last.from.x)) < 1e-9 && Math.abs(first.to.y - first.from.y - (last.to.y - last.from.y)) < 1e-9) {
+      const dx = first.to.x - first.from.x
+      const dy = first.to.y - first.from.y
+      return { ...w, points: w.points.map((p) => ({ x: round(p.x + dx, digits), y: round(p.y + dy, digits) })) }
+    }
+    let points = w.points
+    if (first) points = stretchEnd(points, 0, to(first), exact)
+    if (last) points = stretchEnd(points, points.length - 1, to(last), exact)
+    return { ...w, points }
+  })
+  const labels = project.labels.map((l) => {
+    const m = at(l.sheet ?? ROOT_SHEET, l)
+    return m ? { ...l, x: round(m.to.x, digits), y: round(m.to.y, digits) } : l
+  })
+  return { wires, labels }
+}
+
 /** Sheet symbols moved by `delta`, with their pins and the wires and labels at the pins (their ends follow). */
 export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): Project {
   const move = new Set(ids)
@@ -162,31 +208,13 @@ export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): 
   const digits = kicadRulesShown(project) ? 6 : 4
   const symbols = (project.sheetSymbols ?? []).filter((s) => move.has(s.id))
   if (!symbols.length || (delta.x === 0 && delta.y === 0)) return project
-  const sameSheet = (a: string | undefined, b: string) => (a ?? ROOT_SHEET) === b
-  const ends = (sheet: string) => symbols.filter((s) => s.sheet === sheet).flatMap((s) => s.pins.map((p) => ({ x: p.x, y: p.y })))
-  const at = (p: Vec2, list: Vec2[]) => list.some((q) => Math.abs(q.x - p.x) < 1e-4 && Math.abs(q.y - p.y) < 1e-4)
-  const wires = project.wires.map((w) => {
-    const list = ends(w.sheet ?? ROOT_SHEET)
-    if (!list.length) return w
-    let points = w.points
-    // A wire that is moved with the symbol on both ends is not stretched.
-    const first = at(points[0], list)
-    const last = points.length > 1 && at(points[points.length - 1], list)
-    if (first && last) return { ...w, points: points.map((p) => ({ x: round(p.x + delta.x, digits), y: round(p.y + delta.y, digits) })) }
-    if (first) points = stretchEnd(points, 0, { x: round(points[0].x + delta.x, digits), y: round(points[0].y + delta.y, digits) }, digits > 4)
-    if (last) points = stretchEnd(points, points.length - 1, { x: round(points[points.length - 1].x + delta.x, digits), y: round(points[points.length - 1].y + delta.y, digits) }, digits > 4)
-    return points === w.points ? w : { ...w, points }
-  })
-  const labels = project.labels.map((l) => {
-    const list = ends(l.sheet ?? ROOT_SHEET)
-    return list.length && at(l, list) ? { ...l, x: round(l.x + delta.x, digits), y: round(l.y + delta.y, digits) } : l
-  })
-  void sameSheet
+  const shift = (p: Vec2): Vec2 => ({ x: round(p.x + delta.x, digits), y: round(p.y + delta.y, digits) })
+  const { wires, labels } = followPins(project, symbols.flatMap((s) => s.pins.map((p) => ({ sheet: s.sheet, from: { x: p.x, y: p.y }, to: shift(p) }))), digits)
   return settleKicadSheet(project, touch({
     ...project,
     wires,
     labels,
-    sheetSymbols: project.sheetSymbols!.map((s) => (move.has(s.id) ? { ...s, x: round(s.x + delta.x, digits), y: round(s.y + delta.y, digits), pins: s.pins.map((p) => ({ ...p, x: round(p.x + delta.x, digits), y: round(p.y + delta.y, digits) })) } : s)),
+    sheetSymbols: project.sheetSymbols!.map((s) => (move.has(s.id) ? { ...s, x: round(s.x + delta.x, digits), y: round(s.y + delta.y, digits), pins: s.pins.map((p) => ({ ...p, ...shift(p) })) } : s)),
   }))
 }
 
@@ -226,18 +254,32 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   return touch({ ...project, ...(sheets ? { sheets } : {}), sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
 }
 
-/** A sheet symbol made bigger or smaller: the pins on the far edges go with them. */
+/**
+ * A sheet symbol made bigger or smaller: the pins on the far edges go with them, and a pin past an edge that came in is held on it. The wires and labels at a pin
+ * follow it, as they do when the symbol is moved, so no pin is cut off the net it was on.
+ */
 export function resizeSheetSymbol(project: Project, id: string, w: number, h: number): Project {
   const sym = project.sheetSymbols?.find((s) => s.id === id)
   if (!sym) return project
+  const digits = kicadRulesShown(project) ? 6 : 4
   const nw = Math.max(snap(w), GRID * 4)
   const nh = Math.max(snap(h), GRID * 2)
   const pins = sym.pins.map((p) => {
-    if (p.rot === 0) return { ...p, x: round(sym.x + nw, 4), y: Math.min(p.y, sym.y + nh) }
-    if (p.rot === 90) return { ...p, y: round(sym.y + nh, 4), x: Math.min(p.x, sym.x + nw) }
+    if (p.rot === 0) return { ...p, x: round(sym.x + nw, digits), y: Math.min(p.y, sym.y + nh) }
+    if (p.rot === 90) return { ...p, y: round(sym.y + nh, digits), x: Math.min(p.x, sym.x + nw) }
     return { ...p, x: Math.min(p.x, sym.x + nw), y: Math.min(p.y, sym.y + nh) }
   })
-  return touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? { ...s, w: nw, h: nh, pins } : s)) })
+  const moves = pins.flatMap((p, i) => (samePlace(p, sym.pins[i]) ? [] : [{ sheet: sym.sheet, from: { x: sym.pins[i].x, y: sym.pins[i].y }, to: { x: p.x, y: p.y } }]))
+  const followed = moves.length ? followPins(project, moves, digits) : { wires: project.wires, labels: project.labels }
+  return settleKicadSheet(project, touch({ ...project, wires: followed.wires, labels: followed.labels, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? { ...s, w: nw, h: nh, pins } : s)) }))
+}
+
+/**
+ * What an edit of sheet symbols (a move, a resize) would change about the connections even with the wires following the pins, in words, one sentence each: nets it
+ * would join and pins it would cut off theirs. Empty when every pin is on the net it was on. `conn` is the connectivity of a project, when the caller keeps one.
+ */
+export function sheetEditProblems(before: Project, after: Project, conn: (p: Project) => SchematicConnectivity = computeConnectivity): string[] {
+  return moveProblems(before, after, conn(before), conn(after), new Set(), { lenient: true })
 }
 
 const SIDE_ROT: Record<"left" | "right" | "top" | "bottom", Rotation> = { right: 0, top: 90, left: 180, bottom: 270 }

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { schematic } from "./kicad-schematic-fixtures"
 import { runTool } from "../src/ai/tools"
-import { addSheetPin, addSheetUse, removeSheetSymbols, setSheetSymbol } from "../src/model/sheetOps"
+import { addSheetPin, addSheetUse, moveSheetSymbols, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol } from "../src/model/sheetOps"
 import { kicadFiles } from "../src/export/kicad"
 import { kicad9SheetProblems } from "./kicad9-strict"
+import { createProject } from "../src/model/ops"
+import { schematicPins } from "../src/model/instances"
 import { commitOnUse, sheetUses } from "../src/model/sheets"
 import { pasteItems } from "../src/model/schematicEdit"
 import { setActiveVariant, setVariantOverride } from "../src/model/variants"
@@ -266,5 +268,156 @@ describe("minors", () => {
     // an editor sheet keeps its four
     const plain = addSheetPin({ ...rules, sheets: project.sheets }, sym.id, "LEFT", "input", "left")
     expect(plain.sheetSymbols![0].pins.at(-1)!.x).toBe(6.0961)
+  })
+})
+
+describe("B4: resizing or moving a sheet symbol keeps the wires on its pins", () => {
+  const run = (p: Project, name: string, input: Record<string, unknown>) => runTool(p, name, input)
+  const good = (p: Project, name: string, input: Record<string, unknown>) => {
+    const out = run(p, name, input)
+    expect(out.isError, out.result).toBe(false)
+    return out.project
+  }
+  /** A root with R1 and a sheet POWER with R2 and C1; POWER's pin VOUT is on the right edge and joined to R1 pin 1 by the labels wire_sheet_pin puts at the pin and at R1. */
+  function labelled(): Project {
+    let p = createProject("t")
+    p = good(p, "add_component", { part_id: "resistor", x: 0, y: 0 })
+    p = good(p, "add_sheet", { name: "POWER", page: "2" })
+    p = good(p, "add_component", { part_id: "resistor", sheet: "POWER", x: 0, y: 0 })
+    p = good(p, "add_component", { part_id: "capacitor", sheet: "POWER", x: 5, y: 0 })
+    const inner = p.components.find((c) => c.inst)!
+    p = good(p, "add_hier_label", { sheet: "POWER", name: "VOUT", pins: [`${inner.ref}.2`], shape: "output" })
+    const root = p.components.find((c) => !c.inst)!
+    return good(p, "wire_sheet_pin", { sheet: "POWER", pin: "VOUT", to: [`${root.ref}.1`] })
+  }
+  /** The same, with the labels on the root taken out and a wire drawn from the pin to R1 pin 1. */
+  function wired(): Project {
+    const p = labelled()
+    const root = p.components.find((c) => !c.inst)!
+    const pin = p.sheetSymbols![0].pins[0]
+    const to = schematicPins(root).find((x) => x.pin === "1")!.pos
+    return {
+      ...p,
+      labels: p.labels.filter((l) => l.sheet !== undefined),
+      wires: [...p.wires.filter((w) => w.sheet !== undefined), { id: "wpin", points: [{ x: pin.x, y: pin.y }, { x: pin.x, y: 2 }, { x: to.x, y: 2 }, { x: to.x, y: to.y }] }],
+    }
+  }
+  const connected = (p: Project) => {
+    const root = p.components.find((c) => !c.inst)!
+    const inner = p.components.find((c) => c.inst && c.partId === "resistor")!
+    const conn = getConnectivity(p)
+    const a = conn.pinNet.get(`${root.id}:1`)
+    return a !== undefined && a === conn.pinNet.get(`${inner.id}:2`)
+  }
+  const symOf = (p: Project) => p.sheetSymbols![0]
+  const pinOf = (p: Project) => symOf(p).pins.find((x) => x.name === "VOUT")!
+  const at = (q: { x: number; y: number }, p: Project) => Math.abs(q.x - pinOf(p).x) < 1e-6 && Math.abs(q.y - pinOf(p).y) < 1e-6
+  /** A wire ends on the pin. */
+  const endsAtPin = (p: Project) => p.wires.some((w) => w.sheet === undefined && [w.points[0], w.points.at(-1)!].some((q) => at(q, p)))
+  /** The root's label of the pin's name sits on the pin. */
+  const labelAtPin = (p: Project) => p.labels.some((l) => l.sheet === undefined && l.name === "VOUT" && at(l, p))
+
+  it("the fixtures are one net across the sheet pin", () => {
+    expect(pinOf(wired()).rot).toBe(0)
+    expect(connected(wired())).toBe(true)
+    expect(endsAtPin(wired())).toBe(true)
+    expect(connected(labelled())).toBe(true)
+    expect(labelAtPin(labelled())).toBe(true)
+  })
+
+  it("the label wire_sheet_pin puts on a pin follows the pin when the sheet is resized or moved", () => {
+    const p = labelled()
+    const wider = good(p, "edit_sheet", { sheet: "POWER", w: symOf(p).w + 1 })
+    expect(labelAtPin(wider)).toBe(true)
+    expect(connected(wider)).toBe(true)
+    const moved = good(p, "edit_sheet", { sheet: "POWER", w: symOf(p).w + 1, x: symOf(p).x + 3 })
+    expect(labelAtPin(moved)).toBe(true)
+    expect(connected(moved)).toBe(true)
+  })
+
+  it("edit_sheet with a wider w stretches the wire to the right pin", () => {
+    const p = wired()
+    const out = good(p, "edit_sheet", { sheet: "POWER", w: symOf(p).w + 1 })
+    expect(pinOf(out).x).toBeCloseTo(pinOf(p).x + 1, 6)
+    expect(endsAtPin(out)).toBe(true)
+    expect(connected(out)).toBe(true)
+  })
+
+  it("a smaller h holds a pin on the edge, and the wire goes with it", () => {
+    const p = wired()
+    const out = good(p, "edit_sheet", { sheet: "POWER", h: 0.2 })
+    expect(pinOf(out).y).toBeLessThan(pinOf(p).y)
+    expect(endsAtPin(out)).toBe(true)
+    expect(connected(out)).toBe(true)
+  })
+
+  it("a resize and a move in one call keep the wire", () => {
+    const p = wired()
+    const out = good(p, "edit_sheet", { sheet: "POWER", w: symOf(p).w + 2, h: symOf(p).h + 1, x: symOf(p).x + 3, y: symOf(p).y + 2 })
+    expect(endsAtPin(out)).toBe(true)
+    expect(connected(out)).toBe(true)
+  })
+
+  it("a move alone keeps the wire (the model function the editor's drag also ends in)", () => {
+    const p = wired()
+    const out = moveSheetSymbols(p, [symOf(p).id], { x: 2, y: -1 })
+    expect(endsAtPin(out)).toBe(true)
+    expect(connected(out)).toBe(true)
+  })
+
+  it("the model's resize keeps the wire too: the editor has no resize handle of its own, so this is the one path", () => {
+    const p = wired()
+    const out = resizeSheetSymbol(p, symOf(p).id, symOf(p).w + 1.5, symOf(p).h + 0.5)
+    expect(endsAtPin(out)).toBe(true)
+    expect(connected(out)).toBe(true)
+  })
+
+  it("on a sheet joined by KiCad's rules the points stay at six digits and the pin stays joined", () => {
+    const p = wired()
+    // the sheet symbol, its pin and the wire end on the pin are off the editor's grid, as a KiCad file's are
+    const off = 0.000123
+    const sym = symOf(p)
+    const pin = pinOf(p)
+    const flagged: Project = {
+      ...p,
+      sheets: (p.sheets ?? [{ id: "root" }]).map((s) => (s.id === "root" ? { ...s, kicadRules: true as const } : s)),
+      sheetSymbols: [{ ...sym, x: sym.x + off, y: sym.y + off, pins: sym.pins.map((q) => ({ ...q, x: q.x + off, y: q.y + off })) }],
+      wires: p.wires.map((w) => ({ ...w, points: w.points.map((q) => (Math.abs(q.x - pin.x) < 1e-6 && Math.abs(q.y - pin.y) < 1e-6 ? { x: q.x + off, y: q.y + off } : q)) })),
+    }
+    expect(connected(flagged)).toBe(true)
+    // the tool's resize: the pin is at x + w + off, which four digits would have rounded
+    const wider = good(flagged, "edit_sheet", { sheet: "POWER", w: sym.w + 1 })
+    expect(connected(wider)).toBe(true)
+    expect(endsAtPin(wider)).toBe(true)
+    expect(pinOf(wider).x).toBeCloseTo(pin.x + off + 1, 6)
+    expect(String(pinOf(wider).x).split(".")[1].length).toBeGreaterThan(4)
+    // the model's resize and move
+    const resized = resizeSheetSymbol(flagged, sym.id, sym.w + 1, sym.h - 1)
+    expect(connected(resized)).toBe(true)
+    expect(endsAtPin(resized)).toBe(true)
+    const moved = moveSheetSymbols(flagged, [sym.id], { x: 1.000001, y: 0.500002 })
+    expect(connected(moved)).toBe(true)
+    expect(endsAtPin(moved)).toBe(true)
+    expect(pinOf(moved).x).toBeCloseTo(pin.x + off + 1.000001, 6)
+    // the tool's move lands on the target exactly, and the wire is still on the pin
+    const placed = good(flagged, "edit_sheet", { sheet: "POWER", x: 5, y: 3 })
+    expect(symOf(placed).x).toBe(5)
+    expect(connected(placed)).toBe(true)
+    expect(endsAtPin(placed)).toBe(true)
+  })
+
+  it("an edit that would still change a connection is refused, with nothing changed", () => {
+    const p = wired()
+    // a net of its own, labelled OTHER, where the stretched wire's end would be: the wire would run onto it
+    const at = { x: pinOf(p).x + 1, y: pinOf(p).y }
+    const q: Project = { ...p, labels: [...p.labels, { id: "lother", name: "OTHER", x: at.x, y: at.y, rot: 0 }] }
+    expect(connected(q)).toBe(true)
+    const out = run(q, "edit_sheet", { sheet: "POWER", w: symOf(q).w + 1 })
+    expect(out.isError).toBe(true)
+    expect(out.project).toBe(q)
+    expect(out.result).toMatch(/Didn't resize the sheet POWER: .*Nothing was changed/)
+    const moved = run(q, "edit_sheet", { sheet: "POWER", x: symOf(q).x + 1 })
+    expect(moved.isError).toBe(true)
+    expect(moved.result).toMatch(/Didn't move the sheet POWER/)
   })
 })

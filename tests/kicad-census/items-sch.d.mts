@@ -15,3 +15,11 @@ export interface RawItem {
   flags?: { dnp: boolean; noBom: boolean; noBoard: boolean; noSim: boolean }
 }
 export function rawItems(text: string): RawItem[]
+
+export interface RawBuses {
+  /** Each bus as `[x1, y1, x2, y2]`, in millimetres as the file writes them (y down). */
+  buses: number[][]
+  entries: { at: number[]; size: number[]; toBus: boolean }[]
+  aliases: { name: string; members: string[] }[]
+}
+export function rawBuses(text: string): RawBuses

@@ -373,7 +373,8 @@ describe("the project file and the design rules", () => {
   it("text variables, bus aliases, variants and several sheets in the project file need what they stand for", () => {
     const needs = (j: string) => projectNeeds(readKicadPro(j).pro, null).map((n) => n.ext)
     expect(needs(proJson({ text_variables: { REV: "B" } }))).toEqual(["S4"])
-    expect(needs(proJson({ schematic: { bus_aliases: { DATA: { members: ["D0"] } } } }))).toEqual(["S3"])
+    // KiCad 6 and later never read a bus alias from the project file (the schematic files hold them), so it needs nothing.
+    expect(needs(proJson({ schematic: { bus_aliases: { DATA: { members: ["D0"] } } } }))).toEqual([])
     expect(needs(proJson({ schematic: { variants: [{ name: "A" }] } }))).toEqual(["S9"])
     // the project's list of sheets names what the schematic has; several top level sheets are KiCad 10's and wait for a root that holds several
     expect(needs(proJson({ sheets: [["a", ""], ["b", "Power"]] }))).toEqual([])

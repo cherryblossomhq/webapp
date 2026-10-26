@@ -56,6 +56,7 @@ describe("plain names for the extensions", () => {
     S1T: [/several top level sheets/],
     S2: [/net labels/, /local and global/, /net names/],
     S3: [/buses/, /bus entries/, /bus aliases/],
+    S3B: [/bus names/, /on a wire/, /9 and 10/, /too large/],
     S4: [/notes/, /shapes/, /pictures/, /tables/, /wires and junctions/],
     S5: [/several units/, /mirrored/, /hidden power pins/, /share a number/, /fields/],
     S6: [/arcs/, /curves/, /fills/, /line styles/],

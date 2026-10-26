@@ -55,7 +55,7 @@ const targeted = new Set(existsSync(join(CORPUS ?? "", "projects", "_targeted.tx
 const groupOf = (r: string) => (r.startsWith("pcbench/") ? "pcbench" : r.startsWith("kicad-source/demos") ? "kicad-demos" : r.startsWith("kicad-source") ? "kicad-qa" : targeted.has(r.split("/")[1]) ? "github-targeted" : "github")
 const REAL = ["pcbench", "github", "kicad-demos"]
 /** The extensions raised to measure the nets of a file the real gate refuses for S2 and the rest of what is built. */
-const MEASURE = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "X19"])
+const MEASURE = new Set(["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "X19"])
 /** The paths the census counts that are not records the parser accounts one by one. */
 const normPath = (p: string) => p.toUpperCase().replace(/\/0{8}-0{4}-0{4}-0{4}-0*([0-9A-F]+)/g, "/$1").replace(/\/0+(?=[0-9A-F])/g, "/")
 
@@ -195,6 +195,11 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
           const { pinNet, nets } = computeConnectivity(built.project)
           const symOf = new Map([...built.byRecord].map(([r, c]) => [c.id, r]))
           const derived = deriveLegacyNets(path)
+          // The legacy derivation has no buses (KiCad 5's rules for them are not written): a file with buses is not compared, as before S3 was built it was not imported.
+          if (derived.unsupported.size) {
+            row.nets = `not compared: ${[...derived.unsupported].join(", ")}`
+            continue
+          }
           const universe: string[] = []
           const netOf = new Map<string, string | undefined>()
           const members = new Map<string, string[]>()
@@ -343,7 +348,7 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
           // the project's own board only: a folder may hold more than one
           const projectFiles: ProjectFile[] = [...files].filter(([path]) => !path.endsWith(".kicad_pcb") || path === boardPath.slice(folder.length + 1)).map(([path, data]) => ({ path, data }))
           const plain = importKicadProject(projectFiles)
-          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true })
+          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true })
           const word = (r: typeof plain) => (r.status === "imported" ? "imported" : `refused, ${r.reason}${r.needs.length ? ` (${r.needs.map((n) => n.ext).join(" ")})` : ""}`)
           row.plain = word(plain)
           row.raised = word(raised)

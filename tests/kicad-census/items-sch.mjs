@@ -94,3 +94,16 @@ export function rawItems(text) {
   for (const t of kids(root, "table")) out.push({ kind: "table", nums: kids(kid(t, "cells"), "table_cell").flatMap((c) => [...pair(kid(c, "at")), ...pair(kid(c, "size"))]), rects: kids(kid(t, "cells"), "table_cell").map(rect), anchors: kids(kid(t, "cells"), "table_cell").map(anchor) })
   return out
 }
+
+/**
+ * The buses of a sheet (S3) as the raw file has them, in KiCad's millimetres (y down): each `(bus ...)` as `[x1, y1, x2, y2]`, each
+ * `(bus_entry ...)` as `{ at, size, toBus }`, and each `(bus_alias ...)` as `{ name, members }`, in file order.
+ */
+export function rawBuses(text) {
+  const root = parseSexpr(text).find((n) => Array.isArray(n) && n[0] === "kicad_sch")
+  if (!root) return { buses: [], entries: [], aliases: [] }
+  const buses = kids(root, "bus").map((n) => kids(kid(n, "pts"), "xy").flatMap(pair))
+  const entries = kids(root, "bus_entry").map((n) => ({ at: pair(kid(n, "at")), size: pair(kid(n, "size")), toBus: !!kid(n, "bus_to_bus") }))
+  const aliases = kids(root, "bus_alias").map((n) => ({ name: n[1], members: (kid(n, "members") ?? []).slice(1) }))
+  return { buses, entries, aliases }
+}

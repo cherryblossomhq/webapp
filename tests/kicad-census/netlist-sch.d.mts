@@ -26,6 +26,8 @@ export interface Derived {
   /** The full name KiCad gives a group's net: its driver's (a global one as written, a local one with its sheet's path), else the pin's `Net-(R1-Pad2)` or `unconnected-(...)`; null when nothing names it. */
   netName(group: number): string | null
 }
+/** The member nets of a bus name read by the oracle's own reader (KiCad 6 to 9's grammar for the names the corpus has), or null for a net's name. */
+export function busMembers(text: string, aliases: Map<string, string[]>, depth?: number): { kind: "vector" | "group"; names: string[]; locals: string[] } | null
 export function deriveNets(rootFile: string, opts?: DeriveOptions): Derived
 export interface BoardFootprintNets {
   ref: string

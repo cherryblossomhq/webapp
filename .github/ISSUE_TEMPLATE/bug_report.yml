@@ -30,14 +30,13 @@ body:
       required: true
 
   - type: textarea
-    id: circuit
+    id: project
     attributes:
-      label: Circuit
+      label: Project file
       description: >
-        If the bug depends on a specific circuit, paste the TSX from the Code
-        tab or attach the `.cherryblossom.json` project file. This is usually
-        the difference between a fix today and a fix next month.
-      render: tsx
+        If the bug depends on a specific board, attach its project file
+        (Export › Project file). This is usually the difference between a fix
+        today and a fix next month.
 
   - type: input
     id: environment

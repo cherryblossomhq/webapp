@@ -1,23 +1,13 @@
-import { defineConfig } from "vitest/config";
-import path from "path";
+import { defineConfig } from "vitest/config"
+import { hostAliases } from "./vite.config"
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-  define: {
-    __APP_VERSION__: JSON.stringify("0.0.0-test"),
-  },
+  resolve: { alias: hostAliases },
   test: {
-    globals: true,
-    environment: "jsdom",
-    setupFiles: ["./src/test/setup.ts"],
-    include: [
-      "src/**/*.test.ts",
-      "src/**/*.test.tsx",
-      "server/**/*.test.mjs",
-    ],
+    environment: "node",
+    include: ["tests/**/*.test.ts"],
+    // Building an example routes it, which takes seconds for the ESP32 robot on a laptop and
+    // several times that on a shared CI runner.
+    testTimeout: 120_000,
   },
-});
+})

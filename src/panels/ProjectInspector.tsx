@@ -1,0 +1,608 @@
+import { ChevronDown, Plus, Trash2 } from "lucide-react"
+import { useMemo, useState } from "react"
+import { uid } from "../lib/id"
+import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
+import { isPhysical, valueText } from "../model/instances"
+import { findPart } from "../model/library"
+import {
+  applyCapability,
+  BOARD_THICKNESSES,
+  boardStackup,
+  FAB_CAPABILITIES,
+  formatLength,
+  fromUnit,
+  matchCapability,
+  THERMAL_RELIEF_OPTIONS,
+  zoneClearance,
+} from "../model/rules"
+import { removeStitching, STITCH_PITCHES, stitchCount, stitchPitch, stitchVias } from "../model/stitch"
+import type { CopperLayer, CopperWeight, DesignRules, Project, SurfaceFinish } from "../model/types"
+import { getConnectivity, getPcbAnalysis } from "../store/analysis"
+import { projectApi } from "../store/projectStore"
+import { uiApi, useUi } from "../store/uiStore"
+import { Button, Field, IconButton, Segmented } from "../ui/controls"
+import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
+
+const commitProject = (fn: (p: Project) => Project) => projectApi().commit((p) => ({ ...fn(p), updatedAt: Date.now() }))
+const setBoard = (patch: Partial<Project["board"]>) => commitProject((p) => ({ ...p, board: { ...p.board, ...patch } }))
+const setRules = (patch: Partial<DesignRules>) => commitProject((p) => ({ ...p, rules: { ...p.rules, ...patch } }))
+
+export function ProjectInspector({ project }: { project: Project }) {
+  return (
+    <div>
+      <ProjectSection project={project} />
+      <PropertiesSection project={project} />
+      <BoardSection project={project} />
+      <RulesSection project={project} />
+      <PoursSection project={project} />
+      <NetsSection project={project} />
+    </div>
+  )
+}
+
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
+
+function ProjectSection({ project }: { project: Project }) {
+  const stats = useMemo(() => {
+    const conn = getConnectivity(project)
+    const pcb = getPcbAnalysis(project)
+    const parts = project.components.filter((c) => isPhysical(findPart(c.partId)))
+    const placed = new Set(parts.filter((c) => c.pcb.placed).map((c) => c.id))
+    const lines = new Set(parts.map((c) => JSON.stringify([c.partId, valueText(c, findPart(c.partId)), c.footprint, c.props.mpn ?? ""])))
+    // A net with n placed pins needs n - 1 connections; the ratsnest is the ones still open.
+    let connections = 0
+    for (const n of conn.nets) {
+      const pins = new Set(n.pins.filter((p) => placed.has(p.componentId)).map((p) => `${p.componentId}:${p.pin}`))
+      connections += Math.max(0, pins.size - 1)
+    }
+    const unrouted = pcb.ratsnest.length
+    return {
+      parts: parts.length,
+      placed: placed.size,
+      lines: lines.size,
+      nets: conn.nets.filter((n) => n.pins.length > 0).length,
+      routed: connections ? `${connections - unrouted} of ${connections}` : "None to route",
+    }
+  }, [project])
+  const b = project.board
+  return (
+    <Section title="Project" id="project">
+      <Field label="Name">
+        <CommitInput value={project.name} onCommit={(v) => v.trim() && commitProject((p) => ({ ...p, name: v.trim() }))} />
+      </Field>
+      <DescriptionField value={project.description} />
+      <div className="space-y-1 pt-0.5">
+        <Row label="Parts" value={stats.placed === stats.parts ? stats.parts : `${stats.parts} (${stats.placed} on the board)`} />
+        <Row label="Unique parts" value={stats.lines} />
+        <Row label="Nets" value={stats.nets} />
+        <Row label="Connections routed" value={stats.routed} />
+        <Row label="Vias" value={project.vias.length} />
+        <Row label="Board area" value={`${((b.width * b.height) / 100).toFixed(1)} cm²`} />
+        <Row label="Created" value={dateFormat.format(project.createdAt)} />
+        <Row label="Modified" value={dateFormat.format(project.updatedAt)} />
+      </div>
+    </Section>
+  )
+}
+
+/** Multi-line description that commits on blur; Escape throws the edit away. */
+function DescriptionField({ value }: { value: string }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <Field label="Description">
+      <textarea
+        className="field scroll-thin block min-h-[60px] resize-y py-1.5 leading-[1.45]"
+        rows={3}
+        value={draft ?? value}
+        placeholder="What the board does, for the next person to open it"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== null && draft !== value) commitProject((p) => ({ ...p, description: draft }))
+          setDraft(null)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setDraft(null)
+            requestAnimationFrame(() => (e.target as HTMLTextAreaElement).blur())
+          }
+        }}
+      />
+    </Field>
+  )
+}
+
+const SUGGESTED_PROPERTIES = ["Revision", "Author", "Company", "Licence"]
+
+function PropertiesSection({ project }: { project: Project }) {
+  const props = project.properties ?? []
+  const setProps = (fn: (list: NonNullable<Project["properties"]>) => NonNullable<Project["properties"]>) =>
+    commitProject((p) => {
+      const next = fn(p.properties ?? [])
+      return { ...p, properties: next.length ? next : undefined }
+    })
+  const add = (key: string) => setProps((list) => [...list, { key, value: "" }])
+  const unused = SUGGESTED_PROPERTIES.filter((k) => !props.some((p) => p.key.toLowerCase() === k.toLowerCase()))
+  const uniqueKey = () => {
+    let n = 1
+    while (props.some((p) => p.key === `Property ${n}`)) n++
+    return `Property ${n}`
+  }
+  return (
+    <Section
+      title="Properties"
+      id="properties"
+      action={
+        <IconButton label="Add property" className="-my-1 h-7 w-7" onClick={() => add(uniqueKey())}>
+          <Plus size={14} />
+        </IconButton>
+      }
+    >
+      {props.length === 0 && <p className="text-[12.5px] text-ink-2">Revision, author, licence and anything else the fab or the next engineer should know. They go in the fabrication notes.</p>}
+      {props.map((prop, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <CommitInput
+            ariaLabel={`Property ${i + 1} name`}
+            value={prop.key}
+            className="w-[104px] shrink-0 text-ink-2"
+            onCommit={(v) => v.trim() && setProps((list) => list.map((x, j) => (j === i ? { ...x, key: v.trim() } : x)))}
+          />
+          <CommitInput
+            ariaLabel={prop.key}
+            value={prop.value}
+            placeholder="Value"
+            className="min-w-0 flex-1"
+            onCommit={(v) => setProps((list) => list.map((x, j) => (j === i ? { ...x, value: v.trim() } : x)))}
+          />
+          <IconButton label={`Remove ${prop.key}`} className="shrink-0" onClick={() => setProps((list) => list.filter((_, j) => j !== i))}>
+            <Trash2 size={14} />
+          </IconButton>
+        </div>
+      ))}
+      {unused.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {unused.map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => add(k)}
+              className="inline-flex h-6 items-center gap-1 rounded-full border border-dashed border-line px-2 text-[12px] text-ink-2 hover:border-ink-3 hover:text-ink"
+            >
+              <Plus size={11} /> {k}
+            </button>
+          ))}
+        </div>
+      )}
+    </Section>
+  )
+}
+
+function BoardSection({ project }: { project: Project }) {
+  const b = project.board
+  const colors = boardColors(b)
+  const thicknesses = BOARD_THICKNESSES.includes(b.thickness) ? BOARD_THICKNESSES : [...BOARD_THICKNESSES, b.thickness].sort((x, y) => x - y)
+  const holes = MOUNTING_HOLE_PRESETS.find((o) => o.holes.drill === b.mountingHoles?.drill)
+  return (
+    <Section title="Board" id="board">
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Width">
+          <LengthInput min={5} value={b.width} onCommit={(v) => v !== null && setBoard({ width: v })} />
+        </Field>
+        <Field label="Height">
+          <LengthInput min={5} value={b.height} onCommit={(v) => v !== null && setBoard({ height: v })} />
+        </Field>
+        <Field label="Thickness">
+          <select className="field h-8" value={b.thickness} onChange={(e) => setBoard({ thickness: Number(e.target.value) })}>
+            {thicknesses.map((t) => (
+              <option key={t} value={t}>
+                {t} mm
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Corner radius">
+          <LengthInput value={b.cornerRadius} onCommit={(v) => v !== null && setBoard({ cornerRadius: Math.min(v, b.width / 2, b.height / 2) })} />
+        </Field>
+        <Group label="Copper">
+          <Segmented<string>
+            size="sm"
+            value={String(b.copperWeight ?? 1)}
+            onChange={(v) => setBoard({ copperWeight: Number(v) as CopperWeight })}
+            options={[
+              { value: "1", label: "1 oz", title: "35 µm, the standard" },
+              { value: "2", label: "2 oz", title: "70 µm, for high current" },
+            ]}
+          />
+        </Group>
+        <Field label="Surface finish">
+          <select className="field h-8" value={boardFinish(b)} onChange={(e) => setBoard({ finish: e.target.value as SurfaceFinish })}>
+            {SURFACE_FINISHES.map((f) => (
+              <option key={f.value} value={f.value} title={f.title}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <Group label="Solder mask">
+        <ColorField label="Solder mask colour" value={b.maskColor} fallback={DEFAULT_MASK_COLOR} onCommit={(maskColor) => setBoard({ maskColor })} />
+      </Group>
+      <Group label="Silkscreen">
+        <ColorField label="Silkscreen colour" value={b.silkColor} fallback={defaultSilkColor(colors.mask)} onCommit={(silkColor) => setBoard({ silkColor })} />
+      </Group>
+      <Group label="Mounting holes">
+        <Segmented
+          size="sm"
+          value={holes?.id ?? "none"}
+          onChange={(v) => setBoard({ mountingHoles: MOUNTING_HOLE_PRESETS.find((o) => o.id === v)?.holes ?? null })}
+          options={[{ value: "none", label: "None" }, ...MOUNTING_HOLE_PRESETS.map((o) => ({ value: o.id, label: o.label, title: `${o.holes.drill} mm drill, ${o.holes.inset} mm from the edges` }))]}
+        />
+      </Group>
+      <Stackup project={project} />
+    </Section>
+  )
+}
+
+function Stackup({ project }: { project: Project }) {
+  const layers = boardStackup(project.board)
+  const open = useUi((s) => !s.folded["stackup"])
+  const unit = useLengthUnit()
+  const swatch = { silk: boardColors(project.board).silk, mask: boardColors(project.board).mask, copper: "#c8803c", core: "#8f8358" }
+  return (
+    <div>
+      <button type="button" className="flex w-full items-center justify-between text-[12px] text-ink-2 hover:text-ink" aria-expanded={open} onClick={() => uiApi().toggleFolded("stackup")}>
+        <span>Stackup</span>
+        <span className="flex items-center gap-1 text-ink-3">
+          2 layers, {project.board.thickness} mm
+          <ChevronDown size={13} className={`transition-transform ${open ? "" : "-rotate-90"}`} />
+        </span>
+      </button>
+      {open && (
+        <table className="mt-1.5 w-full text-[12px]">
+          <thead>
+            <tr className="text-left text-[11px] text-ink-3">
+              <th className="pb-1 font-normal">Layer</th>
+              <th className="pb-1 font-normal">Material</th>
+              <th className="pb-1 text-right font-normal">{unit}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {layers.map((l) => (
+              <tr key={l.name} className="border-b border-chrome-2 last:border-0">
+                <td className="py-[5px] pr-2">
+                  <span className="flex items-center gap-2 text-ink">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-[2px] shadow-[inset_0_0_0_1px_rgb(0_0_0/0.25)]" style={{ background: swatch[l.kind] }} />
+                    {l.name}
+                  </span>
+                </td>
+                <td className="py-[5px] pr-2 text-ink-3">{l.material}</td>
+                <td className="mono py-[5px] text-right text-ink-2">{l.thickness === null ? "" : formatLength(l.thickness, unit)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+/** Space-separated widths in the current unit. */
+function WidthsInput({ rules }: { rules: DesignRules }) {
+  const unit = useLengthUnit()
+  return (
+    <CommitInput
+      ariaLabel="Preferred trace widths"
+      className="tabular-nums"
+      value={rules.preferredWidths.map((w) => formatLength(w, unit)).join(" ")}
+      onCommit={(v) => {
+        const widths = v
+          .split(/[\s,;]+/)
+          .map((s) => Number(s))
+          .filter((n) => Number.isFinite(n) && n > 0)
+          .map((n) => Number(fromUnit(n, unit).toFixed(4)))
+        if (widths.length) setRules({ preferredWidths: [...new Set(widths)].sort((a, b) => a - b) })
+      }}
+    />
+  )
+}
+
+function RulesSection({ project }: { project: Project }) {
+  const r = project.rules
+  const cap = matchCapability(r)
+  const unit = useLengthUnit()
+  const len = (key: keyof DesignRules, min = 0, label?: string) => (
+    <LengthInput ariaLabel={label} min={min} value={r[key] as number} onCommit={(v) => v !== null && setRules({ [key]: v })} />
+  )
+  const ring = (r.viaDiameter - r.viaDrill) / 2
+  return (
+    <Section
+      title="Design rules"
+      id="rules"
+      action={
+        <Segmented<"mm" | "mil">
+          size="sm"
+          value={unit}
+          onChange={(u) => uiApi().updateSettings({ units: u })}
+          options={[
+            { value: "mm", label: "mm", title: "Millimetres" },
+            { value: "mil", label: "mil", title: "Thousandths of an inch" },
+          ]}
+        />
+      }
+    >
+      <Field label="Fab capability" hint={cap?.description ?? "Set by hand. Pick a class to reset the limits the fab sets."}>
+        <select
+          className="field h-8"
+          value={cap?.id ?? "custom"}
+          onChange={(e) => {
+            const next = FAB_CAPABILITIES.find((f) => f.id === e.target.value)
+            if (next) commitProject((p) => ({ ...p, rules: applyCapability(p.rules, next) }))
+          }}
+        >
+          {FAB_CAPABILITIES.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name}
+            </option>
+          ))}
+          {!cap && <option value="custom">Custom</option>}
+        </select>
+      </Field>
+
+      <RuleGroup title="Traces">
+        <RuleRow label="Default width" hint="Width of new traces, and of signal traces the autorouter lays">
+          {len("traceWidth", 0.05, "Default trace width")}
+        </RuleRow>
+        <RuleRow label="Minimum width" hint="Narrower traces fail the checks">
+          {len("minTraceWidth", 0.01, "Minimum trace width")}
+        </RuleRow>
+        <div className="space-y-1">
+          <span className="block text-[12.5px] text-ink-2" title="Offered for a selected trace, and cycled with W while routing">
+            Preferred widths <span className="text-ink-3">({unit})</span>
+          </span>
+          <WidthsInput rules={r} />
+        </div>
+      </RuleGroup>
+
+      <RuleGroup title="Clearance">
+        <RuleRow label="Copper to copper" hint="Between traces, pads, vias and pours on different nets">
+          {len("clearance", 0.01, "Copper clearance")}
+        </RuleRow>
+        <RuleRow label="Copper to board edge" hint="Traces, vias and pads keep this far from the outline; pours are inset by it">
+          {len("edgeClearance", 0, "Copper to board edge")}
+        </RuleRow>
+        <RuleRow label="Hole to hole" hint="Drill edge to drill edge, between vias and the holes of different parts">
+          {len("holeClearance", 0, "Hole to hole clearance")}
+        </RuleRow>
+      </RuleGroup>
+
+      <RuleGroup title="Vias and holes">
+        <RuleRow label="Via diameter" hint="Copper diameter of new vias">
+          {len("viaDiameter", 0.1, "Via diameter")}
+        </RuleRow>
+        <RuleRow label="Via drill" hint="Drill of new vias">
+          {len("viaDrill", 0.05, "Via drill")}
+        </RuleRow>
+        <RuleRow label="Minimum drill" hint="Smaller holes fail the checks">
+          {len("minDrill", 0.01, "Minimum drill")}
+        </RuleRow>
+        <RuleRow label="Minimum annular ring" hint="Copper left around a plated hole: (pad - drill) / 2">
+          {len("minAnnularRing", 0, "Minimum annular ring")}
+        </RuleRow>
+        <RuleRow label="Via in pad" hint="Let vias sit in SMD pads; the fab fills and caps them, usually at extra cost">
+          <Switch label="Allow via in pad" checked={r.viaInPad} onChange={(viaInPad) => setRules({ viaInPad })} />
+        </RuleRow>
+        <p className={`text-[11.5px] ${ring < r.minAnnularRing - 1e-6 ? "text-danger" : "text-ink-3"}`}>
+          New vias have a {formatLength(ring, unit, true)} ring{ring < r.minAnnularRing - 1e-6 ? `, below the ${formatLength(r.minAnnularRing, unit, true)} minimum` : ""}.
+        </p>
+      </RuleGroup>
+
+      <RuleGroup title="Solder mask and paste">
+        <RuleRow label="Mask expansion" hint="How far the mask opening reaches past each pad">
+          {len("maskExpansion", 0, "Solder mask expansion")}
+        </RuleRow>
+        <RuleRow label="Paste expansion" hint="Stencil aperture past each SMD pad; negative shrinks it">
+          <LengthInput ariaLabel="Paste expansion" min={-1} value={r.pasteExpansion} onCommit={(v) => v !== null && setRules({ pasteExpansion: v })} />
+        </RuleRow>
+        <RuleRow label="Tent vias" hint="Cover vias with solder mask; untented vias are left open like pads">
+          <Switch label="Tent vias" checked={r.tentVias} onChange={(tentVias) => setRules({ tentVias })} />
+        </RuleRow>
+      </RuleGroup>
+
+      <RuleGroup title="Copper pours">
+        <RuleRow label="Clearance" hint="Gap between a pour and copper on other nets">
+          {len("pourClearance", 0.05, "Pour clearance")}
+        </RuleRow>
+        <RuleRow label="Minimum width" hint="Necks of pour thinner than this are removed">
+          {len("pourMinWidth", 0.05, "Pour minimum width")}
+        </RuleRow>
+        <Group label="Thermal relief">
+          <Segmented
+            size="sm"
+            value={r.thermalRelief}
+            onChange={(thermalRelief) => setRules({ thermalRelief })}
+            options={THERMAL_RELIEF_OPTIONS}
+          />
+        </Group>
+        {r.thermalRelief !== "direct" && (
+          <>
+            <RuleRow label="Spokes">
+              <Segmented<string>
+                size="sm"
+                value={String(r.thermalSpokes)}
+                onChange={(v) => setRules({ thermalSpokes: v === "2" ? 2 : 4 })}
+                options={[
+                  { value: "2", label: "2" },
+                  { value: "4", label: "4" },
+                ]}
+              />
+            </RuleRow>
+            <RuleRow label="Spoke angle">
+              <Segmented<string>
+                size="sm"
+                value={String(r.thermalSpokeAngle)}
+                onChange={(v) => setRules({ thermalSpokeAngle: v === "45" ? 45 : 0 })}
+                options={[
+                  { value: "0", label: "90°", title: "Square to the pad" },
+                  { value: "45", label: "45°", title: "Diagonal" },
+                ]}
+              />
+            </RuleRow>
+            <RuleRow label="Spoke width">{len("thermalSpokeWidth", 0.1, "Thermal spoke width")}</RuleRow>
+          </>
+        )}
+      </RuleGroup>
+    </Section>
+  )
+}
+
+const LAYER_LABEL: Record<CopperLayer, string> = { top: "Top", bottom: "Bottom" }
+
+function PoursSection({ project }: { project: Project }) {
+  const conn = getConnectivity(project)
+  const fills = getPcbAnalysis(project).zoneFills
+  const named = conn.nets.filter((n) => n.pins.length > 0 && !n.name.startsWith("Net-")).map((n) => n.name)
+  const [net, setNet] = useState("")
+  const [layer, setLayer] = useState<CopperLayer>("bottom")
+  const chosen = named.includes(net) ? net : (named.find((n) => n === "GND") ?? named[0] ?? "")
+  const exists = project.zones.some((z) => z.net === chosen && z.layer === layer)
+  const [pitch, setPitch] = useState(() => String(stitchPitch(project.board)))
+  const unit = useLengthUnit()
+  // Stitching needs the same net poured on both layers.
+  const stitchable = [...new Set(project.zones.map((z) => z.net))].filter((n) =>
+    (["top", "bottom"] as const).every((l) => project.zones.some((z) => z.net === n && z.layer === l)),
+  )
+  return (
+    <Section title="Copper pours" id="pours">
+      {project.zones.length === 0 ? (
+        <p className="text-[12.5px] text-ink-2">Fill unused copper with a net, usually GND, to shield signals and save routing.</p>
+      ) : (
+        <ul className="-mx-1.5">
+          {project.zones.map((z) => {
+            const fill = fills.find((f) => f.zoneId === z.id)
+            const empty = !fill || fill.polygons.length === 0
+            return (
+              <li key={z.id} className="flex items-center justify-between rounded-[6px] px-1.5 py-0.5 hover:bg-chrome">
+                <span className="text-[12.5px]">
+                  <span className="mono text-ink">{z.net}</span>
+                  <span className="text-ink-2"> on {LAYER_LABEL[z.layer].toLowerCase()}</span>
+                  {z.clearance !== undefined && <span className="text-ink-3">, {formatLength(zoneClearance(project, z.clearance), unit, true)} gap</span>}
+                  {empty && <span className="text-warn"> (no copper to fill)</span>}
+                </span>
+                <IconButton
+                  label={`Remove ${z.net} pour on ${z.layer}`}
+                  onClick={() => commitProject((p) => ({ ...p, zones: p.zones.filter((x) => x.id !== z.id) }))}
+                >
+                  <Trash2 size={14} />
+                </IconButton>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {named.length > 0 && (
+        <div className="flex items-center gap-1.5">
+          <select aria-label="Pour net" className="field mono h-8 min-w-0 flex-1" value={chosen} onChange={(e) => setNet(e.target.value)}>
+            {named.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <Segmented<CopperLayer>
+            size="sm"
+            value={layer}
+            onChange={setLayer}
+            options={[
+              { value: "top", label: "Top" },
+              { value: "bottom", label: "Bottom" },
+            ]}
+          />
+          <Button
+            disabled={!chosen || exists}
+            onClick={() => commitProject((p) => ({ ...p, zones: [...p.zones, { id: uid("z"), net: chosen, layer }] }))}
+            className="px-2"
+          >
+            <Plus size={14} /> Add
+          </Button>
+        </div>
+      )}
+      {stitchable.map((n) => {
+        const count = stitchCount(project, n)
+        return (
+          <div key={n} className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[12.5px] text-ink-2">
+                <span className="mono text-ink">{n}</span> stitching{count ? `: ${count} vias` : " is off"}
+              </span>
+              {count > 0 && (
+                <IconButton label={`Remove ${n} stitching vias`} onClick={() => projectApi().commit((p) => removeStitching(p, n))}>
+                  <Trash2 size={14} />
+                </IconButton>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Segmented
+                size="sm"
+                value={pitch}
+                onChange={setPitch}
+                options={STITCH_PITCHES.map(String).map((v) => ({ value: v, label: `${v} mm`, title: `One via every ${v} mm` }))}
+              />
+              <Button onClick={() => projectApi().commit((p) => stitchVias(p, n, Number(pitch)).project)} className="flex-1 px-2">
+                {count ? "Restitch" : "Stitch layers"}
+              </Button>
+            </div>
+          </div>
+        )
+      })}
+    </Section>
+  )
+}
+
+function NetsSection({ project }: { project: Project }) {
+  const conn = getConnectivity(project)
+  const highlightNet = useUi((s) => s.highlightNet)
+  const unit = useLengthUnit()
+  const nets = conn.nets.filter((n) => n.pins.length > 0)
+  const highlighted = nets.find((n) => n.id === highlightNet)
+  return (
+    <Section title="Nets" id="nets" action={nets.length > 0 && <span className="text-[12px] text-ink-3">{nets.length}</span>}>
+      {nets.length === 0 ? (
+        <p className="text-[12.5px] text-ink-2">Wire pins together in the schematic to create nets.</p>
+      ) : (
+        <ul className="-mx-1.5 max-h-[280px] overflow-y-auto scroll-thin">
+          {nets.map((n) => (
+            <li key={n.id}>
+              <button
+                onClick={() => uiApi().setHighlightNet(highlightNet === n.id ? null : n.id)}
+                className={`flex w-full items-center justify-between rounded-[6px] px-1.5 py-1 text-left text-[12.5px] ${highlightNet === n.id ? "bg-select-soft" : "hover:bg-chrome"}`}
+              >
+                <span className="mono truncate text-ink">{n.name}</span>
+                <span className="flex items-center gap-2 text-ink-3">
+                  {project.rules.netWidths?.[n.name] !== undefined && <span className="mono">{formatLength(project.rules.netWidths[n.name], unit, true)}</span>}
+                  {n.pins.length}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {highlighted && <NetWidthField project={project} net={highlighted.name} />}
+    </Section>
+  )
+}
+
+/** Trace width for one net; empty means the design-rule width. */
+function NetWidthField({ project, net }: { project: Project; net: string }) {
+  const unit = useLengthUnit()
+  const own = project.rules.netWidths?.[net]
+  const set = (mm: number | null) =>
+    commitProject((p) => {
+      const { [net]: _, ...rest } = p.rules.netWidths ?? {}
+      const netWidths = mm === null ? rest : { ...rest, [net]: Math.max(p.rules.minTraceWidth, mm) }
+      return { ...p, rules: { ...p.rules, netWidths } }
+    })
+  return (
+    <Field label={`Trace width for ${net}`} hint={`Empty uses the default ${formatLength(project.rules.traceWidth, unit, true)}. Applies to new traces and the autorouter.`}>
+      <LengthInput optional value={own ?? null} placeholder={formatLength(project.rules.traceWidth, unit)} onCommit={set} />
+    </Field>
+  )
+}

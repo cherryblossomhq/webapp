@@ -1,85 +1,43 @@
-import path from "path";
-import { readFileSync } from "fs";
-import { createRequire } from "module";
-import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-// The /api/proxy handler, mounted into the dev and preview servers.
-import handleProxyRequest from "./server/proxy.mjs";
+import { fileURLToPath } from "node:url"
+import { defineConfig, type Plugin } from "vite"
+import react from "@vitejs/plugin-react"
+import tailwindcss from "@tailwindcss/vite"
+import { themeScript } from "./src/store/themeScript"
 
-const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as {
-  version: string;
-};
-
-// Resolve React through Node rather than a hardcoded ./node_modules path, so a
-// hoisted install (npm workspaces, pnpm) resolves the same single copy.
-const require = createRequire(import.meta.url);
-const reactDir = path.dirname(require.resolve("react/package.json"));
-const reactDomDir = path.dirname(require.resolve("react-dom/package.json"));
-
-// Serve /api/proxy from the dev + preview servers.
-function proxyEndpoint(): Plugin {
-  return {
-    name: "cherryblossom-proxy-endpoint",
-    configureServer(server) {
-      server.middlewares.use("/api/proxy", handleProxyRequest);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use("/api/proxy", handleProxyRequest);
-    },
-  };
+/**
+ * The two packages the editor imports from the hosted app's monorepo, answered
+ * here by local stand-ins (see `host/`). `vitest.config.ts` and `tsconfig.json`
+ * carry the same map.
+ */
+export const hostAliases = {
+  "@cherryblossom/api-contract": fileURLToPath(new URL("./host/contract.ts", import.meta.url)),
+  "@cherryblossom/ai-models": fileURLToPath(new URL("./host/ai-models.ts", import.meta.url)),
 }
 
-// https://vitejs.dev/config/
+/** Sets the theme before first paint, so a dark-mode visitor never sees a light flash. */
+function themeBeforePaint(): Plugin {
+  return {
+    name: "cherryblossom-theme-script",
+    transformIndexHtml: () => [{ tag: "script", children: themeScript, injectTo: "head" }],
+  }
+}
+
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss(), proxyEndpoint()],
-
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-      // Force all React imports to the top-level copy to prevent
-      // version conflicts from nested dependencies (e.g. tscircuit packages)
-      react: reactDir,
-      "react-dom": reactDomDir,
-      "react/jsx-runtime": path.join(reactDir, "jsx-runtime"),
-      "react/jsx-dev-runtime": path.join(reactDir, "jsx-dev-runtime"),
-    },
-  },
-
+  plugins: [react(), tailwindcss(), themeBeforePaint()],
+  resolve: { alias: hostAliases },
+  // The editor is written to be bundled by any host, and reads `process.env.NODE_ENV` rather than
+  // `import.meta.env`. Mode-aware, so a production build never ships the development hook.
   define: {
-    // Mode-aware: this top-level define applies to `vite build` too, and an
-    // explicit NODE_ENV here overrides Vite's per-mode default — hardcoding
-    // "development" would ship dev-mode React in the production bundle.
-    "process.env.NODE_ENV": JSON.stringify(
-      mode === "production" ? "production" : "development"
-    ),
-    "process.env": "{}",
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    "process.env.NODE_ENV": JSON.stringify(mode === "production" ? "production" : "development"),
   },
-
-  // Pre-bundle the deps the schematic editor + tsx parsing need at startup.
-  // Heavy packages used only by lazy-loaded routes (eval, pcb-viewer, 3d-viewer)
-  // are intentionally NOT included here so dev boot stays fast — they get
-  // bundled on demand the first time the user touches a tab that needs them.
-  optimizeDeps: {
-    include: [
-      "@tscircuit/props",
-      "schematic-symbols",
-      "recast",
-      "@babel/traverse",
-      "@babel/types",
-      "@babel/parser",
-    ],
-    esbuildOptions: {
-      define: {
-        "process.env.NODE_ENV": JSON.stringify("development"),
-        "process.env": "{}",
-      },
-    },
-  },
-
-  // Suppress the large chunk size warning (tscircuit is a big library)
+  worker: { format: "es" },
+  // The workers (`new Worker(new URL(...))`) are invisible to the dependency scan, so the first
+  // STEP file or Tidy in a fresh dev server would find their dependencies late, re-optimise, and
+  // lose the worker's request to a stale chunk.
+  optimizeDeps: { entries: ["index.html", "src/**/*.worker.ts"] },
   build: {
-    chunkSizeWarningLimit: 10000,
+    target: "es2022",
+    // three.js and the STEP reader are big on their own; both load lazily with the 3D view.
+    chunkSizeWarningLimit: 2000,
   },
-}));
+}))

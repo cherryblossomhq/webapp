@@ -15,9 +15,9 @@ Closes #
 
 ## Checklist
 
-- [ ] `npm run check` passes (lint + typecheck + test)
+- [ ] `npm run check` passes (typecheck + unit tests + build)
 - [ ] Added or updated tests for the behaviour this changes
-- [ ] Ran `npm run test:e2e` if this touches the PCB canvas or router
-- [ ] Checked a narrow window by hand if this touches layout below the 800px
-      compact breakpoint (no automated coverage there)
+- [ ] Ran `npm run test:e2e` if this touches bundling, workers, the 3D view or saving
+- [ ] Ran `npm run examples` and committed the JSON if this changes a template,
+      a part, a footprint, the router or the pours
 - [ ] No unrelated reformatting in the diff

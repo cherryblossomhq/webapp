@@ -1,11 +1,14 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test"
 
-// Smoke tests drive the app in a real browser against the Vite dev server —
-// the same way it ships.
+// The editor in a real browser, against the Vite dev server: the stylesheet, the lazy 3D chunk,
+// the workers and the examples' JSON, none of which the unit tests see. Hermetic: no backend and
+// no network beyond localhost. `E2E_PORT` moves it off 5173 when that is taken.
+const port = Number(process.env.E2E_PORT ?? 5173)
+const origin = `http://localhost:${port}`
+
 export default defineConfig({
   testDir: "./e2e",
-  // Most editor flows are stateful; running tests serially keeps them
-  // predictable while the suite is small.
+  // Most editor flows are stateful; running tests serially keeps them predictable.
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
@@ -14,28 +17,20 @@ export default defineConfig({
   timeout: 30_000,
 
   use: {
-    // `localhost`, not `127.0.0.1`: a browser treats them as distinct origins,
-    // and `localhost:5173` is the dev server developers actually run.
-    baseURL: "http://localhost:5173",
+    baseURL: origin,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",
   },
 
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 
   webServer: {
-    // Starting Vite directly keeps the suite runnable in a fresh checkout + CI.
-    command: "npm exec vite -- --host localhost --port 5173",
-    url: "http://localhost:5173",
+    command: `npm exec vite -- --host localhost --port ${port} --strictPort`,
+    url: origin,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     stdout: "ignore",
     stderr: "pipe",
   },
-});
+})

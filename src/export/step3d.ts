@@ -1,3 +1,4 @@
+import { drillsThrough } from "../model/stack"
 import * as THREE from "three"
 import { generatedModel, placedComponents } from "../editor/three/buildBoard"
 import { fetchModelBytes, modelLibrary } from "../editor/three/files/library"
@@ -141,7 +142,7 @@ export function stepBoard(project: Project): StepExportInput["board"] {
     }
   }
   // Only a through via cuts the whole board; blind, buried and micro vias stay inside it (see the note in stepFile).
-  for (const v of project.vias) if (!v.kind) place(v.x, v.y, v.drill)
+  for (const v of project.vias) if (drillsThrough(project.board, v)) place(v.x, v.y, v.drill)
   for (const h of mountingHoles(b)) place(h.x, h.y, h.drill)
   return {
     outline: { x: b.x, y: b.y, width: b.width, height: b.height, cornerRadius: b.cornerRadius, ...(g ? { regions: stepRegions(g, b.outline!.paths) } : {}) },

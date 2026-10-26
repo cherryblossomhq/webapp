@@ -153,7 +153,7 @@ export function checkTexts(text: string, project: Project, opts: { font?: Oracle
       complain(`${f.ref || "a part"}: the part paired with this footprint is not at its place`)
       continue
     }
-    const world = componentTexts(c).map((w) => ({ w, used: false }))
+    const world = componentTexts(c, 2).map((w) => ({ w, used: false }))
     // A part at any angle (X6) is compared like any other: the oracle turns each text by the footprint's angle as KiCad does.
     if (!quarter(f.angle)) result.turned += f.texts.filter((t) => fileOf(t)).length
     if ((sharedPlace.get(`${f.at[0]},${f.at[1]},${f.bottom}`) ?? 0) > 1) result.pairedByOrder += f.texts.filter((t) => fileOf(t)).length

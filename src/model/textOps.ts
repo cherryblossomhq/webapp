@@ -5,6 +5,7 @@ import { findPart } from "./library"
 import { isPhysical } from "./instances"
 import { getDesignators, REF_SIZE, SILK_WIDTH } from "./silk"
 import { flipShapeLayer } from "./shapeLayers"
+import { copperCount } from "./stack"
 import { defaultTextId } from "./textCodec"
 import { isKicadText, isTextLayer, partTextWorld, type WorldText } from "./texts"
 import type { BoardText, ComponentInstance, PartText, Project, Rotation, TextAttrs, Vec2 } from "./types"
@@ -52,10 +53,10 @@ function setFlag<T extends object>(o: T, key: keyof TextAttrs, on: boolean | und
 }
 
 /** The attributes of a patch applied to a text's own fields (not its place, which depends on where the text is held). */
-function applyAttrs<T extends BoardText | PartText>(t: T, patch: TextPatch, partSide?: "top" | "bottom"): T {
+function applyAttrs<T extends BoardText | PartText>(t: T, patch: TextPatch, partSide?: "top" | "bottom", count = 2): T {
   const next = { ...t } as T & Record<string, unknown>
   if (patch.text !== undefined && (("kind" in t && t.kind === "user") || !("kind" in t))) next.text = patch.text
-  if (patch.layer !== undefined && isTextLayer(patch.layer)) next.layer = partSide === "bottom" ? flipShapeLayer(patch.layer) : patch.layer
+  if (patch.layer !== undefined && isTextLayer(patch.layer)) next.layer = partSide === "bottom" ? flipShapeLayer(patch.layer, count) : patch.layer
   if (finite(patch.size) && patch.size > 0) next.size = r6(patch.size)
   if (patch.w !== undefined) {
     if (patch.w === null || (finite(patch.w) && Math.abs(patch.w - next.size) < 1e-9)) delete next.w
@@ -169,7 +170,7 @@ export function updatePartText(project: Project, componentId: string, index: num
     if (!texts[index]) return null
     return texts.map((t, i) => {
       if (i !== index) return t
-      const next = applyAttrs(t, patch, c.pcb.side)
+      const next = applyAttrs(t, patch, c.pcb.side, copperCount(project.board))
       // The mirror flag on the board is the land's the other way round on the bottom.
       if (patch.mirror !== undefined) {
         const landMirror = c.pcb.side === "bottom" ? !patch.mirror : patch.mirror
@@ -178,7 +179,7 @@ export function updatePartText(project: Project, componentId: string, index: num
       }
       if (finite(patch.rot)) next.rot = landAngle(c, patch.rot)
       if (finite(patch.x) || finite(patch.y)) {
-        const world = partTextWorld(c, t, i)
+        const world = partTextWorld(c, t, i, copperCount(project.board))
         const p = landPoint(c, { x: finite(patch.x) ? patch.x : world.x, y: finite(patch.y) ? patch.y : world.y })
         next.x = p.x
         next.y = p.y
@@ -211,7 +212,7 @@ export function addPartText(project: Project, componentId: string, text: { text:
   const seeded = c.texts ? project : withDesignatorText(project, componentId)
   const part = seeded.components.find((x) => x.id === componentId)!
   const p = landPoint(part, text.at)
-  const layer = text.layer && isTextLayer(text.layer) ? (part.pcb.side === "bottom" ? flipShapeLayer(text.layer) : text.layer) : "F.SilkS"
+  const layer = text.layer && isTextLayer(text.layer) ? (part.pcb.side === "bottom" ? flipShapeLayer(text.layer, copperCount(project.board)) : text.layer) : "F.SilkS"
   const added: PartText = { kind: "user", text: text.text, layer, x: p.x, y: p.y, size: text.size ?? REF_SIZE, rot: landAngle(part, 0), thickness: SILK_WIDTH }
   const texts = [...(part.texts ?? []), added]
   return { project: touch({ ...seeded, components: seeded.components.map((x) => (x.id === componentId ? { ...x, texts } : x)) }), index: texts.length - 1 }

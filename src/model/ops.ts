@@ -11,6 +11,7 @@ import {
   transformBox,
 } from "../lib/geometry"
 import { uid } from "../lib/id"
+import { copperLayers } from "./stack"
 import { SpatialHash, pointBox } from "../lib/spatialHash"
 import { blockFrames, blocksWithout } from "./blocks"
 import { UnionFind, computeConnectivity, type SchematicConnectivity } from "./connectivity"
@@ -188,6 +189,8 @@ export function addLabel(project: Project, name: string, at: Vec2, rot: Rotation
 export function addTrace(project: Project, trace: Omit<Trace, "id">): { project: Project; trace: Trace | null } {
   const points = simplifyPolyline(trace.points.map((p) => ({ x: round(p.x), y: round(p.y) })))
   if (points.length < 2) return { project, trace: null }
+  // No copper on a layer the board lacks: a load would drop it.
+  if (!copperLayers(project.board).includes(trace.layer)) return { project, trace: null }
   const t: Trace = { ...trace, points, id: uid("t") }
   return { project: touch({ ...project, traces: [...project.traces, t] }), trace: t }
 }

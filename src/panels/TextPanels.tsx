@@ -1,5 +1,6 @@
 import { Plus, RotateCcw, Trash2 } from "lucide-react"
 import { useState } from "react"
+import { copperCount } from "../model/stack"
 import { addPartText, patchTexts, removeBoardTexts, removePartText, resetPartTexts, withDesignatorText, type TextPatch } from "../model/textOps"
 import { componentTexts, parseTextId, shownOf, type WorldText } from "../model/texts"
 import type { ComponentInstance, Project } from "../model/types"
@@ -179,7 +180,7 @@ export function TextInspector({ texts, project }: { texts: WorldText[]; project:
 
 /** A part's texts: its reference, its value and its own, listed and picked, with a way to add one and to hand the designator back to the editor. */
 export function PartTextsSection({ c, project }: { c: ComponentInstance; project: Project }) {
-  const list = componentTexts(c)
+  const list = componentTexts(c, copperCount(project.board))
   const own = !!c.texts
   const [confirming, setConfirming] = useState(false)
   return (

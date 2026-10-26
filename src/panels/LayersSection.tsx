@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { copperColor } from "../editor/theme"
 import { defaultStackup, layerContent, setCopperLayer, setCopperLayerCount, setStackSettings, setStackup, updateStackRow, type LayerContent } from "../model/layerOps"
 import { copperLayers, innerLayers, layerLabel, layerType, MAX_COPPER_LAYERS } from "../model/stack"
@@ -38,7 +38,10 @@ export function LayersSection({ project }: { project: Project }) {
   const counts = Array.from({ length: MAX_COPPER_LAYERS / 2 }, (_, i) => (i + 1) * 2)
   const wanted = pending ?? stack.length
   // What going to the wanted count would delete.
-  const losing = innerLayers({ stack: setCopperLayerCount(project, wanted).project.board.stack }).length < innerLayers(project.board).length ? setCopperLayerCount(project, wanted).removed : null
+  const losing = useMemo(() => {
+    const smaller = setCopperLayerCount(project, wanted)
+    return innerLayers({ stack: smaller.project.board.stack }).length < innerLayers(project.board).length ? smaller.removed : null
+  }, [project, wanted])
   const sentence = losing ? contentSentence(losing) : ""
   return (
     <Section title="Copper layers" id="copper-layers" action={<span className="text-[12px] text-ink-3">{stack.length}</span>}>

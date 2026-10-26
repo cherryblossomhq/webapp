@@ -7,6 +7,7 @@
 // should have received a copy of the GNU General Public License along with this program; if not, see
 // <https://www.gnu.org/licenses/>.
 
+import { copperCount } from "./stack"
 import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
 import { transformPoint } from "../lib/geometry"
 import { inkBox, iuToMm, kiRound, knockoutMargin, layoutText, linebreakText, mmToIu, strokeFont, type IuBox, type StrokeFontData, type TextAttrsIu, type TextStrokes } from "../lib/kicadText"
@@ -126,18 +127,18 @@ export function expandTextVars(text: string, resolve: (token: string) => string 
 }
 
 /** The layer a part's text is on in the board (its land layer, the other side on the bottom). */
-const partLayer = (c: ComponentInstance, layer: string | undefined) => (layer === undefined ? undefined : c.pcb.side === "bottom" ? flipShapeLayer(layer) : layer)
+const partLayer = (c: ComponentInstance, layer: string | undefined, count: number) => (layer === undefined ? undefined : c.pcb.side === "bottom" ? flipShapeLayer(layer, count) : layer)
 
 /** The text a part's reference text shows. */
 export function referenceShown(project: Project, c: ComponentInstance, depth = 0): string {
   const t = c.texts?.find((x) => x.kind === "reference")
-  return t?.text !== undefined ? textShown(project, c, t.text, depth + 1, undefined, partLayer(c, t.layer)) : c.ref
+  return t?.text !== undefined ? textShown(project, c, t.text, depth + 1, undefined, partLayer(c, t.layer, copperCount(project.board))) : c.ref
 }
 
 /** The text a part's value text shows. */
 export function valueShown(project: Project, c: ComponentInstance, depth = 0): string {
   const t = c.texts?.find((x) => x.kind === "value")
-  return t?.text !== undefined ? textShown(project, c, t.text, depth + 1, undefined, partLayer(c, t.layer)) : valueText(c)
+  return t?.text !== undefined ? textShown(project, c, t.text, depth + 1, undefined, partLayer(c, t.layer, copperCount(project.board))) : valueText(c)
 }
 
 /** The part's footprint name and library as KiCad's `m_fpid` has them: `Library:Name` (the first colon splits them); a part drawn here has no library and its footprint is its name. */
@@ -294,28 +295,28 @@ function fromAttrs(base: Pick<WorldText, "id" | "owner" | "index" | "kind" | "pl
 }
 
 /** A part's text where the part has put it. */
-export function partTextWorld(c: ComponentInstance, t: PartText, index: number): WorldText {
+export function partTextWorld(c: ComponentInstance, t: PartText, index: number, copperCount: number): WorldText {
   const bottom = c.pcb.side === "bottom"
   const p = transformPoint(t, c.pcb, c.pcb.rot, bottom)
   return fromAttrs(
     { id: partTextId(c.id, index), owner: c.id, index, kind: t.kind, placed: c.pcb.placed, source: t, content: t.text ?? "", component: c },
     t,
-    { x: p.x, y: p.y, rot: norm360(bottom ? c.pcb.rot - t.rot : c.pcb.rot + t.rot), mirror: bottom ? !t.mirror : t.mirror === true, layer: bottom ? flipShapeLayer(t.layer) : t.layer },
+    { x: p.x, y: p.y, rot: norm360(bottom ? c.pcb.rot - t.rot : c.pcb.rot + t.rot), mirror: bottom ? !t.mirror : t.mirror === true, layer: bottom ? flipShapeLayer(t.layer, copperCount) : t.layer },
     true,
   )
 }
 
-const cache = new WeakMap<ComponentInstance, WorldText[]>()
+const cache = new WeakMap<ComponentInstance, { count: number; value: WorldText[] }>()
 
 /** The world texts of one part; cached per component object (a component is replaced, never edited): treat the result as read-only. */
-export function componentTexts(c: ComponentInstance): WorldText[] {
+export function componentTexts(c: ComponentInstance, copperCount: number): WorldText[] {
   if (!c.texts?.length) return []
   let hit = cache.get(c)
-  if (!hit) {
-    hit = c.texts.map((t, i) => partTextWorld(c, t, i))
+  if (!hit || hit.count !== copperCount) {
+    hit = { count: copperCount, value: c.texts.map((t, i) => partTextWorld(c, t, i, copperCount)) }
     cache.set(c, hit)
   }
-  return hit
+  return hit.value
 }
 
 /** The text of a dimension as a world text (X11): what KiCad shows for it, anchored where KiCad puts it, on the dimension's layer. Selecting it selects the dimension (`m:<id>`). */
@@ -360,11 +361,11 @@ export const DIMENSION_TEXT_OWNER = "#dim"
 /** Whether a world text is a dimension's: the texts the project holds as texts are not (the KiCad export writes a dimension with its text, not a text). */
 export const isDimensionText = (t: WorldText) => t.owner === DIMENSION_TEXT_OWNER
 
-let all: { components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] } | null = null
+let all: { board: Project["board"]; components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] } | null = null
 
 /** Every KiCad text of the board and of its parts, board text first. Reused while the parts and the board's text are unchanged. */
 export function worldTexts(project: Project): WorldText[] {
-  if (all && all.components === project.components && all.texts === project.texts && all.dimensions === project.dimensions) return all.value
+  if (all && all.board === project.board && all.components === project.components && all.texts === project.texts && all.dimensions === project.dimensions) return all.value
   const out: WorldText[] = []
   project.texts?.forEach((t, index) => {
     if (!isKicadText(t)) return
@@ -376,9 +377,9 @@ export function worldTexts(project: Project): WorldText[] {
   }
   for (const c of project.components) {
     if (!isPhysical(findPart(c.partId))) continue
-    out.push(...componentTexts(c))
+    out.push(...componentTexts(c, copperCount(project.board)))
   }
-  all = { components: project.components, texts: project.texts, dimensions: project.dimensions, value: out }
+  all = { board: project.board, components: project.components, texts: project.texts, dimensions: project.dimensions, value: out }
   return out
 }
 

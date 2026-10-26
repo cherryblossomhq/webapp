@@ -1,4 +1,5 @@
-import { componentFootprint } from "../src/model/instances"
+import { componentFootprint, pcbShapes } from "../src/model/instances"
+import { componentTexts } from "../src/model/texts"
 import { copperLayers, viaLayers } from "../src/model/stack"
 import type { Project } from "../src/model/types"
 import { arcLength, layersOracle } from "./kicad-census/layers.mjs"
@@ -76,6 +77,16 @@ export function checkLayers(text: string, project: Project, lossy: string[] = []
       wrong.push(`vias differ from the file's in kind or layers: project ${JSON.stringify(tally(a))}, file ${JSON.stringify(tally(b))}`)
     }
   }
+  // footprint graphics and texts on an inner copper layer sit on the layer the file gives them in the board (a bottom part's are held in the part's frame)
+  const count = stack.length
+  const innerName = /^In\d+\.Cu$/
+  const onBoard: string[] = []
+  for (const c of project.components) {
+    for (const s of pcbShapes(c, count)) if (innerName.test(s.layer)) onBoard.push(s.layer)
+    for (const t of componentTexts(c, count)) if (innerName.test(t.layer)) onBoard.push(t.layer)
+  }
+  onBoard.sort()
+  if (o.fpInner.length && onBoard.join() !== o.fpInner.join()) wrong.push(`footprint drawings and texts on inner copper: project ${onBoard.join(" ")}, file ${o.fpInner.join(" ")}`)
   // padstacks: pads of the project that carry a stack
   let stacked = 0
   for (const c of project.components) stacked += (componentFootprint(c)?.pads ?? []).filter((p) => p.stack).length

@@ -26,7 +26,7 @@ describe("where a part's text is on the board", () => {
   const land: PartText = { kind: "user", text: "X", layer: "F.SilkS", x: 3, y: 0, size: 1, rot: 0 }
   const at = (rot: Rotation, side: "top" | "bottom", over: Partial<PartText> = {}) => {
     const c = { id: "c", partId: "p", ref: "U1", props: {}, footprint: "f", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 10, y: 5, rot, side, placed: true }, texts: [{ ...land, ...over }] } as ComponentInstance
-    const w = partTextWorld(c, c.texts![0], 0)
+    const w = partTextWorld(c, c.texts![0], 0, 2)
     return { x: round(w.x), y: round(w.y), rot: w.rot, layer: w.layer, mirror: w.mirror }
   }
   it("moves and turns with the part on the top", () => {
@@ -47,7 +47,7 @@ describe("where a part's text is on the board", () => {
     for (const rot of [0, 90, 180, 270] as Rotation[]) {
       for (const side of ["top", "bottom"] as const) {
         const c = { id: "c", partId: "p", ref: "U1", props: {}, footprint: "f", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 10, y: 5, rot, side, placed: true }, texts: [{ ...land, x: 3.25, y: -1.5, rot: 20 }] } as ComponentInstance
-        const w = partTextWorld(c, c.texts![0], 0)
+        const w = partTextWorld(c, c.texts![0], 0, 2)
         expect(landPoint(c, { x: w.x, y: w.y })).toEqual({ x: 3.25, y: -1.5 })
         expect(landAngle(c, w.rot)).toBeCloseTo(20, 9)
       }
@@ -55,10 +55,10 @@ describe("where a part's text is on the board", () => {
   })
   it("a keep-upright text is drawn upright, a text with 'unlocked' is not, and a text box never is", () => {
     const c = (t: Partial<PartText>) => ({ id: "c", partId: "p", ref: "U1", props: {}, footprint: "f", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot: 180 as Rotation, side: "top" as const, placed: true }, texts: [{ ...land, ...t }] }) as ComponentInstance
-    expect(partTextWorld(c({}), c({}).texts![0], 0).drawRot).toBe(0)
-    expect(partTextWorld(c({ upright: false }), c({ upright: false }).texts![0], 0).drawRot).toBe(180)
+    expect(partTextWorld(c({}), c({}).texts![0], 0, 2).drawRot).toBe(0)
+    expect(partTextWorld(c({ upright: false }), c({ upright: false }).texts![0], 0, 2).drawRot).toBe(180)
     const box = { w: 3, h: 1, margins: [0, 0, 0, 0] as [number, number, number, number] }
-    expect(partTextWorld(c({ box }), c({ box }).texts![0], 0).drawRot).toBe(180)
+    expect(partTextWorld(c({ box }), c({ box }).texts![0], 0, 2).drawRot).toBe(180)
   })
   it("ids say what a text is", () => {
     expect(parseTextId(boardTextId("kt3"))).toEqual({ kind: "board", text: "kt3" })
@@ -95,7 +95,7 @@ describe("variables", () => {
     let p = blinker()
     const c = part(p)
     p = addPartText(p, c.id, { text: "${REFERENCE} ${VALUE}", at: { x: 0, y: 0 } }).project
-    const w = componentTexts(p.components.find((x) => x.id === c.id)!).find((t) => t.kind === "user")!
+    const w = componentTexts(p.components.find((x) => x.id === c.id)!, 2).find((t) => t.kind === "user")!
     expect(shownOf(p, w)).toMatch(new RegExp(`^${c.ref} `))
   })
 })
@@ -147,7 +147,7 @@ describe("editing a part's text", () => {
   }
   const world = (p: Project, id: string, index: number) => {
     const c = p.components.find((x) => x.id === id)!
-    return partTextWorld(c, c.texts![index], index)
+    return partTextWorld(c, c.texts![index], index, 2)
   }
   it("a text added at a place on the board is there, whatever the part's turn and side", () => {
     const { p, id, index } = flipped()
@@ -187,7 +187,7 @@ describe("editing a part's text", () => {
     const p1 = withDesignatorText(p0, c.id)
     const c1 = p1.components.find((x) => x.id === c.id)!
     expect(c1.texts).toHaveLength(1)
-    const w = componentTexts(c1)[0]
+    const w = componentTexts(c1, 2)[0]
     expect([round(w.x), round(w.y)]).toEqual([round(d.x), round(d.y)])
     expect(w.size).toBe(d.size)
     expect(w.rot % 180).toBe(d.rot)
@@ -205,9 +205,9 @@ describe("editing a part's text", () => {
     const c = part(p)
     p = withDesignatorText(p, c.id)
     p = { ...p, components: p.components.map((x) => (x.id === c.id ? { ...x, texts: [{ ...x.texts![0], text: "REF**" }] } : x)) }
-    expect(shownOf(p, componentTexts(p.components.find((x) => x.id === c.id)!)[0])).toBe("REF**")
+    expect(shownOf(p, componentTexts(p.components.find((x) => x.id === c.id)!, 2)[0])).toBe("REF**")
     p = updateComponent(p, c.id, { ref: "Z9" })
-    expect(shownOf(p, componentTexts(p.components.find((x) => x.id === c.id)!)[0])).toBe("Z9")
+    expect(shownOf(p, componentTexts(p.components.find((x) => x.id === c.id)!, 2)[0])).toBe("Z9")
     // another change leaves it
     const q = updateComponent(p, c.id, { pcb: { x: 1 } })
     expect(q.components.find((x) => x.id === c.id)!.texts).toEqual(p.components.find((x) => x.id === c.id)!.texts)
@@ -278,7 +278,7 @@ describe("the PCB view's rules for text", () => {
     const onlyFab = p
     p = addPartText(p, c.id, { text: "SILK", at: { x: c.pcb.x, y: c.pcb.y }, layer: "F.SilkS" }).project
     p = addPartText(p, c.id, { text: "FAR", at: { x: c.pcb.x + 60, y: c.pcb.y + 60 }, layer: "F.Fab" }).project
-    const world = componentTexts(p.components.find((x) => x.id === c.id)!)
+    const world = componentTexts(p.components.find((x) => x.id === c.id)!, 2)
     const centre = (t: (typeof world)[number]) => {
       const b = textInk(p, t).box!
       return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }
@@ -333,7 +333,7 @@ describe("the Inspector's facts about texts", () => {
     let p = blinker()
     const c = part(p)
     p = addPartText(p, c.id, { text: "line one\nline two that is long and long", at: { x: 0, y: 0 } }).project
-    const w = componentTexts(p.components.find((x) => x.id === c.id)!).find((t) => t.kind === "user")!
+    const w = componentTexts(p.components.find((x) => x.id === c.id)!, 2).find((t) => t.kind === "user")!
     expect(textRowText(w, shownOf(p, w))).toBe("Text: line one line two that ...")
     expect(textRowText({ ...w, kind: "reference", hidden: true }, "U1")).toBe("Reference: U1 (hidden)")
   })

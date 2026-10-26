@@ -123,5 +123,17 @@ export function layersOracle(text) {
       if (mode && (mode[1] === "front_inner_back" || mode[1] === "custom")) padstacks++
     }
   }
-  return { copper, ids, stackRows: stackRows.length, thickness, arcs: arcs.length, arcLen, arcKeys, segments: segments.length, segLen, vias, padstacks }
+  // footprint-level graphics and text on inner copper, by the layer the file gives them (the board's own, whichever side the part is on): the importer flips a bottom part's
+  // into the part's frame and the editor flips them back, so the editor must end where the file is
+  const fpInner = []
+  const inner = /^In\d+\.Cu$/
+  for (const fp of kids(root, "footprint")) {
+    for (const g of fp) {
+      if (!Array.isArray(g) || !["fp_line", "fp_arc", "fp_circle", "fp_rect", "fp_poly", "fp_curve", "fp_text", "property"].includes(g[0])) continue
+      const l = kid(g, "layer")
+      if (l && typeof l[1] === "string" && inner.test(l[1])) fpInner.push(l[1])
+    }
+  }
+  fpInner.sort()
+  return { copper, ids, fpInner, stackRows: stackRows.length, thickness, arcs: arcs.length, arcLen, arcKeys, segments: segments.length, segLen, vias, padstacks }
 }

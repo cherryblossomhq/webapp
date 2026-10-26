@@ -139,7 +139,7 @@ describe("ellipses (KiCad's parametric definition, turned by its rotation in the
     const fp = footprint({ ref: "G1", name: "X:E", layer: "B.Cu", at: "50 20", pads: [pad({ at: "0 0", layers: '"B.Cu" "B.Paste" "B.Mask"' })], extra: '(fp_ellipse (center 2 1) (major_radius 3) (minor_radius 1) (rotation_angle 40) (stroke (width 0.1) (type solid)) (fill none) (layer "B.SilkS"))' })
     const r = imp(board({ body: [fp] }))
     const c = r.project.components[0]
-    const s = pcbShapes(c)[0]
+    const s = pcbShapes(c, 2)[0]
     expect(s.layer).toBe("B.SilkS")
     // The file's stored point at parameter t, on the board: at + stored (no turn), y flipped.
     const raw = pointAt({ x: 2, y: 1 }, 3, 1, 40, 70)
@@ -234,8 +234,8 @@ describe("a footprint's drawings", () => {
 
   it("lands where the file has it on a top part and on a bottom part", () => {
     const r = imp(board({ body: [fp("F.Cu", "U1", "10 10"), fp("B.Cu", "U2", "30 10")] }))
-    const top = pcbShapes(r.project.components.find((c) => c.ref === "U1")!)[0] as Extract<BoardShape, { type: "line" }>
-    const bottom = pcbShapes(r.project.components.find((c) => c.ref === "U2")!)[0] as Extract<BoardShape, { type: "line" }>
+    const top = pcbShapes(r.project.components.find((c) => c.ref === "U1")!, 2)[0] as Extract<BoardShape, { type: "line" }>
+    const bottom = pcbShapes(r.project.components.find((c) => c.ref === "U2")!, 2)[0] as Extract<BoardShape, { type: "line" }>
     expect(top.layer).toBe("F.SilkS")
     expect(top.a).toMatchObject({ x: 8, y: -9 })
     expect(bottom.layer).toBe("B.SilkS")

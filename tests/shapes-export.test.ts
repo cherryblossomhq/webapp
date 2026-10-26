@@ -459,7 +459,7 @@ function withLogo(side: "top" | "bottom" = "top", rot: 0 | 90 | 180 | 270 = 0, p
   return p
 }
 
-const pcbShapesOf = (p: Project, id: string) => pcbShapes(p.components.find((c) => c.id === id)!)
+const pcbShapesOf = (p: Project, id: string) => pcbShapes(p.components.find((c) => c.id === id)!, 2)
 
 describe("Gerber: a part's drawings", () => {
   const plotted = (p: Project, file: GerberLayerName) => parseGerber(gerberLayers(p)[file])

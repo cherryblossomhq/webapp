@@ -221,24 +221,24 @@ export function pcbSilk(c: ComponentInstance): Vec2[][] {
 }
 
 // A component is replaced, never edited, so its drawings on the board stay put for as long as the object (and its land) does.
-const shapeCache = new WeakMap<ComponentInstance, { fp: FootprintDef; shapes: BoardShape[] }>()
+const shapeCache = new WeakMap<ComponentInstance, { fp: FootprintDef; count: number; shapes: BoardShape[] }>()
 
 /**
  * The drawings of a component's land on the board, with a bottom-side part's mirrored and their
- * layers swapped (`F.SilkS` of a bottom part is on `B.SilkS`). Cached per component object: treat the result as read-only.
+ * layers swapped (`F.SilkS` of a bottom part is on `B.SilkS`, and on a board of `copperCount` layers an inner layer is its mirror in the stack). Cached per component object: treat the result as read-only.
  */
-export function pcbShapes(c: ComponentInstance): BoardShape[] {
+export function pcbShapes(c: ComponentInstance, copperCount: number): BoardShape[] {
   const fp = componentFootprint(c)
   if (!fp?.shapes?.length) return []
   const hit = shapeCache.get(c)
-  if (hit && hit.fp === fp) return hit.shapes
+  if (hit && hit.fp === fp && hit.count === copperCount) return hit.shapes
   const mirror = c.pcb.side === "bottom"
   const f = (p: Vec2) => transformPoint(p, c.pcb, c.pcb.rot, mirror)
   const shapes = fp.shapes.map((s) => {
     const m = mapShape(s, f)
-    return mirror ? { ...m, layer: flipShapeLayer(m.layer) } : m
+    return mirror ? { ...m, layer: flipShapeLayer(m.layer, copperCount) } : m
   })
-  shapeCache.set(c, { fp, shapes })
+  shapeCache.set(c, { fp, count: copperCount, shapes })
   return shapes
 }
 

@@ -2,6 +2,7 @@ import { dimensionShapes } from "./dimensions"
 import { findPart } from "./library"
 import { isPhysical, pcbShapes } from "./instances"
 import { shapeLayerInfo, type ShapeLayerKind } from "./shapeLayers"
+import { copperCount } from "./stack"
 import type { BoardShape, Project } from "./types"
 
 // Every drawing on the board in the board's frame, whether it is the board's own or a part's, with
@@ -44,19 +45,20 @@ export function parseShapeId(id: string): { kind: "board"; graphic: string } | {
 /** The kind of layer a drawing is on (a name that is none of KiCad's counts as a user layer). */
 export const shapeKind = (s: BoardShape): ShapeLayerKind => shapeLayerInfo(s.layer)?.kind ?? "user"
 
-let cache: { components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; dimensions: Project["dimensions"]; value: WorldShape[] } | null = null
+let cache: { board: Project["board"]; components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; dimensions: Project["dimensions"]; value: WorldShape[] } | null = null
 
 /** Every drawing of the board and of its parts, in the board's frame, board drawings first. Reused while parts, drawings and lands are unchanged. */
 export function worldShapes(project: Project): WorldShape[] {
-  if (cache && cache.components === project.components && cache.graphics === project.graphics && cache.footprints === project.footprints && cache.dimensions === project.dimensions) return cache.value
+  if (cache && cache.board === project.board && cache.components === project.components && cache.graphics === project.graphics && cache.footprints === project.footprints && cache.dimensions === project.dimensions) return cache.value
   const out: WorldShape[] = []
+  const count = copperCount(project.board)
   for (const g of project.graphics ?? []) out.push({ id: boardShapeId(g.id), owner: BOARD_SHAPE_OWNER, index: 0, shape: g, placed: true })
   // A dimension draws its extension lines, crossbar and arrows as lines of its layer, after the board's own drawings.
   for (const d of project.dimensions ?? []) dimensionShapes(d).forEach((shape, i) => out.push({ id: `${dimensionId(d.id)}:${i}`, owner: BOARD_SHAPE_OWNER, index: 0, shape, placed: true, dim: d.id, select: dimensionId(d.id) }))
   for (const c of project.components) {
     if (!isPhysical(findPart(c.partId))) continue
-    pcbShapes(c).forEach((shape, index) => out.push({ id: landShapeId(c.id, index), owner: c.id, index, shape, placed: c.pcb.placed }))
+    pcbShapes(c, count).forEach((shape, index) => out.push({ id: landShapeId(c.id, index), owner: c.id, index, shape, placed: c.pcb.placed }))
   }
-  cache = { components: project.components, graphics: project.graphics, footprints: project.footprints, dimensions: project.dimensions, value: out }
+  cache = { board: project.board, components: project.components, graphics: project.graphics, footprints: project.footprints, dimensions: project.dimensions, value: out }
   return out
 }

@@ -1,7 +1,7 @@
 import { uid } from "../lib/id"
 import { round } from "../lib/geometry"
 import { classValues } from "./netClasses"
-import { copperLayers, defaultStackup, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, spanKind, viaBetween, withCopperCount } from "./stack"
+import { copperLayers, defaultStackup, flipLayer, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, spanKind, viaBetween, withCopperCount } from "./stack"
 import type { BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind } from "./types"
 
 // X1, X4 and X5 as the editor edits them: pure functions that return a new project (or the same one when nothing changes), so each is one undo step and
@@ -92,7 +92,7 @@ export const viaKindName = (v: Pick<Via, "kind">): string => v.kind ?? "through"
 export function makeArcTrace(project: Project, opts: { layer: CopperLayer; start: Vec2; mid: Vec2; end: Vec2; width: number; net?: string; locked?: boolean }): { project: Project; trace: Trace | null } {
   const pts = [opts.start, opts.mid, opts.end].map((p) => ({ x: round(p.x), y: round(p.y) }))
   const cross = (pts[1].x - pts[0].x) * (pts[2].y - pts[1].y) - (pts[1].y - pts[0].y) * (pts[2].x - pts[1].x)
-  if (Math.abs(cross) < 1e-9) return { project, trace: null }
+  if (Math.abs(cross) < 1e-9 || !copperLayers(project.board).includes(opts.layer)) return { project, trace: null }
   const t: Trace = { id: uid("t"), layer: opts.layer, width: opts.width, points: pts, arc: true, ...(opts.locked ? { locked: true } : {}), ...(opts.net ? { net: opts.net } : {}) }
   return { project: touch({ ...project, traces: [...project.traces, t] }), trace: t }
 }
@@ -186,6 +186,7 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   const none: LayerContent = { traces: 0, vias: 0, zones: 0, drawings: 0, texts: 0, pads: 0 }
   if (n === had.length) return { project, removed: none }
   const board = withCopperCount(project.board, n)
+  project = keepBottomPartLayers(project, had.length, n)
   const keep = new Set(copperLayers(board))
   const gone = had.filter((l) => !keep.has(l))
   const removed = { ...none }
@@ -223,6 +224,47 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   removed.drawings = (project.graphics?.length ?? 0) - (next.graphics?.length ?? 0)
   removed.texts = project.texts.length - next.texts.length
   return { project: touch(next), removed }
+}
+
+/**
+ * A bottom-side part keeps its inner layers in its own frame (`flipLayer`: of four layers its `in1` is the board's `in2`), and that map depends on the layer
+ * count, so a count that changes would move the part's inner copper to another physical layer. This rewrites them, in the pad lists, the pad stacks, the land's
+ * drawings and the parts' texts, so each stays on the layer it is on in the board. A land used by a bottom-side part is written in the part's frame (as the
+ * KiCad import does), so a land shared with a top-side part is not supported. A layer the new stack lacks keeps its physical name and is dropped as usual.
+ */
+function keepBottomPartLayers(project: Project, from: number, to: number): Project {
+  if ((from < 4 && to < 4) || from === to) return project
+  const bottom = project.components.filter((c) => c.pcb.side === "bottom")
+  if (!bottom.length) return project
+  const alive = new Set<string>(copperLayers(withCopperCount(project.board, to)))
+  const id = (l: CopperLayer): CopperLayer => {
+    const physical = flipLayer(l, from)
+    return alive.has(physical) ? flipLayer(physical, to) : physical
+  }
+  const names = new Set(bottom.map((c) => c.footprint))
+  const mapShapeLayer = (n: string) => {
+    const l = layerOfKicadName(n)
+    return l && isInner(l) ? kicadLayerName(id(l)) : n
+  }
+  const footprints = project.footprints?.map((f) => {
+    if (!names.has(f.name)) return f
+    return {
+      ...f,
+      pads: f.pads.map((p) => {
+        let out = p
+        if (p.layers?.inner) out = { ...out, layers: { ...out.layers, inner: p.layers.inner.map(id) } }
+        if (p.layers?.other) out = { ...out, layers: { ...out.layers, other: p.layers.other.map(mapShapeLayer) } }
+        if (p.stack) {
+          const layers = Object.fromEntries(Object.entries(p.stack.layers).map(([k, v]) => [k === "inner" || k === "top" || k === "bottom" ? k : id(k as CopperLayer), v]))
+          out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
+        }
+        return out
+      }),
+      ...(f.shapes ? { shapes: f.shapes.map((s) => ({ ...s, layer: mapShapeLayer(s.layer) })) } : {}),
+    }
+  })
+  const components = project.components.map((c) => (c.pcb.side === "bottom" && c.texts?.some((t) => mapShapeLayer(t.layer) !== t.layer) ? { ...c, texts: c.texts.map((t) => ({ ...t, layer: mapShapeLayer(t.layer) })) } : c))
+  return { ...project, components, ...(footprints ? { footprints } : {}) }
 }
 
 function cleanPad(p: PadDef, alive: (l: CopperLayer) => boolean): PadDef {

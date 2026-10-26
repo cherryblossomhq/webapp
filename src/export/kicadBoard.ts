@@ -169,7 +169,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const textLines: string[] = []
     const textIds: string[][] = []
     const own = c.texts !== undefined
-    const wts = own ? componentTexts(c) : []
+    const wts = own ? componentTexts(c, copperLayers(project.board).length) : []
     if (own) {
       c.texts!.forEach((t, i) => {
         const wt = wts[i]
@@ -210,7 +210,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       for (const s of land.shapes) {
         const from = serial
         const mapped = mapShape(s, map)
-        const shape: BoardShape = { ...mapped, layer: bottom ? flipShapeLayer(s.layer) : s.layer }
+        const shape: BoardShape = { ...mapped, layer: bottom ? flipShapeLayer(s.layer, copperLayers(project.board).length) : s.layer }
         useLayer(shape.layer)
         for (const b of drawing(shape, true, out)) lines.push(...indent(b, "  "))
         shapeIds.push(issuedSince(from))
@@ -244,7 +244,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       // A polygon pad of four corners that is KiCad's trapezoid is written as one.
       const trapezoid = def.shape === "polygon" && !def.custom && def.points ? (trapezoidPad(def, bottom) ?? undefined) : undefined
       lines.push(...dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid, copperCount: copperLayers(project.board).length })).split(String.fromCharCode(10)))
-      for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o) : o)
+      for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o, copperLayers(project.board).length) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
 
@@ -280,7 +280,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
 
   /** The block of one of a part's texts, in the footprint's file frame, and the ids it was written with. */
   function partTextBlock(c: ComponentInstance, t: PartText, wt: WorldText, bottom: boolean): { lines: string[]; ids: string[] } {
-    const layer = bottom ? flipShapeLayer(t.layer) : t.layer
+    const layer = bottom ? flipShapeLayer(t.layer, copperLayers(project.board).length) : t.layer
     useLayer(layer)
     const sgn = bottom ? 1 : -1
     const local = { x: t.x, y: sgn < 0 ? 0 - t.y : t.y }

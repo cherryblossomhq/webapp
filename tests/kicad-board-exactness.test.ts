@@ -190,7 +190,7 @@ describe("B3: a node counted as imported is in the built project", () => {
     const comp = p.components[0]
     const pads = pcbPads(comp)
     // the part's texts where they are on the board: the reference at (0, -1) and the value at (0, 1) of a part turned 90 degrees at (10, 5)
-    const tw = componentTexts(comp)
+    const tw = componentTexts(comp, 2)
     const prop = (key: string) => p.properties?.find((q) => q.key === key)?.value
     const checks: [RegExp, () => boolean][] = [
       [/^version$/, () => /file version 20240108/.test(prop("KiCad file version") ?? "")],

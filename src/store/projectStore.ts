@@ -3,6 +3,7 @@ import { followNetRenames } from "../model/copperNets"
 import { pruneImportMarks } from "../model/importMarks"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
+import { registerProjectFootprints } from "../model/footprints"
 import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
 import { projectRecord, type ProjectStorage, type SaveRefusal } from "./storage"
@@ -348,3 +349,8 @@ useProjectStore.subscribe((state, prev) => {
 
 /** Non-hook accessor for event handlers. */
 export const projectApi = () => useProjectStore.getState()
+
+// A land that an edit rewrote (a layer count that moved a bottom part's inner layers, an undo of it) is the land the editor reads, before any view of the project renders.
+useProjectStore.subscribe((s) => {
+  if (s.project?.footprints) registerProjectFootprints(s.project)
+})

@@ -335,7 +335,7 @@ describe("a part's text, in the part's land and back on the board", () => {
     const text = board({ body: [`(footprint "L:Hole" (layer "F.Cu") (at 5 5) ${prop("Reference", "REF**", "0 -2 0", "F.SilkS")} ${prop("Value", "H", "0 2 0", "F.Fab")} ${pad({ at: "0 0" })})`] })
     const { project } = imp(text)
     expect(project.components[0].ref).not.toBe("REF**")
-    const wt = componentTexts(project.components[0]).find((t) => t.kind === "reference")!
+    const wt = componentTexts(project.components[0], 2).find((t) => t.kind === "reference")!
     expect(shownOf(project, wt)).toBe("REF**")
     expect(checkTexts(text, project).wrong).toBe(0)
   })
@@ -347,7 +347,7 @@ describe("a part's text, in the part's land and back on the board", () => {
   it("a text that may turn upside down with its part keeps no upright, and one that keeps upright is drawn upright", () => {
     const text = board({ body: [`(footprint "L:A" (layer "F.Cu") (at 5 5 180) ${prop("Reference", "R1", "0 -2 180 unlocked", "F.SilkS")} ${prop("Value", "v", "0 2 180", "F.Fab")} ${pad({ at: "0 0" })})`] })
     const { project } = imp(text)
-    const [r, v] = componentTexts(project.components[0])
+    const [r, v] = componentTexts(project.components[0], 2)
     expect([r.upright, v.upright]).toEqual([false, true])
     // 180 keeps upright draws at 0; unlocked draws at 180
     expect([r.drawRot, v.drawRot]).toEqual([180, 0])

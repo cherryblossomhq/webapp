@@ -27,6 +27,9 @@ export function copperLayers(board: { stack?: BoardStack }): readonly CopperLaye
   return hit
 }
 
+/** The layer to work on: `layer` when the board has it, else the front layer (the active layer outlives the stack that gave it, a project switch or an undo of a layer add). */
+export const clampLayer = (board: { stack?: BoardStack }, layer: CopperLayer): CopperLayer => (copperLayers(board).includes(layer) ? layer : "top")
+
 export const copperCount = (board: { stack?: BoardStack }) => copperLayers(board).length
 
 /** Whether a layer is one of the layers between the two outer ones. */
@@ -101,6 +104,15 @@ export const viaKind = (via: Pick<Via, "kind">): "through" | ViaKind => via.kind
 
 /** Whether a via runs the whole stack. */
 export const isThroughVia = (via: Pick<Via, "kind">): boolean => via.kind === undefined
+
+/**
+ * Whether a via is a hole through the whole board as the fab sees it: a through via, or a `blind` one (not a micro via) whose ends are the two outer layers, which
+ * KiCad treats as through (no drill file of its own).
+ */
+export function drillsThrough(board: { stack?: BoardStack }, via: Pick<Via, "kind" | "from" | "to">): boolean {
+  if (via.kind === undefined) return true
+  return via.kind === "blind" && viaLayers(board, via).length === copperLayers(board).length && via.from !== undefined && via.to !== undefined
+}
 
 /**
  * The copper layers a via has copper on (its pad and its barrel), in stack order: every layer for a through via, the layers from `from` to

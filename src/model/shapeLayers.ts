@@ -59,9 +59,9 @@ export const isShapeLayer = (name: string) => table.has(name)
 /**
  * The layer a drawing on `name` is on once its part is on the other side of the board: `F.SilkS` is `B.SilkS`, a user layer stays, and on a board of
  * `copperLayers` copper layers (four or more) `In1.Cu` is its mirror in the stack (KiCad's `FlipLayer`, layer_id.cpp: of four, `In1.Cu` and `In2.Cu` swap).
- * Without the count, which is two, an inner layer stays.
+ * The count is required, so no caller can forget it (a board of two or three layers keeps an inner layer).
  */
-export function flipShapeLayer(name: string, copperLayers = 2): string {
+export function flipShapeLayer(name: string, copperLayers: number): string {
   if (name.startsWith("F.")) return `B.${name.slice(2)}`
   if (name.startsWith("B.")) return `F.${name.slice(2)}`
   const m = /^In(\d+)\.Cu$/.exec(name)

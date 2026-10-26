@@ -223,7 +223,7 @@ export function landTextBox(texts: PartText[]): { minX: number; minY: number; ma
   let box: { minX: number; minY: number; maxX: number; maxY: number } | null = null
   texts.forEach((t, i) => {
     if (t.hide) return
-    const wt = partTextWorld(stub, t, i)
+    const wt = partTextWorld(stub, t, i, 2)
     const ink = textInk(project, wt)
     if (!ink.box) return
     box = box ? { minX: Math.min(box.minX, ink.box.minX), minY: Math.min(box.minY, ink.box.minY), maxX: Math.max(box.maxX, ink.box.maxX), maxY: Math.max(box.maxY, ink.box.maxY) } : { ...ink.box }

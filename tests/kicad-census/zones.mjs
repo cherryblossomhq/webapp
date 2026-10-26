@@ -67,6 +67,7 @@ export function zoneOracle(text) {
   const copperNames = layerRows.filter((r) => Array.isArray(r) && ["signal", "power", "mixed", "jumper"].includes(r[2])).map((r) => r[1])
   const front = copperNames[0] ?? "F.Cu"
   const back = copperNames[copperNames.length - 1] ?? "B.Cu"
+  const ids = copperNames.map((_, i) => (i === 0 ? "top" : i === copperNames.length - 1 ? "bottom" : `in${i}`))
   const zones = []
   const table = new Map(kids(tree, "net").filter((n) => n.length >= 3).map((n) => [String(n[1]), String(n[2])]))
   // `(net 3 "GND")`, `(net 3)` with the table's name, or (KiCad 10) `(net "GND")`.
@@ -91,8 +92,8 @@ export function zoneOracle(text) {
       inFootprint,
       layers: layerNames,
       onlyCopper: layerNames.length > 0 && layerNames.every(copperLayer),
-      /** Which of the two surface layers it is on: 'top', 'bottom'; inner layers are not counted. */
-      surface: [...new Set(layerNames.flatMap((n) => (n === "*.Cu" || n === "F&B.Cu" ? ["top", "bottom"] : n === front || n === "F.Cu" ? ["top"] : n === back || n === "B.Cu" ? ["bottom"] : [])))],
+      /** Which copper layers of the stack it is on (top, in1.., bottom, by position); `*.Cu` is all of them and `F&B.Cu` the two outer ones. */
+      surface: [...new Set(layerNames.flatMap((n) => (n === "*.Cu" ? ids : n === "F&B.Cu" ? ["top", "bottom"] : copperNames.includes(n) ? [ids[copperNames.indexOf(n)]] : n === "F.Cu" ? ["top"] : n === "B.Cu" ? ["bottom"] : [])))],
       // A `placement` node that is switched off (KiCad 9 writes one on every rule area) places nothing.
       kind: kid(z, "placement") && word(kid(z, "placement"), "enabled") === "yes" ? "placement" : keepoutNode ? (["tracks", "vias", "pads", "copperpour", "footprints"].some((k) => word(keepoutNode, k) === "not_allowed") ? "keepout" : "rule-area") : kid(z, "placement") ? "rule-area" : kid(z, "attr") && kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper",
       // The zone's own `net_name`, as KiCad reads it; a zone without one is on the net its number has in the table.

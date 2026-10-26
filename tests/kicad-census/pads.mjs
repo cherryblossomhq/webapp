@@ -16,6 +16,7 @@
 // overbar written `~DSS~` is `~{DSS}` (this file has its own port of that conversion, not the
 // importer's), and nothing else is decoded or trimmed.
 
+import { arcLength } from "./layers.mjs"
 import { parseSexpr, kid, kids, numAt } from "./sexpr.mjs"
 import { padDetail } from "./pad-detail.mjs"
 
@@ -247,6 +248,15 @@ export function copperOracle(text) {
     const b = kid(s, "end")
     return { net: netOf(s), length: Math.hypot(numAt(a, 1) - numAt(b, 1), numAt(a, 2) - numAt(b, 2)), locked: locked(s), layer: kid(s, "layer")?.[1] ?? "" }
   })
+  // an arc track (X4) is a segment of its arc's length
+  for (const s of kids(board, "arc")) {
+    const a = kid(s, "start")
+    const m = kid(s, "mid")
+    const b = kid(s, "end")
+    if (!a || !m || !b) continue
+    const at = (k) => [numAt(k, 1), numAt(k, 2)]
+    segments.push({ net: netOf(s), length: arcLength(at(a), at(m), at(b)), locked: locked(s), layer: kid(s, "layer")?.[1] ?? "", arc: true })
+  }
   const vias = kids(board, "via").map((v) => ({ net: netOf(v), locked: locked(v) }))
   return { stamp, footprints, segments, vias }
 }

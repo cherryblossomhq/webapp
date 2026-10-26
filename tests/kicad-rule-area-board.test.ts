@@ -5,6 +5,7 @@ import { writeKicadBoard } from "../src/export/kicadBoard"
 import { bomCsv } from "../src/export/bom"
 import { pnpCsv } from "../src/export/pnp"
 import { placedComponents } from "../src/editor/three/buildBoard"
+import { ROOT_SHEET } from "../src/model/sheets"
 import { onBoard } from "../src/model/partFlags"
 import { pcbPads } from "../src/model/instances"
 import { resolvedComponents, ruleAreaFlags, symbolBox } from "../src/model/ruleAreas"
@@ -71,5 +72,31 @@ describe("S8: a rule area's flags on the board side", () => {
     expect(writeKicadBoard(area).text).toContain("dnp")
     expect(bomCsv(area)).toEqual(bomCsv(flagged))
     expect(pnpCsv(area)).toEqual(pnpCsv(flagged))
+  })
+})
+
+describe("a sheet symbol's flags on the board side", () => {
+  // The regulator template, with the target part moved onto a sheet below a flagged sheet symbol.
+  const onSheet = (flags: NonNullable<ComponentInstance["flags"]>): Project => ({
+    ...base,
+    sheetSymbols: [{ id: "sym", sheet: ROOT_SHEET, child: "child", name: "child", file: "child", x: 0, y: 0, w: 1, h: 1, pins: [], flags }] as unknown as Project["sheetSymbols"],
+    components: base.components.map((c) => (c.id === pick.id ? { ...c, inst: "/sym" } : c)),
+  })
+  const direct = (flags: NonNullable<ComponentInstance["flags"]>): Project => ({ ...base, components: base.components.map((c) => (c.id === pick.id ? { ...c, flags: { ...c.flags, ...flags } } : c)) })
+
+  it("on_board no on the sheet symbol gives the same board outputs as the flag on the part", () => {
+    const sheet = onSheet({ notOnBoard: true })
+    expect(resolvedComponents(sheet).find((c) => c.id === pick.id)!.flags?.notOnBoard).toBe(true)
+    const flagged = direct({ notOnBoard: true })
+    expect(placedComponents(sheet).map((c) => c.id)).toEqual(placedComponents(flagged).map((c) => c.id))
+    expect(drillHoles(sheet)).toEqual(drillHoles(flagged))
+    expect(gerberLayers(sheet)).toEqual(gerberLayers(flagged))
+    expect(writeKicadBoard(sheet).text).not.toContain(`"Reference" "${pick.ref}"`)
+  })
+
+  it("dnp on the sheet symbol leaves the part out of the BOM and the position file", () => {
+    const sheet = onSheet({ dnp: true })
+    expect(bomCsv(sheet)).toEqual(bomCsv(direct({ dnp: true })))
+    expect(pnpCsv(sheet)).toEqual(pnpCsv(direct({ dnp: true })))
   })
 })

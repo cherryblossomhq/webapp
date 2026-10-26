@@ -1,7 +1,7 @@
 import { schematicBounds, unitGroup } from "./instances"
 import { findPart } from "./library"
 import { polygonHitsBox } from "./polygonHits"
-import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses } from "./sheets"
+import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses, withSheetFlags } from "./sheets"
 import { componentFields, fieldBox } from "./symbolDrawing"
 import type { Box } from "../lib/geometry"
 import type { ComponentInstance, DrawingLine, PartFlags, Project, RuleAreaMark, SchematicDrawing, Vec2 } from "./types"
@@ -155,13 +155,17 @@ const resolved = new WeakMap<readonly ComponentInstance[], Resolved>()
  * touches none of them costs nothing and one that does costs one pass over the symbols that sit on a sheet with a flagged area.
  */
 export function resolvedComponents(project: Project): ComponentInstance[] {
-  if (!hasFlaggedRuleAreas(project)) return project.components
+  const areas = hasFlaggedRuleAreas(project)
+  const sheets = !!project.sheetSymbols?.some((x) => x.flags && Object.keys(x.flags).length)
+  if (!areas && !sheets) return project.components
   const hit = resolved.get(project.components)
   if (hit && hit.drawings === project.drawings && hit.sheetSymbols === project.sheetSymbols && hit.sheets === project.sheets) return hit.components
-  const taken = ruleAreaFlags(project)
-  let components = project.components
+  // The flags of a sheet symbol first (everything on the sheets below it), then the areas'.
+  const lower = sheets ? withSheetFlags(project) : project
+  let components = lower.components
+  const taken = areas ? ruleAreaFlags(project) : new Map<string, NonNullable<PartFlags>>()
   if (taken.size) {
-    components = project.components.map((c) => {
+    components = components.map((c) => {
       const f = taken.get(c.id)
       if (!f || FLAGS.every((k) => !f[k] || c.flags?.[k])) return c
       return { ...c, flags: { ...c.flags, ...f } }
@@ -169,6 +173,20 @@ export function resolvedComponents(project: Project): ComponentInstance[] {
   }
   resolved.set(project.components, { drawings: project.drawings, sheetSymbols: project.sheetSymbols, sheets: project.sheets, components })
   return components
+}
+
+/** Where a part's resolved flags come from, for a tooltip: "rule area" or "sheet" for each of the four flags the part does not carry itself. */
+export function flagOrigins(project: Project, c: ComponentInstance): Partial<Record<(typeof FLAGS)[number], "rule area" | "sheet">> {
+  const out: Partial<Record<(typeof FLAGS)[number], "rule area" | "sheet">> = {}
+  const own = c.flags
+  const bySheet = withSheetFlags({ ...project, components: [c] }).components[0]
+  const area = ruleAreaFlags(project).get(c.id)
+  for (const k of FLAGS) {
+    if (own?.[k]) continue
+    if (bySheet.flags?.[k]) out[k] = "sheet"
+    else if (area?.[k]) out[k] = "rule area"
+  }
+  return out
 }
 
 /** The project with `resolvedComponents` as its components; the project itself keeps the flags on the area only. */

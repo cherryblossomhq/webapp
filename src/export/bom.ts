@@ -2,7 +2,6 @@ import { isPhysical, valueText } from "../model/instances"
 import { findPart } from "../model/library"
 import { inBom } from "../model/partFlags"
 import { withRuleAreaFlags } from "../model/ruleAreas"
-import { withSheetFlags } from "../model/sheets"
 import type { Project } from "../model/types"
 
 /** Quote a CSV field when it contains separators, quotes, newlines or edge whitespace. */
@@ -17,7 +16,7 @@ const naturalCompare = (a: string, b: string) => a.localeCompare(b, undefined, {
 
 export function bomCsv(source: Project): string {
   // A flag on a sheet symbol is the flag of every part on the sheet, and one on a rule area of every part it touches.
-  const project = withRuleAreaFlags(withSheetFlags(source))
+  const project = withRuleAreaFlags(source)
   const groups = new Map<
     string,
     { refs: string[]; value: string; footprint: string; properties: string; mpn: string; description: string }

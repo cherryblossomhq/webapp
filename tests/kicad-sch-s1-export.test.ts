@@ -21,7 +21,7 @@ const sheet = (uuid: string, name: string, y: number, page: string) =>
     (instances (project "demo" (path "/${ROOT_UUID}" (page "${page}")))))`
 
 /** A root with R1 wired to the VIN pin of sheet A, and a child with R9 (VIN on its pin 1, a local GNDL on its pin 2) used as A and B. */
-function hierarchy(childLabel: "hierarchical" | "local" = "hierarchical") {
+function hierarchy(childLabel: "hierarchical" | "local" = "hierarchical", withGlobal = false) {
   const root = schematic({
     version: VERSION,
     libs: [LIB_R, LIB_GND],
@@ -33,10 +33,11 @@ function hierarchy(childLabel: "hierarchical" | "local" = "hierarchical") {
   const child = schematic({
     version: VERSION,
     uuid: CHILD,
-    libs: [LIB_R, LIB_GNDL],
+    libs: [LIB_R, LIB_GNDL, LIB_GND],
     symbols: [
       { lib: "Device:R", at: "50.8 50.8", ref: "R9", uuid: "bbbbbbbb-0000-4000-8000-000000000001", instances: [`/${ROOT_UUID}/${UA}|R2`, `/${ROOT_UUID}/${UB}|R3`] },
       { lib: "power:GNDL", at: "50.8 54.61", ref: "#PWR01", uuid: "bbbbbbbb-0000-4000-8000-000000000002", instances: [`/${ROOT_UUID}/${UA}|#PWR01`, `/${ROOT_UUID}/${UB}|#PWR02`] },
+      ...(withGlobal ? [{ lib: "power:GND", at: "76.2 54.61", ref: "#PWR03", uuid: "bbbbbbbb-0000-4000-8000-000000000003", instances: [`/${ROOT_UUID}/${UA}|#PWR03`, `/${ROOT_UUID}/${UB}|#PWR04`] }] : []),
     ],
     body: [label],
   })
@@ -97,7 +98,6 @@ describe("S1 export: a local power symbol stays local", () => {
     expect(child).not.toMatch(/\(power global\)/)
     // KiCad 10 is the first version with (power local), so every sheet file carries its stamp, and the globals are bare.
     for (const text of files.values()) expect(text).toMatch(/\(version 20250227\)/)
-    expect([...files.values()].join("")).toMatch(/\(power\)/)
     expect([...files.values()].join("").match(/\(power[^)]*\)/g)!.every((t) => t === "(power)" || t === "(power local)")).toBe(true)
     expect((await kicadFiles(p)).notes.some((n) => /needs KiCad 10|only KiCad 10/.test(n))).toBe(true)
     const back = load(files, rootOf(files))
@@ -106,6 +106,16 @@ describe("S1 export: a local power symbol stays local", () => {
     const pcb = (await kicadFiles(p)).files
     const boardNets = [...Object.entries(pcb).find(([n]) => n.endsWith(".kicad_pcb"))![1].matchAll(/\(net \d+ "([^"]*GNDL[^"]*)"\)/g)].map((m) => m[1]).sort()
     expect(boardNets).toEqual(["/A/GNDL", "/B/GNDL"])
+  })
+
+  it("with a global power symbol too, the globals are bare, the locals local, every sheet is stamped KiCad 10, and the uses stay two nets", async () => {
+    const files = schFiles(await kicadFiles(drawnInEditor(hierarchy("hierarchical", true))))
+    const all = [...files.values()].join("")
+    for (const text of files.values()) expect(text).toMatch(/\(version 20250227\)/)
+    expect(all).toMatch(/\(power local\)/)
+    expect(all).toMatch(/\(power\)/)
+    expect(all).not.toMatch(/\(power global\)/)
+    expect(netNamesOf(load(files, rootOf(files)))).toEqual(["/A/GNDL", "/B/GNDL"])
   })
 
   it("a global power symbol is written bare, and a flat project with only globals keeps KiCad 9's stamp", async () => {

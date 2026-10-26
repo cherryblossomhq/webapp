@@ -81,7 +81,7 @@ export function isKicadBoardProject(project: Pick<Project, "components" | "prope
   // A board of more than two copper layers (X1) has no place in the converter's file, which has two: it is written here, whoever drew it.
   if (project.board.stack && project.board.stack.copper.length > 2) return true
   // A KiCad schematic import has the same properties; what a board import has besides is a board: an outline, copper, zones, drawings, texts, dimensions, images or groups.
-  const board = !!project.board.outline || project.traces.length > 0 || project.vias.length > 0 || project.zones.length > 0 || (project.graphics?.length ?? 0) > 0 || project.texts.length > 0 || (project.dimensions?.length ?? 0) > 0 || (project.images?.length ?? 0) > 0 || (project.groups?.length ?? 0) > 0
+  const board = !!project.board.outline || !!project.board.stack || project.traces.length > 0 || project.vias.length > 0 || project.zones.length > 0 || (project.graphics?.length ?? 0) > 0 || project.texts.length > 0 || (project.dimensions?.length ?? 0) > 0 || (project.images?.length ?? 0) > 0 || (project.groups?.length ?? 0) > 0
   return board && !!project.properties?.some((p) => p.key === "KiCad file version")
 }
 
@@ -602,7 +602,7 @@ function stackRowText(row: StackRow): string {
 function stackupText(stack: NonNullable<Project["board"]["stack"]>): string[] {
   const out = ["    (stackup", ...(stack.rows ?? []).map(stackRowText)]
   if (stack.finish) out.push(`      (copper_finish ${quote(stack.finish)})`)
-  out.push(`      (dielectric_constraints ${stack.dielectricConstraints ? "yes" : "no"})`)
+  if (stack.dielectricConstraints !== undefined) out.push(`      (dielectric_constraints ${stack.dielectricConstraints ? "yes" : "no"})`)
   if (stack.edgeConnector) out.push(`      (edge_connector ${stack.edgeConnector})`)
   if (stack.edgePlating) out.push("      (edge_plating yes)")
   out.push("    )")

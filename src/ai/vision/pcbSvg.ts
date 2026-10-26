@@ -1,3 +1,6 @@
+import { copperLayers, layerOfKicadName, viaLayers } from "../../model/stack"
+import { traceD } from "../../editor/pcb/traceGraphics"
+import { copperColor, pourColor } from "../../editor/theme"
 import type { Box } from "../../lib/geometry"
 import { PCB } from "../../editor/theme"
 import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
@@ -130,7 +133,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const bd = project.board
   const board: Box = { minX: bd.x - bd.width / 2, maxX: bd.x + bd.width / 2, minY: bd.y - bd.height / 2, maxY: bd.y + bd.height / 2 }
   const r = Math.min(bd.cornerRadius, bd.width / 2, bd.height / 2)
-  const shown: CopperLayer[] = opts.side === "both" ? ["bottom", "top"] : [opts.side]
+  const shown: CopperLayer[] = opts.side === "both" ? [...copperLayers(project.board)].reverse() : [opts.side]
   const shownSet = new Set(shown)
   const front: CopperLayer = opts.side === "bottom" ? "bottom" : "top"
   const placed = project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
@@ -173,7 +176,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       for (const f of pcb.zoneFills) {
         if (f.layer !== l) continue
         const d = f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${n(p.x)},${n(p.y)}`).join("L")}Z`)).join("")
-        if (d) body += `<path d="${d}" fill="${l === "top" ? PCB.topPour : PCB.bottomPour}" fill-rule="evenodd"/>`
+        if (d) body += `<path d="${d}" fill="${pourColor(l)}" fill-rule="evenodd"/>`
       }
     }
     // Keepouts, as an outline with a light red tint, on the layers they are on; none on a board that has none.
@@ -183,17 +186,19 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
     }
     for (const t of project.traces) {
       if (t.layer !== l) continue
-      body += `<polyline points="${pts(t.points)}" fill="none" stroke="${l === "top" ? PCB.topCopper : PCB.bottomCopper}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
+      // An arc track (X4) is drawn as its arc, in SVG's own command.
+      body += `<path d="${traceD(t)}" fill="none" stroke="${copperColor(l)}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
     }
-    for (const d of drawings) if (kindOf(d) === "copper" && sideOf(d) === l) body += shapeSvg(d.shape, l === "top" ? PCB.topCopper : PCB.bottomCopper, px)
-    for (const x of texts) if (x.kind === "copper" && x.side === l) body += textSvg(x.t, l === "top" ? PCB.topCopper : PCB.bottomCopper, px)
+    for (const d of drawings) if (kindOf(d) === "copper" && layerOfKicadName(d.shape.layer) === l) body += shapeSvg(d.shape, copperColor(l), px)
+    for (const x of texts) if (x.kind === "copper" && layerOfKicadName(x.layer) === l) body += textSvg(x.t, copperColor(l), px)
     for (const it of pcb.items) {
       if (it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l) body += pad(it.pad, l === front ? PCB.pad : PCB.padBack, px)
     }
   }
-  for (const it of pcb.items) if (it.kind === "pad" && it.layers.length === 2) body += pad(it.pad, PCB.pad, px)
+  for (const it of pcb.items) if (it.kind === "pad" && it.layers.length >= 2) body += pad(it.pad, PCB.pad, px)
   for (const v of project.vias) {
-    body += `<circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.diameter / 2)}" fill="${PCB.via}"/><circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.drill / 2)}" fill="${PCB.hole}"/>`
+    if (!viaLayers(project.board, v).some((l) => shownSet.has(l))) continue
+    body += `<circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.diameter / 2)}" fill="${PCB.via}"${v.kind ? ` stroke="${PCB.hole}" stroke-width="${n(px)}" stroke-dasharray="${n(3 * px)} ${n(2 * px)}"` : ""}/><circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.drill / 2)}" fill="${PCB.hole}"/>`
   }
 
   if (has("silkscreen")) {

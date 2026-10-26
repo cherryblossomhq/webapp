@@ -1,4 +1,5 @@
 import { parseFarads } from "../lib/values"
+import { resolvedComponents } from "../model/ruleAreas"
 import type { Box } from "../lib/geometry"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "./connectivity"
 import { decouplingPairs, groundNetIds, isChip, isSupplyPin, padGap, type DecouplingPair } from "./decoupling"
@@ -282,7 +283,7 @@ function resolveClaims(project: Project, stages: PowerStage[], pairs: Decoupling
     for (const a of pcbPads(cap).filter((p) => p.pin === pin)) for (const b of pcbPads(chip).filter((p) => p.pin !== null && numbers.includes(p.pin))) best = Math.min(best, padGap(a, b))
     return best
   }
-  const chips = project.components.filter((c) => isChip(findPart(c.partId), c))
+  const chips = resolvedComponents(project).filter((c) => isChip(findPart(c.partId), c))
   const owner = new Map<string, { stage: PowerStage; d: number }>()
   const farads = (id: string) => parseFarads(byId.get(id)?.props.capacitance) ?? -Infinity
   for (const stage of stages) {

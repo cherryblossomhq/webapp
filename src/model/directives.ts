@@ -136,6 +136,12 @@ export function labelClassClaims(project: Project, conn: SchematicConnectivity =
     const net = netId === undefined ? undefined : nets.get(netId)
     if (net !== undefined && !claims.has(`${net}\u0000${cls}`)) claims.set(`${net}\u0000${cls}`, { net, cls })
   }
+  // A rule area's net class reaches the pins of the symbols it touches only in KiCad 10: 9.0.0 sets a rule area's class on the wires, labels and
+  // bus entries it covers and on nothing else (the class of a symbol's pin comes from SCH_RULE_AREA::GetResolvedNetclass in
+  // eeschema/sch_rule_area.cpp of 10.0.0, which 9.0.0 does not have). A file stamped before 20250610 (the stamp KiCad 10's rule-area work starts at,
+  // see ruleAreas.ts) is a KiCad 9 one; a project with no stamp is the editor's own and has the 10 behaviour.
+  const stamp = Number(/file version (\d+)/.exec(project.properties?.find((p) => p.key === "KiCad file version")?.value ?? "")?.[1])
+  const pinsTakeAreaClass = !(Number.isFinite(stamp) && stamp < 20250610)
   const hier = isHierarchical(project)
   const wireNetOf = (path: string) => (hier ? conn.byUse?.wireNet.get(path) : conn.wireNet)
   const labelNetOf = (path: string) => (hier ? conn.byUse?.labelNet.get(path) : conn.labelNet)
@@ -191,7 +197,7 @@ export function labelClassClaims(project: Project, conn: SchematicConnectivity =
         }
       }
       for (const l of labelsOf.get(sheet) ?? []) if (inBox(box, l) && pointInPolygon(a.points, l)) for (const cls of classes) claim(labelNet?.get(l.id), cls)
-      for (const c of comps) {
+      for (const c of pinsTakeAreaClass ? comps : []) {
         for (const p of schematicPins(c, findPart(c.partId))) if (!p.slot && inBox(box, p.pos) && pointInPolygon(a.points, p.pos)) for (const cls of classes) claim(conn.pinNet.get(pinKey(c.id, p.pin)), cls)
       }
     }

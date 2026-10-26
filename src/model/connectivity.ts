@@ -1,4 +1,5 @@
 import { pointOnSegment, samePoint } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { numeric, plain } from "../lib/natural"
 import { findPart } from "./library"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
@@ -369,7 +370,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const conflicts: SchematicConnectivity["conflicts"] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const ncSet = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
-  const nodeParts = new Map(project.components.map((c) => [c.id, c]))
+  const nodeParts = new Map(resolvedComponents(project).map((c) => [c.id, c]))
   const labelCount = (members: string[]) => members.filter((m) => m.startsWith("label:")).length
   const physical = new Set(project.components.filter((c) => isSchematicPart(findPart(c.partId))).map((c) => c.id))
   /** The net of every pin node, including the second pin of a number. */

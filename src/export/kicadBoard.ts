@@ -1,4 +1,5 @@
 import { normalizeAngle, round } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { componentFootprint } from "../model/instances"
 import { findPart } from "../model/library"
@@ -139,9 +140,9 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   // ---------- footprints ----------
   const modelOf = new Map<string, Model3D>()
   for (const m of project.models ?? []) modelOf.set(`${m.part}\n${m.footprint}`, m.model)
-  const wanted = project.components.filter((c) => onBoard(c) && c.pcb.placed && componentFootprint(c))
+  const wanted = resolvedComponents(project).filter((c) => onBoard(c) && c.pcb.placed && componentFootprint(c))
   for (const c of wanted) push(indent(footprintBlock(c), "  "))
-  const unplaced = project.components.filter((c) => onBoard(c) && !c.pcb.placed && componentFootprint(c)).length
+  const unplaced = resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed && componentFootprint(c)).length
   if (unplaced) notes.add(`${unplaced} ${unplaced === 1 ? "part is" : "parts are"} not placed on the board yet, so ${unplaced === 1 ? "it is" : "they are"} not in the board file.`)
   if (project.texts.some((t) => t.href) || project.components.some((c) => c.texts?.some((t) => t.href))) notes.add("A text's hyperlink is KiCad 10's: a KiCad 9 file cannot hold it, so it stays in the project and is not written.")
   if (project.zones.some((z) => z.unordered || z.edgeGap !== undefined || z.holeGap !== undefined)) notes.add("A pour from a board of KiCad 5 or of KiCad 6's first files is written with its fill, but KiCad 9 refills it by its own rules: its distance to the board edge and to a hole is the project's design rule and KiCad 9's own (0.5 and 0.25 mm unless set), not the original board's, and zones of equal priority are ordered by their uuid, which this file gives them.")

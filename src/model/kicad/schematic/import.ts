@@ -1,4 +1,5 @@
 import { settleImportedLabelClasses } from "../../directives"
+import { reportRuleAreaUnits } from "../../ruleAreas"
 import { serializeProject } from "../../projectFile"
 import type { Project } from "../../types"
 import { PROJECT_SIZE_LIMIT_BYTES, formatSize } from "../board/import"
@@ -226,6 +227,7 @@ export function finishSchematic(gate: SchematicGate, result: SchematicBuild, opt
   }
   // S8: the net classes the sheet's labels give.
   result.project = settleImportedLabelClasses(result.project, report)
+  reportRuleAreaUnits(result.project, report)
   if (refusals(report).length) {
     releaseBuild(result)
     return { status: "refused", reason: "inexact", message: refusals(report)[0].why, report, needs: missing, tree }

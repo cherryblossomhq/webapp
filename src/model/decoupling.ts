@@ -1,4 +1,5 @@
 import { parseFarads } from "../lib/values"
+import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "./connectivity"
 import { isOnBoard, isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
 import { findPart } from "./library"
@@ -152,7 +153,7 @@ export function decouplingPairs(project: Project, sch: SchematicConnectivity = c
   const units = new Map<string, ComponentInstance[]>()
   const byId = new Map(project.components.map((c) => [c.id, c]))
   for (const [twin, owner] of unitOwners(project.components)) units.set(owner, [...(units.get(owner) ?? []), byId.get(twin)!])
-  for (const c of project.components) {
+  for (const c of resolvedComponents(project)) {
     const part = parts.get(c.id)
     if (!isChip(part, c)) continue
     const drawn = new Map([c, ...(units.get(c.id) ?? [])].flatMap((u) => schematicPins(u, parts.get(u.id)).map((p) => [p.pin, p.pos] as const)))

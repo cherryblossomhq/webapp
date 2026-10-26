@@ -1,4 +1,5 @@
 import { normalizeAngle, round } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { componentFootprint, padLayerDef, pcbPads, type WorldPad } from "../model/instances"
 import { flipLayer, kicadLayerName } from "../model/stack"
@@ -317,7 +318,7 @@ export interface KicadPadsResult {
 }
 
 /** Whether any placed part of the project has a pad that needs writing here. */
-export const hasPadWork = (project: Project) => project.components.some((c) => onBoard(c) && c.pcb.placed && (componentFootprint(c)?.pads.some(hasPadFeatures) ?? false))
+export const hasPadWork = (project: Project) => resolvedComponents(project).some((c) => onBoard(c) && c.pcb.placed && (componentFootprint(c)?.pads.some(hasPadFeatures) ?? false))
 
 /**
  * The board file with the pads of every part that has X7 features written as KiCad has them (each such part's pads, all of them, in the order
@@ -342,7 +343,7 @@ export function applyPads(pcb: string, project: Project): KicadPadsResult {
   }
   let serial = 0
   const uuid = () => `00000000-0000-4000-b000-${(++serial).toString(16).padStart(12, "0")}`
-  const byRef = new Map(project.components.filter((c) => onBoard(c) && c.pcb.placed).map((c) => [c.ref, c]))
+  const byRef = new Map(resolvedComponents(project).filter((c) => onBoard(c) && c.pcb.placed).map((c) => [c.ref, c]))
   let text = pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
     const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
     const c = ref === undefined ? undefined : byRef.get(ref)

@@ -9,9 +9,12 @@ import type { LibSymbol } from "./types"
 // by hand, an `extends` base that was dropped) is in a library of the project: the `sym-lib-table` beside the root sheet names each library by a
 // nickname and a file (`(lib (name "Device") (type "KiCad") (uri "${KIPRJMOD}/libs/Device.kicad_sym"))`), and a symbol's `lib_id` is
 // `nickname:name`. KiCad looks a nickname up in the project's table, then the user's, and the user's names the libraries installed with KiCad
-// (`${KICAD9_SYMBOL_DIR}/Device.kicad_sym`), which the importer does not have: a path through a variable it cannot resolve is read by its file name
-// among the files, and when it is not there the symbol is not found, and said so. The parts database is the last source (`databaseSymbols`).
+// (`${KICAD9_SYMBOL_DIR}/Device.kicad_sym`), which the importer does not have: a path through a KiCad system variable is not looked for among the project's files
+// (a file of the same name is not KiCad's), and the symbol is not found, and said so; another variable or an absolute path of another machine is read by its file name. The parts database is the last source (`databaseSymbols`).
 // A library symbol may have been redrawn since the sheet was; `build.ts` checks that no wire ends where the library's pins are not.
+
+/** The variables KiCad itself defines for the libraries it installs (`KICAD9_SYMBOL_DIR`, `KICAD_SYMBOL_DIR`, `KICAD9_3RD_PARTY`, `KICAD_USER_TEMPLATE_DIR`...). */
+const STOCK_VARIABLE = /\$[({]KICAD\d*_[A-Za-z0-9_]+[)}]/i
 
 /** The files of a project looked up by path without regard to case (what `FileIndex` is). */
 export interface FileLookup {
@@ -126,8 +129,12 @@ export class SymbolLibraries {
     const own = /^\$[({]KIPRJMOD[)}]\/?/i
     const variable = /\$[({][A-Za-z0-9_]+[)}]/
     if (own.test(uri)) uri = join(dir, uri.replace(own, ""))
-    else if (variable.test(uri) || /^([A-Za-z]:)?\//.test(uri)) {
-      // A path through a variable of another machine, or an absolute path of one: only its file name can say which file it is.
+    else if (STOCK_VARIABLE.test(uri)) {
+      // A KiCad system variable (`${KICAD9_SYMBOL_DIR}`) names the libraries installed with KiCad, which a project does not carry: a file of the project that
+      // happens to be called the same is not the stock library, so it is not taken for it. The symbol is not found, and said so.
+      return { why: "external" }
+    } else if (variable.test(uri) || /^([A-Za-z]:)?\//.test(uri)) {
+      // A path through a variable of the user's own, or an absolute path of another machine: only its file name can say which file it is.
       const found = this.byName(baseOf(uri))
       return found ? { file: found } : { why: variable.test(uri) ? "external" : "missing" }
     } else uri = join(dir, uri)
@@ -184,6 +191,8 @@ export class SymbolLibraries {
       return "file" in r ? { file: r.file, type: entry.type } : { why: r.why }
     }
     if (this.entries.some((e) => e.nickname === nickname)) return { why: "missing" }
+    // A project with a table lists its libraries there, and KiCad finds no other by its name; only one with no table at all (the files of a bare folder) is looked at by file name.
+    if (this.tablePath !== null) return { why: "unlisted" }
     const byName = this.byName(`${nickname}.kicad_sym`)
     return byName ? { file: byName, type: "KiCad" } : { why: "unlisted" }
   }

@@ -60,10 +60,9 @@ export function symbolBox(c: ComponentInstance): Box {
   return b
 }
 
-/** The flags each part of a project takes from the rule areas its symbols touch, by component id (every unit of a part has the entry). */
-export function ruleAreaFlags(project: Project): Map<string, NonNullable<PartFlags>> {
-  const out = new Map<string, NonNullable<PartFlags>>()
-  if (!hasFlaggedRuleAreas(project)) return out
+/** The flags each symbol takes from the rule areas it touches itself, by component id (a unit that touches none has no entry). */
+function unitFlags(project: Project): Map<string, Set<(typeof FLAGS)[number]>> {
+  if (!hasFlaggedRuleAreas(project)) return new Map()
   const sheetOfUse = new Map(isHierarchical(project) ? sheetUses(project).map((u) => [u.path, u.sheet] as const) : [])
   const areas = (project.drawings ?? []).filter((d): d is RuleArea => isRuleArea(d) && ruleAreaHasFlags(d.ruleArea) && d.points.length >= 3)
   const bySheet = new Map<string, RuleArea[]>()
@@ -83,10 +82,53 @@ export function ruleAreaFlags(project: Project): Map<string, NonNullable<PartFla
       for (const k of FLAGS) if (a.ruleArea[k]) set.add(k)
     }
   }
+  return taken
+}
+
+/**
+ * The parts that have several units where the units do not take the same flags from the areas, by reference. KiCad's netlist reads the one unit with
+ * the least uuid (netlist_exporter_xml.cpp:316 to 332), which the editor has no uuid to choose by, so it gives the part the flags of any unit that is
+ * in an area; when the units disagree, which way KiCad goes cannot be said, and an import reports it.
+ */
+export function ruleAreaUnitSplits(project: Project): string[] {
+  const taken = unitFlags(project)
+  if (!taken.size) return []
+  const refs = new Set<string>()
+  const byRef = new Map<string, ComponentInstance[]>()
+  for (const c of project.components) if (taken.has(c.id)) (byRef.get(c.ref) ?? byRef.set(c.ref, []).get(c.ref)!).push(c)
+  for (const [ref, touched] of byRef) {
+    const units = unitGroup(project, touched[0])
+    if (units.length < 2) continue
+    const key = (id: string) => [...(taken.get(id) ?? [])].sort().join(",")
+    if (units.some((u) => key(u.id) !== key(units[0].id))) refs.add(ref)
+  }
+  return [...refs]
+}
+
+/** Says in an import report which multi-unit parts have units that disagree about the flags of the rule areas (said once for a part). */
+export function reportRuleAreaUnits(project: Project, report: { entries: { code: string; severity: string; object: string; why: string; count?: number }[] }): void {
+  for (const ref of ruleAreaUnitSplits(project)) {
+    const object = `the part ${ref}`
+    if (report.entries.some((x) => x.code === "rule-area-units" && x.object === object)) continue
+    report.entries.push({
+      code: "rule-area-units",
+      severity: "changed",
+      object,
+      why: "Some of this part's units are inside a rule area that sets do not populate, not in the BOM, not on the board or not simulated, and others are not. KiCad takes the flags of the unit with the least uuid, which the editor cannot choose by: it gives the part the flags of every unit that is inside an area, so the part may be flagged here where KiCad does not flag it.",
+    })
+  }
+}
+
+/** The flags each part of a project takes from the rule areas its symbols touch, by component id (every unit of a part has the entry). */
+export function ruleAreaFlags(project: Project): Map<string, NonNullable<PartFlags>> {
+  const out = new Map<string, NonNullable<PartFlags>>()
+  const taken = unitFlags(project)
+  if (!taken.size) return out
   // Every unit of a part takes what any of its units took.
   const all = new Map<string, Set<(typeof FLAGS)[number]>>()
+  const byId = new Map(project.components.map((x) => [x.id, x] as const))
   for (const [id, set] of taken) {
-    const c = project.components.find((x) => x.id === id)!
+    const c = byId.get(id)!
     for (const x of unitGroup(project, c)) {
       const into = all.get(x.id) ?? all.set(x.id, new Set()).get(x.id)!
       for (const k of set) into.add(k)
@@ -96,23 +138,43 @@ export function ruleAreaFlags(project: Project): Map<string, NonNullable<PartFla
   return out
 }
 
+interface Resolved {
+  drawings: Project["drawings"]
+  sheetSymbols: Project["sheetSymbols"]
+  sheets: Project["sheets"]
+  components: ComponentInstance[]
+}
+const resolved = new WeakMap<readonly ComponentInstance[], Resolved>()
+
 /**
- * The project with the flags of rule areas put on the symbols they touch, as KiCad 10 resolves them (`ResolveDNP` and the others): a symbol's own
- * flag or any area's. The project itself keeps the flags on the area only; a project with no flagged rule area is returned as it is. The BOM, the
- * position file, the exports and the board read this.
+ * The components of a project with the flags of rule areas put on the symbols they touch, as KiCad 10 resolves them (`ResolveDNP` and the others):
+ * a symbol's own flag or any area's. This is the one place the area flags are applied: everything that reads on-board, do-not-populate, in-BOM or
+ * left-out-of-simulation of a part (the BOM, the position file, the Gerber and drill files, the 3D view, the PCB editor, the checks, the board and
+ * Circuit JSON exports, Sakura's tools) asks for the components here, not for `project.components`. A project with no flagged rule area gets its own
+ * array back; otherwise the answer is kept for as long as the components, the drawings and the sheets stay the same objects, so a commit that
+ * touches none of them costs nothing and one that does costs one pass over the symbols that sit on a sheet with a flagged area.
  */
-export function withRuleAreaFlags(project: Project): Project {
+export function resolvedComponents(project: Project): ComponentInstance[] {
+  if (!hasFlaggedRuleAreas(project)) return project.components
+  const hit = resolved.get(project.components)
+  if (hit && hit.drawings === project.drawings && hit.sheetSymbols === project.sheetSymbols && hit.sheets === project.sheets) return hit.components
   const taken = ruleAreaFlags(project)
-  if (!taken.size) return project
-  let changed = false
-  const components = project.components.map((c) => {
-    const f = taken.get(c.id)
-    if (!f) return c
-    if (FLAGS.every((k) => !f[k] || c.flags?.[k])) return c
-    changed = true
-    return { ...c, flags: { ...c.flags, ...f } }
-  })
-  return changed ? { ...project, components } : project
+  let components = project.components
+  if (taken.size) {
+    components = project.components.map((c) => {
+      const f = taken.get(c.id)
+      if (!f || FLAGS.every((k) => !f[k] || c.flags?.[k])) return c
+      return { ...c, flags: { ...c.flags, ...f } }
+    })
+  }
+  resolved.set(project.components, { drawings: project.drawings, sheetSymbols: project.sheetSymbols, sheets: project.sheets, components })
+  return components
+}
+
+/** The project with `resolvedComponents` as its components; the project itself keeps the flags on the area only. */
+export function withRuleAreaFlags(project: Project): Project {
+  const components = resolvedComponents(project)
+  return components === project.components ? project : { ...project, components }
 }
 
 /** The points of a rule area as a polygon. */

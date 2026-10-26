@@ -138,6 +138,49 @@ describe("S8: directive labels", () => {
     expect(claims).toEqual([["/B", ["Inside"]], [MID, ["Inside"]]])
   })
 
+  it("gives a rule area's class to the pins of the symbols it touches only in a KiCad 10 file", () => {
+    // R2's pin 1 touches R1's pin 2 and nothing is wired or labelled: only the pins can claim a class.
+    const alone = (version: number) =>
+      schematic({
+        version,
+        libs: [LIB_R],
+        symbols: [
+          { lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: R1 },
+          { lib: "Device:R", at: "50.8 58.42", ref: "R2", uuid: R2 },
+        ],
+        body: [AREA("", "(xy 40 54) (xy 65 54) (xy 65 70) (xy 40 70)"), directive("45 54 0", "Inside")],
+      })
+    expect([...labelNetClasses(load(alone(VERSION)))].map(([, c]) => c)).toEqual([["Inside"]])
+    // KiCad 9.0.0 puts the class on the wires, labels and bus entries of the area and on no pin: sch_rule_area.cpp of 9.0.0 has no symbol-pin class.
+    expect([...labelNetClasses(load(alone(20250114)))]).toEqual([])
+  })
+
+  it("says so when the units of a part disagree about a rule area's flags, which KiCad reads from the unit with the least uuid", () => {
+    const dual = `(symbol "Test:Dual" (in_bom yes) (on_board yes)
+      (property "Reference" "U" (at 0 5.08 0) (effects (font (size 1.27 1.27))))
+      (property "Value" "Dual" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))
+      (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+      (symbol "Dual_1_1" (rectangle (start -3.81 3.81) (end 3.81 -3.81) (stroke (width 0.254) (type default)) (fill (type background)))
+        (pin input line (at -6.35 0 0) (length 2.54) (name "A" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27))))))
+      (symbol "Dual_2_1" (rectangle (start -3.81 3.81) (end 3.81 -3.81) (stroke (width 0.254) (type default)) (fill (type background)))
+        (pin input line (at -6.35 0 0) (length 2.54) (name "B" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))))`
+    // The symbols are written by hand with their fields hidden, so that only their bodies and pins are tested.
+    const unit = (n: number, at: string, uuid: string) => `(symbol (lib_id "Test:Dual") (at ${at} 0) (unit ${n}) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (uuid ${uuid})
+      (property "Reference" "U1" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Value" "Dual" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (pin "${n}" (uuid ${uuid}-p))
+      (instances (project "demo" (path "/00000000-0000-4000-8000-000000000001" (reference "U1") (unit ${n})))))`
+    const two = (area: string) => schematic({ version: VERSION, libs: [dual], body: [unit(1, "50.8 50.8", R1), unit(2, "50.8 120", R2), area] })
+    const some = report(two(AREA("(dnp yes)", "(xy 30 35) (xy 70 35) (xy 70 65) (xy 30 65)")))
+    const said = some.entries.find((e) => e.code === "rule-area-units")!
+    expect(said.object).toBe("the part U1")
+    expect(said.severity).toBe("changed")
+    // Both units inside, or neither: the units agree and nothing is said.
+    expect(report(two(AREA("(dnp yes)", "(xy 30 35) (xy 70 35) (xy 70 135) (xy 30 135)"))).entries.find((e) => e.code === "rule-area-units")).toBeUndefined()
+    expect(report(two(AREA("(dnp yes)", "(xy 130 35) (xy 170 35) (xy 170 65) (xy 130 65)"))).entries.find((e) => e.code === "rule-area-units")).toBeUndefined()
+  })
+
   it("refuses a net two classes claim, and a directive turned a quarter turn off", () => {
     const two = sheet([directive("50.8 57.15 0", "Power"), directive("50.8 56 0", "Other")])
     const r = importKicadSchematic(two)

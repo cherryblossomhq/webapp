@@ -52,10 +52,27 @@ describe("S12: symbols from the project's libraries", () => {
   })
 
   it("reads the table's paths as KiCad does: relative to the project, through ${KIPRJMOD}, by file name for a path of another machine", () => {
-    for (const uri of ["libs/Device.kicad_sym", "${KIPRJMOD}/libs/Device.kicad_sym", "$(KIPRJMOD)/libs/Device.kicad_sym", "C:\\Users\\someone\\KiCad\\Device.kicad_sym", "/home/someone/kicad/Device.kicad_sym", "${KICAD9_3RD_PARTY}/Device.kicad_sym"]) {
+    for (const uri of ["libs/Device.kicad_sym", "${KIPRJMOD}/libs/Device.kicad_sym", "$(KIPRJMOD)/libs/Device.kicad_sym", "C:\\Users\\someone\\KiCad\\Device.kicad_sym", "/home/someone/kicad/Device.kicad_sym"]) {
       const r = ok(run(files({ "root.kicad_sch": body([]), "sym-lib-table": table(["Device", uri]), "libs/Device.kicad_sym": R_LIB })))
       expect(r.project.symbols, uri).toEqual(withCache.project.symbols)
     }
+  })
+
+  it("does not take a project's file for KiCad's stock library when the table names it through a KiCad variable", () => {
+    for (const uri of ["${KICAD9_SYMBOL_DIR}/Device.kicad_sym", "$(KICAD_SYMBOL_DIR)/Device.kicad_sym", "${KICAD9_3RD_PARTY}/Device.kicad_sym"]) {
+      const r = run(files({ "root.kicad_sch": body([]), "sym-lib-table": table(["Device", uri]), "libs/Device.kicad_sym": R_LIB, "Device.kicad_sym": R_LIB }))
+      expect(r.status, uri).toBe("refused")
+      expect(r.report.entries.some((e) => e.severity === "refused" && /KICAD\d*_/.test(`${e.object} ${e.why}`) || /another machine|machine that made/.test(e.why)), uri).toBe(true)
+    }
+    // A variable of the user's own, and an absolute path of another machine, are still read by their file name.
+    expect(ok(run(files({ "root.kicad_sch": body([]), "sym-lib-table": table(["Device", "${MYLIBS}/Device.kicad_sym"]), "libs/Device.kicad_sym": R_LIB }))).project.symbols).toEqual(withCache.project.symbols)
+  })
+
+  it("does not look for a library by its nickname when the project has a table that does not list it", () => {
+    const listed = table(["Other", "libs/Other.kicad_sym"])
+    const r = run(files({ "root.kicad_sch": body([]), "sym-lib-table": listed, "libs/Other.kicad_sym": R_LIB, "Device.kicad_sym": R_LIB }))
+    expect(r.status).toBe("refused")
+    expect(r.report.entries.some((e) => e.code === "symbol-library-missing" || /Device/.test(e.object + e.why))).toBe(true)
   })
 
   it("finds the table and the libraries beside a root sheet that is in a folder, and without regard to case", () => {
@@ -169,6 +186,16 @@ describe("S12: symbols from the project's libraries", () => {
     expect(e.object).toMatch(/R1|R2/)
   })
 
+  it("refuses a library that has renumbered or renamed (as an alternate) its pins at the same places", () => {
+    // The wires are drawn to the same points, and the instance lists pins 1 and 2: the library's are now A and B.
+    const renumbered = lib(R_BODY.replace('(number "1"', '(number "A"').replace('(number "2"', '(number "B"'))
+    const r = run(files({ "root.kicad_sch": body([]), "Device.kicad_sym": renumbered }))
+    expect(r.status).toBe("refused")
+    expect(r.report.entries.find((x) => x.code === "symbol-may-have-changed")!.severity).toBe("refused")
+    // A library that is as it was is not refused.
+    expect(run(files({ "root.kicad_sch": body([]), "Device.kicad_sym": R_LIB })).status).toBe("imported")
+  })
+
   it("reads a power symbol from its library, and a symbol of two libraries by the nickname", () => {
     const gnd = lib(LIB_GND.replace('"power:GND"', '"GND"'))
     const r = ok(
@@ -215,7 +242,7 @@ describe("S12: symbols from the project's libraries", () => {
     const r = run(files({ "root.kicad_sch": cycle, "Device.kicad_sym": cyc }))
     expect(r.status).toBe("refused")
     expect(r.report.entries.find((e) => e.code === "symbol-base-missing")!.why).toMatch(/cycle/)
-    const many = table(...Array.from({ length: 5000 }, (_, i) => [`L${i}`, `libs/L${i}.kicad_sym`] as [string, string]))
+    const many = table(...[...Array.from({ length: 5000 }, (_, i) => [`L${i}`, `libs/L${i}.kicad_sym`] as [string, string]), ["Device", "Device.kicad_sym"] as [string, string]])
     const t0 = Date.now()
     const big = run(files({ "root.kicad_sch": body([]), "sym-lib-table": many, "Device.kicad_sym": R_LIB }))
     expect(big.status).toBe("imported")

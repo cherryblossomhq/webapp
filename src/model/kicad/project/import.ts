@@ -20,6 +20,7 @@ import { refusals, type ImportReport, type NodeAccount } from "../board/report"
 import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
 import { settleImportedLabelClasses } from "../../directives"
+import { reportRuleAreaUnits } from "../../ruleAreas"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
@@ -442,6 +443,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
   // S8: the net classes the schematic's labels give, on top of the project file's.
   merged.project = settleImportedLabelClasses(merged.project, report)
+  reportRuleAreaUnits(merged.project, report)
   lateParts.push(...(merged.project.parts ?? []).filter((p) => !isRegistered(p.id)).map((p) => p.id))
   registerProjectParts(merged.project)
   const pairs = link.links.flatMap((l) => {

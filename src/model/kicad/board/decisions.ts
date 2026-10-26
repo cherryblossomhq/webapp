@@ -339,7 +339,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^(via)$",
   "decision": "native",
-  "note": "through vias; blind, buried and micro need X5"
+  "note": "a via of any kind (X5)"
  },
  {
   "source": "^(via>(?:at|size|drill|locked))$",

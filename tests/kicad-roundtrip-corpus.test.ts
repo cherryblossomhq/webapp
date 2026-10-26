@@ -3,6 +3,7 @@ import { join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
+import { rememberImage } from "../src/store/imageFiles"
 import { canonicalProject, diffCanonical, proRulesDifferences, withoutProjectFileRules } from "./kicad-roundtrip-check"
 
 // The round trip over a local corpus (not in the repo): every board that imports is written out by the KiCad export, read again, and the two
@@ -20,6 +21,16 @@ const LIMIT = Number(process.env.KICAD_LIMIT ?? 0)
 const EVERY = Number(process.env.KICAD_EVERY ?? 1)
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
 
+/**
+ * What differs on purpose, because a KiCad 9 file cannot say it: a zone of a board of KiCad 5 or earlier has no uuid and is not ordered by one (a file of
+ * KiCad 9 gives every zone a uuid, which orders zones of equal priority), and its fill keeps that release's distances to the edge and to a hole; KiCad 9 has no
+ * `virtual` attribute (it reads it as "not in the BOM" and "not in the position file"). Everything else that differs is a finding.
+ */
+export const BY_DESIGN = [
+  /^project\.zones\[\]\.(edgeGap|holeGap|unordered|uuid)$/,
+  /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
+]
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
@@ -36,8 +47,8 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
     if (ONLY.length) files = files.filter((f) => ONLY.some((o) => f.includes(o)))
     if (EVERY > 1) files = files.filter((_, i) => i % EVERY === 0)
     if (LIMIT) files = files.slice(0, LIMIT)
-    const kinds = new Map<string, { boards: number; example: string }>()
-    const rows: { file: string; status: string; differences: number; kinds: string[]; ms: number; error?: string }[] = []
+    const kinds = new Map<string, { boards: number; example: string; byDesign: boolean }>()
+    const rows: { file: string; status: string; differences: number; unexpected?: number; kinds: string[]; ms: number; error?: string }[] = []
     for (const file of files) {
       const rel = relative(CORPUS!, file).split(String.fromCharCode(92)).join("/")
       const t0 = Date.now()
@@ -47,6 +58,8 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
           rows.push({ file: rel, status: `not imported (${a.reason})`, differences: 0, kinds: [], ms: Date.now() - t0 })
           continue
         }
+        // The host keeps a reference image's bytes; here the page already has them, as it does right after an import.
+        for (const f of a.files) rememberImage(f.id, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
         const written = await kicadFiles(a.project)
         const pcb = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
         const b = importKicadBoard(pcb)
@@ -58,10 +71,11 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
         const diffs = [...diffCanonical(withoutProjectFileRules(canonicalProject(a.project)), withoutProjectFileRules(canonicalProject(b.project)), 400), ...proRulesDifferences(a.project, pro)]
         const ks = [...new Set(diffs.map((d) => d.kind))]
         for (const d of diffs) {
-          if (!kinds.has(d.kind)) kinds.set(d.kind, { boards: 0, example: `${rel} ${d.path}: ${d.first} / ${d.second}` })
+          if (!kinds.has(d.kind)) kinds.set(d.kind, { boards: 0, example: `${rel} ${d.path}: ${d.first} / ${d.second}`, byDesign: BY_DESIGN.some((re) => re.test(d.kind)) })
         }
         for (const k of ks) kinds.get(k)!.boards++
-        rows.push({ file: rel, status: diffs.length ? "differs" : "same", differences: diffs.length, kinds: ks, ms: Date.now() - t0 })
+        const unexpected = diffs.filter((d) => !BY_DESIGN.some((re) => re.test(d.kind))).length
+        rows.push({ file: rel, status: diffs.length ? (unexpected ? "differs" : "differs by design only") : "same", differences: diffs.length, unexpected, kinds: ks, ms: Date.now() - t0 })
       } catch (e) {
         rows.push({ file: rel, status: "error", differences: -1, kinds: [], ms: Date.now() - t0, error: e instanceof Error ? e.stack?.slice(0, 400) : String(e) })
       }
@@ -72,6 +86,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
       boards: rows.length,
       imported: imported.length,
       same: rows.filter((r) => r.status === "same").length,
+      differsByDesignOnly: rows.filter((r) => r.status === "differs by design only").length,
       differs: rows.filter((r) => r.status === "differs").length,
       refusedWritten: rows.filter((r) => r.status.startsWith("written file refused")).length,
       errors: rows.filter((r) => r.status === "error").length,

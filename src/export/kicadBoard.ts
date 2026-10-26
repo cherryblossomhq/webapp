@@ -13,7 +13,7 @@ import type { BoardDimension, BoardShape, ComponentInstance, FootprintDef, PadDe
 import type { Model3D } from "../model/types"
 import { drawing, type Out } from "./kicadShapes"
 import { effects, quote } from "./kicadTexts"
-import { writePad } from "./kicadPads"
+import { trapezoidOf, writePad } from "./kicadPads"
 import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
 import { isWholeBoardPour } from "../model/zones"
@@ -222,9 +222,11 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       const pin = def.pin ? pins.get(def.pin) : undefined
       const fn = pin && pin.name !== pin.number ? pin.name : undefined
       const type = pin?.kind ? PIN_TYPE[pin.kind] : undefined
-      lines.push(dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type })))
+      // A polygon pad of four corners that is KiCad's trapezoid is written as one.
+      const trapezoid = def.shape === "polygon" && !def.custom && def.holeDiameter === undefined && def.points ? (trapezoidOf(def.points.map((p) => ({ x: p.x, y: bottom ? p.y : 0 - p.y }))) ?? undefined) : undefined
+      lines.push(dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid })))
       for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o) : o)
-      if (def.shape === "polygon" && !def.custom) notes.add("A trapezoid or polygon pad is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
+      if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
 
     // The part's own groups, by place in the land.
@@ -264,9 +266,9 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const mirror = bottom ? !t.mirror : t.mirror === true
     const content = t.kind === "user" ? (t.text ?? "") : t.kind === "reference" ? (t.text ?? c.ref) : shownOf(project, wt)
     const id = newUuid()
-    const at = `(at ${xy(local)}${angle ? ` ${mm6(angle)}` : ""}${t.upright === false ? " unlocked" : ""})`
+    const at = `(at ${xy(local)}${angle ? ` ${mm6(angle)}` : ""})`
     const head = t.kind === "reference" ? `(property "Reference" ${quote(content)}` : t.kind === "value" ? `(property "Value" ${quote(content)}` : `(fp_text user ${quote(content)}`
-    const lines = [head, `  ${at}`, `  (layer ${quote(layer)}${t.knockout ? " knockout" : ""})`, ...(t.hide ? ["  (hide yes)"] : []), ...(t.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, mirror, false, t.href).map((l) => `  ${l}`), ")"]
+    const lines = [head, `  ${at}`, ...(t.upright === false ? ["  (unlocked yes)"] : []), `  (layer ${quote(layer)}${t.knockout ? " knockout" : ""})`, ...(t.hide ? ["  (hide yes)"] : []), ...(t.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, mirror, false, t.href).map((l) => `  ${l}`), ")"]
     return { lines, ids: [id] }
   }
 
@@ -357,6 +359,8 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     members.set(d.id, [id])
     boardItems.push(indent(dimensionBlock(d as BoardDimension, id, toFile), "  ").join("\n"))
   }
+  if (project.dimensions?.length) notes.add("Dimensions are written as KiCad's own dimension items, with the text and where KiCad puts it; their lines and arrows are KiCad's to draw, by its rules, as they are here.")
+  if ((project.images ?? []).some((m) => m.scale !== 1 || m.ppi !== 300)) notes.add("A reference image's scale is written with six digits, as KiCad writes it.")
   let missingPictures = 0
   for (const m of project.images ?? []) {
     const bytes = options.pictures?.get(m.file)

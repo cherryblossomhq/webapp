@@ -98,6 +98,46 @@ export interface PadWriteOptions {
   at?: Vec2
   pinfunction?: string
   pintype?: string
+  /** A polygon pad that is KiCad's trapezoid, with the pad's own frame (place, turn in the file, size and delta): written as the trapezoid it was. */
+  trapezoid?: Trapezoid
+}
+
+/** What KiCad stores of a trapezoid pad: its place, its turn within the footprint, its size and its `rect_delta`, in the footprint's file frame. */
+export interface Trapezoid {
+  at: Vec2
+  turn: number
+  w: number
+  h: number
+  dx: number
+  dy: number
+}
+
+/**
+ * The trapezoid a quadrilateral is, in the footprint's file frame (y down), when it is what KiCad's `TransformTrapezoidToPolygon` makes of a size, a delta and
+ * a turn (the corners are `(-hx-dy/2, hy+dx/2)`, `(-hx+dy/2, -hy-dx/2)`, `(hx-dy/2, -hy+dx/2)` and `(hx+dy/2, hy-dx/2)` turned about the centre); null
+ * for any other four points. The centre is their mean, the turn comes from the sum of the two long sides, the rest from the corners turned back.
+ */
+export function trapezoidOf(q: Vec2[]): Trapezoid | null {
+  if (q.length !== 4) return null
+  const at = { x: (q[0].x + q[1].x + q[2].x + q[3].x) / 4, y: (q[0].y + q[1].y + q[2].y + q[3].y) / 4 }
+  const v = q.map((p) => ({ x: p.x - at.x, y: p.y - at.y }))
+  // (C3 - C0 + C2 - C1) / 2 = (2 hx, 0), turned.
+  const t = { x: (v[3].x - v[0].x + v[2].x - v[1].x) / 2, y: (v[3].y - v[0].y + v[2].y - v[1].y) / 2 }
+  const hx = Math.hypot(t.x, t.y) / 2
+  if (hx < 1e-9) return null
+  const turn = (Math.atan2(-t.y, t.x) * 180) / Math.PI
+  const c = v.map((p) => turnVec(p, -turn))
+  const ddy = -(c[0].x + c[2].x) / 2
+  const ddx = (c[0].y + c[2].y) / 2
+  const hy = (c[0].y - c[1].y) / 2 - ddx
+  const want = [
+    { x: -hx - ddy, y: hy + ddx },
+    { x: -hx + ddy, y: -hy - ddx },
+    { x: hx - ddy, y: -hy + ddx },
+    { x: hx + ddy, y: hy - ddx },
+  ]
+  if (hy <= 0 || want.some((p, i) => Math.abs(p.x - c[i].x) > 5e-7 || Math.abs(p.y - c[i].y) > 5e-7)) return null
+  return { at, turn, w: 2 * hx, h: 2 * hy, dx: 2 * ddx, dy: 2 * ddy }
 }
 
 export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstance, frame: (p: Vec2) => Vec2, footprintAngle: number, net: { code: number; name: string } | null, uuid: string, opts?: PadWriteOptions): string {
@@ -110,8 +150,10 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   // A slot runs along x of the pad's frame in KiCad; for a pad whose frame is not its own (a polygon) the frame is turned to it.
   const extra = slot && fixed ? slotAxis : slot && slotAxis % 90 !== 0 ? slotAxis : 0
   const store = (v: Vec2): Vec2 => turnVec({ x: v.x, y: bottom ? v.y : -v.y }, -extra)
-  const angle = normalizeAngle((bottom ? footprintAngle - own + 180 : footprintAngle + own) + extra)
-  const at = opts?.at ?? frame(world!.hole ?? world!)
+  const trap = fixed ? opts?.trapezoid : undefined
+  // A trapezoid's turn is the file's own: the footprint's angle (the editor's less half a turn on the bottom) and the pad's turn within it.
+  const angle = trap ? normalizeAngle((bottom ? footprintAngle - 180 : footprintAngle) + trap.turn) : normalizeAngle((bottom ? footprintAngle - own + 180 : footprintAngle + own) + extra)
+  const at = trap ? trap.at : (opts?.at ?? frame(world!.hole ?? world!))
   const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : "smd"
   const lines: string[] = []
   const w = def.width
@@ -119,7 +161,11 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   let shape: string
   let size = `${mm6(w)} ${mm6(h)}`
   const extras: string[] = []
-  if (def.custom || fixed) {
+  if (trap) {
+    shape = "trapezoid"
+    size = `${mm6(trap.w)} ${mm6(trap.h)}`
+    extras.push(`(rect_delta ${mm6(trap.dx)} ${mm6(trap.dy)})`)
+  } else if (def.custom || fixed) {
     shape = "custom"
     size = fixed ? "0.001 0.001" : `${mm6(w)} ${mm6(def.custom!.anchor === "circle" ? w : h)}`
     const anchor = def.custom?.anchor ?? "circle"

@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
-import { isKicadBoardProject, writeKicadBoard } from "../src/export/kicadBoard"
+import { isKicadBoardProject } from "../src/export/kicadBoard"
 import { importKicadBoard, readKicadBoard } from "../src/model/kicad/board"
 import { pcbPads } from "../src/model/instances"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { canonicalProject, diffCanonical } from "./kicad-roundtrip-check"
 import { twoResistors } from "./zones-fixtures"
+import { rememberImage } from "../src/store/imageFiles"
 
 // X16: the board writer for the round trip. A board is imported, written by the native writer, imported again, and the two projects are compared
 // item for item (`kicad-roundtrip-check.ts`); the corpus version of the same check is `kicad-roundtrip-corpus.test.ts`.
@@ -123,9 +124,57 @@ describe("copper, zones, texts, dimensions and groups", () => {
     expect(await pcbOf(project)).toBe(await pcbOf(project))
   })
 
-  it("names a trapezoid pad's rewrite as a difference on purpose", () => {
-    const p = imported(board({ nets: NETS, body: [footprint({ ref: "U1", at: "5 5", pads: [pad({ number: "1", at: "0 0", shape: "trapezoid", size: "2 1", extra: "(rect_delta 0 0.4)" })] })] }))
-    const { notes } = writeKicadBoard(p)
-    expect(notes.join(" ")).toContain("trapezoid")
+  it("writes a trapezoid pad as a trapezoid, turned and on either side, and reads it back as the same pad", async () => {
+    const trap = (ref: string, at: string, layer: string) => footprint({ ref, at, layer, pads: [pad({ number: "1", at: "0.5 0.2 33", shape: "trapezoid", size: "2 1", extra: "(rect_delta 0 0.4)", layers: layer === "F.Cu" ? '"F.Cu" "F.Paste" "F.Mask"' : '"B.Cu" "B.Paste" "B.Mask"' })] })
+    const p = imported(board({ nets: NETS, body: [trap("U1", "5 5 0", "F.Cu"), trap("U2", "15 5 90", "F.Cu"), trap("U3", "25 5 250", "B.Cu")] }))
+    const { text, differences } = await roundTrip(p)
+    expect(text.split(" trapezoid").length - 1).toBe(3)
+    expect(text).toContain("(rect_delta 0 0.4)")
+    expect(differences).toEqual([])
+  })
+  it("says a polygon pad that is no KiCad trapezoid is written as a custom pad, and reads back the same", async () => {
+    const p = imported(board({ nets: NETS, body: [footprint({ ref: "U1", at: "5 5", pads: [pad({ number: "1", at: "0 0", shape: "custom", size: "0.3 0.3", extra: "(options (anchor rect)) (primitives (gr_poly (pts (xy -0.5 -0.75) (xy 0.5 -0.75) (xy 1 0) (xy 0.5 0.75) (xy -0.5 0.75)) (width 0) (fill yes)))" })] })] }))
+    const { differences } = await roundTrip(p)
+    expect(differences).toEqual([])
+  })
+})
+
+describe("3D models and reference images", () => {
+  const MODEL = '(model "${KICAD10_3DMODEL_DIR}/Resistor_SMD.3dshapes/R_0603_1608Metric.step" (offset (xyz 0.2 -0.1 0.3)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 90)))'
+  it("a stock model is written as KiCad 9's variable names it, at the offset and turn it had, on either side", async () => {
+    const p = imported(board({ nets: NETS, body: [footprint({ ref: "R1", at: "5 5", pads: [pad({ at: "0 0" })], extra: MODEL }), footprint({ ref: "R2", at: "15 5", layer: "B.Cu", pads: [pad({ at: "0 0", layers: '"B.Cu" "B.Paste" "B.Mask"' })], extra: MODEL })] }))
+    const out = await pcbOf(p)
+    expect(out.match(/\(model "\$\{KICAD9_3DMODEL_DIR\}\/Resistor_SMD\.3dshapes\/R_0603_1608Metric\.step"/g)).toHaveLength(2)
+    expect(out).toContain("(xyz 0.2 -0.1 0.3)")
+    expect(out).toContain("(xyz 0 0 90)")
+    const again = importKicadBoard(out)
+    if (again.status !== "imported") throw new Error(again.message)
+    expect(again.project.models).toHaveLength(p.models!.length)
+    expect(diffCanonical(canonicalProject(p), canonicalProject(again.project)).filter((d) => !d.kind.startsWith("project.rules."))).toEqual([])
+  })
+})
+
+describe("reference images", () => {
+  /** A PNG header with the size and a resolution: the header is all the importer reads. */
+  function png(px: number, py: number, perMetre: number): Uint8Array {
+    const b: number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    const u32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]
+    const chunk = (type: string, data: number[]) => [...u32(data.length), ...[...type].map((c) => c.charCodeAt(0)), ...data, 0, 0, 0, 0]
+    b.push(...chunk("IHDR", [...u32(px), ...u32(py), 8, 6, 0, 0, 0]), ...chunk("pHYs", [...u32(perMetre), ...u32(perMetre), 1]), ...chunk("IDAT", [0]), ...chunk("IEND", []))
+    return new Uint8Array(b)
+  }
+  it("is written with its bytes and reads back as the same image, where the page has them", async () => {
+    const bytes = png(40, 20, 11811)
+    const b64 = Buffer.from(bytes).toString("base64")
+    const text = board({ body: [`(image (at 10 5) (layer "User.1") (scale 1.5) (data "${b64.slice(0, 40)}" "${b64.slice(40)}") (uuid "${U(900)}"))`] })
+    const r = importKicadBoard(text)
+    if (r.status !== "imported") throw new Error(r.message)
+    for (const f of r.files) rememberImage(f.id, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
+    const out = await pcbOf(r.project)
+    expect(out).toContain("(image")
+    expect(out).toContain('(layer "User.1")')
+    const again = importKicadBoard(out)
+    if (again.status !== "imported") throw new Error(again.message)
+    expect(diffCanonical(canonicalProject(r.project), canonicalProject(again.project)).filter((d) => !d.kind.startsWith("project.rules."))).toEqual([])
   })
 })

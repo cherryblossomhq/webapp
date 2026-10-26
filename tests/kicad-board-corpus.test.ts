@@ -54,21 +54,34 @@ const ZONE_FILL_OUTLIERS: string[] = [
   // None has a rule of the fill behind it that was found, and the stored fill may be older than the board; the share with a net class (7 of 16) is the share of all
   // boards that have one (296 of 819), so the classes are not what moves them. Three more boards, whose outline crosses itself, poured nothing until the
   // fill took each lobe of such an outline as board (`boardLoops`); they are in the count now.
+  // After X1, X4 and X5 (12 more, all with a copper fill that differs from KiCad's stored one by more than a tenth and 5 mm2): boards that were refused for a stackup, an arc track, a via kind or an inner layer and now import, so their fill is compared too. 3 are four-layer boards (f4fc, d20_tri_r1.0, udb-s); none has a rule of the fill behind it that was found.
   "kicad-source/qa/data/pcbnew/test_copper_graphics.kicad_pcb",
   "pcbench/PCBs/BB-PWR-3608_BB-PWR-3608_revA/raw.kicad_pcb",
   "pcbench/PCBs/CAL430FR_CAL430F_watch/raw.kicad_pcb",
   "pcbench/PCBs/ESP07-Breakout_ESP07-Breakout/raw.kicad_pcb",
   "pcbench/PCBs/Hardware_Playground_NRF52832_Touch_Switch_Power_Supply/raw.kicad_pcb",
   "pcbench/PCBs/LiPoSensor_lipo_sensor/raw.kicad_pcb",
+  "pcbench/PCBs/LogicBoxen_LogicBoxen/raw.kicad_pcb",
   "pcbench/PCBs/MOD-MPU9150_mod-mpu9150/raw.kicad_pcb",
   "pcbench/PCBs/Neptune-Hardware_DataAcquisitionBoard/raw.kicad_pcb",
   "pcbench/PCBs/RPi-PWM-Fan-interface_RPi PWM Fan interface/raw.kicad_pcb",
   "pcbench/PCBs/Starling_matrix/raw.kicad_pcb",
   "pcbench/PCBs/edid-injector_edid-injector/raw.kicad_pcb",
   "pcbench/PCBs/esp8266_link_test_esp12e-generics/raw.kicad_pcb",
+  "pcbench/PCBs/f4fc_f4fc/raw.kicad_pcb",
   "pcbench/PCBs/kitspace_CA3306E/raw.kicad_pcb",
+  "pcbench/PCBs/kitspace_USBI2C01/raw.kicad_pcb",
+  "pcbench/PCBs/kitspace_d20_tri_r1.0/raw.kicad_pcb",
   "pcbench/PCBs/snappi-zero_snappi-zero/raw.kicad_pcb",
   "pcbench/PCBs/tinyFISH_tinyBRUSH/raw.kicad_pcb",
+  "projects/0xjmux__ESP-PROG-Adapter/PCB/ESPPROG-Adapter.kicad_pcb",
+  "projects/Unified-Daughterboard__UDB-S/udb-s.kicad_pcb",
+  "projects/badjeff__paw3395-pcb/paw3395.kicad_pcb",
+  "projects/cormoran__PAW3222-breakout/kicad_projects/PAW3220LU-breakout/PAW3220LU-breakout.kicad_pcb",
+  "projects/johanwheeler__ch32-fireplace/PCBs/Front/Front.kicad_pcb",
+  "projects/pdp7__art/pot.kicad_pcb",
+  "projects/silverstee1__SP1ETH/Kicad/ConnSP1.kicad_pcb",
+  "projects/tschicki__PS2-Portable/Electronics/PS2_Gamepad_Left/Flex_Left/Flex_Left.kicad_pcb",
   "projects/tvlad1234__linux-ch32v003/hardware/linux-ch32v003.kicad_pcb",
 ]
 

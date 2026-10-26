@@ -4,6 +4,7 @@ import { inPositionFile } from "../model/partFlags"
 import { normalizeAngle } from "../lib/geometry"
 import type { ComponentInstance, Project } from "../model/types"
 import { csvRow } from "./bom"
+import { withSheetFlags } from "../model/sheets"
 
 /**
  * The angle the position file gives a part. A part drawn in the editor gives its rotation as it is.
@@ -17,7 +18,9 @@ export function positionAngle(c: ComponentInstance): number {
   return Number(normalizeAngle(c.pcb.side === "bottom" ? c.pcb.rot - 180 : c.pcb.rot).toFixed(6))
 }
 
-export function pnpCsv(project: Project): string {
+export function pnpCsv(source: Project): string {
+  // A flag on a sheet symbol is the flag of every part on the sheet.
+  const project = withSheetFlags(source)
   const lines = [csvRow(["Designator", "Value", "Footprint", "Mid X", "Mid Y", "Rotation", "Layer"])]
   const parts = project.components
     .filter((c) => isPhysical(findPart(c.partId)) && inPositionFile(c))

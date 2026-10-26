@@ -1,3 +1,4 @@
+import { isHierarchical } from "../model/sheets"
 import { copilotAccess, copilotModel, useAccount } from "../store/accountStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
@@ -76,6 +77,9 @@ export const hasKicadSymbols = (project: Project) =>
 /** What a design brought from KiCad needs to know about its net names, flags and notes; a design drawn here is not told. */
 export const KICAD_NET_NOTE = `This design came from KiCad and names its nets as KiCad does: a net a local label names is /NAME, one a global label or a power symbol names is NAME, and one nothing names is Net-(R1-Pad2) (unconnected-(R1-Pad2) for a pin alone). Use the names get_design shows. A label you add is a local one. A part can be marked do not populate, out of the BOM, off the board or out of the position file (update_component: dnp, in_bom, on_board, in_pos_files); get_design lists only the flags that are set, and the notes and drawings on the sheet as sheet_items.`
 
+/** What a design with sheets needs to know; a design of one sheet is not told. */
+export const SHEETS_NOTE = `This design has sheets. get_design lists them and says which sheet each part is on (sheet: a path of names, / for the root). connect, tidy_schematic and get_design take sheet; connect finds it from its pins when they are on one sheet. A net crosses sheets only through a sheet pin and a hierarchical label of the same name, or a global label or power symbol; a sheet used twice has the same wires and labels in each use, and an edit to one use is made in all.`
+
 /**
  * The system message for a design: the static prompt as it always was (the same bytes, so its cache
  * holds), and after it a note about units when the design has parts that need it, and a note about KiCad's net names
@@ -84,10 +88,11 @@ export const KICAD_NET_NOTE = `This design came from KiCad and names its nets as
 export function systemMessageFor(project: Project): Extract<ChatMessage, { role: "system" }> {
   const symbols = hasKicadSymbols(project)
   const named = !!project.netNames
-  if (!symbols && !named) return SYSTEM_MESSAGE
+  const sheets = isHierarchical(project)
+  if (!symbols && !named && !sheets) return SYSTEM_MESSAGE
   return {
     role: "system",
-    content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }, ...(symbols ? [{ type: "text" as const, text: UNITS_NOTE }] : []), ...(named ? [{ type: "text" as const, text: KICAD_NET_NOTE }] : [])],
+    content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }, ...(symbols ? [{ type: "text" as const, text: UNITS_NOTE }] : []), ...(named ? [{ type: "text" as const, text: KICAD_NET_NOTE }] : []), ...(sheets ? [{ type: "text" as const, text: SHEETS_NOTE }] : [])],
   }
 }
 

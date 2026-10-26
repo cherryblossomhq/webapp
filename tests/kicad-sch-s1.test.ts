@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { ROOT_SHEET, sheetUses, sheetView, mergeSheetView, syncCopies, commitOnUse, usesOfSheet } from "../src/model/sheets"
-import { addWire } from "../src/model/ops"
+import { addWire, createProject } from "../src/model/ops"
 import { kicadFiles } from "../src/export/kicad"
+import { runTool } from "../src/ai/tools"
 import { LIB_GND, LIB_R, ROOT_UUID, schematic } from "./kicad-schematic-fixtures"
 
 // S1: hierarchical sheets, end to end, from the files KiCad writes.
@@ -172,5 +173,32 @@ describe("S1: the KiCad export", () => {
     expect(back.project.components.map((c) => c.ref).sort()).toEqual(["R1", "R2", "R3"])
     expect(sheetUses(back.project).map((u) => u.human)).toEqual(["/", "/A/", "/B/"])
     expect(back.project.labels.filter((l) => l.kind === "hierarchical")).toHaveLength(1)
+  })
+})
+
+describe("S1: Sakura's tools take a sheet", () => {
+  it("get_design lists each part's sheet, one sheet's parts alone, and refuses a sheet a one-sheet project does not have", () => {
+    const { project } = imp()
+    const all = JSON.parse(runTool(project, "get_design", {}).result)
+    expect(all.sheets.map((s: { path: string }) => s.path)).toEqual(["/", "/Power/"])
+    expect(all.components.map((c: { ref: string; sheet: string }) => [c.ref, c.sheet])).toEqual([["R1", "/"], ["R2", "/Power/"]])
+    const one = JSON.parse(runTool(project, "get_design", { sheet: "Power" }).result)
+    expect(one.components.map((c: { ref: string }) => c.ref)).toEqual(["R2"])
+    expect(one.showing_sheet).toBe("/Power/")
+    expect(runTool(project, "get_design", { sheet: "Nope" }).isError).toBe(true)
+    const flat = runTool(createProject("x"), "get_design", { sheet: "Power" })
+    expect(flat.isError).toBe(true)
+  })
+
+  it("connect works on the sheet of its pins, and one sheet's tidy leaves the others alone", () => {
+    const { project } = imp()
+    const r = runTool(project, "connect", { pins: ["R1.1", "R2.1"] })
+    expect(r.isError).toBe(true)
+    expect(r.result).toMatch(/different sheets/)
+    const tidy = runTool(project, "tidy_schematic", {})
+    expect(tidy.isError).toBe(true)
+    expect(tidy.result).toMatch(/sheets: \//)
+    const ok = runTool(project, "tidy_schematic", { sheet: "Power", whole_sheet: true })
+    expect(ok.project.components.find((c) => c.ref === "R1")).toEqual(project.components.find((c) => c.ref === "R1"))
   })
 })

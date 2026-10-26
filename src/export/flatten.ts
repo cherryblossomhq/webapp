@@ -2,7 +2,7 @@ import { computeConnectivity, pinKey } from "../model/connectivity"
 import { schematicBounds, schematicPins } from "../model/instances"
 import { labelBox } from "../model/labels"
 import { findPart } from "../model/library"
-import { ROOT_SHEET, isHierarchical, sheetUses, useOf, type SheetUse } from "../model/sheets"
+import { ROOT_SHEET, isHierarchical, sheetUses, useOf, withSheetFlags, type SheetUse } from "../model/sheets"
 import type { ComponentInstance, NetLabel, Project, SchematicDrawing, Vec2, Wire } from "../model/types"
 
 // S1: a project with sheets as one flat project, for the formats that have no sheets (Circuit JSON, and the board's side of
@@ -46,7 +46,7 @@ export function flattenHierarchy(project: Project): FlatProject {
   }
   const dx = (path: string) => shift.get(path) ?? 0
 
-  const components: ComponentInstance[] = project.components.map((c) => {
+  const components: ComponentInstance[] = withSheetFlags(project).components.map((c) => {
     const d = dx(useOf(c))
     const { inst: _inst, tpl: _tpl, ...rest } = c
     void _inst

@@ -376,3 +376,34 @@ export function commitOnUse(project: Project, path: string, fn: (view: Project) 
   if (made === view) return project
   return syncCopies(mergeSheetView(project, view, made), path)
 }
+
+// ---------- the flags a sheet symbol gives what is inside it ----------
+
+/**
+ * The project with the flags of sheet symbols (do not populate, not in the BOM, not on the board, not simulated) put on the symbols of every
+ * sheet below them, as KiCad has them mean (the flag of a sheet is the flag of everything on it). The project itself keeps the flag
+ * on the sheet symbol only; a project with no flagged sheet symbol is returned as it is. The BOM, the position file and the exports read this.
+ */
+export function withSheetFlags(project: Project): Project {
+  if (!project.sheetSymbols?.some((s) => s.flags && Object.keys(s.flags).length)) return project
+  const uses = new Map(sheetUses(project).map((u) => [u.path, u]))
+  const inherited = (path: string) => {
+    const out: NonNullable<SheetSymbol["flags"]> = {}
+    for (let at = uses.get(path); at?.symbol; at = uses.get(at.parent ?? "")) {
+      const f = at.symbol.flags
+      if (f?.dnp) out.dnp = true
+      if (f?.excludeFromBom) out.excludeFromBom = true
+      if (f?.notOnBoard) out.notOnBoard = true
+      if (f?.excludeFromSim) out.excludeFromSim = true
+    }
+    return out
+  }
+  let changed = false
+  const components = project.components.map((c) => {
+    const f = inherited(c.inst ?? "")
+    if (!Object.keys(f).length) return c
+    changed = true
+    return { ...c, flags: { ...c.flags, ...f } }
+  })
+  return changed ? { ...project, components } : project
+}

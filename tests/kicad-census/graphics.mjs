@@ -37,7 +37,9 @@ function canon(name, front, back, copperNames) {
   if (name === back) return "B.Cu"
   if (name === "Edge.Cuts") return "Edge.Cuts"
   if (DRAWING.test(name)) return name
-  if (copperNames.includes(name) || /^In\d+\.Cu$/.test(name)) return "inner"
+  // an inner copper layer is told by its place in the table (X1): the first inner layer is In1.Cu, whatever the file calls it
+  if (copperNames.includes(name) && copperNames.length > 2) return `In${copperNames.indexOf(name)}.Cu`
+  if (/^In\d+\.Cu$/.test(name)) return "inner"
   const t = TRANSLATED[name]
   if (t) return t
   return "unknown"

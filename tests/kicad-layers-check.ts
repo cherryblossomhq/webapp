@@ -71,7 +71,10 @@ export function checkLayers(text: string, project: Project, lossy: string[] = []
   else {
     const a = have.slice().sort()
     const b = want.slice().sort()
-    if (!a.every((k: string, i: number) => k === b[i])) wrong.push(`vias differ from the file's in kind or layers, for one ${b.find((k: string, i: number) => k !== a[i])}`)
+    if (!a.every((k: string, i: number) => k === b[i])) {
+      const tally = (xs: string[]) => xs.reduce<Record<string, number>>((m, k) => ({ ...m, [k]: (m[k] ?? 0) + 1 }), {})
+      wrong.push(`vias differ from the file's in kind or layers: project ${JSON.stringify(tally(a))}, file ${JSON.stringify(tally(b))}`)
+    }
   }
   // padstacks: pads of the project that carry a stack
   let stacked = 0

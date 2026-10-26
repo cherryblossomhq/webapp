@@ -404,7 +404,8 @@ export function textOracle(text) {
     if (name === back) return "B.Cu"
     if (name === "Edge.Cuts") return "Edge.Cuts"
     if (DRAWING.test(name)) return name
-    if (copperNames.includes(name) || /^In\d+\.Cu$/.test(name)) return "inner"
+    if (copperNames.includes(name) && copperNames.length > 2) return `In${copperNames.indexOf(name)}.Cu`
+    if (/^In\d+\.Cu$/.test(name)) return "inner"
     return TRANSLATED[name] ?? "unknown"
   }
   const props = {}

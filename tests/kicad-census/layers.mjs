@@ -14,13 +14,13 @@ export function copperTable(root) {
   const table = kid(root, "layers")
   const rows = []
   if (!table) return rows
+  // KiCad reads the copper rows of the table in the order written: the first is the front layer, the last the back, the others the inner layers between them (a legacy file names
+  // them Front, GND.Cu, Back). A copper row is one typed signal, power, mixed or jumper.
   for (const r of table.slice(1)) {
     if (!Array.isArray(r)) continue
     const [id, name, type, label] = r
-    if (typeof name === "string" && /\.Cu$/.test(name) && ["signal", "power", "mixed", "jumper", "user"].includes(type)) rows.push({ id: num(id), name, type, label: typeof label === "string" ? label : undefined })
+    if (typeof name === "string" && ["signal", "power", "mixed", "jumper"].includes(type)) rows.push({ id: num(id), name, type, label: typeof label === "string" ? label : undefined })
   }
-  const order = (n) => (n === "F.Cu" ? -1 : n === "B.Cu" ? 1e9 : Number((/^In(\d+)\.Cu$/.exec(n) ?? [0, 5e8])[1]))
-  rows.sort((a, b) => order(a.name) - order(b.name))
   return rows
 }
 
@@ -62,16 +62,21 @@ export function layersOracle(text) {
   const idOf = new Map(copper.map((r, i) => [r.name, ids[i]]))
   const setup = kid(root, "setup")
   const stackup = setup ? kid(setup, "stackup") : undefined
-  const stackRows = stackup ? kids(stackup, "layer") : []
-  let thickness = 0
-  for (const r of stackRows) {
-    const t = kid(r, "thickness")
-    if (t) thickness += num(t[1])
-    for (const s of kids(r, "addsublayer")) {
-      const st = kid(s, "thickness")
-      if (st) thickness += num(st[1])
+  // KiCad's parser (parseBoardStackup) takes the rows in order: a surface layer (a copper, silkscreen, mask or paste layer) listed a second time is a stackup appended to itself (KiCad's own
+  // test `Issue23625_CorruptedStackup` has one of 605 rows that grew by being saved again), and it and every row after it are not part of the stackup; at most 128 rows are kept.
+  const stackRows = []
+  if (stackup) {
+    const seen = new Set()
+    for (const r of kids(stackup, "layer")) {
+      const name = typeof r[1] === "string" ? r[1] : ""
+      if (seen.has(name) && /\.(Cu|SilkS|Mask|Paste)$/.test(name)) break
+      seen.add(name)
+      if (stackRows.length < 128) stackRows.push(r)
     }
   }
+  // the thickness of a row is every `thickness` it has: a dielectric of several sublayers writes the word `addsublayer` and then the next sublayer's fields in the same row
+  let thickness = 0
+  for (const r of stackRows) for (const t of kids(r, "thickness")) thickness += num(t[1])
   const arcs = kids(root, "arc")
   const segments = kids(root, "segment")
   let arcLen = 0
@@ -106,8 +111,6 @@ export function layersOracle(text) {
     else if (words.includes("blind")) kind = "blind"
     // KiCad 9 writes `blind` for a via between two inner layers: that is a buried via
     if (kind === "blind" && a && b && innerOnly(a) && innerOnly(b)) kind = "buried"
-    // a blind via that spans the outer two is a through via
-    if (kind === "blind" && a && b && new Set([a, b]).size === 2 && [a, b].includes("top") && [a, b].includes("bottom")) kind = "through"
     const ends = a && b ? [a, b].sort((x, y) => ids.indexOf(x) - ids.indexOf(y)) : []
     vias.push({ key: `${kind}|${at ? at.map((n) => n.toFixed(3)) : ""}|${kind === "through" ? "" : ends.join(">")}`, kind })
   }

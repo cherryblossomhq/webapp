@@ -1,3 +1,4 @@
+import { commitHere } from "../store/sheetScope"
 import { Bold, BringToFront, Code, Italic, SendToBack, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useSch } from "../editor/theme"
@@ -13,7 +14,6 @@ import {
   updateDrawings,
 } from "../model/drawings"
 import type { DrawingBox, DrawingColor, DrawingLine, DrawingStyle, DrawingText, SchematicDrawing } from "../model/types"
-import { projectApi } from "../store/projectStore"
 import { uiApi } from "../store/uiStore"
 import { Button, IconButton, Segmented } from "../ui/controls"
 import { Group, Section, Switch } from "../ui/form"
@@ -46,7 +46,7 @@ export function DrawingInspector({ drawings }: { drawings: SchematicDrawing[] })
   const rects = drawings.filter((d): d is DrawingBox => d.type === "rect")
   const allTexts = texts.length === drawings.length
 
-  const change = (fn: (d: SchematicDrawing) => SchematicDrawing) => projectApi().commit((p) => updateDrawings(p, ids, fn))
+  const change = (fn: (d: SchematicDrawing) => SchematicDrawing) => commitHere((p) => updateDrawings(p, ids, fn))
 
   const setStyle = (patch: DrawingStyle) => {
     // An open line keeps no fill, even when it is picked with shapes that take one.
@@ -130,7 +130,7 @@ export function DrawingInspector({ drawings }: { drawings: SchematicDrawing[] })
             shortcut="Del"
             className="h-7 w-7 hover:bg-danger-soft hover:text-danger"
             onClick={() => {
-              projectApi().commit((p) => removeDrawings(p, ids))
+              commitHere((p) => removeDrawings(p, ids))
               uiApi().clearSelection()
             }}
           >
@@ -190,10 +190,10 @@ export function DrawingInspector({ drawings }: { drawings: SchematicDrawing[] })
 
       <Section title="Arrange">
         <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => projectApi().commit((p) => reorderDrawings(p, ids, "front"))} title="Drawn over the other drawings">
+          <Button onClick={() => commitHere((p) => reorderDrawings(p, ids, "front"))} title="Drawn over the other drawings">
             <BringToFront size={14} /> Bring to front
           </Button>
-          <Button onClick={() => projectApi().commit((p) => reorderDrawings(p, ids, "back"))} title="Drawn under the other drawings">
+          <Button onClick={() => commitHere((p) => reorderDrawings(p, ids, "back"))} title="Drawn under the other drawings">
             <SendToBack size={14} /> Send to back
           </Button>
         </div>

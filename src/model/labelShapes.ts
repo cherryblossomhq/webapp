@@ -27,7 +27,7 @@ export const isKicadLabel = (l: Pick<NetLabel, "kind">) => l.kind !== undefined
 /** The justification a label has when its file names none: by the way it points, as KiCad writes it. */
 export function labelJustify(l: Pick<NetLabel, "rot" | "kind" | "look">): { h: "left" | "right"; v: "top" | "bottom" | undefined } {
   const away = l.rot === 180 || l.rot === 270
-  return { h: l.look?.h ?? (away ? "right" : "left"), v: l.look?.v ?? (l.kind === "global" ? undefined : "bottom") }
+  return { h: l.look?.h ?? (away ? "right" : "left"), v: l.look?.v ?? (l.kind === "global" || l.kind === "hierarchical" ? undefined : "bottom") }
 }
 
 /** The box a text covers: from its anchor, on the sides its extent names, `width` along the text and `height` across it. */
@@ -57,7 +57,7 @@ export function labelGeometry(l: NetLabel): LabelGeometry {
   const len = textWidth(l.name, size)
   const vertical = l.rot === 90 || l.rot === 270
   const angle = vertical ? 90 : 0
-  if (l.kind !== "global") {
+  if (l.kind !== "global" && l.kind !== "hierarchical") {
     // The text's angle is the label's mod 180, and its justification names the side of the point it extends to.
     const j = labelJustify(l)
     const { extent, vertical: v } = textOnSheet(angle, j.h, j.v, { rot: 0 })

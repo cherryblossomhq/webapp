@@ -14,8 +14,8 @@ import { LibraryPanel } from "../panels/LibraryPanel"
 import { SaveNotice } from "../panels/SaveNotice"
 import { SettingsDialog } from "../panels/SettingsDialog"
 import { TopBar } from "../panels/TopBar"
-import { projectApi } from "../store/projectStore"
-import { useUi, type SidePanel } from "../store/uiStore"
+import { projectApi, useProjectStore } from "../store/projectStore"
+import { uiApi, useUi, type SidePanel } from "../store/uiStore"
 import { IconButton, Segmented } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 
@@ -121,6 +121,9 @@ export function Editor() {
   useEffect(() => stopTidy, [])
   useEffect(() => stopZoneFills, [])
   useEffect(() => stopCleanup, [])
+  // A project opens on its root sheet.
+  const projectId = useProjectStore((s) => s.project?.id)
+  useEffect(() => uiApi().setSheet(""), [projectId])
 
   return (
     <div className="flex h-full flex-col">

@@ -1,9 +1,10 @@
+import { shownProject } from "../../store/sheetScope"
+import { isHierarchical } from "../../model/sheets"
 import { create } from "zustand"
 import { finishCleanup, hasParts, planCleanup, type CleanupPlan, type CleanupResult } from "../../model/cleanup"
 import { parseProjectFile, serializeProject } from "../../model/projectFile"
 import { tidySchematic, type TidyResult } from "../../model/tidy"
 import type { Project } from "../../model/types"
-import { projectApi } from "../../store/projectStore"
 import { applyTidyResult, TIDY_TIMEOUT_MS, type TidyReply, type TidyRequest } from "./tidyAction"
 
 // Clean up from the schematic toolbar, the free version: the parts in no block are grouped by how
@@ -61,7 +62,7 @@ function conclude(result: CleanupResult) {
 
 /** Show what Clean up would do. Nothing on an empty sheet, and nothing while it is already working. */
 export function openCleanup(): void {
-  const project = projectApi().project
+  const project = shownProject()
   if (!project || !hasParts(project) || useCleanup.getState().phase.kind === "running") return
   setPhase({ kind: "preview", plan: planCleanup(project) })
 }
@@ -73,7 +74,7 @@ export function cancelCleanup(): void {
   run++
   dropWorker()
   setPhase({ kind: "idle" })
-  if (phase.kind === "running") applyTidyResult(left(projectApi().project!, "Clean up was stopped; nothing was changed."))
+  if (phase.kind === "running") applyTidyResult(left(shownProject(), "Clean up was stopped; nothing was changed."))
 }
 
 /** Stop everything as the editor closes. */
@@ -88,7 +89,7 @@ export function applyCleanup(timeoutMs = TIDY_TIMEOUT_MS): void {
   const { phase } = useCleanup.getState()
   if (phase.kind !== "preview") return
   const { plan } = phase
-  const now = projectApi().project
+  const now = shownProject()
   if (!now) return
   if (now !== plan.before) {
     setPhase({ kind: "preview", plan: planCleanup(now) })
@@ -100,8 +101,8 @@ export function applyCleanup(timeoutMs = TIDY_TIMEOUT_MS): void {
     if (id !== run) return
     dropWorker()
     setPhase({ kind: "idle" })
-    if (projectApi().project !== plan.before) {
-      applyTidyResult(left(projectApi().project!, "The sheet changed while it was being cleaned up, so nothing was changed."))
+    if (shownProject() !== plan.before) {
+      applyTidyResult(left(shownProject(), "The sheet changed while it was being cleaned up, so nothing was changed."))
       return
     }
     conclude(finishCleanup(plan, tidy))
@@ -113,7 +114,7 @@ export function applyCleanup(timeoutMs = TIDY_TIMEOUT_MS): void {
     applyTidyResult(left(plan.before, message, problems))
   }
 
-  if (typeof Worker !== "function") {
+  if (typeof Worker !== "function" || isHierarchical(plan.before)) {
     // No workers (the unit tests): after the busy state is drawn, tidy here.
     setTimeout(() => {
       try {

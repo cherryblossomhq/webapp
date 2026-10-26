@@ -1,5 +1,5 @@
+import { commitHere, shownProject } from "../../store/sheetScope"
 import { groupSelection, ungroupSelection } from "../../model/blocks"
-import { projectApi } from "../../store/projectStore"
 import { selectionIds, uiApi } from "../../store/uiStore"
 
 // Grouping by hand, for the ⌘G and ⇧⌘G shortcuts and the Inspector's buttons alike.
@@ -10,8 +10,8 @@ export function groupSelected() {
   const components = selectionIds(sel, "c")
   const blocks = selectionIds(sel, "b")
   if (!components.length && !blocks.length) return
-  const { project, blockId } = groupSelection(projectApi().project!, components, blocks)
-  projectApi().commit(() => project)
+  const { project, blockId } = groupSelection(shownProject(), components, blocks)
+  commitHere(() => project)
   if (blockId) uiApi().select([`b:${blockId}`])
 }
 
@@ -21,8 +21,8 @@ export function ungroupSelected() {
   const components = selectionIds(sel, "c")
   const blocks = selectionIds(sel, "b")
   if (!components.length && !blocks.length) return
-  const before = projectApi().project!
+  const before = shownProject()
   const freed = (before.blocks ?? []).filter((b) => blocks.includes(b.id)).flatMap((b) => b.components)
-  projectApi().commit(() => ungroupSelection(before, components, blocks))
+  commitHere(() => ungroupSelection(before, components, blocks))
   uiApi().select([...new Set([...sel.filter((id) => !id.startsWith("b:")), ...freed.map((id) => `c:${id}`)])])
 }

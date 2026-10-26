@@ -1,9 +1,10 @@
+import { commitHere, shownProject } from "../../store/sheetScope"
+import { isHierarchical } from "../../model/sheets"
 import type { Box } from "../../lib/geometry"
 import { parseProjectFile, serializeProject } from "../../model/projectFile"
 import { tidySchematic, type TidyResult } from "../../model/tidy"
 import type { Vec2 } from "../../model/types"
 import { toScreen, type ViewTransform } from "../viewport"
-import { projectApi } from "../../store/projectStore"
 import { selectionIds, uiApi } from "../../store/uiStore"
 
 // Tidy from the schematic toolbar and the T shortcut: the selected block when exactly one block is
@@ -53,7 +54,7 @@ function selectedBlock(): string | undefined {
 /** Take a tidy's result into the project as one undo step, and tell the listeners. */
 function apply(blockId: string | undefined, result: TidyResult): TidyResult {
   if (result.changed) {
-    projectApi().commit(() => result.project)
+    commitHere(() => result.project)
     // Wires, labels and ports are drawn anew, so only what is still there stays selected.
     const p = result.project
     const alive = new Set([
@@ -141,8 +142,9 @@ export function startTidy(timeoutMs = TIDY_TIMEOUT_MS): void {
   if (busy || projectApi().role === "viewer") return
   setBusy(true)
   const w = tidyWorker()
-  const before = projectApi().project
-  if (w && before) {
+  const before = shownProject()
+  // A project with sheets is tidied one sheet at a time, here: the worker is given a file, which has no sheet shown.
+  if (w && before && !isHierarchical(before)) {
     const blockId = selectedBlock()
     const tell = (r: TidyResult) => {
       for (const l of listeners) l({ ...r, whole: !blockId, blockId })
@@ -157,7 +159,7 @@ export function startTidy(timeoutMs = TIDY_TIMEOUT_MS): void {
       timer = null
       setBusy(false)
       const reply = e.data
-      const now = projectApi().project
+      const now = shownProject()
       if ("error" in reply) {
         tell(unchanged(before, "Tidy couldn't finish; nothing was changed.", [reply.error]))
         return
@@ -197,7 +199,7 @@ export function startTidy(timeoutMs = TIDY_TIMEOUT_MS): void {
 
 /** Tidy here and now, on the page's thread. */
 export function tidySelected(): TidyResult {
-  const before = projectApi().project!
+  const before = shownProject()
   const blockId = selectedBlock()
   return apply(blockId, tidySchematic(before, { blockId }))
 }

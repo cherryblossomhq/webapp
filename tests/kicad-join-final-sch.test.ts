@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest"
+import { importKicadSchematic } from "../src/model/kicad/schematic"
+import { schematic } from "./kicad-schematic-fixtures"
 import { runTool } from "../src/ai/tools"
 import { addSheetUse, removeSheetSymbols } from "../src/model/sheetOps"
 import { commitOnUse, sheetUses } from "../src/model/sheets"
 import { pasteItems } from "../src/model/schematicEdit"
 import { setVariantOverride } from "../src/model/variants"
-import type { Project } from "../src/model/types"
+import type { ComponentInstance, Project } from "../src/model/types"
+import { computeConnectivity, pinKey } from "../src/model/connectivity"
+import { getConnectivity, sameSchematic } from "../src/model/connectivityCache"
+import { followNetRenames } from "../src/model/copperNets"
+import { setSymbolVariant } from "../src/model/schematicEdit"
+import { importSheet, place } from "./kicad-sch-parts"
 import { imp, S1, S2 } from "./kicad-sheets-fixtures"
 
 // The final schematic review of the join: per-use variant changes (B1), the connectivity cache (B2), the KiCad 9 export of a shared sheet (B3) and Sakura's edit_sheet (B4).
@@ -97,5 +104,80 @@ describe("B1: the variant changes of one use of a sheet are that use's", () => {
     expect(inner.variants).toEqual({ [uses[2].path]: { Lite: { excludeFromBom: true } } })
     expect(inner.pages).toEqual({ [`${uses[2].path}/h9`]: "8" })
     void b
+  })
+})
+
+describe("B2: the connectivity cache sees what changes a symbol's pins", () => {
+  /** What the nets are, by name and the pins on each. */
+  const netsOf = (c: ReturnType<typeof computeConnectivity>) => c.nets.map((n) => `${n.name}: ${n.pins.map((p) => `${p.componentId}.${p.pin}`).join(",")}`)
+  const edit = (p: Project, id: string, patch: Partial<ComponentInstance>): Project => ({ ...p, components: p.components.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
+  /** The cache is primed with the project before the edit, as the editor has it; what it answers for the project after must be what a fresh computation answers. */
+  const expectFresh = (before: Project, after: Project) => {
+    getConnectivity(before)
+    expect(sameSchematic(before, after)).toBe(false)
+    expect(netsOf(getConnectivity(after))).toEqual(netsOf(computeConnectivity(after)))
+    expect(netsOf(computeConnectivity(after))).not.toEqual(netsOf(computeConnectivity(before)))
+  }
+  // An MCU at (60, 120): pin 1 (PA0) at (52.38, 114.92), wired to R1's pin 2 at (40, 114.92).
+  const mcu = () => importSheet({ symbols: [place("Test:MCU", "60 120", "U3"), place("Device:R", "40 111.11", "R1")], wires: ["52.38 114.92 40 114.92"] })
+
+  it("the scenario: a pin function picked with setSymbolVariant renames the net, and the trace follows", () => {
+    const before = mcu()
+    const u3 = before.components.find((c) => c.ref === "U3")!
+    expect(computeConnectivity(before).nets.some((n) => n.name === "Net-(U3-PA0)")).toBe(true)
+    const withTrace: Project = { ...before, traces: [{ id: "t1", layer: "top", width: 0.2, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], net: "Net-(U3-PA0)" }] }
+    getConnectivity(withTrace)
+    const res = setSymbolVariant(withTrace, u3.id, { pinAlt: { pin: "1", alternate: "TX" } }, { conn: getConnectivity })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(getConnectivity(res.project).nets.some((n) => n.name === "Net-(U3-TX)")).toBe(true)
+    expect(followNetRenames(withTrace, res.project).traces[0].net).toBe("Net-(U3-TX)")
+  })
+
+  it("pinAlt", () => {
+    const before = mcu()
+    const u3 = before.components.find((c) => c.ref === "U3")!
+    expectFresh(before, edit(before, u3.id, { pinAlt: { "1": "TX" } }))
+  })
+
+  it("mirror", () => {
+    const before = importSheet({ symbols: [place("Test:MCU", "60 120", "U3")], wires: ["52.38 114.92 40 114.92"], labels: ["M 40 114.92 0"] })
+    const u3 = before.components[0]
+    expectFresh(before, edit(before, u3.id, { sch: { ...u3.sch, mirror: "y" } }))
+  })
+
+  it("unit", () => {
+    const before = importSheet({ symbols: [place("Test:OPA2", "100 100", "U1", { unit: 1 })], wires: ["107.62 100 115 100"], labels: ["A 115 100 0"] })
+    const u1 = before.components[0]
+    expectFresh(before, edit(before, u1.id, { unit: 2 }))
+  })
+
+  it("bodyStyle", () => {
+    const font = "(effects (font (size 1.27 1.27)))"
+    const pin = (at: string) => `(pin input line (at ${at}) (length 3.81) (name "A" ${font}) (number "1" ${font}))`
+    const lib = `(symbol "Test:BS" (in_bom yes) (on_board yes)
+      (property "Reference" "U" (at 0 5.08 0) ${font}) (property "Value" "BS" (at 0 -5.08 0) ${font})
+      (symbol "BS_1_1" (rectangle (start -3.81 5.08) (end 3.81 -5.08) (stroke (width 0) (type default)) (fill (type none))) ${pin("-7.62 2.54 0")})
+      (symbol "BS_1_2" (rectangle (start -3.81 5.08) (end 3.81 -5.08) (stroke (width 0) (type default)) (fill (type none))) ${pin("-7.62 -2.54 0")}))`
+    const r = importKicadSchematic(schematic({ libs: [lib], symbols: [place("Test:BS", "100 100", "U1")], wires: ["92.38 102.54 85 102.54"], labels: ["B 85 102.54 0"] }))
+    if (r.status !== "imported") throw new Error(r.message)
+    const before = r.project
+    expectFresh(before, edit(before, before.components[0].id, { bodyStyle: 2 }))
+  })
+
+  it("the net naming rule of the project, and the symbol drawings parts are made of", () => {
+    const before = mcu()
+    getConnectivity(before)
+    const kicad5 = { ...before, netNames: "kicad5" as const }
+    expect(sameSchematic(before, kicad5)).toBe(false)
+    expect(netsOf(getConnectivity(kicad5))).toEqual(netsOf(computeConnectivity(kicad5)))
+    expect(sameSchematic(before, { ...before, symbols: { ...before.symbols } })).toBe(false)
+  })
+
+  it("an edit that no net can see is still not a schematic edit: a footprint, a PCB move and the fields' places", () => {
+    const before = mcu()
+    const u3 = before.components.find((c) => c.ref === "U3")!
+    expect(sameSchematic(before, edit(before, u3.id, { footprint: "other", pcb: { ...u3.pcb, x: 9, y: 9, placed: true } }))).toBe(true)
+    expect(sameSchematic(before, edit(before, u3.id, { fields: { Value: { x: 1, y: 1, angle: 0, size: 1.27 } as never } }))).toBe(true)
   })
 })

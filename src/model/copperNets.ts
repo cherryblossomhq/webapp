@@ -36,6 +36,8 @@ export function followNetRenames(before: Project, after: Project): Project {
   const was = getConnectivity(before)
   const now = getConnectivity(after)
   const nowNet = new Map(now.nets.map((n) => [n.id, n]))
+  // A project named as KiCad names its nets has the names of unlabelled nets from their pins (`Net-(U3-TX)`), which the board stores too: they follow a rename like any other. Elsewhere only a net a label or power symbol names does.
+  const byPins = !!after.netNames
   const renamed: Record<string, string> = {}
   for (const net of was.nets) {
     if (!names.has(net.name)) continue
@@ -43,7 +45,7 @@ export function followNetRenames(before: Project, after: Project): Project {
     for (const pin of net.pins) {
       const id = now.pinNet.get(pinKey(pin.componentId, pin.pin))
       const n = id ? nowNet.get(id) : undefined
-      if (n?.named) targets.add(n.name)
+      if (n && (n.named || byPins)) targets.add(n.name)
     }
     if (targets.size === 1) {
       const [to] = targets

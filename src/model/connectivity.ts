@@ -512,7 +512,8 @@ function kicadPinName(
     const facts = factsOf(c, part)
     const fact = facts.find((f) => f.number === number)
     if (!fact) continue
-    names.push(pinNetName(rule, refOf.get(cid) ?? "", unitSuffix(c, part), fact, facts, unconnected))
+    // A symbol with no annotation (`U?`) is named by its uuid in KiCad; the editor has the symbol's id, which is as much its own, so two unannotated nets never share a name.
+    names.push(pinNetName(rule, refOf.get(cid) ?? "", unitSuffix(c, part), fact, facts, unconnected, c.id))
   }
   if (!names.length) return null
   names.sort((a, b) => Number(a.includes("-Pad")) - Number(b.includes("-Pad")) || (a < b ? -1 : a > b ? 1 : 0))

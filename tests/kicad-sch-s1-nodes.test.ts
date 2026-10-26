@@ -34,6 +34,7 @@ const root = schematic({
 
 const child = schematic({
   uuid: CHILD,
+  head: '(title_block (title "Power stage") (date "2026-01-01") (rev "B") (company "ACME") (comment 1 "first"))',
   libs: [LIB_R],
   symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R9", uuid: "bbbbbbbb-0000-4000-8000-000000000001", instances: [`/${ROOT_UUID}/${SHEET}|R2`] }],
   body: [
@@ -92,6 +93,16 @@ describe("S1 nodes are held", () => {
     expect(sym.pins[0].uuid).toBe("00000000-0000-4000-8000-0000000000c1")
   })
 
+  it("keeps a sub-sheet's own title block, which the project's properties do not hold", () => {
+    expect(project.sheets![1].titleBlock).toEqual([
+      { key: "Title", value: "Power stage" },
+      { key: "Date", value: "2026-01-01" },
+      { key: "Rev", value: "B" },
+      { key: "Company", value: "ACME" },
+      { key: "Comment1", value: "first" },
+    ])
+  })
+
   it("keeps the pages of the root and of the use", () => {
     expect(project.sheets![0]).toMatchObject({ id: "root", page: "3" })
     expect(sheetUses(project).map((u) => u.page)).toEqual(["3", "5"])
@@ -137,5 +148,6 @@ describe("S1 nodes are held", () => {
     expect(s.pins.map((p) => [p.name, p.shape, p.rot])).toEqual(sym.pins.map((p) => [p.name, p.shape, p.rot]))
     expect(sheetUses(again.project).map((u) => u.page)).toEqual(["3", "5"])
     expect(again.project.labels.find((l) => l.name === "VOUT/A")).toMatchObject({ kind: "hierarchical" })
+    expect(again.project.sheets![1].titleBlock).toEqual(project.sheets![1].titleBlock)
   })
 })

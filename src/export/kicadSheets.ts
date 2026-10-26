@@ -49,6 +49,18 @@ export function instancePath(project: Project, use: SheetUse): string {
   return `/${[sheetUuid(project, ROOT_SHEET), ...chain].join("/")}`
 }
 
+/** A sub-sheet's own title block, from the entries it was read with (the root's is the project's, `titleBlock` in `kicadPost.ts`). */
+export function sheetTitleBlock(project: Project, sheet: string): { title: string; date?: string; revision?: string; company?: string; comments: { index: number; text: string }[] } | null {
+  const entries = sheetsOf(project).find((s) => s.id === sheet)?.titleBlock
+  if (!entries?.length) return null
+  const get = (key: string) => entries.find((e) => e.key === key)?.value
+  const comments = entries.flatMap((e) => {
+    const m = /^Comment(\d+)$/.exec(e.key)
+    return m ? [{ index: Number(m[1]), text: e.value }] : []
+  })
+  return { title: get("Title") ?? "", ...(get("Date") ? { date: get("Date") } : {}), ...(get("Rev") ? { revision: get("Rev") } : {}), ...(get("Company") ? { company: get("Company") } : {}), comments }
+}
+
 /** The file name of each sheet: the root's is the project's, the others keep the name they had, or are named after the sheet; each is its own. */
 export function sheetFileNames(project: Project, base: string): Map<string, string> {
   const out = new Map<string, string>()

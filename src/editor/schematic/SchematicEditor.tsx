@@ -206,6 +206,14 @@ export function SchematicEditor() {
   // Fit once on mount; later edits keep the user's view.
   const [fitBox] = useState(() => contentBounds(project) ?? { minX: -3, minY: -2, maxX: 3, maxY: 2 })
 
+  // Another sheet shown is fitted to the window, as a project is when it is opened.
+  const shownBefore = useRef(sheet)
+  useEffect(() => {
+    if (shownBefore.current === sheet) return
+    shownBefore.current = sheet
+    vpRef.current?.fit(contentBounds(shownProject(projectApi().project!, sheet)) ?? { minX: -3, minY: -2, maxX: 3, maxY: 2 })
+  }, [sheet])
+
   const selected = useMemo(() => new Set(selection), [selection])
   const drawings = project.drawings ?? []
 

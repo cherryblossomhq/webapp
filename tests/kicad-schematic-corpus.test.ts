@@ -22,6 +22,7 @@ import { boxCorners, boxTextAt } from "../src/model/sheetItems"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
 import { rawItems } from "./kicad-census/items-sch.mjs"
+import { kid, kids, numAt, parseSexpr, type Sexpr } from "./kicad-census/sexpr.mjs"
 import { boardPadNets, deriveNets } from "./kicad-census/netlist-sch.mjs"
 import { needsSch } from "./kicad-census/needs-sch.mjs"
 
@@ -344,6 +345,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       /** The files with sheet symbols whose nets are compared with the oracle's, whole hierarchy at once. */
       const hierNets: FileRow[] = []
       const netNameProblems: string[] = []
+      const sheetProblems: string[] = []
+      let sheetsCompared = 0
       // ---------- the nets of the schematics (a hierarchy whole, with every use of a reused sheet) ----------
       // Every pin the editor has a port for, in the groups of the editor's own connectivity and of the derivation from the raw file:
       // single pins included, and the names of the nets where the build is exact. A build that needs an extension is not counted as equal:
@@ -389,7 +392,37 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             row.nets = `not compared: ${[...derived.unsupported].join(", ")}`
             continue
           }
-          if (schematic.sheets.length) hierNets.push(row)
+          if (schematic.sheets.length) {
+            hierNets.push(row)
+            // The root's sheet symbols against the raw file, number by number (a reader that shares no code with `src`): the rectangle and each pin's place, name and shape.
+            const rawRoot = parseSexpr(new TextDecoder().decode(bytes)).find((n) => Array.isArray(n) && n[0] === "kicad_sch") as Sexpr[]
+            const rawSheets = kids(rawRoot, "sheet")
+            const mine = built.project.sheetSymbols?.filter((x) => x.sheet === "root") ?? []
+            if (rawSheets.length !== mine.length) sheetProblems.push(`${row.file}: ${mine.length} sheet symbols against ${rawSheets.length}`)
+            rawSheets.forEach((r, i) => {
+              const m = mine[i]
+              if (!m) return
+              sheetsCompared++
+              const at = kid(r, "at")
+              const size = kid(r, "size")
+              const want = [numAt(at, 1), numAt(at, 2) + numAt(size, 2), numAt(size, 1), numAt(size, 2)]
+              // the lower-left corner is at y + h in KiCad's frame (y down), which the editor holds negated
+              const gotRect = [m.x * MM, -m.y * MM, m.w * MM, m.h * MM]
+              const wantRect = want
+              gotRect.forEach((v, k) => {
+                if (Math.abs(v - wantRect[k]) > 0.001) sheetProblems.push(`${row.file} sheet ${i} number ${k}: ${v} against ${wantRect[k]}`)
+              })
+              const pins = kids(r, "pin")
+              if (pins.length !== m.pins.length) sheetProblems.push(`${row.file} sheet ${i}: ${m.pins.length} pins against ${pins.length}`)
+              pins.forEach((pin, j) => {
+                const q = m.pins[j]
+                if (!q) return
+                const pat = kid(pin, "at")
+                const name = String(pin[1]).split("{slash}").join("/")
+                if (Math.abs(q.x * MM - numAt(pat, 1)) > 0.001 || Math.abs(-q.y * MM - numAt(pat, 2)) > 0.001 || q.name !== name || q.shape !== (pin[2] === "unconnected" ? "passive" : pin[2]) || ((q.rot - numAt(pat, 3) + 720) % 360) % 360 !== 0) sheetProblems.push(`${row.file} sheet ${i} pin ${j} (${name})`)
+              })
+            })
+          }
           const inUniverse = new Set(universe)
           const byGroup = new Map<number, string[]>()
           for (const [key, g] of derived.pins) for (const x of ([] as number[]).concat(g)) if (inUniverse.has(key)) (byGroup.get(x) ?? byGroup.set(x, []).get(x)!).push(key)
@@ -623,6 +656,8 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         needsDiffering: rows.filter((r) => r.needsDiff).length,
         netsEqual: sum((r) => r.nets === "equal"),
         netNameProblems,
+        sheetsCompared,
+        sheetProblems: sheetProblems.slice(0, 20),
         hierarchicalNetsCompared: hierNets.length,
         hierarchicalNetsEqual: hierNets.filter((r) => r.nets === "equal").length,
         hierarchicalNetsOther: Object.fromEntries([...new Set(hierNets.filter((r) => r.nets !== "equal").map((r) => r.nets))].map((k) => [k, hierNets.filter((r) => r.nets === k).length])),
@@ -664,6 +699,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(summary.nodesEqual).toBe(summary.files)
       expect(summary.unknown).toBe(0)
       expect(proProblems).toEqual([])
+      expect(sheetProblems.slice(0, 5)).toEqual([])
       expect(drawingProblems.slice(0, 5)).toEqual([])
       expect(summary.drawingWorstMm).toBeLessThanOrEqual(0.001)
       expect(itemProblems.slice(0, 5)).toEqual([])

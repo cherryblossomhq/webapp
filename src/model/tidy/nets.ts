@@ -130,7 +130,7 @@ export function netInfo(project: Project): NetInfo {
       // the port Tidy would draw there would name it and join it to whatever shares that name.
       // A name Tidy made up says nothing of what the net is: the pins and ports on it do.
       // A net a local label names stays one: a power port in its place would name it NAME where KiCad names it /NAME.
-      rail: (!net.named && pins.length < 2) || net.label?.kind === "local" ? null : railOf(made && !ports.get(id)?.size ? "" : bareName(net), kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
+      rail: (!net.named && pins.length < 2) || net.label?.kind === "local" || net.label?.kind === "hierarchical" ? null : railOf(made && !ports.get(id)?.size ? "" : bareName(net), kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
       pins,
       ...portOf(imported.get(id)),
     })

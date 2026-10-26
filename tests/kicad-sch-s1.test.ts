@@ -5,6 +5,9 @@ import { ROOT_SHEET, sheetUses, sheetView, mergeSheetView, syncCopies, commitOnU
 import { addWire, createProject } from "../src/model/ops"
 import { kicadFiles } from "../src/export/kicad"
 import { runTool } from "../src/ai/tools"
+import { bomCsv } from "../src/export/bom"
+import { projectToCircuitJson } from "../src/export/circuitJson"
+import { setSheetSymbol } from "../src/model/sheetOps"
 
 // S1: hierarchical sheets, end to end, from the files KiCad writes.
 
@@ -154,5 +157,36 @@ describe("S1: Sakura's tools take a sheet", () => {
     expect(tidy.result).toMatch(/sheets: \//)
     const ok = runTool(project, "tidy_schematic", { sheet: "Power", whole_sheet: true })
     expect(ok.project.components.find((c) => c.ref === "R1")).toEqual(project.components.find((c) => c.ref === "R1"))
+  })
+})
+
+describe("S1: Circuit JSON and the BOM", () => {
+  const two = [
+    { uuid: S1, name: "A", y: 60.96 },
+    { uuid: S2, name: "B", y: 90 },
+  ]
+  it("counts the parts of every use in the BOM", () => {
+    const { project } = imp(two)
+    const rows = bomCsv(project).trim().split(String.fromCharCode(10)).slice(1)
+    expect(rows.join(" ")).toMatch(/R1/)
+    expect(rows.join(" ")).toMatch(/R2/)
+    expect(rows.join(" ")).toMatch(/R3/)
+  })
+
+  it("leaves a sheet's do-not-populate flag on every part of it in the BOM and the position file", () => {
+    const { project } = imp(two)
+    const flagged = setSheetSymbol(project, project.sheetSymbols![0].id, { flags: { excludeFromBom: true } })
+    const csv = bomCsv(flagged)
+    expect(csv).not.toContain("R2")
+    expect(csv).toContain("R3")
+  })
+
+  it("is flattened, says so, and keeps the nets and their names", () => {
+    const { project } = imp(two)
+    const out = projectToCircuitJson(project)
+    expect(out.notes.join(" ")).toMatch(/3 sheets/)
+    const nets = out.elements.filter((e) => e.type === "source_net").map((e) => (e as { name: string }).name)
+    expect(nets).toContain("/A/VIN")
+    expect(out.elements.filter((e) => e.type === "source_component").length).toBeGreaterThanOrEqual(3)
   })
 })

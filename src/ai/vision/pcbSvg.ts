@@ -187,7 +187,9 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
     for (const t of project.traces) {
       if (t.layer !== l) continue
       // An arc track (X4) is drawn as its arc, in SVG's own command.
-      body += `<path d="${traceD(t)}" fill="none" stroke="${copperColor(l)}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
+      body += t.arc
+        ? `<path d="${traceD(t)}" fill="none" stroke="${copperColor(l)}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
+        : `<polyline points="${pts(t.points)}" fill="none" stroke="${copperColor(l)}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`
     }
     for (const d of drawings) if (kindOf(d) === "copper" && layerOfKicadName(d.shape.layer) === l) body += shapeSvg(d.shape, copperColor(l), px)
     for (const x of texts) if (x.kind === "copper" && layerOfKicadName(x.layer) === l) body += textSvg(x.t, copperColor(l), px)

@@ -280,7 +280,7 @@ const editSheetTool: ToolSpec = {
     }
     // The wires follow the pins of a sheet that is resized or moved; what that still cannot keep (a wire that would run onto another net) is refused, with nothing changed.
     if (w !== undefined || h !== undefined || x !== undefined || y !== undefined) {
-      const problems = sheetEditProblems(project, next, getConnectivity)
+      const problems = sheetEditProblems(project, next, sym.sheet, getConnectivity)
       if (problems.length) {
         const shown = problems.slice(0, 3).join("; ") + (problems.length > 3 ? `; and ${problems.length - 3} more` : "")
         return fail(project, `Didn't ${w !== undefined || h !== undefined ? "resize" : "move"} the sheet ${sym.name}: ${shown}. Nothing was changed. Resize or move it where the wires at its pins can follow, or delete those wires first.`)

@@ -3,7 +3,7 @@ import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { moveProblems } from "./merges"
 import { removeItems, stretchEnd } from "./ops"
-import { ROOT_SHEET, hasUse, sheetUses, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
+import { ROOT_SHEET, hasUse, sheetUses, sheetView, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
 import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
 
 // S1: editing the sheets of a schematic: adding a sheet (a sheet symbol on a sheet, with the sheet it stands for), using a sheet again,
@@ -276,10 +276,15 @@ export function resizeSheetSymbol(project: Project, id: string, w: number, h: nu
 
 /**
  * What an edit of sheet symbols (a move, a resize) would change about the connections even with the wires following the pins, in words, one sentence each: nets it
- * would join and pins it would cut off theirs. Empty when every pin is on the net it was on. `conn` is the connectivity of a project, when the caller keeps one.
+ * would join and pins it would cut off theirs. Empty when every pin is on the net it was on. The sheet the symbols are drawn on is looked at alone (its first use: the
+ * parts of other sheets are at places of their own), `sheet` being its id. `conn` is the connectivity of a project, when the caller keeps one.
  */
-export function sheetEditProblems(before: Project, after: Project, conn: (p: Project) => SchematicConnectivity = computeConnectivity): string[] {
-  return moveProblems(before, after, conn(before), conn(after), new Set(), { lenient: true })
+export function sheetEditProblems(before: Project, after: Project, sheet: string, conn: (p: Project) => SchematicConnectivity = computeConnectivity): string[] {
+  const path = usesOfSheet(before, sheet)[0]?.path
+  if (path === undefined || before.scope !== undefined) return moveProblems(before, after, conn(before), conn(after), new Set(), { lenient: true })
+  const was = sheetView(before, path)
+  const now = sheetView(after, path)
+  return moveProblems(was, now, conn(was), conn(now), new Set(), { lenient: true })
 }
 
 const SIDE_ROT: Record<"left" | "right" | "top" | "bottom", Rotation> = { right: 0, top: 90, left: 180, bottom: 270 }

@@ -276,8 +276,11 @@ function uniqueRefs(project: Project, view: Project, components: ComponentInstan
 /** The key every copy of a symbol shares: the first use's symbol's id. */
 export const copyKey = (c: Pick<ComponentInstance, "id" | "tpl">) => c.tpl ?? c.id
 
-/** What a copy keeps of its own when the sheet is edited: its reference and unit (each use has its own), its place on the board and the footprint's own text and groups. */
-const OWN: ReadonlySet<string> = new Set(["id", "ref", "inst", "tpl", "unit", "pcb", "texts", "groups", "fpid"])
+/**
+ * What a copy keeps of its own when the sheet is edited: its reference and unit (each use has its own), its place on the board, the footprint's own text and groups,
+ * and its schematic variants (S9: what a variant changes on a symbol is said for one use, as KiCad 10 keeps it in that use's instance data).
+ */
+const OWN: ReadonlySet<string> = new Set(["id", "ref", "inst", "tpl", "unit", "pcb", "texts", "groups", "fpid", "variants"])
 
 /** A new copy's reference: the symbol's own letters and the next number nobody has. */
 function nextCopyRef(ref: string, taken: Set<string>): string {
@@ -347,6 +350,8 @@ const stripOwn = (c: ComponentInstance): ComponentInstance => {
   const out = { ...c } as Record<string, unknown>
   delete out.inst
   delete out.tpl
+  // A new copy starts with no variants: those of the use it was copied from are that use's.
+  delete out.variants
   return out as unknown as ComponentInstance
 }
 
@@ -355,7 +360,7 @@ function copyOf(s: ComponentInstance, c: ComponentInstance): ComponentInstance {
   const next: Record<string, unknown> = { id: c.id, ref: c.ref, pcb: c.pcb }
   if (c.inst !== undefined) next.inst = c.inst
   next.tpl = copyKey(s)
-  for (const k of ["unit", "texts", "groups", "fpid"] as const) if (c[k] !== undefined) next[k] = c[k]
+  for (const k of ["unit", "texts", "groups", "fpid", "variants"] as const) if (c[k] !== undefined) next[k] = c[k]
   for (const [k, v] of Object.entries(s)) if (!OWN.has(k)) next[k] = v
   // The footprint is the symbol's field, shared by every use; its KiCad name goes with it.
   return next as unknown as ComponentInstance

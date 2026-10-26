@@ -98,6 +98,26 @@ export function addSheetUse(project: Project, parent: string, child: string, box
   return { project: next, symbol }
 }
 
+/**
+ * What a sheet symbol keeps by the path of a use (the variants of its flags on each use of its parent sheet, the page of each use) goes when that use does: a
+ * symbol added later takes the id of one removed, so its uses would otherwise start with the removed one's variants.
+ */
+function forgetGoneUses(symbols: SheetSymbol[], live: Set<string>): SheetSymbol[] {
+  const keep = (rec: Record<string, unknown> | undefined) => !rec || Object.keys(rec).every((k) => live.has(k))
+  return symbols.map((s) => {
+    if (keep(s.variants) && keep(s.pages)) return s
+    const next: SheetSymbol = { ...s }
+    for (const k of ["variants", "pages"] as const) {
+      const rec = s[k] as Record<string, unknown> | undefined
+      if (!rec || keep(rec)) continue
+      const kept = Object.fromEntries(Object.entries(rec).filter(([use]) => live.has(use)))
+      if (Object.keys(kept).length) (next as unknown as Record<string, unknown>)[k] = kept
+      else delete next[k]
+    }
+    return next
+  })
+}
+
 /** Everything that was drawn on sheets and uses that are no longer in the tree goes with the sheet symbol that made them. */
 function dropUnusedSheets(project: Project): Project {
   const uses = sheetUses(project)
@@ -118,7 +138,7 @@ function dropUnusedSheets(project: Project): Project {
     if (aliases.length) next = { ...next, busAliases: aliases }
     else delete next.busAliases
   }
-  const symbols = (project.sheetSymbols ?? []).filter((s) => live.has(s.sheet) && live.has(s.child))
+  const symbols = forgetGoneUses((project.sheetSymbols ?? []).filter((s) => live.has(s.sheet) && live.has(s.child)), paths)
   const sheets = (project.sheets ?? []).filter((x) => x.id === ROOT_SHEET || live.has(x.id))
   // A project with no sheet left but a plain root is a project of one sheet.
   const plainRoot = sheets.length === 1 && Object.keys(sheets[0]).length === 1

@@ -344,8 +344,12 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
     const unitsRef = part.units ? `${part.unitOf ?? part.id}|${c.ref}` : null
     const ref = (unitsRef && unitRefs.get(unitsRef)) || nextRef(next, part.refPrefix)
     if (unitsRef) unitRefs.set(unitsRef, ref)
+    // S9: a copy is a new symbol, not another use of one: it keeps none of the variants the copied one had on its use, nor the copy key it was kept alike by.
+    const { variants: _variants, tpl: _tpl, ...kept } = c
+    void _variants
+    void _tpl
     const copy = {
-      ...c,
+      ...kept,
       id: uid("c"),
       ref,
       props: { ...c.props },

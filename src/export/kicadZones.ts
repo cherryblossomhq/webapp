@@ -2,6 +2,7 @@ import { round } from "../lib/geometry"
 import type { ZoneFill } from "../model/pour"
 import { flattenPath, type PathSeg, type ShapePath } from "../model/shapes"
 import { zoneLayers } from "../model/zones"
+import { kicadLayerName } from "../model/stack"
 import type { CopperLayer, Project, Vec2, Zone } from "../model/types"
 import { fractureRings } from "./fracture"
 
@@ -21,7 +22,7 @@ const xyOf = (to: ToFile) => (p: Vec2) => {
   return `(xy ${mm6(q.x)} ${mm6(q.y)})`
 }
 const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
-const LAYER: Record<CopperLayer, string> = { top: "F.Cu", bottom: "B.Cu" }
+const LAYER = (l: CopperLayer): string => kicadLayerName(l)
 
 /** A uuid made from the zone's id, so the same project exports the same file. */
 function uuidOf(text: string): string {
@@ -85,7 +86,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   o.push(`    (net ${rule || !z.net ? 0 : netNumber(z.net)})`)
   o.push(`    (net_name ${quote(rule ? "" : z.net)})`)
   if (z.locked) o.push(`    (locked yes)`)
-  o.push(layers.length > 1 ? `    (layers ${layers.map((l) => quote(LAYER[l])).join(" ")})` : `    (layer ${quote(LAYER[layers[0]])})`)
+  o.push(layers.length > 1 ? `    (layers ${layers.map((l) => quote(LAYER(l))).join(" ")})` : `    (layer ${quote(LAYER(layers[0]))})`)
   o.push(`    (uuid ${z.uuid ? `${z.uuid.slice(0, 8)}-${z.uuid.slice(8, 12)}-${z.uuid.slice(12, 16)}-${z.uuid.slice(16, 20)}-${z.uuid.slice(20)}` : fallbackUuid ? fallbackUuid() : uuidOf(z.id)})`)
   if (z.name) o.push(`    (name ${quote(z.name)})`)
   o.push(`    (hatch edge 0.5)`)
@@ -113,7 +114,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
       const f = fills.find((x) => x.zoneId === z.id && x.layer === layer)
       for (const polygon of f?.polygons ?? []) {
         const ring = polygon.length > 1 ? fractureRings(polygon[0], polygon.slice(1)) : polygon[0]
-        o.push(`    (filled_polygon (layer ${quote(LAYER[layer])}) (pts ${ring.map(xy).join(" ")}))`)
+        o.push(`    (filled_polygon (layer ${quote(LAYER(layer))}) (pts ${ring.map(xy).join(" ")}))`)
       }
     }
   }

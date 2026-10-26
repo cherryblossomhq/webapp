@@ -352,7 +352,7 @@ export const PATH_RULES: PathRule[] = [
   "note": "layer pair; a blind via with two inner layers is a buried one"
  },
  {
-  "source": "^(via>(?:free|remove_unused_layers|keep_end_layers|padstack(?:>.*)?|tenting(?:>(?:front|back))?))$",
+  "source": "^(via>(?:free|remove_unused_layers|keep_end_layers|start_end_only|padstack(?:>.*)?|tenting(?:>(?:front|back))?))$",
   "decision": "extend",
   "ext": "X5",
   "note": "via stacks (per-layer sizes), tenting and unused-pad removal"
@@ -1056,6 +1056,23 @@ export const ATOM_RULES: AtomRule[] = [
   "skip": []
  },
  {
+  "source": "^(via>padstack>mode)$",
+  "values": [
+   "front_inner_back",
+   "custom"
+  ],
+  "skip": []
+ },
+ {
+  "source": "^(setup>stackup>edge_connector)$",
+  "values": [
+   "yes",
+   "bevelled",
+   "none"
+  ],
+  "skip": []
+ },
+ {
   "source": "^((?:module|footprint)>pad>padstack>layer>shape)$",
   "values": [
    "circle",
@@ -1377,7 +1394,7 @@ export const ATOM_RULES: AtomRule[] = [
   "skip": []
  },
  {
-  "source": "^((?:.*>)?(?:locked|hide|unlocked|bold|italic|knockout|keep_text_aligned|suppress_zeroes|external|header|cols|rows|border|free|remove_unused_layers|keep_end_layers|enabled|prefer_zone_connections|allow_two_segments|curved_edges|stagger|island|filled_areas_thickness|totals|guide_cross|outline_slots|npth|plated|slots|vias|castellated|backdrill|dnp|duplicate_pad_numbers_are_jumpers|embedded_fonts|placed|capped|filled|is_time_domain|override_custom_rules|rounded|single_sided|use_netclass|castellated_pads|dielectric_constraints|exclude_from_sim|keep_upright|edge_plating|freeze_assignments|hide_dnp))$",
+  "source": "^((?:.*>)?(?:start_end_only|locked|hide|unlocked|bold|italic|knockout|keep_text_aligned|suppress_zeroes|external|header|cols|rows|border|free|remove_unused_layers|keep_end_layers|enabled|prefer_zone_connections|allow_two_segments|curved_edges|stagger|island|filled_areas_thickness|totals|guide_cross|outline_slots|npth|plated|slots|vias|castellated|backdrill|dnp|duplicate_pad_numbers_are_jumpers|embedded_fonts|placed|capped|filled|is_time_domain|override_custom_rules|rounded|single_sided|use_netclass|castellated_pads|dielectric_constraints|exclude_from_sim|keep_upright|edge_plating|freeze_assignments|hide_dnp))$",
   "values": [
    "yes",
    "no",

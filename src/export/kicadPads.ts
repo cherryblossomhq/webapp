@@ -1,12 +1,13 @@
 import { normalizeAngle, round } from "../lib/geometry"
 import { computeConnectivity, pinKey } from "../model/connectivity"
-import { componentFootprint, pcbPads, type WorldPad } from "../model/instances"
+import { componentFootprint, padLayerDef, pcbPads, type WorldPad } from "../model/instances"
+import { flipLayer, kicadLayerName } from "../model/stack"
 import { hasPadFeatures } from "../model/padGeom"
 import { padFaces } from "../model/padFaces"
 import { flipShapeLayer } from "../model/shapeLayers"
 import { shapePaths } from "../model/shapes"
 import { onBoard } from "../model/partFlags"
-import type { BoardShape, ComponentInstance, PadDef, PadSides, Project, Vec2 } from "../model/types"
+import type { BoardShape, ComponentInstance, CopperLayer, PadDef, PadSides, Project, Vec2 } from "../model/types"
 import { localFrame, polygonItems, ringItems } from "./kicadShapes"
 
 // The pads of a part that has X7 features, written into the board file the converter made, exactly as KiCad has them: the shape (rectangle,
@@ -93,6 +94,8 @@ function polyOf(shape: BoardShape, map: (v: Vec2) => Vec2, width: string, fill: 
 /** One pad of a part, as KiCad's pad node. */
 /** What the native board writer (`kicadBoard.ts`) says about a pad that the converter's path does not: where the hole is in the footprint's file frame, exactly, and the part's pin function and type. */
 export interface PadWriteOptions {
+  /** X1: the board's number of copper layers, which names the inner layers of a pad and the layers of its pad stack (two when absent). */
+  copperCount?: number
   /** A custom pad's polygons are written with their corners in the order the land has them. */
   exact?: boolean
   at?: Vec2
@@ -159,53 +162,72 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   const at = trap ? trap.at : (opts?.at ?? frame(world!.hole ?? world!))
   const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : "smd"
   const lines: string[] = []
-  const w = def.width
-  const h = def.height
-  let shape: string
-  let size = `${mm6(w)} ${mm6(h)}`
-  const extras: string[] = []
-  if (trap) {
-    shape = "trapezoid"
-    size = `${mm6(trap.w)} ${mm6(trap.h)}`
-    extras.push(`(rect_delta ${mm6(trap.dx)} ${mm6(trap.dy)})`)
-  } else if (def.custom || fixed) {
-    shape = "custom"
-    size = fixed ? "0.001 0.001" : `${mm6(w)} ${mm6(def.custom!.anchor === "circle" ? w : h)}`
-    const anchor = def.custom?.anchor ?? "circle"
-    const hull = def.custom?.hull ? " (clearance convexhull)" : ""
-    extras.push(`(options (anchor ${anchor})${hull})`)
-    const centre = { x: def.x, y: def.y }
-    const prims: string[] = []
-    if (fixed) {
-      // A polygon pad: a tiny anchor at its centre and the outline as a filled polygon, with the vectors of the land's frame.
-      const pts = (def.points ?? []).map((q) => store({ x: q.x - centre.x, y: q.y - centre.y }))
-      prims.push(`(gr_poly (pts ${pts.map((q) => `(xy ${xy(q)})`).join(" ")}) (width 0) (fill yes))`)
-    } else {
-      for (const s of def.custom!.shapes) {
-        const b = primitiveBlock(s, store, opts?.exact)
-        if (b) prims.push(b)
+  // The pad as one layer has it (X1): its shape and size, and what goes with them. The pad's frame is the file's, shared by every layer, so a drawing that is in the land's frame (a polygon pad's corners) is turned into it.
+  const toPadFrame = (v: Vec2, d: PadDef): Vec2 => (d.shape === "polygon" && !d.custom && own !== 0 ? turnVec({ x: v.x, y: bottom ? v.y : -v.y }, -((bottom ? -own : own) + extra)) : store(v))
+  const shapeParts = (d: PadDef, t: Trapezoid | undefined): { shape: string; size: string; extras: string[] } => {
+    const dFixed = d.shape === "polygon" && !d.custom
+    const w = d.width
+    const h = d.height
+    let shape: string
+    let size = `${mm6(w)} ${mm6(h)}`
+    const extras: string[] = []
+    const sv = (v: Vec2) => toPadFrame(v, d)
+    if (t) {
+      shape = "trapezoid"
+      size = `${mm6(t.w)} ${mm6(t.h)}`
+      extras.push(`(rect_delta ${mm6(t.dx)} ${mm6(t.dy)})`)
+    } else if (d.custom || dFixed) {
+      shape = "custom"
+      size = dFixed ? "0.001 0.001" : `${mm6(w)} ${mm6(d.custom!.anchor === "circle" ? w : h)}`
+      const anchor = d.custom?.anchor ?? "circle"
+      const hull = d.custom?.hull ? " (clearance convexhull)" : ""
+      extras.push(`(options (anchor ${anchor})${hull})`)
+      const centre = { x: d.x, y: d.y }
+      const prims: string[] = []
+      if (dFixed) {
+        // A polygon pad: a tiny anchor at its centre and the outline as a filled polygon, with the vectors of the land's frame.
+        const pts = (d.points ?? []).map((q) => sv({ x: q.x - centre.x, y: q.y - centre.y }))
+        prims.push(`(gr_poly (pts ${pts.map((q) => `(xy ${xy(q)})`).join(" ")}) (width 0) (fill yes))`)
+      } else {
+        for (const sh of d.custom!.shapes) {
+          const b = primitiveBlock(sh, sv, opts?.exact)
+          if (b) prims.push(b)
+        }
+        for (const sh of d.custom!.proxy ?? []) {
+          const b = primitiveBlock(sh, sv, opts?.exact)
+          if (b) prims.push(b.replace(/^\(gr_line/, "(gr_vector").replace(/^\(gr_rect/, "(gr_bbox").replace(/ \(width [^)]*\)/, " (width 0)"))
+        }
       }
-      for (const s of def.custom!.proxy ?? []) {
-        const b = primitiveBlock(s, store, opts?.exact)
-        if (b) prims.push(b.replace(/^\(gr_line/, "(gr_vector").replace(/^\(gr_rect/, "(gr_bbox").replace(/ \(width [^)]*\)/, " (width 0)"))
+      if (prims.length) extras.push(`(primitives ${prims.join(" ")})`)
+    } else if (d.shape === "circle") {
+      shape = "circle"
+      size = `${mm6(w)} ${mm6(w)}`
+    } else if (d.shape === "pill") shape = "oval"
+    else if (d.round || d.chamfer) {
+      shape = "roundrect"
+      extras.push(`(roundrect_rratio ${mm6(d.round ?? 0)})`)
+      if (d.chamfer) {
+        // The flip swapped top and bottom.
+        const k = d.chamfer.corners
+        const stored = bottom ? (k & 1 ? 8 : 0) | (k & 2 ? 4 : 0) | (k & 4 ? 2 : 0) | (k & 8 ? 1 : 0) : k
+        const names = [stored & 1 ? "top_left" : "", stored & 2 ? "top_right" : "", stored & 8 ? "bottom_left" : "", stored & 4 ? "bottom_right" : ""].filter(Boolean)
+        extras.push(`(chamfer_ratio ${mm6(d.chamfer.ratio)})`, `(chamfer ${names.join(" ")})`)
       }
-    }
-    if (prims.length) extras.push(`(primitives ${prims.join(" ")})`)
-  } else if (def.shape === "circle") {
-    shape = "circle"
-    size = `${mm6(w)} ${mm6(w)}`
-  } else if (def.shape === "pill") shape = "oval"
-  else if (def.round || def.chamfer) {
-    shape = "roundrect"
-    extras.push(`(roundrect_rratio ${mm6(def.round ?? 0)})`)
-    if (def.chamfer) {
-      // The flip swapped top and bottom.
-      const k = def.chamfer.corners
-      const stored = bottom ? (k & 1 ? 8 : 0) | (k & 2 ? 4 : 0) | (k & 4 ? 2 : 0) | (k & 8 ? 1 : 0) : k
-      const names = [stored & 1 ? "top_left" : "", stored & 2 ? "top_right" : "", stored & 8 ? "bottom_left" : "", stored & 4 ? "bottom_right" : ""].filter(Boolean)
-      extras.push(`(chamfer_ratio ${mm6(def.chamfer.ratio)})`, `(chamfer ${names.join(" ")})`)
-    }
-  } else shape = "rect"
+    } else shape = "rect"
+    return { shape, size, extras }
+  }
+  // X1: the pad stack. The file's front layer is the top-level shape: the part's own side, or on the bottom its far side (`PadStack`).
+  const stackLayers = def.stack?.layers
+  const count = opts?.copperCount ?? 2
+  const variantFor = (own: CopperLayer | "inner"): PadDef => {
+    const v = stackLayers?.[own as CopperLayer]
+    return v ? padLayerDef(def, v) : def
+  }
+  const frontDef: PadDef = def.stack && bottom ? variantFor("bottom") : def
+  const frontTrap = frontDef === def ? trap : undefined
+  const front = shapeParts(frontDef, frontTrap)
+  let { shape, size } = front
+  const extras = front.extras
   // The number the file gives the pad: its own when the land keeps one.
   const number = def.number !== undefined ? def.number : (def.pin ?? "")
   lines.push(`(pad ${quote(number)} ${type} ${shape}`)
@@ -221,7 +243,14 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
     lines.push(`  (drill ${drill}${o ? ` (offset ${xy(o)})` : ""})`)
   }
   const faces = padFaces(def)
-  const names = [...layerNames(faces.copper, "Cu", bottom), ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom), ...(def.layers?.other ?? []).map((n) => (bottom ? flipShapeLayer(n) : n))]
+  // Inner copper (X1): a through-hole pad with copper on both sides has every inner layer as `*.Cu` says, so only a pad that says otherwise names them.
+  const innerNames = (): string[] => {
+    const given = def.layers?.inner
+    if (!given) return []
+    return given.map((l) => kicadLayerName(bottom ? flipLayer(l, count) : l)).sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")))
+  }
+  const copperNames = def.layers?.inner && faces.copper === "both" ? [kicadLayerName("top"), ...innerNames(), kicadLayerName("bottom")] : [...layerNames(faces.copper, "Cu", bottom), ...innerNames()]
+  const names = [...copperNames, ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom), ...(def.layers?.other ?? []).map((n) => (bottom ? flipShapeLayer(n) : n))]
   lines.push(`  (layers ${names.map(quote).join(" ")})`)
   for (const e of extras) lines.push(`  ${e}`)
   if (def.maskMargin !== undefined) lines.push(`  (solder_mask_margin ${mm6(def.maskMargin)})`)
@@ -236,7 +265,48 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   if (opts?.pinfunction !== undefined) lines.push(`  (pinfunction ${quote(opts.pinfunction)})`)
   if (opts?.pintype !== undefined) lines.push(`  (pintype ${quote(opts.pintype)})`)
   if (def.property) lines.push(`  (property pad_prop_${def.property})`)
+  if (def.unused) lines.push("  (remove_unused_layers yes)", `  (keep_end_layers ${def.unused === "keepEnds" ? "yes" : "no"})`)
+  if (def.tent) {
+    // KiCad 9 says a pad's tenting in words, for both sides: a side that is not named is not tented. The file's front is the part's far side on the bottom.
+    const f = (bottom ? def.tent.bottom : def.tent.top) === true
+    const b = (bottom ? def.tent.top : def.tent.bottom) === true
+    lines.push(`  (tenting${f ? " front" : ""}${b ? " back" : ""}${!f && !b ? " none" : ""})`)
+  }
   lines.push(`  (uuid ${uuid})`)
+  if (def.stack) {
+    const centreOf = (d: PadDef): Vec2 => ({ x: d.x, y: d.y })
+    const hole = { x: def.x - (def.holeOffset?.x ?? 0), y: def.y - (def.holeOffset?.y ?? 0) }
+    void hole
+    const layerBlock = (name: string, d: PadDef, v: NonNullable<PadDef["stack"]>["layers"][CopperLayer]): string[] => {
+      const parts = shapeParts(d, undefined)
+      const out = [`(layer ${quote(name)}`, `  (shape ${parts.shape})`, `  (size ${parts.size})`]
+      // A layer whose copper is not centred where the pad's is has an offset from the hole, in the pad's frame.
+      const dc = centreOf(d)
+      const bc = centreOf(def)
+      if (Math.abs(dc.x - bc.x) > 1e-9 || Math.abs(dc.y - bc.y) > 1e-9) out.push(`  (offset ${xy(store({ x: dc.x - bc.x, y: dc.y - bc.y }))})`)
+      for (const e of parts.extras) out.push(`  ${e}`)
+      if (v?.thermalAngle !== undefined) out.push(`  (thermal_bridge_angle ${mm6(v.thermalAngle)})`)
+      if (v?.thermalGap !== undefined) out.push(`  (thermal_gap ${mm6(v.thermalGap)})`)
+      if (v?.thermalWidth !== undefined) out.push(`  (thermal_bridge_width ${mm6(v.thermalWidth)})`)
+      if (v?.clearance !== undefined) out.push(`  (clearance ${mm6(v.clearance)})`)
+      if (v?.zoneConnect !== undefined) out.push(`  (zone_connect ${{ none: 0, thermal: 1, solid: 2, tht: 3 }[v.zoneConnect]})`)
+      out.push(")")
+      return out
+    }
+    const entry = (own: CopperLayer | "inner", fileName: string): string[] => layerBlock(fileName, variantFor(own), stackLayers?.[own as CopperLayer])
+    const body: string[] = []
+    if (def.stack.mode === "front_inner_back") {
+      body.push("(mode front_inner_back)", ...entry("inner", "Inner"), ...entry(bottom ? "top" : "bottom", "B.Cu"))
+    } else {
+      body.push("(mode custom)")
+      for (let k = 1; k < count; k++) {
+        const board: CopperLayer = k === count - 1 ? "bottom" : (`in${k}` as CopperLayer)
+        const own: CopperLayer = bottom ? flipLayer(board, count) : board
+        body.push(...layerBlock(kicadLayerName(board), variantFor(own), stackLayers?.[own]))
+      }
+    }
+    lines.push("  (padstack", ...body.map((l) => `    ${l}`), "  )")
+  }
   lines.push(")")
   return lines.map((l) => `    ${l}`).join("\n")
 }

@@ -94,16 +94,28 @@ export function canonicalProject(project: Project): Json {
   flatten(plain.graphics)
   for (const f of plain.footprints ?? []) flatten(f.shapes)
   // Tracks are compared as the segments they hold: where the import joins two segments (or breaks a chain) depends on a millionth of a millimetre the first import rounded away, and the copper is the same either way.
+  // A via stack that lists a layer at the via's own diameter says the same as one that does not list it: the writer lists every layer, as KiCad does.
+  for (const v of plain.vias ?? []) {
+    const layers = v.stack?.layers
+    if (!layers) continue
+    for (const [k, d] of Object.entries(layers)) if (Math.abs((d as number) - v.diameter) < 1e-6) delete layers[k]
+  }
   plain.traces = (plain.traces ?? [])
-    .flatMap((t: any) =>
-      t.points.slice(1).flatMap((q: Pt, i: number) => {
+    .flatMap((t: any) => {
+      // An arc track is one item, held by its three points; an arc that runs the other way round between the same ends is the same arc.
+      if (t.arc) {
+        const [a, m, b] = t.points as Pt[]
+        const [first, last] = ptKey(a) <= ptKey(b) ? [a, b] : [b, a]
+        return [{ layer: t.layer, width: t.width, net: t.net, locked: t.locked, arc: [first, m, last] }]
+      }
+      return t.points.slice(1).flatMap((q: Pt, i: number) => {
         const p = t.points[i] as Pt
         if (Math.hypot(p.x - q.x, p.y - q.y) < 1e-5) return []
         const [a, b] = ptKey(p) <= ptKey(q) ? [p, q] : [q, p]
         return [{ layer: t.layer, width: t.width, net: t.net, locked: t.locked, a, b }]
-      }),
-    )
-    .sort((x: any, y: any) => (JSON.stringify([x.layer, ptKey(x.a), ptKey(x.b), x.width, x.net]) < JSON.stringify([y.layer, ptKey(y.a), ptKey(y.b), y.width, y.net]) ? -1 : 1))
+      })
+    })
+    .sort((x: any, y: any) => (JSON.stringify([x.layer, ptKey(x.a ?? x.arc[0]), ptKey(x.b ?? x.arc[2]), x.width, x.net]) < JSON.stringify([y.layer, ptKey(y.a ?? y.arc[0]), ptKey(y.b ?? y.arc[2]), y.width, y.net]) ? -1 : 1))
   const { wires: _w, labels: _l, parts, footprints, components, properties, ...rest } = plain
   const sortBy = (list: any[] | undefined, key: (x: any) => string) => [...(list ?? [])].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
   return walk({
@@ -257,7 +269,7 @@ export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
 export const RULES_IN_PROJECT_FILE = ["traceWidth", "clearance", "viaDiameter", "viaDrill", "minTraceWidth", "minAnnularRing", "holeClearance", "edgeClearance", "minDrill", "preferredWidths", "viaSizes", "netClasses"] as const
 
 /** The rules the board file itself carries (its `setup`), which the importer reads back. */
-export const RULES_IN_BOARD_FILE = ["maskExpansion", "pasteExpansion", "maskMinWidth", "pasteRatio", "maskBridgesInParts"]
+export const RULES_IN_BOARD_FILE = ["maskExpansion", "pasteExpansion", "maskMinWidth", "pasteRatio", "maskBridgesInParts", "tentVias", "tentSides"]
 
 const near = (a: number | undefined, b: number | undefined) => (a === undefined && b === undefined) || (a !== undefined && b !== undefined && Math.abs(a - b) < 6e-7)
 const unescape = (p: string) => p.split("\\").join("")

@@ -36,7 +36,10 @@ export function hasPadFeatures(pad: PadDef): boolean {
     pad.thermalGap !== undefined ||
     pad.thermalWidth !== undefined ||
     pad.thermalAngle !== undefined ||
-    pad.property !== undefined
+    pad.property !== undefined ||
+    pad.stack !== undefined ||
+    pad.unused !== undefined ||
+    pad.tent !== undefined
   )
 }
 

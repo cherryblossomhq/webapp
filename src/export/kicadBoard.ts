@@ -19,6 +19,9 @@ import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
 import { isWholeBoardPour } from "../model/zones"
 import { rotate90 } from "../lib/geometry"
+import { copperLayers, kicadLayerName, viaLayers } from "../model/stack"
+import { isArcTrace } from "../model/arcTracks"
+import type { CopperLayer, StackRow } from "../model/types"
 
 // A `.kicad_pcb` written natively, in KiCad 9's format (stamp 20241229, `generator "pcbnew"`), for a project that came from a KiCad board
 // (X16). The converter path (`kicad.ts`) goes through Circuit JSON, which has no inner layers, outline arcs, keepouts, graphics, padless
@@ -75,6 +78,8 @@ const LAYER_TABLE: [number, string, string, string?][] = [
 /** Whether the project came from a KiCad board, which is what the native writer is for (a project drawn in the editor keeps the converter's path). */
 export function isKicadBoardProject(project: Pick<Project, "components" | "properties" | "board" | "traces" | "vias" | "zones" | "graphics" | "texts" | "dimensions" | "images" | "groups">): boolean {
   if (project.components.some((c) => c.fpid !== undefined)) return true
+  // A board of more than two copper layers (X1) has no place in the converter's file, which has two: it is written here, whoever drew it.
+  if (project.board.stack && project.board.stack.copper.length > 2) return true
   // A KiCad schematic import has the same properties; what a board import has besides is a board: an outline, copper, zones, drawings, texts, dimensions, images or groups.
   const board = !!project.board.outline || project.traces.length > 0 || project.vias.length > 0 || project.zones.length > 0 || (project.graphics?.length ?? 0) > 0 || project.texts.length > 0 || (project.dimensions?.length ?? 0) > 0 || (project.images?.length ?? 0) > 0 || (project.groups?.length ?? 0) > 0
   return board && !!project.properties?.some((p) => p.key === "KiCad file version")
@@ -238,7 +243,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       const type = pin?.kind ? PIN_TYPE[pin.kind] : undefined
       // A polygon pad of four corners that is KiCad's trapezoid is written as one.
       const trapezoid = def.shape === "polygon" && !def.custom && def.points ? (trapezoidPad(def, bottom) ?? undefined) : undefined
-      lines.push(...dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid })).split(String.fromCharCode(10)))
+      lines.push(...dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid, copperCount: copperLayers(project.board).length })).split(String.fromCharCode(10)))
       for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
@@ -417,21 +422,61 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const derived = lacking ? derivedCopperNets(project, sch) : null
   const nameOfNet = (id: string | null | undefined) => (id && id !== "short" ? (netNameOf.get(id) ?? "") : "")
   for (const t of project.traces) {
-    const layer = t.layer === "top" ? "F.Cu" : "B.Cu"
+    const layer = kicadLayerName(t.layer)
     const net = netCode(t.net ?? (derived ? nameOfNet(derived.traceNet.get(t.id)) : ""))
     const ids: string[] = []
-    for (let i = 1; i < t.points.length; i++) {
+    if (isArcTrace(t)) {
+      // X4: an arc track is KiCad's `arc`: the three points as the project has them.
       const id = newUuid()
       ids.push(id)
-      copperItems.push(`  (segment\n    (start ${xy(toFile(t.points[i - 1]))})\n    (end ${xy(toFile(t.points[i]))})\n    (width ${mm6(t.width)})\n    (layer ${quote(layer)})${t.locked ? "\n    (locked yes)" : ""}\n    (net ${net})\n    (uuid ${id})\n  )`)
+      copperItems.push(`  (arc\n    (start ${xy(toFile(t.points[0]))})\n    (mid ${xy(toFile(t.points[1]))})\n    (end ${xy(toFile(t.points[2]))})\n    (width ${mm6(t.width)})${t.locked ? "\n    (locked yes)" : ""}\n    (layer ${quote(layer)})\n    (net ${net})\n    (uuid ${id})\n  )`)
+    } else {
+      for (let i = 1; i < t.points.length; i++) {
+        const id = newUuid()
+        ids.push(id)
+        copperItems.push(`  (segment\n    (start ${xy(toFile(t.points[i - 1]))})\n    (end ${xy(toFile(t.points[i]))})\n    (width ${mm6(t.width)})\n    (layer ${quote(layer)})${t.locked ? "\n    (locked yes)" : ""}\n    (net ${net})\n    (uuid ${id})\n  )`)
+      }
     }
     members.set(t.id, ids)
   }
+  const stackCount = copperLayers(project.board).length
   for (const v of project.vias) {
     const id = newUuid()
     const net = netCode(v.routedNet ?? v.net ?? (derived ? nameOfNet(derived.viaNet.get(v.id)) : ""))
     members.set(v.id, [id])
-    copperItems.push(`  (via\n    (at ${xy(toFile(v))})\n    (size ${mm6(v.diameter)})\n    (drill ${mm6(v.drill)})\n    (layers "F.Cu" "B.Cu")${v.locked ? "\n    (locked yes)" : ""}\n    (net ${net})\n    (uuid ${id})\n  )`)
+    const span = viaLayers(project.board, v)
+    const ends = v.kind ? [span[0], span[span.length - 1]] : (["top", "bottom"] as CopperLayer[])
+    // KiCad 9 has `blind` and `micro`: a buried via is a blind one between two inner layers (the word `buried` is KiCad 10's).
+    const word = v.kind === "micro" ? "micro " : v.kind ? "blind " : ""
+    if (v.kind === "buried" && (ends[0] === "top" || ends[1] === "bottom")) notes.add("A buried via that has an outer layer for an end is written as a blind one: KiCad 9 tells the two by their layers, and the word `buried` is KiCad 10's.")
+    const lines = [`  (via${word ? ` ${word.trim()}` : ""}`, `    (at ${xy(toFile(v))})`, `    (size ${mm6(v.diameter)})`, `    (drill ${mm6(v.drill)})`, `    (layers ${quote(kicadLayerName(ends[0]))} ${quote(kicadLayerName(ends[1]))})`]
+    // KiCad 9 says what becomes of the layers nothing connects to as two words (`start_end_only` is KiCad 10's mode: the nearest KiCad 9 has is the one that keeps the ends).
+    if (v.unused) {
+      lines.push("    (remove_unused_layers yes)", `    (keep_end_layers ${v.unused === "remove" ? "no" : "yes"})`)
+      if (v.unused === "startEnd") notes.add("A via that has copper at its two ends only (KiCad 10's `start_end_only`) is written as one that removes unused layers and keeps its ends: a KiCad 9 file has no such mode, and a layer a track touches keeps its copper.")
+    }
+    if (v.locked) lines.push("    (locked yes)")
+    if (v.free) lines.push("    (free yes)")
+    if (v.zoneLayers) lines.push(`    (zone_layer_connections${v.zoneLayers.map((l) => ` ${quote(kicadLayerName(l))}`).join("")})`)
+    if (v.tent && (v.tent.front !== undefined || v.tent.back !== undefined)) {
+      const f = v.tent.front === true
+      const b = v.tent.back === true
+      lines.push(`    (tenting${f ? " front" : ""}${b ? " back" : ""}${!f && !b ? " none" : ""})`)
+      if ((v.tent.front === undefined) !== (v.tent.back === undefined)) notes.add("A via that says its tenting for one side only is written with the other side not tented: KiCad 9 has words for both sides together.")
+    }
+    if (v.stack) {
+      if ("inner" in v.stack) lines.push(`    (padstack (mode front_inner_back) (layer "Inner" (size ${mm6(v.stack.inner)})) (layer "B.Cu" (size ${mm6(v.stack.back)})))`)
+      else {
+        const sizes: string[] = []
+        for (let k = 1; k < stackCount; k++) {
+          const l: CopperLayer = k === stackCount - 1 ? "bottom" : (`in${k}` as CopperLayer)
+          sizes.push(`(layer ${quote(kicadLayerName(l))} (size ${mm6((v.stack as { layers: Partial<Record<CopperLayer, number>> }).layers[l] ?? v.diameter)}))`)
+        }
+        lines.push(`    (padstack (mode custom) ${sizes.join(" ")})`)
+      }
+    }
+    lines.push(`    (net ${net})`, `    (uuid ${id})`, "  )")
+    copperItems.push(lines.join("\n"))
   }
 
   // ---------- zones ----------
@@ -465,11 +510,18 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
 
   // ---------- the header ----------
   const rules = project.rules
+  const stack = project.board.stack
   const setup: string[] = [`    (pad_to_mask_clearance ${mm6(rules.maskExpansion)})`]
   if (rules.maskMinWidth !== undefined) setup.push(`    (solder_mask_min_width ${mm6(rules.maskMinWidth)})`)
   if (rules.pasteExpansion) setup.push(`    (pad_to_paste_clearance ${mm6(rules.pasteExpansion)})`)
   if (rules.pasteRatio !== undefined) setup.push(`    (pad_to_paste_clearance_ratio ${round(rules.pasteRatio, 6)})`)
   if (rules.maskBridgesInParts) setup.push("    (allow_soldermask_bridges_in_footprints yes)")
+  // The sides vias are tented on, in KiCad 9's words; every KiCad 9 board says so.
+  const tentFront = rules.tentSides ? rules.tentSides.front : rules.tentVias
+  const tentBack = rules.tentSides ? rules.tentSides.back : rules.tentVias
+  setup.push(`    (tenting${tentFront ? " front" : ""}${tentBack ? " back" : ""}${!tentFront && !tentBack ? " none" : ""})`)
+  if (stack?.rows?.length || stack?.finish !== undefined || stack?.edgePlating !== undefined || stack?.dielectricConstraints !== undefined || stack?.edgeConnector) setup.push(...stackupText(stack!))
+  if (rules.minMicroVia || rules.microVia || rules.microViasAllowed !== undefined || rules.blindBuriedViasAllowed !== undefined) notes.add("The sizes and permissions KiCad 5 kept for micro, blind and buried vias are not in a KiCad 9 board file: the smallest micro via is in the project file, and the rest stay in the project.")
   const kept = (project.properties ?? []).filter((p) => !PROVENANCE_PROPERTIES.has(p.key))
   const isTitleBlock = (key: string) => /^(Title|Date|Rev|Company|Comment \d+)$/.test(key)
   const title: string[] = []
@@ -483,7 +535,13 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   }
   const boardProps = kept.filter((p) => !isTitleBlock(p.key))
 
-  const layerRows: string[] = LAYER_TABLE.map(([n, name, type, user]) => `    (${n} ${quote(name)} ${type}${user ? ` ${quote(user)}` : ""})`)
+  // The copper layers from the front to the back as the project has them (X1), numbered as KiCad 9 numbers them (`F.Cu` 0, `B.Cu` 2, `In1.Cu` 4 and by twos), then the fixed layers.
+  const copperRows = copperLayers(project.board).map((l, i) => {
+    const n = l === "top" ? 0 : l === "bottom" ? 2 : 2 + 2 * Number(l.slice(2))
+    const row = stack?.copper[i]
+    return `    (${n} ${quote(kicadLayerName(l))} ${row?.type ?? "signal"}${row?.label ? ` ${quote(row.label)}` : ""})`
+  })
+  const layerRows: string[] = [...copperRows, ...LAYER_TABLE.filter(([, name]) => name !== "F.Cu" && name !== "B.Cu").map(([n, name, type, user]) => `    (${n} ${quote(name)} ${type}${user ? ` ${quote(user)}` : ""})`)]
   const extra = [...layers]
     .flatMap((name) => {
       const n = userLayerNumber9(name)
@@ -523,6 +581,32 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   ]
   notes.add("The board is written natively in KiCad 9's format: footprints with their pads, drawings, text, groups and 3D models of KiCad's stock library, the outline, tracks, vias, zones, dimensions and reference images, each as KiCad has them. The design rules and net classes are in the project file.")
   return { text: body.join("\n"), notes: [...notes] }
+}
+
+/** One row of the stackup as KiCad 9 writes it: the fields it has, a dielectric's further sublayers after `addsublayer`. KiCad 11's `spec_frequency` and `dielectric_model` have no place in a KiCad 9 file. */
+function stackRowText(row: StackRow): string {
+  const field = (r: Omit<StackRow, "name" | "type" | "sub">): string[] => {
+    const f: string[] = []
+    if (r.color !== undefined) f.push(`(color ${quote(r.color)})`)
+    if (r.thickness !== undefined) f.push(`(thickness ${mm6(r.thickness)}${r.locked ? " locked" : ""})`)
+    if (r.material !== undefined) f.push(`(material ${quote(r.material)})`)
+    if (r.epsilonR !== undefined) f.push(`(epsilon_r ${r.epsilonR})`)
+    if (r.lossTangent !== undefined) f.push(`(loss_tangent ${r.lossTangent})`)
+    return f
+  }
+  const parts = [...field(row), ...(row.sub ?? []).flatMap((s) => ["addsublayer", ...field(s)])]
+  return `      (layer ${quote(row.name)} (type ${quote(row.type)})${parts.length ? ` ${parts.join(" ")}` : ""})`
+}
+
+/** The board's stackup (`setup (stackup ...)`) as a KiCad 9 board writes it. */
+function stackupText(stack: NonNullable<Project["board"]["stack"]>): string[] {
+  const out = ["    (stackup", ...(stack.rows ?? []).map(stackRowText)]
+  if (stack.finish) out.push(`      (copper_finish ${quote(stack.finish)})`)
+  out.push(`      (dielectric_constraints ${stack.dielectricConstraints ? "yes" : "no"})`)
+  if (stack.edgeConnector) out.push(`      (edge_connector ${stack.edgeConnector})`)
+  if (stack.edgePlating) out.push("      (edge_plating yes)")
+  out.push("    )")
+  return out
 }
 
 /** The outline as paths: its own paths, or the rectangle (with its rounded corners) the board is. */

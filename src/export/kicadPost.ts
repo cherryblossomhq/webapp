@@ -243,6 +243,7 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
     min_hole_clearance: rules.clearance,
     min_copper_edge_clearance: rules.edgeClearance,
     ...(rules.maxError !== undefined ? { max_error: rules.maxError } : {}),
+    ...(rules.minMicroVia ? { min_microvia_diameter: rules.minMicroVia.diameter, min_microvia_drill: rules.minMicroVia.drill } : {}),
   })
   if (rules.minViaDrill !== undefined && rules.minViaDrill !== rules.minDrill) {
     notes.push(`KiCad 9 has one smallest drill for vias and through holes, so the project file has the smaller, ${Math.min(rules.minDrill, rules.minViaDrill)} mm (the project checks vias at ${rules.minViaDrill} mm and through holes at ${rules.minDrill} mm).`)

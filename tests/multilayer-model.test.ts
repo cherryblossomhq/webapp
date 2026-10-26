@@ -333,14 +333,16 @@ describe("the project file", () => {
     const doc = JSON.parse(serializeProject(p))
     doc.project.vias = [{ id: "v1", x: 1, y: 1, diameter: 0.8, drill: 0.4, kind: "blind" }, { id: "v2", x: 2, y: 1, diameter: 0.8, drill: 0.4, kind: "buried", from: "in1", to: "in2", tent: { front: "yes" }, unused: "all" }]
     doc.project.traces = [{ id: "t1", layer: "top", width: 0.2, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], arc: true }]
-    doc.project.board.stack = { copper: [{}] }
+    const oneLayer = JSON.parse(JSON.stringify(doc))
+    oneLayer.project.board.stack = { copper: [{}] }
+    expect(parseProjectFile(oneLayer, { id: "x" }).board.stack).toBeUndefined()
+    doc.project.board.stack = { copper: [{}, {}, {}, {}] }
     const read = parseProjectFile(doc, { id: "x" })
     expect(read.vias[0].kind).toBeUndefined()
     expect(read.vias[1]).toMatchObject({ kind: "buried", from: "in1", to: "in2" })
     expect(read.vias[1].tent).toBeUndefined()
     expect(read.vias[1].unused).toBeUndefined()
     expect(read.traces[0].arc).toBeUndefined()
-    expect(read.board.stack).toBeUndefined()
   })
 })
 

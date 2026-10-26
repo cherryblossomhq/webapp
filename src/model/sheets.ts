@@ -407,3 +407,25 @@ export function withSheetFlags(project: Project): Project {
   })
   return changed ? { ...project, components } : project
 }
+
+/**
+ * After an edit made on the whole project (Sakura's `update_component`, a part removed by its reference), the uses of a sheet used more than
+ * once are made alike: the first use that has a symbol the edit changed, added or removed is the one the others follow. A project with no
+ * sheet used twice, and an edit that touched none of them, are returned as they are.
+ */
+export function syncEdited(before: Project, after: Project): Project {
+  if (before === after || !isHierarchical(after)) return after
+  const shared = new Set(sheetUses(after).filter((u) => usesOfSheet(after, u.sheet).length > 1).map((u) => u.path))
+  if (!shared.size) return after
+  const was = new Map(before.components.map((c) => [c.id, c]))
+  const now = new Set(after.components.map((c) => c.id))
+  let out = after
+  const done = new Set<string>()
+  const touched = (path: string) => after.components.some((c) => useOf(c) === path && was.get(c.id) !== c) || before.components.some((c) => useOf(c) === path && !now.has(c.id))
+  for (const u of sheetUses(after)) {
+    if (!shared.has(u.path) || done.has(u.sheet) || !touched(u.path)) continue
+    done.add(u.sheet)
+    out = syncCopies(out, u.path)
+  }
+  return out
+}

@@ -274,7 +274,7 @@ describe("dimensions, groups and images are stored compactly and read back as th
   })
   it("a document of version 4 opens as it was written, with none of them, and migrates unchanged", () => {
     const v4 = { format: "cherryblossom.project", version: 4, project: { name: "old", description: "", components: [], wires: [], labels: [], traces: [], vias: [], zones: [], texts: [] } }
-    expect(migrateProjectFile(v4)).toEqual(v4.project)
+    expect(migrateProjectFile(v4)).toEqual({ ...v4.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v4, { id: "x" })
     expect(read.dimensions).toBeUndefined()
     expect(read.groups).toBeUndefined()

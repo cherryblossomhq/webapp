@@ -4,6 +4,8 @@
    host's root and would generate a utility for every class the host itself uses. */
 @import "tailwindcss" source(none);
 @source ".";
+/* The KiCad stroke font is megabytes of glyph data with no classes; scanning it hangs Tailwind. */
+@source not "./lib/kicadFont";
 
 /*
   Cherry Blossom's palette: the neutrals are the marketing site's warm paper-cream by

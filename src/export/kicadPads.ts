@@ -105,6 +105,9 @@ export interface PadWriteOptions {
 /** What KiCad stores of a trapezoid pad: its place, its turn within the footprint, its size and its `rect_delta`, in the footprint's file frame. */
 export interface Trapezoid {
   at: Vec2
+  /** With a hole: where the copper's centre is from the hole, in the pad's own frame (the drill's `offset`), and whether a slot runs along the pad's y (the drill is written tall). */
+  offset?: Vec2
+  slotAcross?: boolean
   turn: number
   w: number
   h: number
@@ -211,9 +214,9 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   if (def.holeDiameter !== undefined) {
     const off = def.holeOffset && (def.holeOffset.x !== 0 || def.holeOffset.y !== 0) ? def.holeOffset : null
     // KiCad's offset moves the copper from the hole: the opposite of where the land has the hole from the copper.
-    const o = off ? store({ x: -off.x, y: -off.y }) : null
+    const o = trap ? (trap.offset ?? null) : off ? store({ x: -off.x, y: -off.y }) : null
     // KiCad reads the two sizes as x then y of the pad's frame, so a slot across that frame (not turned into it above) is written tall.
-    const across = slot && extra === 0 && (((slotAxis % 180) + 180) % 180) === 90
+    const across = trap ? trap.slotAcross === true : slot && extra === 0 && (((slotAxis % 180) + 180) % 180) === 90
     const drill = !slot ? mm6(def.holeDiameter) : across ? `oval ${mm6(def.holeDiameter)} ${mm6(def.slotLength!)}` : `oval ${mm6(def.slotLength!)} ${mm6(def.holeDiameter)}`
     lines.push(`  (drill ${drill}${o ? ` (offset ${xy(o)})` : ""})`)
   }

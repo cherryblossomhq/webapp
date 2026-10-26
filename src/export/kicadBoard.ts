@@ -131,6 +131,9 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   for (const m of project.models ?? []) modelOf.set(`${m.part}\n${m.footprint}`, m.model)
   const wanted = project.components.filter((c) => onBoard(c) && c.pcb.placed && componentFootprint(c))
   for (const c of wanted) push(indent(footprintBlock(c), "  "))
+  const unplaced = project.components.filter((c) => onBoard(c) && !c.pcb.placed && componentFootprint(c)).length
+  if (unplaced) notes.add(`${unplaced} ${unplaced === 1 ? "part is" : "parts are"} not placed on the board yet, so ${unplaced === 1 ? "it is" : "they are"} not in the board file.`)
+  if (project.board.mountingHoles) notes.add("The board's corner mounting holes are not written to the KiCad board.")
 
   function footprintBlock(c: ComponentInstance): string[] {
     const land = componentFootprint(c) as FootprintDef
@@ -223,7 +226,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       const fn = pin && pin.name !== pin.number ? pin.name : undefined
       const type = pin?.kind ? PIN_TYPE[pin.kind] : undefined
       // A polygon pad of four corners that is KiCad's trapezoid is written as one.
-      const trapezoid = def.shape === "polygon" && !def.custom && def.holeDiameter === undefined && def.points ? (trapezoidOf(def.points.map((p) => ({ x: p.x, y: bottom ? p.y : 0 - p.y }))) ?? undefined) : undefined
+      const trapezoid = def.shape === "polygon" && !def.custom && def.points ? (trapezoidPad(def, bottom) ?? undefined) : undefined
       lines.push(dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid })))
       for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
@@ -270,6 +273,27 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const head = t.kind === "reference" ? `(property "Reference" ${quote(content)}` : t.kind === "value" ? `(property "Value" ${quote(content)}` : `(fp_text user ${quote(content)}`
     const lines = [head, `  ${at}`, ...(t.upright === false ? ["  (unlocked yes)"] : []), `  (layer ${quote(layer)}${t.knockout ? " knockout" : ""})`, ...(t.hide ? ["  (hide yes)"] : []), ...(t.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, mirror, false, t.href).map((l) => `  ${l}`), ")"]
     return { lines, ids: [id] }
+  }
+
+  /**
+   * A polygon pad as the KiCad trapezoid it is, in the footprint's file frame: with a hole, the pad is at the hole and the drill's offset says where the copper
+   * is; a slot has to run along one of the pad's own axes (the drill is written wide or tall), or the pad is a custom one.
+   */
+  function trapezoidPad(def: PadDef, bottom: boolean) {
+    const t = trapezoidOf((def.points ?? []).map((p) => ({ x: p.x, y: bottom ? p.y : 0 - p.y })))
+    if (!t || def.holeDiameter === undefined) return t
+    const hole = padAt(def, bottom)
+    const away = { x: t.at.x - hole.x, y: t.at.y - hole.y }
+    const a = (-t.turn * Math.PI) / 180
+    const own = { x: away.x * Math.cos(a) + away.y * Math.sin(a), y: -away.x * Math.sin(a) + away.y * Math.cos(a) }
+    const out = { ...t, at: hole, ...(Math.abs(own.x) > 1e-9 || Math.abs(own.y) > 1e-9 ? { offset: own } : {}) }
+    if (def.slotLength === undefined || def.slotLength <= def.holeDiameter + 1e-9) return out
+    // The slot's axis in the land (0 along x) less the pad's turn is the drill's own: 0 for wide, 90 for tall.
+    const axis = def.holeAxis ?? (def.width >= def.height ? 0 : 90)
+    const own90 = (((axis - (bottom ? -t.turn : t.turn)) % 180) + 180) % 180
+    if (Math.abs(own90) < 1e-6 || Math.abs(own90 - 180) < 1e-6) return out
+    if (Math.abs(own90 - 90) < 1e-6) return { ...out, slotAcross: true }
+    return null
   }
 
   /** Where a pad's hole is in the footprint's file frame: the pad's centre less the offset the copper has from the hole, exactly. */

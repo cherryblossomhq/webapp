@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { rememberImage } from "../src/store/imageFiles"
-import { canonicalProject, diffCanonical, proRulesDifferences, withoutProjectFileRules } from "./kicad-roundtrip-check"
+import { diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
 
 // The round trip over a local corpus (not in the repo): every board that imports is written out by the KiCad export, read again, and the two
 // projects are compared item for item (`kicad-roundtrip-check.ts`). The table says how many have no difference and counts every kind of difference.
@@ -31,6 +31,9 @@ export const BY_DESIGN = [
   /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
 ]
 
+/** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */
+export const REPAIRED = [/^project\.board\.outlineDrawn: /]
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
@@ -44,7 +47,7 @@ function walk(dir: string, out: string[] = []): string[] {
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the corpus", () => {
   it("writes every imported board out and reads it back as the same project", async () => {
     let files = walk(CORPUS!).sort()
-    if (ONLY.length) files = files.filter((f) => ONLY.some((o) => f.includes(o)))
+    if (ONLY.length) files = files.filter((f) => ONLY.some((o) => f.split(String.fromCharCode(92)).join("/").includes(o)))
     if (EVERY > 1) files = files.filter((_, i) => i % EVERY === 0)
     if (LIMIT) files = files.slice(0, LIMIT)
     const kinds = new Map<string, { boards: number; example: string; byDesign: boolean }>()
@@ -68,14 +71,15 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
           continue
         }
         const pro = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pro"))![1]
-        const diffs = [...diffCanonical(withoutProjectFileRules(canonicalProject(a.project)), withoutProjectFileRules(canonicalProject(b.project)), 400), ...proRulesDifferences(a.project, pro)]
+        const diffs = [...diffProjects(a.project, b.project, 400), ...proRulesDifferences(a.project, pro)]
         const ks = [...new Set(diffs.map((d) => d.kind))]
         for (const d of diffs) {
-          if (!kinds.has(d.kind)) kinds.set(d.kind, { boards: 0, example: `${rel} ${d.path}: ${d.first} / ${d.second}`, byDesign: BY_DESIGN.some((re) => re.test(d.kind)) })
+          if (!kinds.has(d.kind)) kinds.set(d.kind, { boards: 0, example: `${rel} ${d.path}: ${d.first} / ${d.second}`, byDesign: [...BY_DESIGN, ...REPAIRED].some((re) => re.test(d.kind)) })
         }
         for (const k of ks) kinds.get(k)!.boards++
-        const unexpected = diffs.filter((d) => !BY_DESIGN.some((re) => re.test(d.kind))).length
-        rows.push({ file: rel, status: diffs.length ? (unexpected ? "differs" : "differs by design only") : "same", differences: diffs.length, unexpected, kinds: ks, ms: Date.now() - t0 })
+        const unexpected = diffs.filter((d) => ![...BY_DESIGN, ...REPAIRED].some((re) => re.test(d.kind))).length
+        const repaired = diffs.some((d) => REPAIRED.some((re) => re.test(d.kind)))
+        rows.push({ file: rel, status: !diffs.length ? "same" : unexpected ? "differs" : repaired ? "differs by design and outline repair only" : "differs by design only", differences: diffs.length, unexpected, kinds: ks, ms: Date.now() - t0 })
       } catch (e) {
         rows.push({ file: rel, status: "error", differences: -1, kinds: [], ms: Date.now() - t0, error: e instanceof Error ? e.stack?.slice(0, 400) : String(e) })
       }
@@ -87,6 +91,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
       imported: imported.length,
       same: rows.filter((r) => r.status === "same").length,
       differsByDesignOnly: rows.filter((r) => r.status === "differs by design only").length,
+      differsByDesignAndRepairOnly: rows.filter((r) => r.status === "differs by design and outline repair only").length,
       differs: rows.filter((r) => r.status === "differs").length,
       refusedWritten: rows.filter((r) => r.status.startsWith("written file refused")).length,
       errors: rows.filter((r) => r.status === "error").length,

@@ -1,6 +1,7 @@
 import { computeConnectivity } from "../src/model/connectivity"
 import { outlinePaths, PROVENANCE_PROPERTIES } from "../src/export/kicadBoard"
 import { dimensionDrawing } from "../src/model/dimensions"
+import { flattenPath } from "../src/model/shapes"
 import type { BoardDimension, Project } from "../src/model/types"
 
 // The round trip's oracle for the board writer (X16): two projects, the one a board was imported as and the one its written file imports as,
@@ -69,6 +70,39 @@ export function canonicalProject(project: Project): Json {
     delete d.y
     delete d.rot
   }
+  // A pad that is the same turned by a quarter turn (a plain rectangle, a circle, a pill) is the same pad with its sides swapped: a file may give such a turn a millionth off a quarter, which a second reading takes for the quarter.
+  for (const f of plain.footprints ?? []) {
+    for (const pad of f.pads ?? []) {
+      if (pad.rot === undefined || pad.custom || pad.holeOffset || pad.chamfer?.corners || pad.shape === "polygon") continue
+      const q = (((pad.rot % 180) + 180) % 180)
+      if (Math.abs(q - 90) < 1e-6) {
+        const w = pad.width
+        pad.width = pad.height
+        pad.height = w
+        delete pad.rot
+      }
+    }
+  }
+  // An arc of no size (three equal points) is the line of no length KiCad draws it as, and a second reading says so.
+  const flatten = (list: any[] | undefined) => list?.forEach((sh, i) => {
+    if (sh.type === "arc" && Math.hypot(sh.start.x - sh.end.x, sh.start.y - sh.end.y) < 1e-5 && Math.hypot(sh.start.x - sh.mid.x, sh.start.y - sh.mid.y) < 1e-5) {
+      const { start, mid: _m, end: _e, ...rest } = sh
+      list[i] = { ...rest, type: "line", a: start, b: start }
+    }
+  })
+  flatten(plain.graphics)
+  for (const f of plain.footprints ?? []) flatten(f.shapes)
+  // Tracks are compared as the segments they hold: where the import joins two segments (or breaks a chain) depends on a millionth of a millimetre the first import rounded away, and the copper is the same either way.
+  plain.traces = (plain.traces ?? [])
+    .flatMap((t: any) =>
+      t.points.slice(1).flatMap((q: Pt, i: number) => {
+        const p = t.points[i] as Pt
+        if (Math.hypot(p.x - q.x, p.y - q.y) < 1e-5) return []
+        const [a, b] = ptKey(p) <= ptKey(q) ? [p, q] : [q, p]
+        return [{ layer: t.layer, width: t.width, net: t.net, locked: t.locked, a, b }]
+      }),
+    )
+    .sort((x: any, y: any) => (JSON.stringify([x.layer, ptKey(x.a), ptKey(x.b), x.width, x.net]) < JSON.stringify([y.layer, ptKey(y.a), ptKey(y.b), y.width, y.net]) ? -1 : 1))
   const { wires: _w, labels: _l, parts, footprints, components, properties, ...rest } = plain
   const sortBy = (list: any[] | undefined, key: (x: any) => string) => [...(list ?? [])].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
   return walk({
@@ -121,6 +155,20 @@ function normalizeOutline(paths: any[]): any[] {
       if (s.kind === "arc") return Math.hypot(s.start.x - s.end.x, s.start.y - s.end.y) > 1e-5 || Math.hypot(s.start.x - s.mid.x, s.start.y - s.mid.y) > 1e-5
       return true
     })
+    // A curve of the importer's path may be held backwards (its end is where the previous piece ends); it is the same curve either way round, so each is turned to follow the one before.
+    const gap = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y)
+    const turn = (g: any) => (g.kind === "bezier" ? { ...g, p0: g.p1, p1: g.p0, c1: g.c2, c2: g.c1 } : g)
+    for (let i = 0; i < segs.length; i++) {
+      const g = segs[i]
+      if (g.kind !== "bezier") continue
+      if (i > 0) {
+        const prev = endOf(segs[i - 1])
+        if (gap(g.p1, prev) < gap(g.p0, prev)) segs[i] = turn(g)
+      } else if (segs.length > 1) {
+        const next = startOf(segs[1])
+        if (gap(g.p0, next) < gap(g.p1, next)) segs[i] = turn(g)
+      }
+    }
     const merge = (list: any[]) => {
       const r: any[] = []
       for (const s of list) {
@@ -153,7 +201,7 @@ function normalizeOutline(paths: any[]): any[] {
     }
     if (path.closed && segs.length > 1 && signedArea(segs) < 0) {
       // Every closed path runs the same way round: the reverse of a path has its pieces in the other order with their ends swapped.
-      const flipped = segs.slice().reverse().map((g: any) => (g.kind === "line" ? { ...g, a: g.b, b: g.a } : g.kind === "arc" ? { ...g, start: g.end, end: g.start } : g))
+      const flipped = segs.slice().reverse().map((g: any) => (g.kind === "line" ? { ...g, a: g.b, b: g.a } : g.kind === "arc" ? { ...g, start: g.end, end: g.start } : turn(g)))
       const first = flipped.findIndex(() => true)
       void first
       segs = flipped
@@ -186,7 +234,7 @@ export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
   const kindOf = (path: string) => path.replace(/\[\d+\]/g, "[]").replace(/^(components|parts|footprints)\[[^\]]*\]/, "$1[]").replace(/(noConnect|netWidths)\.[^.]+/, "$1.*")
   const walk = (x: any, y: any, path: string) => {
     if (out.length >= limit || x === y) return
-    if (typeof x === "number" && typeof y === "number" && Math.abs(x - y) < 6e-7) return
+    if (typeof x === "number" && typeof y === "number" && Math.abs(x - y) < 1.5e-6) return
     if (typeof x !== "object" || typeof y !== "object" || x === null || y === null || Array.isArray(x) !== Array.isArray(y)) {
       out.push({ kind: kindOf(path), path, first: short(x), second: short(y) })
       return
@@ -271,4 +319,68 @@ export function withoutProjectFileRules(canonical: any): any {
   const rules: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(canonical.rules ?? {})) if (keep.has(k)) rules[k] = v
   return { ...canonical, rules }
+}
+
+// ---------- the whole comparison ----------
+
+/** The most the outline repair may move a piece (`JOIN_TOLERANCE` of the importer): the repair runs again on what the writer wrote. */
+const REPAIR_TOLERANCE = 0.1
+
+function samples(paths: any[]): Pt[][] {
+  return paths.map((p) => flattenPath({ closed: p.closed, segs: p.segs }, 0.002))
+}
+
+const near2 = (p: Pt, ring: Pt[], closed: boolean) => {
+  let best = Infinity
+  const n = ring.length
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const a = ring[i]
+    const b = ring[(i + 1) % n]
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const l2 = dx * dx + dy * dy
+    const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0
+    best = Math.min(best, Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)))
+  }
+  return best
+}
+
+/** How far apart two outlines are: the most any point of one is from the other, both ways. */
+export function outlineDistance(a: any[], b: any[]): number {
+  const sa = samples(a)
+  const sb = samples(b)
+  const reach = (from: Pt[][], to: Pt[][], toPaths: any[]) => {
+    let worst = 0
+    for (const ring of from) for (const p of ring) {
+      let best = Infinity
+      to.forEach((r, i) => (best = Math.min(best, near2(p, r, toPaths[i].closed))))
+      worst = Math.max(worst, best)
+    }
+    return worst
+  }
+  return Math.max(reach(sa, sb, b), reach(sb, sa, a))
+}
+
+/**
+ * Every difference between a project and the one its written file imports as. An outline that differs by less than the repair's own tolerance, with the
+ * same number of paths, is one named difference (`outline repair runs again`), not a list of moved pieces.
+ */
+export function diffProjects(first: Project, second: Project, limit = 200): Difference[] {
+  // The rules the project file carries are checked against the written project file (`proRulesDifferences`), not against what the board alone reads back.
+  const a = withoutProjectFileRules(canonicalProject(first))
+  const b = withoutProjectFileRules(canonicalProject(second))
+  const extra: Difference[] = []
+  const oa = a.board?.outlineDrawn
+  const ob = b.board?.outlineDrawn
+  if (oa && ob && JSON.stringify(oa) !== JSON.stringify(ob) && oa.length === ob.length) {
+    // exact to the tolerance of a number first; only a real difference is measured
+    if (diffCanonical(oa, ob, 1).length) {
+      const d = outlineDistance(oa, ob)
+      if (d <= REPAIR_TOLERANCE + 1e-6) {
+        extra.push({ kind: "project.board.outlineDrawn: the outline repair runs again on its own output", path: "project.board.outlineDrawn", first: `${oa.length} path(s)`, second: `within ${d.toFixed(4)} mm` })
+        b.board.outlineDrawn = oa
+      }
+    }
+  }
+  return [...diffCanonical(a, b, limit), ...extra]
 }

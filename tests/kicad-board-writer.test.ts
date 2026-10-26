@@ -5,7 +5,7 @@ import { importKicadBoard, readKicadBoard } from "../src/model/kicad/board"
 import { pcbPads } from "../src/model/instances"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
-import { canonicalProject, diffCanonical } from "./kicad-roundtrip-check"
+import { diffProjects } from "./kicad-roundtrip-check"
 import { twoResistors } from "./zones-fixtures"
 import { rememberImage } from "../src/store/imageFiles"
 
@@ -24,7 +24,7 @@ const roundTrip = async (p: Project) => {
   const text = await pcbOf(p)
   const again = importKicadBoard(text)
   if (again.status !== "imported") throw new Error(`the written board is refused: ${again.message}`)
-  return { text, differences: diffCanonical(canonicalProject(p), canonicalProject(again.project)).filter((d) => !d.kind.startsWith("project.rules.")), again: again.project }
+  return { text, differences: diffProjects(p, again.project), again: again.project }
 }
 
 const NETS = ['(net 0 "")', '(net 1 "A")', '(net 2 "B")']
@@ -120,6 +120,12 @@ describe("copper, zones, texts, dimensions and groups", () => {
     expect(text).toMatch(/\(group "g"/)
   })
 
+  it("keeps tracks as the polylines they were, point for point and in the same order", async () => {
+    const { again } = await roundTrip(project)
+    expect(again.traces.map((t) => [t.layer, t.width, t.net, t.points])).toEqual(project.traces.map((t) => [t.layer, t.width, t.net, t.points]))
+    expect(again.vias.map((v) => [v.x, v.y, v.locked])).toEqual(project.vias.map((v) => [v.x, v.y, v.locked]))
+  })
+
   it("writes the same bytes twice", async () => {
     expect(await pcbOf(project)).toBe(await pcbOf(project))
   })
@@ -130,6 +136,13 @@ describe("copper, zones, texts, dimensions and groups", () => {
     const { text, differences } = await roundTrip(p)
     expect(text.split(" trapezoid").length - 1).toBe(3)
     expect(text).toContain("(rect_delta 0 0.4)")
+    expect(differences).toEqual([])
+  })
+  it("writes a trapezoid pad with a hole, a slot across it and the copper off the hole, as a trapezoid", async () => {
+    const holed = (ref: string, at: string, layer: string) => footprint({ ref, at, layer, pads: [pad({ number: "1", type: "thru_hole", at: "0 0", shape: "trapezoid", size: "2 3.7", layers: '"*.Cu" "*.Mask"', extra: "(rect_delta 0 0.3) (drill oval 0.6 3.3 (offset 0.2 0.1))" }), pad({ number: "2", type: "thru_hole", at: "6 0 30", shape: "trapezoid", size: "2 1.5", layers: '"*.Cu" "*.Mask"', extra: "(rect_delta 0 0.3) (drill 0.6 (offset 0.1 0.1))" })] })
+    const p = imported(board({ nets: NETS, body: [holed("J1", "5 5 0", "F.Cu"), holed("J2", "15 5 90", "F.Cu"), holed("J3", "25 5 270", "B.Cu")] }))
+    const { text, differences } = await roundTrip(p)
+    expect(text.split(" trapezoid").length - 1).toBe(6)
     expect(differences).toEqual([])
   })
   it("says a polygon pad that is no KiCad trapezoid is written as a custom pad, and reads back the same", async () => {
@@ -150,7 +163,7 @@ describe("3D models and reference images", () => {
     const again = importKicadBoard(out)
     if (again.status !== "imported") throw new Error(again.message)
     expect(again.project.models).toHaveLength(p.models!.length)
-    expect(diffCanonical(canonicalProject(p), canonicalProject(again.project)).filter((d) => !d.kind.startsWith("project.rules."))).toEqual([])
+    expect(diffProjects(p, again.project)).toEqual([])
   })
 })
 
@@ -175,6 +188,6 @@ describe("reference images", () => {
     expect(out).toContain('(layer "User.1")')
     const again = importKicadBoard(out)
     if (again.status !== "imported") throw new Error(again.message)
-    expect(diffCanonical(canonicalProject(r.project), canonicalProject(again.project)).filter((d) => !d.kind.startsWith("project.rules."))).toEqual([])
+    expect(diffProjects(r.project, again.project)).toEqual([])
   })
 })

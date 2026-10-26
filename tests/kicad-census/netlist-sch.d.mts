@@ -12,7 +12,7 @@ export interface Derived {
   /** Pin key `<board path>#<pin number>` to the net group (a number), or an array of them for a number held by several pins. */
   pins: Map<string, number | number[]>
   /** The name KiCad gives each group that has a driver, and the driver's priority (2 sheet pin to 7 global label). */
-  driver: Map<number, { name: string; prio: number; low: boolean }>
+  driver: Map<number, { name: string; full: string; prio: number; low: boolean; depth: number; strong: boolean }>
   /** The names each group carries. */
   names: Map<number, Set<string>>
   /** What was left out of the derivation: `buses`. */

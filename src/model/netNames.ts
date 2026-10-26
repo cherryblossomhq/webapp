@@ -30,6 +30,8 @@ export interface NameDriver {
   from: "label" | "power" | "pin"
   /** The kind of label a label driver is, where it is a hierarchical one (a `local` for naming, since it puts the sheet's path in front). */
   labelKind?: LabelKind
+  /** S1: how deep the sheet it is on is (the root is 0): of two drivers of one priority the one nearer the root names the net (`CONNECTION_SUBGRAPH` order, connection_graph.cpp). */
+  depth?: number
 }
 
 /** The driver KiCad picks among those of a net: the highest priority, then `-Pad` names last, then the name that sorts first. */
@@ -41,9 +43,13 @@ export function bestDriver(drivers: readonly NameDriver[]): NameDriver | undefin
       continue
     }
     if (d.prio < best.prio) continue
+    if ((d.depth ?? 0) !== (best.depth ?? 0)) {
+      if ((d.depth ?? 0) < (best.depth ?? 0)) best = d
+      continue
+    }
     const lowD = barePad(d.text)
     const lowB = barePad(best.text)
-    if (lowD !== lowB ? lowB : d.text < best.text) best = d
+    if (lowD !== lowB ? lowB : d.name < best.name) best = d
   }
   return best
 }

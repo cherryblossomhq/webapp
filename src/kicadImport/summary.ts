@@ -34,6 +34,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width and tracks exposed through the solder mask",
   X25: "tables, barcodes and drill charts, text boxes inside parts, and text with expressions or variables the editor cannot fill in",
   S1: "sheets inside sheets (hierarchical sheets, sheet pins and hierarchical labels)",
+  S1T: "several top level sheets in one project (a KiCad 10 feature)",
   S2: "net labels as KiCad has them (local and global labels, their shapes and styles) and KiCad's own net names",
   S3: "buses (bus wires, bus entries and bus aliases)",
   S4: "notes, shapes, pictures and tables on the sheet, and wires and junctions with a look of their own",

@@ -53,6 +53,7 @@ describe("plain names for the extensions", () => {
     X25: [/tables/, /barcodes/, /drill charts/, /text boxes/, /expressions/, /variables/],
     // the schematic's (docs/kicad-import-schematic.md section 3)
     S1: [/sheets inside sheets/, /hierarchical/, /sheet pins/],
+    S1T: [/several top level sheets/],
     S2: [/net labels/, /local and global/, /net names/],
     S3: [/buses/, /bus entries/, /bus aliases/],
     S4: [/notes/, /shapes/, /pictures/, /tables/, /wires and junctions/],

@@ -112,8 +112,9 @@ describe("S1: a sheet used twice", () => {
   it("keeps the uses of a sheet apart: each has its own nets, named by its path", () => {
     const { project } = imp(two)
     const { nets } = computeConnectivity(project)
-    // the two sheet pins are on the one wire from R1, so VIN of both uses is one net
-    expect(nets.filter((n) => n.pins.length > 1).map((n) => n.pins.length)).toEqual([3])
+    // only the first use's pin is on R1's wire: the second use's VIN is a net of its own, however alike the pins' names are
+    expect(nets.filter((n) => n.pins.length > 1).map((n) => [n.name, n.pins.length])).toEqual([["/A/VIN", 2]])
+    expect(nets.map((n) => n.name)).toContain("/B/VIN")
   })
 
   it("a view of one use holds only its symbols and the sheet's items, and an edit on it is made for every use", () => {

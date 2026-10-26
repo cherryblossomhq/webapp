@@ -458,7 +458,8 @@ function readSheet(node: List, stamp: number | null): SchSheet {
   const { name, file } = sheetFields(props, stamp)
   const pins: SheetPin[] = kids(node, "pin").map((p) => {
     const at = kid(p, "at")
-    return { name: pinText(strAt(p, 1) ?? "", stamp), type: strAt(p, 2) ?? "input", at: pt(at), angle: snum(at, 3), node: p }
+    // A sheet pin names a net as a label does, so its text is read as a label's is (`{slash}` is `/`).
+    return { name: labelText(strAt(p, 1) ?? "", stamp), type: strAt(p, 2) ?? "input", at: pt(at), angle: snum(at, 3), node: p }
   })
   const instances: SheetInstance[] = []
   for (const project of kids(kid(node, "instances"), "project")) {

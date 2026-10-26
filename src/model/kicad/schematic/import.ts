@@ -165,6 +165,22 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   if (foreign) {
     report.entries.push({ code: "other-projects-instances", severity: "note", object: `${foreign} use${foreign > 1 ? "s" : ""} of symbols by other KiCad projects`, why: "The symbols keep the references they have in other projects that share these sheets. Only this project's own are read.", count: foreign })
   }
+  // Instance data for a use of a sheet that the project does not have (a sheet symbol that was deleted since), and a page for one: the symbols keep their own references.
+  const validPaths = new Map<string, Set<string>>()
+  for (const inst of tree.instances) (validPaths.get(inst.file) ?? validPaths.set(inst.file, new Set()).get(inst.file)!).add(inst.path)
+  let stray = 0
+  for (const f of list) {
+    const ok = validPaths.get(f.path) ?? new Set<string>()
+    for (const sym of f.schematic.symbols) stray += sym.instances.filter((i) => root.uuid && (i.path === `/${root.uuid}` || i.path.startsWith(`/${root.uuid}/`)) && !ok.has(i.path)).length
+  }
+  if (stray) {
+    report.entries.push({ code: "instance-of-no-sheet", severity: "note", object: `${stray} use${stray > 1 ? "s" : ""} of symbols on sheets the project does not have`, why: "The symbols name a use of a sheet that no sheet symbol makes any more. Those uses are left out; a symbol keeps the reference of the uses that exist.", count: stray })
+  }
+  const boardPaths = new Set(tree.instances.map((i) => (i.chain.length ? `/${i.chain.join("/")}` : "/")))
+  const pageless = root.sheetInstances.filter((i) => i.path !== "/" && i.path !== `/${root.uuid}` && !boardPaths.has(i.path) && !tree.instances.some((x) => x.path === i.path))
+  if (pageless.length) {
+    report.entries.push({ code: "page-of-no-sheet", severity: "note", object: `${pageless.length} page number${pageless.length > 1 ? "s" : ""} of sheets the project does not have`, why: "The root sheet lists pages for sheets that no sheet symbol makes.", count: pageless.length })
+  }
   for (const err of tree.errors) {
     report.entries.push({ code: `sheet-${err.code}`, severity: "refused", object: err.sheet ? `the sheet "${err.sheet}" (${err.file})` : `a sheet in ${err.parent}`, why: err.message })
   }

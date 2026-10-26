@@ -206,18 +206,16 @@ describe("the schematic and project importer", () => {
     expect(o.summary.notRead).toEqual([{ file: "demo.kicad_pro", why: expect.stringMatching(/belong to the board/) }])
   })
 
-  it("a schematic that needs what the editor lacks is refused in plain words: sheets inside sheets, named, and no project is made", async () => {
+  it("sheets inside sheets are imported: one project with a sheet for each file", async () => {
     const hierarchical = schematic({
       body: [`(sheet (at 10 10) (size 20 10) (uuid s1) (property "Sheetname" "Power" (at 0 0 0)) (property "Sheetfile" "power.kicad_sch" (at 0 0 0)))`],
     })
     const power = schematic({})
     const o = outcomeOf(await run([entry("top.kicad_sch", hierarchical), entry("power.kicad_sch", power)]))
-    expect(o.project).toBeNull()
     expect(o.summary.kind).toBe("schematic")
-    expect(o.summary.status).toBe("refused")
-    expect(o.summary.reason).toBe("unsupported")
-    expect(o.summary.message).toMatch(/^This schematic uses 1 thing Cherry Blossom cannot hold yet, listed below\.$/)
-    expect(o.summary.missing).toEqual([{ id: "S1", name: PLAIN_NAMES.S1, why: expect.stringMatching(/./) }])
+    expect(o.summary.status).toBe("imported")
+    expect(o.project?.sheetSymbols).toHaveLength(1)
+    expect(o.project?.sheets?.map((s) => s.id)).toEqual(["root", "s1"])
   })
 
   it("a refusal of the project's board or schematic says project, with the board's own reason", async () => {

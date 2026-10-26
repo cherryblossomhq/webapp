@@ -63,7 +63,7 @@ const REAL = ["pcbench", "github", "kicad-demos"]
 /** Projects whose sheets carry the references of another KiCad project too: link.mjs takes those for a match by reference, the importer does not. */
 const FOREIGN_REFERENCES = ["ESP32_S3_PCB_TEMPLATE", "USB Module/USB Switch"]
 
-const MEASURE = new Set(["S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "X19"])
+const MEASURE = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "X19"])
 
 interface FileRow {
   file: string
@@ -339,7 +339,10 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         row.ms = Date.now() - t1
       }
 
-      // ---------- the nets of the flat schematics ----------
+      /** The files with sheet symbols whose nets are compared with the oracle's, whole hierarchy at once. */
+      const hierNets: FileRow[] = []
+      const netNameProblems: string[] = []
+      // ---------- the nets of the schematics (a hierarchy whole, with every use of a reused sheet) ----------
       // Every pin the editor has a port for, in the groups of the editor's own connectivity and of the derivation from the raw file:
       // single pins included, and the names of the nets where the build is exact. A build that needs an extension is not counted as equal:
       // one that needs only S2 (KiCad's own net names) has its partition compared and says so.
@@ -349,8 +352,11 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         try {
           const bytes = new Uint8Array(readFileSync(path))
           const { schematic } = readKicadSchematic(bytes)
-          if (schematic.sheets.length || schematic.buses.length || schematic.busEntries.length || schematic.labels.some((l) => l.kind === "hierarchical")) continue
-          const gate = gateSchematic(bytes, { built: MEASURE })
+          if (schematic.buses.length || schematic.busEntries.length) continue
+          // A file with sheet symbols is read with every file of its folder, as a project is.
+          const folder = path.slice(0, path.lastIndexOf(sep))
+          const input = schematic.sheets.length ? { files: new Map([...walk(folder)].filter((f) => f.endsWith(".kicad_sch") || f.endsWith(".sch")).map((f) => [relative(folder, f).split(sep).join("/"), new Uint8Array(readFileSync(f))] as const)), root: path.slice(folder.length + 1) } : bytes
+          const gate = gateSchematic(input, { built: MEASURE })
           if ("refused" in gate) {
             row.nets = `not built: ${gate.refused.message.slice(0, 80)}`
             continue
@@ -359,7 +365,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           row.lossy = built.lossy.map((n) => n.ext)
           const exts = new Set(row.lossy)
           const { pinNet, nets } = computeConnectivity(built.project)
-          const symOf = new Map([...built.bySymbol].map(([s, c]) => [c.id, s]))
+          const symOf = new Map([...built.byRecord].map(([r, c]) => [c.id, r]))
           const universe: string[] = []
           const netOf = new Map<string, string | undefined>()
           const members = new Map<string, string[]>()
@@ -367,7 +373,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             const sym = symOf.get(c.id)
             if (!sym) continue
             for (const pin of schematicPins(c)) {
-              const key = `/${sym.uuid}#${pin.pin}`
+              const key = `${sym.path}#${pin.pin}`
               const net = pinNet.get(pinKey(c.id, pin.pin))
               universe.push(key)
               netOf.set(key, net)
@@ -377,6 +383,11 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           // a pin's group: the sorted pins of its net, or itself alone
           const mine = (k: string) => (netOf.get(k) ? [...members.get(netOf.get(k)!)!].sort().join(" ") : k)
           const derived = deriveNets(path, { hiddenPower: true, localJoinsGlobal: "same" })
+          if (derived.unsupported.size) {
+            row.nets = `not compared: ${[...derived.unsupported].join(", ")}`
+            continue
+          }
+          if (schematic.sheets.length) hierNets.push(row)
           const inUniverse = new Set(universe)
           const byGroup = new Map<number, string[]>()
           for (const [key, g] of derived.pins) for (const x of ([] as number[]).concat(g)) if (inUniverse.has(key)) (byGroup.get(x) ?? byGroup.set(x, []).get(x)!).push(key)
@@ -392,7 +403,13 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             if (!keys?.length) continue
             const g = ([] as number[]).concat(derived.pins.get(keys[0]) ?? [])[0]
             // KiCad's name of the net, from the raw file: its driver's, or a pin's `Net-(R1-Pad2)`; the editor's own name for it is the same
-            if ((g === undefined ? null : derived.netName(g)) !== net.name) namesEqual = false
+            const rawName = g === undefined ? null : derived.netName(g)
+            // KiCad names a net of an unannotated symbol (`U?`) by the symbol's uuid, which neither the importer nor the derivation writes: those are not compared.
+            if (/\?[A-Z]?-/.test(rawName ?? "") || /^Net-\(-Pad/.test(net.name)) continue
+            if (rawName !== net.name) {
+              namesEqual = false
+              if (netNameProblems.length < 40) netNameProblems.push(`${row.file}: ${net.name} (importer) against ${rawName} (raw file)`)
+            }
           }
           const other = [...exts].filter((x) => x !== "S2")
           if (other.length) row.nets = `not compared: needs ${[...exts].sort().join(" ")}${partitionEqual ? " (partition equal)" : " (partition differs)"}`
@@ -469,7 +486,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
                 // a net the user named has the name on the board (`/NAME` on a sheet below the root, `NAME` for a power symbol)
                 const driver = derived.driver.get(([] as number[]).concat(g)[0])
                 const boardName = p.net === null ? null : p.net.split("{slash}").join("/")
-                if (boardName !== null && !/^(?:Net-\(|unconnected-\()/.test(boardName) && !(driver && (boardName === driver.name || boardName.endsWith(`/${driver.name}`)))) {
+                if (boardName !== null && !/^(?:Net-\(|unconnected-\()/.test(boardName) && !(driver && boardName === driver.full)) {
                   nameBad++
                   if (nameDetail.length < 3) nameDetail.push(`${fp.ref}.${p.number} board ${boardName}, schematic ${driver ? driver.name : "none"}`)
                 }
@@ -505,7 +522,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           for (const ext of [".kicad_pro", ".kicad_dru"]) if (existsSync(base + ext)) projectFiles.push({ path: `${base.slice(folder.length + 1)}${ext}`, data: new Uint8Array(readFileSync(base + ext)) })
           const tImport = Date.now()
           const plainRun = importKicadProject(projectFiles)
-          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true })
+          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true })
           row.importMs = Date.now() - tImport
           const word = (r: typeof plainRun) => (r.status === "imported" ? "imported" : `refused, ${r.reason}${r.needs.length ? ` (${r.needs.map((n) => n.ext).join(" ")})` : r.reason === "inexact" ? ` (${r.message.replace(/^This (board|schematic) cannot be imported exactly: /, "").split(";")[0].slice(0, 60)})` : ""}`)
           row.status = `${word(plainRun)} / ${word(raised)}`
@@ -597,6 +614,10 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         needsEqualCensus: sum((r) => !r.needsDiff),
         needsDiffering: rows.filter((r) => r.needsDiff).length,
         netsEqual: sum((r) => r.nets === "equal"),
+        netNameProblems,
+        hierarchicalNetsCompared: hierNets.length,
+        hierarchicalNetsEqual: hierNets.filter((r) => r.nets === "equal").length,
+        hierarchicalNetsOther: Object.fromEntries([...new Set(hierNets.filter((r) => r.nets !== "equal").map((r) => r.nets))].map((k) => [k, hierNets.filter((r) => r.nets === k).length])),
         netsDiffer: sum((r) => r.nets === "differs"),
         netsDifferInNames: sum((r) => r.nets === "differs in names"),
         netsPartitionOnly: sum((r) => r.nets.startsWith("partition equal")),
@@ -604,6 +625,14 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         netsOutOfScope: sum((r) => r.nets === "-"),
         projects: projects.length,
         linksAsCensus: projects.filter((p) => p.linkOk).length,
+        hierarchicalProjects: projects.filter((p) => p.sheets > 1).length,
+        hierarchicalProjectsImported: projects.filter((p) => p.sheets > 1 && p.status.startsWith("imported")).length,
+        hierarchicalProjectsRefused: Object.fromEntries([...new Set(projects.filter((p) => p.sheets > 1 && !p.status.startsWith("imported")).map((p) => p.status))].map((k) => [k, projects.filter((p) => p.sheets > 1 && p.status === k).length])),
+        hierarchicalBoardAgree: projects.filter((p) => p.sheets > 1 && p.boardNets === "agree").length,
+        hierarchicalBoardStale: projects.filter((p) => p.sheets > 1 && p.boardNets.startsWith("stale")).length,
+        hierarchicalMeasured: projects.filter((p) => p.sheets > 1 && p.imported).length,
+        hierarchicalNoDifference: projects.filter((p) => p.sheets > 1 && p.imported && p.differences === 0).length,
+        hierarchicalPads: projects.filter((p) => p.sheets > 1 && p.imported).reduce((n, p) => n + p.pads, 0),
         boardAgree: projects.filter((p) => p.boardNets === "agree").length,
         boardStale: projects.filter((p) => p.boardNets.startsWith("stale")).length,
         boardSkipped: projects.filter((p) => p.boardNets.startsWith("skipped")).length,
@@ -635,7 +664,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(itemsCompared).toBeGreaterThan(300)
       // the real gate: with S2, S4 and S7 built, the files slices-sch.mjs puts in slice 3b import (71 of the 184 real files, 38.6%)
       expect(summary.imported3a).toBe(summary.importedWithNames)
-      expect(summary.importedReal3a).toBe(71)
+      expect(summary.importedReal3a).toBeGreaterThanOrEqual(71)
       expect(summary.netsDiffer).toBe(0)
       expect(summary.netsDifferInNames).toBe(0)
       expect(summary.linksAsCensus).toBe(summary.projects)

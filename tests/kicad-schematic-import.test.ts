@@ -37,7 +37,7 @@ const message = (text: string) => refused(importKicadSchematic(text)).message
 
 describe("the gate", () => {
   it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4) and symbol flags (S7)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S10", "S2", "S4", "S5", "S6", "S7"])
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S1", "S10", "S2", "S4", "S5", "S6", "S7"])
   })
 
   it("imports a divider: KiCad's net names are the project's rule now", () => {
@@ -45,15 +45,14 @@ describe("the gate", () => {
   })
 
   it("refuses a schematic that uses what the editor cannot hold yet, naming it in plain words, and imports nothing", () => {
-    const r = refused(importKicadSchematic(schematic({ body: [`(hierarchical_label "IN" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid h))`] })))
+    const r = refused(importKicadSchematic(schematic({ body: [`(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`] })))
     expect(r.reason).toBe("unsupported")
-    expect(r.message).toBe("This schematic uses hierarchical sheets, which are not supported yet.")
-    expect(r.needs.map((n) => n.ext)).toEqual(["S1"])
-    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S1/.test(e.why))).toBe(true)
+    expect(r.message).toBe("This schematic uses buses, which are not supported yet.")
+    expect(r.needs.map((n) => n.ext)).toEqual(["S3"])
+    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S3/.test(e.why))).toBe(true)
   })
 
   const one: [string, SchSpec, string, string][] = [
-    ["S1", { body: [`(hierarchical_label "IN" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid h))`] }, "hierarchical sheets", "hierarchical labels"],
     ["S3", { body: [`(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`] }, "buses", "buses, bus entries or bus aliases"],
     ["S3", { body: [`(bus_alias "DATA" (members "D0" "D1"))`] }, "buses", "buses, bus entries or bus aliases"],
     ["S8", { body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`] }, "directive labels and rule areas", "directive labels or rule areas"],
@@ -91,10 +90,10 @@ describe("the gate", () => {
 
   it("names every extension a schematic needs in the one sentence", () => {
     const text = schematic({
-      body: [`(hierarchical_label "A" (shape input) (at 1 1 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid g))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
+      body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
     })
-    expect(needsOf(text)).toEqual(["S1", "S3"])
-    expect(message(text)).toBe("This schematic uses hierarchical sheets and buses, which are not supported yet.")
+    expect(needsOf(text)).toEqual(["S3", "S8"])
+    expect(message(text)).toBe("This schematic uses buses and directive labels and rule areas, which are not supported yet.")
   })
 
   it("a schematic that needs nothing the editor lacks is imported: wires, junctions, labels and no-connects", () => {
@@ -152,19 +151,18 @@ describe("the gate", () => {
     expect(r.reason).toBe("unreadable")
     expect(r.message).toBe(`the sheet "Power" (power.kicad_sch) is not among the files, so its pages are missing.`)
     expect(r.report.entries.some((e) => e.code === "sheet-missing" && e.severity === "refused")).toBe(true)
-    expect(r.needs.map((n) => n.ext)).toContain("S1")
+    expect(r.needs).toEqual([])
   })
 
-  it("a project with its sheets is read whole, and refused for what it needs, not for the files", () => {
+  it("a project with its sheets is read whole and imported, each sheet with its own items", () => {
     const files = new Map([
       ["root.kicad_sch", schematic({ uuid: "r", body: [`(sheet (at 10 10) (size 20 10) (uuid s1) (property "Sheetname" "Power" (at 0 0 0)) (property "Sheetfile" "power.kicad_sch" (at 0 0 0)))`] })],
       ["power.kicad_sch", schematic({ uuid: "p", body: [`(hierarchical_label "VIN" (shape input) (at 10 10 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid h))`] })],
     ])
-    const r = refused(importKicadSchematic({ files, root: "root.kicad_sch" }))
-    expect(r.reason).toBe("unsupported")
-    expect(r.tree?.files.size).toBe(2)
-    expect(r.needs.map((n) => n.ext)).toEqual(["S1"])
-    expect(r.message).toBe("This schematic uses hierarchical sheets, which are not supported yet.")
+    const r = imported(importKicadSchematic({ files, root: "root.kicad_sch" }))
+    expect(r.tree.files.size).toBe(2)
+    expect(r.project.sheets?.map((x) => x.id)).toEqual(["root", "s1"])
+    expect(r.project.labels).toMatchObject([{ name: "VIN", kind: "hierarchical", sheet: "s1" }])
   })
 
   it("a schematic whose project would be over the size limit is refused, saying how big it is", () => {
@@ -208,9 +206,10 @@ describe("what the importer finds on top of the census's rules", () => {
     const sym = { lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }
     const own = schematic({ libs: [LIB_R], symbols: [sym] })
     expect(needsOf(own)).not.toContain("S1")
-    // used on a sheet below the root, and a second time
-    expect(needsOf(own.replace(`(path "/${ROOT_UUID}"`, `(path "/${ROOT_UUID}/sheet1"`))).toContain("S1")
-    expect(needsOf(own.replace(`(instances`, `(instances (project "demo" (path "/${ROOT_UUID}/sheet2" (reference "R9") (unit 1)))`))).toContain("S1")
+    // used on a sheet below the root that the project does not have, and a second time: the instance of a use that does not exist is a note, and the symbol keeps its own reference
+    const stray = imported(importKicadSchematic(own.replace(`(instances`, `(instances (project "demo" (path "/${ROOT_UUID}/sheet2" (reference "R9") (unit 1)))`)))
+    expect(stray.report.entries.find((e) => e.code === "instance-of-no-sheet")?.count).toBe(1)
+    expect(stray.project.components.map((c) => c.ref)).toEqual(["R1"])
     // the instance of another project that shares the sheet is not this project's, and is a note
     const foreign = own.replace(`(instances`, `(instances (project "other" (path "/ffffffff-0000-4000-8000-000000000009" (reference "R7") (unit 1)))`)
     const r = imported(importKicadSchematic(foreign))
@@ -230,7 +229,8 @@ describe("what the importer finds on top of the census's rules", () => {
   it("the root's own sheet_instances, in the spelling of either release, say nothing", () => {
     expect(importKicadSchematic(schematic()).status).toBe("imported")
     expect(importKicadSchematic(schematic().replace(`(path "/" (page "1"))`, `(path "/${ROOT_UUID}" (page "1"))`)).status).toBe("imported")
-    expect(needsOf(schematic().replace(`(path "/" (page "1"))`, `(path "/${ROOT_UUID}" (page "1")) (path "/${ROOT_UUID}/x" (page "2"))`))).toEqual(["S1"])
+    // a page for a sheet that is not there is a note
+    expect(imported(importKicadSchematic(schematic().replace(`(path "/" (page "1"))`, `(path "/${ROOT_UUID}" (page "1")) (path "/${ROOT_UUID}/x" (page "2"))`))).report.entries.some((e) => e.code === "page-of-no-sheet")).toBe(true)
   })
 })
 
@@ -302,7 +302,7 @@ describe("the accounting of every node", () => {
       ["root.kicad_sch", schematic({ uuid: "r", wires: ["1 1 2 2"], body: [`(sheet (at 10 10) (size 20 10) (uuid s1) (property "Sheetname" "A" (at 0 0 0)) (property "Sheetfile" "a.kicad_sch" (at 0 0 0)))`] })],
       ["a.kicad_sch", schematic({ uuid: "a", wires: ["1 1 2 2", "3 3 4 4"] })],
     ])
-    const a = refused(importKicadSchematic({ files, root: "root.kicad_sch" })).report.account!
+    const a = imported(importKicadSchematic({ files, root: "root.kicad_sch" })).report.account!
     expect(a.paths.get("wire")).toBe(3)
     expect(total(a)).toBe(a.total)
   })
@@ -536,8 +536,8 @@ describe("what each flag and field of the file needs, so that nothing imported i
     expect(group("")?.[0].locked).toBeUndefined()
   })
 
-  it("a page number other than 1 on the root sheet is S1", () => {
-    expect(needsOf(schematic().replace(`(page "1")`, `(page "7")`))).toEqual(["S1"])
+  it("a page number other than 1 on the root sheet is kept", () => {
+    expect(imported(importKicadSchematic(schematic().replace(`(page "1")`, `(page "7")`))).project.sheets?.[0]).toMatchObject({ id: "root", page: "7" })
     expect(importKicadSchematic(schematic()).status).toBe("imported")
   })
 })

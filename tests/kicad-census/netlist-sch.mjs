@@ -339,7 +339,7 @@ export function deriveNets(rootFile, opts = {}) {
           }
           out.pinsTotal++
           for (const n of padNumbers(number)) pinItems.push({ item, key: `${boardPath}#${n}`, pin: n })
-          pinDrivers.push({ item, ref: reference, refUnit: `${reference}${unitCount > 1 ? unitLetter(u) : ""}`, name, number, unitPins, nc: etype === "no_connect", eligible: onBoard && !refField.startsWith("#") && !(etype === "power_in" && isPower) && !reference.startsWith("#"), flagKey: keyOf(wx, wy) })
+          pinDrivers.push({ item, ref: reference, refUnit: `${reference}${unitCount > 1 ? unitLetter(u) : ""}`, name, number, unitPins, nc: etype === "no_connect", eligible: onBoard && !refField.startsWith("#") && !(etype === "power_in" && isPower) && !reference.startsWith("#"), flagKey: keyOf(wx, wy), flagInst: inst })
           const hidden = flag(pin, "hide")
           const powerIn = etype === "power_in"
           if (powerIn && isPower) {
@@ -475,7 +475,7 @@ export function deriveNets(rootFile, opts = {}) {
   for (const pd of pinDrivers) if (!pd.nc) bump(pd.item)
   for (const item of labelItems) bump(item)
   const ncGroups = new Set()
-  for (const pd of pinDrivers) if (ncFlags.some((f) => f.key === pd.flagKey)) ncGroups.add(groupId.get(uf.find(pd.item)))
+  for (const pd of pinDrivers) if (ncFlags.some((f) => f.key === pd.flagKey && f.inst === pd.flagInst)) ncGroups.add(groupId.get(uf.find(pd.item)))
   const pinNames = new Map()
   const byGroup = new Map()
   for (const pd of pinDrivers) {

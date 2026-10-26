@@ -375,7 +375,10 @@ describe("the project file and the design rules", () => {
     expect(needs(proJson({ text_variables: { REV: "B" } }))).toEqual(["S4"])
     expect(needs(proJson({ schematic: { bus_aliases: { DATA: { members: ["D0"] } } } }))).toEqual(["S3"])
     expect(needs(proJson({ schematic: { variants: [{ name: "A" }] } }))).toEqual(["S9"])
-    expect(needs(proJson({ sheets: [["a", ""], ["b", "Power"]] }))).toEqual(["S1"])
+    // the project's list of sheets names what the schematic has; several top level sheets are KiCad 10's and wait for a root that holds several
+    expect(needs(proJson({ sheets: [["a", ""], ["b", "Power"]] }))).toEqual([])
+    expect(needs(proJson({ schematic: { top_level_sheets: [{ filename: "a.kicad_sch", name: "a", uuid: "x" }] } }))).toEqual([])
+    expect(needs(proJson({ schematic: { top_level_sheets: [{ filename: "a.kicad_sch", name: "a", uuid: "x" }, { filename: "b.kicad_sch", name: "b", uuid: "y" }] } }))).toEqual(["S1T"])
     expect(needs(proJson())).toEqual([])
   })
 

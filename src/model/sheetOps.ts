@@ -243,7 +243,7 @@ export function resizeSheetSymbol(project: Project, id: string, w: number, h: nu
 const SIDE_ROT: Record<"left" | "right" | "top" | "bottom", Rotation> = { right: 0, top: 90, left: 180, bottom: 270 }
 
 /** The first free place along an edge of a symbol, a grid step in from the corner and a grid step apart. */
-function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT): Vec2 {
+function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT, digits = 4): Vec2 {
   const rot = SIDE_ROT[side]
   const taken = sym.pins.filter((p) => p.rot === rot)
   const horizontal = side === "top" || side === "bottom"
@@ -251,7 +251,7 @@ function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT): Vec2 {
   for (let step = 2; step * GRID < length; step += 2) {
     const along = step * GRID
     const spot = side === "left" ? { x: sym.x, y: sym.y + sym.h - along } : side === "right" ? { x: sym.x + sym.w, y: sym.y + sym.h - along } : side === "top" ? { x: sym.x + along, y: sym.y + sym.h } : { x: sym.x + along, y: sym.y }
-    if (!taken.some((p) => Math.hypot(p.x - spot.x, p.y - spot.y) < GRID * 1.5)) return { x: round(spot.x, 4), y: round(spot.y, 4) }
+    if (!taken.some((p) => Math.hypot(p.x - spot.x, p.y - spot.y) < GRID * 1.5)) return { x: round(spot.x, digits), y: round(spot.y, digits) }
   }
   return side === "left" ? { x: sym.x, y: sym.y } : side === "right" ? { x: sym.x + sym.w, y: sym.y } : side === "top" ? { x: sym.x, y: sym.y + sym.h } : { x: sym.x, y: sym.y }
 }
@@ -260,7 +260,8 @@ function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT): Vec2 {
 export function addSheetPin(project: Project, symbolId: string, name: string, shape: LabelShape = "bidirectional", side: keyof typeof SIDE_ROT = "left", at?: Vec2): Project {
   const sym = project.sheetSymbols?.find((s) => s.id === symbolId)
   if (!sym || !name.trim()) return project
-  const spot = at ?? freeSpot(sym, side)
+  // S11: a sheet joined by KiCad's rules keeps its points to six digits.
+  const spot = at ?? freeSpot(sym, side, kicadRulesShown(project) ? 6 : 4)
   const pin: SheetPin = { id: nextId(sym.pins.map((p) => p.id), "p"), name: name.trim(), shape, x: spot.x, y: spot.y, rot: SIDE_ROT[side] }
   return touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === symbolId ? { ...s, pins: [...s.pins, pin] } : s)) })
 }

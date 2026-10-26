@@ -87,7 +87,7 @@ export function variantSheetFlags(sym: Pick<SheetSymbol, "flags" | "variants">, 
  * What an export says about the variants: a format with no variants (Circuit JSON, KiCad 9) is written from the symbols as the active variant makes them,
  * and the variants themselves are not in the files. Empty when the project has none.
  */
-export function variantExportNotes(project: Pick<Project, "variants">, format: string): string[] {
+export function variantExportNotes(project: Pick<Project, "variants">, format: string, o: { sheets?: boolean } = {}): string[] {
   const names = variantNames(project)
   if (!names.length) return []
   const active = activeVariant(project)
@@ -95,7 +95,7 @@ export function variantExportNotes(project: Pick<Project, "variants">, format: s
   return [
     active === undefined
       ? `${format} has no schematic variants: the symbols are written as they are, with no variant active, and the project's ${names.length} variant${names.length > 1 ? "s are" : " is"} not in the files.`
-      : `${format} has no schematic variants: the symbols are written as the active variant "${active}" makes them (its do not populate, BOM, position and board flags and its field values are on each symbol)${others ? `, and the other ${others} variant${others > 1 ? "s are" : " is"} not in the files` : ""}.`,
+      : `${format} has no schematic variants: the symbols are written as the active variant "${active}" makes them (its do not populate, BOM, position and board flags and its field values are on the symbols${o.sheets ? "; those it gives a sheet symbol are on the sheet symbol, not on the symbols below it" : ""})${others ? `, and the other ${others} variant${others > 1 ? "s are" : " is"} not in the files` : ""}.`,
   ]
 }
 

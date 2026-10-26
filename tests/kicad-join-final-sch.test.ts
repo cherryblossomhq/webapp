@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { schematic } from "./kicad-schematic-fixtures"
 import { runTool } from "../src/ai/tools"
-import { addSheetUse, removeSheetSymbols } from "../src/model/sheetOps"
+import { addSheetPin, addSheetUse, removeSheetSymbols, setSheetSymbol } from "../src/model/sheetOps"
+import { kicadFiles } from "../src/export/kicad"
+import { kicad9SheetProblems } from "./kicad9-strict"
 import { commitOnUse, sheetUses } from "../src/model/sheets"
 import { pasteItems } from "../src/model/schematicEdit"
-import { setVariantOverride } from "../src/model/variants"
+import { setActiveVariant, setVariantOverride } from "../src/model/variants"
 import type { ComponentInstance, Project } from "../src/model/types"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
+import { computeConnectivity } from "../src/model/connectivity"
 import { getConnectivity, sameSchematic } from "../src/model/connectivityCache"
 import { followNetRenames } from "../src/model/copperNets"
 import { setSymbolVariant } from "../src/model/schematicEdit"
@@ -179,5 +181,90 @@ describe("B2: the connectivity cache sees what changes a symbol's pins", () => {
     const u3 = before.components.find((c) => c.ref === "U3")!
     expect(sameSchematic(before, edit(before, u3.id, { footprint: "other", pcb: { ...u3.pcb, x: 9, y: 9, placed: true } }))).toBe(true)
     expect(sameSchematic(before, edit(before, u3.id, { fields: { Value: { x: 1, y: 1, angle: 0, size: 1.27 } as never } }))).toBe(true)
+  })
+})
+
+describe("B3: the KiCad 9 export of a sheet used twice", () => {
+  /** The root file and the shared child file of an export. */
+  async function exported(p: Project) {
+    const { files, notes } = await kicadFiles(p)
+    const names = Object.keys(files).filter((k) => k.endsWith(".kicad_sch"))
+    const root = names.find((k) => files[k].includes("(sheet\n"))!
+    const child = names.find((k) => k !== root)!
+    return { root: files[root], child: files[child], childName: child, notes: notes.join("\n"), all: files }
+  }
+  /** The text of the placed symbols of a file (the child file holds R9 once, with a reference for each use). */
+  const symbolText = (sch: string) => sch.slice(sch.indexOf("\n  (symbol\n    (lib_id"))
+  const sheetNodes = (root: string) => root.split("\n  (sheet\n").slice(1).map((n) => n.slice(0, n.indexOf("\n  )")))
+
+  it("scenario 1: only the first sheet symbol is do not populate: that is on its node in the parent file, and not on the shared symbols", async () => {
+    const p = twoUses()
+    const first = p.sheetSymbols![0]
+    const flagged = setSheetSymbol(p, first.id, { flags: { dnp: true } })
+    const out = await exported(flagged)
+    const nodes = sheetNodes(out.root)
+    expect(nodes).toHaveLength(2)
+    expect(nodes[0]).toMatch(/\(dnp yes\)/)
+    expect(nodes[1]).toMatch(/\(dnp no\)/)
+    // the file both uses share does not say do not populate: the second use is not
+    expect(symbolText(out.child)).toMatch(/\(dnp no\)/)
+    expect(symbolText(out.child)).not.toMatch(/\(dnp yes\)/)
+    expect(out.notes).toMatch(/The flags of a sheet symbol are written on the sheet symbol/)
+    expect(kicad9SheetProblems(out.root)).toEqual([])
+    expect(kicad9SheetProblems(out.child)).toEqual([])
+  })
+
+  it("a part's own flag is in the shared file, for every use", async () => {
+    const p = twoUses()
+    const own = { ...p, components: p.components.map((c) => (c.ref === "R2" || c.ref === "R3" ? { ...c, flags: { dnp: true as const } } : c)) }
+    const out = await exported(own)
+    expect(symbolText(out.child)).toMatch(/\(dnp yes\)/)
+    expect(out.notes).not.toMatch(/KiCad 9 keeps a sheet used more than once/)
+  })
+
+  it("scenario 2: do not populate under the active variant on the second use only: the file has the first use's, and the note names the part and what was written", async () => {
+    const p = setActiveVariant(twoUses(), "Lite")
+    const out = await exported(p)
+    expect(symbolText(out.child)).toMatch(/\(dnp no\)/)
+    const line = out.notes.split("\n").find((l) => l.startsWith("R3 on "))!
+    expect(line).toBeDefined()
+    expect(line).toMatch(/R3 on \/Power2\/ has do not populate/)
+    expect(line).toMatch(/says what R2 on \/Power\/ has, no flag/)
+    expect(line).toContain(out.childName)
+    // the variant note no longer claims the flags are on every symbol
+    expect(out.notes).toMatch(/the active variant "Lite" makes them/)
+    expect(out.notes).not.toMatch(/are on each symbol/)
+  })
+
+  it("a variant that is the same on every use is written in the shared file with no difference said", async () => {
+    let p = twoUses()
+    p = setVariantOverride(p, ref(p, "R2").id, "Lite", { dnp: true })
+    const out = await exported(setActiveVariant(p, "Lite"))
+    expect(symbolText(out.child)).toMatch(/\(dnp yes\)/)
+    expect(out.notes).not.toMatch(/KiCad 9 keeps a sheet used more than once/)
+  })
+
+  it("a sheet symbol whose variant differs between the uses of its parent sheet is said", async () => {
+    // Power sits on the root; a sheet Inner below it is drawn once and used twice (a symbol on each use of Power would need Power used twice), so the case is
+    // the sheet symbols of a sheet used twice: give the first use's symbol a variant for the second parent use.
+    const { project } = imp([{ uuid: S1, name: "Power", y: 60.96 }, { uuid: S2, name: "Power2", y: 90 }])
+    const [a, b] = project.sheetSymbols!
+    const inner = { id: "h9", sheet: a.child, child: "s9", x: 0, y: 0, w: 5, h: 5, name: "Inner", file: "inner.kicad_sch", pins: [], variants: { [`/${b.id}`]: { Lite: { dnp: true } } } }
+    const p = setActiveVariant({ ...project, sheets: [...(project.sheets ?? []), { id: "s9" }], sheetSymbols: [...project.sheetSymbols!, inner], variants: { list: [{ name: "Lite" }] } }, "Lite")
+    const out = await exported(p)
+    expect(out.notes).toMatch(/The sheet symbol Inner is do not populate on \/Power2\/ but not flagged on \/Power\//)
+  })
+})
+
+describe("minors", () => {
+  it("a pin added to a sheet symbol on a sheet joined by KiCad's rules keeps six digits", () => {
+    const { project } = imp([{ uuid: S1, name: "Power", y: 60.96 }])
+    const rules: Project = { ...project, sheets: (project.sheets ?? []).map((s) => (s.id === "root" ? { ...s, kicadRules: true as const } : s)), sheetSymbols: project.sheetSymbols!.map((s) => ({ ...s, x: 6.096123, y: 1.234567 })) }
+    const sym = rules.sheetSymbols![0]
+    const left = addSheetPin(rules, sym.id, "LEFT", "input", "left")
+    expect(left.sheetSymbols![0].pins.at(-1)!.x).toBe(6.096123)
+    // an editor sheet keeps its four
+    const plain = addSheetPin({ ...rules, sheets: project.sheets }, sym.id, "LEFT", "input", "left")
+    expect(plain.sheetSymbols![0].pins.at(-1)!.x).toBe(6.0961)
   })
 })

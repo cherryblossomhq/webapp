@@ -1,5 +1,5 @@
 import { round } from "../lib/geometry"
-import { ROOT_SHEET, copyKey, sheetsOf, sheetUses, symbolsOnSheet, usesOfSheet, type SheetUse } from "../model/sheets"
+import { ROOT_SHEET, copyKey, sheetsOf, sheetUses, symbolsOnSheet, useAt, useOf, usesOfSheet, type SheetUse } from "../model/sheets"
 import { activeVariant, variantSheetFlags } from "../model/variants"
 import { colorNode } from "./kicadSheet"
 import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, TextLook, Vec2 } from "../model/types"
@@ -99,12 +99,68 @@ function effects(look: TextLook | undefined, place?: FieldPlace): string {
 
 const yn = (b: boolean) => (b ? "yes" : "no")
 
+/** The flags a sheet symbol's node says: the active variant's on the first use of its parent sheet (KiCad 9), or its own, with the variants beside it (KiCad 10). */
+export function sheetFlagsWritten(project: Project, sym: SheetSymbol, variants: "keep" | "apply"): SheetSymbol["flags"] {
+  const flags = variants === "keep" ? sym.flags : variantSheetFlags(sym, usesOfSheet(project, sym.sheet)[0]?.path ?? "", activeVariant(project))
+  return flags && Object.keys(flags).length ? flags : undefined
+}
+
+const FLAG_WORDS = [["dnp", "do not populate"], ["excludeFromBom", "out of the BOM"], ["notOnBoard", "not on the board"], ["excludeFromSim", "out of simulation"]] as const
+const flagWords = (f: SheetSymbol["flags"] | ComponentInstance["flags"]) => FLAG_WORDS.filter(([k]) => f?.[k]).map(([, w]) => w)
+const MOST_NOTES = 20
+
+/**
+ * What a sheet used more than once cannot say in KiCad 9: its symbols are one file, so a symbol has one set of flags and one value for every use, and the sheet
+ * symbols drawn on it one set of flags for every use of the sheet they are on. The file says what the first use has; where another use differs (a variant that
+ * changes one use's symbol, a rule area that covers a symbol on one use only) this names each part and use and what was written. A sheet symbol's flags are on
+ * its node in the parent's file and never on the symbols below it, so they are not a difference between the symbols' uses. `symbolFlags` are the symbols as their
+ * files say them (`ownFlagComponents`).
+ */
+export function sharedSheetNotes(project: Project, symbolFlags: ReadonlyMap<string, ComponentInstance>, variants: "keep" | "apply", files: Map<string, string>): string[] {
+  const found: string[] = []
+  const variant = activeVariant(project)
+  const sheets = new Set(sheetUses(project).filter((u) => u.symbol).map((u) => u.sheet))
+  const human = (path: string) => useAt(project, path).human
+  for (const sheet of sheets) {
+    const list = usesOfSheet(project, sheet)
+    if (list.length < 2) continue
+    const first = list[0]
+    const file = files.get(sheet) ?? sheet
+    const groups = new Map<string, ComponentInstance[]>()
+    for (const c of project.components) if (list.some((u) => u.path === useOf(c))) (groups.get(copyKey(c)) ?? groups.set(copyKey(c), []).get(copyKey(c))!).push(c)
+    for (const group of groups.values()) {
+      const base = group.find((c) => useOf(c) === first.path)
+      if (!base) continue
+      const was = symbolFlags.get(base.id) ?? base
+      for (const c of group) {
+        if (c === base) continue
+        const now = symbolFlags.get(c.id) ?? c
+        const props = [...new Set([...Object.keys(now.props), ...Object.keys(was.props)])].filter((k) => now.props[k] !== was.props[k])
+        const flags = flagWords(now.flags).join(",") !== flagWords(was.flags).join(",")
+        if (!flags && !props.length) continue
+        const say = (x: ComponentInstance) => [...flagWords(x.flags), ...props.map((k) => `${k} ${x.props[k] ?? "unset"}`)].join(", ") || "no flag"
+        found.push(`${c.ref} on ${human(c.inst ?? "")} has ${say(now)}, but KiCad 9 keeps a sheet used more than once in one file (${file}) with no flags of its own for each use: it says what ${base.ref} on ${human(first.path)} has, ${say(was)}.`)
+      }
+    }
+    if (variants === "keep") continue
+    for (const sym of symbolsOnSheet(project, sheet)) {
+      const was = variantSheetFlags(sym, first.path, variant)
+      for (const u of list.slice(1)) {
+        const now = variantSheetFlags(sym, u.path, variant)
+        if (flagWords(now).join(",") === flagWords(was).join(",")) continue
+        found.push(`The sheet symbol ${sym.name} is ${flagWords(now).join(", ") || "not flagged"} on ${human(u.path)} but ${flagWords(was).join(", ") || "not flagged"} on ${human(first.path)}: it is one node in ${file}, written as ${human(first.path)} has it.`)
+      }
+    }
+  }
+  return found.length > MOST_NOTES ? [...found.slice(0, MOST_NOTES), `${found.length - MOST_NOTES} more parts and sheet symbols differ between the uses of a sheet.`] : found
+}
+
 /** A sheet symbol as KiCad 9 writes it, with a pin for each of its pins and the page of each use of its parent. */
 export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: Vec2) => Vec2, files: Map<string, string>, variants: "keep" | "apply" = "apply"): string {
   const top = toPage({ x: sym.x, y: sym.y + sym.h })
   const origin = toPage({ x: sym.x, y: sym.y })
   // S9: KiCad 9 has no variants, so a sheet symbol's flags are the active variant's on its first use; a project written as KiCad 10 files keeps the variants in each use.
-  const flags = (variants === "keep" ? sym.flags : variantSheetFlags(sym, usesOfSheet(project, sym.sheet)[0]?.path ?? "", activeVariant(project))) ?? {}
+  const flags = sheetFlagsWritten(project, sym, variants) ?? {}
   const stroke = sym.stroke
   const out: string[] = ["  (sheet", `    (at ${mm6(top.x)} ${mm6(top.y)})`, `    (size ${mm6(sym.w * MM)} ${mm6(sym.h * MM)})`]
   out.push(`    (exclude_from_sim ${yn(!!flags.excludeFromSim)})`, `    (in_bom ${yn(!flags.excludeFromBom)})`, `    (on_board ${yn(!flags.notOnBoard)})`, `    (dnp ${yn(!!flags.dnp)})`)

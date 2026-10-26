@@ -4,6 +4,7 @@ import { inPositionFile } from "../model/partFlags"
 import { normalizeAngle } from "../lib/geometry"
 import type { ComponentInstance, Project } from "../model/types"
 import { csvRow } from "./bom"
+import { withRuleAreaFlags } from "../model/ruleAreas"
 import { withSheetFlags } from "../model/sheets"
 
 /**
@@ -19,8 +20,8 @@ export function positionAngle(c: ComponentInstance): number {
 }
 
 export function pnpCsv(source: Project): string {
-  // A flag on a sheet symbol is the flag of every part on the sheet.
-  const project = withSheetFlags(source)
+  // A flag on a sheet symbol is the flag of every part on the sheet, and one on a rule area of every part it touches.
+  const project = withRuleAreaFlags(withSheetFlags(source))
   const lines = [csvRow(["Designator", "Value", "Footprint", "Mid X", "Mid Y", "Rotation", "Layer"])]
   const parts = project.components
     .filter((c) => isPhysical(findPart(c.partId)) && inPositionFile(c))

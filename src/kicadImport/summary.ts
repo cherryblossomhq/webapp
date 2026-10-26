@@ -165,11 +165,16 @@ function groupIgnored(ignored: IgnoredFile[]): ImportSummary["ignored"] {
 
 function broughtOf(p: Project): ImportSummary["brought"] {
   // A part of the schematic that is a symbol only (a power port, a flag) is not counted as a part.
+  const drawings = p.drawings ?? []
+  const directives = drawings.filter((d) => d.type === "directive").length
+  const areas = drawings.filter((d) => d.type === "line" && d.ruleArea).length
   return [
     { label: "parts", count: p.components.length },
     { label: "wires on the schematic", count: p.wires.length },
     { label: "net labels", count: p.labels.length },
-    { label: "notes, shapes and pictures on the sheet", count: p.drawings?.length ?? 0 },
+    { label: "notes, shapes and pictures on the sheet", count: drawings.length - directives - areas },
+    { label: "directive labels (net classes)", count: directives },
+    { label: "rule areas", count: areas },
     { label: "tracks", count: p.traces.length },
     { label: "vias", count: p.vias.length },
     { label: "pours", count: p.zones.length },

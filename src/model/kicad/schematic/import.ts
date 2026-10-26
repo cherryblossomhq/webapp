@@ -1,3 +1,4 @@
+import { settleImportedLabelClasses } from "../../directives"
 import { serializeProject } from "../../projectFile"
 import type { Project } from "../../types"
 import { PROJECT_SIZE_LIMIT_BYTES, formatSize } from "../board/import"
@@ -7,6 +8,7 @@ import { buildSchematicProject, releaseBuild, type SchematicBuild } from "./buil
 import { plainnessOf, settleFor } from "./carried"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, needsOfFile, needsOfProject, refusalMessage, unbuilt, type Need } from "./needs"
 import { legacyEntries, legacyWarnings } from "./legacy/report"
+import { isMiss } from "./libraries"
 import { KicadSchematicReadError } from "./read"
 import { readSchematicTree, type KicadFiles, type SchematicTree } from "./tree"
 
@@ -25,6 +27,11 @@ export interface SchematicImportOptions {
   limitBytes?: number
   /** Most drawn objects (wires, symbols, labels, junctions, flags, text...) a schematic may hold; defaults to `MAX_SCHEMATIC_OBJECTS`. */
   maxObjects?: number
+  /**
+   * S12: symbols of the parts database, by `lib_id`, as the text of each symbol's own `.kicad_sym` file; the last place a symbol the schematic's cache lacks is
+   * looked for, after the project's own libraries. A host that has such a source passes what it fetched for the symbols a first import found missing.
+   */
+  databaseSymbols?: ReadonlyMap<string, string>
   /** The budgets of `readCost`; default to `MAX_LINE_STEPS` and `MAX_CELL_STEPS`. */
   maxLineSteps?: number
   maxCellSteps?: number
@@ -114,7 +121,7 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   const rootPath = typeof input === "string" || input instanceof Uint8Array ? ROOT_NAME : input.root
   let tree: SchematicTree
   try {
-    tree = readSchematicTree(files, rootPath)
+    tree = readSchematicTree(files, rootPath, { databaseSymbols: options.databaseSymbols })
   } catch (e) {
     const message = e instanceof KicadSchematicReadError ? e.message : `The file could not be read: ${e instanceof Error ? e.message : String(e)}`
     // A record of a legacy file that the importer does not know is refused by name, as an unknown node of a `.kicad_sch` is.
@@ -147,7 +154,7 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   const root = tree.files.get(tree.root)!.schematic
   const plain = plainnessOf(list, root.uuid, tree.root)
   const counted = new Map(list.map((f) => [f.path, countPaths(f.schematic.tree)]))
-  const needs = needsOfProject(list.map((f) => needsOfFile(f.schematic, counted.get(f.path)!, plain)))
+  const needs = needsOfProject(list.map((f) => needsOfFile(f.schematic, counted.get(f.path)!, plain, (id) => !isMiss(tree.libraries.find(id)))))
   const missing = unbuilt(needs, built)
   const needed = new Set(missing.map((n) => n.ext))
   const account = mergeAccounts(list.map((f) => accountNodes(f.schematic.tree, f.text, needed, counted.get(f.path), settleFor(plain))))
@@ -217,6 +224,8 @@ export function finishSchematic(gate: SchematicGate, result: SchematicBuild, opt
       report.entries.push({ code: "lossy-measured", severity: "not-brought", object: EXTENSION_NAMES[n.ext] ?? n.ext, why: `${n.why} (${n.ext}); the project is only as exact as the built extension.` })
     }
   }
+  // S8: the net classes the sheet's labels give.
+  result.project = settleImportedLabelClasses(result.project, report)
   if (refusals(report).length) {
     releaseBuild(result)
     return { status: "refused", reason: "inexact", message: refusals(report)[0].why, report, needs: missing, tree }

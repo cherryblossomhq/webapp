@@ -328,7 +328,7 @@ function readGraphic(node: List, unit: number, bodyStyle: number, stamp: number 
   return g
 }
 
-function readLibSymbol(node: List, stamp: number | null): LibSymbol {
+export function readLibSymbol(node: List, stamp: number | null): LibSymbol {
   const name = strAt(node, 1) ?? ""
   const pins: LibPin[] = []
   const graphics: LibGraphic[] = []

@@ -15,9 +15,10 @@ import type { KicadSchematic } from "./types"
  * strokes of a symbol's drawing) and S10 (the drawings kept in the project). Slice 3b-ii built S2 (labels,
  * their shapes, sizes and styles, and the net names KiCad gives), S4 (text, text boxes, drawings,
  * pictures, tables, wire strokes, junction dots and no-connect flags of their own, locked groups) and
- * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated).
+ * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated). S8 is directive labels and rule areas, S12 the symbols a
+ * schematic's cache lacks, taken from the project's own libraries and the parts database (a symbol found in neither is still refused, naming the libraries looked in).
  */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S10"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S10", "S12"])
 
 /** What each extension is, for the sentence "This schematic uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -54,7 +55,7 @@ const GRAPHICS = ["polyline", "rectangle", "circle", "arc", "bezier"]
  * rules (`slices-sch.mjs`) first. `plain` is the plainness of the project the file is in, and
  * decides which of the file's `extend` nodes say nothing the editor does not already.
  */
-export function needsOfFile(s: KicadSchematic, paths: ReadonlyMap<string, number>, plain: Plainness): Need[] {
+export function needsOfFile(s: KicadSchematic, paths: ReadonlyMap<string, number>, plain: Plainness, covered?: (libId: string) => boolean): Need[] {
   const out = new Map<string, Need>()
   const need = (ext: string, why: string, source: Need["source"] = "slices") => {
     if (!out.has(ext)) out.set(ext, { ext, why, source })
@@ -74,8 +75,9 @@ export function needsOfFile(s: KicadSchematic, paths: ReadonlyMap<string, number
   if (s.labels.some((l) => l.kind === "directive") || other("rule_area") > 0) need("S8", "directive labels or rule areas")
   if ([...paths.keys()].some((p) => /variant$/.test(p))) need("S9", "schematic variants")
 
-  // A KiCad 5 schematic whose symbols are in no library the project gives: they are in the parts database or in KiCad's own libraries, which are not read yet.
-  const missing = s.legacy?.symbolSources.filter((x) => x.from === "missing") ?? []
+  // A KiCad 5 schematic whose symbols are in no library the project gives (its own, a `sym-lib-table` library or the parts database): they are in KiCad's own libraries, which the importer does not have.
+  // (S12: a symbol that a library of the project or the parts database has is not missing.)
+  const missing = s.legacy?.symbolSources.filter((x) => x.from === "missing" && !covered?.(x.libId)) ?? []
   if (missing.length) need("S12", `symbols that no library of the project has (${missing.slice(0, 4).map((x) => x.libId).join(", ")}${missing.length > 4 ? ", ..." : ""})`, "importer")
 
   // The importer's own additions: what the model cannot hold that the census rules did not list.

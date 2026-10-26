@@ -36,8 +36,8 @@ const needsOf = (text: string) => {
 const message = (text: string) => refused(importKicadSchematic(text)).message
 
 describe("the gate", () => {
-  it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4) and symbol flags (S7)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S1", "S10", "S2", "S4", "S5", "S6", "S7"])
+  it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4), symbol flags (S7) and directive labels and rule areas (S8)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S1", "S10", "S12", "S2", "S4", "S5", "S6", "S7", "S8"])
   })
 
   it("imports a divider: KiCad's net names are the project's rule now", () => {
@@ -67,9 +67,12 @@ describe("the gate", () => {
         expect(needsOf(withVariant)).toContain("S9")
         return
       }
-      expect(needsOf(text)).toEqual([ext])
-      expect(message(text)).toBe(`This schematic uses ${words}, which are not supported yet.`)
-      expect(refused(importKicadSchematic(text)).report.entries.find((e) => e.code === "unsupported")?.why).toContain(`(${ext})`)
+      // An extension that is built is imported (S8 is); the table's sentence is what a build without it says.
+      const built = new Set([...BUILT_EXTENSIONS].filter((x) => x !== ext))
+      const r = refused(importKicadSchematic(text, { built }))
+      expect(r.needs.map((n) => n.ext)).toEqual([ext])
+      expect(r.message).toBe(`This schematic uses ${words}, which are not supported yet.`)
+      expect(r.report.entries.find((e) => e.code === "unsupported")?.why).toContain(`(${ext})`)
     })
   }
 
@@ -92,8 +95,11 @@ describe("the gate", () => {
     const text = schematic({
       body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
     })
-    expect(needsOf(text)).toEqual(["S3", "S8"])
-    expect(message(text)).toBe("This schematic uses buses and directive labels and rule areas, which are not supported yet.")
+    const r = refused(importKicadSchematic(text, { built: new Set([...BUILT_EXTENSIONS].filter((x) => x !== "S8")) }))
+    expect(r.needs.map((n) => n.ext)).toEqual(["S3", "S8"])
+    expect(r.message).toBe("This schematic uses buses and directive labels and rule areas, which are not supported yet.")
+    // With S8 built the buses are what is left.
+    expect(needsOf(text)).toEqual(["S3"])
   })
 
   it("a schematic that needs nothing the editor lacks is imported: wires, junctions, labels and no-connects", () => {
@@ -417,13 +423,15 @@ describe("the build", () => {
     expect(imported(importKicadSchematic(gnd, { built: SYMBOLS })).project.components[0].props.net).toBe("GND")
   })
 
-  it("a symbol whose drawing is not in the cache needs the symbol sources slice (S12), with the symbol named", () => {
+  it("a symbol whose drawing is in no library either is refused naming the symbol and what to add (S12, built: the libraries of the project are read)", () => {
     const text = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:C", at: "50.8 50.8", ref: "C1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }] })
     const r = refused(importKicadSchematic(text, { built: SYMBOLS }))
-    expect(r.reason).toBe("unsupported")
-    expect(r.message).toBe("This schematic uses symbols from a project's own libraries or the parts database, which are not supported yet.")
-    expect(r.needs.map((n) => n.ext)).toEqual(["S12"])
-    expect(r.report.entries.find((e) => e.code === "symbol-not-in-cache")?.object).toBe("1 symbol (Device:C)")
+    expect(r.reason).toBe("inexact")
+    const e = r.report.entries.find((x) => x.code === "symbol-not-in-cache")!
+    expect(e.object).toBe("1 symbol (Device:C)")
+    expect(e.why).toContain("no symbol library")
+    expect(e.why).toContain("S12")
+    expect(r.message).toBe(e.why)
   })
 
   it("a pin with no number is a pin of the part like any other: it joins a wire, and no pad is paired with it", () => {

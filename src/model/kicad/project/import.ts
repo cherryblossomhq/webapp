@@ -19,6 +19,7 @@ import { decodeNetName } from "../board/read"
 import { refusals, type ImportReport, type NodeAccount } from "../board/report"
 import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
+import { settleImportedLabelClasses } from "../../directives"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
@@ -58,6 +59,8 @@ export interface ProjectImportOptions {
    * `allowLossy`). For measurement and tests only: the importer never imports such a board.
    */
   allowLossyBoard?: boolean
+  /** S12: symbols of the parts database by `lib_id`, as the text of each one's `.kicad_sym` file; see `SchematicImportOptions.databaseSymbols`. */
+  databaseSymbols?: ReadonlyMap<string, string>
 }
 
 /** One pad whose net on the board is not the net of its pin in the schematic. */
@@ -147,7 +150,7 @@ export function pickProjectFiles(files: ProjectFile[]) {
   }
   const rules = dru.find((d) => dirOf(d.path) === dirOf(board?.path ?? "")) ?? dru[0]
   // A KiCad 5 schematic is read with the libraries beside it: every file of the project goes to the reader.
-  return { board, pro, proIsLegacy: !!pro && legacy && !pros.length, root, rules, legacy, sheets: new Map((legacy ? all : sheets).map((s) => [s.path, s.data] as const)), all, notes }
+  return { board, pro, proIsLegacy: !!pro && legacy && !pros.length, root, rules, legacy, sheets: new Map((legacy ? all : [...sheets, ...all.filter((f) => /(^|\/)sym-lib-table$/i.test(f.path) || /\.(kicad_sym|lib)$/i.test(f.path))]).map((s) => [s.path, s.data] as const)), all, notes }
 }
 
 /**
@@ -383,7 +386,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
     report.account = boardResult.report.account
     return { status: "imported", project: boardResult.project, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes }
   }
-  const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes })
+  const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
   const boardAlone = "importing the .kicad_pcb alone gives the board with a schematic generated from its nets"
   if ("refused" in gated) {
     report.entries.push(...gated.refused.report.entries)
@@ -437,6 +440,8 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- one project: the board's copper and lands, the schematic's parts, wires and labels ----------
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
+  // S8: the net classes the schematic's labels give, on top of the project file's.
+  merged.project = settleImportedLabelClasses(merged.project, report)
   lateParts.push(...(merged.project.parts ?? []).filter((p) => !isRegistered(p.id)).map((p) => p.id))
   registerProjectParts(merged.project)
   const pairs = link.links.flatMap((l) => {

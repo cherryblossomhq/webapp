@@ -182,6 +182,8 @@ function buildIndex(rules: DesignRules): ClassIndex {
   }
   const byNet = new Map<string, NetClass>()
   for (const c of classes) for (const n of c.nets) if (!byNet.has(n)) byNet.set(n, c)
+  // S8: the nets a directive label puts in a class are in it as the nets it lists are, after them.
+  for (const c of classes) for (const n of c.labelNets ?? []) if (!byNet.has(n)) byNet.set(n, c)
   const patterns = classes.flatMap((c) => (c.patterns ?? []).map((p) => ({ c, match: patternMatcher(p) })))
   const cache = new Map<string, NetClass | null>()
   const values = new Map<NetClass, ClassValues>(classes.map((c) => [c, resolved(c, base)]))
@@ -247,7 +249,7 @@ export function classPourClearance(rules: DesignRules, zoneNet: string | null | 
 /** Every net that two classes both claim (listed in both, or listed in one and matching a pattern of another), by name, for a reader of KiCad 9 and later files, whose classes combine by priority. */
 export function overlappingNets(rules: Pick<DesignRules, "netClasses">, nets: Iterable<string>): string[] {
   const classes = rules.netClasses ?? []
-  const matchers = classes.map((c) => ({ c, listed: new Set(c.nets), match: (c.patterns ?? []).map(patternMatcher) }))
+  const matchers = classes.map((c) => ({ c, listed: new Set([...c.nets, ...(c.labelNets ?? [])]), match: (c.patterns ?? []).map(patternMatcher) }))
   const out: string[] = []
   for (const net of nets) {
     let claims = 0
@@ -307,7 +309,7 @@ export function setClassField(rules: DesignRules, name: string, field: ClassFiel
     rules,
     (rules.netClasses ?? []).map((c) => {
       if (c.name !== name) return c
-      const { [field]: _gone, ...rest } = c
+      const { [field]: _gone, implicit: _made, ...rest } = c
       return value === undefined ? rest : { ...rest, [field]: value }
     }),
   )
@@ -318,7 +320,7 @@ export function setClassDescription(rules: DesignRules, name: string, descriptio
     rules,
     (rules.netClasses ?? []).map((c) => {
       if (c.name !== name) return c
-      const { description: _gone, ...rest } = c
+      const { description: _gone, implicit: _made, ...rest } = c
       return description ? { ...rest, description } : rest
     }),
   )
@@ -357,7 +359,7 @@ export function setClassPatterns(rules: DesignRules, name: string, patterns: str
     rules,
     (rules.netClasses ?? []).map((c) => {
       if (c.name !== name) return c
-      const { patterns: _gone, ...rest } = c
+      const { patterns: _gone, implicit: _made, ...rest } = c
       return list.length ? { ...rest, patterns: list } : rest
     }),
   )
@@ -371,7 +373,10 @@ export function assignNet(rules: DesignRules, net: string, className: string | n
     rules,
     classes.map((c) => {
       const without = c.nets.filter((n) => n !== net)
-      if (c.name === className) return { ...c, nets: [...without, net] }
+      if (c.name === className) {
+        const { implicit: _made, ...own } = c
+        return { ...own, nets: [...without, net] }
+      }
       return without.length === c.nets.length ? c : { ...c, nets: without }
     }),
   )
@@ -417,6 +422,10 @@ export function normalizeNetClasses(raw: unknown): NetClass[] {
     for (const f of ["traceWidth", "viaDiameter", "viaDrill", "microViaDiameter", "microViaDrill", "diffPairWidth", "diffPairGap"] as const) if (positive(c[f])) cls[f] = c[f]
     const patterns = Array.isArray(c.patterns) ? [...new Set(c.patterns.filter((p): p is string => typeof p === "string" && p !== ""))] : []
     if (patterns.length) cls.patterns = patterns
+    // S8: the nets a directive label puts in the class, and whether a label alone makes the class.
+    const labelNets = Array.isArray(c.labelNets) ? [...new Set(c.labelNets.filter((n): n is string => typeof n === "string" && n !== ""))] : []
+    if (labelNets.length) cls.labelNets = labelNets
+    if (c.implicit === true) cls.implicit = true
     out.push(cls)
   }
   return out

@@ -1,5 +1,6 @@
 import type { ReportEntry } from "../../board/report"
 import type { PlacedSymbol } from "../types"
+import { isMiss } from "../libraries"
 import type { SchematicTree } from "../tree"
 
 // What the import report says about the KiCad 5 side of a project: where each symbol came from,
@@ -22,7 +23,9 @@ export function legacyEntries(tree: SchematicTree): ReportEntry[] {
   for (const f of tree.files.values()) {
     for (const s of f.schematic.legacy?.symbolSources ?? []) {
       symbols++
-      if (s.from === "missing") missing.add(s.libId)
+      // S12: a symbol the project's own `sym-lib-table` libraries (or the parts database) have is not missing: the build takes it from there.
+      if (s.from === "missing" && isMiss(tree.libraries.find(s.libId))) missing.add(s.libId)
+      else if (s.from === "missing") symbols--
       else {
         const k = `${s.from === "cache" ? "the cache" : "the library"} ${s.file}`
         from.set(k, (from.get(k) ?? 0) + 1)
@@ -57,7 +60,7 @@ export function legacyEntries(tree: SchematicTree): ReportEntry[] {
       code: "symbol-not-found",
       severity: "refused",
       object: `${missing.size} symbol${missing.size > 1 ? "s" : ""} (${list([...missing])})`,
-      why: `No library of the project has them (looked in ${tried.length ? list(tried, 6) : "no library: the project has no cache and lists none that is among the files"}${sources.missing.length ? `; the project lists ${list(sources.missing, 6)}, which ${sources.missing.length > 1 ? "are" : "is"} not among the files` : ""}). KiCad takes such symbols from the libraries installed with it, which the importer does not have yet (S12): nothing is guessed.`,
+      why: `No library of the project has them (looked in ${tried.length ? list(tried, 6) : "no library: the project has no cache and lists none that is among the files"}${sources.missing.length ? `; the project lists ${list(sources.missing, 6)}, which ${sources.missing.length > 1 ? "are" : "is"} not among the files` : ""}). KiCad takes such symbols from the libraries installed with it, which are not among the files, and nor is a sym-lib-table library or the parts database's copy of them (S12): add the library to the project (a .lib its .pro lists, or a .kicad_sym its sym-lib-table lists). Nothing is guessed.`,
       count: missing.size,
     })
     for (const b of broken) out.push({ code: "library-unreadable", severity: "refused", object: b.source.file, why: `The library cannot be read: ${b.error}` })

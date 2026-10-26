@@ -15,6 +15,8 @@ export interface Derived {
   driver: Map<number, { name: string; full: string; prio: number; low: boolean; depth: number; strong: boolean }>
   /** The names each group carries. */
   names: Map<number, Set<string>>
+  /** S8: the classes each net that has a pin is in, by the net's name: the Netclass fields of the labels on it, and of a rule area's directive labels for what the area holds. */
+  netClasses: Map<string, Set<string>>
   /** What was left out of the derivation: `buses`. */
   unsupported: Set<string>
   symbols: number

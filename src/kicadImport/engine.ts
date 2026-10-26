@@ -65,7 +65,7 @@ export function fromSchematicResult(r: SchematicImportResult): ImportResult {
 /** Runs the real importers on the files: a board and its schematic through the project importer, a schematic alone through the schematic importer. */
 async function importFiles(f: ProjectBytes, options: ImportOptions): Promise<ImportResult> {
   const [project, schematic] = await Promise.all([import("../model/kicad/project"), import("../model/kicad/schematic")])
-  const beside = [f.projectFile, ...f.schematics, f.rules].flatMap((x) => (x ? [{ path: x.path, data: x.bytes }] : []))
+  const beside = [f.projectFile, ...f.schematics, f.rules, ...f.libraries].flatMap((x) => (x ? [{ path: x.path, data: x.bytes }] : []))
   if (f.board && f.boardPath) {
     // A footprint that is nothing but text is given the box of its ink, which takes KiCad's glyphs: they are loaded for the board's text first.
     await loadKicadFontFor(f.board)
@@ -158,13 +158,14 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
         projectFile: projectFile ? await read(projectFile) : null,
         schematics: await Promise.all(schematics.map(read)),
         rules: rules ? await read(rules) : null,
-        libraries: [],
+        libraries: await Promise.all(files.libraries.map(read)),
       }
       result = await projectImporter(project, importOptions)
       context.used.push(...[project.projectFile, ...project.schematics, project.rules].flatMap((f) => (f ? [f.name] : [])))
+      // S12: a library is read only for a symbol the schematic's own cache lacks, which is the report's to say; the files are used.
+      context.used.push(...project.libraries.map((f) => f.name))
       if (!files.board && project.projectFile) context.notRead.push({ file: project.projectFile.name, why: "its net classes and rules belong to the board; they are read when the board comes with it" })
       if (!files.board && project.rules) context.notRead.push({ file: project.rules.name, why: "its rules belong to the board; they are read when the board comes with it" })
-      for (const f of files.libraries) context.notRead.push({ file: baseName(f.path), why: "the schematic carries its own copy of every symbol it uses, so the library files are not read" })
     } else if (!bytes) {
       return done({ project: null, summary: stoppedSummary("no-board", "A schematic alone cannot be imported here: the schematic importer is not available.", context) })
     } else {

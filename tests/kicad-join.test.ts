@@ -44,7 +44,7 @@ describe("the board writer and the sheets", () => {
   it("the gate keeps a hierarchical schematic import on the converter's path", () => {
     expect(isKicadBoardProject(hierarchical(false))).toBe(false)
   })
-  it("the project file is at version 11", () => {
-    expect(PROJECT_FILE_VERSION).toBe(11)
+  it("the project file is at version 14", () => {
+    expect(PROJECT_FILE_VERSION).toBe(14)
   })
 })

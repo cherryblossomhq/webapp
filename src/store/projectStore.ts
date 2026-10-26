@@ -1,5 +1,6 @@
 import { pruneGroups } from "../model/boardObjects"
 import { followNetRenames } from "../model/copperNets"
+import { settleLabelNetClasses } from "../model/directives"
 import { pruneImportMarks } from "../model/importMarks"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
@@ -12,9 +13,9 @@ const HISTORY_LIMIT = 200
 
 /**
  * Copper that names its net follows a rename, what an import marked that no longer holds is retired, and a group loses what an edit deleted (and goes when nothing is left in it).
- * The first two stop at once for an edit that left the schematic alone, the last for a board with no groups.
+ * The first two stop at once for an edit that left the schematic alone, the group one for a board with no groups, and the classes directive labels give (S8) for a project with none.
  */
-const settleEdit = (before: Project, made: Project) => pruneGroups(pruneImportMarks(before, followNetRenames(before, made)))
+const settleEdit = (before: Project, made: Project) => settleLabelNetClasses(before, pruneGroups(pruneImportMarks(before, followNetRenames(before, made))))
 /** Quiet time after an edit before it is saved, so a burst of edits is one save. */
 const SAVE_DELAY_MS = 600
 /** Waits before retrying a save that didn't arrive (offline, a server error). */

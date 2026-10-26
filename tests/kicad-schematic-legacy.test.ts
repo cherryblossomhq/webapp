@@ -573,15 +573,30 @@ describe("where a symbol comes from", () => {
     expect(readSchematicTree(f, "t.sch").files.get("t.sch")!.schematic.legacy!.symbolSources[0]).toMatchObject({ from: "cache", name: "Device:R" })
   })
 
-  it("a symbol found nowhere refuses naming it and the libraries looked in, never guessed (S12)", () => {
+  it("a symbol found nowhere refuses naming it and the libraries looked in, never guessed (S12, built: a sym-lib-table library or the parts database would have it)", () => {
     const r = imp(mini(comp({ lib: "Device:C", ref: "C1", ts: R1, at: [0, 0] }), LIB_R))
     expect(r.status).toBe("refused")
     if (r.status !== "refused") return
-    expect(r.needs.map((n) => n.ext)).toEqual(["S12"])
+    expect(r.reason).toBe("inexact")
+    expect(r.needs).toEqual([])
     const e = r.report.entries.find((x) => x.code === "symbol-not-found")!
     expect(e.object).toContain("Device:C")
     expect(e.why).toContain("t-cache.lib")
     expect(e.severity).toBe("refused")
+  })
+
+  it("takes a symbol no .lib has from the project's sym-lib-table library, and says where it came from (S12)", () => {
+    const kicadLib = `(kicad_symbol_lib (version 20231120) (generator "kicad_symbol_editor")
+      (symbol "C" (property "Reference" "C" (at 0 0 0) (effects (font (size 1.27 1.27))))
+        (symbol "C_0_1" (polyline (pts (xy -2.032 -0.762) (xy 2.032 -0.762)) (stroke (width 0.508) (type default)) (fill (type none))))
+        (symbol "C_1_1" (pin passive line (at 0 3.81 270) (length 2.794) (name "~" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+          (pin passive line (at 0 -3.81 90) (length 2.794) (name "~" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27))))))))`
+    const f = mini(comp({ lib: "Device:C", ref: "C1", ts: R1, at: [5000, 4000] }), LIB_R, { "sym-lib-table": `(sym_lib_table (version 7) (lib (name "Device")(type "KiCad")(uri "\${KIPRJMOD}/Device.kicad_sym")(options "")(descr "")))`, "Device.kicad_sym": kicadLib })
+    const r = imp(f)
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.report.entries.find((e) => e.code === "symbol-from-library" && /Device:C/.test(e.object))?.object).toContain("Device.kicad_sym")
+    expect(r.report.entries.some((e) => e.code === "symbol-not-found")).toBe(false)
   })
 
   it("a library the project lists that is not among the files is named, and so is one that cannot be read", () => {

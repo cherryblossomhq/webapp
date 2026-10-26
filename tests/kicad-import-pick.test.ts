@@ -24,6 +24,11 @@ describe("what a file is", () => {
     expect(kindOf("x.kicad_pro")).toBe("project")
     expect(kindOf("x.kicad_dru")).toBe("rules")
     expect(kindOf("x-cache.lib")).toBe("library")
+    expect(kindOf("libs/Device.kicad_sym")).toBe("library")
+    // The table that names a project's symbol libraries (S12) has no extension.
+    expect(kindOf("proj/sym-lib-table")).toBe("library")
+    expect(kindOf("proj/Sym-Lib-Table")).toBe("library")
+    expect(kindOf("proj/fp-lib-table")).toBe("other")
     expect(kindOf("README")).toBe("other")
     expect(kindOf("photo.png")).toBe("other")
   })
@@ -222,6 +227,14 @@ describe("legacy files", () => {
     expect(r.files.projectFile?.path).toBe("k5.pro")
     expect(paths(r.files.schematics)).toEqual(["k5.sch"])
     expect(paths(r.files.libraries)).toEqual(["k5-cache.lib", "parts.lib"])
+  })
+})
+
+describe("a project's symbol libraries (S12)", () => {
+  it("takes the sym-lib-table and the .kicad_sym files with the project, from a folder or a zip's entries", async () => {
+    const r = await ready([input("p/p.kicad_pcb"), input("p/p.kicad_sch"), input("p/sym-lib-table"), input("p/libs/Device.kicad_sym"), input("p/fp-lib-table")])
+    expect(paths(r.files.libraries)).toEqual(["p/libs/Device.kicad_sym", "p/sym-lib-table"])
+    expect(paths(r.ignored.map((i) => ({ path: i.path })) as InputFile[])).toContain("p/fp-lib-table")
   })
 })
 

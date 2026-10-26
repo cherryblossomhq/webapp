@@ -9,7 +9,7 @@ import { EXTENSION_NAMES as SCHEMATIC_NAMES } from "../src/model/kicad/schematic
 import { EXTENSION_NAMES } from "../src/model/kicad/board"
 import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeWorkers, zipEntry } from "./kicad-import-helpers"
-import { divider, schematic } from "./kicad-schematic-fixtures"
+import { divider, LIB_R, schematic } from "./kicad-schematic-fixtures"
 
 // The job and its worker protocol, with the real importer behind it: every outcome the report
 // screen has to draw (imported, imported with report entries, refused for missing extensions,
@@ -183,6 +183,23 @@ describe("the schematic and project importer", () => {
     const o = outcomeOf(await run(dropped))
     expect(o.summary.kind).toBe("project")
     expect(o.project?.components.some((c) => c.ref === "R1")).toBe(true)
+  })
+
+  it("a schematic whose cache lacks its symbols is imported from the sym-lib-table and the .kicad_sym files dropped with it (S12)", async () => {
+    const lib = `(kicad_symbol_lib (version 20231120) (generator "kicad_symbol_editor")
+${LIB_R.replace('"Device:R"', '"R"')}
+)`
+    const text = schematic({ libs: [], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }], labels: ["A 50.8 46.99 0", "B 50.8 54.61 0"] })
+    const table = '(sym_lib_table (version 7) (lib (name "Device")(type "KiCad")(uri "${KIPRJMOD}/libs/Device.kicad_sym")(options "")(descr "")))'
+    const files = [entry("p/p.kicad_sch", text), entry("p/sym-lib-table", table), entry("p/libs/Device.kicad_sym", lib)]
+    const o = outcomeOf(await run(files))
+    expect(o.summary.status).toBe("imported")
+    expect(o.project?.components.map((c) => c.ref)).toEqual(["R1"])
+    expect(o.summary.used).toEqual(expect.arrayContaining(["sym-lib-table", "Device.kicad_sym"]))
+    // Without them the same schematic is refused, naming the symbol and what to add.
+    const alone = outcomeOf(await run([entry("p/p.kicad_sch", text)]))
+    expect(alone.summary.status).toBe("refused")
+    expect(alone.project).toBeNull()
   })
 
   it("a lone .kicad_sch is a schematic-only project, said in its own words", async () => {

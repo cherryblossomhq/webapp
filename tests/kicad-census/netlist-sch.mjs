@@ -165,6 +165,13 @@ const unitLetter = (n) => {
 const decode = (s) => s.replace(/\{slash\}/g, "/")
 
 /**
+ * The classes a label names by its fields called Netclass (KiCad 9 and 10 read the names Netclass and Net Class; a development build also reads the
+ * translations of Net Class, which a file written by a program in another language has: the French one is in the corpus).
+ */
+const NETCLASS_NAMES = new Set(["Netclass", "Net Class", "Classe d'Equipot"])
+const netclassFields = (node) => [...new Set(kids(node, "property").filter((p) => NETCLASS_NAMES.has(p[1]) && typeof p[2] === "string" && p[2] !== "").map((p) => p[2]))]
+
+/**
  * Derives the nets of a project. `readFile(path)` gives a file's text or null.
  * Returns `{ pins: Map<"<board path>#<pin number>", group>, names: Map<group, Set<name>>, unsupported: Set<string> }`.
  */
@@ -187,6 +194,10 @@ export function deriveNets(rootFile, opts = {}) {
   const pinDrivers = []
   const labelItems = []
   const ncPinItems = new Set()
+  // S8: what the net classes are worked out from: every directive label and every label with a net class field, the rule areas, and where each wire, pin and label is.
+  const classSources = []
+  const ruleAreas = []
+  const geo = { wires: [], pins: [], labels: [] }
 
   const sheetNames = new Map([["", ""]]) // the instance path -> the sheets' names from the root, as KiCad writes them in a net name
   const walk = (file, chain, ancestors, parentSheet) => {
@@ -220,6 +231,7 @@ export function deriveNets(rootFile, opts = {}) {
       const a = { x: numAt(pts[0], 1), y: numAt(pts[0], 2) }
       const b = { x: numAt(pts[1], 1), y: numAt(pts[1], 2) }
       wires.push({ item, a, b })
+      geo.wires.push({ inst, item, a, b, width: numAt(kid(kid(w, "stroke"), "width"), 1, 0) })
       add(a.x, a.y, item)
       add(b.x, b.y, item)
       bodyItems.push({ x: a.x, y: a.y, item, kind: "wireEnd", wire: item })
@@ -244,6 +256,9 @@ export function deriveNets(rootFile, opts = {}) {
         bodyItems.push({ x: numAt(at, 1), y: numAt(at, 2), item, kind: "label", plain: true })
         labelNames.push({ item, kind, text: decode(l[1]) })
         labelItems.push(item)
+        geo.labels.push({ inst, item, x: numAt(at, 1), y: numAt(at, 2) })
+        const own = netclassFields(l)
+        if (own.length) classSources.push({ inst, item, classes: own, own: true })
       }
     }
     for (const kind of ["netclass_flag", "directive_label"]) {
@@ -253,8 +268,10 @@ export function deriveNets(rootFile, opts = {}) {
         uf.find(item)
         add(numAt(at, 1), numAt(at, 2), item)
         bodyItems.push({ x: numAt(at, 1), y: numAt(at, 2), item, kind: "label" })
+        classSources.push({ inst, item, x: numAt(at, 1), y: numAt(at, 2), classes: netclassFields(l), own: false })
       }
     }
+    for (const ra of kids(s, "rule_area")) ruleAreas.push({ inst, pts: kids(kid(kid(ra, "polyline"), "pts"), "xy").map((p) => [numAt(p, 1), numAt(p, 2)]) })
     // sheet pins of the sheets drawn on this sheet
     const children = []
     for (const sh of kids(s, "sheet")) {
@@ -336,6 +353,7 @@ export function deriveNets(rootFile, opts = {}) {
           if (etype !== "no_connect") {
             add(wx, wy, item)
             bodyItems.push({ x: wx, y: wy, item, kind: "pin" })
+            geo.pins.push({ inst, item, x: wx, y: wy })
           }
           out.pinsTotal++
           for (const n of padNumbers(number)) pinItems.push({ item, key: `${boardPath}#${n}`, pin: n })
@@ -512,7 +530,72 @@ export function deriveNets(rootFile, opts = {}) {
     return pinNames.get(g) ?? null
   }
   out.groupOf = (key) => out.pins.get(key)
+  out.netClasses = netClassesOf()
   return out
+
+  /**
+   * S8: the classes each net is in, by the net's name, for the nets that have a pin. KiCad's rule (`CONNECTION_GRAPH::GetNetclassesForDriver`,
+   * connection_graph.cpp): every item of a net can name a class by a field called Netclass, and the net is in all of them; and a directive label on the
+   * edge of a rule area gives its classes to the wires, labels and pins inside the area (the wires by the segment of their width, the others by their point).
+   */
+  function netClassesOf() {
+    const result = new Map()
+    const claim = (item, cls) => {
+      const g = groupId.get(uf.find(item))
+      if (g === undefined) return
+      const name = out.netName(g)
+      if (name === null) return
+      if (!result.has(name)) result.set(name, new Set())
+      result.get(name).add(cls)
+    }
+    for (const s of classSources) for (const cls of s.classes) claim(s.item, cls)
+    const inside = (pts, x, y) => {
+      // On the edge counts as inside.
+      let inn = false
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [xi, yi] = pts[i]
+        const [xj, yj] = pts[j]
+        const cross = (xj - xi) * (y - yi) - (yj - yi) * (x - xi)
+        const within = Math.min(xi, xj) - 1e-9 <= x && x <= Math.max(xi, xj) + 1e-9 && Math.min(yi, yj) - 1e-9 <= y && y <= Math.max(yi, yj) + 1e-9
+        if (Math.abs(cross) < 1e-9 && within) return true
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inn = !inn
+      }
+      return inn
+    }
+    const distToSeg = (px, py, ax, ay, bx, by) => {
+      const dx = bx - ax
+      const dy = by - ay
+      const len2 = dx * dx + dy * dy
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
+      return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+    }
+    const segSeg = (a, b, c, d) => {
+      const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+      const o1 = o(a, b, c)
+      const o2 = o(a, b, d)
+      const o3 = o(c, d, a)
+      const o4 = o(c, d, b)
+      return o1 * o2 < 0 && o3 * o4 < 0
+    }
+    for (const area of ruleAreas) {
+      const edge = (x, y) => area.pts.some((p, i) => distToSeg(x, y, p[0], p[1], area.pts[(i + 1) % area.pts.length][0], area.pts[(i + 1) % area.pts.length][1]) <= 5e-6)
+      const classes = [...new Set(classSources.filter((s) => !s.own && s.inst === area.inst && edge(s.x, s.y)).flatMap((s) => s.classes))]
+      if (!classes.length) continue
+      for (const w of geo.wires.filter((w) => w.inst === area.inst)) {
+        const half = (w.width > 0 ? w.width : 0.1524) / 2
+        const a = [w.a.x, w.a.y]
+        const b = [w.b.x, w.b.y]
+        const hit = inside(area.pts, a[0], a[1]) || inside(area.pts, b[0], b[1]) || area.pts.some((p, i) => {
+          const q = area.pts[(i + 1) % area.pts.length]
+          return segSeg(a, b, p, q) || distToSeg(p[0], p[1], a[0], a[1], b[0], b[1]) < half || distToSeg(q[0], q[1], a[0], a[1], b[0], b[1]) < half
+        })
+        if (hit) for (const cls of classes) claim(w.item, cls)
+      }
+      for (const l of geo.labels.filter((l) => l.inst === area.inst)) if (inside(area.pts, l.x, l.y)) for (const cls of classes) claim(l.item, cls)
+      for (const p of geo.pins.filter((p) => p.inst === area.inst)) if (inside(area.pts, p.x, p.y)) for (const cls of classes) claim(p.item, cls)
+    }
+    return result
+  }
 }
 
 /** The footprints of a board with each pad's net, from the raw file. */

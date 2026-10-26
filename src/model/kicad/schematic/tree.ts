@@ -1,6 +1,7 @@
 import { newReport, type ImportReport } from "../board/report"
 import { isLegacySchematic, readLegacySchematic } from "./legacy/read"
 import { LegacySources } from "./legacy/sources"
+import { SymbolLibraries, type SymbolLibraryOptions } from "./libraries"
 import { KicadSchematicReadError, readKicadSchematic } from "./read"
 import type { KicadSchematic, SchSheet, SheetFile } from "./types"
 
@@ -62,6 +63,8 @@ export interface SchematicTree {
   report: ImportReport
   /** The libraries a KiCad 5 schematic's symbols are searched in, when the project has legacy sheets. */
   legacy: LegacySources | null
+  /** S12: the project's own symbol libraries (`sym-lib-table` and the `.kicad_sym` files) and the parts database, where a symbol is looked for when the schematic's cache lacks it. */
+  libraries: SymbolLibraries
 }
 
 /** `a\b/./c/../d` as `a/b/d`; a path that climbs out of the folder keeps its `..`. */
@@ -104,11 +107,11 @@ export class FileIndex {
 const describe = (name: string | null, file: string) => `${name ? `the sheet "${name}"` : "a sheet"} (${file})`
 
 /** Reads a root schematic and every sheet below it. Throws `KicadSchematicReadError` for a root that cannot be read; a sub-sheet that cannot be is a `SheetError`. */
-export function readSchematicTree(files: KicadFiles, rootPath: string): SchematicTree {
+export function readSchematicTree(files: KicadFiles, rootPath: string, options: SymbolLibraryOptions = {}): SchematicTree {
   const index = new FileIndex(files)
   const rootFound = index.find(rootPath)
   if (!rootFound) throw new KicadSchematicReadError("missing-root", `The schematic ${rootPath} is not among the files.`)
-  const tree: SchematicTree = { root: rootFound.path, files: new Map(), uses: [], errors: [], instances: [], report: newReport(), legacy: null }
+  const tree: SchematicTree = { root: rootFound.path, files: new Map(), uses: [], errors: [], instances: [], report: newReport(), legacy: null, libraries: new SymbolLibraries(index, rootFound.path, options) }
   const tried = new Map<string, "ok" | "bad">()
 
   const load = (path: string, data: string | Uint8Array): KicadSchematic => {

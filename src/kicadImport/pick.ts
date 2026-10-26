@@ -27,7 +27,7 @@ const KINDS: Record<string, FileKind> = {
 }
 
 /** The extensions the import button offers. */
-export const ACCEPTED_EXTENSIONS = [".kicad_pcb", ".kicad_sch", ".kicad_pro", ".kicad_dru", ".sch", ".lib", ".pro", ".brd", ".zip"] as const
+export const ACCEPTED_EXTENSIONS = [".kicad_pcb", ".kicad_sch", ".kicad_pro", ".kicad_dru", ".sch", ".lib", ".kicad_sym", ".pro", ".brd", ".zip"] as const
 
 /**
  * The largest single file the import reads. A board of 40 MB is normal, and the import takes about
@@ -55,6 +55,8 @@ const stemOf = (path: string) => {
 
 export function kindOf(path: string): FileKind {
   const name = baseName(path).toLowerCase()
+  // The table that names a project's symbol libraries (S12) has no extension.
+  if (name === "sym-lib-table") return "library"
   const dot = name.lastIndexOf(".")
   return dot < 0 ? "other" : (KINDS[name.slice(dot)] ?? "other")
 }

@@ -47,6 +47,8 @@ export interface SheetInstancePath {
   file: string
   /** The uuids of the sheet symbols from the root down; empty for the root sheet. */
   chain: string[]
+  /** The sheet symbols themselves, from the root down (a uuid can be written twice in a project that was copied by hand). */
+  symbols: SchSheet[]
   /** The sheet symbol (null for the root). */
   sheet: SchSheet | null
 }
@@ -120,14 +122,14 @@ export function readSchematicTree(files: KicadFiles, rootPath: string): Schemati
   tried.set(rootFound.path, "ok")
 
   const root = tree.files.get(rootFound.path)!.schematic
-  tree.instances.push({ path: `/${root.uuid}`, file: rootFound.path, chain: [], sheet: null })
+  tree.instances.push({ path: `/${root.uuid}`, file: rootFound.path, chain: [], symbols: [], sheet: null })
 
   // Depth first, one instance at a time: a file that is its own ancestor is a cycle. A hierarchy too wide to expand is said once and not walked further.
   let stop = false
   // Sets, not scans of the lists: a hostile file can name tens of thousands of sheets.
   const errorKeys = new Set<string>()
   const usedSheets = new Set<SchSheet>()
-  const expand = (file: string, instancePath: string, chain: string[], ancestors: string[]) => {
+  const expand = (file: string, instancePath: string, chain: string[], chainSymbols: SchSheet[], ancestors: string[]) => {
     const schematic = tree.files.get(file)!.schematic
     for (const sheet of schematic.sheets) {
       if (stop) return
@@ -181,12 +183,13 @@ export function readSchematicTree(files: KicadFiles, rootPath: string): Schemati
         continue
       }
       const childChain = [...chain, sheet.uuid]
+      const childSymbols = [...chainSymbols, sheet]
       const childPath = `${instancePath}/${sheet.uuid}`
-      tree.instances.push({ path: childPath, file: found.path, chain: childChain, sheet })
-      expand(found.path, childPath, childChain, [...ancestors, file])
+      tree.instances.push({ path: childPath, file: found.path, chain: childChain, symbols: childSymbols, sheet })
+      expand(found.path, childPath, childChain, childSymbols, [...ancestors, file])
     }
   }
-  expand(rootFound.path, `/${root.uuid}`, [], [])
+  expand(rootFound.path, `/${root.uuid}`, [], [], [])
   return tree
 }
 

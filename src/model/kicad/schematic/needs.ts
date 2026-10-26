@@ -17,11 +17,12 @@ import type { KicadSchematic } from "./types"
  * pictures, tables, wire strokes, junction dots and no-connect flags of their own, locked groups) and
  * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated).
  */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S2", "S4", "S5", "S6", "S7", "S10"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S10"])
 
 /** What each extension is, for the sentence "This schematic uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
   S1: "hierarchical sheets",
+  S1T: "several top level sheets (a KiCad 10 project with more than one root sheet)",
   S2: "labels and net names as KiCad has them",
   S3: "buses",
   S4: "annotations and styled wires",
@@ -44,7 +45,7 @@ export interface Need {
   source: "slices" | "importer"
 }
 
-const extNumber = (ext: string) => Number(ext.slice(1)) + (ext.startsWith("X") ? 100 : 0)
+const extNumber = (ext: string) => (ext === "S1T" ? 1.5 : Number(ext.slice(1)) + (ext.startsWith("X") ? 100 : 0))
 
 const GRAPHICS = ["polyline", "rectangle", "circle", "arc", "bezier"]
 

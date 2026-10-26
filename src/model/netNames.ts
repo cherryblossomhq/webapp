@@ -1,6 +1,6 @@
 import { expandPinNumber } from "./pinNumbers"
 import { symbolOf, unitLetters } from "./symbolDrawing"
-import type { ComponentInstance, Net, PartDef } from "./types"
+import type { ComponentInstance, LabelKind, Net, PartDef } from "./types"
 
 // S2: the names KiCad gives nets, for a project that is named that way (`Project.netNames`).
 //
@@ -16,7 +16,7 @@ import type { ComponentInstance, Net, PartDef } from "./types"
 // KiCad writes `{slash}` is `/`.
 
 /** The priority of each kind of driver, as `CONNECTION_SUBGRAPH::PRIORITY` numbers them. */
-export const DRIVER = { pin: 1, label: 4, localPower: 5, globalPower: 6, globalLabel: 7 } as const
+export const DRIVER = { pin: 1, sheetPin: 2, hierLabel: 3, label: 4, localPower: 5, globalPower: 6, globalLabel: 7 } as const
 
 /** What a net's name came from: the text to type to get it back, and which kind of label or symbol. */
 export interface NameDriver {
@@ -26,8 +26,10 @@ export interface NameDriver {
   /** What the driver is written as: the label's text, or the power symbol's net. */
   text: string
   kind: "local" | "global"
-  /** A label or a power symbol. */
-  from: "label" | "power"
+  /** A label, a power symbol, or a pin of a sheet symbol (S1: the lowest of the drivers, below a hierarchical label). */
+  from: "label" | "power" | "pin"
+  /** The kind of label a label driver is, where it is a hierarchical one (a `local` for naming, since it puts the sheet's path in front). */
+  labelKind?: LabelKind
 }
 
 /** The driver KiCad picks among those of a net: the highest priority, then `-Pad` names last, then the name that sorts first. */

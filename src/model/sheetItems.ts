@@ -88,8 +88,8 @@ export function normalizeLabel(raw: unknown): NetLabel | null {
   if (!isObject(raw) || typeof raw.id !== "string" || typeof raw.name !== "string" || !finite(raw.x, raw.y)) return null
   const { kind, shape, look, fields, fieldsAutoplaced, ...rest } = raw
   const out = { ...rest, rot: ROTATIONS.includes(raw.rot as number) ? raw.rot : 0 } as unknown as NetLabel
-  if (kind === "local" || kind === "global") out.kind = kind
-  if (typeof shape === "string" && SHAPES.has(shape) && out.kind === "global") out.shape = shape as NetLabel["shape"]
+  if (kind === "local" || kind === "global" || kind === "hierarchical") out.kind = kind
+  if (typeof shape === "string" && SHAPES.has(shape) && (out.kind === "global" || out.kind === "hierarchical")) out.shape = shape as NetLabel["shape"]
   const l = normalizeLook(look)
   if (l) out.look = l
   const f = normalizeLabelFields(fields)

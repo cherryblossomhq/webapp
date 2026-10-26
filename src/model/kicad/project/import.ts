@@ -417,9 +417,9 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
       report.entries.push({ code: "symbol-not-on-board", severity: "note", object: `${l.record.reference || "a symbol"}`, why: `The schematic marks ${l.record.reference || "this symbol"} as not on the board, but the board has its footprint. The footprint is kept as a part of the board, not linked to the symbol.` })
       continue
     }
-    if (c && !symbolFootprint.has(l.record.symbol)) symbolFootprint.set(l.record.symbol, { land: c.footprint, pcb: c.pcb, index: l.footprint })
+    if (c && !symbolFootprint.has(l.record)) symbolFootprint.set(l.record, { land: c.footprint, pcb: c.pcb, index: l.footprint })
   }
-  const sch = buildSchematicProject(gate.tree, gate.report, { name: options.name, source: options.source, built, footprintFor: (s) => symbolFootprint.get(s) })
+  const sch = buildSchematicProject(gate.tree, gate.report, { name: options.name, source: options.source, built, footprintFor: (r) => symbolFootprint.get(r) })
   const finished = finishSchematic(gate, sch, { limitBytes: options.limitBytes, built })
   if (finished.status === "refused") {
     report.entries.push(...gate.report.entries.filter((e) => !report.entries.includes(e)))
@@ -442,11 +442,11 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   const pairs = link.links.flatMap((l) => {
     const rec = l.record
     if (!rec) return []
-    const c = sch.bySymbol.get(rec.symbol)
-    const owner = symbolFootprint.get(rec.symbol)
+    const c = sch.byRecord.get(rec)
+    const owner = symbolFootprint.get(rec)
     if (!c || !owner || owner.index !== l.footprint) return []
     // The other units of the part are components too: a pad may be a pin of any of them.
-    const units = l.units.map((u) => sch.bySymbol.get(u.symbol)).filter((x): x is ComponentInstance => !!x)
+    const units = l.units.map((u) => sch.byRecord.get(u)).filter((x): x is ComponentInstance => !!x)
     return [{ fp: kicadBoard.footprints[l.footprint], components: [c, ...units.filter((x) => x !== c)] }]
   })
   // Every other footprint is a part of the board with its own nets, labelled as the board's generated schematic labels them: its pads are compared too.
@@ -461,8 +461,8 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   }
   const covered = new Set<object>()
   for (const l of link.links) {
-    if (!l.record || !sch.bySymbol.has(l.record.symbol)) continue
-    const owner = symbolFootprint.get(l.record.symbol)
+    if (!l.record || !sch.byRecord.has(l.record)) continue
+    const owner = symbolFootprint.get(l.record)
     if (!owner || owner.index !== l.footprint) continue
     covered.add(l.record.symbol)
     for (const u of l.units) covered.add(u.symbol)
@@ -499,8 +499,8 @@ export function projectNeeds(pro: KicadPro | null, rules: KicadRules | null): Ne
     const nonEmpty = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === "object" && v !== null ? Object.keys(v).length > 0 : false)
     if (nonEmpty(schematic.bus_aliases)) need("S3", "bus aliases in the project file")
     if (nonEmpty(schematic.variants)) need("S9", "schematic variants in the project file")
-    if (nonEmpty(schematic.top_level_sheets)) need("S1", "several top level sheets")
-    if (pro.sheets.length > 1) need("S1", "the project's list of sheets")
+    // One top level sheet is the root the importer already picks; several are KiCad 10's virtual root, which the sheet tree does not have yet.
+    if (Array.isArray(schematic.top_level_sheets) && schematic.top_level_sheets.length > 1) need("S1T", "several top level sheets")
     if (Object.keys(pro.textVariables).length) need("S4", "text variables")
     for (const k of ["component_class_settings", "tuning_profiles"]) {
       const v = j[k] as Record<string, unknown> | undefined
@@ -531,7 +531,7 @@ function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, 
   if (loose.length) {
     report.entries.push({ code: "footprint-without-symbol", severity: "note", object: `${loose.length} footprint${loose.length > 1 ? "s" : ""} (${loose.slice(0, 5).map((l) => l.ref || "(no reference)").join(", ")}${loose.length > 5 ? ", ..." : ""})`, why: "No symbol in the schematic claims them. They stay parts with a footprint and no symbol: mounting holes, logos, or parts the schematic no longer has.", count: loose.length })
   }
-  const unplaced = [...sch.bySymbol].filter(([s, comp]) => !symbolFootprint.has(s) && comp.footprint === "" && s.props.some((p) => p.name === "Footprint" && p.value !== ""))
+  const unplaced = [...sch.byRecord].filter(([r, comp]) => !symbolFootprint.has(r) && comp.footprint === "" && r.symbol.props.some((p) => p.name === "Footprint" && p.value !== ""))
   if (unplaced.length) {
     report.entries.push({ code: "symbol-without-footprint", severity: "note", object: `${unplaced.length} symbol${unplaced.length > 1 ? "s" : ""} (${unplaced.slice(0, 5).map(([, c]) => c.ref).join(", ")}${unplaced.length > 5 ? ", ..." : ""})`, why: "The schematic gives these a footprint, but the board has no footprint linked to them: they are parts of the schematic that are not on the board.", count: unplaced.length })
   }
@@ -631,7 +631,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const linkedBoard = new Set<string>()
   for (const l of link.links) {
     if (!l.record) continue
-    const owner = symbolFootprint.get(l.record.symbol)
+    const owner = symbolFootprint.get(l.record)
     if (owner && owner.index === l.footprint) {
       const c = componentOf.get(l.footprint)
       if (c) linkedBoard.add(c.id)
@@ -643,16 +643,16 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const { nets: schNets, pinNet: schPinNet } = computeConnectivity(sch.project)
   const schName = new Map(schNets.map((n) => [n.id, bareName(n)]))
   // A label that joins a net of the schematic is of the kind that net's own label is (a local label joins by its text); any other is a global one, which names a net exactly as written.
-  const kindOf = new Map<string, "local" | "global">(schNets.flatMap((n) => (n.label ? [[n.label.text, n.label.kind] as const] : [])))
+  const kindOf = new Map<string, "local" | "global">(schNets.flatMap((n) => (n.label ? [[n.label.text, n.label.kind === "global" ? "global" : "local"] as const] : [])))
   const rename = new Map<string, string>()
   /** The nets of the schematic that no label or power symbol names and that a loose pad of the board is on: each needs a label of its name on the schematic side, so the pad joins it. */
   const anchored = new Map<string, { name: string; pin: { componentId: string; pin: string } }>()
   const schNetOf = new Map(schNets.map((n) => [n.id, n]))
   for (const l of link.links) {
     if (!l.record) continue
-    const owner = symbolFootprint.get(l.record.symbol)
+    const owner = symbolFootprint.get(l.record)
     if (!owner || owner.index !== l.footprint) continue
-    const comps = [sch.bySymbol.get(l.record.symbol), ...l.units.map((u) => sch.bySymbol.get(u.symbol))].filter((x): x is ComponentInstance => !!x)
+    const comps = [sch.byRecord.get(l.record), ...l.units.map((u) => sch.byRecord.get(u))].filter((x): x is ComponentInstance => !!x)
     for (const pad of board.footprints[l.footprint].pads) {
       if (!pad.number || !pad.netRaw || rename.has(pad.netRaw)) continue
       for (const c of comps) {
@@ -686,9 +686,9 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const newPartOf = new Map<string, string>()
   for (const l of link.links) {
     if (!l.record) continue
-    const owner = symbolFootprint.get(l.record.symbol)
+    const owner = symbolFootprint.get(l.record)
     const old = componentOf.get(l.footprint)
-    const next = sch.bySymbol.get(l.record.symbol)
+    const next = sch.byRecord.get(l.record)
     if (owner && old && next && owner.index === l.footprint) newPartOf.set(`${old.partId}|${old.footprint}`, next.partId)
   }
   for (const m of boardProject.models ?? []) {
@@ -703,8 +703,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const differing: { ref: string; words: string[] }[] = []
   for (const l of link.links) {
     if (!l.record) continue
-    const owner = symbolFootprint.get(l.record.symbol)
-    const next = sch.bySymbol.get(l.record.symbol)
+    const owner = symbolFootprint.get(l.record)
+    const next = sch.byRecord.get(l.record)
     const old = componentOf.get(l.footprint)
     if (!owner || !next || !old || owner.index !== l.footprint) continue
     boardOf.set(next.id, old)
@@ -712,7 +712,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     if (differ.length) differing.push({ ref: next.ref, words: differ })
     joinedOf.set(next.id, flags)
     for (const u of l.units) {
-      const unit = sch.bySymbol.get(u.symbol)
+      const unit = sch.byRecord.get(u)
       if (unit && unit !== next) joinedOf.set(unit.id, flags)
     }
   }

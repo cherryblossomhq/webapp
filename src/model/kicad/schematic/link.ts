@@ -34,8 +34,18 @@ export interface SymbolRecord {
 
 const referenceOf = (s: PlacedSymbol) => s.props.find((p) => p.name === "Reference")?.value ?? ""
 
-/** Every use of every symbol of the tree: one record per instance path. */
+const recordCache = new WeakMap<SchematicTree, SymbolRecord[]>()
+
+/** Every use of every symbol of the tree: one record per instance path. The same tree gives the same records, so a map keyed by one works for the link and the build. */
 export function symbolRecords(tree: SchematicTree): SymbolRecord[] {
+  const hit = recordCache.get(tree)
+  if (hit) return hit
+  const made = recordsOf(tree)
+  recordCache.set(tree, made)
+  return made
+}
+
+function recordsOf(tree: SchematicTree): SymbolRecord[] {
   const out: SymbolRecord[] = []
   const rootFile = tree.files.get(tree.root)
   const rootUuid = rootFile?.schematic.uuid ?? ""
@@ -184,8 +194,10 @@ export function linkFootprints(tree: SchematicTree, footprints: FootprintToLink[
     counts[how]++
     const record = hit.record
     // Units of one part: the other symbols with this reference on the same sheet use.
-    const mates = record.reference ? (bySheetRef.get(`${record.sheetPath}\n${record.reference}`) ?? []) : [record]
-    const units = [record, ...mates.filter((m) => m !== record)]
+    // The other units of a part may be on another sheet: a reference is the project's, unless no annotation gave it. Each unit once.
+    const mates = record.reference ? (/[?*]$/.test(record.reference) ? (bySheetRef.get(`${record.sheetPath}\n${record.reference}`) ?? []) : (byRef.get(record.reference) ?? [])) : [record]
+    const units = [record]
+    for (const m of mates) if (m !== record && (m.sheetPath === record.sheetPath || !units.some((x) => x.unit === m.unit))) units.push(m)
     used.set(record.symbol, (used.get(record.symbol) ?? 0) + 1)
     links.push({ footprint: index, ref: fp.ref, how, record, units, ambiguous: hit.ambiguous })
   })

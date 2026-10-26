@@ -3,7 +3,8 @@ import { numeric, plain } from "../lib/natural"
 import { findPart } from "./library"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import { DRIVER, NO_NET, bestDriver, driverName, pinFacts, pinNetName, unitSuffix, type NameDriver, type PinFact } from "./netNames"
-import type { ComponentInstance, Net, PartDef, Project, Vec2 } from "./types"
+import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses, symbolsOnSheet, useAt, useOfSymbol, type SheetUse } from "./sheets"
+import type { ComponentInstance, Net, NetLabel, PartDef, Project, Vec2, Wire } from "./types"
 
 export class UnionFind {
   private parent = new Map<string, string>()
@@ -44,6 +45,11 @@ export interface SchematicConnectivity {
   ncPins: WorldPin[]
   /** Net names that were merged with a differently named net. */
   conflicts: { names: string[]; netId: string }[]
+  /**
+   * S1: for a project with sheet symbols, what each use of a sheet has: its wires' and labels' nets by id and its junction dots. A sheet used
+   * twice has the same wire ids in both uses, so the plain maps above hold only the first. Absent for a project of one sheet.
+   */
+  byUse?: { wireNet: Map<string, Map<string, string>>; labelNet: Map<string, Map<string, string>>; junctions: Map<string, Vec2[]> }
 }
 
 export const pinKey = (componentId: string, pin: string) => `${componentId}:${pin}`
@@ -113,9 +119,36 @@ function push<T>(map: Map<number, T[]>, k: number, v: T) {
 
 const pk = (p: Vec2) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`
 
+/** The use of a sheet the editor's own single sheet is: the root, which KiCad writes `/`. */
+const ROOT_USE: SheetUse = { path: "", sheet: ROOT_SHEET, symbol: null, parent: null, name: "", human: "/", depth: 0, page: "1" }
+
 export function computeConnectivity(project: Project): SchematicConnectivity {
   // S2: a project named as KiCad names it picks each net's name by its driver (`netNames.ts`); any other by the editor's rule.
   const kicad = project.netNames
+  // S1: with sheet symbols the project is a tree of uses of sheets; a view shows one use of it. Local names, wires and labels are per use.
+  const hier = isHierarchical(project)
+  const scoped = project.scope !== undefined
+  const uses: SheetUse[] = scoped ? [useAt(project, project.scope!)] : hier ? sheetUses(project) : [ROOT_USE]
+  const useByPath = new Map(uses.map((u) => [u.path, u]))
+  const humanOf = (path: string) => (path === "" ? "/" : (useByPath.get(path)?.human ?? useAt(project, path).human))
+  const wiresOf = new Map<string, Wire[]>()
+  const labelsOf = new Map<string, NetLabel[]>()
+  if (hier || scoped) {
+    for (const w of project.wires) (wiresOf.get(sheetIdOf(w)) ?? wiresOf.set(sheetIdOf(w), []).get(sheetIdOf(w))!).push(w)
+    for (const l of project.labels) (labelsOf.get(sheetIdOf(l)) ?? labelsOf.set(sheetIdOf(l), []).get(sheetIdOf(l))!).push(l)
+  } else {
+    wiresOf.set(ROOT_SHEET, project.wires)
+    labelsOf.set(ROOT_SHEET, project.labels)
+  }
+  /** Where an item of a use is a node: the root's keep the plain key, so a project with one sheet is worked out as it always was. */
+  const wk = (inst: string, id: string) => (inst ? `wire:${inst}|${id}` : `wire:${id}`)
+  const lk = (inst: string, id: string) => (inst ? `label:${inst}|${id}` : `label:${id}`)
+  const at = (inst: string, p: Vec2) => (inst ? `${inst}@${pk(p)}` : pk(p))
+  /** The name a local label, a hierarchical label, a local power symbol or a sheet pin joins others by: on its own use of a sheet only. */
+  const localName = (inst: string, text: string) => (inst ? `${inst}|${text}` : text)
+  /** What each node of a wire or label is. */
+  const itemOf = new Map<string, { inst: string; id: string }>()
+  const hierDriver = hier || scoped
   /** The drivers each name text has on the sheet: labels, power symbols and hidden power pins. */
   const drivers = new Map<string, NameDriver[]>()
   const addDriver = (text: string, d: NameDriver) => {
@@ -123,11 +156,12 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     if (list) list.push(d)
     else drivers.set(text, [d])
   }
+  const useDrivers = !!kicad || hierDriver
   const uf = new UnionFind()
   const pins: WorldPin[] = []
   const pointOwners = new Map<string, string[]>()
-  const addPointOwner = (p: Vec2, owner: string) => {
-    const key = pk(p)
+  const addPointOwner = (p: Vec2, owner: string, inst = "") => {
+    const key = at(inst, p)
     const list = pointOwners.get(key)
     if (list) list.push(owner)
     else pointOwners.set(key, [owner])
@@ -141,6 +175,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   for (const c of project.components) {
     const part = findPart(c.partId)
     const power = powerNetName(c, part)
+    const inst = c.inst ?? ""
     // The editor's own parts join the pins that share a number; a KiCad symbol keeps them apart unless it says they are jumpered.
     const jumpered = !part?.jumpers || part.jumpers.duplicates
     const here = new Set<string>()
@@ -152,20 +187,22 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       pins.push(pin)
       nodeOf.set(pin, key)
       here.add(pin.pin)
-      addPointOwner(pin.pos, key)
+      addPointOwner(pin.pos, key, inst)
       // A KiCad power symbol whose Value is empty names its net nothing, which KiCad shows as `<NO NET>`.
       const portName = power === "" && kicad && part?.powerNet && part.jumpers ? NO_NET : power
       if (portName) {
-        uf.union(key, `name:${portName}`)
-        if (kicad) {
-          const local = !!part?.powerLocal
-          addDriver(portName, { prio: local ? DRIVER.localPower : DRIVER.globalPower, name: driverName(portName, local ? "local" : "global"), text: portName, kind: local ? "local" : "global", from: "power" })
+        // A local power symbol is a net of its own use of a sheet (`/VCC` on the root, `/Power/VCC` below it); a global one is the project's.
+        const local = !!part?.powerLocal
+        const nameKey = local ? localName(inst, portName) : portName
+        uf.union(key, `name:${nameKey}`)
+        if (useDrivers) {
+          addDriver(nameKey, { prio: local ? DRIVER.localPower : DRIVER.globalPower, name: driverName(portName, local ? "local" : "global", humanOf(inst)), text: portName, kind: local ? "local" : "global", from: "power" })
         }
       }
       // A hidden power-input pin of an ordinary part is on the global net of its name (`SCH_PIN::IsGlobalPower`).
       else if (pin.hidden && pin.type === "power_in" && pin.name.trim()) {
         uf.union(key, `name:${pin.name.trim()}`)
-        if (kicad) addDriver(pin.name.trim(), { prio: DRIVER.globalPower, name: pin.name.trim(), text: pin.name.trim(), kind: "global", from: "power" })
+        if (useDrivers) addDriver(pin.name.trim(), { prio: DRIVER.globalPower, name: pin.name.trim(), text: pin.name.trim(), kind: "global", from: "power" })
       }
     }
     // Pins of different numbers that the part joins inside itself.
@@ -176,18 +213,50 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   }
 
   // Wire vertices coincide with pins / other wire vertices.
-  for (const w of project.wires) {
-    const key = `wire:${w.id}`
-    uf.find(key)
-    for (const p of w.points) addPointOwner(p, key)
+  for (const use of uses) {
+    for (const w of wiresOf.get(use.sheet) ?? []) {
+      const key = wk(use.path, w.id)
+      itemOf.set(key, { inst: use.path, id: w.id })
+      uf.find(key)
+      for (const p of w.points) addPointOwner(p, key, use.path)
+    }
   }
-  for (const l of project.labels) {
-    const key = `label:${l.id}`
-    uf.union(key, `name:${l.name.trim()}`)
-    addPointOwner(l, key)
-    if (kicad && l.name.trim()) {
-      const kind = l.kind === "global" ? "global" : "local"
-      addDriver(l.name.trim(), { prio: kind === "global" ? DRIVER.globalLabel : DRIVER.label, name: driverName(l.name.trim(), kind), text: l.name.trim(), kind, from: "label" })
+  for (const use of uses) {
+    for (const l of labelsOf.get(use.sheet) ?? []) {
+      const key = lk(use.path, l.id)
+      itemOf.set(key, { inst: use.path, id: l.id })
+      const text = l.name.trim()
+      const global = l.kind === "global"
+      const nameKey = global ? text : localName(use.path, text)
+      uf.union(key, `name:${nameKey}`)
+      addPointOwner(l, key, use.path)
+      // A hierarchical label is also the end of the sheet pin of its name, on the sheet symbol that holds this use.
+      if (l.kind === "hierarchical" && text) uf.union(key, `hier:${use.path}|${text}`)
+      if (useDrivers && text) {
+        const kind = global ? "global" : "local"
+        const prio = global ? DRIVER.globalLabel : l.kind === "hierarchical" ? DRIVER.hierLabel : DRIVER.label
+        addDriver(nameKey, { prio, name: driverName(text, kind, humanOf(use.path)), text, kind, from: "label", ...(l.kind === "hierarchical" ? { labelKind: "hierarchical" as const } : {}) })
+      }
+    }
+  }
+  // S1: the pins of the sheet symbols drawn on a use are nodes on it, each joined to the hierarchical labels of its name in the use of the sheet below that symbol makes.
+  if (hierDriver) {
+    for (const use of uses) {
+      for (const sym of symbolsOnSheet(project, use.sheet)) {
+        const childPath = useOfSymbol(use.path, sym)
+        for (const pin of sym.pins) {
+          const key = `sheetpin:${use.path}|${sym.id}|${pin.id}`
+          const text = pin.name.trim()
+          uf.find(key)
+          addPointOwner(pin, key, use.path)
+          if (!text) continue
+          uf.union(key, `hier:${childPath}|${text}`)
+          // In KiCad a pin is named like a local label of its text on the sheet it is drawn on, so it joins that name.
+          const nameKey = localName(use.path, text)
+          uf.union(key, `name:${nameKey}`)
+          if (useDrivers) addDriver(nameKey, { prio: DRIVER.sheetPin, name: driverName(text, "local", humanOf(use.path)), text, kind: "local", from: "pin" })
+        }
+      }
     }
   }
   for (const owners of pointOwners.values()) {
@@ -195,57 +264,64 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   }
 
   // T-junctions: a wire endpoint, pin or label lying on another wire's segment.
-  const junctions: Vec2[] = []
-  const junctionKeys = new Set<string>()
-  const addJunction = (p: Vec2) => {
-    const k = pk(p)
-    if (!junctionKeys.has(k)) {
-      junctionKeys.add(k)
-      junctions.push(p)
-    }
-  }
-  const probes: { p: Vec2; owner: string; isWireEnd: boolean }[] = []
-  for (const w of project.wires) {
-    if (w.points.length < 2) continue
-    probes.push({ p: w.points[0], owner: `wire:${w.id}`, isWireEnd: true })
-    probes.push({ p: w.points[w.points.length - 1], owner: `wire:${w.id}`, isWireEnd: true })
-  }
-  for (const l of project.labels) probes.push({ p: l, owner: `label:${l.id}`, isWireEnd: false })
-
-  // Wire segments by the line they run along (`SegmentIndex`), so a probe only looks at wires
-  // near it. Wires are still visited in order, and each wire's segments in order, as a plain scan
-  // over all of them would.
-  const segIndex = new SegmentIndex(project.wires)
-  for (const probe of probes) {
-    for (const [wi, segs] of segIndex.near(probe.p)) {
-      const w = project.wires[wi]
-      if (`wire:${w.id}` === probe.owner) continue
-      for (const i of segs) {
-        const a = w.points[i]
-        const b = w.points[i + 1]
-        if (!pointOnSegment(probe.p, a, b)) continue
-        uf.union(probe.owner, `wire:${w.id}`)
-        if (probe.isWireEnd && !samePoint(probe.p, a) && !samePoint(probe.p, b)) addJunction(probe.p)
-        break
+  const junctionsByUse = new Map<string, Vec2[]>()
+  for (const use of uses) {
+    const wires = wiresOf.get(use.sheet) ?? []
+    const inst = use.path
+    const junctions: Vec2[] = []
+    const junctionKeys = new Set<string>()
+    const addJunction = (p: Vec2) => {
+      const k = pk(p)
+      if (!junctionKeys.has(k)) {
+        junctionKeys.add(k)
+        junctions.push(p)
       }
     }
-  }
-
-  // A point where three or more wire ends meet also gets a dot.
-  const endCount = new Map<string, { p: Vec2; n: number }>()
-  for (const w of project.wires) {
-    if (w.points.length < 2) continue
-    for (const p of [w.points[0], w.points[w.points.length - 1]]) {
-      const k = pk(p)
-      const e = endCount.get(k)
-      if (e) e.n++
-      else endCount.set(k, { p, n: 1 })
+    const probes: { p: Vec2; owner: string; isWireEnd: boolean }[] = []
+    for (const w of wires) {
+      if (w.points.length < 2) continue
+      probes.push({ p: w.points[0], owner: wk(inst, w.id), isWireEnd: true })
+      probes.push({ p: w.points[w.points.length - 1], owner: wk(inst, w.id), isWireEnd: true })
     }
+    for (const l of labelsOf.get(use.sheet) ?? []) probes.push({ p: l, owner: lk(inst, l.id), isWireEnd: false })
+
+    // Wire segments by the line they run along (`SegmentIndex`), so a probe only looks at wires
+    // near it. Wires are still visited in order, and each wire's segments in order, as a plain scan
+    // over all of them would.
+    const segIndex = new SegmentIndex(wires)
+    for (const probe of probes) {
+      for (const [wi, segs] of segIndex.near(probe.p)) {
+        const w = wires[wi]
+        if (wk(inst, w.id) === probe.owner) continue
+        for (const i of segs) {
+          const a = w.points[i]
+          const b = w.points[i + 1]
+          if (!pointOnSegment(probe.p, a, b)) continue
+          uf.union(probe.owner, wk(inst, w.id))
+          if (probe.isWireEnd && !samePoint(probe.p, a) && !samePoint(probe.p, b)) addJunction(probe.p)
+          break
+        }
+      }
+    }
+
+    // A point where three or more wire ends meet also gets a dot.
+    const endCount = new Map<string, { p: Vec2; n: number }>()
+    for (const w of wires) {
+      if (w.points.length < 2) continue
+      for (const p of [w.points[0], w.points[w.points.length - 1]]) {
+        const k = pk(p)
+        const e = endCount.get(k)
+        if (e) e.n++
+        else endCount.set(k, { p, n: 1 })
+      }
+    }
+    for (const { p, n } of endCount.values()) {
+      const pinsHere = pointOwners.get(at(inst, p))?.filter((o) => o.startsWith("pin:")).length ?? 0
+      if (n + pinsHere >= 3) addJunction(p)
+    }
+    junctionsByUse.set(use.path, junctions)
   }
-  for (const { p, n } of endCount.values()) {
-    const pinsHere = pointOwners.get(pk(p))?.filter((o) => o.startsWith("pin:")).length ?? 0
-    if (n + pinsHere >= 3) addJunction(p)
-  }
+  const junctions = junctionsByUse.get(uses[0].path) ?? []
 
   // Group into nets.
   const groups = new Map<string, string[]>()
@@ -260,6 +336,11 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const pinNet = new Map<string, string>()
   const wireNet = new Map<string, string>()
   const labelNet = new Map<string, string>()
+  const useWireNet = new Map<string, Map<string, string>>()
+  const useLabelNet = new Map<string, Map<string, string>>()
+  const firstUse = new Map<string, string>()
+  for (const u of uses) if (!firstUse.has(u.sheet)) firstUse.set(u.sheet, u.path)
+  const sheetOfUse = new Map(uses.map((u) => [u.path, u.sheet]))
   const conflicts: SchematicConnectivity["conflicts"] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const ncSet = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
@@ -311,21 +392,21 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     let label: Net["label"]
     let power: Net["power"]
     let named = names.length > 0
+    // The driver of the highest priority names the net; with none, a pin does (S2). A project drawn in the editor with several sheets is named the same way where a driver is.
+    const best = useDrivers ? bestDriver(names.flatMap((n) => drivers.get(n) ?? [])) : undefined
     if (kicad) {
-      // The driver of the highest priority names the net; with none, a pin does.
-      const here = names.flatMap((n) => drivers.get(n) ?? [])
-      const best = bestDriver(here)
       if (best) {
         name = best.name
         named = true
-        if (best.from === "label") label = { text: best.text, kind: best.kind }
-        else power = { text: best.text, local: best.kind === "local" }
+        if (best.from === "label") label = { text: best.text, kind: best.labelKind ?? best.kind }
+        else if (best.from === "power") power = { text: best.text, local: best.kind === "local" }
       } else {
         named = false
         name = kicadPinName(kicad, pinMembers, labelCount(members), ownerOf, nodeParts, refOf, physical, ncSet) ?? `N$${autoIndex++}`
       }
     } else if (names.length) {
-      name = names[0]
+      name = best && hierDriver ? best.name : names[0]
+      if (best && hierDriver && best.from === "label") label = { text: best.text, kind: best.labelKind ?? best.kind }
     } else if (netPins.length) {
       name = `Net-(${refOf.get(netPins[0].componentId)}-${netPins[0].pin})`
     } else {
@@ -333,8 +414,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     }
     let id = `net:${name}`
     // Two nets that KiCad's rules give one name (a local and a global label of one text on no common wire) stay two nets.
-    for (let i = 2; kicad && nets.some((n) => n.id === id); i++) id = `net:${name}#${i}`
-    if (kicad) {
+    for (let i = 2; (kicad || hierDriver) && nets.some((n) => n.id === id); i++) id = `net:${name}#${i}`
+    if (useDrivers) {
       const texts = [...new Set(names.flatMap((n) => (drivers.get(n) ?? []).map((d) => d.text)))].sort()
       if (texts.length > 1) conflicts.push({ names: texts, netId: id })
     } else if (names.length > 1) conflicts.push({ names, netId: id })
@@ -349,8 +430,16 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
         if (second) continue
         // The pin of a unit is also a pin of the part on the board.
         if (ownerOf(componentId) !== componentId) aliased.push([pinKey(ownerOf(componentId), pin), id])
-      } else if (m.startsWith("wire:")) wireNet.set(m.slice(5), id)
-      else if (m.startsWith("label:")) labelNet.set(m.slice(6), id)
+      } else if (m.startsWith("wire:") || m.startsWith("label:")) {
+        const item = itemOf.get(m)
+        if (!item) continue
+        const isWire = m.startsWith("wire:")
+        const byUse = isWire ? useWireNet : useLabelNet
+        const own = byUse.get(item.inst) ?? byUse.set(item.inst, new Map()).get(item.inst)!
+        own.set(item.id, id)
+        // The plain maps hold the first use of each sheet, which is the only one for a sheet used once.
+        if (firstUse.get(sheetOfUse.get(item.inst) ?? ROOT_SHEET) === item.inst) (isWire ? wireNet : labelNet).set(item.id, id)
+      }
     }
   }
   // A pin the part's own symbol does not draw is the pin of the unit that does. Where both draw it, its own net stands.
@@ -369,7 +458,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const ncPins = floating.filter(isNc)
 
   nets.sort((a, b) => numeric.compare(a.name, b.name))
-  return { nets, pinNet, wireNet, labelNet, junctions, unconnectedPins, ncPins, conflicts }
+  return { nets, pinNet, wireNet, labelNet, junctions, unconnectedPins, ncPins, conflicts, ...(hier || scoped ? { byUse: { wireNet: useWireNet, labelNet: useLabelNet, junctions: junctionsByUse } } : {}) }
 }
 
 /**

@@ -39,7 +39,8 @@ export function canonicalProject(project: Project): Json {
       const out: Record<string, any> = {}
       for (const [k, x] of Object.entries(v)) {
         if (k === "id" || k === "createdAt" || k === "updatedAt") continue
-        out[walk(k)] = walk(x)
+        // The members of a group are a set: KiCad writes them sorted by id, which is not the order the file the project was imported from had.
+        out[walk(k)] = k === "members" && Array.isArray(x) ? walk(x).slice().sort() : walk(x)
       }
       return out
     }

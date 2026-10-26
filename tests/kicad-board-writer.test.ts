@@ -191,3 +191,86 @@ describe("reference images", () => {
     expect(diffProjects(r.project, again.project)).toEqual([])
   })
 })
+
+describe("the outline", () => {
+  const line = (a: string, b: string) => `(gr_line (start ${a}) (end ${b}) (stroke (width 0.1) (type default)) (layer "Edge.Cuts"))`
+  const arc = (a: string, m: string, b: string) => `(gr_arc (start ${a}) (mid ${m}) (end ${b}) (stroke (width 0.1) (type default)) (layer "Edge.Cuts"))`
+  const part1 = footprint({ ref: "R1", at: "10 10", pads: [pad({ at: "0 0" })] })
+  it("a rectangle with rounded corners, a board with a cutout and a slot, and a board with an open outline come back as the same outline", async () => {
+    const m = 2 * Math.SQRT1_2
+    const rounded = [line("2 0", "28 0"), arc("28 0", `${28 + m} ${2 - m}`, "30 2"), line("30 2", "30 18"), arc("30 18", `${28 + m} ${18 + m}`, "28 20"), line("28 20", "2 20"), arc("2 20", `${2 - m} ${18 + m}`, "0 18"), line("0 18", "0 2"), arc("0 2", `${2 - m} ${2 - m}`, "2 0")].join(String.fromCharCode(10))
+    const cutout = `(gr_circle (center 15 10) (end 17 10) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))`
+    const board1 = imported(board({ body: [part1], outline: [rounded, cutout].join("\n") }))
+    expect((await roundTrip(board1)).differences).toEqual([])
+    const open = imported(board({ body: [part1], outline: [line("0 0", "30 0"), line("30 0", "30 20"), line("30 20", "0 20")].join("\n") }))
+    expect((await roundTrip(open)).differences).toEqual([])
+    const none = imported(board({ body: [part1], outline: false }))
+    const out = await pcbOf(none)
+    expect(out).not.toContain("Edge.Cuts\")\n")
+    expect((await roundTrip(none)).differences).toEqual([])
+  })
+})
+
+describe("text", () => {
+  const fx = (extra = "") => `(effects (font (size 1.2 1) (thickness 0.2) ${extra}))`
+  const text = (extra: string) => `(gr_text "T" (at 4 4 20) (layer "F.SilkS") ${extra})`
+  it("board texts of every kind, text boxes at 0 and 90 degrees, and a part's own texts on both sides read back as the same texts", async () => {
+    const body = [
+      text(fx("bold italic")),
+      `(gr_text "M" (at 8 4) (layer "B.SilkS") (effects (font (size 1 1) (thickness 0.15)) (justify left bottom mirror)))`,
+      `(gr_text "K" (at 12 4) (layer "F.Cu" knockout) (effects (font (size 1.5 1.5) (thickness 0.3))))`,
+      `(gr_text "H" (at 16 4) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15)) (href "https://example.com")))`,
+      `(gr_text_box "hello world" (start 2 8) (end 12 12) (stroke (width 0.2) (type solid)) (border yes) (margins 0.5 0.6 0.7 0.8) (layer "F.SilkS") ${fx()})`,
+      `(gr_text_box "turned" (start 14 8) (end 24 12) (angle 90) (layer "F.Fab") ${fx()})`,
+      footprint({ ref: "R1", at: "10 20 30", pads: [pad({ at: "0 0" })], extra: `(fp_text user "own" (at 1 -2 45 unlocked) (layer "F.Fab") (effects (font (size 0.8 0.8) (thickness 0.1)) (justify right top)))` }),
+      footprint({ ref: "R2", at: "25 20 60", layer: "B.Cu", pads: [pad({ at: "0 0", layers: '"B.Cu" "B.Paste" "B.Mask"' })], extra: `(fp_text user "own" (at 1 -2 45) (layer "B.Fab") (hide yes) (effects (font (size 0.8 0.8) (thickness 0.1)) (justify mirror)))` }),
+    ]
+    const p = imported(board({ version: 20241229, body, outline: '(gr_rect (start 0 0) (end 30 30) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' }))
+    expect(p.texts.length).toBe(6)
+    const { text: out, differences } = await roundTrip(p)
+    expect(differences).toEqual([])
+    expect(out).toContain('(href "https://example.com")')
+    expect(out).toContain('(layer "F.Cu" knockout)')
+    expect(out).toContain("(unlocked yes)")
+    expect(out).toContain("(justify left bottom mirror)")
+  })
+})
+
+describe("parts' flags and groups, and zones of every kind", () => {
+  const sq = (a: number, b: number, c: number, d: number) => `(polygon (pts (xy ${a} ${b}) (xy ${c} ${b}) (xy ${c} ${d}) (xy ${a} ${d})))`
+  const zone = (extra: string, polygon: string, layer = '(layer "F.Cu")', net = '(net 1) (net_name "A")') => `(zone ${net} ${layer} (uuid "a1b2c3d4-0000-4000-8000-0000000000${(extra.length % 90) + 10}") (hatch edge 0.5) ${extra} ${polygon})`
+  it("every attribute, net tie and jumper group, and a group inside a part naming its pads, drawings and texts, read back the same", async () => {
+    const part1 = footprint({
+      ref: "J1",
+      at: "10 10 15",
+      pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "A")' }), pad({ number: "2", at: "1 0", net: '(net 2 "B")' }), pad({ number: "3", at: "3 0" })],
+      extra: `(attr smd board_only exclude_from_pos_files exclude_from_bom allow_soldermask_bridges allow_missing_courtyard dnp) (net_tie_pad_groups "1,2") (jumper_pad_groups ("1" "3")) (duplicate_pad_numbers_are_jumpers yes) (locked yes)
+        (fp_line (start -2 1) (end 2 1) (stroke (width 0.1) (type solid)) (layer "F.SilkS") (uuid "${U(41)}"))
+        (fp_text user "t" (at 0 2) (layer "F.SilkS") (uuid "${U(42)}") (effects (font (size 1 1) (thickness 0.15))))
+        (group "inner" (uuid "${U(43)}") (members "${U(41)}" "${U(42)}"))`,
+    })
+    const p = imported(board({ nets: NETS, body: [part1] }))
+    expect(p.components[0].groups).toHaveLength(1)
+    const { text, differences } = await roundTrip(p)
+    expect(differences).toEqual([])
+    expect(text).toContain('(net_tie_pad_groups "1,2")')
+    expect(text).toContain('(jumper_pad_groups ("1" "3"))')
+    expect(text).toContain("(locked yes)")
+    expect(text).toMatch(/\(group "inner"/)
+  })
+  it("zones with an arc, smoothing, islands, a rule area, a teardrop, on the back layer and on both, read back the same", async () => {
+    const arcPoly = '(polygon (pts (xy 0 0) (xy 10 0) (arc (start 10 0) (mid 12 3) (end 10 6)) (xy 0 6)))'
+    const body = [
+      footprint({ ref: "R1", at: "5 3", pads: [pad({ at: "0 0", net: '(net 1 "A")' })] }),
+      zone("(priority 3) (connect_pads (clearance 0.4)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.4) (smoothing fillet) (radius 1.2) (island_removal_mode 2) (island_area_min 4))", arcPoly),
+      zone("(connect_pads thru_hole_only (clearance 0.3)) (min_thickness 0.2) (filled_areas_thickness no) (fill (thermal_gap 0.3) (thermal_bridge_width 0.3))", sq(0, 10, 10, 16), '(layers "F.Cu" "B.Cu")'),
+      zone("(connect_pads no (clearance 0.3)) (min_thickness 0.2) (filled_areas_thickness no) (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.3) (island_removal_mode 1) (island_area_min 10))", sq(12, 10, 20, 16), '(layer "B.Cu")'),
+      '(zone (net 0) (net_name "") (layers "F.Cu" "B.Cu") (uuid "a1b2c3d4-0000-4000-8000-000000000077") (name "keep out") (hatch edge 0.5) (connect_pads (clearance 0)) (min_thickness 0.25) (keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed)) (fill (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 22 0) (xy 28 0) (xy 28 6) (xy 22 6))))',
+      zone("(attr (teardrop (type padvia))) (connect_pads yes (clearance 0.3)) (min_thickness 0.2) (filled_areas_thickness no) (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.3))", sq(22, 10, 28, 16)),
+    ]
+    const p = imported(board({ nets: ['(net 0 "")', '(net 1 "A")'], body, outline: '(gr_rect (start 0 -2) (end 30 20) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' }))
+    expect(p.zones.length).toBe(5)
+    const { differences } = await roundTrip(p)
+    expect(differences).toEqual([])
+  })
+})

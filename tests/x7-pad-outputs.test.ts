@@ -206,10 +206,10 @@ describe("the stored form and the other exports", () => {
     expect(serializeProject(back)).toBe(text)
   })
 
-  it("a document of version 9 reads as written, and a damaged pad drops its land rather than being drawn without a field", () => {
+  it("a document of version 3 reads as written, and a damaged pad drops its land rather than being drawn without a field", () => {
     const file = JSON.parse(serializeProject(project))
-    const v9 = { ...file, version: 9 }
-    expect(parseProjectFile(v9, { id: "x" }).footprints).toEqual(project.footprints)
+    const v3 = { ...file, version: 3 }
+    expect(parseProjectFile(v3, { id: "x" }).footprints).toEqual(project.footprints)
     const bad = JSON.parse(JSON.stringify(file))
     bad.project.footprints[0].pads[1].round = 3
     expect(parseProjectFile(bad, { id: "x" }).footprints ?? []).toEqual([])

@@ -331,7 +331,7 @@ describe("storing an outline", () => {
   })
 
   it("a plain object outline in a hand-written file is read and sized", () => {
-    const doc = { format: "cherryblossom.project", version: 6, project: { name: "h", components: [], board: { width: 1, height: 1, x: 0, y: 0, thickness: 1.6, cornerRadius: 1, outline: { paths: [{ closed: true, segs: poly([0, 0], [8, 0], [8, 6]).segs }] } } } }
+    const doc = { format: "cherryblossom.project", version: 3, project: { name: "h", components: [], board: { width: 1, height: 1, x: 0, y: 0, thickness: 1.6, cornerRadius: 1, outline: { paths: [{ closed: true, segs: poly([0, 0], [8, 0], [8, 6]).segs }] } } } }
     const p = parseProjectFile(doc, { id: "h" })
     expect([p.board.width, p.board.height, p.board.cornerRadius]).toEqual([8, 6, 0])
   })

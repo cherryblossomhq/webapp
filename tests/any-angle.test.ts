@@ -285,11 +285,11 @@ describe("the project file with parts at any angle", () => {
     expect(JSON.parse(serializeProject(project)).version).toBe(PROJECT_FILE_VERSION)
   })
 
-  it("reads a version 4 document as it was written: its quarter turns stay, and it is saved as the current version", () => {
+  it("reads a version 3 document as it was written: its quarter turns stay, and it is saved as the current version", () => {
     const doc = {
       format: PROJECT_FILE_FORMAT,
-      version: 4,
-      project: { name: "v4", description: "", components: [{ id: "c1", partId: "resistor", ref: "R1", props: {}, footprint: "0805", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 1, y: 2, rot: 270, side: "top", placed: true } }], wires: [], labels: [], board: { width: 40, height: 30, x: 0, y: 0, thickness: 1.6, cornerRadius: 2 } },
+      version: 3,
+      project: { name: "v3", description: "", components: [{ id: "c1", partId: "resistor", ref: "R1", props: {}, footprint: "0805", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 1, y: 2, rot: 270, side: "top", placed: true } }], wires: [], labels: [], board: { width: 40, height: 30, x: 0, y: 0, thickness: 1.6, cornerRadius: 2 } },
     }
     const read = parseProjectFile(doc, { id: "x" })
     expect(read.components[0].pcb).toMatchObject({ rot: 270, x: 1, y: 2 })
@@ -299,7 +299,7 @@ describe("the project file with parts at any angle", () => {
   })
 
   it("an angle that is not a number is read as 0, one over a turn is brought round", () => {
-    const base = { format: PROJECT_FILE_FORMAT, version: 6, project: { name: "v6", description: "", components: [] as unknown[], wires: [], labels: [], board: {} } }
+    const base = { format: PROJECT_FILE_FORMAT, version: 3, project: { name: "v3", description: "", components: [] as unknown[], wires: [], labels: [], board: {} } }
     const part = (rot: unknown) => ({ id: "c", partId: "resistor", ref: "R1", props: {}, footprint: "0805", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot, side: "top", placed: true } })
     expect(parseProjectFile({ ...base, project: { ...base.project, components: [part("x")] } }, { id: "x" }).components[0].pcb.rot).toBe(0)
     expect(parseProjectFile({ ...base, project: { ...base.project, components: [part(405)] } }, { id: "x" }).components[0].pcb.rot).toBe(45)

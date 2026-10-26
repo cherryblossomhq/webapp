@@ -329,8 +329,8 @@ describe("the project file", () => {
     expect(JSON.parse(text).version).toBe(PROJECT_FILE_VERSION)
   })
 
-  it("a document of version 10 opens as it was written, and a project of two layers has no trace of any of it", () => {
-    const old = { format: "cherryblossom.project", version: 10, project: { ...JSON.parse(serializeProject(p)).project, board: { width: 50, height: 40, x: 0, y: 0, thickness: 1.6, cornerRadius: 1 }, traces: [{ id: "t1", layer: "top", width: 0.25, points: [{ x: 0, y: 0 }, { x: 5, y: 0 }] }], vias: [{ id: "v1", x: 1, y: 1, diameter: 0.8, drill: 0.4 }] } }
+  it("a document of version 3 without layers opens as it was written, and a project of two layers has no trace of any of it", () => {
+    const old = { format: "cherryblossom.project", version: 3, project: { ...JSON.parse(serializeProject(p)).project, board: { width: 50, height: 40, x: 0, y: 0, thickness: 1.6, cornerRadius: 1 }, traces: [{ id: "t1", layer: "top", width: 0.25, points: [{ x: 0, y: 0 }, { x: 5, y: 0 }] }], vias: [{ id: "v1", x: 1, y: 1, diameter: 0.8, drill: 0.4 }] } }
     const read = parseProjectFile(old, { id: "x" })
     expect(read.traces[0]).toEqual(old.project.traces[0])
     expect(read.vias[0]).toEqual(old.project.vias[0])

@@ -260,7 +260,7 @@ describe("Tidy", () => {
 describe("the migration of the old items keeps drawings safe", () => {
   it("a tool-made drawing in any older version is as it was", () => {
     const doc = JSON.parse(serializeProject({ ...createProject("old"), drawings: [{ id: "d1", type: "text", text: "Mine", x: 1, y: 2, size: 0.14, align: "left" as const }] as SchematicDrawing[] }))
-    for (const version of [3, 4]) {
+    for (const version of [2, 3]) {
       doc.version = version
       expect(parseProjectFile(doc, origin).drawings).toEqual([{ id: "d1", type: "text", text: "Mine", x: 1, y: 2, size: 0.14 }])
     }

@@ -190,6 +190,11 @@ export function labelText(raw: string, stamp: number | null): string {
   return decodeNetName(converted)
 }
 
+/** A bus alias's name or member as the user reads it: KiCad converts the old overbar notation of an alias before stamp 20210621 (`parseBusAlias`), a little later than a label's. */
+export function aliasText(raw: string, stamp: number | null): string {
+  return decodeNetName(stamp !== null && stamp < 20210621 ? convertOverbar(raw) : raw)
+}
+
 /** A pin or sheet-pin name: the old overbar notation is converted before stamp 20210606. */
 const pinText = (raw: string, stamp: number | null) => (stamp !== null && stamp < OVERBAR_NOTATION_FROM ? convertOverbar(raw) : raw)
 
@@ -528,7 +533,7 @@ function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): K
   }
   const wires: SchWire[] = kids(tree, "wire").map((w) => ({ pts: readPoints(w), node: w }))
   const buses: SchWire[] = kids(tree, "bus").map((w) => ({ pts: readPoints(w), node: w }))
-  const busEntries: BusEntry[] = kids(tree, "bus_entry").map((b) => ({ at: pt(kid(b, "at")), size: pt(kid(b, "size")), node: b }))
+  const busEntries: BusEntry[] = kids(tree, "bus_entry").map((b) => ({ at: pt(kid(b, "at")), size: pt(kid(b, "size")), toBus: flagOf(b, "bus_to_bus"), node: b }))
   const busAliases = kids(tree, "bus_alias").map((a) => ({ name: strAt(a, 1) ?? "", members: (kid(a, "members")?.slice(1) ?? []).filter((m): m is string => typeof m === "string") }))
   const junctions = kids(tree, "junction").map((j) => ({ at: pt(kid(j, "at")), node: j }))
   const noConnects = kids(tree, "no_connect").map((j) => ({ at: pt(kid(j, "at")), node: j }))

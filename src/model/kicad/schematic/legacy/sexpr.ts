@@ -197,6 +197,7 @@ export function legacyToKicadText(l: LegacySchematic): string {
     out.push(`(${token} (pts (xy ${xy(w.x1, w.y1)}) (xy ${xy(w.x2, w.y2)})) ${stroke(w)})`)
   }
   for (const e of l.entries) out.push(entryNode(e))
+  for (const a of l.busAliases) out.push(`(bus_alias ${q(a.name)} (members ${a.members.map(q).join(" ")}))`)
   for (const t of l.texts) out.push(textNode(t, l.version))
   for (const b of l.bitmaps) out.push(`(image (at ${xy(b.x, b.y)}) (scale ${nn(b.scale)}) (data ${q(toBase64(b.data))}))`)
   for (const s of l.sheets) {

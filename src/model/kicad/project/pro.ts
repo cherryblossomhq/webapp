@@ -91,7 +91,7 @@ export function readKicadPro(input: string | Uint8Array): ProReadResult {
 export interface ProRule {
   /** A regular expression over the whole key path: object keys joined by `>`, each array element `[]`. */
   re: RegExp
-  decision: "not-needed" | "pending"
+  decision: "not-needed" | "pending" | "used"
   /** For `pending`: the extension of the model the key needs. */
   ext?: string
   note: string
@@ -121,7 +121,7 @@ export const PRO_RULES: ProRule[] = [
   rule(`(?:tuning_profiles|time_domain_parameters)${SUB}`, "pending", "length and delay tuning profiles", "X21"),
   rule(`kicad_routing_tools${SUB}`, "not-needed", "settings of KiCad's interactive router"),
   // ---- the schematic's own settings ----
-  rule(`schematic>bus_aliases${SUB}`, "pending", "bus aliases", "S3"),
+  rule(`schematic>bus_aliases${SUB}`, "used", "the bus aliases of the project (KiCad 10 keeps them here, for the whole schematic: `SCHEMATIC::loadBusAliasesFromProject`; KiCad 9 and before keep a `bus_alias` in each schematic file and write this key empty)"),
   rule(`schematic>variants${SUB}`, "pending", "schematic variants", "S9"),
   rule(`schematic>top_level_sheets${SUB}`, "pending", "the sheets at the top of the hierarchy", "S1"),
   rule(`text_variables${SUB}`, "pending", "the text variables that text and title blocks can use", "S4"),
@@ -191,9 +191,29 @@ export function accountPro(json: unknown): NodeAccount {
     const r = proRuleFor(path)
     if (!r) account.unknownPaths.set(path, count)
     else if (r.decision === "pending") account.pending.set(r.ext!, (account.pending.get(r.ext!) ?? 0) + count)
-    else account.notNeeded.set(r.note, (account.notNeeded.get(r.note) ?? 0) + count)
+    else if (r.decision === "used") {
+      account.imported += count
+      account.importedPaths.set(path, count)
+    } else account.notNeeded.set(r.note, (account.notNeeded.get(r.note) ?? 0) + count)
   }
   return account
+}
+
+/**
+ * S3: the bus aliases a project file lists (`schematic.bus_aliases`, an object of name to members), as KiCad 10 reads them
+ * (`PROJECT_FILE`'s "schematic.bus_aliases": a name and each member are stripped of spaces, an empty one is dropped, a value that is
+ * not a list is skipped). They are the project's aliases before those of its schematic files.
+ */
+export function proBusAliases(pro: Pick<KicadPro, "json"> | null): { name: string; members: string[] }[] {
+  const aliases = pro && isObject(pro.json.schematic) ? (pro.json.schematic as Record<string, unknown>).bus_aliases : undefined
+  if (!isObject(aliases)) return []
+  const out: { name: string; members: string[] }[] = []
+  for (const [key, value] of Object.entries(aliases)) {
+    const name = key.trim()
+    if (!name || !Array.isArray(value)) continue
+    out.push({ name, members: value.filter((m): m is string => typeof m === "string").map((m) => m.trim()).filter(Boolean) })
+  }
+  return out
 }
 
 /** Report entries for the keys the table does not know. */

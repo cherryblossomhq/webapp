@@ -57,7 +57,7 @@ export const RULES_SCH = [
   rule("junction|junction>at", "native", "wires cut at the junction: the editor joins wires at their ends", { effort: "S", note: "an explicit junction says two crossing wires are joined; the builder cuts the wires there" }),
   rule("junction>(?:diameter|color)", "extend", "-", { ext: "S4", note: "a junction dot of its own size or colour; KiCad's default (diameter 0, no colour) is what the editor draws" }),
   rule("no_connect|no_connect>at", "extend", "ComponentInstance.nc", { ext: "S4", note: "a no-connect flag on a pin is the pin's nc mark (carried); one that is not on a pin is a drawing of its own" }),
-  rule("bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|stroke(?:>.*)?)|bus_alias|bus_alias>members", "extend", "-", { ext: "S3", note: "buses, bus entries and bus aliases, with vector names like D[0..7]" }),
+  rule("bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|bus_to_bus|stroke(?:>.*)?)|bus_alias|bus_alias>members", "extend", "-", { ext: "S3", note: "buses, bus entries and bus aliases, with vector names like D[0..7]" }),
 
   // ---- labels ----
   rule("label|label>(?:at|fields_autoplaced|uuid)", "native", "NetLabel", { effort: "S", note: "a local label belongs to its sheet" }),

@@ -37,6 +37,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   S1T: "several top level sheets in one project (a KiCad 10 feature)",
   S2: "net labels as KiCad has them (local and global labels, their shapes and styles) and KiCad's own net names",
   S3: "buses (bus wires, bus entries and bus aliases)",
+  S3B: "bus names the importer cannot read exactly (a bus name on a wire, a name KiCad 9 and 10 read differently, a bus too large)",
   S4: "notes, shapes, pictures and tables on the sheet, and wires and junctions with a look of their own",
   S5: "symbols with several units, mirrored symbols, hidden power pins, pins that share a number and fields placed by hand",
   S6: "symbol drawings with arcs, curves, fills and line styles",

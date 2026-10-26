@@ -181,6 +181,8 @@ export interface LegacySchematic {
   noConnects: { x: number; y: number }[]
   wires: LegacyWire[]
   entries: LegacyEntry[]
+  /** The bus aliases (`BusAlias NAME member member ...`): the names a bus group may use for a list of nets. */
+  busAliases: { name: string; members: string[] }[]
   texts: LegacyText[]
   /** The ERC markers old KiCad versions saved in the schematic (`Kmarq`): KiCad recomputes them. */
   markers: { type: string; x: number; y: number; text: string }[]
@@ -251,7 +253,7 @@ export function readLegacySchematicText(text: string): LegacySchematic {
   }
   if (!sawLayerEnd) throw new LegacyParseError("truncated", "The header has no `EELAYER END` line; the file looks cut short.", lines.length, "header")
 
-  const out: LegacySchematic = { version, libs, page: null, comps: [], sheets: [], bitmaps: [], junctions: [], noConnects: [], wires: [], entries: [], texts: [], markers: [], notes: [], records }
+  const out: LegacySchematic = { version, libs, page: null, comps: [], sheets: [], bitmaps: [], junctions: [], noConnects: [], wires: [], entries: [], busAliases: [], texts: [], markers: [], notes: [], records }
 
   // ---------- the body ----------
   let ended = false
@@ -280,6 +282,13 @@ export function readLegacySchematicText(text: string): LegacySchematic {
       endOfLine(c)
     } else if (c.compare("Wire")) out.wires.push(readWire(c))
     else if (c.compare("Entry")) out.entries.push(readEntry(c))
+    else if (c.compare("BusAlias")) {
+      // `BusAlias NAME member ...`: KiCad reads each word up to a space (`SCH_LEGACY_PLUGIN::loadBusAlias`).
+      count("BusAlias")
+      const words = line.slice("BusAlias".length).trim().split(/[ 	]+/).filter(Boolean)
+      if (!words.length) c.fail("bad-line", "a bus alias has no name")
+      out.busAliases.push({ name: words[0], members: words.slice(1) })
+    }
     else if (c.compare("Text")) out.texts.push(readText(c))
     else if (c.compare("Kmarq")) {
       // An ERC marker, as KiCad 2 to 4 saved them: `Kmarq B 3100 2150 "Warning ..." F=1`.

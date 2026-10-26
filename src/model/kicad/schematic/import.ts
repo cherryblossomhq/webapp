@@ -36,6 +36,8 @@ export interface SchematicImportOptions {
   /** The budgets of `readCost`; default to `MAX_LINE_STEPS` and `MAX_CELL_STEPS`. */
   maxLineSteps?: number
   maxCellSteps?: number
+  /** S3: the bus aliases of the project file (KiCad 10), which come before those of the schematic files. */
+  busAliases?: readonly { name: string; members: string[] }[]
 }
 
 /**
@@ -247,6 +249,6 @@ export function finishSchematic(gate: SchematicGate, result: SchematicBuild, opt
 export function importKicadSchematic(input: SchematicInput, options: SchematicImportOptions = {}): SchematicImportResult {
   const gated = gateSchematic(input, options)
   if ("refused" in gated) return gated.refused
-  const result = buildSchematicProject(gated.gate.tree, gated.gate.report, { name: options.name, source: options.source, built: options.built })
+  const result = buildSchematicProject(gated.gate.tree, gated.gate.report, { name: options.name, source: options.source, built: options.built, busAliases: options.busAliases })
   return finishSchematic(gated.gate, result, options)
 }

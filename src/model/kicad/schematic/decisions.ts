@@ -218,7 +218,7 @@ export const PATH_RULES: PathRule[] = [
   "note": "a no-connect flag on a pin is the pin's nc mark (carried); one that is not on a pin is a drawing of its own"
  },
  {
-  "source": "^(bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|stroke(?:>.*)?)|bus_alias|bus_alias>members)$",
+  "source": "^(bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|bus_to_bus|stroke(?:>.*)?)|bus_alias|bus_alias>members)$",
   "decision": "extend",
   "ext": "S3",
   "note": "buses, bus entries and bus aliases, with vector names like D[0..7]"

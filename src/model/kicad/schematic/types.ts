@@ -184,6 +184,8 @@ export interface SchSheet {
 export interface BusEntry {
   at: Pt
   size: Pt
+  /** KiCad 5's bus-to-bus entry (the legacy reader writes it as `(bus_to_bus yes)`): it joins two buses, where an entry of a wire joins a wire to a bus. */
+  toBus: boolean
   node: List
 }
 

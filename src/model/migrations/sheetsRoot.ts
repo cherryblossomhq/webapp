@@ -1,3 +1,4 @@
+// (Version numbers here are dev ones, now folded into version 3: see `projectFile.ts`.)
 // Version 10 to 11: hierarchical sheets (S1). A version 10 project is one sheet, which version 11 calls the root sheet: it is listed
 // as `{ id: "root" }`, and its parts, wires, labels and drawings, which name no sheet, are on it. Nothing else is rewritten: a
 // project with no sheet symbols draws and connects exactly as it did. The bump is what keeps an older reader, which would drop the

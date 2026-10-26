@@ -282,7 +282,7 @@ describe("the project file with parts at any angle", () => {
     const { project } = resistorAt(37.125)
     const back = parseProjectFile(serializeProject(project), { id: "x" })
     expect(back.components[0].pcb.rot).toBe(37.125)
-    expect(JSON.parse(serializeProject(project)).version).toBeGreaterThanOrEqual(6)
+    expect(JSON.parse(serializeProject(project)).version).toBe(PROJECT_FILE_VERSION)
   })
 
   it("reads a version 4 document as it was written: its quarter turns stay, and it is saved as the current version", () => {

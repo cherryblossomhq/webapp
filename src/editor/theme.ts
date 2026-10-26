@@ -153,3 +153,24 @@ export const PCB = {
   danger: "#ff4d57",
   warn: "#ffb547",
 }
+
+// Inner copper layers (X1): a colour for each, in the stack's order, so a four layer board reads at a glance with its two inner layers apart from each other and
+// from the red top and the blue bottom. The pour is the same hue, darker.
+const INNER_COPPER = ["#37d67a", "#ffb02e", "#c26bff", "#27d3e6", "#f0e14a", "#ff6fb1", "#9bd13f", "#ff8a4c", "#5ab0ff", "#d4a5ff"]
+const INNER_POUR = ["#1a9150", "#bf7f10", "#8a3ec9", "#12909e", "#b0a31a", "#c24a82", "#6c9422", "#c0561f", "#2f77c4", "#9a6ec2"]
+
+/** The colour of a copper layer's tracks and pads. `in1` is the first of the inner colours, and they repeat past the tenth. */
+export function copperColor(layer: string): string {
+  if (layer === "top") return PCB.topCopper
+  if (layer === "bottom") return PCB.bottomCopper
+  const k = Number(layer.slice(2))
+  return INNER_COPPER[(Math.max(1, k) - 1) % INNER_COPPER.length]
+}
+
+/** The colour of a copper layer's pour. */
+export function pourColor(layer: string): string {
+  if (layer === "top") return PCB.topPour
+  if (layer === "bottom") return PCB.bottomPour
+  const k = Number(layer.slice(2))
+  return INNER_POUR[(Math.max(1, k) - 1) % INNER_POUR.length]
+}

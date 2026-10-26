@@ -4,6 +4,7 @@ import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { inBom, inPositionFile } from "../model/partFlags"
 import { computeConnectivity } from "../model/connectivity"
 import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } from "../model/netClasses"
+import { copperCount } from "../model/stack"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
 import { isDimensionText, worldTexts } from "../model/texts"
@@ -62,14 +63,14 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...(project.properties?.length ? [""] : []),
     "BOARD",
     `  Size              ${mm(b.width)} x ${mm(b.height)}${b.outline ? ` bounding box; outline of its own (${describeOutline(b)}), area ${(boardAreaMm2(b) / 100).toFixed(2)} cm2` : b.cornerRadius > 0 ? `, ${mm(b.cornerRadius)} corner radius` : ""}`,
-    "  Layers            2",
+    `  Layers            ${copperCount(b)}`,
     `  Thickness         ${mm(b.thickness)}`,
     "  Material          FR-4",
     `  Copper            ${weight} oz (${Math.round(copperThickness(weight) * 1000)} µm) outer layers`,
     `  Surface finish    ${SURFACE_FINISHES.find((f) => f.value === boardFinish(b))?.label}`,
     `  Solder mask       ${colorName(colors.mask)}, both sides`,
     `  Silkscreen        ${colorName(colors.silk)}, both sides`,
-    `  Vias              ${project.vias.length}, ${r.tentVias ? "tented" : "not tented"}${inPad ? `, ${inPad} in SMD pads: fill and cap` : ""}`,
+    `  Vias              ${project.vias.length}${viaKindsNote(project)}, ${tentNote(r)}${inPad ? `, ${inPad} in SMD pads: fill and cap` : ""}`,
     `  Mounting holes    ${mountingHoles(b).length || "none"}`,
     "",
     "SMALLEST FEATURES ON THE BOARD",
@@ -266,4 +267,17 @@ function assemblyNotes(project: Project): string[] {
     `  In bom.csv        ${flagged.filter(inBom).length} of the ${flagged.length} flagged parts; in pnp.csv ${flagged.filter(inPositionFile).length}`,
     "",
   ]
+}
+
+/** The vias that are not through vias, in words: `, 3 blind, 2 micro`. */
+function viaKindsNote(project: Project): string {
+  const count = (k: string) => project.vias.filter((v) => v.kind === k).length
+  const parts = (["blind", "buried", "micro"] as const).filter((k) => count(k)).map((k) => `${count(k)} ${k}`)
+  return parts.length ? ` (${parts.join(", ")})` : ""
+}
+
+/** How the board's rule has vias tented: both sides, neither, or one side. */
+function tentNote(r: Project["rules"]): string {
+  if (r.tentSides) return `tented on the ${r.tentSides.front ? "front" : "back"} only`
+  return r.tentVias ? "tented" : "not tented"
 }

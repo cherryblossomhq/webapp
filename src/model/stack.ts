@@ -1,4 +1,4 @@
-import type { BoardDef, BoardStack, CopperLayer, CopperLayerType, PadDef, StackCopper, Via, ViaKind } from "./types"
+import type { BoardDef, BoardStack, CopperLayer, CopperLayerType, PadDef, StackCopper, StackRow, Via, ViaKind } from "./types"
 
 // X1: the board's copper layers. A layer is named by its place in the stack (`top`, `in1`, `in2`..., `bottom`), a board has two to 32 of
 // them (`BoardDef.stack`), and a board with no stack has the two outer layers every board drawn in the editor has. Everything that
@@ -194,3 +194,30 @@ export function withCopperCount(board: BoardDef, count: number): BoardDef {
   if (n === 2 && !stack.finish && !stack.edgePlating && !stack.dielectricConstraints && !stack.edgeConnector && !stack.castellated && copper.every((c) => !c.label && !c.type)) return plain
   return { ...plain, stack }
 }
+
+// ---------- the stackup ----------
+
+/** KiCad's own standard rows for a board of `count` copper layers: the silkscreen, paste and mask each side, 35 micrometre copper, 1.6 mm over all. */
+export function defaultStackup(count: number, thickness = 1.6): StackRow[] {
+  const n = Math.max(2, Math.min(MAX_COPPER_LAYERS, count))
+  const copper = 0.035
+  const mask = 0.01
+  const dielectrics = n - 1
+  // The inner layers' copper is thinner (17.5 micrometres, half an ounce) on a board of four or more.
+  const inner = n > 2 ? 0.0175 : 0.035
+  const outerTotal = 2 * copper + (n - 2) * inner + 2 * mask
+  const each = Math.max(0.01, (thickness - outerTotal) / dielectrics)
+  const rows: StackRow[] = [
+    { name: "F.SilkS", type: "Top Silk Screen", material: "Not specified" },
+    { name: "F.Paste", type: "Top Solder Paste" },
+    { name: "F.Mask", type: "Top Solder Mask", thickness: mask, material: "Not specified", epsilonR: 3.3, lossTangent: 0 },
+    { name: "F.Cu", type: "copper", thickness: copper },
+  ]
+  for (let i = 1; i <= dielectrics; i++) {
+    rows.push({ name: `dielectric ${i}`, type: i === 1 && n === 2 ? "core" : i % 2 === 1 ? "prepreg" : "core", thickness: Math.round(each * 1e4) / 1e4, material: "FR4", epsilonR: 4.5, lossTangent: 0.02 })
+    if (i < dielectrics) rows.push({ name: `In${i}.Cu`, type: "copper", thickness: inner })
+  }
+  rows.push({ name: "B.Cu", type: "copper", thickness: copper }, { name: "B.Mask", type: "Bottom Solder Mask", thickness: mask, material: "Not specified", epsilonR: 3.3, lossTangent: 0 }, { name: "B.Paste", type: "Bottom Solder Paste" }, { name: "B.SilkS", type: "Bottom Silk Screen", material: "Not specified" })
+  return rows
+}
+

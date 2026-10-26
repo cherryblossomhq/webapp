@@ -1,5 +1,6 @@
 import { normalizeDefaultClass, normalizeNetClasses } from "./netClasses"
-import type { BoardDef, DesignRules, DiffPairSize, Project, ThermalRelief, ViaSize } from "./types"
+import { defaultStackup } from "./stack"
+import type { BoardDef, DesignRules, DiffPairSize, Project, StackRow, ThermalRelief, ViaSize } from "./types"
 
 /** What a typical two-layer fab makes without extra charge, and the sizes new copper gets. */
 export const DEFAULT_RULES: DesignRules = {
@@ -130,6 +131,16 @@ function normalizeNetClassRules(rules: DesignRules) {
   // a paste ratio is a fraction of the pad, negative to shrink; zero is none
   if (!(typeof rules.pasteRatio === "number" && Number.isFinite(rules.pasteRatio) && rules.pasteRatio !== 0 && Math.abs(rules.pasteRatio) < 10)) delete rules.pasteRatio
   if (rules.maskBridgesInParts !== true) delete rules.maskBridgesInParts
+  // X5: the sides vias are tented on, micro via sizes and what the board allows; each valid or gone
+  const sides = rules.tentSides as { front?: unknown; back?: unknown } | undefined
+  if (!(sides && typeof sides.front === "boolean" && typeof sides.back === "boolean" && sides.front !== sides.back)) delete rules.tentSides
+  else rules.tentSides = { front: sides.front, back: sides.back }
+  for (const key of ["microVia", "minMicroVia"] as const) {
+    const v = rules[key] as Partial<ViaSize> | undefined
+    if (v && positive(v.diameter) && positive(v.drill)) rules[key] = { diameter: v.diameter, drill: v.drill }
+    else delete rules[key]
+  }
+  for (const key of ["microViasAllowed", "blindBuriedViasAllowed"] as const) if (typeof rules[key] !== "boolean") delete rules[key]
 }
 
 export const THERMAL_RELIEF_OPTIONS: { value: ThermalRelief; label: string; title: string }[] = [
@@ -155,14 +166,39 @@ const MASK_THICKNESS = 0.02
 
 export interface StackupLayer {
   name: string
-  kind: "silk" | "mask" | "copper" | "core"
+  kind: "silk" | "mask" | "paste" | "copper" | "core"
   material: string
   /** Millimetres; null for layers too thin to matter to the total. */
   thickness: number | null
 }
 
-/** The two-layer stackup the board is built to, top to bottom; the core takes up what the rest leaves. */
+/** What a row of a KiCad stackup is, for the Inspector and the fabrication notes. */
+function rowLayer(r: StackRow, b: BoardDef): StackupLayer {
+  const t = r.type.toLowerCase()
+  const kind: StackupLayer["kind"] = t.includes("silk") ? "silk" : t.includes("mask") ? "mask" : t.includes("paste") ? "paste" : t === "copper" ? "copper" : "core"
+  const name = kind === "copper" ? `${layerNameOf(r.name, b)} copper` : kind === "core" ? `${r.name.replace(/^dielectric/, "Dielectric")}${r.type ? ` (${r.type})` : ""}` : r.name
+  const eps = r.epsilonR !== undefined ? `, εr ${r.epsilonR}` : ""
+  const material = r.material && r.material !== "Not specified" ? `${r.material}${eps}` : kind === "copper" ? "copper" : eps ? eps.slice(2) : ""
+  const sub = (r.sub ?? []).reduce((n, s) => n + (s.thickness ?? 0), 0)
+  return { name, kind, material, thickness: r.thickness === undefined && !r.sub?.length ? null : (r.thickness ?? 0) + sub }
+}
+
+/** A copper layer's name in the stackup: the one a person gave it, else `Top`, `Bottom` or `Inner n`. */
+const layerNameOf = (kicadName: string, b: BoardDef): string => {
+  const m = /^In(\d+)\.Cu$/.exec(kicadName)
+  const index = kicadName === "F.Cu" ? 0 : kicadName === "B.Cu" ? (b.stack?.copper.length ?? 2) - 1 : m ? Number(m[1]) : -1
+  const given = index >= 0 ? b.stack?.copper[index]?.label : undefined
+  return given ?? (kicadName === "F.Cu" ? "Top" : kicadName === "B.Cu" ? "Bottom" : m ? `Inner ${m[1]}` : kicadName)
+}
+
+/**
+ * The stackup the board is built to, top to bottom: the rows of its own stackup when it has one (X1), the standard one for its copper layers when it has more than two
+ * and none of its own, and for the two layers every board drawn here has, the core taking up what the rest leaves.
+ */
 export function boardStackup(b: BoardDef): StackupLayer[] {
+  const n = b.stack?.copper.length ?? 2
+  if (b.stack?.rows?.length) return b.stack.rows.map((r) => rowLayer(r, b))
+  if (n > 2) return defaultStackup(n, b.thickness).map((r) => rowLayer(r, b))
   const cu = copperThickness(b.copperWeight ?? 1)
   const core = Math.max(0.1, b.thickness - 2 * cu - 2 * MASK_THICKNESS)
   const weight = `${b.copperWeight ?? 1} oz copper`

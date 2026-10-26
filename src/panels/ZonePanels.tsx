@@ -3,6 +3,7 @@ import { areaMm2OfZone, zoneFacts } from "./zoneInspector"
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
 import { updateZone, removeZones, type ZonePatch } from "../model/zoneOps"
 import { zoneSettings } from "../model/zones"
+import { copperLayers, layerLabel } from "../model/stack"
 import { formatLength } from "../model/rules"
 import type { CopperLayer, Project, Zone, ZoneConnection } from "../model/types"
 import { projectApi } from "../store/projectStore"
@@ -38,7 +39,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
   const patch = (p: ZonePatch) => projectApi().commit((x) => updateZone(x, zone.id, p))
   const layers = zone.layers ?? [zone.layer]
   const toggleLayer = (l: CopperLayer, on: boolean) => {
-    const next = (["top", "bottom"] as const).filter((x) => (x === l ? on : layers.includes(x)))
+    const next = copperLayers(project.board).filter((x) => (x === l ? on : layers.includes(x)))
     if (next.length) patch({ layers: next, layer: next[0] })
   }
   const rule = zone.keepout !== undefined
@@ -70,10 +71,10 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
         </Field>
       )}
       <div className="flex items-center gap-4">
-        {(["top", "bottom"] as const).map((l) => (
+        {copperLayers(project.board).map((l) => (
           <label key={l} className="flex items-center gap-1.5 text-[12.5px] text-ink-2">
             <input type="checkbox" aria-label={`On the ${l} layer`} checked={layers.includes(l)} onChange={(e) => toggleLayer(l, e.target.checked)} />
-            {l === "top" ? "Top" : "Bottom"}
+            {layerLabel(project.board, l)}
           </label>
         ))}
       </div>
@@ -166,7 +167,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
           {zone.teardrop && <Row label="Teardrop" value={zone.teardrop === "padvia" ? "at a pad or via" : "at a track end"} />}
         </>
       )}
-      <Row label="Layers" value={layers.map((l) => (l === "top" ? "Top" : "Bottom")).join(" and ")} />
+      <Row label="Layers" value={layers.map((l) => layerLabel(project.board, l)).join(", ")} />
       <Row label="Corners" value={facts.corners} />
       <Row label="Area" value={`${facts.area.toFixed(1)} mm²`} mono />
       {!rule && <Row label="Copper" value={facts.empty ? "none: nothing to fill here" : `${areaMm2OfZone(facts.copper).toFixed(1)} mm² in ${facts.pieces} piece${facts.pieces === 1 ? "" : "s"}`} />}

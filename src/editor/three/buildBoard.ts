@@ -1,3 +1,5 @@
+import { viaLayers } from "../../model/stack"
+import { viaTentedOn } from "../../model/viaRules"
 import * as THREE from "three"
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
 import { boardColors, boardFinish, finishMetal, mountingHoles } from "../../model/board"
@@ -201,7 +203,8 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
       holes.push({ x: p.x, y: p.y, r: p.holeDiameter / 2, bare: isNpth(p), slot })
     }
   }
-  for (const v of project.vias) holes.push({ x: v.x, y: v.y, r: v.drill / 2 })
+  // Only a through via is drilled through the whole board; blind, buried and micro vias are inside it (X5).
+  for (const v of project.vias) if (!v.kind) holes.push({ x: v.x, y: v.y, r: v.drill / 2 })
   for (const h of holesMounting) holes.push({ x: h.x, y: h.y, r: h.drill / 2 })
 
   const outline = roundedRect(b.x, b.y, b.width, b.height, b.cornerRadius)
@@ -270,19 +273,28 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
       if (p.layers.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true))
     }
   }
-  const tented = project.rules.tentVias
-  const rings = [...holesMounting, ...(tented ? [] : project.vias)]
-  for (const h of rings) {
+  const viaSide = (v: (typeof project.vias)[number], side: "top" | "bottom") => viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)
+  for (const h of holesMounting) {
     const ring = circleShape(h.x, h.y, h.diameter / 2)
     ring.holes.push(circlePath(h.x, h.y, h.drill / 2))
     copper.push(slab(ring, PAD_DEPTH, topZ, false))
     copper.push(slab(ring, PAD_DEPTH, bottomZ, true))
   }
+  for (const v of project.vias) {
+    // A through via has a hole in its ring; a blind one is closed on the side it does not reach, so its ring has no hole to show.
+    const hole = !v.kind
+    for (const side of ["top", "bottom"] as const) {
+      if (!viaSide(v, side)) continue
+      const ring = circleShape(v.x, v.y, v.diameter / 2)
+      if (hole) ring.holes.push(circlePath(v.x, v.y, v.drill / 2))
+      copper.push(slab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom"))
+    }
+  }
   mergeInto(group, copper, metal, "copper", false)
 
   // Plated barrels for pad and mounting holes, and for vias unless they're tented: then mask
   // dips into the hole and closes it, so they read as small dimples rather than open holes.
-  const viaAt = new Set(tented ? project.vias.map((v) => `${v.x},${v.y}`) : [])
+  const viaAt = new Set(project.vias.filter((v) => !v.kind && viaTentedOn(project.rules, v, "top") && viaTentedOn(project.rules, v, "bottom")).map((v) => `${v.x},${v.y}`))
   const barrels: THREE.BufferGeometry[] = []
   const plugs: THREE.BufferGeometry[] = []
   for (const h of accepted) {

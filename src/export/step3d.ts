@@ -140,7 +140,8 @@ export function stepBoard(project: Project): StepExportInput["board"] {
       place(at.x, at.y, p.holeDiameter, ends ? { a: ends[0], b: ends[1] } : undefined)
     }
   }
-  for (const v of project.vias) place(v.x, v.y, v.drill)
+  // Only a through via cuts the whole board; blind, buried and micro vias stay inside it (see the note in stepFile).
+  for (const v of project.vias) if (!v.kind) place(v.x, v.y, v.drill)
   for (const h of mountingHoles(b)) place(h.x, h.y, h.drill)
   return {
     outline: { x: b.x, y: b.y, width: b.width, height: b.height, cornerRadius: b.cornerRadius, ...(g ? { regions: stepRegions(g, b.outline!.paths) } : {}) },
@@ -286,6 +287,8 @@ export async function stepFile(project: Project, options: { onProgress?: (p: Ste
 
   if (approximate.length) notes.push(approximateNote(approximate))
 
+  const partial = project.vias.filter((v) => v.kind).length
+  if (partial) notes.push(`${partial} blind, buried or micro via${partial === 1 ? " is" : "s are"} not drawn: the board solid has only the holes that go through it.`)
   const out = writeStep({ name: project.name, board: stepBoard(project), models: [...models.values()], placements })
   return { text: out.text, notes: [...notes, ...out.notes] }
 }

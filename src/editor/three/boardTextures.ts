@@ -1,3 +1,5 @@
+import { viaLayers } from "../../model/stack"
+import { viaTentedOn } from "../../model/viaRules"
 import * as THREE from "three"
 import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../../model/board"
 import { isNpth, maskSides, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
@@ -191,6 +193,7 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
     for (const p of pads) if ((isNpth(p) ? (p.ring ?? []) : p.layers).includes(layer)) padPath(ctx, p)
   }
   for (const v of project.vias) {
+    if (!viaLayers(project.board, v).includes(layer)) continue
     ctx.moveTo(v.x + v.diameter / 2, v.y)
     ctx.arc(v.x, v.y, v.diameter / 2, 0, Math.PI * 2)
   }
@@ -233,7 +236,7 @@ function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: 
       else padPath(ctx, p, grow)
     }
   }
-  const rings = [...mountingHoles(input.project.board), ...(input.project.rules.tentVias ? [] : input.project.vias)]
+  const rings = [...mountingHoles(input.project.board), ...input.project.vias.filter((v) => viaLayers(input.project.board, v).includes(side) && !viaTentedOn(input.project.rules, v, side as "top" | "bottom"))]
   for (const h of rings) {
     ctx.moveTo(h.x + h.diameter / 2 + grow, h.y)
     ctx.arc(h.x, h.y, h.diameter / 2 + grow, 0, Math.PI * 2)

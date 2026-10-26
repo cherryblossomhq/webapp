@@ -3,7 +3,9 @@ import { runTool } from "../src/ai/tools"
 import type { ToolContext } from "../src/ai/toolKit"
 import { getConnectivity } from "../src/store/analysis"
 import { createProject } from "../src/model/ops"
-import { isHierarchical, sheetUses } from "../src/model/sheets"
+import { isHierarchical, mergeSheetView, sheetUses, sheetView, syncCopies } from "../src/model/sheets"
+import { addDrawings } from "../src/model/drawings"
+import { kicadFiles } from "../src/export/kicad"
 import type { Project } from "../src/model/types"
 
 // Sakura builds sheets: add_sheet (new, or another use), edit_sheet, add_hier_label, wire_sheet_pin and show_sheet, one undo step each (a tool call
@@ -225,5 +227,43 @@ describe("get_design lists the hierarchy", () => {
     const d = JSON.parse(run(p, "get_design", {}).result)
     expect(d.sheets[0]).toMatchObject({ path: "/", page: "1" })
     expect(d.sheets[1]).toMatchObject({ path: "/POWER/", page: "2", box: { w: 10, h: 8 }, pins: ["EN (input)"] })
+  })
+})
+
+// The join with buses (S3): the draw tool has no bus shape, so the bus is drawn the way the editor's Bus tool does (the same drawings), on the sheet's own view.
+describe("Sakura's sheets with a bus", () => {
+  function built() {
+    let p = withPower()
+    p = good(p, "connect", { sheet: "POWER", net_name: "D3", pins: ["R2.1"] })
+    const path = sheetUses(p)[1].path
+    const view = sheetView(p, path)
+    const label = view.labels.find((l) => l.name === "D3")!
+    let v2 = addDrawings(view, [{ type: "bus", points: [{ x: label.x - 1.4, y: label.y + 0.2 }, { x: label.x + 0.1, y: label.y + 0.2 }] }, { type: "busentry", x: label.x, y: label.y, dx: -0.2, dy: 0.2 }]).project
+    v2 = { ...v2, labels: [...v2.labels, { id: "lbus", name: "D[0..3]", x: label.x - 0.9, y: label.y + 0.2, rot: 0, sheet: label.sheet }] }
+    p = syncCopies(mergeSheetView(p, view, v2), path)
+    p = good(p, "add_sheet", { reuse: "POWER", name: "POWER2" })
+    p = good(p, "add_hier_label", { sheet: "POWER", name: "ENA", pins: ["C1.1"] })
+    p = good(p, "wire_sheet_pin", { sheet: "POWER", pin: "ENA", to: ["R1.1"] })
+    return p
+  }
+
+  it("exports the bus, with the bus member as each use's own net and the hierarchical net shared", async () => {
+    const p = built()
+    const names = getConnectivity(p).nets.map((n) => n.name).sort()
+    expect(names).toEqual(["/ENA", "/POWER/D3", "/POWER2/D3", "/POWER2/ENA"])
+    const sch = Object.entries((await kicadFiles(p)).files).find(([k]) => k.startsWith("POWER") && k.endsWith(".kicad_sch"))![1] as string
+    expect(sch).toMatch(/\(bus\b/)
+    expect(sch).toMatch(/\(bus_entry\b/)
+    expect(sch).toContain('(label "D[0..3]"')
+    expect(sch).toContain('(hierarchical_label "ENA"')
+  })
+
+  it("draw on the sheet keeps the bus, and Tidy still refuses a sheet with buses", () => {
+    let p = built()
+    p = good(p, "draw", { sheet: "POWER", shapes: [{ type: "text", x: 0, y: 4, text: "note" }] })
+    const view = sheetView(p, sheetUses(p)[1].path)
+    expect(view.drawings?.some((d) => d.type === "bus")).toBe(true)
+    expect(view.drawings?.some((d) => d.type === "text")).toBe(true)
+    expect(refused(p, "tidy_schematic", { sheet: "POWER", whole_sheet: true })).toMatch(/sheet with buses/)
   })
 })

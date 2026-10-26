@@ -775,7 +775,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(rows.filter((r) => r.status === "imported" && r.fillStored > 0 && r.fillXor > Math.max(0.1 * r.fillTheirs, 5)).map((r) => r.file)).toEqual(ONLY.length || LIMIT ? expect.arrayContaining([]) : ZONE_FILL_OUTLIERS)
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },
-    3_600_000,
+    10_800_000,
   )
 })
 

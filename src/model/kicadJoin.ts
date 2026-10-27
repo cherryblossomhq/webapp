@@ -26,9 +26,11 @@ export function onSideExact(p: Vec2, a: Vec2, b: Vec2): boolean {
   const by = iu(b.y)
   if (Math.max(Math.abs(px), Math.abs(py), Math.abs(ax), Math.abs(ay), Math.abs(bx), Math.abs(by)) > 2 ** 26) {
     const [PX, PY, AX, AY, BX, BY] = [px, py, ax, ay, bx, by].map((v) => BigInt(v))
-    if ((BX - AX) * (PY - AY) - (BY - AY) * (PX - AX) !== 0n) return false
+    // `BigInt(0)`, not `0n`: the website compiles this package for a target below ES2020.
+    const ZERO = BigInt(0)
+    if ((BX - AX) * (PY - AY) - (BY - AY) * (PX - AX) !== ZERO) return false
     const dot = (PX - AX) * (BX - AX) + (PY - AY) * (BY - AY)
-    return dot > 0n && dot < (BX - AX) ** 2n + (BY - AY) ** 2n
+    return dot > ZERO && dot < (BX - AX) * (BX - AX) + (BY - AY) * (BY - AY)
   }
   if ((bx - ax) * (py - ay) - (by - ay) * (px - ax) !== 0) return false
   const dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay)

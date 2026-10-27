@@ -75,6 +75,8 @@ interface UiState {
   copilotOpen: boolean
   /** The menu of every sheet, over the left end of the sheet tabs (`panels/SheetMenu.tsx`); a project of one sheet has none. */
   sheetMenuOpen: boolean
+  /** The use of a sheet whose tab is being renamed (a new sheet's starts so), or null. */
+  renamingSheet: string | null
   /** Version history (`panels/HistoryPanel.tsx`), a column on the left. Starts closed, and is not remembered. */
   historyOpen: boolean
   cursor: { x: number; y: number } | null
@@ -110,6 +112,7 @@ interface UiState {
   setCopilotOpen: (open: boolean) => void
   toggleCopilot: () => void
   setSheetMenu: (open: boolean) => void
+  setRenamingSheet: (path: string | null) => void
   toggleHistory: () => void
   setCursor: (c: { x: number; y: number } | null) => void
   focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
@@ -135,6 +138,7 @@ export const useUi = create<UiState>((set, get) => ({
   panelOpen: wide(),
   copilotOpen: false,
   sheetMenuOpen: false,
+  renamingSheet: null,
   historyOpen: false,
   cursor: null,
   focusRequest: null,
@@ -172,6 +176,7 @@ export const useUi = create<UiState>((set, get) => ({
   setCopilotOpen: (copilotOpen) => set({ copilotOpen }),
   toggleCopilot: () => set({ copilotOpen: !get().copilotOpen }),
   setSheetMenu: (sheetMenuOpen) => set({ sheetMenuOpen }),
+  setRenamingSheet: (renamingSheet) => set({ renamingSheet }),
   toggleHistory: () => set({ historyOpen: !get().historyOpen }),
   setCursor: (cursor) => set({ cursor }),
   focus: (view, x, y, box, fit) =>

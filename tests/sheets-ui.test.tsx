@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { runErc } from "../src/model/erc"
 import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, renameSheetUse, resizeSheetSymbol, setSheetSymbol } from "../src/model/sheetOps"
-import { addWire, createProject } from "../src/model/ops"
+import { addComponent, addWire, createProject } from "../src/model/ops"
+import { schematicPins } from "../src/model/instances"
+import { moveSelectedToNewSheet } from "../src/editor/schematic/sheetActions"
 import { sheetUses } from "../src/model/sheets"
 import { SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
 import { SheetTabs } from "../src/panels/SheetTabs"
 import { ReadOnly } from "../src/ui/form"
-import { projectApi } from "../src/store/projectStore"
+import { projectApi, useProjectStore } from "../src/store/projectStore"
 import { commitHere, shownProject } from "../src/store/sheetScope"
 import { uiApi } from "../src/store/uiStore"
 import { tidySelected } from "../src/editor/schematic/tidyAction"
@@ -25,6 +27,13 @@ let host: HTMLElement
 const mount = (ui: ReactElement) => act(() => root.render(ui))
 const button = (name: RegExp | string) => [...document.querySelectorAll("button")].find((b) => (typeof name === "string" ? b.textContent?.trim() === name : name.test(b.textContent ?? "") || name.test(b.getAttribute("aria-label") ?? "")))
 const click = (b: Element | undefined) => act(() => void b!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+/** Type into a field and leave it as a key does (Enter blurs it, Escape gives up). */
+const type = (input: HTMLInputElement, value: string, key: "Enter" | "Escape") =>
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value)
+    input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
+    if (key === "Enter") input.blur()
+  })
 
 beforeEach(() => {
   host = document.createElement("div")
@@ -46,10 +55,41 @@ const open = (uses?: Parameters<typeof imp>[0]) => {
 describe("the sheet tabs", () => {
   const tabs = () => [...host.querySelectorAll("[role=tab]")]
 
-  it("are not there for a project of one sheet", () => {
+  it("are Main and a + for a project of one sheet, with no menu to open, and nothing for a viewer of it", () => {
     projectApi().open(createProject("one"))
     mount(<SheetTabs />)
+    expect(tabs().map((t) => t.textContent)).toEqual(["Main"])
+    expect(button(/New sheet/)).toBeDefined()
+    expect(button(/All sheets/)).toBeUndefined()
+    useProjectStore.setState({ role: "viewer" })
+    mount(<SheetTabs />)
     expect(host.textContent).toBe("")
+    useProjectStore.setState({ role: "owner" })
+  })
+
+  it("make a new sheet with the +, show it, and have its tab ready to be named; Escape keeps the name it was given", () => {
+    projectApi().open(createProject("one"))
+    mount(<SheetTabs />)
+    click(button(/New sheet/))
+    const p = projectApi().project!
+    expect(p.sheetSymbols).toHaveLength(1)
+    expect(p.sheetSymbols![0]).toMatchObject({ sheet: "root", name: "Sheet", w: 2, h: 1.2 })
+    expect(uiApi().sheet).toBe(`/${p.sheetSymbols![0].id}`)
+    const input = host.querySelector<HTMLInputElement>("input[role=tab]")!
+    expect(input.value).toBe("Sheet")
+    type(input, "Power", "Enter")
+    // Its file was named after it, and follows the name it is given.
+    expect(projectApi().project!.sheetSymbols![0]).toMatchObject({ name: "Power", file: "Power.kicad_sch" })
+    expect(projectApi().project!.sheets!.find((x) => x.id === p.sheetSymbols![0].child)!.file).toBe("Power.kicad_sch")
+    expect(tabs().map((t) => t.textContent)).toEqual(["Main", "Power"])
+    // A double-click on a tab renames it too; Escape gives the new name up.
+    act(() => void tabs()[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true })))
+    type(host.querySelector<HTMLInputElement>("input[role=tab]")!, "Nope", "Escape")
+    expect(projectApi().project!.sheetSymbols![0].name).toBe("Power")
+    // Undo takes the name back, and then the sheet.
+    act(() => projectApi().undo())
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols ?? []).toHaveLength(0)
   })
 
   it("are one per use, Main first, by name alone, the sheet shown selected; a click shows that use", () => {
@@ -72,6 +112,35 @@ describe("the sheet tabs", () => {
     click(button(/All sheets/))
     expect(uiApi().sheetMenuOpen).toBe(false)
     expect(host.querySelector("[role=dialog]")).toBeNull()
+  })
+})
+
+describe("moving the selection to a new sheet", () => {
+  it("is one undo step that leaves the new sheet's symbol selected (the Inspector then lists its pins) and its tab ready to be named", () => {
+    let p = createProject("t")
+    const a = addComponent(p, "resistor", { sch: { x: 0, y: 0, rot: 90 } })
+    const b = addComponent(a.project, "resistor", { sch: { x: 2, y: 0, rot: 90 } })
+    p = b.project
+    const pin = (id: string, n: string) => schematicPins(p.components.find((c) => c.id === id)!).find((x) => x.pin === n)!.pos
+    p = addWire(p, [pin(a.component.id, "2"), pin(b.component.id, "1")]).project
+    projectApi().open(p)
+    act(() => uiApi().select([`c:${b.component.id}`]))
+    act(() => moveSelectedToNewSheet())
+    const after = projectApi().project!
+    const sym = after.sheetSymbols![0]
+    expect(uiApi().selection).toEqual([`h:${sym.id}`])
+    expect(uiApi().renamingSheet).toBe(`/${sym.id}`)
+    expect(sym.pins.map((x) => x.name)).toEqual(["R1_2"])
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols ?? []).toHaveLength(0)
+    expect(projectApi().project!.components.every((c) => c.inst === undefined)).toBe(true)
+  })
+
+  it("says what to select when nothing that can move is", () => {
+    projectApi().open(createProject("t"))
+    act(() => uiApi().select([]))
+    act(() => moveSelectedToNewSheet())
+    expect(uiApi().notice?.text).toBe("Select the parts to move to a new sheet first.")
   })
 })
 
@@ -106,7 +175,8 @@ describe("the panel of the sheet shown", () => {
     expect(top.sheets!.find((s) => s.id === "root")).toMatchObject({ name: "Board" })
     expect(sheetUses(top)[0]).toMatchObject({ name: "Board" })
     const below = renameSheetUse(top, "/h1", "Supply")
-    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply" })
+    // A file KiCad named otherwise keeps its name.
+    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply", file: p.sheetSymbols![0].file })
     // An empty name, or a use the project hasn't, changes nothing.
     expect(renameSheetUse(below, "/h1", "  ")).toBe(below)
     expect(renameSheetUse(below, "/gone", "X")).toBe(below)

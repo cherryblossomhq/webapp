@@ -1,4 +1,5 @@
 import { round } from "../lib/geometry"
+import { schematicBounds } from "./instances"
 import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { moveProblems } from "./merges"
@@ -37,6 +38,15 @@ function freshName(p: Project, base: string): string {
 
 const slug = (name: string) => name.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "sheet"
 
+/** A file for a sheet named `name` that no other sheet has (KiCad keeps each sheet in a file of its own): `Power.kicad_sch`, `Power2.kicad_sch`. */
+function freeFile(p: Project, name: string, except?: string): string {
+  const taken = new Set([...(p.sheets ?? []).filter((s) => s.id !== except).map((s) => s.file?.toLowerCase()), ...(p.sheetSymbols ?? []).filter((s) => s.child !== except).map((s) => s.file.toLowerCase())])
+  const base = slug(name)
+  let file = `${base}.kicad_sch`
+  for (let i = 2; taken.has(file.toLowerCase()); i++) file = `${base}${i}.kicad_sch`
+  return file
+}
+
 export interface BoxLike {
   minX: number
   minY: number
@@ -51,7 +61,7 @@ export function addSheet(project: Project, parent: string, box: BoxLike, name?: 
   const id = nextId(sheetIds({ ...project, sheets }), "s")
   const symbolId = nextId(symbolIds(project), "h")
   const title = name?.trim() || freshName(project, "Sheet")
-  const sheet: SchematicSheet = { id, file: `${slug(title)}.kicad_sch` }
+  const sheet: SchematicSheet = { id, file: freeFile(project, title) }
   const symbol: SheetSymbol = {
     id: symbolId,
     sheet: parentSheet,
@@ -66,6 +76,46 @@ export function addSheet(project: Project, parent: string, box: BoxLike, name?: 
   }
   return { project: touch({ ...project, sheets: [...sheets, sheet], sheetSymbols: [...(project.sheetSymbols ?? []), symbol] }), symbol }
 }
+
+/** The first free place on the sheet of a use: right of everything on it, level with the lowest thing. */
+export function freeSheetSpot(project: Project, parent: string): Vec2 {
+  const use = useAt(project, parent)
+  const view = sheetView(project, use.path)
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const c of view.components) {
+    const b = schematicBounds(c)
+    xs.push(b.maxX)
+    ys.push(b.minY)
+  }
+  for (const s of project.sheetSymbols ?? []) {
+    if (s.sheet !== use.sheet) continue
+    xs.push(s.x + s.w)
+    ys.push(s.y)
+  }
+  for (const w of view.wires) {
+    for (const q of w.points) {
+      xs.push(q.x)
+      ys.push(q.y)
+    }
+  }
+  for (const l of view.labels) {
+    xs.push(l.x)
+    ys.push(l.y)
+  }
+  return xs.length ? { x: snap(Math.max(...xs) + 2), y: snap(Math.min(...ys)) } : { x: 0, y: 0 }
+}
+
+/** A new empty sheet, its symbol drawn in free space on the use of a sheet at `parent` at the size KiCad gives a new one. */
+export function addSheetInFreeSpace(project: Project, parent: string, name?: string): { project: Project; symbol: SheetSymbol; path: string } {
+  const at = freeSheetSpot(project, parent)
+  const made = addSheet(project, parent, { minX: at.x, minY: at.y, maxX: at.x + NEW_SHEET_W, maxY: at.y + NEW_SHEET_H }, name)
+  return { ...made, path: `${useAt(project, parent).path}/${made.symbol.id}` }
+}
+
+/** The size of a sheet symbol the editor draws for a new sheet: 2 by 1.2 (1000 by 600 mil). */
+export const NEW_SHEET_W = 2
+export const NEW_SHEET_H = 1.2
 
 /** Another use of a sheet that is already there: a second symbol for it, the parts of the sheet copied to the new use with references of their own. */
 export function addSheetUse(project: Project, parent: string, child: string, box: BoxLike, name?: string): { project: Project; symbol: SheetSymbol } | null {
@@ -261,7 +311,12 @@ export function renameSheetUse(project: Project, path: string, name: string): Pr
   const title = name.trim()
   const use = knownUse(project, path)
   if (!title || !use || title === use.name) return project
-  if (use.symbol) return setSheetSymbol(project, use.symbol.id, { name: title })
+  if (use.symbol) {
+    // A file still named after the sheet (as a new sheet's is) follows the new name; one named otherwise, as KiCad's are, stays.
+    const sym = use.symbol
+    const follows = sym.file.replace(/\d*\.kicad_sch$/, "") === slug(sym.name) && usesOfSheet(project, use.sheet).length === 1
+    return setSheetSymbol(project, sym.id, { name: title, ...(follows ? { file: freeFile(project, title, use.sheet) } : {}) })
+  }
   const sheets = sheetsOf(project)
   const root = sheets.find((s) => s.id === ROOT_SHEET)!
   const { name: _old, ...plain } = root

@@ -86,12 +86,15 @@ export function SheetMenu() {
                     aria-label={`Rename ${use.name}`}
                     defaultValue={use.name}
                     onFocus={(e) => e.currentTarget.select()}
-                    onBlur={(e) => rename(use.path, e.currentTarget.value)}
+                    onBlur={(e) => e.currentTarget.dataset.cancel !== "1" && rename(use.path, e.currentTarget.value)}
                     onKeyDown={(e) => {
-                      // Escape gives up the new name and leaves the menu open.
+                      // Escape gives up the new name and leaves the menu open; the field going may still say it lost focus.
                       e.stopPropagation()
                       if (e.key === "Enter") e.currentTarget.blur()
-                      else if (e.key === "Escape") setRenaming(null)
+                      else if (e.key === "Escape") {
+                        e.currentTarget.dataset.cancel = "1"
+                        setRenaming(null)
+                      }
                     }}
                     className="h-6 min-w-0 flex-1 bg-transparent text-[12.5px] font-[600] text-ink outline-none"
                   />

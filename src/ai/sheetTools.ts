@@ -1,8 +1,7 @@
 import { round } from "../lib/geometry"
-import { schematicBounds } from "../model/instances"
 import { kicadRulesShown } from "../model/kicadJoin"
 import { addLabel } from "../model/ops"
-import { addMissingPins, addSheet, addSheetPin, addSheetUse, moveSheetSymbols, removalNote, removeSheetPin, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol, sheetEditProblems } from "../model/sheetOps"
+import { addMissingPins, addSheet, addSheetPin, addSheetUse, freeSheetSpot, moveSheetSymbols, removalNote, removeSheetPin, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol, sheetEditProblems } from "../model/sheetOps"
 import { ROOT_SHEET, isHierarchical, mergeSheetView, sheetUses, sheetView, syncCopies, useAt, type SheetUse } from "../model/sheets"
 import type { LabelShape, Project, SheetSymbol } from "../model/types"
 import { getConnectivity } from "../store/analysis"
@@ -116,33 +115,6 @@ function symbolArg(project: Project, input: ToolInput): { use: SheetUse; sym: Sh
 const nameTaken = (project: Project, parentSheet: string, name: string, except?: string) =>
   (project.sheetSymbols ?? []).some((s) => s.sheet === parentSheet && s.id !== except && s.name.trim().toLowerCase() === name.trim().toLowerCase())
 
-/** The first free place on a sheet: right of everything on it, level with the lowest thing. */
-function freeSheetSpot(project: Project, parent: SheetUse): { x: number; y: number } {
-  const view = sheetView(project, parent.path)
-  const xs: number[] = []
-  const ys: number[] = []
-  for (const c of view.components) {
-    const b = schematicBounds(c)
-    xs.push(b.maxX)
-    ys.push(b.minY)
-  }
-  for (const s of project.sheetSymbols ?? []) {
-    if (s.sheet !== parent.sheet) continue
-    xs.push(s.x + s.w)
-    ys.push(s.y)
-  }
-  for (const w of view.wires) {
-    for (const q of w.points) {
-      xs.push(q.x)
-      ys.push(q.y)
-    }
-  }
-  for (const l of view.labels) {
-    xs.push(l.x)
-    ys.push(l.y)
-  }
-  return xs.length ? { x: onGrid(Math.max(...xs) + 2), y: onGrid(Math.min(...ys)) } : { x: 0, y: 0 }
-}
 
 const sheetProp: JsonSchema = { type: "string", description: "Sheet name or path, e.g. /Power/" }
 
@@ -172,7 +144,7 @@ const addSheetTool: ToolSpec = {
     if (w < GRID * 4 || h < GRID * 2) return fail(project, "The sheet's w and h are too small to draw: use at least 0.4 by 0.2, and 8 by 6 or more to fit pins.")
     if (name !== undefined && !name) return fail(project, "name is empty")
     if (name && nameTaken(project, parent.sheet, name)) return fail(project, `${parent.human} already has a sheet called ${name}. Names are unique on a sheet: pick another.`)
-    const spot = freeSheetSpot(project, parent)
+    const spot = freeSheetSpot(project, parent.path)
     const x = num(input.x) ?? spot.x
     const y = num(input.y) ?? spot.y
     const box = { minX: x, minY: y, maxX: x + w, maxY: y + h }

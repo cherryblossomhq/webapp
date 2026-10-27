@@ -8,10 +8,10 @@
 // <https://www.gnu.org/licenses/>.
 
 import { copperCount } from "./stack"
-import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
+import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64 } from "@countertype/clipper2-ts"
 import { transformPoint } from "../lib/geometry"
 import { effectivePenWidth, inkBox, iuToMm, kiRound, knockoutMargin, layoutText, linebreakText, mmToIu, strokeFont, type IuBox, type StrokeFontData, type TextAttrsIu, type TextStrokes } from "../lib/kicadText"
-import { outlineRings, ringsToPolygons, textOutlineSignature, type Pose } from "./textOutlines"
+import { collect, outlineRings, ringsToPolygons, textOutlineSignature, type Pose } from "./textOutlines"
 import { dimensionDrawing } from "./dimensions"
 import { findPart } from "./library"
 import { isPhysical, valueText } from "./instances"
@@ -682,21 +682,6 @@ export function inkPaths(ink: TextInk, grow = 0): Paths64 {
     out.push(...Clipper.inflatePaths([path], half, JoinType.Round, EndType.Round, 2, 0.005 * NM))
   }
   return out.length ? Clipper.union(out, [], FillRule.NonZero) : []
-}
-
-/** The outer rings with their holes of a polygon tree, each ring first and its holes after. */
-function collect(node: PolyPath64, out: Path64[][]) {
-  for (let i = 0; i < node.count; i++) {
-    const outer = node.child(i)
-    if (!outer.poly) continue
-    const group: Path64[] = [outer.poly]
-    for (let j = 0; j < outer.count; j++) {
-      const hole = outer.child(j)
-      if (hole.poly) group.push(hole.poly)
-      collect(hole, out)
-    }
-    out.push(group)
-  }
 }
 
 /** A knockout text's filled shape: its box (grown by the margin) with the strokes taken out. Each polygon is its outer ring and then its holes. */

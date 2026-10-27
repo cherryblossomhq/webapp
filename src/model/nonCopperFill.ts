@@ -35,7 +35,8 @@ export function smoothedOtherOutline(project: Project, zone: Zone, layer: string
   if (!flat.length) return []
   let joined = flat
   for (const other of project.zones) {
-    if (other === zone || !isOtherZone(other) || isRuleArea(other) || !other.other!.includes(layer)) continue
+    // KiCad's `GetInteractingZones` looks only at `board->Zones()`: a zone that belongs to a part is never joined to a board zone's outline.
+    if (other === zone || other.part || !isOtherZone(other) || isRuleArea(other) || !other.other!.includes(layer)) continue
     const o = outlinePaths(project, other)
     if (o.length && intersect(flat, o).length) joined = union(joined, o)
   }

@@ -6,6 +6,9 @@ import { SHAPE_LAYERS, shapeLayerInfo } from "./shapeLayers"
 /** The non-copper layers a zone may be on, in the order a layer picker lists them. */
 export const OTHER_LAYER_ORDER: readonly string[] = [...SHAPE_LAYERS.filter((l) => l.kind !== "copper").map((l) => l.name), "Edge.Cuts"]
 
+/** The non-copper layers the editor has a Gerber for. */
+export const PLOTTED_LAYERS = /^[FB]\.(Mask|Paste|SilkS)$|^Edge\.Cuts$/
+
 const known = new Set(OTHER_LAYER_ORDER)
 
 /** Whether a name is a layer a zone may be on besides copper. */

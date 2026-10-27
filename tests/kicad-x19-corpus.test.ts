@@ -10,7 +10,6 @@ import { OutlineNotClosedError } from "../src/export/outlineGuard"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { textFontState, textInk, worldTexts } from "../src/model/texts"
 import { outlineState } from "../src/model/outline"
-import { rememberImage } from "../src/store/imageFiles"
 import { parseSexpr } from "./kicad-census/sexpr.mjs"
 import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
@@ -25,7 +24,8 @@ import { unknownNodes } from "./kicad9-nodes"
 //  - every text that has a cache is drawn from it (`textFontState` is `outline`);
 //  - the letters as drawn against the file's polygons: points sampled in each text's box, inside or outside by the non-zero winding of the file's own rings (the oracle) and
 //    by the editor's polygon groups (outer rings less holes), which must agree except within a nanometre of an edge (the Hausdorff measure of the two shapes is
-//    then at most that, sampled), and the areas of the two (shoelace sums against the polygons' areas) to a part in 10^9 of the ink;
+//    then at most that, sampled), and the areas of the two (the file's rings integrated by scanlines, against the polygons' shoelace areas), which agree to the scanline's
+//    own error (about 2e-4 of the ink: the scanline sum is approximate); the tight checks are the 2 nm edge gap and the samples;
 //  - the Gerber files hold a region of the same area for every polygon the letters make (Gerber coordinates are whole nanometres);
 //  - a save and a load give the same project, and the KiCad export read again gives the same texts, the same fonts and the same outlines.
 // With no corpus the test is skipped.
@@ -193,6 +193,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
       // 2. the letters against the file's polygons: points sampled in each text's box
       const rawBy = new Map<string, RawText[]>()
       for (const t of raw) rawBy.set(t.text, [...(rawBy.get(t.text) ?? []), t])
+      const used = new Set<RawText>()
       let samples = 0
       let hausdorffWrong = 0
       let hausdorffWorst = 0
@@ -206,15 +207,17 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
         const shownRaw = raw.find((q) => q.text === (wt.outline!.text))
         const mine = ink.outlines!
         // the oracle's rings for this text: those of the raw cache with the text's own text and the same first point (cache polygons are unique to a text's place)
-        const first = wt.outline!.rings
-        void first
         const cands = (rawBy.get(wt.outline!.text) ?? []).filter((q) => q.rings.length)
-        const rings = cands.find((q) => {
+        const cache = cands.find((q) => {
+          if (used.has(q)) return false
           if (q.mirror !== !!wt.mirror) return false
           const xs = q.rings.flatMap((rg) => rg.map((pt) => pt[0]))
           const ys = q.rings.flatMap((rg) => rg.map((pt) => -pt[1]))
           return Math.abs(Math.min(...xs) - lt.box.minX) < 1e-6 && Math.abs(Math.max(...xs) - lt.box.maxX) < 1e-6 && Math.abs(Math.min(...ys) - lt.box.minY) < 1e-6 && Math.abs(Math.max(...ys) - lt.box.maxY) < 1e-6
-        })?.rings
+        })
+        // a cache is the oracle of one text only: two texts of the editor cannot both claim it
+        if (cache) used.add(cache)
+        const rings = cache?.rings
         if (!rings) {
           if (shownRaw) problems.push(`${name}: no cache of the file matches the box of the text "${wt.outline!.text}"`)
           continue
@@ -341,7 +344,6 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
       }
       if (p.fonts?.files.length) total.fonts += p.fonts.files.length
       rows.push(row)
-      void rememberImage
     }
     const summary = { ...total, refused: Object.fromEntries(total.refused), problems }
     if (OUT) writeFileSync(OUT, JSON.stringify({ summary, rows }, null, 1))

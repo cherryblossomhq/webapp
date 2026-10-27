@@ -496,6 +496,8 @@ export interface KicadFontFile {
   owner: KicadFootprint | null
   bytes: Uint8Array
   checksum: string | null
+  /** The `file` node it was read from. */
+  node: List
 }
 
 export interface KicadBoard {

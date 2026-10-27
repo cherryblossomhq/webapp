@@ -31,9 +31,6 @@ export const PLACEMENT_BY: { value: ZonePlacement["by"]; label: string }[] = [
   { value: "group", label: "Parts in a group" },
 ]
 
-/** `placement` as KiCad's writer does when it has none to say: a switched off rule area that names no sheet. */
-export const NO_PLACEMENT: ZonePlacement = { by: "sheet", name: "", off: true }
-
 /** Whether the zone is a rule area with a target that is switched on. */
 export const placesParts = (z: Zone): boolean => !!z.keepout && !!z.placement && !z.placement.off && z.placement.name !== ""
 
@@ -54,16 +51,20 @@ export function placementAreas(project: Pick<Project, "zones">): Zone[] {
   return project.zones.some((z) => z.placement) ? project.zones.filter((z) => placesParts(z) && hasPolygon(z)) : []
 }
 
-/** Every rule area that has a placement, on or off, as the Inspector and Sakura list them. */
-export const placementZones = (project: Pick<Project, "zones">): Zone[] => project.zones.filter((z) => z.keepout && z.placement)
+/** The sheet paths a sheet area can name: the schematic's sheets, then the sheets that parts of a board brought in without its schematic say they are on (`sheetPath`). */
+export function sheetNames(project: Project): string[] {
+  const names = sheetUses(project).map((u) => u.human)
+  for (const c of project.components) if (c.sheetPath !== undefined && !names.includes(c.sheetPath)) names.push(c.sheetPath)
+  return names
+}
 
 /** The target a new placement area starts with: the sheet of the part that is selected, else the first sheet that has no area yet (the root sheet of a design with one). */
 export function defaultPlacement(project: Project, selectedIds: readonly string[]): ZonePlacement {
   const sel = project.components.find((c) => selectedIds.includes(c.id))
   if (sel) return { by: "sheet", name: partSheet(project, sel) }
   const taken = new Set(project.zones.flatMap((z) => (z.placement?.by === "sheet" ? [z.placement.name] : [])))
-  const uses = sheetUses(project)
-  return { by: "sheet", name: (uses.find((u) => !taken.has(u.human)) ?? uses[0]).human }
+  const names = sheetNames(project)
+  return { by: "sheet", name: names.find((n) => !taken.has(n)) ?? names[0] }
 }
 
 // ---------- which parts an area picks ----------

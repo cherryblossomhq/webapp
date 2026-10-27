@@ -53,6 +53,21 @@ describe("X30 is built, and the gate says so", () => {
     expect(importKicadBoard(text).status).toBe("imported")
   })
 
+  it("a placement area inside a part keeps no placement, and the report says so", () => {
+    const on = `(keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed)) (placement (enabled yes) (sheetname "/A/")) ${FILL}`
+    const r = imported([part([zoneIn(SQUARE, '(layer "F.Cu")', on)])])
+    const z = r.project.footprints![0].zones![0]
+    expect(z.keepout).toBeDefined()
+    expect(z.placement).toBeUndefined()
+    expect(r.project.zones.some((q) => q.placement)).toBe(false)
+    const entry = r.report.entries.find((e) => e.code === "placement-in-parts")
+    expect(entry?.severity).toBe("not-brought")
+    expect(entry?.count).toBe(1)
+    // a switched off one that names no sheet (what KiCad 9 writes on every keepout) is nothing to report
+    const plain = imported([part([zoneIn(SQUARE)])])
+    expect(plain.report.entries.some((e) => e.code === "placement-in-parts")).toBe(false)
+  })
+
   it("the zone is the land's, in the land's frame, with none of the board's identity", () => {
     const r = imported([part([zoneIn(SQUARE)])])
     const land = r.project.footprints![0]

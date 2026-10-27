@@ -33,6 +33,12 @@ export interface OutlineLook {
 }
 
 /** The signature of what a text's outlines depend on (`TextOutline.sig`): equal signatures draw the same letters. */
+/**
+ * The font a text is said to be in when the file caches its outlines and names no font. It only lets the outlines be kept and the report name them: the writer never writes it
+ * as a `face` (the user's board has no such font), only the outlines.
+ */
+export const UNNAMED_FONT = "a font the file does not name"
+
 export const textOutlineSignature = (l: OutlineLook): string => [l.face, l.size, l.w, l.bold ? 1 : 0, l.italic ? 1 : 0, l.hj, l.vj, l.spacing, ...(l.box ? [l.box.w, l.box.h, ...l.box.margins] : [])].join("|")
 
 // ---------- the packed rings ----------
@@ -176,7 +182,7 @@ export function outlineRings(o: TextOutline, now: Pose): Polygon[] {
 // ---------- as polygons ----------
 
 /** The outer rings with their holes of a polygon tree, each ring first and its holes after. */
-function collect(node: PolyPath64, out: Path64[][]) {
+export function collect(node: PolyPath64, out: Path64[][]) {
   for (let i = 0; i < node.count; i++) {
     const outer = node.child(i)
     if (!outer.poly) continue

@@ -11,7 +11,7 @@ import { rotate90 } from "../../../lib/geometry"
 import { kiRound, mmToIu } from "../../../lib/kicadText"
 import { flipShapeLayer } from "../../shapeLayers"
 import { boardTextWorld, isTextLayer, outlineSignatureOf, partTextWorld, textInk, textPose, type WorldText } from "../../texts"
-import { packRings } from "../../textOutlines"
+import { packRings, UNNAMED_FONT } from "../../textOutlines"
 import type { BoardText, ComponentInstance, PartText, PcbSide, Project, TextAttrs, TextOutline } from "../../types"
 import { resolveLayer } from "./graphics"
 import type { KicadBoard, KicadText } from "./types"
@@ -37,9 +37,6 @@ export function faceOf(t: KicadText): string | null {
   if (t.face !== null && !t.face.startsWith(KICAD_FONT_NAME)) return t.face
   return t.renderCache && t.face === null ? UNNAMED_FONT : null
 }
-
-/** What a text is said to be in when the file caches its outlines and names no font. */
-export const UNNAMED_FONT = "a font the file does not name"
 
 /** The outlines of a text, kept with the pose and the look they were drawn at: the world text is the text as the model has it. */
 function outlineOf(t: KicadText, wt: WorldText): TextOutline | undefined {

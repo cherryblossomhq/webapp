@@ -4,7 +4,7 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { pcbCourtyard } from "../src/model/instances"
 import { addComponent, autoPlacePcb, createProject, labelPin, resolvePinSpec, updateComponent } from "../src/model/ops"
 import { analyzePcb } from "../src/model/pcb"
-import { areaReport, areasOfPart, groupNamesOf, nearestInAreas, partInAreas, partSheet, placementAreas, placementProblems, ringInArea } from "../src/model/placementAreas"
+import { areaReport, areasOfPart, defaultPlacement, sheetNames, groupNamesOf, nearestInAreas, partInAreas, partSheet, placementAreas, placementProblems, ringInArea } from "../src/model/placementAreas"
 import { zoneArea } from "../src/model/zones"
 import { makeZone } from "../src/model/zoneOps"
 import type { ComponentInstance, Project, Vec2, Zone, ZonePlacement } from "../src/model/types"
@@ -285,5 +285,17 @@ describe("Sakura", () => {
     const r = runTool(p, "layout_pcb", {})
     expect(r.isError).toBe(false)
     expect(r.result).toMatch(/part\(s\) are outside their placement area \(R\d/)
+  })
+})
+
+describe("the sheets a placement area can name", () => {
+  it("a board brought in without its schematic offers the sheets its parts say they are on", () => {
+    const p = board(3, 2)
+    expect(sheetNames(p)).toEqual(["/", "/Power/"])
+    // the first sheet with no area of its own is the default
+    const first = defaultPlacement(p, [])
+    expect(first).toEqual({ by: "sheet", name: "/" })
+    const taken = { ...p, zones: [area(rect(-5, -5, 5, 5), { by: "sheet", name: "/" })] }
+    expect(defaultPlacement(taken, [])).toEqual({ by: "sheet", name: "/Power/" })
   })
 })

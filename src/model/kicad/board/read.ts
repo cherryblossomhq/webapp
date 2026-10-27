@@ -1401,7 +1401,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       return
     }
     const sum = strAt(kid(f, "checksum"), 1)
-    fontFiles.push({ name, owner: from, bytes, checksum: sum ?? null })
+    fontFiles.push({ name, owner: from, bytes, checksum: sum ?? null, node: f })
   }
   for (const e of kids(tree, "embedded_files")) for (const f of kids(e, "file")) embed(f, "the board", null)
   for (const fp of footprints) for (const e of kids(fp.node, "embedded_files")) for (const f of kids(e, "file")) embed(f, fp.ref || fp.name, fp)

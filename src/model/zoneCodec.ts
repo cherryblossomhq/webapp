@@ -53,7 +53,6 @@ export function unpackRings(raw: unknown): ShapePath[] | null {
   return out.length ? out : null
 }
 
-const sortedOtherLayers = orderedOtherLayers
 const legacyKeys = new Set(["id", "net", "layer", "clearance"])
 const isLegacy = (z: Zone) => Object.keys(z).every((k) => legacyKeys.has(k) || (z as unknown as Json)[k] === undefined)
 
@@ -108,7 +107,7 @@ export function normalizeZones(raw: unknown): Zone[] {
     // `layers: []` says no copper layer at all; a zone with `layer` alone (or `layers` of several) is on copper.
     const noCopper = Array.isArray(item.layers) && item.layers.length === 0
     if (other.length && (isObject(item.keepout) || noCopper)) {
-      z.other = sortedOtherLayers(other)
+      z.other = orderedOtherLayers(other)
       if (noCopper) z.layers = []
     }
     if (typeof item.connect === "string" && CONNECTIONS.has(item.connect as ZoneConnection)) z.connect = item.connect as ZoneConnection

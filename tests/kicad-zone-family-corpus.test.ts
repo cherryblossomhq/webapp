@@ -93,7 +93,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS))("the zone family on the corpus",
     () => {
       const rows: string[] = []
       const failures: string[] = []
-      const count = { boards: 0, imported: 0, refusedOther: 0, zones: 0, otherZones: 0, partZones: 0, partZoneBoards: 0, padsWithConnections: 0, boardsWithPadConnections: 0, fills: 0, fillsStored: 0, gerbers: 0, roundTrips: 0, roundTripSkipped: 0, outlineRefused: 0 }
+      const count = { boards: 0, imported: 0, refusedOther: 0, zones: 0, otherZones: 0, partZones: 0, partZoneBoards: 0, padsWithConnections: 0, boardsWithPadConnections: 0, fills: 0, fillsStored: 0, gerbers: 0, outlineRefused: 0 }
       let worstXor = 0
       for (const rel of ZONE_FAMILY_BOARDS) {
         count.boards++

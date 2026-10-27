@@ -105,14 +105,48 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
     const message = result.lossy.length ? `This board cannot be imported exactly: ${result.lossy.join("; ")}.` : refusals(report)[0].why
     return { status: "refused", reason: "inexact", message, report, needs: missing, board }
   }
-  const bytes = byteLength(serializeProject(result.project))
+  let project = result.project
+  let bytes = byteLength(serializeProject(project))
   const limit = options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES
+  // A board that is over the limit only because of the outlines KiCad cached for its TrueType text keeps its text without them (drawn in the stroke font, said in the report), not none of the board.
+  if (bytes > limit && hasOutlines(project)) {
+    const bare = withoutOutlines(project)
+    const bareBytes = byteLength(serializeProject(bare.project))
+    if (bareBytes <= limit) {
+      project = bare.project
+      bytes = bareBytes
+      const at = report.entries.findIndex((e) => e.code === "text-outlines")
+      const entry: ImportReport["entries"][number] = {
+        code: "text-outlines-dropped",
+        severity: "changed",
+        object: `${bare.count} text${bare.count === 1 ? "" : "s"} in a TrueType font`,
+        why: `Kept with the outlines KiCad stored for them, the board would be over the ${formatSize(limit)} a project may hold, so the outlines were left out: the editor draws and plots these texts in KiCad's stroke font, and keeps the fonts' names and writes them back. KiCad draws them in the font if its computer has it.`,
+        count: bare.count,
+      }
+      if (at >= 0) report.entries[at] = entry
+      else report.entries.push(entry)
+    }
+  }
   if (bytes > limit) {
     const message = `This board needs ${formatSize(bytes)} and projects hold up to ${formatSize(limit)}.`
     report.entries.push({ code: "too-large", severity: "refused", object: "the project", why: message })
     return { status: "refused", reason: "too-large", message, report, needs: missing, board }
   }
-  return { status: "imported", project: result.project, report, board, bytes, files: result.files, footprintComponents: result.footprintComponents }
+  return { status: "imported", project, report, board, bytes, files: result.files, footprintComponents: result.footprintComponents }
+}
+
+const hasOutlines = (p: Project) => p.texts.some((t) => t.outline) || p.components.some((c) => c.texts?.some((t) => t.outline))
+
+/** The project with the cached outlines of its texts taken off, and how many texts had them. */
+function withoutOutlines(p: Project): { project: Project; count: number } {
+  let count = 0
+  const bare = <T extends { outline?: unknown }>(t: T): T => {
+    if (!t.outline) return t
+    count++
+    const { outline: _outline, ...rest } = t
+    return rest as T
+  }
+  return { project: { ...p, texts: p.texts.map(bare), components: p.components.map((c) => (c.texts?.some((t) => t.outline) ? { ...c, texts: c.texts.map(bare) } : c)) }, count }
 }
 
 /** KiCad 6 and later keep the design rules in the project file beside the board, which a board alone does not have. */

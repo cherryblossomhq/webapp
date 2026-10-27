@@ -239,6 +239,21 @@ export function acceptEmbeddedFonts(account: NodeAccount, board: KicadBoard) {
   for (const fp of board.footprints) for (const e of fp.node.slice(1)) if (Array.isArray(e) && e[0] === "embedded_files") accept(e, "footprint>embedded_files")
 }
 
+/** A font file of a footprint that is no part of the project is not brought in after all: its nodes move back from imported to reported. */
+export function rejectEmbeddedFont(account: NodeAccount, file: KicadBoard["embeddedFonts"]["files"][number]) {
+  const walk = (node: List, path: string) => {
+    const had = account.importedPaths.get(path)
+    if (had !== undefined) {
+      if (had <= 1) account.importedPaths.delete(path)
+      else account.importedPaths.set(path, had - 1)
+      account.imported--
+      account.reported++
+    }
+    for (const c of node.slice(1)) if (Array.isArray(c) && typeof c[0] === "string") walk(c, `${path}>${c[0]}`)
+  }
+  walk(file.node, file.owner ? "footprint>embedded_files>file" : "embedded_files>file")
+}
+
 /**
  * The nodes of the models the project does not hold (hidden, scaled, a second one, not in the
  * stock library) are not imported, whatever the table says of a model node: they move from

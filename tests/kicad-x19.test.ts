@@ -3,7 +3,8 @@ import { kicadFiles } from "../src/export/kicad"
 import { gerberSilkscreen } from "../src/export/gerber"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES } from "../src/model/kicad/board"
-import { outlineRings, packRings, ringsToPolygons, unpackRings, type Polygon } from "../src/model/textOutlines"
+import { outlineRings, packRings, ringsToPolygons, unpackRings, UNNAMED_FONT, type Polygon } from "../src/model/textOutlines"
+import { updateComponent } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { patchTexts } from "../src/model/textOps"
 import { currentOutline, layerText, textFontState, textInk, worldTexts } from "../src/model/texts"
@@ -202,6 +203,50 @@ describe("editing an outlined text", () => {
   })
 })
 
+describe("a part's text with outlines when the part is edited", () => {
+  const part = (unlocked = "") => imported(board({ body: [footprint({ pads: [pad({ number: "1", at: "-1 0" })], layer: "F.Cu", at: "20 10 0", extra: `(fp_text user "Hi" (at 1 2 0 ${unlocked}) (layer "F.SilkS") (effects (font (face "Ubuntu Sans") (size 1 1) (thickness 0.15))) (render_cache "Hi" 0 ${SQUARE}))` })] }))
+  const own = (p: Project) => worldTexts(p).find((t) => t.outline)!
+  const move = (p: Project, pcb: Partial<Project["components"][number]["pcb"]>) => updateComponent(p, p.components[0].id, { pcb: { ...p.components[0].pcb, ...pcb } })
+
+  it("moving the part carries the outlines along, and flipping it to the other side keeps them valid", () => {
+    const p = part()
+    const was = textInk(p, own(p)).box!
+    const moved = move(p, { x: p.components[0].pcb.x + 7, y: p.components[0].pcb.y + 3 })
+    expect(textFontState(moved, own(moved))).toBe("outline")
+    const box = textInk(moved, own(moved)).box!
+    expect(box.minX - was.minX).toBeCloseTo(7, 6)
+    expect(box.minY - was.minY).toBeCloseTo(3, 6)
+    const flipped = move(p, { side: "bottom" })
+    expect(textFontState(flipped, own(flipped))).toBe("outline")
+    expect(area(textInk(flipped, own(flipped)).outlines![0])).toBeCloseTo(3, 6)
+  })
+
+  it("turning the part through half a turn keeps the outlines, upright or not", () => {
+    for (const extra of ["", "unlocked"]) {
+      const p = part(extra)
+      for (const rot of [80, 100, 170, 190, 260, 280]) {
+        const turned = move(p, { rot })
+        expect(textFontState(turned, own(turned)), `${extra} ${rot}`).toBe("outline")
+        expect(area(textInk(turned, own(turned)).outlines![0]), `${extra} ${rot}`).toBeCloseTo(3, 4)
+      }
+    }
+  })
+})
+
+describe("a knockout text with outlines", () => {
+  it("keeps them, and is a box with the letters cut out of it", () => {
+    const p = imported(withText(text().replace("(layer \"F.SilkS\")", '(layer "F.SilkS" knockout)')))
+    const [wt] = worldTexts(p)
+    expect(wt.knockout).toBe(true)
+    expect(textFontState(p, wt)).toBe("outline")
+    const ink = textInk(p, wt)
+    expect(ink.hull).toBeDefined()
+    expect(ink.outlines).toHaveLength(1)
+    const lt = layerText(p, wt)!
+    expect(lt.fills.length).toBeGreaterThan(0)
+  })
+})
+
 describe("the project file", () => {
   it("saves and loads a text's font and outlines with no difference, edited or not", () => {
     const p = imported(withText(text()))
@@ -259,6 +304,33 @@ describe("the KiCad export", () => {
     const text2 = await pcbOf(edited)
     expect(text2).not.toMatch(/render_cache/)
     expect(text2).toMatch(/\(face "Ubuntu Sans"\)/)
+  })
+
+  it("the written angle of a cache follows the text's turn", async () => {
+    const p = imported(withText(text({ at: "10 5 0" })))
+    const turned = patchTexts(p, worldTexts(p), { rot: 135 })
+    const out = await pcbOf(turned)
+    const angle = Number(/\(render_cache "Hi" (-?[\d.]+)/.exec(out)![1])
+    expect([135, 225]).toContain(((angle % 360) + 360) % 360)
+    expect(out).toMatch(/\(at 10 5 (135|225)\)/)
+    const at = Number(/\(at 10 5 ([\d.]+)\)/.exec(out)![1])
+    expect(angle).toBeCloseTo(at, 6)
+    const again = importKicadBoard(out)
+    if (again.status !== "imported") throw new Error(again.message)
+    expect(textFontState(again.project, worldTexts(again.project)[0])).toBe("outline")
+  })
+
+  it("a cache that names no font is kept, and the made-up name is never written as one", async () => {
+    const p = imported(withText(text({ face: null })))
+    expect(p.texts[0].face).toBe(UNNAMED_FONT)
+    expect(p.texts[0].outline).toBeDefined()
+    const out = await pcbOf(p)
+    expect(out).not.toContain(UNNAMED_FONT)
+    expect(out).not.toMatch(/\(face /)
+    expect(out).toMatch(/\(render_cache "Hi"/)
+    const again = importKicadBoard(out)
+    if (again.status !== "imported") throw new Error(again.message)
+    expect(diffProjects(p, again.project)).toEqual([])
   })
 
   it("a part's text and a text box round trip too", async () => {
@@ -338,6 +410,40 @@ describe("embedded fonts", () => {
     const again = importKicadBoard(out)
     if (again.status !== "imported") throw new Error(again.message)
     expect(diffProjects(r.project, again.project)).toEqual([])
+  })
+
+  it("a stored `fonts` that does not read is dropped by what it says, and a good one is kept", () => {
+    const p = importKicadBoard(src)
+    if (p.status !== "imported") throw new Error(p.message)
+    const raw = JSON.parse(serializeProject(p.project))
+    const ORIGIN = { id: "p1", createdAt: 1, updatedAt: 1 }
+    expect(parseProjectFile(JSON.parse(JSON.stringify(raw)), ORIGIN).fonts).toEqual(p.project.fonts)
+    for (const bad of [{}, "x", [], { files: "no" }, { files: [null, 3, { name: 1 }, { name: "a", file: "short", size: 1 }] }]) {
+      const copy = JSON.parse(JSON.stringify(raw))
+      copy.project.fonts = bad
+      expect(parseProjectFile(copy, ORIGIN).fonts).toBeUndefined()
+    }
+    const copy = JSON.parse(JSON.stringify(raw))
+    copy.project.fonts.files.push({ name: "x.ttf", file: "nothex", size: 3 }, { name: "y.ttf", file: "a".repeat(64), size: 3, owner: "gone" })
+    expect(parseProjectFile(copy, ORIGIN).fonts).toEqual(p.project.fonts)
+  })
+
+  it("a board that is over the size limit only for its outlines keeps its text without them, and says so", () => {
+    const full = importKicadBoard(withText(text()))
+    if (full.status !== "imported") throw new Error(full.message)
+    const bare = { ...full.project, texts: full.project.texts.map(({ outline: _o, ...t }) => t) }
+    const limit = serializeProject(bare).length
+    expect(serializeProject(full.project).length).toBeGreaterThan(limit)
+    const r = importKicadBoard(withText(text()), { limitBytes: limit })
+    if (r.status !== "imported") throw new Error(`${r.status}: ${r.message}`)
+    expect(r.project.texts[0].face).toBe("Ubuntu Sans")
+    expect(r.project.texts[0].outline).toBeUndefined()
+    expect(textFontState(r.project, worldTexts(r.project)[0])).toBe("uncached")
+    expect(r.report.entries.some((e) => e.code === "text-outlines-dropped" && e.severity === "changed")).toBe(true)
+    expect(r.report.entries.some((e) => e.code === "text-outlines")).toBe(false)
+    expect(r.bytes).toBeLessThanOrEqual(limit)
+    // a board that is over the limit without them too is still refused
+    expect(importKicadBoard(withText(text()), { limitBytes: limit - 1 }).status).toBe("refused")
   })
 
   it("a board with no fonts has no `fonts` at all", () => {

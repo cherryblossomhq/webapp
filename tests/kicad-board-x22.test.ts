@@ -9,11 +9,13 @@ import { drillDepth, holeCuts, layerDistance, padInBoardFrame, padMachining, pos
 import { patchProtectRule, updateLandPadMachining, updateViaMachining } from "../src/model/machiningOps"
 import { setCopperLayerCount } from "../src/model/layerOps"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { buildCopperItems } from "../src/model/pcb"
+import { analyzePcb, buildCopperItems } from "../src/model/pcb"
 import { computeConnectivity } from "../src/model/connectivity"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
-import { diffProjects } from "./kicad-roundtrip-check"
+import { diffCanonical, diffProjects, BY_DESIGN } from "./kicad-roundtrip-check"
+import { fillTester } from "../src/model/pour"
+import { registerProjectFootprints } from "../src/model/footprints"
 import { unknownNodes } from "./kicad9-nodes"
 
 // X22: via protection (IPC-4761), backdrills and post-machining of vias and pads, read from a KiCad 10 board exactly, kept through a save, drawn into the drill files, the Gerber protection files and the
@@ -311,5 +313,82 @@ describe("X22 in the pour", () => {
     const items = buildCopperItems(p, computeConnectivity(p))
     const v = items.find((i) => i.kind === "via")!
     expect(v.kind === "via" && v.cut).toEqual({ top: 0.5, in1: 0.5 })
+  })
+})
+
+describe("X22 in the pour: a real fill", () => {
+  // A 20 by 10 board of four layers, a pour on In1 and In2 on net A, a wall of net B at x = 14 that cuts the board in two, copper of net A on both sides: a plain via on the left, a backdrilled
+  // via on the right, and a through pad on the left that is backdrilled from the top to In1. In1 is cut at both; In2 is not.
+  const wall = (layer: string) => `(segment (start 14 0) (end 14 10) (width 0.2) (layer "${layer}") (net 2))`
+  const zone = `(zone (net 1) (net_name "A") (layers "In1.Cu" "In2.Cu") (uuid "00000000-0000-4000-8000-000000000001") (hatch edge 0.5) (connect_pads yes (clearance 0.2)) (min_thickness 0.2) (filled_areas_thickness no) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 0 0) (xy 20 0) (xy 20 10) (xy 0 10))))`
+  const thru = footprint({ ref: "J1", at: "5 5", pads: [pad({ number: "1", type: "thru_hole", shape: "circle", at: "0 0", size: "1.6 1.6", layers: '"*.Cu" "*.Mask"', net: '(net 1 "A")', extra: '(drill 0.8) (backdrill (size 1) (layers "F.Cu" "In1.Cu"))' })] })
+  const text = board({ version: V10, layers: L4, nets: [...NETS, '(net 2 "B")'], body: [zone, thru, via("17 5", '(backdrill (size 1) (layers "F.Cu" "In1.Cu"))'), via("3 2", ""), wall("In1.Cu"), wall("In2.Cu")] })
+  const fills = () => {
+    const p = imported(text)
+    const a = analyzePcb(p, computeConnectivity(p))
+    return { filled: (layer: string, x: number, y: number) => a.zoneFills.filter((f) => f.layer === layer).some((f) => f.polygons.some((poly) => fillTester(poly)({ x, y }))) }
+  }
+
+  it("on a layer that is cut the pour does not join the pad or the via and keeps out of the hole that is cut; on the other it still joins", () => {
+    const { filled } = fills()
+    // y is up in the project: the file's y 5 is -5
+    // In1: the pad (a hole 1 mm across, so 0.5 + the hole gap 0.25 from its centre) is a hole in the pour, and the pour comes back beyond the pad's own clearance
+    expect(filled("in1", 5.6, -5)).toBe(false)
+    expect(filled("in1", 5, -5)).toBe(false)
+    expect(filled("in1", 6.4, -5)).toBe(true)
+    // In2: nothing is cut, so the pour joins the pad (the centre is copper of the fill, solid connection)
+    expect(filled("in2", 5.6, -5)).toBe(true)
+    // In1: the via keeps the pour out as far as its hole cut and its own clearance
+    expect(filled("in2", 17.6, -5)).toBe(true)
+    expect(filled("in2", 17, -5)).toBe(true)
+  })
+
+  it("copper that is cut does not keep an island of the pour alive: the right half has only a cut via on In1 and goes, and on In2 the via holds it", () => {
+    const { filled } = fills()
+    expect(filled("in1", 19, -3)).toBe(false)
+    expect(filled("in2", 19, -3)).toBe(true)
+    // the left half has a plain via on both, so it stays
+    expect(filled("in1", 1.5, -7)).toBe(true)
+    expect(filled("in2", 1.5, -7)).toBe(true)
+  })
+})
+
+describe("the round trip check excuses an unset tenting side and no other", () => {
+  const first = (tent: unknown) => ({ vias: [{ tent }] })
+  const second = { vias: [{ tent: { front: false } }] }
+  const by = (d: { kind: string }) => BY_DESIGN.some((re) => re.test(d.kind))
+  it("a side the first project leaves unset, that comes back not tented, is by design", () => {
+    const d = diffCanonical(first({}), second)
+    expect(d).toHaveLength(1)
+    expect(by(d[0])).toBe(true)
+  })
+  it("a side that was tented and comes back changed is a finding", () => {
+    const d = diffCanonical(first({ front: true }), second)
+    expect(d).toHaveLength(1)
+    expect(by(d[0])).toBe(false)
+  })
+})
+
+describe("X22 on a pad of a part on the bottom", () => {
+  const extra = '(drill 0.5) (backdrill (size 0.6) (layers "F.Cu" "In1.Cu"))'
+  const part = (layer: string) => footprint({ layer, at: "10 5", pads: [pad({ at: "0 0", type: "thru_hole", shape: "circle", layers: '"*.Cu" "*.Mask"', net: '(net 1 "A")', extra })] })
+
+  it("the copper a backdrill cuts is on the board's layers whichever side the part is on", () => {
+    for (const side of ["F.Cu", "B.Cu"]) {
+      const p = imported(four([part(side)]))
+      const item = buildCopperItems(p, computeConnectivity(p)).find((i) => i.kind === "pad")!
+      expect(item.kind === "pad" && item.cut, side).toEqual({ top: 0.6, in1: 0.6 })
+    }
+  })
+
+  it("a layer count that changes keeps the backdrill where it is on the board: the part's own side is renamed", () => {
+    const p = imported(four([part("B.Cu")]))
+    const before = padMachining(p)[0].backdrill
+    expect(before).toEqual({ size: 0.6, from: "top", to: "in1" })
+    const six = setCopperLayerCount(p, 6).project
+    // in the part's own frame In1 of the board is the fourth inner layer of six, and the board's view has not moved
+    expect(six.footprints![0].pads[0].backdrill).toEqual({ size: 0.6, from: "bottom", to: "in4" })
+    registerProjectFootprints(six)
+    expect(padMachining(six)[0].backdrill).toEqual(before)
   })
 })

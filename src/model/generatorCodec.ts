@@ -1,6 +1,6 @@
 import { isCopperLayerId } from "./stack"
 import type { GenValue, PcbGenerator, Via } from "./types"
-import { readProtection } from "./viaCodec"
+import { normalizeVia } from "./viaCodec"
 
 // X21: a generated item as it is stored (the object after a group's flags, see `dimCodec.ts`) and as it reads back: every property valid or the whole item gone, since a pattern with a property missing would be tuned wrong.
 
@@ -32,9 +32,8 @@ export function readGenerator(raw: unknown): PcbGenerator | undefined {
     const templates: NonNullable<PcbGenerator["templates"]> = []
     for (const t of raw.templates) {
       if (!isObject(t) || typeof t.name !== "string" || !isObject(t.via) || !finite(t.via.x) || !finite(t.via.y) || !finite(t.via.diameter) || !finite(t.via.drill)) return undefined
-      const protect = readProtection(t.via.protect)
-      if (protect === null) return undefined
-      templates.push({ name: t.name, via: { ...(t.via as Omit<Via, "id">), ...(protect ? { protect } : {}) } })
+      // The same reading as a via of the board: a field that does not read is dropped, never half of a blind via.
+      templates.push({ name: t.name, via: normalizeVia(t.via) as unknown as Omit<Via, "id"> })
     }
     if (templates.length) out.templates = templates
   }

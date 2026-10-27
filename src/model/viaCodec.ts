@@ -138,3 +138,36 @@ export function unpackVias(raw: unknown, vx: unknown): unknown {
   }
   return out
 }
+
+type Json = Record<string, unknown>
+
+const VIA_KINDS = new Set(["blind", "buried", "micro"])
+const UNUSED = new Set(["remove", "keepEnds", "startEnd"])
+
+/** A via's X5 fields as they read: a kind needs both its ends, and every other field is dropped when it does not read, so a via is never half of a blind one. */
+export function normalizeVia(item: Json): Json {
+  if (!("kind" in item || "from" in item || "to" in item || "tent" in item || "unused" in item || "zoneLayers" in item || "free" in item || "stack" in item || "protect" in item || "backdrill" in item || "tertiary" in item || "post" in item)) return item
+  const { kind, from, to, tent, unused, zoneLayers, free, stack, protect: _protect, backdrill: _backdrill, tertiary: _tertiary, post: _post, ...rest } = item
+  const out: Json = { ...rest, ...readViaX22(item) }
+  if (typeof kind === "string" && VIA_KINDS.has(kind) && isCopperLayerId(from) && isCopperLayerId(to) && from !== to) Object.assign(out, { kind, from, to })
+  if (isObject(tent)) {
+    const t: Json = {}
+    if (typeof tent.front === "boolean") t.front = tent.front
+    if (typeof tent.back === "boolean") t.back = tent.back
+    if (Object.keys(t).length) out.tent = t
+  }
+  if (typeof unused === "string" && UNUSED.has(unused)) out.unused = unused
+  if (Array.isArray(zoneLayers) && zoneLayers.every(isCopperLayerId)) out.zoneLayers = zoneLayers
+  if (free === true) out.free = true
+  if (isObject(stack)) {
+    const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0
+    if (num(stack.inner) && num(stack.back)) out.stack = { inner: stack.inner, back: stack.back }
+    else if (isObject(stack.layers)) {
+      const layers: Json = {}
+      for (const [k, v] of Object.entries(stack.layers)) if (isCopperLayerId(k) && num(v)) layers[k] = v
+      if (Object.keys(layers).length) out.stack = { layers }
+    }
+  }
+  return out
+}
+

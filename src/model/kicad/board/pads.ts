@@ -3,7 +3,8 @@ import { defaultFaces } from "../../padFaces"
 import { flipShapeLayer } from "../../shapeLayers"
 import { DEFAULT_SHAPE_WIDTH, isClosedShape, mapShape } from "../../shapes"
 import { flipLayer } from "../../stack"
-import type { BoardShape, CopperLayer, PadDef, PadLayerShape, PadLayers, PadProperty, PadSides, PostMachining, Vec2, ZoneConnect } from "../../types"
+import type { BoardShape, CopperLayer, PadDef, PadLayerShape, PadLayers, PadProperty, PadSides, Vec2, ZoneConnect } from "../../types"
+import { backdrill, ownLayer, postMachining } from "./build22"
 import { layerMapOf, layersOfNames } from "./layers"
 import { quarterTurns, rotK } from "./geometry"
 import { rawGeometry } from "./graphics"
@@ -130,11 +131,6 @@ const PROPERTY: Record<string, PadProperty> = {
   pad_prop_heatsink: "heatsink",
   pad_prop_mechanical: "mechanical",
   pad_prop_pressfit: "pressfit",
-}
-
-/** A post-machining as the project holds it: sizes to the nanometre, a zero as nothing (the writer leaves it out and the machine has none). */
-export function postOf(p: NonNullable<KicadPad["post"]>["front"] & {}): PostMachining {
-  return { mode: p.mode, ...(p.size ? { size: r6(p.size) } : {}), ...(p.depth ? { depth: r6(p.depth) } : {}), ...(p.angle ? { angle: round(p.angle, 1) } : {}) }
 }
 
 /** What a pad sets for itself, over what its footprint sets: a pad that sets none of a kind takes the footprint's (`PAD::GetSolderMaskExpansion` and the others ask the footprint). */
@@ -401,23 +397,23 @@ function landPadPlain(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: 
   // X22: backdrills and post-machining, by the part's own side: `PAD::Flip` (via `PADSTACK::FlipLayers`, padstack.cpp 10.0.0 `:1550`) flips the drills' layers and swaps the front and back post-machining, and the file keeps that state.
   if (board && (pad.backdrill || pad.tertiary)) {
     const map = layerMapOf(board)
+    const own = ownLayer(bottom, map.count)
     for (const [from, key] of [[pad.backdrill, "backdrill"], [pad.tertiary, "tertiary"]] as const) {
       if (!from) continue
-      const a = map.of(from.start)
-      const b = map.of(from.end)
-      if (!a || !b) {
+      const drill = backdrill(from, map, own)
+      if (!drill) {
         notes.push(`a ${key === "backdrill" ? "backdrill" : "tertiary drill"} between ${from.start} and ${from.end}, which are not both copper layers of the board (KiCad ignores it too)`)
         continue
       }
-      out[key] = { size: r6(from.size), from: bottom ? flipLayer(a, map.count) : a, to: bottom ? flipLayer(b, map.count) : b }
+      out[key] = drill
     }
   }
   if (pad.post) {
     const own = bottom ? pad.post.back : pad.post.front
     const far = bottom ? pad.post.front : pad.post.back
     const post: NonNullable<PadDef["post"]> = {}
-    if (own) post.front = postOf(own)
-    if (far) post.back = postOf(far)
+    if (own) post.front = postMachining(own)
+    if (far) post.back = postMachining(far)
     out.post = post
   }
   if (pad.dieLength !== undefined) out.dieLength = r6(pad.dieLength)

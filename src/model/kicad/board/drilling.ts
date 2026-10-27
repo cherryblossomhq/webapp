@@ -115,9 +115,14 @@ export function postMachiningOf(item: List): KicadPost | undefined {
 
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
 
+/** The properties of a generated item that KiCad keeps as text, whatever they look like. */
+const TEXT_PROPS = new Set(["last_netname", "last_tuning", "initial_side", "tuning_mode"])
+
 /** One property of a generated item: `yes` and `no`, a number, a string, `(xy x y)`, `(pts (xy ...))` or `(cells (ij i j) ...)`. Null for a value KiCad's parser accepts and this one cannot hold (an arc among the points). */
 function genValueOf(c: List): KicadGenValue | null | undefined {
   const v = c[1]
+  // The reader does not tell a quoted word from a bare one, so the properties KiCad holds as text are named: a net called `5` or a tuning of `10` must stay text, as the writer quotes it.
+  if (typeof v === "string" && TEXT_PROPS.has(c[0] as string)) return v
   if (Array.isArray(v)) {
     if (v[0] === "xy") return { xy: [Number(v[1]), Number(v[2])] }
     if (v[0] === "pts") {

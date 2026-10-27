@@ -253,6 +253,8 @@ export interface Difference {
 
 const short = (v: unknown) => (JSON.stringify(v) ?? "undefined").slice(0, 90)
 
+export const TENT_UNSET = " (unset in the first project)"
+
 /** Every difference of two canonical projects, at most `limit`. */
 export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
   const out: Difference[] = []
@@ -261,7 +263,9 @@ export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
     if (out.length >= limit || x === y) return
     if (typeof x === "number" && typeof y === "number" && Math.abs(x - y) < 1.5e-6) return
     if (typeof x !== "object" || typeof y !== "object" || x === null || y === null || Array.isArray(x) !== Array.isArray(y)) {
-      out.push({ kind: kindOf(path), path, first: short(x), second: short(y) })
+      // A tenting side the first project leaves unset is its own kind: KiCad 10 writes `none` for it and the 9.0 file says it by words for both sides, so it comes back not tented (by design); a side that was set and changed is a finding.
+      const unsetTent = x === undefined && /\.tent\.(front|back|top|bottom)$/.test(path)
+      out.push({ kind: kindOf(path) + (unsetTent ? TENT_UNSET : ""), path, first: short(x), second: short(y) })
       return
     }
     if (Array.isArray(x)) {
@@ -434,7 +438,7 @@ export const BY_DESIGN = [
   // KiCad 11's dielectric model and frequency of a stackup row are not in a KiCad 9 file (the writer says so), and KiCad 9 says a via's or pad's tenting by words for both sides together, so a side the file left
   // unset (KiCad 10 writes `none`) is written not tented (the writer's note says so).
   /^project\.board\.stack\.rows\[\](\.sub\[\])?\.(model|specFreq)$/,
-  /^project\.(vias\[\]|footprints\[\]\.pads\[\])\.tent\.(front|back|top|bottom)$/,
+  /^project\.(vias\[\]|footprints\[\]\.pads\[\])\.tent\.(front|back|top|bottom) \(unset in the first project\)$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */

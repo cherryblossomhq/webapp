@@ -139,8 +139,6 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X20 over the corpus", () 
       // With every extension counted as built, so the other needs of the board do not stop it: this is about X20 alone.
       const text = readFileSync(file)
       const r = importKicadBoard(text, { built: ALL_EXTENSIONS })
-      // EdgeCubeH3 keeps the outlines of its TrueType text (X19) and is then over the 900 KB a project may hold: refused for that alone.
-      if (r.status === "refused" && /projects hold up to/.test(r.message)) return
       if (r.status !== "imported") throw new Error(`${r.status}: ${r.message}`)
       const facts = fileFacts(text.toString("utf8"))
       const placed = r.project.zones.filter((z) => z.placement)
@@ -164,7 +162,6 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X20 over the corpus", () 
 
     it(`${rel}: written as a KiCad board and read again, the areas and classes are the same`, async () => {
       const a = importKicadBoard(readFileSync(file), { built: ALL_EXTENSIONS })
-      if (a.status === "refused" && /projects hold up to/.test(a.message)) return
       if (a.status !== "imported") throw new Error(a.status)
       const written = await kicadFiles(a.project)
       const pcb = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]

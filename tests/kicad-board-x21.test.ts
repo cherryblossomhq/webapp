@@ -9,6 +9,8 @@ import { netLengths, padDieTimes, tuningPatterns } from "../src/model/netLengths
 import { pruneNetChains, renameChainNets } from "../src/model/netChains"
 import { analyzePcb } from "../src/model/pcb"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { packGroups, sharedGeneratorProps, unpackGroups } from "../src/model/dimCodec"
+import { readGenerator } from "../src/model/generatorCodec"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { diffProjects } from "./kicad-roundtrip-check"
@@ -123,7 +125,68 @@ describe("X21 reader", () => {
   })
 })
 
+describe("X21 reader: values and chains", () => {
+  it("a property KiCad holds as text stays text when it looks like a number", () => {
+    const p = imported(withPattern('(last_netname "5")').replace('"single"', '"10"').replace('"75.9800 mm (too short)"', '"7"').replace('"left"', '"1"'))
+    const props = p.groups![0].gen!.props
+    expect(props.last_netname).toBe("5")
+    expect(props.tuning_mode).toBe("10")
+    expect(props.last_tuning).toBe("7")
+    expect(props.initial_side).toBe("1")
+    // and a number is still a number
+    expect(props.target_length).toBe(100)
+  })
+
+  it("the net class a chain names is reported as not brought in, and a word the chain never has is refused", () => {
+    const chain = (inner: string) => board({ version: 20260831, nets: NETS, body: [`(net_chains (net_chain (name "CH") (members (net "A")) ${inner}))`] })
+    const r = importKicadBoard(chain('(net_class "Fast")'))
+    expect(r.status).toBe("imported")
+    if (r.status === "imported") expect(r.report.entries.some((e) => e.severity === "not-brought" && /net_chains>net_chain>net_class/.test(e.object))).toBe(true)
+    expect(importKicadBoard(chain("(mystery 1)")).status).toBe("refused")
+  })
+})
+
 describe("X21 stored form", () => {
+  it("the vias a stored generator lays out read as a board's vias do: a field that does not read is dropped", () => {
+    const g = readGenerator({ kind: "via_stitch", layer: "top", props: {}, templates: [{ name: "v", via: { x: 0, y: 0, diameter: 0.8, drill: 0.4, kind: "blind", tent: { front: "yes", back: true } } }] })!
+    const via = g.templates![0].via
+    expect(via.kind).toBeUndefined()
+    expect(via.tent).toEqual({ back: true })
+  })
+
+  it("members are stored by place and the shared properties once, and both the old and the new form read", () => {
+    const traces = [{ id: "t-a" }, { id: "t-b" }, { id: "t-c" }]
+    const vias = [{ id: "v-a" }]
+    const ids = [...traces, ...vias].map((t) => t.id)
+    const gen = (n: number) => ({ kind: "tuning_pattern", layer: "top" as const, props: { rounded: true, target_length: n, last_netname: "5" } })
+    const groups = [
+      { id: "g1", name: "P1", members: ["t-a", "v-a"], gen: gen(10) },
+      { id: "g2", name: "P2", members: ["t-b", "t-c", "elsewhere"], gen: gen(20) },
+      { id: "g3", name: "Plain", members: ["t-a"] },
+    ]
+    const shared = sharedGeneratorProps(groups)
+    expect(shared).toEqual({ tuning_pattern: { rounded: true, last_netname: "5" } })
+    const packed = packGroups(groups, undefined, { ids, shared })
+    expect(packed[0].slice(4)).toEqual([0, 3])
+    expect(packed[1].slice(4)).toEqual([1, 2, "elsewhere"])
+    expect(packed[2].slice(3)).toEqual(["t-a"])
+    expect(JSON.stringify(packed)).not.toContain("last_netname")
+    expect(unpackGroups(JSON.parse(JSON.stringify(packed)), undefined, { ids, shared })).toEqual(groups)
+    // the form before: names for members, every property written out
+    expect(unpackGroups(JSON.parse(JSON.stringify(packGroups(groups))))).toEqual(groups)
+    // a place that is not there takes the group with it
+    expect(unpackGroups([[0, "P", 4, { kind: "tuning_pattern", layer: "top", props: {} }, 9]], undefined, { ids })).toEqual([])
+  })
+
+  it("tuning patterns are written small enough that a board with sixty of them fits", () => {
+    const p = imported(withPattern())
+    const gens = Array.from({ length: 60 }, (_, i) => ({ id: `gp${i + 1}`, name: "Tuning Pattern", members: [p.traces[0].id], gen: { ...p.groups![0].gen!, props: { ...p.groups![0].gen!.props, target_length: 10 + i } } }))
+    const big = { ...p, groups: gens }
+    const text = serializeProject(big)
+    expect(text.match(/corner_radius_percent/g)?.length).toBe(1)
+    expect(parseProjectFile(text, { id: "x", createdAt: 0, updatedAt: 0 }).groups).toEqual(gens)
+  })
+
   it("a generated item and the chains survive a save and load exactly", () => {
     const p = imported(withPattern())
     const back = parseProjectFile(serializeProject(p), { id: "x", createdAt: 0, updatedAt: 0 })

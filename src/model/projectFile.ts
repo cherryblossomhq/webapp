@@ -2,8 +2,8 @@ import { normalizeAngle } from "../lib/geometry"
 import { cleanBlockName } from "./blocks"
 import { clean, DEFAULT_TEXT_SIZE, isDrawingColor, isLineDash, isLineWeight } from "./drawings"
 import { normalizeNetChains } from "./netChains"
-import { hasViaX22, packVias, readViaX22, unpackVias } from "./viaCodec"
-import { packDimensions, packGroups, packImages, defaultPartGroupId, unpackDimensions, unpackGroups, unpackImages, type DimensionStyleDef } from "./dimCodec"
+import { hasViaX22, normalizeVia, packVias, unpackVias } from "./viaCodec"
+import { packDimensions, packGroups, packImages, defaultPartGroupId, sharedGeneratorProps, unpackDimensions, unpackGroups, unpackImages, type DimensionStyleDef } from "./dimCodec"
 import { buildCustomPart, customPartProblems, registerProjectParts } from "./customParts"
 import { registerProjectFootprints } from "./footprints"
 import { findPart } from "./library"
@@ -26,10 +26,10 @@ import { normalizeShape } from "./shapes"
 import { readDrawing } from "./symbolDrawing"
 import { normalizeOverrides, normalizeProjectVariants, normalizeSheetOverrides } from "./variants"
 import { normalizeStack } from "./stackCodec"
-import { copperLayers, isCopperLayerId } from "./stack"
+import { copperLayers } from "./stack"
 import { normalizeBoardTextObjects, normalizePartTexts, packTexts, unpackBoardTexts, unpackPartTexts, type TextStyleDef } from "./textCodec"
 import { repairUnits } from "./units"
-import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, ComponentInstance, CustomPartSpec, DrawingBox, DrawingLine, DrawingText, FieldPlace, FootprintDef, PadDef, PartDatabaseSource, PartSource, Project, SchematicBlock, SchematicDrawing, SymbolDrawing, Trace, Vec2, Via, Wire } from "./types"
+import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, ComponentInstance, CustomPartSpec, DrawingBox, DrawingLine, DrawingText, FieldPlace, FootprintDef, PadDef, PartDatabaseSource, PartSource, GenValue, Project, SchematicBlock, SchematicDrawing, SymbolDrawing, Trace, Vec2, Via, Wire } from "./types"
 
 /**
  * The project file: how a project is written down wherever it is kept. One format for an
@@ -217,13 +217,16 @@ export function serializeProject(project: Project, { pretty = false } = {}): str
   // Dimensions, groups and reference images are written compactly too (`model/dimCodec.ts`).
   const dims = packDimensions(plain.dimensions ?? [])
   const { dimensions: _dimensions, groups: _groups, images: _images, ...rest } = plain
+  const shared = sharedGeneratorProps(plain.groups ?? [])
   const document = {
     ...rest,
     ...(plain.texts?.some((t) => t.layer !== undefined) ? { texts: plain.texts.filter((t) => t.layer === undefined) } : {}),
     ...(plain.components.some((c) => c.texts || c.groups) ? { components: plain.components.map((c) => (c.texts || c.groups ? storedComponent(c, packed.tx?.[c.id]) : c)) } : {}),
     ...(dims.dimStyles ? { dimStyles: dims.dimStyles } : {}),
     ...(dims.dm ? { dm: dims.dm } : {}),
-    ...(plain.groups?.length ? { grp: packGroups(plain.groups) } : {}),
+    // X21: a generated item's members by place among the stored tracks and vias, and what the items of a kind share, once (`gd`).
+    ...(plain.groups?.length ? { grp: packGroups(plain.groups, undefined, { ids: [...plain.traces, ...plain.vias].map((t) => t.id), shared }) } : {}),
+    ...(Object.keys(shared).length ? { gd: shared } : {}),
     // X22 on vias is stored once per setting (`model/viaCodec.ts`).
     ...(hasViaX22(plain.vias) ? (({ vias, vx }) => ({ vias, vx }))(packVias(plain.vias)) : {}),
     ...(plain.images?.length ? { im: packImages(plain.images) } : {}),
@@ -611,34 +614,20 @@ function normalizeTrace(item: Json): Json {
   return arc === true && Array.isArray(item.points) && item.points.length === 3 ? item : rest
 }
 
-const VIA_KINDS = new Set(["blind", "buried", "micro"])
-const UNUSED = new Set(["remove", "keepEnds", "startEnd"])
-
-/** A via's X5 fields as they read: a kind needs both its ends, and every other field is dropped when it does not read, so a via is never half of a blind one. */
-function normalizeVia(item: Json): Json {
-  if (!("kind" in item || "from" in item || "to" in item || "tent" in item || "unused" in item || "zoneLayers" in item || "free" in item || "stack" in item || "protect" in item || "backdrill" in item || "tertiary" in item || "post" in item)) return item
-  const { kind, from, to, tent, unused, zoneLayers, free, stack, protect: _protect, backdrill: _backdrill, tertiary: _tertiary, post: _post, ...rest } = item
-  const out: Json = { ...rest, ...readViaX22(item) }
-  if (typeof kind === "string" && VIA_KINDS.has(kind) && isCopperLayerId(from) && isCopperLayerId(to) && from !== to) Object.assign(out, { kind, from, to })
-  if (isObject(tent)) {
-    const t: Json = {}
-    if (typeof tent.front === "boolean") t.front = tent.front
-    if (typeof tent.back === "boolean") t.back = tent.back
-    if (Object.keys(t).length) out.tent = t
+/** The embedded fonts (X19) as they read: files with a name, a SHA-256 id and a size, each owned by a part that exists or by the board; a bad entry is dropped, and none left is no `fonts`. */
+function normalizeFonts(raw: unknown, components: ComponentInstance[]): Project["fonts"] {
+  if (!isObject(raw) || !Array.isArray(raw.files)) return undefined
+  const ids = new Set(components.map((c) => c.id))
+  const files: NonNullable<Project["fonts"]>["files"] = []
+  for (const f of raw.files) {
+    if (!isObject(f) || typeof f.name !== "string" || typeof f.file !== "string" || !/^[0-9a-f]{64}$/.test(f.file)) continue
+    if (typeof f.size !== "number" || !Number.isFinite(f.size) || f.size < 0) continue
+    if (f.owner !== undefined && (typeof f.owner !== "string" || !ids.has(f.owner))) continue
+    files.push({ name: f.name, file: f.file, size: f.size, ...(typeof f.checksum === "string" ? { checksum: f.checksum } : {}), ...(typeof f.owner === "string" ? { owner: f.owner } : {}) })
   }
-  if (typeof unused === "string" && UNUSED.has(unused)) out.unused = unused
-  if (Array.isArray(zoneLayers) && zoneLayers.every(isCopperLayerId)) out.zoneLayers = zoneLayers
-  if (free === true) out.free = true
-  if (isObject(stack)) {
-    const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0
-    if (num(stack.inner) && num(stack.back)) out.stack = { inner: stack.inner, back: stack.back }
-    else if (isObject(stack.layers)) {
-      const layers: Json = {}
-      for (const [k, v] of Object.entries(stack.layers)) if (isCopperLayerId(k) && num(v)) layers[k] = v
-      if (Object.keys(layers).length) out.stack = { layers }
-    }
-  }
-  return out
+  const parts = Array.isArray(raw.parts) ? raw.parts.filter((x): x is string => typeof x === "string" && ids.has(x)) : []
+  if (!files.length && !parts.length && raw.board !== true) return undefined
+  return { ...(raw.board === true ? { board: true as const } : {}), ...(parts.length ? { parts } : {}), files }
 }
 
 /** The board's drawings: each with an id (once each) and a shape that reads; absent when there are none. */
@@ -970,12 +959,14 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
   const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
   const kicadTexts = [...normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set()), ...unpackBoardTexts((raw as { kt?: unknown }).kt, textStyles)]
   const models = normalizeModels(raw.models)
-  const { textStyles: _textStyles, kt: _kt, kp, dimStyles: _dimStyles, dm, grp, im, vx, ...stored } = raw as typeof raw & { textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; im?: unknown; vx?: unknown }
+  const { textStyles: _textStyles, kt: _kt, kp, dimStyles: _dimStyles, dm, grp, gd, im, vx, fonts: _fonts, ...stored } = raw as typeof raw & { fonts?: unknown; textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; gd?: unknown; im?: unknown; vx?: unknown }
   const dimensions = unpackDimensions(dm, dimStyles)
-  const groups = unpackGroups(grp) ?? []
+  const storedVias = unpackVias(raw.vias, vx)
+  const ids = [...list<unknown>(raw.traces), ...list<unknown>(storedVias)].map((t) => (isObject(t) && typeof t.id === "string" ? t.id : ""))
+  const groups = unpackGroups(grp, undefined, { ids, shared: isObject(gd) ? (gd as Record<string, Record<string, GenValue>>) : undefined }) ?? []
   const images = unpackImages(im) ?? []
   const board = normalizeBoard(raw.board)
-  const copper = fitCopperToStack(normalizeCopper<Trace>(raw.traces, "net"), normalizeCopper<Via>(unpackVias(raw.vias, vx), "routedNet"), board)
+  const copper = fitCopperToStack(normalizeCopper<Trace>(raw.traces, "net"), normalizeCopper<Via>(storedVias, "routedNet"), board)
   return {
     ...stored,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name : "Untitled project",
@@ -993,6 +984,7 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
     dimensions: dimensions.length ? dimensions : undefined,
     groups: groups.length ? groups : undefined,
     images: images.length ? images : undefined,
+    fonts: normalizeFonts((raw as { fonts?: unknown }).fonts, components),
     netChains: normalizeNetChains((raw as { netChains?: unknown }).netChains),
     board,
     rules: normalizeRules(raw.rules),

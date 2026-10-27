@@ -2,7 +2,7 @@ import { uid } from "../lib/id"
 import { round } from "../lib/geometry"
 import { classValues } from "./netClasses"
 import { copperLayers, defaultStackup, flipLayer, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, spanKind, viaBetween, withCopperCount } from "./stack"
-import type { BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind } from "./types"
+import type { BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind, Zone } from "./types"
 
 // X1, X4 and X5 as the editor edits them: pure functions that return a new project (or the same one when nothing changes), so each is one undo step and
 // the PCB view, the Inspector and Sakura's tools share one set of rules.
@@ -224,6 +224,45 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   removed.drawings = (project.graphics?.length ?? 0) - (next.graphics?.length ?? 0)
   removed.texts = project.texts.length - next.texts.length
   return { project: touch(next), removed }
+}
+
+/**
+ * What is on a copper layer the board no longer has, dropped, as `setCopperLayerCount` drops it from the board it changes: for the board as another copy left it
+ * (a copy cut the stack to two layers while this one routed on `in1`). Traces, blind and buried vias, the layers of zones (a zone with none left goes), and the
+ * board graphics and texts on an inner layer's name. The project itself when nothing is on a missing layer.
+ */
+export function dropDeadLayers(project: Project): Project {
+  const keep = new Set<string>(copperLayers(project.board))
+  const alive = (l: CopperLayer) => keep.has(l)
+  const aliveName = (n: string) => {
+    const l = layerOfKicadName(n)
+    return !l || alive(l)
+  }
+  const zoneOk = (z: Zone) => (z.layers ?? [z.layer]).every(alive)
+  const viaOk = (v: Via) => (v.kind === undefined || (alive(v.from!) && alive(v.to!))) && !v.zoneLayers?.some((l) => !alive(l))
+  if (
+    project.traces.every((t) => alive(t.layer)) &&
+    project.zones.every(zoneOk) &&
+    project.vias.every(viaOk) &&
+    (project.graphics ?? []).every((g) => aliveName(g.layer)) &&
+    project.texts.every((t) => t.layer === undefined || aliveName(t.layer))
+  )
+    return project
+  const zones = project.zones.flatMap((z) => {
+    if (zoneOk(z)) return [z]
+    const ls = (z.layers ?? [z.layer]).filter(alive)
+    if (!ls.length) return []
+    const next = { ...without(z, "layers"), layer: ls[0] }
+    return [ls.length > 1 ? { ...next, layers: ls } : next]
+  })
+  return {
+    ...project,
+    traces: project.traces.filter((t) => alive(t.layer)),
+    vias: project.vias.filter((v) => v.kind === undefined || (alive(v.from!) && alive(v.to!))).map((v) => (v.zoneLayers?.some((l) => !alive(l)) ? { ...v, zoneLayers: v.zoneLayers.filter(alive) } : v)),
+    zones,
+    ...(project.graphics ? { graphics: project.graphics.filter((g) => aliveName(g.layer)) } : {}),
+    texts: project.texts.filter((t) => t.layer === undefined || aliveName(t.layer)),
+  }
 }
 
 /**

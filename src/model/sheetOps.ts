@@ -121,7 +121,7 @@ function forgetGoneUses(symbols: SheetSymbol[], live: Set<string>): SheetSymbol[
 }
 
 /** Everything that was drawn on sheets and uses that are no longer in the tree goes with the sheet symbol that made them. */
-function dropUnusedSheets(project: Project): Project {
+export function dropUnusedSheets(project: Project): Project {
   const uses = sheetUses(project)
   const paths = new Set(uses.map((u) => u.path))
   const live = new Set(uses.map((u) => u.sheet))

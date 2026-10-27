@@ -346,6 +346,50 @@ export function syncCopies(project: Project, path: string): Project {
   return { ...project, components: out }
 }
 
+/**
+ * Gives every use of a reused sheet the symbols another use of it has and it lacks, and nothing else: it never removes or rewrites a symbol (that is `syncCopies`,
+ * run where an edit is made). It is what two copies of a shared project both run on the same state, so it must give the same answer on both: the source of a
+ * missing symbol is the first use (by path) that has it, the order is by path and key rather than the list's order, and a new copy's id is made from its template and
+ * its use, so two copies that fill one gap write the same item and nothing is doubled.
+ */
+export function fillCopies(project: Project): Project {
+  if (!isHierarchical(project)) return project
+  const uses = sheetUses(project).filter((u) => u.path !== "")
+  const bySheet = new Map<string, SheetUse[]>()
+  for (const u of uses) (bySheet.get(u.sheet) ?? bySheet.set(u.sheet, []).get(u.sheet)!).push(u)
+  const byUse = new Map<string, Map<string, ComponentInstance>>()
+  for (const c of project.components) {
+    const at = useOf(c)
+    const m = byUse.get(at) ?? byUse.set(at, new Map()).get(at)!
+    const k = copyKey(c)
+    // Two symbols with one key in one use: the lower id is the one other uses copy.
+    const was = m.get(k)
+    if (!was || c.id < was.id) m.set(k, c)
+  }
+  const taken = new Set(project.components.map((c) => c.ref))
+  const added: ComponentInstance[] = []
+  const ids = new Set(project.components.map((c) => c.id))
+  for (const list of bySheet.values()) {
+    if (list.length < 2) continue
+    const sorted = [...list].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    const keys = new Set<string>()
+    for (const u of sorted) for (const k of byUse.get(u.path)?.keys() ?? []) keys.add(k)
+    for (const k of [...keys].sort()) {
+      const source = sorted.map((u) => byUse.get(u.path)?.get(k)).find((c) => c)!
+      for (const u of sorted) {
+        if (byUse.get(u.path)?.has(k)) continue
+        const id = `c_${k}_${u.path.replace(/\//g, "-")}`
+        if (ids.has(id)) continue
+        const ref = nextCopyRef(source.ref, taken)
+        taken.add(ref)
+        ids.add(id)
+        added.push({ ...stripOwn(source), id, ref, inst: u.path, tpl: k, pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false } } as ComponentInstance)
+      }
+    }
+  }
+  return added.length ? { ...project, components: [...project.components, ...added] } : project
+}
+
 const stripOwn = (c: ComponentInstance): ComponentInstance => {
   const out = { ...c } as Record<string, unknown>
   delete out.inst

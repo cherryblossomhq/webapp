@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { addDrawings } from "../src/model/drawings"
 import { addComponent, addWire, createProject } from "../src/model/ops"
 import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
-import { addSheet, addSheetUse, moveSheetSymbols, resizeSheetSymbol, addSheetPin, setSheetSymbol } from "../src/model/sheetOps"
-import { commitOnUse, ROOT_SHEET, sheetUses } from "../src/model/sheets"
+import { addSheet, addSheetUse, moveSheetSymbols, removeSheetSymbols, resizeSheetSymbol, addSheetPin, setSheetSymbol } from "../src/model/sheetOps"
+import { settleStructure } from "../src/model/settleStructure"
+import { commitOnUse, ROOT_SHEET, sheetUses, useOf } from "../src/model/sheets"
 import { withCopperCount } from "../src/model/stack"
 import type { Project, Zone } from "../src/model/types"
 import { addVariant, setActiveVariant, setVariantOverride } from "../src/model/variants"
@@ -368,6 +369,153 @@ describe("undo of KiCad-model edits", () => {
     api().redo()
     await settle()
     expect(memory.project(id).sheetSymbols).toHaveLength(1)
+  })
+})
+
+
+// ---------- A sheet tree that stays whole ----------
+
+describe("the sheet tree under undo and other people's edits", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    api().close()
+    connectProjectStorage(null)
+    vi.useRealTimers()
+  })
+
+  const strip = (p: Project) => ({ ...p, id: "", createdAt: 0, updatedAt: 0 })
+
+  /** Nothing on a sheet or use the tree does not have. */
+  function expectWhole(p: Project) {
+    const uses = sheetUses(p)
+    const paths = new Set(uses.map((u) => u.path))
+    const sheets = new Set(uses.map((u) => u.sheet))
+    for (const c of p.components) expect(paths.has(useOf(c)), `part ${c.ref} on use "${c.inst}"`).toBe(true)
+    for (const w of p.wires) expect(sheets.has(w.sheet ?? ROOT_SHEET), `wire ${w.id} on sheet ${w.sheet}`).toBe(true)
+  }
+
+  async function open(start: Project) {
+    const memory = memoryStorage()
+    connectProjectStorage(memory.storage)
+    const { id } = await memory.storage.create(projectRecord(start))
+    const stored = (await memory.storage.load(id))!
+    api().open(openStoredProject(stored), stored)
+    await settle()
+    const load = async () => openStoredProject((await memory.storage.load(id))!)
+    return { memory, id, load }
+  }
+
+  it("undo of a new sheet keeps the sheet while someone else has a part and a wire on it, and nothing is left orphaned", async () => {
+    const { memory, id, load } = await open(createProject("Undo orphan"))
+    api().commit((p) => addSheet(p, "", { minX: 0, minY: 0, maxX: 10, maxY: 6 }, "Power").project)
+    await settle()
+    // Bob opens the sheet and adds R1 and a wire on it.
+    const now = await load()
+    const use = sheetUses(now).find((u) => u.path !== "")!
+    const bobs = commitOnUse(now, use.path, (v) => addWire(addComponent(v, "resistor").project, [{ x: 0, y: 0 }, { x: 2, y: 0 }]).project)
+    await memory.pushAs("bob", id, projectChanges(now, bobs))
+    await settle()
+    expect(api().project!.components).toHaveLength(1)
+    api().undo()
+    await settle()
+    const mine = api().project!
+    expectWhole(mine)
+    // Bob's work is still there, on the sheet that is still there.
+    expect(mine.components).toHaveLength(1)
+    expect(mine.wires).toHaveLength(1)
+    expect(mine.sheetSymbols).toHaveLength(1)
+    const stored = await load()
+    expectWhole(stored)
+    expect(jsonEqual(strip(stored), strip(mine))).toBe(true)
+    // Redo puts the sheet back as it was, still whole.
+    api().redo()
+    await settle()
+    expectWhole(api().project!)
+    expect(jsonEqual(strip(await load()), strip(api().project!))).toBe(true)
+  })
+
+  it("undo of a new sheet nobody else touched still removes it", async () => {
+    const { memory, id } = await open(createProject("Undo clean"))
+    api().commit((p) => addSheet(p, "", { minX: 0, minY: 0, maxX: 10, maxY: 6 }, "Power").project)
+    await settle()
+    api().undo()
+    await settle()
+    expect(api().project!.sheetSymbols ?? []).toHaveLength(0)
+    expect(memory.project(id).sheetSymbols ?? []).toHaveLength(0)
+  })
+
+  /** A project with a sheet used twice. */
+  function reused(): { start: Project; uses: string[] } {
+    const first = addSheet(createProject("Reuse"), "", { minX: 0, minY: 0, maxX: 10, maxY: 6 }, "Cell")
+    const start = addSheetUse(first.project, "", first.symbol.child, { minX: 20, minY: 0, maxX: 30, maxY: 6 }, "Cell B")!.project
+    return { start, uses: sheetUses(start).filter((u) => u.path !== "").map((u) => u.path) }
+  }
+
+  it("a part added to a use that someone else deletes at the same moment does not stay on no sheet", async () => {
+    const { start, uses } = reused()
+    const { memory, id, load } = await open(start)
+    // Ada adds a part to the first use (its copy lands on the second), her batch still on its way...
+    api().commit((p) => commitOnUse(p, uses[0], (v) => addComponent(v, "resistor").project))
+    // ...when Bob's deletion of the second use reaches storage first.
+    const now = await load()
+    const second = now.sheetSymbols!.find((s) => `/${s.id}` === uses[1])!
+    await memory.pushAs("bob", id, projectChanges(now, removeSheetSymbols(now, [second.id])))
+    await settle()
+    await settle()
+    const mine = api().project!
+    expectWhole(mine)
+    const stored = await load()
+    expectWhole(stored)
+    expect(jsonEqual(strip(stored), strip(mine))).toBe(true)
+    // The first use keeps Ada's part.
+    expect(mine.components.filter((c) => useOf(c) === uses[0])).toHaveLength(1)
+  })
+
+  it("a part added to a use while someone adds a third use ends on all three uses, once", async () => {
+    const { start, uses } = reused()
+    const { memory, id, load } = await open(start)
+    const before = await load()
+    api().commit((p) => commitOnUse(p, uses[0], (v) => addComponent(v, "resistor").project))
+    // Bob adds a third use from the sheet as he has it, without Ada's part.
+    const child = sheetUses(before).find((u) => u.path === uses[0])!.sheet
+    const bobs = addSheetUse(before, "", child, { minX: 40, minY: 0, maxX: 50, maxY: 6 }, "Cell C")!.project
+    await memory.pushAs("bob", id, projectChanges(before, bobs))
+    await settle()
+    await settle()
+    const mine = api().project!
+    const all = sheetUses(mine).filter((u) => u.path !== "").map((u) => u.path)
+    expect(all).toHaveLength(3)
+    for (const path of all) expect(mine.components.filter((c) => useOf(c) === path), path).toHaveLength(1)
+    expect(new Set(mine.components.map((c) => c.ref)).size).toBe(3)
+    expect(jsonEqual(strip(await load()), strip(mine))).toBe(true)
+  })
+
+  it("two copies settling one state agree, whatever order their lists are in, and settling again changes nothing", () => {
+    const { start, uses } = reused()
+    const edited = commitOnUse(start, uses[0], (v) => addComponent(addComponent(v, "resistor").project, "capacitor").project)
+    // A third use that lacks both parts.
+    const child = sheetUses(edited).find((u) => u.path === uses[0])!.sheet
+    const third = addSheetUse(start, "", child, { minX: 40, minY: 0, maxX: 50, maxY: 6 }, "C")!.project
+    const withC = { ...third, components: edited.components }
+    const a = settleStructure(withC)
+    const b = settleStructure({ ...withC, components: [...withC.components].reverse() })
+    const byId = (p: Project) => [...p.components].sort((x, y) => (x.id < y.id ? -1 : 1))
+    expect(byId(a).map((c) => [c.id, c.ref, c.inst])).toEqual(byId(b).map((c) => [c.id, c.ref, c.inst]))
+    expect(a.components.length).toBeGreaterThan(withC.components.length)
+    expect(settleStructure(a)).toBe(a)
+  })
+
+  it("a trace on a layer that another copy removed is dropped", async () => {
+    const start: Project = { ...createProject("Layers"), board: withCopperCount(createProject("x").board, 4) }
+    const { memory, id, load } = await open(start)
+    api().commit((p) => ({ ...p, traces: [...p.traces, { id: "t1", net: "N", layer: "in1", width: 0.2, points: [{ x: 0, y: 0 }, { x: 2, y: 0 }] } as never] }))
+    const now = await load()
+    await memory.pushAs("bob", id, projectChanges(now, { ...now, board: withCopperCount(now.board, 2) }))
+    await settle()
+    await settle()
+    expect(api().project!.board.stack).toBeUndefined()
+    expect(api().project!.traces.filter((t) => t.layer === "in1")).toHaveLength(0)
+    expect((await load()).traces.filter((t) => t.layer === "in1")).toHaveLength(0)
   })
 })
 

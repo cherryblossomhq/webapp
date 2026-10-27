@@ -409,3 +409,33 @@ export function diffProjects(first: Project, second: Project, limit = 200): Diff
   }
   return [...diffCanonical(a, b, limit), ...extra]
 }
+
+/**
+ * What differs on purpose, because a KiCad 9 file cannot say it: a zone of a board of KiCad 5 or earlier has no uuid and is not ordered by one (a file of
+ * KiCad 9 gives every zone a uuid, which orders zones of equal priority), and its fill keeps that release's distances to the edge and to a hole; KiCad 9 has no
+ * `virtual` attribute (it reads it as "not in the BOM" and "not in the position file"), and jumper pad groups and a text's hyperlink are KiCad 10's, which the 9.0
+ * parser refuses (they stay in the project and are not written). Copper the file put on no net that touches a net is written on that net (the editor cannot tell it from copper added in it). Everything else that differs is a finding.
+ */
+export const BY_DESIGN = [
+  /^project\.zones\[\]\.(edgeGap|holeGap|unordered|uuid)$/,
+  /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
+  /^project\.components\[\]\.flags\.(jumperDuplicates|jumperGroups)$/,
+  /^project\.(texts|components\[\]\.texts)\[\]\.href$/,
+  /^project\.(traces\[\]\.net|vias\[\]\.routedNet)$/,
+  // X1: a stackup's `castellated_pads` is a word of later KiCad releases than 9.0, whose parser stops at a node it does not have, so it is kept in the project and not written
+  /^project\.board\.stack\.castellated$/,
+  // X22 and X21: via protection, backdrills and post-machining, a pad's `die_delay`, a via stack or via stitching, and net chains are KiCad 10's (and 11's) words, which the 9.0 parser refuses (the
+  // written file has none: `unknownNodes`), so they stay in the project. A tuning pattern and a pad's `die_length` are KiCad 9's and are written; a pattern that goes missing shows as
+  // `project.groups[].gen.props...` or, when the whole pattern is gone, is caught by the `tuning pattern` check below.
+  /^project\.vias\[\]\.(protect|backdrill|tertiary|post)(\.|$)/,
+  /^project\.footprints\[\]\.pads\[\]\.(backdrill|tertiary|post|dieDelay)(\.|$)/,
+  /^project\.groups\[\]\.gen$/,
+  /^project\.netChains(\[\]|\.length)?(\.|$)/,
+  // KiCad 11's dielectric model and frequency of a stackup row are not in a KiCad 9 file (the writer says so), and KiCad 9 says a via's or pad's tenting by words for both sides together, so a side the file left
+  // unset (KiCad 10 writes `none`) is written not tented (the writer's note says so).
+  /^project\.board\.stack\.rows\[\](\.sub\[\])?\.(model|specFreq)$/,
+  /^project\.(vias\[\]|footprints\[\]\.pads\[\])\.tent\.(front|back|top|bottom)$/,
+]
+
+/** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */
+export const REPAIRED = [/^project\.board\.outlineDrawn: /]

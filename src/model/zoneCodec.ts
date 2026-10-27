@@ -1,5 +1,6 @@
 import { normalizeOutline, packOutline, unpackOutline } from "./outlineCodec"
 import { segStart, type ShapePath } from "./shapes"
+import { isOtherZoneLayer, orderedOtherLayers } from "./zoneLayers"
 import { isCopperLayerId } from "./stack"
 import type { CopperLayer, Zone, ZoneConnection, ZoneKeepout } from "./types"
 import { finite, isObject } from "../lib/guards"
@@ -52,6 +53,7 @@ export function unpackRings(raw: unknown): ShapePath[] | null {
   return out.length ? out : null
 }
 
+const sortedOtherLayers = orderedOtherLayers
 const legacyKeys = new Set(["id", "net", "layer", "clearance"])
 const isLegacy = (z: Zone) => Object.keys(z).every((k) => legacyKeys.has(k) || (z as unknown as Json)[k] === undefined)
 
@@ -100,6 +102,14 @@ export function normalizeZones(raw: unknown): Zone[] {
     if (rings?.length) z.outline = rings
     const layers = Array.isArray(item.layers) ? item.layers.map(layerOf).filter((l): l is CopperLayer => l !== null) : []
     if (layers.length > 1 && layers[0] === layer && new Set(layers).size === layers.length) z.layers = layers
+    // X29: the layers that are not copper, each once and in the table's order; a zone with them and no copper layer says `layers: []`. A pour is on one kind or the other, so a pour that
+    // says both keeps its copper (a rule area may be on both).
+    const other = Array.isArray(item.other) ? [...new Set(item.other.filter(isOtherZoneLayer))] : []
+    const copperLayersGiven = layers.length > 0
+    if (other.length && (isObject(item.keepout) || !copperLayersGiven)) {
+      z.other = sortedOtherLayers(other)
+      if (!copperLayersGiven) z.layers = []
+    }
     if (typeof item.connect === "string" && CONNECTIONS.has(item.connect as ZoneConnection)) z.connect = item.connect as ZoneConnection
     const sm = item.smoothing
     if (isObject(sm) && (sm.kind === "chamfer" || sm.kind === "fillet") && finite(sm.radius) && sm.radius > 0) z.smoothing = { kind: sm.kind, radius: sm.radius }

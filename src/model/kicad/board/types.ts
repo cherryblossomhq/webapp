@@ -92,7 +92,8 @@ export interface KicadPad {
   tenting?: { front?: boolean; back?: boolean }
   removeUnused?: boolean
   keepEnds?: boolean
-  zoneLayers: boolean
+  /** `(zone_layer_connections L1 L2 ...)` of a pad: the copper layers a pour joins it on when its unused layers are removed (KiCad 9 and 10 write what the last fill found); the layer names as written, `[]` for the node with none, null when the pad has no such node (X31). */
+  zoneLayers: string[] | null
   /** A `tenting` that says yes or no for a side (`none` is no setting). */
   tented: boolean
   node: List

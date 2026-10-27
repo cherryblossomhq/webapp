@@ -1,9 +1,11 @@
 import { uid } from "../../../lib/id"
 import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
-import { kicadUuid } from "../../zones"
+import { anchorSide, isOtherZoneLayer, orderedOtherLayers } from "../../zoneLayers"
+import { hasOtherLayers, isOtherZone, kicadUuid } from "../../zones"
 import { layerClass } from "./needs"
 import { layerMapOf, layersOfNames } from "./layers"
+import { resolveLayer } from "./graphics"
 import { eraOf } from "./read"
 import type { ImportReport } from "./report"
 import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
@@ -24,6 +26,40 @@ export function zoneCopperLayers(z: KicadZone, board: KicadBoard): CopperLayer[]
 export function zoneOnlyCopper(z: KicadZone, board: KicadBoard): boolean {
   const names = new Set(board.copper.names)
   return z.layers.length > 0 && z.layers.every((n) => n === "*.Cu" || n === "F&B.Cu" || layerClass(n, names) === "copper")
+}
+
+/** What a zone's layer names stand for: the board's copper layers, the layers that are not copper (wildcards like `*.Mask` made into both sides), and names that are none of KiCad's. */
+export interface ZoneLayerSplit {
+  copper: CopperLayer[]
+  other: string[]
+  unknown: string[]
+}
+
+/** The non-copper layers the editor has a Gerber for. */
+const PLOTTED_LAYERS = /^[FB]\.(Mask|Paste|SilkS)$|^Edge\.Cuts$/
+
+const SIDED_WILDCARD = /^\*\.(Adhes|Paste|SilkS|Mask|CrtYd|Fab)$/
+
+export function splitZoneLayers(board: KicadBoard, names: readonly string[]): ZoneLayerSplit {
+  const map = layerMapOf(board)
+  const copperNames: string[] = []
+  const other = new Set<string>()
+  const unknown: string[] = []
+  for (const n of names) {
+    if (n === "*.Cu" || n === "F&B.Cu" || map.of(n)) copperNames.push(n)
+    else if (SIDED_WILDCARD.test(n)) {
+      other.add(`F.${n.slice(2)}`)
+      other.add(`B.${n.slice(2)}`)
+    } else {
+      const r = resolveLayer(board, n)
+      // A copper layer the board has no row for is left out, as it always was (a zone left with none is not brought in).
+      if (r.kind === "inner") continue
+      if (r.kind === "edge") other.add("Edge.Cuts")
+      else if (r.kind === "layer" && isOtherZoneLayer(r.name)) other.add(r.name)
+      else unknown.push(n)
+    }
+  }
+  return { copper: layersOfNames(map, copperNames), other: orderedOtherLayers([...other]), unknown }
 }
 
 /** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points. */
@@ -58,6 +94,8 @@ export interface ZoneContext {
 
 export interface ZoneResult {
   zones: Zone[]
+  /** What a zone has that the model cannot hold, each said once (the import is then refused as inexact). */
+  lossy: string[]
   /** Zones with no fill in the file, which the editor fills (KiCad refills before it plots). */
   unfilled: number
   /** Zones with fewer than three corners, which KiCad ignores. */
@@ -79,18 +117,33 @@ export function convertZones(cx: ZoneContext): ZoneResult {
   let unfilled = 0
   let degenerate = 0
   const loose: string[] = []
+  const lossy: string[] = []
   const widest = edgeWidth(board)
   for (const z of board.zones) {
-    // A zone with a layer that is not copper among its layers is X29 (the board is refused for it before it gets here).
-    if (z.kind === "placement" || !zoneOnlyCopper(z, board)) continue
-    const layers = zoneCopperLayers(z, board)
+    if (z.kind === "placement") continue
+    const split = splitZoneLayers(board, z.layers)
+    const layers = split.copper
+    const rule = z.kind === "keepout" || z.kind === "rule-area"
+    if (split.unknown.length) {
+      const what = `a zone on ${split.unknown.join(", ")}, which is no layer the editor has`
+      if (!lossy.includes(what)) lossy.push(what)
+      continue
+    }
     const paths = z.rings.map(ringPath).filter((p): p is ShapePath => p !== null)
-    if (!layers.length || paths.length === 0 || z.rings[0].length < 3) {
+    if ((!layers.length && !split.other.length) || paths.length === 0 || z.rings[0].length < 3) {
       degenerate++
       continue
     }
-    const zone: Zone = { id: uid("z"), net: "", layer: layers[0], outline: paths }
+    // X29: a filled zone is on copper or on layers that are not, never both (KiCad would fill each layer of such a zone as copper, by the nets and pads of a layer that has none).
+    if (!rule && layers.length && split.other.length) {
+      const what = "a zone that is filled on a copper layer and on a layer that is not copper at once"
+      if (!lossy.includes(what)) lossy.push(what)
+      continue
+    }
+    const zone: Zone = { id: uid("z"), net: "", layer: layers[0] ?? anchorSide(split.other), outline: paths }
     if (layers.length > 1) zone.layers = layers
+    if (!layers.length) zone.layers = []
+    if (split.other.length) zone.other = split.other
     if (z.name) zone.name = z.name
     if (z.priority > 0) zone.priority = z.priority
     // KiCad 6 and later order zones of equal priority by uuid (zone.cpp, `HigherPriority`, 6.0 to 10.0); KiCad 5 and earlier cut a zone only out of
@@ -112,11 +165,13 @@ export function convertZones(cx: ZoneContext): ZoneResult {
       out.push(zone)
       continue
     }
-    if (z.netRaw) {
+    // A zone on layers that is not copper has no net and no teardrop: KiCad's file says what it says of the rest (clearance, pad connection, thermal gap) and the zone keeps it.
+    const copperZone = split.other.length === 0
+    if (copperZone && z.netRaw) {
       const name = cx.netName(z.netRaw)
       if (name) zone.net = name
     }
-    if (z.teardrop) zone.teardrop = z.teardrop
+    if (copperZone && z.teardrop) zone.teardrop = z.teardrop
     zone.clearance = z.clearance ?? rules.pourClearance
     zone.minWidth = z.minThickness ?? rules.pourMinWidth
     zone.connect = z.connect === "yes" ? "solid" : z.connect === "no" ? "none" : z.connect === "thru_hole_only" ? "tht" : "thermal"
@@ -130,6 +185,11 @@ export function convertZones(cx: ZoneContext): ZoneResult {
     // clearance and from such a hole by the board's hole clearance, which are design rules of the project file (`.kicad_pro`), not of the board:
     // the files that have a stored fill show 0.5 mm as the commonest distance from a fill to the edge in every release from 6 to 10, which is
     // KiCad's default, and 0.25 mm is its default hole clearance.
+    if (!copperZone) {
+      if (!z.filled) unfilled++
+      out.push(zone)
+      continue
+    }
     if (z.strokedFill) zone.edgeGap = Math.round((zone.clearance + widest / 2) * 1e6) / 1e6
     else {
       zone.edgeGap = 0.5
@@ -138,13 +198,29 @@ export function convertZones(cx: ZoneContext): ZoneResult {
     if (!z.filled) unfilled++
     out.push(zone)
   }
-  return { zones: out, unfilled, degenerate, loose }
+  return { zones: out, lossy, unfilled, degenerate, loose }
 }
 
 export function reportZones(r: ZoneResult, report: ImportReport, all: number) {
   if (!r.zones.length && !r.degenerate) return
-  const pours = r.zones.filter((z) => !z.keepout)
-  const areas = r.zones.length - pours.length
+  const pours = r.zones.filter((z) => !z.keepout && !isOtherZone(z))
+  const filled = r.zones.filter((z) => !z.keepout && isOtherZone(z))
+  const areas = r.zones.length - pours.length - filled.length
+  const sidedAreas = r.zones.filter((z) => z.keepout && hasOtherLayers(z))
+  // X29: a zone on the mask, paste, silkscreen or a user layer is a filled area of that layer, which the editor fills by KiCad's rules for such a zone.
+  if (filled.length) {
+    const plotted = filled.filter((z) => z.other!.some((n) => PLOTTED_LAYERS.test(n))).length
+    report.entries.push({
+      code: "zones-non-copper",
+      severity: "changed",
+      object: `${filled.length} zone${filled.length === 1 ? "" : "s"} on layers that are not copper`,
+      why: `Brought in with their outlines, layers and settings. The editor fills each by KiCad's rule for such a zone (its outline with corners smoothed, kept inside the board, out of areas that keep pours out, thinned to its minimum width), so the fill can differ from the file's by a few hundredths of a millimetre at corners. ${plotted === filled.length ? "They plot on the Gerber of their layer." : plotted ? `${plotted} of them plot on the Gerber of their layer (mask, paste, silkscreen or board edge); the rest are on layers the editor draws and keeps but has no Gerber for.` : "They are on layers the editor draws and keeps but has no Gerber for (fabrication, courtyard, adhesive and user layers)."}`,
+      count: filled.length,
+    })
+  }
+  if (sidedAreas.length) {
+    report.entries.push({ code: "rule-areas-non-copper", severity: "note", object: `${sidedAreas.length} keepout${sidedAreas.length === 1 ? "" : "s"} that name layers that are not copper`, why: "Kept with those layers and written back. A keepout acts on copper (tracks, vias, pads, pours) and on a zone on its own layer that is not copper (pours), so the extra layers change nothing else.", count: sidedAreas.length })
+  }
   if (pours.length) {
     report.entries.push({
       code: "zones-refilled",

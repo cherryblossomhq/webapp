@@ -267,6 +267,7 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   if (opts?.pintype !== undefined) lines.push(`  (pintype ${quote(opts.pintype)})`)
   if (def.property) lines.push(`  (property pad_prop_${def.property})`)
   if (def.unused) lines.push("  (remove_unused_layers yes)", `  (keep_end_layers ${def.unused === "keepEnds" ? "yes" : "no"})`)
+  if (def.zoneLayers) lines.push(`  (zone_layer_connections${def.zoneLayers.map((l) => ` ${quote(kicadLayerName(bottom ? flipLayer(l, count) : l))}`).join("")})`)
   if (def.tent) {
     // KiCad 9 says a pad's tenting in words, for both sides: a side that is not named is not tented. The file's front is the part's far side on the bottom.
     const f = (bottom ? def.tent.bottom : def.tent.top) === true

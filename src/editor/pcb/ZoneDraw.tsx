@@ -1,8 +1,28 @@
+import type { OtherFill } from "../../model/nonCopperFill"
 import { pathsSvgPath } from "../../model/shapes"
+import { otherLayerKind } from "../../model/zoneLayers"
 import { zoneLayers } from "../../model/zones"
 import { zoneCorners } from "../../model/zoneOps"
 import type { CopperLayer, Project, Vec2 } from "../../model/types"
 import { copperColor, PCB } from "../theme"
+import { shapeLayerColor } from "./ShapeGraphics"
+
+/**
+ * The fills of the zones that are on layers that are not copper (X29), in their layer's colour: the silkscreen ones solid, the others as light as the drawings on those layers. `silk` picks which of the two
+ * is drawn, so the silkscreen's goes with the silkscreen and the rest under it. `shown` says whether a layer is on screen, `opacityOf` how faint its side is.
+ */
+export function OtherZoneFills({ fills, silk, shown, opacityOf }: { fills: OtherFill[]; silk: boolean; shown: (layer: string) => boolean; opacityOf: (layer: string) => number }) {
+  const list = fills.filter((f) => f.polygons.length > 0 && (otherLayerKind(f.layer) === "silk") === silk && shown(f.layer))
+  if (!list.length) return null
+  return (
+    <g>
+      {list.map((f) => {
+        const d = f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${p.x} ${p.y}`).join("L")}Z`)).join("")
+        return <path key={`${f.zoneId}|${f.layer}`} d={d} fill={shapeLayerColor(f.layer)} fillOpacity={silk ? 1 : 0.4} fillRule="evenodd" opacity={opacityOf(f.layer)} />
+      })}
+    </g>
+  )
+}
 
 /**
  * The outlines of the zones with a polygon (a dashed line on the layer's colour, a rule area tinted and hatched), and the corners and edge
@@ -21,8 +41,10 @@ export function ZoneOutlines({ project, selected, px, active }: { project: Proje
       {zones.map((z) => {
         const d = pathsSvgPath(z.outline!)
         const sel = selected.has(`z:${z.id}`)
-        const here = zoneLayers(z).includes(active)
-        const color = z.keepout ? "#ff5470" : copperColor(here ? active : zoneLayers(z)[0] ?? z.layer)
+        const copper = zoneLayers(z)
+        // A zone that is on layers that are not copper is drawn in the colour of the first of them, at full strength (it is not on any copper layer to be dimmed on).
+        const here = copper.includes(active) || (copper.length === 0 && (z.other?.length ?? 0) > 0)
+        const color = z.keepout ? "#ff5470" : copper.length === 0 && z.other?.length ? shapeLayerColor(z.other[0]) : copperColor(here ? active : copper[0] ?? z.layer)
         return (
           <g key={z.id} opacity={here ? 1 : 0.45}>
             {z.keepout && <path d={d} fill="url(#keepout-hatch)" fillOpacity={0.5} fillRule="evenodd" />}

@@ -1,8 +1,11 @@
 import { Trash2 } from "lucide-react"
 import { areaMm2OfZone, zoneFacts } from "./zoneInspector"
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
-import { updateZone, removeZones, type ZonePatch } from "../model/zoneOps"
-import { zoneSettings } from "../model/zones"
+import { updateZone, removeZones, setZoneSurface, type ZonePatch } from "../model/zoneOps"
+import { nonCopperFills } from "../model/nonCopperFill"
+import { shapeLayerInfo } from "../model/shapeLayers"
+import { OTHER_LAYER_ORDER } from "../model/zoneLayers"
+import { isOtherZone, zoneSettings } from "../model/zones"
 import { copperLayers, layerLabel } from "../model/stack"
 import { formatLength } from "../model/rules"
 import type { CopperLayer, Project, Zone, ZoneConnection } from "../model/types"
@@ -38,11 +41,21 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
     .map((n) => n.name)
   const patch = (p: ZonePatch) => projectApi().commit((x) => updateZone(x, zone.id, p))
   const layers = zone.layers ?? [zone.layer]
+  const others = zone.other ?? []
+  const rule = zone.keepout !== undefined
+  // X29: a pour is on copper or on layers that are not copper; choosing one kind clears the other (a keepout may be on both).
+  const surface = (copper: CopperLayer[], other: string[]) => projectApi().commit((x) => setZoneSurface(x, zone.id, copper, other))
   const toggleLayer = (l: CopperLayer, on: boolean) => {
     const next = copperLayers(project.board).filter((x) => (x === l ? on : layers.includes(x)))
-    if (next.length) patch({ layers: next, layer: next[0] })
+    if (next.length || others.length) surface(next, rule || !on ? others : [])
   }
-  const rule = zone.keepout !== undefined
+  const toggleOther = (name: string, on: boolean) => {
+    const next = OTHER_LAYER_ORDER.filter((x) => (x === name ? on : others.includes(x)))
+    if (layers.length || next.length) surface(rule || !on ? layers : [], next)
+  }
+  const filledArea = nonCopperFills(project).filter((f) => f.zoneId === zone.id)
+  const filledMm2 = areaMm2OfZone(filledArea.flatMap((f) => f.polygons))
+  const flat = isOtherZone(zone) && !rule
   const fmt = (mm: number) => `${formatLength(mm, unit, true)}`
   const row = (label: string, hint: string, control: React.ReactNode) => (
     <div className="flex items-center justify-between gap-3">
@@ -53,11 +66,11 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
     </div>
   )
   return (
-    <Section title={rule ? "Keepout" : zone.teardrop ? "Teardrop zone" : "Copper zone"}>
+    <Section title={rule ? "Keepout" : flat ? "Filled area" : zone.teardrop ? "Teardrop zone" : "Copper zone"}>
       <Field label="Name">
         <input key={zone.name ?? ""} className="field h-8" aria-label="Zone name" defaultValue={zone.name ?? ""} placeholder="No name" onBlur={(e) => e.target.value !== (zone.name ?? "") && patch({ name: e.target.value || undefined })} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
       </Field>
-      {!rule && (
+      {!rule && !flat && (
         <Field label="Net">
           <select className="field mono h-8" aria-label="Zone net" value={zone.net} onChange={(e) => patch({ net: e.target.value })}>
             <option value="">No net</option>
@@ -70,14 +83,30 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
           </select>
         </Field>
       )}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         {copperLayers(project.board).map((l) => (
           <label key={l} className="flex items-center gap-1.5 text-[12.5px] text-ink-2">
             <input type="checkbox" aria-label={`On the ${l} layer`} checked={layers.includes(l)} onChange={(e) => toggleLayer(l, e.target.checked)} />
             {layerLabel(project.board, l)}
           </label>
         ))}
+        {others.map((n) => (
+          <label key={n} className="flex items-center gap-1.5 text-[12.5px] text-ink-2">
+            <input type="checkbox" aria-label={`On the ${n} layer`} checked onChange={(e) => toggleOther(n, e.target.checked)} />
+            {shapeLayerInfo(n)?.label ?? n}
+          </label>
+        ))}
       </div>
+      <Field label="Also on a layer that is not copper">
+        <select className="field h-8" aria-label="Add a layer that is not copper" value="" onChange={(e) => e.target.value && toggleOther(e.target.value, true)}>
+          <option value="">{flat || rule ? "Add a layer" : "Move to a layer"}</option>
+          {OTHER_LAYER_ORDER.filter((n) => !others.includes(n)).map((n) => (
+            <option key={n} value={n}>
+              {shapeLayerInfo(n)?.label ?? n}
+            </option>
+          ))}
+        </select>
+      </Field>
       {rule ? (
         <div className="space-y-1">
           <p className="text-[12.5px] text-ink-2">Keeps out:</p>
@@ -98,6 +127,26 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
             ),
           )}
         </div>
+      ) : flat ? (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Thinnest feature">
+              <LengthInput min={0} value={set.minWidth} ariaLabel="Minimum width" onCommit={(v) => v !== null && patch({ minWidth: v })} />
+            </Field>
+            <Field label="Corners">
+              <select className="field h-8" aria-label="Corner smoothing" value={zone.smoothing?.kind ?? "none"} onChange={(e) => patch({ smoothing: e.target.value === "none" ? undefined : { kind: e.target.value as "chamfer" | "fillet", radius: zone.smoothing?.radius ?? 0.5 } })}>
+                <option value="none">Square</option>
+                <option value="chamfer">Cut off</option>
+                <option value="fillet">Rounded</option>
+              </select>
+            </Field>
+          </div>
+          {zone.smoothing && (
+            <Field label="By">
+              <LengthInput min={0.01} value={zone.smoothing.radius} ariaLabel="Corner size" onCommit={(v) => v !== null && patch({ smoothing: { kind: zone.smoothing!.kind, radius: v } })} />
+            </Field>
+          )}
+        </>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-2">
@@ -167,11 +216,13 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
           {zone.teardrop && <Row label="Teardrop" value={zone.teardrop === "padvia" ? "at a pad or via" : "at a track end"} />}
         </>
       )}
-      <Row label="Layers" value={layers.map((l) => layerLabel(project.board, l)).join(", ")} />
+      <Row label="Layers" value={[...layers.map((l) => layerLabel(project.board, l)), ...others.map((n) => shapeLayerInfo(n)?.label ?? n)].join(", ")} />
       <Row label="Corners" value={facts.corners} />
       <Row label="Area" value={`${facts.area.toFixed(1)} mm²`} mono />
-      {!rule && <Row label="Copper" value={facts.empty ? "none: nothing to fill here" : `${areaMm2OfZone(facts.copper).toFixed(1)} mm² in ${facts.pieces} piece${facts.pieces === 1 ? "" : "s"}`} />}
-      {!rule && <p className="text-[12px] text-ink-3">The copper is filled again as soon as the zone or the copper round it changes (as you let go of a drag): gap {fmt(set.clearance)}, thinnest copper {fmt(set.minWidth)}.</p>}
+      {!rule && !flat && <Row label="Copper" value={facts.empty ? "none: nothing to fill here" : `${areaMm2OfZone(facts.copper).toFixed(1)} mm² in ${facts.pieces} piece${facts.pieces === 1 ? "" : "s"}`} />}
+      {flat && <Row label="Filled" value={filledMm2 === 0 ? "nothing: the area is outside the board or thinner than the minimum" : `${filledMm2.toFixed(1)} mm²`} />}
+      {flat && <p className="text-[12px] text-ink-3">The area is filled again as soon as the zone or the board changes. On the mask it opens the solder mask, on the paste layer it is stencil, on the silkscreen it is ink; it plots on the Gerber of its layer.</p>}
+      {!rule && !flat && <p className="text-[12px] text-ink-3">The copper is filled again as soon as the zone or the copper round it changes (as you let go of a drag): gap {fmt(set.clearance)}, thinnest copper {fmt(set.minWidth)}.</p>}
       <p className="text-[12px] text-ink-3">Drag a square to move a corner, a dot on an edge to add one, the zone's edge to move the whole zone, right-click a corner to remove it. Delete removes the zone.</p>
       <div className="flex items-center justify-between gap-3">
         <span className="text-[12.5px] text-ink-2" title="A locked zone stays as it is when it is dragged or edited">
@@ -187,7 +238,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
         }}
         disabled={zone.locked}
       >
-        <Trash2 size={14} /> Delete {rule ? "keepout" : "zone"}
+        <Trash2 size={14} /> Delete {rule ? "keepout" : flat ? "area" : "zone"}
       </Button>
     </Section>
   )

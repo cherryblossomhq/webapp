@@ -1,6 +1,7 @@
 import { uid } from "../lib/id"
 import { round } from "../lib/geometry"
 import { classValues } from "./netClasses"
+import { anchorSide } from "./zoneLayers"
 import { copperLayers, defaultStackup, flipLayer, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, spanKind, viaBetween, withCopperCount } from "./stack"
 import type { BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind, Zone } from "./types"
 
@@ -142,7 +143,7 @@ export interface LayerContent {
   zones: number
   drawings: number
   texts: number
-  /** Pads that have copper on the layer by their own say (`PadDef.layers.inner` or a pad stack layer). */
+  /** Pads that have copper on the layer by their own say (`PadDef.layers.inner`, a pad stack layer or `PadDef.zoneLayers`). */
   pads: number
 }
 
@@ -155,7 +156,7 @@ export function layerContent(project: Project, layer: CopperLayer): LayerContent
     zones: project.zones.filter((z) => (z.layers ?? [z.layer]).includes(layer)).length,
     drawings: (project.graphics ?? []).filter((g) => onLayerName(g.layer, layer)).length,
     texts: project.texts.filter((t) => t.layer !== undefined && onLayerName(t.layer, layer)).length,
-    pads: (project.footprints ?? []).reduce((n, f) => n + f.pads.filter((p) => p.layers?.inner?.includes(layer) || p.stack?.layers[layer]).length, 0),
+    pads: (project.footprints ?? []).reduce((n, f) => n + f.pads.filter((p) => p.layers?.inner?.includes(layer) || p.stack?.layers[layer] || p.zoneLayers?.includes(layer)).length, 0),
   }
 }
 
@@ -192,14 +193,16 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   const alive = (l: CopperLayer) => keep.has(l)
   const alsoNames = new Set(gone.map(kicadLayerName))
   const zones = project.zones.flatMap((z) => {
-    const ls = (z.layers ?? [z.layer]).filter(alive)
-    if (!ls.length) return []
-    if (ls.length === (z.layers ?? [z.layer]).length) return [z]
+    const own = z.layers ?? [z.layer]
+    const ls = own.filter(alive)
+    if (ls.length === own.length) return [z]
+    // A rule area that is on layers that are not copper too keeps those (X29); a zone with none left is gone.
+    if (!ls.length) return z.other?.length ? [{ ...without(z, "layers"), layers: [], layer: anchorSide(z.other) }] : []
     const next = { ...without(z, "layers"), layer: ls[0] }
     return [ls.length > 1 ? { ...next, layers: ls } : next]
   })
   const footprints = project.footprints?.map((f) => {
-    if (!f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
+    if (!f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || p.zoneLayers?.some((l) => !alive(l)) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
     return { ...f, pads: f.pads.map((p) => cleanPad(p, alive)) }
   })
   const next: Project = {
@@ -286,6 +289,7 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
         let out = p
         if (p.layers?.inner) out = { ...out, layers: { ...out.layers, inner: p.layers.inner.map(id) } }
         if (p.layers?.other) out = { ...out, layers: { ...out.layers, other: p.layers.other.map(mapShapeLayer) } }
+        if (p.zoneLayers) out = { ...out, zoneLayers: p.zoneLayers.map((l) => (l === "top" || l === "bottom" ? l : id(l))) }
         if (p.stack) {
           const layers = Object.fromEntries(Object.entries(p.stack.layers).map(([k, v]) => [k === "inner" || k === "top" || k === "bottom" ? k : id(k as CopperLayer), v]))
           out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
@@ -302,6 +306,7 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
 function cleanPad(p: PadDef, alive: (l: CopperLayer) => boolean): PadDef {
   let out = p
   if (p.layers?.inner?.some((l) => !alive(l))) out = { ...out, layers: { ...out.layers, inner: out.layers!.inner!.filter(alive) } }
+  if (p.zoneLayers?.some((l) => !alive(l))) out = { ...out, zoneLayers: p.zoneLayers.filter(alive) }
   if (p.stack) {
     const layers = Object.fromEntries(Object.entries(p.stack.layers).filter(([k]) => k === "inner" || alive(k as CopperLayer)))
     out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }

@@ -704,7 +704,7 @@ describe("the project file, version 3", () => {
 
 describe("the gate after slice 1b-i", () => {
   it("builds X13 and X15 (and X8, which slice 1b-ii added, X9, which slice 1b-iii did, X2 and X6 of slice 2c-i, X10, X11, X12 and X14 of the board objects slice, X3, the zones, X7, the pad model, and X1, X4 and X5, the layers, arc tracks and via kinds)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X1", "X10", "X11", "X12", "X13", "X14", "X15", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9"])
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X1", "X10", "X11", "X12", "X13", "X14", "X15", "X2", "X29", "X3", "X30", "X31", "X4", "X5", "X6", "X7", "X8", "X9"])
   })
   it("a board whose only needs are built is imported by the real gate with its parts; one that also needs text in another font is refused for that alone", () => {
     const onlyCopper = board({ nets: ['(net 0 "")', net(1, "A")], body: [seg("0 0", "5 0", "(net 1)"), '(via (at 5 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))'] })

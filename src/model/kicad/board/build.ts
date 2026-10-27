@@ -679,6 +679,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
   if (board.footprints.some((f) => f.zones.length)) lose("zones inside parts")
   const zoneResult = convertZones({ board, rules, netName: (raw) => labelText.get(raw) })
+  for (const what of zoneResult.lossy) lose(what)
 
   // ---------- drawings on the board ----------
   const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, where: "the board" }

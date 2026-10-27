@@ -1137,7 +1137,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         properties: atomsOf(kid(c, "property")),
         padstack: !!kid(c, "padstack"),
         stack: kid(c, "padstack") ? padStackOf(kid(c, "padstack")!, number) : null,
-        zoneLayers: !!kid(c, "zone_layer_connections"),
+        zoneLayers: kid(c, "zone_layer_connections") ? atomsOf(kid(c, "zone_layer_connections")) : null,
         tented: !!kid(c, "tenting") && (kid(c, "tenting") as List).slice(1).some((t) => (Array.isArray(t) ? t[1] !== undefined && t[1] !== "none" : true)),
         ...(kid(c, "tenting") ? { tenting: tentingOf(kid(c, "tenting"), version) } : {}),
         node: c,

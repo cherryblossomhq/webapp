@@ -8,8 +8,19 @@ import type { CopperLayer, DesignRules, Project, Vec2, Zone, ZoneConnection } fr
 // (the editor's whole-board pour, which this file leaves exactly as it was): this file says which is which, resolves each setting
 // from the zone or the board's rules, and holds the pure functions the editing tools, the checks and the router share.
 
-/** The layers a zone is on, its own first. */
-export const zoneLayers = (z: Zone): CopperLayer[] => (z.layers && z.layers.length ? z.layers : [z.layer])
+/** The copper layers a zone is on, its own first; none for a zone that is on layers that are not copper (X29). */
+export const zoneLayers = (z: Zone): CopperLayer[] => (z.layers ? z.layers : [z.layer])
+
+/** The layers a zone is on that are not copper (X29), by KiCad's names. */
+export const zoneOtherLayers = (z: Zone): readonly string[] => z.other ?? NONE
+
+/** A zone on mask, paste, silkscreen or a user layer and no copper layer: a filled area of that layer, which the copper engine, the router and Checks have nothing to do with. */
+export const isOtherZone = (z: Zone): boolean => z.other !== undefined && z.other.length > 0 && zoneLayers(z).length === 0
+
+/** A rule area that has layers that are not copper beside, or in place of, its copper ones. */
+export const hasOtherLayers = (z: Zone): boolean => z.other !== undefined && z.other.length > 0
+
+const NONE: readonly string[] = []
 
 /** A rule area (keepout): not a pour, with no net and no fill. */
 export const isRuleArea = (z: Zone): boolean => z.keepout !== undefined
@@ -21,6 +32,7 @@ export function isWholeBoardPour(z: Zone): boolean {
     z.keepout === undefined &&
     z.teardrop === undefined &&
     z.layers === undefined &&
+    z.other === undefined &&
     z.name === undefined &&
     z.priority === undefined &&
     z.minWidth === undefined &&

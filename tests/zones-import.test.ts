@@ -86,13 +86,14 @@ describe("importing a zone", () => {
     expect(r.report.entries.some((e) => e.code === "rule-areas")).toBe(true)
   })
 
-  it("keeps a placement rule area, a hatched fill, a zone on a layer that is not copper and a zone in a part out, each by its extension", () => {
+  it("keeps a placement rule area, a hatched fill and a zone in a part out, each by its extension", () => {
     const placement = refused([zone(`(keepout (tracks allowed) (vias allowed) (pads allowed) (copperpour allowed) (footprints allowed)) (placement (enabled yes) (sheetname "/")) ${modernFill}`, square, '(layer "F.Cu")', '(net 0) (net_name "")')])
     expect(placement?.needs.map((n) => n.ext)).toEqual(["X20"])
     const hatch = refused([zone("(connect_pads (clearance 0.4)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (mode hatch) (thermal_gap 0.5) (thermal_bridge_width 0.5) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0))")])
     expect(hatch?.needs.map((n) => n.ext)).toEqual(["X24"])
-    const mask = refused([zone(modernFill, square, '(layer "F.Mask")', '(net 0) (net_name "")')])
-    expect(mask?.needs.map((n) => n.ext)).toEqual(["X29"])
+    // a zone on a layer that is not copper is imported (X29, kicad-board-x29.test.ts)
+    const mask = imported([zone(modernFill, square, '(layer "F.Mask")', '(net 0) (net_name "")')])
+    expect(mask.project.zones[0].other).toEqual(["F.Mask"])
     const inPart = refused([footprint({ pads: [pad({ at: "0 0" })], extra: `(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed)) (polygon (pts (xy -1 -1) (xy 1 -1) (xy 1 1))))` })])
     expect(inPart?.needs.map((n) => n.ext)).toContain("X30")
     // a zone on an inner layer of a board that has one is imported (X1); one on a layer the board lacks is not brought in, and the report says so

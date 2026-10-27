@@ -55,6 +55,10 @@ function ringOf(pts) {
   return out
 }
 
+const SIDED = /^\*\.(Adhes|Paste|SilkS|Mask|CrtYd|Fab)$/
+const OTHER_KNOWN = /^[FB]\.(Adhes|Paste|SilkS|Mask|CrtYd|Fab)$|^(Dwgs|Cmts|Eco1|Eco2)\.User$|^Margin$|^User\.\d+$|^Edge\.Cuts$/
+export const knownOther = (name) => OTHER_KNOWN.test(name)
+
 const word = (node, name) => {
   const k = kid(node, name)
   return k && typeof k[1] === "string" ? k[1] : undefined
@@ -92,6 +96,8 @@ export function zoneOracle(text) {
       inFootprint,
       layers: layerNames,
       onlyCopper: layerNames.length > 0 && layerNames.every(copperLayer),
+      /** The layers that are not copper, by KiCad's names with a sided wildcard (`*.Mask`) made into both sides, sorted; `unknown` is true when one is no layer of KiCad's. */
+      other: [...new Set(layerNames.filter((n) => !copperLayer(n)).flatMap((n) => (SIDED.test(n) ? [`F.${n.slice(2)}`, `B.${n.slice(2)}`] : [n])))].sort(),
       /** Which copper layers of the stack it is on (top, in1.., bottom, by position); `*.Cu` is all of them and `F&B.Cu` the two outer ones. */
       surface: [...new Set(layerNames.flatMap((n) => (n === "*.Cu" ? ids : n === "F&B.Cu" ? ["top", "bottom"] : copperNames.includes(n) ? [ids[copperNames.indexOf(n)]] : n === "F.Cu" ? ["top"] : n === "B.Cu" ? ["bottom"] : [])))],
       // A `placement` node that is switched off (KiCad 9 writes one on every rule area) places nothing.
@@ -128,5 +134,14 @@ export function zoneOracle(text) {
   return { zones, front, back }
 }
 
-/** Whether the importer takes a zone in: the zones the file has on copper, with an outline of three corners or more, that are not placement areas. */
-export const importedZone = (z) => !z.inFootprint && z.kind !== "placement" && z.onlyCopper && z.surface.length > 0 && z.rings.length > 0 && z.rings[0].length >= 3
+/**
+ * Whether the importer takes a zone in: a zone of the board that is not a placement area, with an outline of three corners or more, on copper layers the board has (a pour) or on layers that are not
+ * copper and are KiCad's (a filled zone of that layer), or a rule area on either or both. A pour on both kinds at once is not (the import is refused as inexact).
+ */
+export const importedZone = (z) => {
+  if (z.inFootprint || z.kind === "placement" || z.rings.length === 0 || z.rings[0].length < 3) return false
+  if (!z.other.every(knownOther)) return false
+  const rule = z.kind === "keepout" || z.kind === "rule-area"
+  if (z.other.length) return rule || z.surface.length === 0
+  return z.onlyCopper && z.surface.length > 0
+}

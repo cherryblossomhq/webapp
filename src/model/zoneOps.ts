@@ -1,4 +1,5 @@
 import { uid } from "../lib/id"
+import { anchorSide, orderedOtherLayers } from "./zoneLayers"
 import { polygonPath, zoneLayers } from "./zones"
 import type { PathSeg, ShapePath } from "./shapes"
 import { segEnd, segStart } from "./shapes"
@@ -76,6 +77,31 @@ export function updateZone(project: Project, id: string, patch: ZonePatch): Proj
   }
   // A rule area has no net; a pour that stops being one gets none.
   if (next.keepout) next.net = ""
+  return stamp({ ...project, zones: project.zones.map((x) => (x.id === id ? next : x)) })
+}
+
+/**
+ * Where a zone is: the copper layers it is on and the layers that are not copper (X29). A pour is on one kind or the other (a rule area may be on both); a zone with no layer at all is
+ * refused, and so is a locked one. The zone's `layer` follows its first copper layer, or the side of its first other layer.
+ */
+export function setZoneSurface(project: Project, id: string, copper: readonly CopperLayer[], other: readonly string[]): Project {
+  const z = project.zones.find((x) => x.id === id)
+  if (!z || z.locked) return project
+  const cu = [...new Set(copper)]
+  const ot = orderedOtherLayers(other)
+  if (!cu.length && !ot.length) return project
+  if (!z.keepout && cu.length && ot.length) return project
+  const next: Zone = { ...z, layer: cu[0] ?? anchorSide(ot) }
+  delete next.layers
+  delete next.other
+  if (cu.length > 1) next.layers = cu
+  else if (!cu.length) next.layers = []
+  if (ot.length) next.other = ot
+  // A zone that is not on copper is on no net and has no teardrop.
+  if (!cu.length) {
+    next.net = ""
+    delete next.teardrop
+  }
   return stamp({ ...project, zones: project.zones.map((x) => (x.id === id ? next : x)) })
 }
 

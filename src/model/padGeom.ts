@@ -39,6 +39,7 @@ export function hasPadFeatures(pad: PadDef): boolean {
     pad.property !== undefined ||
     pad.stack !== undefined ||
     pad.unused !== undefined ||
+    pad.zoneLayers !== undefined ||
     pad.tent !== undefined
   )
 }

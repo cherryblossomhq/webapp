@@ -7,6 +7,7 @@ import { PCB } from "../../editor/theme"
 import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
 import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
+import { nonCopperFills, type OtherFill } from "../../model/nonCopperFill"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
 import { worldShapes } from "../../model/shapeItems"
@@ -116,6 +117,12 @@ function shapeSvg(shape: BoardShape, color: string, px: number): string {
   return out
 }
 
+/** The fill of a zone on a layer that is not copper (X29) as the editor draws it: solid on the silkscreen, soft on the other layers. */
+function otherFillSvg(f: OtherFill, color: string, soft: boolean): string {
+  const d = f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${n(p.x)},${n(p.y)}`).join("L")}Z`)).join("")
+  return d ? `<path d="${d}" fill="${color}"${soft ? ' fill-opacity="0.4"' : ""} fill-rule="evenodd"/>` : ""
+}
+
 /** A KiCad text as the editor draws it: strokes with its pen, a knockout filled with its letters left out, a text box's border. */
 function textSvg(t: LayerText, color: string, px: number, soft = false): string {
   const round = (w: number) => `stroke-width="${n(Math.max(w, px))}" stroke-linecap="round" stroke-linejoin="round"`
@@ -145,6 +152,8 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const has = (x: PcbExtra) => opts.extras.has(x)
   // The drawings on the board and in its placed parts, by what their layer is for; none on a board that has none.
   const drawings = worldShapes(project).filter((d) => d.placed)
+  // The fills of the zones on mask, paste, silkscreen and user layers (X29); none on a board that has none.
+  const otherFills = nonCopperFills(project)
   const kindOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.kind ?? "user"
   const sideOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.side ?? null
   // The KiCad texts on the board and in its placed parts, with the layer each is on; none on a board that has none.
@@ -230,6 +239,11 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       if (kindOf(d) !== "silk" || !side || !shownSet.has(side)) continue
       body += `<g opacity="${side === front ? 1 : 0.55}">${shapeSvg(d.shape, side === "top" ? PCB.silk : PCB.silkBottom, px)}</g>`
     }
+    for (const f of otherFills) {
+      const side = shapeLayerInfo(f.layer)?.side
+      if (shapeLayerInfo(f.layer)?.kind !== "silk" || !side || !shownSet.has(side)) continue
+      body += `<g opacity="${side === front ? 1 : 0.55}">${otherFillSvg(f, side === "top" ? PCB.silk : PCB.silkBottom, false)}</g>`
+    }
     for (const x of texts) {
       if (x.kind !== "silk" || !x.side || !shownSet.has(x.side)) continue
       body += `<g opacity="${x.side === front ? 1 : 0.55}">${textSvg(x.t, x.side === "top" ? PCB.silk : PCB.silkBottom, px)}</g>`
@@ -255,6 +269,12 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       const side = sideOf(d)
       if (kind === "copper" || kind === "silk" || (side && !shownSet.has(side))) continue
       body += `<g opacity="${!side || side === front ? 1 : 0.55}">${shapeSvg(d.shape, colors[kind], px)}</g>`
+    }
+    for (const f of otherFills) {
+      const info = shapeLayerInfo(f.layer)
+      const kind = f.layer === "Edge.Cuts" ? null : (info?.kind ?? "user")
+      if (!kind || kind === "copper" || kind === "silk" || (info?.side && !shownSet.has(info.side))) continue
+      body += `<g opacity="${!info?.side || info.side === front ? 1 : 0.55}">${otherFillSvg(f, colors[kind], true)}</g>`
     }
     for (const x of texts) {
       if (!x.kind || x.kind === "edge" || x.kind === "copper" || x.kind === "silk" || (x.side && !shownSet.has(x.side))) continue

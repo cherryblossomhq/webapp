@@ -189,6 +189,8 @@ export interface WorldPad {
   hull?: true
   /** X1: what becomes of the pad's copper on a layer nothing connects to on it (see `PadDef.unused`). Absent keeps every layer. */
   unused?: "remove" | "keepEnds"
+  /** X31: the copper layers a pour joins the pad on when its unused layers are removed, as the board's layers (see `PadDef.zoneLayers`). */
+  zoneLayers?: CopperLayer[]
   /** X5: the pad's own tenting of the mask on the board's front and back, where it says (see `PadDef.tent`). */
   tented?: { front?: boolean; back?: boolean }
   /**
@@ -389,6 +391,7 @@ function isX7Pad(pad: PadDef): boolean {
     pad.property !== undefined ||
     pad.stack !== undefined ||
     pad.unused !== undefined ||
+    pad.zoneLayers !== undefined ||
     pad.tent !== undefined
   )
 }
@@ -527,6 +530,7 @@ function x7WorldPad(c: ComponentInstance, part: PartDef, pad: PadDef, mirror: bo
   if (pad.thermalAngle !== undefined) out.thermalAngle = pad.thermalAngle
   if (pad.property !== undefined) out.property = pad.property
   if (pad.unused !== undefined) out.unused = pad.unused
+  if (pad.zoneLayers !== undefined) out.zoneLayers = pad.zoneLayers.map((l) => (mirror ? flipLayer(l, count) : l))
   if (pad.tent) {
     // Sides of the pad's own part: `top` is its own side, which is the board's back for a part on the bottom.
     const front = mirror ? pad.tent.bottom : pad.tent.top

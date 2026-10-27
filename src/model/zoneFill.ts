@@ -61,7 +61,7 @@ interface ItemRec {
   net: string | null
 }
 
-interface Group {
+export interface Group {
   /** The outline then its holes. */
   paths: Path64[]
 }
@@ -81,7 +81,7 @@ function collect(node: PolyPath64, out: Group[]) {
   }
 }
 
-function groupsOf(paths: Paths64): Group[] {
+export function groupsOf(paths: Paths64): Group[] {
   if (!paths.length) return []
   const tree = new PolyTree64()
   const c = new Clipper64()
@@ -239,7 +239,7 @@ function spokesOf(pad: WorldPad, project: Project, gap: number, spokeWidth: numb
 const pad0 = (b: Bounds, d: number): Bounds => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
 
 /** The zone's outline with its holes, flattened, as paths that fill with the even-odd rule. */
-function outlinePaths(project: Project, z: Zone): Paths64 {
+export function outlinePaths(project: Project, z: Zone): Paths64 {
   if (!hasPolygon(z)) return boardLoops(project.board)
   const rings = zoneRings(z)
   if (!rings.length) return []
@@ -248,7 +248,7 @@ function outlinePaths(project: Project, z: Zone): Paths64 {
 }
 
 /** KiCad's corner smoothing (`SHAPE_POLY_SET::Chamfer` and `Fillet`): each convex corner cut off or rounded by the radius. Concave corners stay (a fillet there lies outside the zone and is trimmed). */
-function smoothPaths(paths: Paths64, kind: "chamfer" | "fillet", radius: number): Paths64 {
+export function smoothPaths(paths: Paths64, kind: "chamfer" | "fillet", radius: number): Paths64 {
   const out: Paths64 = []
   for (const path of paths) {
     const pts = toVec(path)

@@ -17,6 +17,7 @@ import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
 import { requireClosedOutline } from "./outlineGuard"
 import { maskRegions } from "./maskMerge"
+import { otherFillsOn } from "../model/nonCopperFill"
 
 const EDGE_WIDTH = 0.1
 
@@ -350,6 +351,11 @@ function drawingsOn(project: Project, layer: string): BoardShape[] {
   return worldShapes(project).filter((s) => s.placed && s.shape.layer === layer).map((s) => s.shape)
 }
 
+/** The fills of the zones on a layer that is not copper (X29) as KiCad plots a zone's fill: one region for each polygon, its holes cut out of it (`PlotZone`, plot_brditems_plotter.cpp). */
+function plotOtherZones(w: GerberWriter, project: Project, layer: string) {
+  for (const f of otherFillsOn(project, layer)) for (const polygon of f.polygons) w.region(polygon.length > 1 ? fractureRings(polygon[0], polygon.slice(1)) : polygon[0])
+}
+
 /** The texts on one KiCad layer as KiCad plots them (`PlotText`, pcbnew/plot_brditems_plotter.cpp:767 of 10.0.0): strokes with a round pen, a knockout as a filled region with the letters left out, a text box's border as a stroked outline. */
 function plotTexts(w: GerberWriter, project: Project, layer: string) {
   for (const t of textsOnLayer(project, layer)) {
@@ -428,6 +434,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
   // A via has an opening on a side when its copper reaches that outer layer and it is not tented there: by its own setting, else the board's (X5).
   for (const v of project.vias) if (viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)) w.flashCircle(v, viaDiameterOn(v, side) + grow * 2)
   for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
+  plotOtherZones(w, project, side === "top" ? "F.Mask" : "B.Mask")
   plotTexts(w, project, side === "top" ? "F.Mask" : "B.Mask")
   return w.toString(`Soldermask,${sideName(side)}`, "Negative")
 }
@@ -449,6 +456,7 @@ export function gerberPaste(project: Project, side: PcbSide): string {
     else flashPad(w, pad, Math.max(pasteExpansion + pad.width * pasteRatio, -pad.width / 2), Math.max(pasteExpansion + pad.height * pasteRatio, -pad.height / 2))
   }
   for (const shape of drawingsOn(project, side === "top" ? "F.Paste" : "B.Paste")) plotShape(w, shape)
+  plotOtherZones(w, project, side === "top" ? "F.Paste" : "B.Paste")
   plotTexts(w, project, side === "top" ? "F.Paste" : "B.Paste")
   return w.toString(`Paste,${sideName(side)}`)
 }
@@ -467,6 +475,7 @@ export function gerberSilkscreen(project: Project, side: PcbSide): string {
     for (const stroke of boardTextStrokes(t)) w.stroke(stroke, boardTextStrokeWidth(t))
   }
   for (const shape of drawingsOn(project, side === "top" ? "F.SilkS" : "B.SilkS")) plotShape(w, shape)
+  plotOtherZones(w, project, side === "top" ? "F.SilkS" : "B.SilkS")
   plotTexts(w, project, side === "top" ? "F.SilkS" : "B.SilkS")
   return w.toString(`Legend,${sideName(side)}`)
 }
@@ -478,6 +487,7 @@ export function gerberEdgeCuts(project: Project): string {
   // A board with an outline of its own: every path as drawn, arcs as arcs (G02 and G03), the cutouts and slots with it.
   if (b.outline?.paths.length) {
     for (const path of b.outline.paths) w.strokeSegs(path.segs, EDGE_WIDTH)
+    plotOtherZones(w, project, "Edge.Cuts")
     plotTexts(w, project, "Edge.Cuts")
     return w.toString("Profile,NP")
   }
@@ -494,6 +504,7 @@ export function gerberEdgeCuts(project: Project): string {
       { x: minX, y: maxY },
     ]
     w.stroke([...corners, corners[0]], EDGE_WIDTH)
+    plotOtherZones(w, project, "Edge.Cuts")
     plotTexts(w, project, "Edge.Cuts")
     for (const shape of drawingsOn(project, "Edge.Cuts")) plotShape(w, shape)
     return w.toString("Profile,NP")
@@ -511,6 +522,7 @@ export function gerberEdgeCuts(project: Project): string {
   w.arcCcwTo({ x: minX, y: maxY - r }, { x: 0, y: -r })
   line({ x: minX, y: maxY - r }, { x: minX, y: minY + r })
   w.arcCcwTo({ x: minX + r, y: minY }, { x: r, y: 0 })
+  plotOtherZones(w, project, "Edge.Cuts")
   plotTexts(w, project, "Edge.Cuts")
   for (const shape of drawingsOn(project, "Edge.Cuts")) plotShape(w, shape)
   return w.toString("Profile,NP")

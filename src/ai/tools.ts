@@ -1909,7 +1909,7 @@ function zonesReport(project: Project) {
   return project.zones.map((z) => ({
     id: z.id,
     ...(z.net ? { net: z.net } : {}),
-    layers: zoneLayers(z).join("+"),
+    layers: [...zoneLayers(z), ...(z.other ?? [])].join("+"),
     ...(z.keepout ? { keepout: keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join("+") || "rules only" } : {}),
     ...(z.priority ? { priority: z.priority } : {}),
     ...(z.outline ? { polygon: outlinePoints(z).slice(0, 40).flatMap((p) => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]) } : { whole_board: true }),

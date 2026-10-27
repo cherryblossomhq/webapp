@@ -258,6 +258,12 @@ export interface PadDef {
   /** X1, KiCad's `remove_unused_layers` and `keep_end_layers`: what becomes of the pad's copper on a layer nothing connects to on it. Absent keeps every layer. */
   unused?: "remove" | "keepEnds"
   /**
+   * X31, KiCad's pad `zone_layer_connections`: the copper layers a pour joins the pad on when its unused layers are removed, as ids of a board seen from the part's own
+   * side (a part on the bottom turns them over). The pad keeps its copper on those layers, and on the others only where a track, a via or a pad touches it. `[]` is no layer; absent
+   * is no setting (the pad then keeps the layers it has by what touches it). It has an effect only with `unused`.
+   */
+  zoneLayers?: CopperLayer[]
+  /**
    * X5, KiCad's pad `tenting`: whether the mask is closed over the pad on its own side (`top`) and on the far one (`bottom`), where the pad says. A side it does not say
    * follows the mask layers of the pad (`layers.mask`) as ever.
    */
@@ -1255,8 +1261,15 @@ export interface Zone {
    * stores a zone. Absent is the whole board (inset by the edge clearance), which is what a pour drawn by the editor is.
    */
   outline?: ShapePath[]
-  /** Every layer it is on, `layer` first: a zone on both copper layers. Absent is the one layer. */
+  /** Every layer it is on, `layer` first: a zone on both copper layers. Absent is the one layer. `[]` with `other` is a zone on no copper layer (see `other`). */
   layers?: CopperLayer[]
+  /**
+   * X29: KiCad's names of the layers it is on that are not copper (`F.Mask`, `B.Paste`, `F.SilkS`, `User.3`, `Edge.Cuts`...), in the order of `SHAPE_LAYERS`. A zone with only these has `layers: []`
+   * and a `layer` that is no more than the side it was put on: it is a filled area on the mask, the paste, the silkscreen or a user layer, filled by KiCad's rules for such a zone
+   * (`nonCopperFill.ts`: its polygon smoothed and kept inside the board, minus the rule areas that keep pours out, thinned to its minimum width), with no net, no clearance and no pads. A rule area may
+   * have them beside its copper layers (it then keeps pours out of a zone on that layer too); a pour never has both.
+   */
+  other?: string[]
   /** KiCad's identity of the zone as 32 lowercase hex digits (`kicadUuid`): what orders two zones of equal priority, as KiCad's `HigherPriority` does (the greater one is filled first). Absent for a zone drawn here and for a board of KiCad 5 or earlier, which had no such order: file order then. */
   uuid?: string
   /** From a board of KiCad 5 or earlier, whose fill cut a zone only out of zones of strictly higher priority (`zone_filler.cpp` of 5.1): two such zones of equal priority cut neither, and overlap. */

@@ -53,6 +53,7 @@ describe("X7 is built, and the gate says so", () => {
     expect(ext("(remove_unused_layers yes) (keep_end_layers no)", "thru_hole")).toContain("X1")
     expect(ext("(remove_unused_layers yes) (keep_end_layers yes)", "thru_hole")).not.toContain("X1")
     expect(ext("(remove_unused_layers no)", "thru_hole")).not.toContain("X1")
+    // X31 is built: the need is still named, and the gate lets it in (`kicad-board-x31.test.ts`).
     expect(ext('(zone_layer_connections "F.Cu")', "thru_hole")).toContain("X31")
     expect(ext("(tenting (front yes) (back none))")).toContain("X5")
     expect(ext("(tenting (front none) (back none))")).not.toContain("X5")

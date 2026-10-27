@@ -421,8 +421,8 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
 /**
  * X1 and X5: copper a through-hole pad or a via drops on the layers nothing connects to (KiCad's `remove_unused_layers`: `PAD::FlashLayer`, pad.cpp
  * 9.0.0 `:341`, and `PCB_VIA::FlashLayer`, pcb_track.cpp 9.0.0 `:1225`). Its item then has no copper there, so no check, pour or plot sees any. A layer stays when the
- * mode keeps it (every layer; the outer ones of a pad and the two ends of a via for `keepEnds`; only the two ends for `startEnd`), when a via's `zoneLayers` list
- * it, or when a track, a via or a pad of the same net touches the item on it. A pour is not copper that connects here, as in KiCad, where the pour joins what the
+ * mode keeps it (every layer; the outer ones of a pad and the two ends of a via for `keepEnds`; only the two ends for `startEnd`), when a pad's or via's `zoneLayers` list
+ * it (X31, X5), or when a track, a via or a pad of the same net touches the item on it. A pour is not copper that connects here, as in KiCad, where the pour joins what the
  * connectivity already connected. The layers dropped are `unflashed` on the item.
  */
 function pruneUnused(project: Project, items: CopperItem[]) {
@@ -456,6 +456,8 @@ function pruneUnused(project: Project, items: CopperItem[]) {
     let check: CopperLayer[] = it.layers
     if (it.kind === "pad") {
       if (it.pad.unused === "keepEnds") for (const l of it.layers) if (outer.has(l)) keep.add(l)
+      // X31: a layer a pour joins the pad on keeps its copper (KiCad's `ZLO_FORCE_FLASHED`, which `PAD::FlashLayer` honours before it asks the connectivity).
+      for (const l of it.pad.zoneLayers ?? []) keep.add(l)
       check = it.layers.filter((l) => !keep.has(l))
     } else {
       const v = viaOf.get(it.viaId)!

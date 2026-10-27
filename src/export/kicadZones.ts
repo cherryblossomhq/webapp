@@ -1,6 +1,7 @@
 import { round } from "../lib/geometry"
 import type { ZoneFill } from "../model/pour"
 import { flattenPath, type PathSeg, type ShapePath } from "../model/shapes"
+import { nonCopperFills } from "../model/nonCopperFill"
 import { zoneLayers } from "../model/zones"
 import { kicadLayerName } from "../model/stack"
 import type { CopperLayer, Project, Vec2, Zone } from "../model/types"
@@ -74,6 +75,9 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   const xy = xyOf(to)
   const rule = z.keepout !== undefined
   const layers = zoneLayers(z)
+  // X29: the layers that are not copper come after the copper ones, by KiCad's names.
+  const names = [...layers.map(LAYER), ...(z.other ?? [])]
+  const otherFills = z.other ? nonCopperFills(project).filter((f) => f.zoneId === z.id) : []
   const set = {
     clearance: z.clearance ?? project.rules.pourClearance,
     minWidth: z.minWidth ?? project.rules.pourMinWidth,
@@ -86,7 +90,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   o.push(`    (net ${rule || !z.net ? 0 : netNumber(z.net)})`)
   o.push(`    (net_name ${quote(rule ? "" : z.net)})`)
   if (z.locked) o.push(`    (locked yes)`)
-  o.push(layers.length > 1 ? `    (layers ${layers.map((l) => quote(LAYER(l))).join(" ")})` : `    (layer ${quote(LAYER(layers[0]))})`)
+  o.push(names.length > 1 ? `    (layers ${names.map(quote).join(" ")})` : `    (layer ${quote(names[0])})`)
   o.push(`    (uuid ${z.uuid ? `${z.uuid.slice(0, 8)}-${z.uuid.slice(8, 12)}-${z.uuid.slice(12, 16)}-${z.uuid.slice(16, 20)}-${z.uuid.slice(20)}` : fallbackUuid ? fallbackUuid() : uuidOf(z.id)})`)
   if (z.name) o.push(`    (name ${quote(z.name)})`)
   o.push(`    (hatch edge 0.5)`)
@@ -102,7 +106,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
     o.push(`    (keepout (tracks ${f(k.tracks)}) (vias ${f(k.vias)}) (pads ${f(k.pads)}) (copperpour ${f(k.pour)}) (footprints ${f(k.footprints)}))`)
     o.push(`    (placement (enabled no) (sheetname ""))`)
   }
-  const filled = !rule && fills.some((f) => f.zoneId === z.id)
+  const filled = !rule && (fills.some((f) => f.zoneId === z.id) || otherFills.some((f) => f.polygons.length > 0))
   const fill = [filled ? " yes" : ""]
   fill.push(` (thermal_gap ${mm6(set.gap)}) (thermal_bridge_width ${mm6(set.spoke)})`)
   if (z.smoothing) fill.push(` (smoothing ${z.smoothing.kind}) (radius ${mm6(z.smoothing.radius)})`)
@@ -110,6 +114,12 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   o.push(`    (fill${fill.join("")})`)
   for (const ring of z.outline ?? boardRings ?? []) o.push(`    (polygon ${pts(ring, to)})`)
   if (!rule) {
+    for (const f of otherFills) {
+      for (const polygon of f.polygons) {
+        const ring = polygon.length > 1 ? fractureRings(polygon[0], polygon.slice(1)) : polygon[0]
+        o.push(`    (filled_polygon (layer ${quote(f.layer)}) (pts ${ring.map(xy).join(" ")}))`)
+      }
+    }
     for (const layer of layers) {
       const f = fills.find((x) => x.zoneId === z.id && x.layer === layer)
       for (const polygon of f?.polygons ?? []) {

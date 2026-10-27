@@ -3,6 +3,7 @@ export interface OracleZone {
   layers: string[]
   onlyCopper: boolean
   surface: ("top" | "bottom")[]
+  other: string[]
   kind: "copper" | "keepout" | "rule-area" | "teardrop" | "placement"
   netName: string
   priority: number
@@ -28,4 +29,5 @@ export interface OracleZone {
 }
 export function arcPoints(a: number[], m: number[], b: number[], err?: number): number[][]
 export function zoneOracle(text: string): { zones: OracleZone[]; front: string; back: string }
+export function knownOther(name: string): boolean
 export function importedZone(z: OracleZone): boolean

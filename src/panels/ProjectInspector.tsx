@@ -32,7 +32,8 @@ import type { CopperLayer, CopperWeight, DesignRules, NetStyle, Project, Surface
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
-import { isWholeBoardPour, keepoutFlags } from "../model/zones"
+import { shapeLayerInfo } from "../model/shapeLayers"
+import { isOtherZone, isWholeBoardPour, keepoutFlags, zoneLayers, zoneOtherLayers } from "../model/zones"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
 import { NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
@@ -638,12 +639,12 @@ function PoursSection({ project }: { project: Project }) {
             return (
               <li key={z.id} className="flex items-center justify-between rounded-[6px] px-1.5 py-0.5 hover:bg-chrome">
                 <span className={`text-[12.5px] ${z.outline ? "cursor-pointer" : ""}`} onClick={z.outline ? () => uiApi().select([`z:${z.id}`]) : undefined}>
-                  <span className="mono text-ink">{z.keepout ? "Keepout" : z.net || "No net"}</span>
+                  <span className="mono text-ink">{z.keepout ? "Keepout" : isOtherZone(z) ? "Zone" : z.net || "No net"}</span>
                   {z.name && <span className="text-ink-2"> {z.name}</span>}
-                  <span className="text-ink-2"> on {(z.layers ?? [z.layer]).map((l) => layerLabel(project.board, l).toLowerCase()).join(" and ")}</span>
+                  <span className="text-ink-2"> on {[...zoneLayers(z).map((l) => layerLabel(project.board, l)), ...zoneOtherLayers(z).map((n) => shapeLayerInfo(n)?.label ?? n)].map((s) => s.toLowerCase()).join(" and ")}</span>
                   {z.outline && <span className="text-ink-3">, {z.keepout ? "keeps out " + (keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join(", ") || "nothing") : "polygon"}</span>}
                   {z.clearance !== undefined && <span className="text-ink-3">, {formatLength(zoneClearance(project, z.clearance), unit, true)} gap</span>}
-                  {empty && !z.keepout && <span className="text-warn"> (no copper to fill)</span>}
+                  {empty && !z.keepout && !isOtherZone(z) && <span className="text-warn"> (no copper to fill)</span>}
                 </span>
                 <IconButton
                   label={`Remove ${z.net} pour on ${z.layer}`}

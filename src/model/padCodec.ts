@@ -17,7 +17,7 @@ const SIDES = new Set<string>(["top", "bottom", "both", "none"])
 const ZONE = new Set<string>(["none", "thermal", "solid", "tht"])
 const PROPS = new Set<string>(["bga", "fiducial_glob", "fiducial_loc", "testpoint", "castellated", "heatsink", "mechanical", "pressfit"])
 const SHAPES = new Set(["rect", "circle", "pill", "polygon"])
-const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property", "stack"] as const
+const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property", "stack", "zoneLayers"] as const
 
 function packCustom(custom: NonNullable<PadDef["custom"]>): unknown {
   const { shapes, proxy, ...rest } = custom
@@ -95,6 +95,8 @@ export function normalizePad(raw: unknown): PadDef | null {
   if (raw.holeOffset !== undefined && !isPoint(raw.holeOffset)) return null
   if (raw.zoneConnect !== undefined && !(typeof raw.zoneConnect === "string" && ZONE.has(raw.zoneConnect))) return null
   if (raw.property !== undefined && !(typeof raw.property === "string" && PROPS.has(raw.property))) return null
+  // X31: a list of copper layers, each once; the empty list is a setting too.
+  if (raw.zoneLayers !== undefined && !(Array.isArray(raw.zoneLayers) && raw.zoneLayers.every(isCopperLayerId) && new Set(raw.zoneLayers).size === raw.zoneLayers.length)) return null
   const layers = readLayers(raw.layers)
   if (layers === null) return null
   if (layers) out.layers = layers

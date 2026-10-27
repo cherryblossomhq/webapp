@@ -41,7 +41,7 @@ import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutl
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
-import { needsZoneEngine, zoneLayers } from "../model/zones"
+import { isOtherZone, needsZoneEngine, zoneLayers } from "../model/zones"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
 import { textElements } from "./circuitJsonTexts"
@@ -1014,6 +1014,11 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
     for (const z of project.zones) {
       if (!z.keepout || !z.outline?.length) continue
       const k = z.keepout
+      // X29: a rule area on layers that are not copper alone has no copper layer to keep anything out of.
+      if (!zoneLayers(z).length) {
+        keepoutNotes.push("A rule area that is on layers that are not copper only has no element in Circuit JSON and was left out.")
+        continue
+      }
       if (!(k.tracks || k.vias || k.pads || k.pour || k.footprints)) {
         keepoutNotes.push("A rule area that keeps nothing out (it is there for rules) has no element in Circuit JSON and was left out.")
         continue
@@ -1238,7 +1243,8 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   if (droppedProps.size && !kicad) notes.push(`Part properties with no field in Circuit JSON were left out: ${[...droppedProps].sort().join(", ")}. Values, part numbers and LCSC numbers are kept.`)
   layerNotesAfter()
   notes.push(...layerNotes)
-  if (project.zones.length && !kicad) notes.push("Copper pours are exported as the copper they fill, not as pours that refill: change a pour's settings in Cherry Blossom, not after the export.")
+  if (project.zones.some(isOtherZone) && !kicad) notes.push("Zones on layers that are not copper (solder mask, paste, silkscreen and user layers) are left out: Circuit JSON has no filled area on those layers. The Gerber files carry them.")
+  if (project.zones.some((z) => !z.keepout && !isOtherZone(z)) && !kicad) notes.push("Copper pours are exported as the copper they fill, not as pours that refill: change a pour's settings in Cherry Blossom, not after the export.")
   if (orphanUnits.length) notes.push(`Left out ${orphanUnits.length === 1 ? "a unit symbol" : `${orphanUnits.length} unit symbols`} whose part is not on the sheet: ${orphanUnits.join(", ")}.`)
   if (drawn.curves) notes.push("Bezier curves and ellipses, and the fill of filled arcs, are written as paths of short straight lines, since Circuit JSON has no curve for them.")
   if (drawn.mixedDash) notes.push("Dash-dot and dash-dot-dot lines are written as plain dashes: Circuit JSON has one dash length and gap for a line.")

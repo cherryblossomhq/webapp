@@ -42,7 +42,7 @@ const plainFp = (name: string, at: string, layer: string, texts: string, ref = "
 
 describe("the gate after slice 1b-iii", () => {
   it("builds X9 with X8, X13 and X15, 2c-i X2 and X6, X10, the board objects slice's X11, X12 and X14, X3, the zones, and X7, the pad model", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X1", "X10", "X11", "X12", "X13", "X14", "X15", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9"])
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X1", "X10", "X11", "X12", "X13", "X14", "X15", "X2", "X29", "X3", "X30", "X31", "X4", "X5", "X6", "X7", "X8", "X9"])
   })
   it("a board with a part and text imports through the real gate", () => {
     const r = importKicadBoard(board({ body: [plainFp("L:A", "10 5", "F.Cu", "")] }))

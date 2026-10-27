@@ -382,6 +382,12 @@ function landPadPlain(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: 
   // X1 and X5: what becomes of the copper on layers nothing connects to, and the pad's own tenting of the mask (sides as the part has them: the file's front is the far side of a part on the bottom).
   const unused = padUnusedOf(pad.node)
   if (unused) out.unused = unused
+  // X31: the layers a pour joins the pad on, as the part's own side has them (a part on the bottom has its inner layers the other way round); the node with no layer is `[]`.
+  if (pad.zoneLayers && board) {
+    const map = layerMapOf(board)
+    const own = layersOfNames(map, pad.zoneLayers).map((l) => (bottom ? flipLayer(l, map.count) : l))
+    out.zoneLayers = map.ids.filter((l) => own.includes(l))
+  }
   if (pad.tenting && (pad.tenting.front !== undefined || pad.tenting.back !== undefined)) {
     const own = bottom ? pad.tenting.back : pad.tenting.front
     const far = bottom ? pad.tenting.front : pad.tenting.back

@@ -2,7 +2,9 @@ import type { WorldPad } from "../model/instances"
 import { maskMargin, padOpeningRings } from "../model/padOpening"
 import { padPaths, polygonKit, withMaxError, type FillPolygon } from "../model/pour"
 import { dashShape, flattenSeg, isClosedShape, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
+import { smoothedOtherRings } from "../model/nonCopperFill"
 import { textsOnLayer } from "../model/texts"
+import { isOtherZone, isRuleArea } from "../model/zones"
 import type { BoardShape, PcbSide, Project, Vec2 } from "../model/types"
 
 // The solder mask when the board has a minimum mask web (`DesignRules.maskMinWidth`, KiCad's `solder_mask_min_width`).
@@ -73,6 +75,12 @@ export function maskRegions(project: Project, side: PcbSide, pads: WorldPad[], d
     if (!tentVias) for (const v of project.vias) parts.push(...polygonKit.circle(v.x, v.y, v.diameter / 2 + grow))
     for (const shape of drawings) parts.push(...shapePolygons(shape))
     const layer = side === "top" ? "F.Mask" : "B.Mask"
+    // X29: a zone on the mask layer opens it by its smoothed outline (`TransformSmoothedOutlineToPolygon`), not by its fill.
+    for (const z of project.zones) {
+      if (!isOtherZone(z) || isRuleArea(z) || !z.other!.includes(layer)) continue
+      const rings = smoothedOtherRings(project, z, layer)
+      if (rings.length) parts.push(...polygonKit.unionEvenOdd(rings.map((r) => polygonKit.path(r))))
+    }
     for (const t of textsOnLayer(project, layer)) {
       for (const polygon of t.fills) parts.push(...polygonKit.unionEvenOdd(polygon.map((r) => polygonKit.path(r))))
       for (const stroke of t.strokes) parts.push(...polygonKit.stroke(stroke.length === 1 ? [stroke[0], { x: stroke[0].x + 1e-6, y: stroke[0].y }] : stroke, t.pen / 2))

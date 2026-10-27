@@ -3,6 +3,7 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { analyzePcb } from "../src/model/pcb"
 import { isNpth } from "../src/model/instances"
 import { boardLoops, padShape } from "../src/model/zoneGeom"
+import { nonCopperFills } from "../src/model/nonCopperFill"
 import { zoneLayers } from "../src/model/zones"
 import { flattenPath } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
@@ -48,6 +49,9 @@ export function checkZoneSettings(text: string, project: Project): { compared: n
     const bad = (what: string) => out.push({ zone: i, what })
     const layers = zoneLayers(z).slice().sort()
     if (layers.join() !== f.surface.slice().sort().join()) bad(`layers ${layers.join("+")} against ${f.surface.join("+")}`)
+    // X29: the layers that are not copper, by KiCad's names (a sided wildcard made into both sides by the oracle).
+    const other = (z.other ?? []).slice().sort().join()
+    if (other !== f.other.join()) bad(`layers that are not copper ${other} against ${f.other.join()}`)
     // The tie-break between zones of equal priority (KiCad 6 and later compare the uuid's sixteen bytes; a tstamp is the last four): kept from file version 20211014 (KiCad 6) on.
     const stamp = Number(/\(version\s+(\d+)\)/.exec(text)?.[1] ?? 0)
     const digits = f.uuid === null ? "" : f.uuid.replace(/-/g, "").toLowerCase()
@@ -62,7 +66,10 @@ export function checkZoneSettings(text: string, project: Project): { compared: n
         if (!!f.keepout?.[k] !== !!(z.keepout as Record<string, unknown>)[key]) bad(`keepout ${k}`)
       }
     } else {
-      if (project.zones[i].net !== f.netName && !(f.netName === "" && z.net === "")) {
+      // A zone on layers that is not copper is on no net (KiCad ignores one a file gives it: nothing connects through such a zone).
+      if (f.other.length) {
+        if (z.net !== "") bad(`net ${z.net} on a zone that is not copper`)
+      } else if (project.zones[i].net !== f.netName && !(f.netName === "" && z.net === "")) {
         // The importer names nets by its own rule (a name that is not safe is encoded); the net must at least be the same net.
         if (!z.net || !f.netName) bad(`net ${z.net} against ${f.netName}`)
       }
@@ -112,13 +119,43 @@ export interface FillRow {
 const ringsOf = (paths: Paths64): number[][][] => paths.map((p) => [...p.map((q) => [q.x / U, q.y / U]), [p[0].x / U, p[0].y / U]])
 
 /** The editor's copper of every zone and layer against KiCad's stored fill. */
-export function compareFills(text: string, project: Project, reach = 3): FillRow[] {
+export function compareFills(text: string, project: Project, reach = 3, onlyOther = false): FillRow[] {
   const expected = zoneOracle(text).zones.filter(importedZone)
-  const analysis = analyzePcb(project, computeConnectivity(project))
+  const analysis = onlyOther ? null! : analyzePcb(project, computeConnectivity(project))
   const rows: FillRow[] = []
+  const others = nonCopperFills(project)
+  const row = (i: number, layer: string, net: string, stroked: boolean, ours: Paths64, theirs: Paths64, hadStored = theirs.length > 0): FillRow => {
+    const r: FillRow = { zone: i, layer, net, ours: areaMm2(ours), theirs: areaMm2(theirs), xor: 0, hausdorff: 0, p99: 0, stored: hadStored, version: stroked ? "stroked" : "area" }
+    if (theirs.length || ours.length) {
+      r.xor = areaMm2(Clipper.xor(ours, theirs, FillRule.NonZero))
+      const a = ringsOf(ours)
+      const b = ringsOf(theirs)
+      const toTheirs = b.length ? nearestIndex(b, reach) : () => Infinity
+      const toOurs = a.length ? nearestIndex(a, reach) : () => Infinity
+      const dists: number[] = []
+      for (const line of a) for (const p of sample(line, 0.05)) dists.push(Math.min(toTheirs(p), reach))
+      for (const line of b) for (const p of sample(line, 0.05)) dists.push(Math.min(toOurs(p), reach))
+      dists.sort((x, y) => x - y)
+      r.hausdorff = dists.length ? dists[dists.length - 1] : 0
+      r.p99 = dists.length ? dists[Math.floor(dists.length * 0.99)] : 0
+    }
+    return r
+  }
   project.zones.forEach((z: Zone, i) => {
     const f = expected[i]
     if (!f || z.keepout) return
+    // X29: a zone on layers that is not copper, against the fill KiCad stored for each of its layers.
+    for (const name of z.other ?? []) {
+      const fill = others.find((x) => x.zoneId === z.id && x.layer === name)
+      const ours: Paths64 = Clipper.union((fill?.polygons ?? []).flatMap((poly) => poly.map((r) => r.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) })))), [], FillRule.NonZero)
+      // KiCad 8 and later cut such a fill by every rule area that keeps pours out and is on its layer (`fillNonCopperZone`, 8.0 :1700); a fill KiCad 7 or earlier stored was not cut, so it is cut here by the
+      // rule areas the file itself says (the oracle's own reading of them), which changes nothing in a fill that already is.
+      const keepouts: Paths64 = expected.filter((k) => k.keepout?.copperpour && k.other.includes(name)).flatMap((k) => k.rings.map(toPath))
+      let theirs = Clipper.intersect(storedCopper(f, name), boardLoops(project.board), FillRule.NonZero)
+      if (keepouts.length && theirs.length) theirs = Clipper.difference(theirs, Clipper.union(keepouts, [], FillRule.EvenOdd), FillRule.NonZero)
+      rows.push(row(i, name, "", f.strokedFill, ours, theirs, (f.fills.get(name)?.length ?? 0) > 0))
+    }
+    if (onlyOther || !zoneLayers(z).length) return
     for (const layer of zoneLayers(z)) {
       const name = layer === "top" ? zoneOracle(text).front : zoneOracle(text).back
       // KiCad 5's thermal relief leaves the zone's copper under the pad, and the editor's does not: the pad's own copper is on top of it either

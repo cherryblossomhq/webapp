@@ -70,7 +70,8 @@ import {
 } from "./shapeEditing"
 import { copperColor, PCB, pourColor } from "../theme"
 import { addZone, deleteZoneCorner, insertZoneCorner, makeZone, moveZone, removeZones, setZoneCorner } from "../../model/zoneOps"
-import { ZoneOutlines, ZonePreview } from "./ZoneDraw"
+import { OtherZoneFills, ZoneOutlines, ZonePreview } from "./ZoneDraw"
+import { nonCopperFills } from "../../model/nonCopperFill"
 import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, selectedZoneIds, zoneHit, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
 import { Tooltip } from "../../ui/Tooltip"
 import { isTyping, toWorld, Viewport, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
@@ -1007,6 +1008,9 @@ export function PcbEditor() {
   // Drawings on screen, by what they are drawn as: copper in its layer's group, silkscreen with the part silk, the rest muted.
   const vis: ShapeVisibility = { hidden: hiddenShapeLayers, layers }
   const shown = visibleShapes(worldShapes(project), vis)
+  // X29: the fills of the zones on mask, paste, silkscreen and user layers.
+  const otherFills = nonCopperFills(project)
+  const otherShown = (name: string) => !hiddenShapeLayers[name] && (shapeLayerInfo(name)?.kind !== "silk" || layers.silk)
   const hlName = highlightNet ? netName(highlightNet) : null
   const shapeDim = (net: string | undefined) => (dimOthers && net !== hlName ? 0.3 : 1)
   const sideOpacity = (layerName: string) => {
@@ -1188,6 +1192,8 @@ export function PcbEditor() {
                   </g>
                 ))}
 
+              <OtherZoneFills fills={otherFills} silk={false} shown={otherShown} opacityOf={(name) => sideOpacity(name) * 0.85} />
+
               {/* Text on mask, paste, fabrication, courtyard, adhesive, user and edge layers: muted, under the silkscreen */}
               {shownTexts
                 .filter((tx) => {
@@ -1206,6 +1212,7 @@ export function PcbEditor() {
                     .map((tx) => (
                       <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={textSide(tx.layer) !== front ? 0.55 : 1} />
                     ))}
+                  <OtherZoneFills fills={otherFills} silk shown={otherShown} opacityOf={sideOpacity} />
                   {shown
                     .filter((s) => shapeKindOf(s.shape.layer) === "silk")
                     .map((s) => (

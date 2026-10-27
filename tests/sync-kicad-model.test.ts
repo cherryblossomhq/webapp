@@ -505,6 +505,30 @@ describe("the sheet tree under undo and other people's edits", () => {
     expect(settleStructure(a)).toBe(a)
   })
 
+  it("undo then redo of a part added to a reused sheet, after someone added a third use, does not double the part", async () => {
+    const { start, uses } = reused()
+    const { memory, id, load } = await open(start)
+    api().commit((p) => commitOnUse(p, uses[0], (v) => addComponent(v, "resistor").project))
+    await settle()
+    // Bob adds a third use, which copies the part.
+    const before = await load()
+    const child = sheetUses(before).find((u) => u.path === uses[0])!.sheet
+    const bobs = addSheetUse(before, "", child, { minX: 40, minY: 0, maxX: 50, maxY: 6 }, "Cell C")!.project
+    await memory.pushAs("bob", id, projectChanges(before, bobs))
+    await settle()
+    expect(api().project!.components).toHaveLength(3)
+    api().undo()
+    await settle()
+    expect(api().project!.components).toHaveLength(0)
+    api().redo()
+    await settle()
+    await settle()
+    const mine = api().project!
+    const all = sheetUses(mine).filter((u) => u.path !== "").map((u) => u.path)
+    for (const path of all) expect(mine.components.filter((c) => useOf(c) === path), path).toHaveLength(1)
+    expect(jsonEqual(strip(await load()), strip(mine))).toBe(true)
+  })
+
   it("a trace on a layer that another copy removed is dropped", async () => {
     const start: Project = { ...createProject("Layers"), board: withCopperCount(createProject("x").board, 4) }
     const { memory, id, load } = await open(start)

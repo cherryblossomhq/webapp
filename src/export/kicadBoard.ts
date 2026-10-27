@@ -1,4 +1,5 @@
 import { normalizeAngle, round } from "../lib/geometry"
+import { boardTextStrokeWidth, ownTexts } from "../model/board"
 import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { componentFootprint } from "../model/instances"
@@ -396,6 +397,16 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       boardItems.push(indent([`(gr_text ${quote(content)}`, `  (at ${xy(at)}${rot ? ` ${mm6(rot)}` : ""})`, `  ${layer}`, ...(wt.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, wt.mirror, false).map((l) => `  ${l}`), ")"], "  ").join("\n"))
     }
     members.set(t.id, [id])
+  }
+  // The editor's own silkscreen text (no layer: the Gerber plots it, `gerberSilkscreen`): centred on its place, its size the letters' height,
+  // turned by its angle, on the silk of its side and mirrored on the bottom, with the pen the Gerber draws it with.
+  for (const t of ownTexts(project)) {
+    const layer = t.side === "bottom" ? "B.SilkS" : "F.SilkS"
+    useLayer(layer)
+    const rot = normalizeAngle(t.rot)
+    boardItems.push(
+      indent([`(gr_text ${quote(t.text)}`, `  (at ${xy(toFile({ x: t.x, y: t.y }))}${rot ? ` ${mm6(rot)}` : ""})`, `  (layer ${quote(layer)})`, `  (uuid ${newUuid()})`, "  (effects", "    (font", `      (size ${mm6(t.size)} ${mm6(t.size)})`, `      (thickness ${mm6(boardTextStrokeWidth(t))})`, "    )", ...(t.side === "bottom" ? ["    (justify mirror)"] : []), "  )", ")"], "  ").join("\n"),
+    )
   }
   for (const d of project.dimensions ?? []) {
     const id = newUuid()

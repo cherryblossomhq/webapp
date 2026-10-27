@@ -103,6 +103,11 @@ const SUB = "(?:[>\\[].*)?"
 
 export const PRO_RULES: ProRule[] = [
   rule(`meta${SUB}`, "not-needed", "the file's own name and version"),
+  // What a program writes about the file and the session that saved it (our own export writes these too): no design in them.
+  rule(`(?:version|head)${SUB}`, "not-needed", "the file's version and the program that wrote it"),
+  rule(`board>(?:meta|last_opened_board)${SUB}`, "not-needed", "the board section's version and the board that was open last"),
+  rule(`schematic>last_opened_files${SUB}`, "not-needed", "the sheets that were open last"),
+  rule("net_settings>last_net_id", "not-needed", "the last number KiCad gave a net"),
   // The objects that hold the settings below: each key under them has a row of its own.
   rule("board|board>design_settings|net_settings|schematic", "not-needed", "a group of settings, each of which is accounted for below it"),
   // ---- net classes, rules and what hangs on them: board slice 1d ----

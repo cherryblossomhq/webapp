@@ -88,7 +88,8 @@ describe("B2: the symbol wins only for the flags its file's KiCad copies", () =>
     const flagged = setFlags(first.r.project, first.r.project.components.find((c) => c.ref === "R1")!.id, { excludeFromPos: true, dnp: true, excludeFromBom: true })
     const { files } = await kicadFiles(flagged)
     const entries = Object.entries(files)
-    const back = imported(importKicadProject([{ path: "back.kicad_pcb", data: entries.find(([k]) => k.endsWith(".kicad_pcb"))![1] }, { path: "back.kicad_sch", data: entries.find(([k]) => k.endsWith(".kicad_sch"))![1] }], { built: BUILT }))
+    // the whole export, the project file too: our own file is not refused for the keys our own converter writes
+    const back = imported(importKicadProject([{ path: "back.kicad_pcb", data: entries.find(([k]) => k.endsWith(".kicad_pcb"))![1] }, { path: "back.kicad_sch", data: entries.find(([k]) => k.endsWith(".kicad_sch"))![1] }, { path: "back.kicad_pro", data: entries.find(([k]) => k.endsWith(".kicad_pro"))![1] }]))
     const r1 = back.project.components.find((c) => c.ref === "R1")!
     expect(r1.flags).toMatchObject({ excludeFromPos: true, dnp: true, excludeFromBom: true })
     expect(back.report.entries.some((e) => e.code === "symbol-footprint-flags-differ")).toBe(false)

@@ -2,6 +2,7 @@ import { round } from "../lib/geometry"
 import { ROOT_SHEET, copyKey, sheetsOf, sheetUses, symbolsOnSheet, useAt, useOf, usesOfSheet, type SheetUse } from "../model/sheets"
 import { activeVariant, variantSheetFlags } from "../model/variants"
 import { colorNode } from "./kicadSheet"
+import type { ExtraUnit } from "./circuitJson"
 import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, TextLook, Vec2 } from "../model/types"
 
 // S1 in the KiCad files: a project with sheets is written as a root schematic, a file for each other sheet (drawn once, whatever the
@@ -226,10 +227,39 @@ export function spreadInstances(text: string, project: Project, sheet: string, c
   const paths = new Map(uses.map((u) => [u.path, instancePath(project, u)]))
   return text.replace(/\n {4}\(instances\n {6}\(project ""\n {8}\(path "\/[0-9a-f-]+"\n {10}\(reference "([^"]*)"\)\n {10}\(unit (\d+)\)\n {8}\)\n {6}\)\n {4}\)/g, (whole, ref: string, unit: string) => {
     const group = byRef.get(`${ref}\u0000${unit}`) ?? byRef.get(`${ref}\u00001`)
-    const rows = (group ?? []).map((c) => `        (path ${quote(paths.get(c.inst ?? "") ?? `/${converterUuid}`)}\n          (reference ${quote(c.ref)})\n          (unit ${c.unit ?? Number(unit)})\n        )`)
+    const rows = (group ?? []).map((c) => `        (path ${quote(paths.get(c.inst ?? "") ?? `/${converterUuid}`)}\n          (reference ${quote(c.ref)})\n          (unit ${c.unit ?? 1})\n        )`)
     if (!rows.length) return whole
     return `\n    (instances\n      (project ""\n${rows.join("\n")}\n      )\n    )`
   })
+}
+
+/**
+ * The units a use of the sheet takes of a symbol that the first use takes as another unit (a symbol is drawn once in the file, and each use says which unit of its
+ * part it is: an op-amp's A in one use and its B in the other). The file's library symbol must have each of them, so each is returned, drawn where the first use's
+ * symbol is, with the component of the first use it goes with.
+ */
+export function unitsOfOtherUses(project: Project, sheet: string): ExtraUnit[] {
+  const uses = usesOfSheet(project, sheet)
+  if (uses.length < 2) return []
+  const first = uses[0].path
+  const byKey = new Map<string, ComponentInstance[]>()
+  for (const c of project.components) {
+    if (!uses.some((u) => u.path === (c.inst ?? ""))) continue
+    ;(byKey.get(copyKey(c)) ?? byKey.set(copyKey(c), []).get(copyKey(c))!).push(c)
+  }
+  const out: ExtraUnit[] = []
+  for (const group of byKey.values()) {
+    const base = group.find((c) => (c.inst ?? "") === first)
+    if (!base) continue
+    const seen = new Set([base.unit ?? 1])
+    for (const c of group) {
+      const unit = c.unit ?? 1
+      if ((c.inst ?? "") === first || seen.has(unit)) continue
+      seen.add(unit)
+      out.push({ base: base.id, unit: { ...c, id: `${base.id}@unit${unit}`, inst: base.inst, sch: base.sch, ref: base.ref } })
+    }
+  }
+  return out
 }
 
 /** What is written for a sheet: its symbols, which are the ones drawn on it. */

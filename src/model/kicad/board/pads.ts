@@ -218,6 +218,11 @@ function landPadStacked(fp: KicadFootprint, pad0: KicadPad, bottom: boolean, ids
     if (v) layers[key] = v
   }
   for (const k of keyed) {
+    // A layer the board has no copper on (`In9.Cu` on a board of four layers) has no place in the stack: say so, the entry is left out.
+    if (k.id === null) {
+      const why = `a pad stack entry for ${k.l.name}, which is not a copper layer of the board, so the entry is left out`
+      if (!notes.includes(why)) notes.push(why)
+    }
     if (k === backEntry || k.id === null) continue
     const own: string = k.id === "inner" ? "inner" : bottom ? flipLayer(k.id, map.count) : k.id
     add(own, layerPad(pad, k.l))

@@ -372,6 +372,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     layers.push({ ordinal, name: row[1], type: typeof row[2] === "string" ? row[2] : "", ...(typeof row[3] === "string" ? { userName: row[3] } : {}) })
   }
   const copperNames = layers.filter((l) => COPPER_TYPES.has(l.type)).map((l) => l.name)
+  // KiCad has a front, a back and 30 inner copper layers (`BOARD_STACKUP`'s limit, `MAX_CU_LAYERS` is 32): a file with more is not one KiCad wrote.
+  if (copperNames.length > 32) throw new KicadReadError("not-a-board", `This board lists ${copperNames.length} copper layers, and KiCad boards have at most 32 (a front, a back and 30 inner layers), so this is not a board KiCad wrote.`)
   const general = kid(tree, "general")
   const declared = copperNames.length || numAt(kid(general, "layers"), 1, 0)
   const copper = { names: copperNames, front: copperNames[0] ?? "F.Cu", back: copperNames[copperNames.length - 1] ?? "B.Cu" }

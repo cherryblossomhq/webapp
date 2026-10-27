@@ -211,13 +211,13 @@ describe("a part with three units in Circuit JSON", () => {
 // ---------- twins without a part, and symbols with no footprint ----------
 
 describe("what is left out", () => {
-  it("names a unit whose part is not on the sheet", () => {
+  it("draws a unit whose part is not on the sheet as a symbol of its own (the part's other units are on another sheet)", () => {
     const p = opamp()
     const owner = p.components.find((c) => !findPart(c.partId)?.unitOf)!
     const orphan = { ...p, components: p.components.filter((c) => c.id !== owner.id) }
     const { elements, notes } = projectToCircuitJson(orphan)
-    expect(of(elements as El[], "schematic_component")).toHaveLength(0)
-    expect(notes.join(" ")).toMatch(/Left out 2 unit symbols whose part is not on the sheet: U1, U1/)
+    expect(of(elements as El[], "schematic_component")).toHaveLength(2)
+    expect(notes.join(" ")).not.toMatch(/Left out/)
   })
 
   it("keeps KiCad symbols that have no footprint on the sheet, with no board part and no note about them", () => {

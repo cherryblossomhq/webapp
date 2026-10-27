@@ -324,7 +324,7 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (shapeGfx(board.shapes) || board.footprints.some((f) => shapeGfx(f.shapes)) || board.footprints.some((f) => f.pads.length === 0) || has(/^target/)) need("X8", "drawings beyond the editor's silkscreen lines, or parts with no pads")
   // A part is its pins: one whose pads are all unnumbered (a mounting hole) has none to draw, which X8's graphics-only parts will.
   else if (board.footprints.some((f) => !f.pads.some((p) => p.number !== "" && p.type !== "np_thru_hole"))) need("X8", "a part with no numbered pads, such as a mounting hole", "importer")
-  // X24: what KiCad 9 and 10 add to a drawing that the editor's shapes do not hold (the nodes of line ends, colours and track mask openings are found by the table below).
+  // X24: what KiCad 9 and 10 (and KiCad 11 development, for line ends) add to a drawing that the editor's shapes do not hold (the nodes of line ends, colours and track mask openings are found by the table below).
   const allShapes = [...board.shapes, ...board.footprints.flatMap((f) => f.shapes)]
   if (allShapes.some((s) => s.hatched && layerClass(s.layer, copperSet) !== "edge")) need("X24", "a drawing filled with a hatch", "importer")
   // A filled drawing whose stroke width is negative shrinks its fill when KiCad plots it (`PlotShape`: the polygon is inflated by half the negative width, a circle's diameter is cut by it; plot_brditems_plotter.cpp, lines 948-951, 1040-1046 and 1170-1173), which the model's widths (never negative) cannot say. A nanometre of it (-0.000001 in one corpus file) is no width at all, as before.

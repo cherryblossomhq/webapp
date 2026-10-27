@@ -4,11 +4,12 @@ import { analyzePcb } from "../src/model/pcb"
 import { isNpth } from "../src/model/instances"
 import { boardLoops, padShape } from "../src/model/zoneGeom"
 import { nonCopperFills } from "../src/model/nonCopperFill"
-import { zoneLayers } from "../src/model/zones"
+import { worldPartZones } from "../src/model/partZones"
+import { zoneLayers, zoneRings } from "../src/model/zones"
 import { flattenPath } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
 import { nearestIndex, sample } from "./kicad-census/edge.mjs"
-import { importedZone, zoneOracle } from "./kicad-census/zones.mjs"
+import { importedZone, knownOther, zoneOracle } from "./kicad-census/zones.mjs"
 
 // The zones of an imported board against the raw file (`kicad-census/zones.mjs`, which shares no code with `src`): each zone's outline,
 // layers, net and settings, and the editor's own fill of it against the copper KiCad stored, by area and by Hausdorff distance.
@@ -119,7 +120,8 @@ export interface FillRow {
 const ringsOf = (paths: Paths64): number[][][] => paths.map((p) => [...p.map((q) => [q.x / U, q.y / U]), [p[0].x / U, p[0].y / U]])
 
 /** The editor's copper of every zone and layer against KiCad's stored fill. */
-export function compareFills(text: string, project: Project, reach = 3, onlyOther = false): FillRow[] {
+export function compareFills(text: string, project: Project, reach = 3, which: "copper" | "other" = "copper"): FillRow[] {
+  const onlyOther = which === "other"
   const expected = zoneOracle(text).zones.filter(importedZone)
   const analysis = onlyOther ? null! : analyzePcb(project, computeConnectivity(project))
   const rows: FillRow[] = []
@@ -145,7 +147,7 @@ export function compareFills(text: string, project: Project, reach = 3, onlyOthe
     const f = expected[i]
     if (!f || z.keepout) return
     // X29: a zone on layers that is not copper, against the fill KiCad stored for each of its layers.
-    for (const name of z.other ?? []) {
+    for (const name of onlyOther ? (z.other ?? []) : []) {
       const fill = others.find((x) => x.zoneId === z.id && x.layer === name)
       const ours: Paths64 = Clipper.union((fill?.polygons ?? []).flatMap((poly) => poly.map((r) => r.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) })))), [], FillRule.NonZero)
       // KiCad 8 and later cut such a fill by every rule area that keeps pours out and is on its layer (`fillNonCopperZone`, 8.0 :1700); a fill KiCad 7 or earlier stored was not cut, so it is cut here by the
@@ -192,4 +194,46 @@ export function compareFills(text: string, project: Project, reach = 3, onlyOthe
     }
   })
   return rows
+}
+
+/** A zone as a line of text that two readings of the same zone agree on: its kind, layers, rule flags, name, priority, and the outline's area and box (the y flipped to the project's). */
+function zoneSignature(kind: string, surface: string[], other: string[], flags: string, name: string, priority: number, rings: number[][][]): { key: string; box: number[] } {
+  const outline = Clipper.union(rings.map(toPath), [], FillRule.EvenOdd)
+  const box = rings[0].reduce((b, [x, y]) => ({ minX: Math.min(b.minX, x), maxX: Math.max(b.maxX, x), minY: Math.min(b.minY, -y), maxY: Math.max(b.maxY, -y) }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity })
+  return { key: `${kind}|${[...surface].sort().join("+")}|${[...other].sort().join("+")}|${flags}|${name}|${priority}|${areaMm2(outline).toFixed(1)}`, box: [box.minX, box.minY, box.maxX, box.maxY] }
+}
+
+/**
+ * X30: the zones inside parts, against the raw file. The file writes each in the board's frame (up to stamp 20260616), so its corners as the oracle reads them are where the board has the zone,
+ * whatever the part's side and turn; the project's are the zones its parts' lands put on the board. Compared as sets: each zone's kind, layers, rule flags, name, priority, and its outline's area
+ * and box. A file written in the footprint's own frame (20260616 and later) is not compared here.
+ */
+export function checkPartZones(text: string, project: Project): { compared: number; skipped: number; mismatches: string[] } {
+  const stamp = Number(/\(version\s+(\d+)\)/.exec(text)?.[1] ?? 0)
+  const raw = zoneOracle(text).zones.filter((z) => z.inFootprint && z.kind !== "placement" && z.rings.length > 0 && z.rings[0].length >= 3 && z.other.every(knownOther))
+  const world = worldPartZones(project)
+  if (stamp >= 20260616) return { compared: 0, skipped: raw.length, mismatches: [] }
+  const flagsOf = (z: Zone) => (z.keepout ? (["tracks", "vias", "pads", "pour", "footprints"] as const).filter((k) => z.keepout![k]).join(",") : "pour-zone")
+  const mine = world.map((z) =>
+    zoneSignature(z.keepout ? "rule" : "pour", zoneLayers(z), z.other ?? [], flagsOf(z), z.name ?? "", z.priority ?? 0, zoneRings(z).map((r) => r.map((p) => [p.x, -p.y]))),
+  )
+  const theirs = raw.map((f) => {
+    const rule = f.kind === "keepout" || f.kind === "rule-area"
+    const flags = rule ? (["tracks", "vias", "pads", "copperpour", "footprints"] as const).filter((k) => f.keepout?.[k]).map((k) => (k === "copperpour" ? "pour" : k)).join(",") : "pour-zone"
+    return zoneSignature(rule ? "rule" : "pour", f.surface, f.other, flags, f.name, f.priority, f.rings)
+  })
+  const out: string[] = []
+  if (mine.length !== theirs.length) out.push(`${theirs.length} zones in parts in the file, ${mine.length} in the project`)
+  // Each zone of the file is matched with one of the project's of the same kind, layers, flags, name, priority and area, whose box agrees to 2 microns (the places are floating point, turned and mirrored).
+  const pool = [...mine]
+  let compared = 0
+  for (const t of theirs) {
+    const at = pool.findIndex((m) => m.key === t.key && m.box.every((v, i) => Math.abs(v - t.box[i]) <= 2e-3))
+    if (at < 0) out.push(`${t.key} at ${t.box.map((v) => v.toFixed(3)).join(",")} is not among the project's`)
+    else {
+      pool.splice(at, 1)
+      compared++
+    }
+  }
+  return { compared, skipped: 0, mismatches: out }
 }

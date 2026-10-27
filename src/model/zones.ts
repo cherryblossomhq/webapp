@@ -49,8 +49,11 @@ export function isWholeBoardPour(z: Zone): boolean {
   )
 }
 
-/** Whether any zone of the project needs the polygon engine; when none does, every pour is filled as the editor always filled it. */
-export const needsZoneEngine = (project: Pick<Project, "zones">): boolean => project.zones.some((z) => !isWholeBoardPour(z))
+/** Whether the project has a land with zones of its own, a keepout or a pour drawn inside a footprint (X30; `partZones.ts` puts them on the board). */
+export const hasPartZones = (project: Partial<Pick<Project, "footprints">>): boolean => !!project.footprints?.some((f) => f.zones?.length)
+
+/** Whether any zone of the project needs the polygon engine; when none does, every pour is filled as the editor always filled it. A zone of a part always does. */
+export const needsZoneEngine = (project: Pick<Project, "zones"> & Partial<Pick<Project, "footprints">>): boolean => project.zones.some((z) => !isWholeBoardPour(z)) || hasPartZones(project)
 
 /** Whether the zone has a polygon of its own (every rule area does), as opposed to being the whole board. */
 export const hasPolygon = (z: Zone): boolean => !!z.outline && z.outline.length > 0

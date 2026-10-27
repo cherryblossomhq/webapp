@@ -26,6 +26,7 @@ import {
   union,
   upright,
 } from "./zoneGeom"
+import { withPartZones } from "./partZones"
 import { hasPolygon, higherPriority, isRuleArea, zoneLayers, zoneRings, zoneSettings, type ZoneSettings } from "./zones"
 import type { CopperLayer, Project, Vec2, Zone } from "./types"
 
@@ -508,6 +509,7 @@ function groupZones(prep: Prepared, settings: Map<string, ZoneSettings>, keepIsl
  * With `reuseOnly`, a group whose fill is not kept is not filled: the fills in `reuseOnly.stale` stand in for it, and it is listed in `missing`.
  */
 export function fillPolygonZonesEx(project: Project, sch: SchematicConnectivity, input: PourInput, reuseOnly?: { stale: ZoneFill[] }): { fills: ZoneFill[]; missing: PendingGroup[] } {
+  project = withPartZones(project)
   const netIdOf = new Map<string, string | null>()
   for (const z of project.zones) netIdOf.set(z.net, z.net ? (sch.nets.find((n) => n.name === z.net)?.id ?? null) : null)
   const recs: ItemRec[] = input.items.flatMap((item, index) => (item.kind === "zone" ? [] : [{ index, item, net: input.netOf(index) }]))
@@ -560,6 +562,7 @@ export const fillPolygonZones = (project: Project, sch: SchematicConnectivity, i
  */
 export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: CopperItem; net: string | null }[], netName: (id: string | null) => string | null = () => null): ZoneFill[] {
   if (!fresh.length) return fills
+  project = withPartZones(project)
   const classes = classIndex(project.rules)
   return fills.map((f) => {
     const zone = project.zones.find((z) => z.id === f.zoneId)

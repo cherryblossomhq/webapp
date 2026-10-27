@@ -1,4 +1,5 @@
 import type { OtherFill } from "../../model/nonCopperFill"
+import { withPartZones } from "../../model/partZones"
 import { pathsSvgPath } from "../../model/shapes"
 import { otherLayerKind } from "../../model/zoneLayers"
 import { zoneLayers } from "../../model/zones"
@@ -29,7 +30,8 @@ export function OtherZoneFills({ fills, silk, shown, opacityOf }: { fills: Other
  * middles of the selected ones. The copper of the pours is drawn with the layers, where it belongs.
  */
 export function ZoneOutlines({ project, selected, px, active }: { project: Project; selected: Set<string>; px: number; active: CopperLayer }) {
-  const zones = project.zones.filter((z) => z.outline)
+  // The zones inside parts are drawn where their parts are (X30); they are the part's, so they are never selected on their own.
+  const zones = withPartZones(project).zones.filter((z) => z.outline)
   if (!zones.length) return null
   return (
     <g>

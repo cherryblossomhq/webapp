@@ -1,6 +1,8 @@
 import { uid } from "../../../lib/id"
 import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
+import { flipShapeLayer } from "../../shapeLayers"
+import { flipLayer } from "../../stack"
 import { anchorSide, isOtherZoneLayer, orderedOtherLayers } from "../../zoneLayers"
 import { hasOtherLayers, isOtherZone, kicadUuid } from "../../zones"
 import { layerClass } from "./needs"
@@ -8,7 +10,7 @@ import { layerMapOf, layersOfNames } from "./layers"
 import { resolveLayer } from "./graphics"
 import { eraOf } from "./read"
 import type { ImportReport } from "./report"
-import type { KicadBoard, KicadZone, KicadZoneSeg, Pt } from "./types"
+import type { KicadBoard, KicadFootprint, KicadZone, KicadZoneSeg, Pt } from "./types"
 
 // A KiCad zone as the editor's `Zone` (X3). The file's frame is y down and the editor's is y up, so every point is flipped. A zone keeps
 // what the file says (its outline with holes and arcs, layers, net, priority, clearance, minimum width, how its pads join, the thermal
@@ -62,8 +64,8 @@ export function splitZoneLayers(board: KicadBoard, names: readonly string[]): Zo
   return { copper: layersOfNames(map, copperNames), other: orderedOtherLayers([...other]), unknown }
 }
 
-/** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points. */
-function ringPath(segs: KicadZoneSeg[]): ShapePath | null {
+/** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points, each point through `map` (the file's frame is y down, the editor's y up). */
+function ringPath(segs: KicadZoneSeg[], map: (p: Pt) => Vec2 = flip): ShapePath | null {
   const out: PathSeg[] = []
   const at: { cur: Vec2 | null; first: Vec2 | null } = { cur: null, first: null }
   const lineTo = (p: Vec2) => {
@@ -72,12 +74,12 @@ function ringPath(segs: KicadZoneSeg[]): ShapePath | null {
     if (!at.first) at.first = p
   }
   for (const s of segs) {
-    if (s.kind === "xy") lineTo(flip(s.at))
+    if (s.kind === "xy") lineTo(map(s.at))
     else {
-      const start = flip(s.start)
-      const end = flip(s.end)
+      const start = map(s.start)
+      const end = map(s.end)
       lineTo(start)
-      out.push({ kind: "arc", start, mid: flip(s.mid), end })
+      out.push({ kind: "arc", start, mid: map(s.mid), end })
       at.cur = end
     }
   }
@@ -102,6 +104,8 @@ export interface ZoneResult {
   degenerate: number
   /** Zones on a net that no pin carries, which cannot be on a net here. */
   loose: string[]
+  /** Zones on layers that are not copper that the file puts on a net, which KiCad ignores (nothing connects through such a zone) and the project does not keep. */
+  ignoredNets: number
 }
 
 /** The widest line the file draws on Edge.Cuts: KiCad 5's pours kept half of it from the edge, on top of the zone's clearance. */
@@ -111,94 +115,164 @@ function edgeWidth(board: KicadBoard): number {
   return w
 }
 
-export function convertZones(cx: ZoneContext): ZoneResult {
+interface OneContext extends ZoneContext {
+  widest: number
+  /** The file's point as the project's: y flipped for the board, the land's own frame for a part (`landShapes`). */
+  map: (p: Pt) => Vec2
+  /** A zone of a part on the bottom: its layers are the board's, and the land keeps them as the part's own side has them (flipped back). */
+  bottomPart: boolean
+  inPart: boolean
+  id: () => string
+}
+
+interface One {
+  zone?: Zone
+  degenerate?: true
+  lossy?: string
+  unfilled?: true
+  ignoredNet?: true
+}
+
+/** One zone of the file as the project's, or what keeps it from being one. */
+function convertOne(z: KicadZone, cx: OneContext): One {
   const { board, rules } = cx
-  const out: Zone[] = []
-  let unfilled = 0
-  let degenerate = 0
-  const loose: string[] = []
-  const lossy: string[] = []
-  const widest = edgeWidth(board)
-  for (const z of board.zones) {
-    if (z.kind === "placement") continue
-    const split = splitZoneLayers(board, z.layers)
-    const layers = split.copper
-    const rule = z.kind === "keepout" || z.kind === "rule-area"
-    if (split.unknown.length) {
-      const what = `a zone on ${split.unknown.join(", ")}, which is no layer the editor has`
-      if (!lossy.includes(what)) lossy.push(what)
-      continue
-    }
-    const paths = z.rings.map(ringPath).filter((p): p is ShapePath => p !== null)
-    if ((!layers.length && !split.other.length) || paths.length === 0 || z.rings[0].length < 3) {
-      degenerate++
-      continue
-    }
-    // X29: a filled zone is on copper or on layers that are not, never both (KiCad would fill each layer of such a zone as copper, by the nets and pads of a layer that has none).
-    if (!rule && layers.length && split.other.length) {
-      const what = "a zone that is filled on a copper layer and on a layer that is not copper at once"
-      if (!lossy.includes(what)) lossy.push(what)
-      continue
-    }
-    const zone: Zone = { id: uid("z"), net: "", layer: layers[0] ?? anchorSide(split.other), outline: paths }
-    if (layers.length > 1) zone.layers = layers
-    if (!layers.length) zone.layers = []
-    if (split.other.length) zone.other = split.other
-    if (z.name) zone.name = z.name
-    if (z.priority > 0) zone.priority = z.priority
-    // KiCad 6 and later order zones of equal priority by uuid (zone.cpp, `HigherPriority`, 6.0 to 10.0); KiCad 5 and earlier cut a zone only out of
-    // zones of strictly higher priority (zone_filler.cpp of 5.1), so two zones of equal priority overlap.
+  const map = layerMapOf(board)
+  const split = splitZoneLayers(board, z.layers)
+  let layers = split.copper
+  let other = split.other
+  if (cx.bottomPart) {
+    // A part on the bottom keeps its land in the top side's frame: copper layers turned over (an inner layer is its mirror in the stack), the others swapped for the other side's.
+    layers = map.ids.filter((l) => layers.includes(flipLayer(l, map.count)))
+    other = orderedOtherLayers(other.map((n) => flipShapeLayer(n, map.count)))
+  }
+  const rule = z.kind === "keepout" || z.kind === "rule-area"
+  if (split.unknown.length) return { lossy: `a zone on ${split.unknown.join(", ")}, which is no layer the editor has` }
+  const paths = z.rings.map((r) => ringPath(r, cx.map)).filter((p): p is ShapePath => p !== null)
+  if ((!layers.length && !other.length) || paths.length === 0 || z.rings[0].length < 3) return { degenerate: true }
+  // X29: a filled zone is on copper or on layers that are not, never both (KiCad would fill each layer of such a zone as copper, by the nets and pads of a layer that has none).
+  if (!rule && layers.length && other.length) return { lossy: "a zone that is filled on a copper layer and on a layer that is not copper at once" }
+  const copperZone = other.length === 0
+  // X30: a pour inside a part is on no net here: the net it names is one of the part's pads, which a land shared by several parts cannot say.
+  if (cx.inPart && !rule && copperZone && z.netRaw) return { lossy: "a pour inside a part that is on a net" }
+  const zone: Zone = { id: cx.id(), net: "", layer: layers[0] ?? anchorSide(other), outline: paths }
+  if (layers.length > 1) zone.layers = layers
+  if (!layers.length) zone.layers = []
+  if (other.length) zone.other = other
+  if (z.name) zone.name = z.name
+  if (z.priority > 0) zone.priority = z.priority
+  // KiCad 6 and later order zones of equal priority by uuid (zone.cpp, `HigherPriority`, 6.0 to 10.0); KiCad 5 and earlier cut a zone only out of
+  // zones of strictly higher priority (zone_filler.cpp of 5.1), so two zones of equal priority overlap. A zone of a part has neither: a land is shared by every part that has it.
+  if (!cx.inPart) {
     if (["kicad3", "kicad4", "kicad5", "pre6-nightly"].includes(eraOf(board.version))) zone.unordered = true
     else {
       const uuid = z.uuid ? kicadUuid(z.uuid) : undefined
       if (uuid) zone.uuid = uuid
     }
-    if (z.locked) zone.locked = true
-    if (z.kind === "keepout" || z.kind === "rule-area") {
-      zone.keepout = {
-        ...(z.keepout?.tracks ? { tracks: true as const } : {}),
-        ...(z.keepout?.vias ? { vias: true as const } : {}),
-        ...(z.keepout?.pads ? { pads: true as const } : {}),
-        ...(z.keepout?.copperpour ? { pour: true as const } : {}),
-        ...(z.keepout?.footprints ? { footprints: true as const } : {}),
-      }
-      out.push(zone)
-      continue
+  }
+  if (z.locked) zone.locked = true
+  if (rule) {
+    zone.keepout = {
+      ...(z.keepout?.tracks ? { tracks: true as const } : {}),
+      ...(z.keepout?.vias ? { vias: true as const } : {}),
+      ...(z.keepout?.pads ? { pads: true as const } : {}),
+      ...(z.keepout?.copperpour ? { pour: true as const } : {}),
+      ...(z.keepout?.footprints ? { footprints: true as const } : {}),
     }
-    // A zone on layers that is not copper has no net and no teardrop: KiCad's file says what it says of the rest (clearance, pad connection, thermal gap) and the zone keeps it.
-    const copperZone = split.other.length === 0
-    if (copperZone && z.netRaw) {
-      const name = cx.netName(z.netRaw)
-      if (name) zone.net = name
-    }
-    if (copperZone && z.teardrop) zone.teardrop = z.teardrop
-    zone.clearance = z.clearance ?? rules.pourClearance
-    zone.minWidth = z.minThickness ?? rules.pourMinWidth
-    zone.connect = z.connect === "yes" ? "solid" : z.connect === "no" ? "none" : z.connect === "thru_hole_only" ? "tht" : "thermal"
-    zone.thermalGap = z.thermalGap ?? 0.5
-    zone.spokeWidth = z.thermalBridge ?? 0.5
-    if (z.smoothing !== "none" && z.radius > 0) zone.smoothing = { kind: z.smoothing, radius: z.radius }
-    if (z.islandMode === 1) zone.islands = "never"
-    else if (z.islandMode === 2) zone.islands = z.islandArea ?? 10
-    // KiCad 5 and earlier kept a pour its own clearance and half the edge line's width from the edge, and from a hole with no copper by the
-    // pour's clearance (zone_filler.cpp of 5.1, buildZoneFeatureHoleList). KiCad 6 and later keep it from the edge by the board's copper to edge
-    // clearance and from such a hole by the board's hole clearance, which are design rules of the project file (`.kicad_pro`), not of the board:
-    // the files that have a stored fill show 0.5 mm as the commonest distance from a fill to the edge in every release from 6 to 10, which is
-    // KiCad's default, and 0.25 mm is its default hole clearance.
-    if (!copperZone) {
-      if (!z.filled) unfilled++
-      out.push(zone)
-      continue
-    }
-    if (z.strokedFill) zone.edgeGap = Math.round((zone.clearance + widest / 2) * 1e6) / 1e6
+    return { zone }
+  }
+  // A zone on layers that is not copper has no net and no teardrop: KiCad's file says what it says of the rest (clearance, pad connection, thermal gap) and the zone keeps it.
+  let ignoredNet: true | undefined
+  if (copperZone && z.netRaw) {
+    const name = cx.netName(z.netRaw)
+    if (name) zone.net = name
+  } else if (z.netRaw) ignoredNet = true
+  if (copperZone && z.teardrop) zone.teardrop = z.teardrop
+  zone.clearance = z.clearance ?? rules.pourClearance
+  zone.minWidth = z.minThickness ?? rules.pourMinWidth
+  zone.connect = z.connect === "yes" ? "solid" : z.connect === "no" ? "none" : z.connect === "thru_hole_only" ? "tht" : "thermal"
+  zone.thermalGap = z.thermalGap ?? 0.5
+  zone.spokeWidth = z.thermalBridge ?? 0.5
+  if (z.smoothing !== "none" && z.radius > 0) zone.smoothing = { kind: z.smoothing, radius: z.radius }
+  if (z.islandMode === 1) zone.islands = "never"
+  else if (z.islandMode === 2) zone.islands = z.islandArea ?? 10
+  // KiCad 5 and earlier kept a pour its own clearance and half the edge line's width from the edge, and from a hole with no copper by the
+  // pour's clearance (zone_filler.cpp of 5.1, buildZoneFeatureHoleList). KiCad 6 and later keep it from the edge by the board's copper to edge
+  // clearance and from such a hole by the board's hole clearance, which are design rules of the project file (`.kicad_pro`), not of the board:
+  // the files that have a stored fill show 0.5 mm as the commonest distance from a fill to the edge in every release from 6 to 10, which is
+  // KiCad's default, and 0.25 mm is its default hole clearance.
+  if (copperZone) {
+    if (z.strokedFill) zone.edgeGap = Math.round((zone.clearance + cx.widest / 2) * 1e6) / 1e6
     else {
       zone.edgeGap = 0.5
       zone.holeGap = 0.25
     }
-    if (!z.filled) unfilled++
-    out.push(zone)
   }
-  return { zones: out, lossy, unfilled, degenerate, loose }
+  return { zone, ...(!z.filled ? { unfilled: true as const } : {}), ...(ignoredNet ? { ignoredNet } : {}) }
+}
+
+export function convertZones(cx: ZoneContext): ZoneResult {
+  const { board } = cx
+  const out: Zone[] = []
+  const r: ZoneResult = { zones: out, lossy: [], unfilled: 0, degenerate: 0, loose: [], ignoredNets: 0 }
+  const one: OneContext = { ...cx, widest: edgeWidth(board), map: flip, bottomPart: false, inPart: false, id: () => uid("z") }
+  for (const z of board.zones) {
+    if (z.kind === "placement") continue
+    const made = convertOne(z, one)
+    if (made.lossy) {
+      if (!r.lossy.includes(made.lossy)) r.lossy.push(made.lossy)
+    } else if (made.degenerate) r.degenerate++
+    else if (made.zone) {
+      out.push(made.zone)
+      if (made.unfilled) r.unfilled++
+      if (made.ignoredNet) r.ignoredNets++
+    }
+  }
+  return r
+}
+
+export interface PartZones {
+  /** The zones of the part, in the land's frame, with ids that name their place in the land (`z0`, `z1`...). */
+  zones: Zone[]
+  lossy: string[]
+  degenerate: number
+}
+
+/**
+ * The zones of one footprint (X30: a keepout, or a pour on no net, drawn inside a part) as a land's, in the land's frame: the point as the part's own side has it (y up, the land
+ * the library's on both sides, as `landShapes` has it) and the layers as that side has them. Placement areas are the part's own business (X20) and are left out here as on the board.
+ */
+export function convertPartZones(fp: KicadFootprint, bottom: boolean, cx: ZoneContext): PartZones {
+  const out: PartZones = { zones: [], lossy: [], degenerate: 0 }
+  const one: OneContext = { ...cx, widest: 0, map: bottom ? (p) => ({ x: p.x + 0, y: p.y + 0 }) : flip, bottomPart: bottom, inPart: true, id: () => `z${out.zones.length}` }
+  for (const z of fp.zones) {
+    if (z.kind === "placement") continue
+    const made = convertOne(z, one)
+    if (made.lossy) {
+      if (!out.lossy.includes(made.lossy)) out.lossy.push(made.lossy)
+    } else if (made.degenerate) out.degenerate++
+    else if (made.zone) out.zones.push(made.zone)
+  }
+  return out
+}
+
+/** The report of the zones that were inside parts (X30): what they are, and that they move with their part. */
+export function reportPartZones(r: { parts: number; zones: Zone[]; degenerate: number }, report: ImportReport) {
+  const keepouts = r.zones.filter((z) => z.keepout).length
+  const pours = r.zones.filter((z) => !z.keepout && !isOtherZone(z)).length
+  const areas = r.zones.length - keepouts - pours
+  if (r.zones.length) {
+    const kinds = [keepouts ? `${keepouts} keepout${keepouts === 1 ? "" : "s"}` : "", pours ? `${pours} pour${pours === 1 ? "" : "s"}` : "", areas ? `${areas} filled area${areas === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")
+    report.entries.push({
+      code: "zones-in-parts",
+      severity: "note",
+      object: `${kinds} inside ${r.parts} part${r.parts === 1 ? "" : "s"}`,
+      why: "Kept with the part: they move, turn and flip with it, as KiCad's do, and act as the same zones on the board do (a keepout keeps tracks, vias, pads, pours or parts out, a pour is filled). They are edited by editing the part, not as zones of the board.",
+      count: r.zones.length,
+    })
+  }
+  if (r.degenerate) {
+    report.entries.push({ code: "zones-degenerate", severity: "not-brought", object: `${r.degenerate} zone${r.degenerate === 1 ? "" : "s"} inside parts with fewer than three corners, or on no copper layer of the board`, why: "KiCad draws and fills nothing for such a zone, so none was brought in.", count: r.degenerate })
+  }
 }
 
 export function reportZones(r: ZoneResult, report: ImportReport, all: number) {
@@ -214,7 +288,7 @@ export function reportZones(r: ZoneResult, report: ImportReport, all: number) {
       code: "zones-non-copper",
       severity: "changed",
       object: `${filled.length} zone${filled.length === 1 ? "" : "s"} on layers that are not copper`,
-      why: `Brought in with their outlines, layers and settings. The editor fills each by KiCad's rule for such a zone (its outline with corners smoothed, kept inside the board, out of areas that keep pours out, thinned to its minimum width), so the fill can differ from the file's by a few hundredths of a millimetre at corners. ${plotted === filled.length ? "They plot on the Gerber of their layer." : plotted ? `${plotted} of them plot on the Gerber of their layer (mask, paste, silkscreen or board edge); the rest are on layers the editor draws and keeps but has no Gerber for.` : "They are on layers the editor draws and keeps but has no Gerber for (fabrication, courtyard, adhesive and user layers)."}`,
+      why: `Brought in with their outlines, layers and settings${r.ignoredNets ? `, but not the net the file gives ${r.ignoredNets === 1 ? "one of them" : `${r.ignoredNets} of them`} (KiCad ignores it: nothing connects through such a zone)` : ""}. The editor fills each by KiCad's rule for such a zone (its outline with corners smoothed, kept inside the board, out of areas that keep pours out, thinned to its minimum width), so the fill can differ from the file's by a few hundredths of a millimetre at corners. ${plotted === filled.length ? "They plot on the Gerber of their layer." : plotted ? `${plotted} of them plot on the Gerber of their layer (mask, paste, silkscreen or board edge); the rest are on layers the editor draws and keeps but has no Gerber for.` : "They are on layers the editor draws and keeps but has no Gerber for (fabrication, courtyard, adhesive and user layers)."}`,
       count: filled.length,
     })
   }

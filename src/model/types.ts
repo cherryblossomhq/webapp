@@ -477,6 +477,11 @@ export interface FootprintDef {
    */
   noCourtyard?: true
   /**
+   * X30: the zones drawn inside the footprint (keepouts, and pours on no net), in the land's frame, which is the part's own side's: they move, turn and flip with every part that has the land
+   * (`partZones.ts` puts them on the board). Their ids (`z0`, `z1`...) name their place in the land; none has a net, a uuid or a priority tie to break against the board's zones.
+   */
+  zones?: Zone[]
+  /**
    * The package's own name where a source gave one (KiCad's `SOIC-8_3.9x4.9mm_P1.27mm`, a
    * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`), kept as it was given.
    */
@@ -1298,6 +1303,8 @@ export interface Zone {
   holeGap?: number
   /** Pinned by the user (KiCad's lock): the editing tools leave it where it is. */
   locked?: true
+  /** Only on the board's copy of a zone of a part (`partZones.ts`, never stored): the id of the part it belongs to. */
+  part?: string
 }
 
 /**

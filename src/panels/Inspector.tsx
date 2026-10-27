@@ -7,7 +7,7 @@ import { addToBlock, blockOf, createBlock, nextBlockName, removeFromBlocks, rena
 import { pinKey } from "../model/connectivity"
 import { isValidFootprint } from "../model/footprints"
 import { findPart } from "../model/library"
-import { isPhysical, pcbCourtyard, pcbPads, schematicBounds, schematicPins } from "../model/instances"
+import { componentFootprint, isPhysical, pcbCourtyard, pcbPads, schematicBounds, schematicPins } from "../model/instances"
 import { forgetStoredNets, sameStoredNet } from "../model/copperNets"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { cleanFlags, setFlags } from "../model/partFlags"
@@ -49,6 +49,19 @@ import { removeBoardTexts, removePartText } from "../model/textOps"
 import { parseTextId, worldTexts } from "../model/texts"
 import { landSelectionOwner, selectedGraphicIds } from "./shapeInspector"
 import { BlockLock, ExactDrawingInspector, ExactDrawingsInspector, LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "./SheetInspectors"
+
+/** How many zones are drawn inside a part's footprint, in words. */
+const zonesInPart = (c: ComponentInstance): string => {
+  const n = componentFootprint(c)?.zones?.length ?? 0
+  return `${n} zone${n === 1 ? "" : "s"}`
+}
+
+/** What those zones are: keepouts and pours. */
+const zoneKinds = (c: ComponentInstance): string => {
+  const zones = componentFootprint(c)?.zones ?? []
+  const keepouts = zones.filter((z) => z.keepout).length
+  return [keepouts ? `${keepouts} keepout${keepouts === 1 ? "" : "s"}` : "", zones.length - keepouts ? `${zones.length - keepouts} pour${zones.length - keepouts === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")
+}
 
 export function Inspector() {
   const project = useProjectStore((s) => s.project)!
@@ -721,6 +734,11 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
             </Button>
           </form>
           {fpError && <p className="text-[12px] text-danger">Footprinter can't build that footprint. Check the name and pin count.</p>}
+          {(componentFootprint(c)?.zones?.length ?? 0) > 0 && (
+            <p className="text-[12px] text-ink-3">
+              {zonesInPart(c)} drawn inside this footprint ({zoneKinds(c)}): they move, turn and flip with the part. Change them by changing the footprint.
+            </p>
+          )}
         </Section>
       )}
 

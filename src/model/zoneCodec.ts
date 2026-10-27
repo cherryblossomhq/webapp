@@ -105,10 +105,11 @@ export function normalizeZones(raw: unknown): Zone[] {
     // X29: the layers that are not copper, each once and in the table's order; a zone with them and no copper layer says `layers: []`. A pour is on one kind or the other, so a pour that
     // says both keeps its copper (a rule area may be on both).
     const other = Array.isArray(item.other) ? [...new Set(item.other.filter(isOtherZoneLayer))] : []
-    const copperLayersGiven = layers.length > 0
-    if (other.length && (isObject(item.keepout) || !copperLayersGiven)) {
+    // `layers: []` says no copper layer at all; a zone with `layer` alone (or `layers` of several) is on copper.
+    const noCopper = Array.isArray(item.layers) && item.layers.length === 0
+    if (other.length && (isObject(item.keepout) || noCopper)) {
       z.other = sortedOtherLayers(other)
-      if (!copperLayersGiven) z.layers = []
+      if (noCopper) z.layers = []
     }
     if (typeof item.connect === "string" && CONNECTIONS.has(item.connect as ZoneConnection)) z.connect = item.connect as ZoneConnection
     const sm = item.smoothing

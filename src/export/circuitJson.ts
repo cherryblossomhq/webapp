@@ -41,6 +41,7 @@ import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutl
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
+import { withPartZones } from "../model/partZones"
 import { isOtherZone, needsZoneEngine, zoneLayers } from "../model/zones"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
@@ -1011,7 +1012,8 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   // Rule areas (keepouts) are `pcb_keepout` outlines: the outline of the polygon, on the layers it is on.
   const keepoutNotes: string[] = []
   if (!options.forKicad) {
-    for (const z of project.zones) {
+    // The keepouts inside parts are the board's here (X30), where they stand now.
+    for (const z of withPartZones(project).zones) {
       if (!z.keepout || !z.outline?.length) continue
       const k = z.keepout
       // X29: a rule area on layers that are not copper alone has no copper layer to keep anything out of.

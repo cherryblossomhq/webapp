@@ -17,8 +17,8 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // The rules are the ones of `tests/kicad-census/slices.mjs`, which the census judged the plan by,
 // with the differences named in `Need.source`.
 
-/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects), the board objects slice X11 (dimensions), X12 (groups) and X14 (reference images), the zones slice X3, slice X7 the pad model, X29 (zones on layers that are not copper) and X31 (the layers a pour joins a pad on). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15", "X29", "X31"])
+/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects), the board objects slice X11 (dimensions), X12 (groups) and X14 (reference images), the zones slice X3, slice X7 the pad model, X29 (zones on layers that are not copper), X30 (zones inside parts) and X31 (the layers a pour joins a pad on). */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15", "X29", "X30", "X31"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {

@@ -55,7 +55,8 @@ import { flattenPath } from "../model/shapes"
 import { MOUNTING_HOLE_PRESETS, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { applyCapability, BOARD_THICKNESSES, FAB_CAPABILITIES, matchCapability, THERMAL_RELIEF_OPTIONS } from "../model/rules"
 import { addZone, makeZone, outlinePoints, removeZones, updateZone } from "../model/zoneOps"
-import { isWholeBoardPour, keepoutFlags, zoneLayers } from "../model/zones"
+import { withPartZones } from "../model/partZones"
+import { hasPartZones, isWholeBoardPour, keepoutFlags, zoneLayers } from "../model/zones"
 import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
 import { SHEET_ARG, SHEET_PROPERTY, onSheet, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
@@ -1905,9 +1906,12 @@ function polygonZone(project: Project, input: Record<string, unknown>): ToolOutc
 
 /** What get_design says of the zones, only for a project that has a polygon or a keepout: nothing for the editor's own pours alone. */
 function zonesReport(project: Project) {
-  if (!project.zones.some((z) => z.outline)) return undefined
-  return project.zones.map((z) => ({
+  if (!project.zones.some((z) => z.outline) && !hasPartZones(project)) return undefined
+  const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  // The zones inside parts come last, each with the part it belongs to.
+  return withPartZones(project).zones.map((z) => ({
     id: z.id,
+    ...(z.part ? { part: refOf.get(z.part) } : {}),
     ...(z.net ? { net: z.net } : {}),
     layers: [...zoneLayers(z), ...(z.other ?? [])].join("+"),
     ...(z.keepout ? { keepout: keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join("+") || "rules only" } : {}),

@@ -290,6 +290,14 @@ describe("the project file", () => {
     expect(none.zones[0].other).toBeUndefined()
   })
 
+  it("a keepout on one copper layer and a layer that is not copper keeps both through a save and a load", () => {
+    const r = imp([zone('(layers "F.Cu" "F.Fab")', KEEPOUT(true))])
+    expect(r.project.zones[0]).toMatchObject({ layer: "top", other: ["F.Fab"] })
+    expect(r.project.zones[0].layers).toBeUndefined()
+    const back = parseProjectFile(serializeProject(r.project), { id: "p1", createdAt: 1, updatedAt: 1 })
+    expect(back.zones).toEqual(r.project.zones)
+  })
+
   it("a whole-board pour and a copper polygon are stored as they were", () => {
     const base = twoResistors()
     const p = withZone(withZone(base, rectangle(-10, -10, 10, 10), { net: "GND", layers: ["top"] }, "a"), rectangle(-5, -5, 5, 5), { net: "GND", layers: ["top", "bottom"] }, "b")

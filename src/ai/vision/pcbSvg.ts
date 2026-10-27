@@ -8,6 +8,7 @@ import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/bo
 import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
 import { nonCopperFills, type OtherFill } from "../../model/nonCopperFill"
+import { withPartZones } from "../../model/partZones"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
 import { worldShapes } from "../../model/shapeItems"
@@ -194,7 +195,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       }
     }
     // Keepouts, as an outline with a light red tint, on the layers they are on; none on a board that has none.
-    for (const z of project.zones) {
+    for (const z of withPartZones(project).zones) {
       if (!z.keepout || !z.outline || !(z.layers ?? [z.layer]).includes(l)) continue
       body += `<path d="${pathsSvgPath(z.outline)}" fill="#ff5470" fill-opacity="0.15" fill-rule="evenodd" stroke="#ff5470" stroke-width="${n(Math.max(0.1, 1.5 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
     }

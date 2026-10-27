@@ -250,7 +250,9 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
     if (!given) return []
     return given.map((l) => kicadLayerName(bottom ? flipLayer(l, count) : l)).sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")))
   }
-  const copperNames = def.layers?.inner && faces.copper === "both" ? [kicadLayerName("top"), ...innerNames(), kicadLayerName("bottom")] : [...layerNames(faces.copper, "Cu", bottom), ...innerNames()]
+  // A pad that is not through-hole and is on both outer layers is on those two only: `*.Cu` would put it on every inner layer of a board that has some.
+  const outerOnly = faces.copper === "both" && def.layers?.inner === undefined && def.layer !== "through" && count > 2
+  const copperNames = outerOnly ? [kicadLayerName("top"), kicadLayerName("bottom")] : def.layers?.inner && faces.copper === "both" ? [kicadLayerName("top"), ...innerNames(), kicadLayerName("bottom")] : [...layerNames(faces.copper, "Cu", bottom), ...innerNames()]
   const names = [...copperNames, ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom), ...(def.layers?.other ?? []).map((n) => (bottom ? flipShapeLayer(n, count) : n))]
   lines.push(`  (layers ${names.map(quote).join(" ")})`)
   for (const e of extras) lines.push(`  ${e}`)

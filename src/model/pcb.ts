@@ -21,6 +21,7 @@ import { holeCentre, padBox, padCopper, padEdgeDistance, padRingsOf, padRingWidt
 import { classIndex, hasNetClasses } from "./netClasses"
 import { onBoard } from "./partFlags"
 import { keepoutViolations } from "./zoneChecks"
+import { withPartZones } from "./partZones"
 import { carveFills, type PendingGroup } from "./zoneFill"
 import { fillTester, fillZones, fillZonesReusing, type FillPolygon, type ZoneFill } from "./pour"
 import { formatLength } from "./rules"
@@ -735,6 +736,8 @@ export function analyzePcb(
     carve?: { fills: ZoneFill[]; known: ReadonlySet<string> }
   } = {},
 ): PcbAnalysis {
+  // X30: the zones of the parts are zones of the board here (a keepout of a part keeps out, a pour of a part is filled).
+  project = withPartZones(project)
   const copper = buildCopperItems(project, sch)
   // Pours need each item's net, which comes from copper connectivity without the pours.
   let zoneFills: ZoneFill[] = opts.fills ?? []

@@ -192,18 +192,14 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   }
   const alive = (l: CopperLayer) => keep.has(l)
   const alsoNames = new Set(gone.map(kicadLayerName))
-  const zones = project.zones.flatMap((z) => {
-    const own = z.layers ?? [z.layer]
-    const ls = own.filter(alive)
-    if (ls.length === own.length) return [z]
-    // A rule area that is on layers that are not copper too keeps those (X29); a zone with none left is gone.
-    if (!ls.length) return z.other?.length ? [{ ...without(z, "layers"), layers: [], layer: anchorSide(z.other) }] : []
-    const next = { ...without(z, "layers"), layer: ls[0] }
-    return [ls.length > 1 ? { ...next, layers: ls } : next]
-  })
+  const zones = project.zones.flatMap((z) => keptZone(z, alive))
   const footprints = project.footprints?.map((f) => {
-    if (!f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || p.zoneLayers?.some((l) => !alive(l)) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
-    return { ...f, pads: f.pads.map((p) => cleanPad(p, alive)) }
+    // X30: the zones inside a part lose the layer too.
+    const zonesGo = f.zones?.some((z) => (z.layers ?? [z.layer]).some((l) => !alive(l)))
+    if (!zonesGo && !f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || p.zoneLayers?.some((l) => !alive(l)) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
+    const kept = zonesGo ? f.zones!.flatMap((z) => keptZone(z, alive)) : f.zones
+    const { zones: _zones, ...rest } = f
+    return { ...rest, pads: f.pads.map((p) => cleanPad(p, alive)), ...(kept?.length ? { zones: kept } : {}) }
   })
   const next: Project = {
     ...project,
@@ -297,6 +293,8 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
         return out
       }),
       ...(f.shapes ? { shapes: f.shapes.map((s) => ({ ...s, layer: mapShapeLayer(s.layer) })) } : {}),
+      // X30: the zones inside the part keep their inner layers in the part's frame as well.
+      ...(f.zones ? { zones: f.zones.map((z) => keepInnerOfBottomPart(z, id)) } : {}),
     }
   })
   const components = project.components.map((c) => (c.pcb.side === "bottom" && c.texts?.some((t) => mapShapeLayer(t.layer) !== t.layer) ? { ...c, texts: c.texts.map((t) => ({ ...t, layer: mapShapeLayer(t.layer) })) } : c))
@@ -312,6 +310,25 @@ function cleanPad(p: PadDef, alive: (l: CopperLayer) => boolean): PadDef {
     out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
   }
   return out
+}
+
+/** A zone of a part on the bottom with its inner layers renamed (see `keepBottomPartLayers`). */
+function keepInnerOfBottomPart(z: Zone, id: (l: CopperLayer) => CopperLayer): Zone {
+  const own = z.layers ?? [z.layer]
+  if (!own.some((l) => l !== "top" && l !== "bottom")) return z
+  const mapped = own.map((l) => (l === "top" || l === "bottom" ? l : id(l)))
+  return { ...z, layer: mapped[0], ...(z.layers ? { layers: mapped } : {}) }
+}
+
+/** A zone without the copper layers that are gone: the zone as it was, the zone on the layers it still has, a rule area on its layers that are not copper alone (X29), or nothing. */
+function keptZone(z: Zone, alive: (l: CopperLayer) => boolean): Zone[] {
+  const own = z.layers ?? [z.layer]
+  const ls = own.filter(alive)
+  if (ls.length === own.length) return [z]
+  // A rule area that is on layers that are not copper too keeps those (X29); a zone with none left is gone.
+  if (!ls.length) return z.other?.length ? [{ ...without(z, "layers"), layers: [], layer: anchorSide(z.other) }] : []
+  const next = { ...without(z, "layers"), layer: ls[0] }
+  return [ls.length > 1 ? { ...next, layers: ls } : next]
 }
 
 /** Name a copper layer (an empty name is KiCad's own) and say what it is for. */

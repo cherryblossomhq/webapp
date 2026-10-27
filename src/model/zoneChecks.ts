@@ -41,7 +41,8 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
     }
     if (z.keepout!.footprints) {
       for (const c of project.components) {
-        if (!c.pcb.placed || !hasCourtyard(c) || !layers.includes(c.pcb.side)) continue
+        // The part a keepout belongs to is not kept out of its own keepout (KiCad's `intersectsArea` skips the area's parent, pcbexpr_functions.cpp).
+        if (!c.pcb.placed || !hasCourtyard(c) || !layers.includes(c.pcb.side) || z.part === c.id) continue
         const ring = pcbCourtyardRing(c) ?? (pcbCourtyard(c) ? boxRing(pcbCourtyard(c)!) : null)
         if (ring && areaTouches(area, ring, 0, true)) say(z.id, `f:${c.id}`, `${c.ref} is inside ${name} that keeps parts out`, { x: c.pcb.x, y: c.pcb.y })
       }

@@ -322,6 +322,15 @@ describe("X1 and X5: the pads of a board of more than two layers", () => {
     expect(differences).toEqual([])
   })
 
+  it("a surface-mount pad on both outer layers of a four layer board is written on those two, not on every layer (`*.Cu` is all of them)", async () => {
+    const smd = pad({ number: "1", type: "smd", shape: "rect", at: "0 0", size: "4 2", layers: '"F&B.Cu" "*.Mask"' })
+    const p = imported(board({ layers: L4, nets: NETS, body: [footprint({ ref: "J1", at: "10 5", pads: [smd] })] }))
+    expect(p.footprints![0].pads[0].layers?.inner).toBeUndefined()
+    const { differences, text } = await roundTrip(p)
+    expect(differences).toEqual([])
+    expect(text).toContain('(layers "F.Cu" "B.Cu"')
+  })
+
   it("a pad that removes the copper nothing joins and one that tents its own mask are kept and written", async () => {
     const text = board({
       layers: L4,

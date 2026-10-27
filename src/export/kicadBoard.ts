@@ -20,7 +20,8 @@ import { quoteTabs as quote } from "../lib/kicadQuote"
 import { trapezoidOf, writePad } from "./kicadPads"
 import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
-import { isWholeBoardPour } from "../model/zones"
+import { isWholeBoardPour, zoneLayers } from "../model/zones"
+import { worldPartZones } from "../model/partZones"
 import { rotate90 } from "../lib/geometry"
 import { copperLayers, kicadLayerName, viaLayers } from "../model/stack"
 import { isArcTrace } from "../model/arcTracks"
@@ -250,6 +251,14 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o, copperLayers(project.board).length) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
+
+    // X30: the zones drawn inside the footprint, in the board's frame as KiCad 9 writes a footprint's zone (the footprint's frame came with 20260616).
+    for (const z of worldPartZones(project)) {
+      if (z.part !== c.id) continue
+      for (const l of zoneLayers(z)) useLayer(kicadLayerName(l))
+      for (const n of z.other ?? []) useLayer(n)
+      lines.push(...zoneText(project, z, options.fills ?? [], netCode, null, newUuid, toFile).split(String.fromCharCode(10)))
+    }
 
     // The part's own groups, by place in the land.
     // (a group can hold another group of the part: it is named by its place in the list, `g<k>`)

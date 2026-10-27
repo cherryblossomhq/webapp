@@ -3,6 +3,7 @@ import { maskMargin, padOpeningRings } from "../model/padOpening"
 import { padPaths, polygonKit, withMaxError, type FillPolygon } from "../model/pour"
 import { dashShape, flattenSeg, isClosedShape, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
 import { smoothedOtherRings } from "../model/nonCopperFill"
+import { withPartZones } from "../model/partZones"
 import { textsOnLayer } from "../model/texts"
 import { isOtherZone, isRuleArea } from "../model/zones"
 import type { BoardShape, PcbSide, Project, Vec2 } from "../model/types"
@@ -76,9 +77,10 @@ export function maskRegions(project: Project, side: PcbSide, pads: WorldPad[], d
     for (const shape of drawings) parts.push(...shapePolygons(shape))
     const layer = side === "top" ? "F.Mask" : "B.Mask"
     // X29: a zone on the mask layer opens it by its smoothed outline (`TransformSmoothedOutlineToPolygon`), not by its fill.
-    for (const z of project.zones) {
+    const withParts = withPartZones(project)
+    for (const z of withParts.zones) {
       if (!isOtherZone(z) || isRuleArea(z) || !z.other!.includes(layer)) continue
-      const rings = smoothedOtherRings(project, z, layer)
+      const rings = smoothedOtherRings(withParts, z, layer)
       if (rings.length) parts.push(...polygonKit.unionEvenOdd(rings.map((r) => polygonKit.path(r))))
     }
     for (const t of textsOnLayer(project, layer)) {

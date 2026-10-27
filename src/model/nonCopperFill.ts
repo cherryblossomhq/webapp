@@ -2,6 +2,7 @@ import { Clipper, FillRule, JoinType, type Paths64 } from "@countertype/clipper2
 import type { FillPolygon } from "./pour"
 import type { Project, Vec2, Zone } from "./types"
 import { boardLoops, difference, inflate, intersect, toVec, union } from "./zoneGeom"
+import { withPartZones } from "./partZones"
 import { groupsOf, outlinePaths, smoothPaths } from "./zoneFill"
 import { hasPolygon, isOtherZone, isRuleArea, zoneRings } from "./zones"
 
@@ -69,6 +70,8 @@ const NONE: OtherFill[] = []
  * rules, and `[]` (one shared array) for a project with no such zone, so a board drawn in the editor does nothing here.
  */
 export function nonCopperFills(project: Project): OtherFill[] {
+  // A filled area drawn inside a part is the part's, where the part stands (X30).
+  project = withPartZones(project)
   if (!hasOtherZones(project)) return NONE
   let byBoard = cache.get(project.zones)
   if (!byBoard) cache.set(project.zones, (byBoard = new WeakMap()))

@@ -7,6 +7,7 @@ import { padBox, padRingsOf } from "./padDistance"
 import { pointShapeDistance, type ShapeCopper } from "./shapes"
 import { outlineGeometry, rasterizeInside } from "./outline"
 import { areaDistance, needsZoneEngine, zoneArea, zoneLayers } from "./zones"
+import { withPartZones } from "./partZones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
 import { fillTester, type ZoneFill } from "./pour"
 import { classIndex, hasNetClasses, type ClassIndex } from "./netClasses"
@@ -465,7 +466,7 @@ class Router {
     let reachLimit = 0
     for (const { profile } of this.owners.values()) reachLimit = Math.max(reachLimit, profile.width / 2)
     for (const vp of this.viaProfiles.values()) reachLimit = Math.max(reachLimit, vp.viaDiameter / 2)
-    for (const z of this.project.zones) {
+    for (const z of withPartZones(this.project).zones) {
       if (!z.keepout || !(z.keepout.tracks || z.keepout.vias)) continue
       const area = zoneArea(z)
       if (!area) continue

@@ -10,7 +10,7 @@ import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
 import { pathsBox } from "../../shapes"
-import type { BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import type { BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire, Zone } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
@@ -31,7 +31,7 @@ import type { OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
 import { decodeNetName, eraOf } from "./read"
 import { importRulesX10 } from "./netClassImport"
-import { convertZones, reportZones } from "./zones"
+import { convertPartZones, convertZones, reportPartZones, reportZones } from "./zones"
 import { buildStack, layerMapOf, layersOfNames } from "./layers"
 import { copperLayers, viaBetween } from "../../stack"
 import type { KicadBoard, KicadFootprint } from "./types"
@@ -363,6 +363,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   project = { ...project, rules: { ...project.rules, ...x10 } }
   const degenerate: string[] = []
   const badNets: string[] = []
+  /** The zones inside parts, for the report. */
+  const partZones: { parts: number; zones: Zone[]; degenerate: number } = { parts: 0, zones: [], degenerate: 0 }
   let privateShapes = 0
   /** Text objects brought in, for the report; and the conversion context a text is built with. */
   let textCount = 0
@@ -416,13 +418,21 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     // The drawings of the footprint on its land, in the land's frame; the courtyard is the one the file draws, else the pads' box and a quarter millimetre, else (a logo) the box of what is drawn, which the checks leave out.
     const drawn = landShapes(fp, board, bottom, (raw) => labelText.get(raw), lose, degenerate, badNets)
     privateShapes += drawn.privateCount
+    // X30: the zones drawn inside the footprint are the land's, in the land's frame, so they move, turn and flip with every part that has it.
+    const inside = fp.zones.length ? convertPartZones(fp, bottom, { board, rules: project.rules, netName: (raw) => labelText.get(raw) }) : null
+    if (inside) {
+      for (const what of inside.lossy) lose(what)
+      partZones.parts += inside.zones.length ? 1 : 0
+      partZones.zones.push(...inside.zones)
+      partZones.degenerate += inside.degenerate
+    }
     const partTextOrigins: number[] = []
     const drawnCourtyard = courtyardBox(drawn.shapes)
     // A footprint of text only (a logo's name) has no pad and no drawing: its box, for selecting it, is where its texts are.
     const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x), y: round(frameTop(fp.at).y), rot, bottom, at: fp.at, angle: fp.angle })
     const textBox = !pads.length && !drawn.shapes.length ? landTextBox(convertPartTexts(fp.texts, fp.ref, placeOf(), { board, lose: () => {}, where: "" }, { ref: fp.ref })) : null
     const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? textBox ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
-    const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
+    const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(inside?.zones.length ? { zones: inside.zones } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
     const nameBase = fp.name.includes(":") ? fp.name.slice(fp.name.indexOf(":") + 1) : fp.name
     const landName = `${slug(nameBase || fp.ref)}-${digest(JSON.stringify(land) + modelKey(modelPlan))}`
     if (!lands.has(landName)) lands.set(landName, { name: landName, ...land })
@@ -677,7 +687,6 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       items: copperBadNets,
     })
   }
-  if (board.footprints.some((f) => f.zones.length)) lose("zones inside parts")
   const zoneResult = convertZones({ board, rules, netName: (raw) => labelText.get(raw) })
   for (const what of zoneResult.lossy) lose(what)
 
@@ -821,6 +830,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const checked = verifyNets(project, padFacts, labelText, report)
   zoneResult.loose = [...new Set(zoneResult.zones.filter((z) => z.net && !checked.conn.nets.some((n) => n.name === z.net)).map((z) => z.net))]
   reportZones(zoneResult, report, board.zones.length)
+  reportPartZones(partZones, report)
   const copperNetMismatches = compareCopperNets(project, checked.conn, board, report)
   project = acceptLoneLabels(project, checked.conn, report)
   // The pins marked no connect are the importer's, recorded so they can be handed back to Checks in one action.

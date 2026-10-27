@@ -35,7 +35,7 @@ const num = (mm: number) => {
 
 const xy = (p: Vec2) => `X${coord(p.x)}Y${coord(p.y)}`
 
-class GerberWriter {
+export class GerberWriter {
   private apertures = new Map<string, number>()
   private body: string[] = []
   private current: number | null = null

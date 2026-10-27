@@ -12,6 +12,8 @@ import { worldShapes } from "../model/shapeItems"
 import { isDimensionText, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
+import { padMachining, postMachiningComment, protectionWords, viaProtection, viaBackdrills } from "../model/machining"
+import { padDieTimes, tuningPatterns } from "../model/netLengths"
 
 /** Mask and silkscreen colours fabs list, to name the nearest one beside the exact hex code. */
 const COLOR_NAMES: [string, string][] = [
@@ -93,6 +95,9 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
     ...variantNotes(project), ...assemblyNotes(project),
+    ...viaProtectionNotes(project),
+    ...machiningNotes(project),
+    ...lengthNotes(project),
     ...drawingNotes(project),
     ...textNotes(project),
     ...dimensionNotes(project),
@@ -276,6 +281,83 @@ function assemblyNotes(project: Project): string[] {
     `  In bom.csv        ${flagged.filter(inBom).length} of the ${flagged.length} flagged parts; in pnp.csv ${flagged.filter(inPositionFile).length}`,
     "",
   ]
+}
+
+/**
+ * What a fab is asked to do to the vias beyond tenting (X22, IPC-4761): the vias that are filled, capped, covered or plugged, each combination counted, and the board's own rule. Only for a board that has any, so
+ * a board drawn here reads as it did. Which of it is in which file is KiCad's: the Gerber files `-filling-`, `-capping-`, `-covering-` and `-plugging-`.
+ */
+function viaProtectionNotes(project: Project): string[] {
+  const r = project.rules
+  const counts = new Map<string, number>()
+  for (const v of project.vias) {
+    const words = protectionWords(viaProtection(r, v, project.board))
+    if (words.length) counts.set(words.join(", "), (counts.get(words.join(", ")) ?? 0) + 1)
+  }
+  if (!counts.size) return []
+  const rule = r.viaProtect ? protectionWords(viaProtection({ ...r, viaProtect: r.viaProtect }, {})) : []
+  return [
+    "VIA PROTECTION",
+    ...[...counts].sort((a, b) => b[1] - a[1]).map(([what, n]) => `  ${`${n} via${n === 1 ? "" : "s"}`.padEnd(18)}${what}`),
+    ...(rule.length ? [`  Board rule        ${rule.join(", ")} (for a via that does not say)`] : []),
+    "  Files             -filling-, -capping-, -covering- and -plugging- Gerber files (function Other): a flash of each protected via, as KiCad's Gerber drill files have them",
+    "  Solder mask       the mask files open or close each via by its tenting only; covering, plugging, filling and capping are not in them, as in KiCad's own plot",
+    "",
+  ]
+}
+
+/**
+ * Backdrills and post-machining (X22): every via's and pad's, with the layers it runs between, its size and depth. KiCad's drill files carry a via's (a file of each backdrill span, a comment beside a
+ * post-machined hole) and not a pad's, so the pad's are listed here in full. Only for a board that has any.
+ */
+function machiningNotes(project: Project): string[] {
+  const backdrills = viaBackdrills(project)
+  const pads = padMachining(project)
+  const posts = project.vias.filter((v) => v.post)
+  if (!backdrills.length && !pads.length && !posts.length) return []
+  const name = (l: string) => (l === "top" ? "F.Cu" : l === "bottom" ? "B.Cu" : `In${l.slice(2)}.Cu`)
+  const lines = ["BACKDRILL AND POST-MACHINING"]
+  if (backdrills.length) {
+    const by = new Map<string, number>()
+    for (const h of backdrills) {
+      const key = `${h.kind === "tertiary" ? "tertiary drill" : "backdrill"} ${mm(h.size)}, ${name(h.from)} to ${name(h.to)}, stub ${mm(h.stub)}`
+      by.set(key, (by.get(key) ?? 0) + 1)
+    }
+    for (const [what, n] of by) lines.push(`  ${`${n} via${n === 1 ? "" : "s"}`.padEnd(18)}${what}`)
+    lines.push("  Files             one backdrill drill file for each span: _Backdrills_Drill_<first>_<last>, and -<layers>-backdrill with a `; backdrill` comment before each hit")
+  }
+  if (posts.length) {
+    const by = new Map<string, number>()
+    for (const v of posts) for (const [side, p] of [["front", v.post!.front], ["back", v.post!.back]] as const) if (p) by.set(postMachiningComment(side, p).replace("Post-machining ", ""), (by.get(postMachiningComment(side, p).replace("Post-machining ", "")) ?? 0) + 1)
+    for (const [what, n] of by) lines.push(`  ${`${n} via${n === 1 ? "" : "s"}`.padEnd(18)}${what}`)
+    lines.push("  Files             a comment before each such hole in the plated drill file")
+  }
+  for (const p of pads) {
+    const bits: string[] = []
+    if (p.backdrill) bits.push(`backdrill ${mm(p.backdrill.size)}, ${name(p.backdrill.from)} to ${name(p.backdrill.to)}`)
+    if (p.tertiary) bits.push(`tertiary drill ${mm(p.tertiary.size)}, ${name(p.tertiary.from)} to ${name(p.tertiary.to)}`)
+    if (p.front) bits.push(postMachiningComment("front", p.front).replace("Post-machining ", ""))
+    if (p.back) bits.push(postMachiningComment("back", p.back).replace("Post-machining ", ""))
+    lines.push(`  ${`${p.ref} pad ${p.pad}`.padEnd(18)}${bits.join("; ")} (at ${mm(p.x)}, ${mm(p.y)})`)
+  }
+  if (pads.length) lines.push("  Pads              KiCad's drill files do not carry a pad's backdrill or post-machining (only its ODB++ and IPC-2581 do), so these are given here")
+  lines.push("")
+  return lines
+}
+
+/** Tuning patterns and the lengths inside packages (X21): what was tuned and to what, and which pads add length to their net. Only for a board that has any. */
+function lengthNotes(project: Project): string[] {
+  const patterns = tuningPatterns(project)
+  const dies = padDieTimes(project)
+  if (!patterns.length && !dies.length) return []
+  const lines = ["TUNING AND LENGTHS"]
+  for (const t of patterns) {
+    const target = t.target === null ? "no target" : `target ${mm(t.target)}${t.min !== null && t.max !== null ? ` (${mm(t.min)} to ${mm(t.max)})` : ""}`
+    lines.push(`  ${(t.name || "Tuning pattern").slice(0, 18).padEnd(18)}${t.layer}, ${target}${t.last ? `, last tuned: ${t.last}` : ""}`)
+  }
+  if (dies.length) lines.push(`  Package lengths   ${dies.length} pad${dies.length === 1 ? "" : "s"} have a length inside the package (die length${dies.some((d) => d.delay !== undefined) ? " and delay" : ""}), which a net's length counts: ${dies.slice(0, 6).map((d) => `${d.ref} pad ${d.pad} ${mm(d.length)}`).join(", ")}${dies.length > 6 ? ", ..." : ""}`)
+  lines.push("")
+  return lines
 }
 
 /** The vias that are not through vias, in words: `, 3 blind, 2 micro`. */

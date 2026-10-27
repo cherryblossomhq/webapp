@@ -77,6 +77,31 @@ export function groupBlock(g: PcbGroup, uuid: string, members: string[]): string
   return [`(group ${quote(g.name)}`, `  (uuid ${uuid})`, ...(g.locked ? ["  (locked yes)"] : []), `  (members ${[...members].sort().map(quote).join(" ")})`, ")"]
 }
 
+/** KiCad's `{:.10g}` for a generated item's number. */
+const formatG10 = (n: number) => String(Number(n.toPrecision(10)))
+
+/**
+ * A tuning pattern as KiCad 9 writes it (`PCB_IO_KICAD_SEXPR::format( const PCB_GENERATOR* )`, 10.0 `:3083`, the same format 9.0's parser reads, `parseGENERATOR`): the uuid, its type, name
+ * and layer, `locked`, every property by name (numbers as `{:.10g}`, yes and no, strings quoted, a point as `(xy x y)`, a line as `(pts ...)`) and the sorted ids of its members.
+ * `toFile` maps a point of the project to the file's frame (y down) and `layer` is the file's name for the layer. Only a tuning pattern is written: KiCad 9 has no other generated item.
+ */
+export function generatorBlock(g: PcbGroup, uuid: string, members: string[], layer: string, toFile: (p: Vec2) => Vec2): string[] {
+  const gen = g.gen!
+  const out = ["(generated", `  (uuid ${uuid})`, `  (type ${gen.kind}) (name ${quote(g.name)}) (layer ${quote(layer)})`]
+  if (g.locked) out.push("  (locked yes)")
+  for (const key of Object.keys(gen.props).sort()) {
+    const v = gen.props[key]
+    if (typeof v === "number") out.push(`  (${key} ${formatG10(v)})`)
+    else if (typeof v === "boolean") out.push(`  (${key} ${v ? "yes" : "no"})`)
+    else if (typeof v === "string") out.push(`  (${key} ${quote(v)})`)
+    else if ("xy" in v) out.push(`  (${key} (xy ${xy(toFile({ x: v.xy[0], y: v.xy[1] }))}))`)
+    else if ("pts" in v) out.push(`  (${key} (pts ${v.pts.map(([x, y]) => `(xy ${xy(toFile({ x, y }))})`).join(" ")}))`)
+    else out.push(`  (${key} (cells ${v.cells.map(([i, j]) => `(ij ${i} ${j})`).join("")}))`)
+  }
+  out.push(`  (members ${[...members].sort().map(quote).join(" ")})`, ")")
+  return out
+}
+
 const indent = (lines: string[], by: string) => lines.map((l) => `${by}${l}`).join("\n")
 
 /** The footprints of the converter's file by reference: where each is in the text, and its id. */

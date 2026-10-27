@@ -267,6 +267,8 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   if (net) lines.push(`  (net ${net.code} ${quote(net.name)})`)
   if (opts?.pinfunction !== undefined) lines.push(`  (pinfunction ${quote(opts.pinfunction)})`)
   if (opts?.pintype !== undefined) lines.push(`  (pintype ${quote(opts.pintype)})`)
+  // X21: the length of wire inside the package, which KiCad 9 has (`die_length`); the delay (`die_delay`) is KiCad 10's and is not written.
+  if (def.dieLength !== undefined) lines.push(`  (die_length ${mm6(def.dieLength)})`)
   if (def.property) lines.push(`  (property pad_prop_${def.property})`)
   if (def.unused) lines.push("  (remove_unused_layers yes)", `  (keep_end_layers ${def.unused === "keepEnds" ? "yes" : "no"})`)
   if (def.zoneLayers) lines.push(`  (zone_layer_connections${def.zoneLayers.map((l) => ` ${quote(kicadLayerName(bottom ? flipLayer(l, count) : l))}`).join("")})`)
@@ -320,8 +322,11 @@ export interface KicadPadsResult {
   notes: string[]
 }
 
+/** A pad this module writes: one with a feature of X7, or a length inside its package (X21). */
+const needsWriting = (pad: PadDef) => hasPadFeatures(pad) || pad.dieLength !== undefined
+
 /** Whether any placed part of the project has a pad that needs writing here. */
-export const hasPadWork = (project: Project) => resolvedComponents(project).some((c) => onBoard(c) && c.pcb.placed && (componentFootprint(c)?.pads.some(hasPadFeatures) ?? false))
+export const hasPadWork = (project: Project) => resolvedComponents(project).some((c) => onBoard(c) && c.pcb.placed && (componentFootprint(c)?.pads.some(needsWriting) ?? false))
 
 /**
  * The board file with the pads of every part that has X7 features written as KiCad has them (each such part's pads, all of them, in the order
@@ -351,7 +356,7 @@ export function applyPads(pcb: string, project: Project): KicadPadsResult {
     const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
     const c = ref === undefined ? undefined : byRef.get(ref)
     const fp = c ? componentFootprint(c) : null
-    if (!c || !fp || !fp.pads.some(hasPadFeatures)) return block
+    if (!c || !fp || !fp.pads.some(needsWriting)) return block
     const A = Number(block.match(/\n {4}\(at \S+ \S+(?: (\S+))?\)/)?.[1] ?? 0)
     const world = pcbPads(c)
     // The converter's frame for this footprint: a point of the board less the footprint's place, y flipped, turned back by its angle.

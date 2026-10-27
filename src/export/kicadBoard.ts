@@ -18,7 +18,7 @@ import { effects } from "./kicadTexts"
 import { stableUuid } from "./kicadUuid"
 import { quoteTabs as quote } from "../lib/kicadQuote"
 import { trapezoidOf, writePad } from "./kicadPads"
-import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
+import { dimensionBlock, generatorBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
 import { isWholeBoardPour, zoneLayers } from "../model/zones"
 import { worldPartZones } from "../model/partZones"
@@ -529,7 +529,13 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   for (const [id, u] of groupUuid) members.set(id, [u])
   for (const g of project.groups ?? ([] as PcbGroup[])) {
     const ids = g.members.flatMap((m) => members.get(m) ?? [])
-    if (ids.length) groupItems.push(indent(groupBlock(g, groupUuid.get(g.id)!, ids), "  ").join("\n"))
+    if (!ids.length) continue
+    // X21: a tuning pattern is KiCad 9's `generated`; a via stack or via stitching is KiCad 10's, so its vias are written and the group is a plain one.
+    if (g.gen?.kind === "tuning_pattern") groupItems.push(indent(generatorBlock(g, groupUuid.get(g.id)!, ids, kicadLayerName(g.gen.layer), toFile), "  ").join("\n"))
+    else {
+      groupItems.push(indent(groupBlock(g, groupUuid.get(g.id)!, ids), "  ").join("\n"))
+      if (g.gen) notes.add("A via stack or via stitching (KiCad 10's generated items) is written as a plain group of its vias: a KiCad 9 file has no such item, so its settings stay in the project.")
+    }
   }
   if ((project.groups ?? []).some((g) => g.lib !== undefined)) notes.add("A group made from a design block keeps no link to it: KiCad 9's file has no node for one.")
 

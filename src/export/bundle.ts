@@ -5,7 +5,8 @@ import { ensureTextFont } from "../model/textFont"
 import { withRuleAreaFlags } from "../model/ruleAreas"
 import type { Project } from "../model/types"
 import { bomCsv } from "./bom"
-import { drillSets, excellonDrill, npthHoles } from "./excellon"
+import { backdrillFileSuffix, backdrillPairSuffix, backdrillSets, drillSets, excellonBackdrill, excellonDrill, npthHoles } from "./excellon"
+import { viaProtectionFiles } from "./viaProtection"
 import { gerberLayers, type GerberLayerName } from "./gerber"
 import { fabricationNotes } from "./notes"
 import { pnpCsv } from "./pnp"
@@ -54,6 +55,13 @@ export function buildFabricationFiles(source: Project): Record<string, string> {
   files[`${base}-PTH.drl`] = excellonDrill(project)
   // X5: the holes of the vias between two layers are drilled in a file of their own for each pair of layers, as KiCad does.
   for (const set of drillSets(project)) if (set.span) files[`${base}-${set.suffix}.drl`] = excellonDrill(project, { span: set.span })
+  // X22: a via's backdrills are drilled in files of their own, two for each span as KiCad's Excellon writer makes them (the second says `; backdrill` before every hit), and the via protection
+  // (IPC-4761) is in Gerber files, as KiCad's Gerber drill writer files it. A board with none of them has none of these files.
+  for (const set of backdrillSets(project)) {
+    files[`${base}${backdrillFileSuffix(project, set)}.drl`] = excellonBackdrill(project, set)
+    files[`${base}${backdrillPairSuffix(set)}.drl`] = excellonBackdrill(project, set, true)
+  }
+  for (const f of viaProtectionFiles(project)) files[`${base}${f.suffix}.gbr`] = f.content
   // Non-plated holes go in their own file, as fabs expect; only boards that have some get one.
   if (npthHoles(project).length) files[`${base}-NPTH.drl`] = excellonDrill(project, { plated: false })
   files["bom.csv"] = bomCsv(project)

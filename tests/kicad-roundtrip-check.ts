@@ -270,6 +270,7 @@ export interface Difference {
 const short = (v: unknown) => (JSON.stringify(v) ?? "undefined").slice(0, 90)
 
 export const TENT_UNSET = " (unset in the first project)"
+export const KEPT_ONLY_IN_FIRST = " (unset in the second project)"
 
 /** Every difference of two canonical projects, at most `limit`. */
 export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
@@ -281,7 +282,11 @@ export function diffCanonical(a: any, b: any, limit = 200): Difference[] {
     if (typeof x !== "object" || typeof y !== "object" || x === null || y === null || Array.isArray(x) !== Array.isArray(y)) {
       // A tenting side the first project leaves unset is its own kind: KiCad 10 writes `none` for it and the 9.0 file says it by words for both sides, so it comes back not tented (by design); a side that was set and changed is a finding.
       const unsetTent = x === undefined && /\.tent\.(front|back|top|bottom)$/.test(path)
-      out.push({ kind: kindOf(path) + (unsetTent ? TENT_UNSET : ""), path, first: short(x), second: short(y) })
+      // The same for what the writer leaves out because KiCad 9 has no words for it (a hatch position, a shape at a line's end), which the second project then lacks, and for the grid of a KiCad 10 hatch, which the 9.0 file makes the
+      // second project lay from the corner of the copper; a value that is set in both and changed is a finding.
+      const keptOnlyInFirst = y === undefined && /\.(hatchAt|ends)$/.test(path)
+      const gridUnset = x === undefined && /\.hatch\.fromFill$/.test(path)
+      out.push({ kind: kindOf(path) + (unsetTent || gridUnset ? TENT_UNSET : "") + (keptOnlyInFirst ? KEPT_ONLY_IN_FIRST : ""), path, first: short(x), second: short(y) })
       return
     }
     if (Array.isArray(x)) {
@@ -459,11 +464,11 @@ export const BY_DESIGN = [
   // unset (KiCad 10 writes `none`) is written not tented (the writer's note says so).
   /^project\.board\.stack\.rows\[\](\.sub\[\])?\.(model|specFreq)$/,
   /^project\.(vias\[\]|footprints\[\]\.pads\[\])\.tent\.(front|back|top|bottom) \(unset in the first project\)$/,
-  // X24: a hatch position and the shapes at a line's ends are KiCad 10's words, which the 9.0 parser refuses (they stay in the project and are not written); a hatched pour of a KiCad 10 file lays its grid from the
+  // X24: a hatch position is KiCad 10's word and the shapes at a line's ends KiCad 11 development's, which the 9.0 parser refuses (they stay in the project and are not written); a hatched pour of a KiCad 10 file lays its grid from the
   // origin, and the KiCad 9 file the writer makes is read as one that lays it from the corner of its copper.
-  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatchAt$/,
-  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatch\.fromFill$/,
-  /^project\.(graphics\[\]|footprints\[\]\.shapes\[\])\.ends$/,
+  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatchAt \(unset in the second project\)$/,
+  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatch\.fromFill \(unset in the first project\)$/,
+  /^project\.(graphics\[\]|footprints\[\]\.shapes\[\])\.ends \(unset in the second project\)$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */

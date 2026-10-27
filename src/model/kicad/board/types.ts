@@ -217,7 +217,7 @@ export interface KicadShape {
   ellipse?: { center: Pt; major: number; minor: number; rotation: number; start?: number; end?: number }
   /** The shape's own solder mask margin, when it writes one. */
   maskMargin?: number
-  /** X24: what KiCad 10 puts at the line's ends (`start_shape`, `end_shape`) and the colour it draws it in (`stroke (color r g b a)`); the editor keeps both and draws neither. */
+  /** X24: what KiCad 11 development puts at the line's ends (`start_shape`, `end_shape`) and the colour it draws it in (`stroke (color r g b a)`); the editor keeps both, and draws the ends. */
   ends?: { start?: LineEnd; end?: LineEnd }
   color?: [number, number, number, number]
   node: List

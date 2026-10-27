@@ -345,10 +345,11 @@ export type ShapeGeometry =
   | { type: "ellipse"; c: Vec2; rx: number; ry: number; rot: number; from?: number; to?: number }
 
 /**
- * X24: what KiCad 10 draws at an end of a line (`start_shape`, `end_shape`): the shape, its length and width and the outline it is drawn with. The editor keeps it and writes it back; it does not draw or plot it.
+ * X24: what KiCad draws at an end of a line, an arc or a curve (`start_shape`, `end_shape`, the board file's "Line ending shapes" of stamp 20260818, KiCad 11 development): the shape, its length and width and the
+ * outline it is drawn with. The editor draws it, plots it as the copper, silkscreen or other layer the drawing is on, and keeps copper away from it as KiCad does (`lineEnds.ts`); it does not write it to a KiCad 9 file.
  */
 export interface LineEnd {
-  /** KiCad's word for it: `arrow`, `arrow_open`, `square`, `circle`, `diamond` or `dot`. */
+  /** KiCad's word for it: `arrow`, `arrow_open`, `circle` or `square`; any other word is kept and draws nothing, as in KiCad. */
   style: string
   length?: number
   width?: number
@@ -370,7 +371,7 @@ export interface ShapeStyle {
   /** The net of copper that has one, by the project's net name; absent for a drawing with none. */
   net?: string
   locked?: true
-  /** X24: what KiCad 10 puts at the line's ends. Kept and written back, not drawn. */
+  /** X24: what KiCad 11 development puts at the ends of a line, an arc or a curve: drawn, plotted and kept clear of by pours, and not written to a KiCad 9 file. */
   ends?: { start?: LineEnd; end?: LineEnd }
   /** X24: the colour KiCad 10 draws the line in (red, green, blue 0 to 255, then opacity 0 to 1). Kept and written back, not drawn. */
   color?: [number, number, number, number]

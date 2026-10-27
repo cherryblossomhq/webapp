@@ -31,7 +31,7 @@ const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 const STROKE_TYPE = { dash: "dash", dot: "dot", dash_dot: "dash_dot", dash_dot_dot: "dash_dot_dot" } as const
 
 /** Said once in the export's notes when a drawing has shapes at its line ends. */
-export const LINE_END_NOTE = "KiCad 9 has no shapes at the ends of a line (arrowheads, KiCad 10's): they stay in the project and are not written to the file."
+export const LINE_END_NOTE = "KiCad 9 has no shapes at the ends of a line (arrowheads, KiCad 11 development's): they stay in the project and are not written to the file."
 
 /** KiCad's numbers for the user layers it has to be told about: `User.1` is 50 and `User.9` is 58, `User.10` is 60 (59 is the rescue layer). */
 export const userLayerNumber = (name: string): number | null => {
@@ -95,7 +95,7 @@ export function drawing(shape: BoardShape, fp: boolean, out: Out): string[][] {
   const type = shape.dash ? STROKE_TYPE[shape.dash] : "solid"
   const net = shape.net && shapeLayerInfo(shape.layer)?.kind === "copper" ? out.netCode(shape.net) : 0
   const tail = (): string[] => [`(layer ${quote(shape.layer)})`, ...(net > 0 ? [`(net ${net})`] : []), ...(shape.locked ? ["(locked yes)"] : []), `(uuid ${out.uuid()})`]
-  // X24: a drawing's colour is part of KiCad 9's stroke; the shapes at a line's ends are KiCad 10's, which a 9.0 parser stops at, so they stay in the project and are not written.
+  // X24: a drawing's colour is part of KiCad 9's stroke; the shapes at a line's ends are KiCad 11 development's, which a 9.0 parser stops at, so they stay in the project and are not written.
   if (shape.ends) out.flattened.add("ends")
   const stroke = (width = shape.width, kind: string = type) => [`(stroke`, `  (width ${mm6(width)})`, `  (type ${kind})`, ...(shape.color ? [`  (color ${shape.color.map((c, i) => (i === 3 ? round(c, 6) : c)).join(" ")})`] : []), `)`]
   const block = (name: string, body: string[]) => [`(${tag(name)}`, ...body.map((l) => `  ${l}`), `)`]

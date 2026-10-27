@@ -16,7 +16,7 @@ import { isNpth, type WorldPad } from "./instances"
 import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
 import { outlineGeometry } from "./outline"
-import { flattenPath, shapePolylines, shapeRings } from "./shapes"
+import { flattenPath, lineEndParts, shapePolylines, shapeRings } from "./shapes"
 import { classPourClearance, hasNetClasses } from "./netClasses"
 import { zoneClearance } from "./rules"
 import { fillPolygonZones, fillPolygonZonesEx, type PendingGroup } from "./zoneFill"
@@ -125,6 +125,14 @@ function shapeObstacle(it: Extract<CopperItem, { kind: "shape" }>, d: number): P
   if (it.shape.fill) {
     const rings = shapeRings(it.shape).map((ring) => ring.map((p) => pt(p.x, p.y)))
     if (rings.length) out.push(...inflate(Clipper.union(rings, [], FillRule.EvenOdd), half))
+  }
+  // The ends of a line (X24), as KiCad keeps copper from them: a closed one grown by the gap, its outline stroked by its own width and the gap, an open arrow's two strokes likewise.
+  for (const part of lineEndParts(it.shape)) {
+    if (!part.open) {
+      const outline = part.outline.map((p) => pt(p.x, p.y))
+      out.push(...inflate([Clipper.isPositive(outline) ? outline : outline.reverse()], d))
+    }
+    if (part.open || part.width > 0) out.push(...stroke(part.open ? part.outline : [...part.outline, part.outline[0]], part.width / 2 + d))
   }
   return out
 }

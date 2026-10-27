@@ -7,7 +7,7 @@ import { maskMargin, padOpeningRings } from "../../model/padOpening"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
 import { worldShapes } from "../../model/shapeItems"
-import { dashShape, shapeCanvasPath } from "../../model/shapes"
+import { dashShape, lineEndParts, shapeCanvasPath } from "../../model/shapes"
 import { textsOnLayer } from "../../model/texts"
 import type { BoardShape, ComponentInstance, CopperLayer, Project, Vec2 } from "../../model/types"
 
@@ -135,6 +135,20 @@ function drawShapes(ctx: CanvasRenderingContext2D, shapes: BoardShape[]) {
       ctx.beginPath()
       shapeCanvasPath(ctx, shape)
       ctx.fill("evenodd")
+    }
+    // the ends of a line (X24): a closed one filled and outlined by its own width, an open arrow stroked
+    for (const part of lineEndParts(shape)) {
+      ctx.beginPath()
+      ctx.moveTo(part.outline[0].x, part.outline[0].y)
+      for (const q of part.outline.slice(1)) ctx.lineTo(q.x, q.y)
+      if (!part.open) {
+        ctx.closePath()
+        ctx.fill()
+      }
+      if (part.open || part.width > 0) {
+        ctx.lineWidth = part.width
+        ctx.stroke()
+      }
     }
     if (shape.width <= 0) continue
     ctx.lineWidth = shape.width

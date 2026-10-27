@@ -14,7 +14,7 @@ import { BOARD_OWNER } from "../../model/pcb"
 import { PLACEMENT_COLOR } from "../../model/placementAreas"
 import { worldShapes } from "../../model/shapeItems"
 import { shapeLayerInfo } from "../../model/shapeLayers"
-import { dashShape, pathsSvgPath, shapeSvgPath, type DashPiece } from "../../model/shapes"
+import { dashShape, lineEndParts, pathsSvgPath, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import { layerText, textLayerKind, textLayerSide, worldTexts, type LayerText } from "../../model/texts"
 import type { BoardShape, CopperLayer, Project } from "../../model/types"
@@ -116,6 +116,12 @@ function shapeSvg(shape: BoardShape, color: string, px: number): string {
   if (shape.fill) out += `<path d="${d}" fill="${color}"${soft ? ' fill-opacity="0.4"' : ""} fill-rule="evenodd" ${dashed.length ? 'stroke="none"' : `stroke="${color}" ${round}`}/>`
   if (dashed.length) out += `<path d="${dashed.map(pieceD).join("")}" fill="none" stroke="${color}" ${round}/>`
   else if (!shape.fill) out += `<path d="${d}" fill="none" stroke="${color}" ${round}/>`
+  // the ends of a line (X24)
+  for (const part of lineEndParts(shape)) {
+    const points = part.outline.map((p) => `${n(p.x)},${n(p.y)}`).join(" ")
+    if (part.open) out += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${n(Math.max(part.width, px))}" stroke-linecap="round" stroke-linejoin="round"/>`
+    else out += `<polygon points="${points}" fill="${color}"${soft ? ' fill-opacity="0.4"' : ""} stroke="${part.width > 0 ? color : "none"}" stroke-width="${n(part.width)}" stroke-linejoin="round"/>`
+  }
   return out
 }
 

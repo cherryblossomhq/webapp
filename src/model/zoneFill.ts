@@ -27,7 +27,7 @@ import {
   upright,
 } from "./zoneGeom"
 import { withPartZones } from "./partZones"
-import { hatchPaths } from "./zoneHatch"
+import { hatchPaths, type HatchNet } from "./zoneHatch"
 import { hasPolygon, higherPriority, isRuleArea, zoneLayers, zoneRings, zoneSettings, type ZoneSettings } from "./zones"
 import type { CopperLayer, Project, Vec2, Zone } from "./types"
 
@@ -193,16 +193,17 @@ function padFrame(pad: WorldPad, project: Project): { w: number; h: number; angl
 
 /**
  * The four spokes of a pad's thermal relief, as KiCad builds them (`buildThermalSpokes`): square-ended bars from the middle of the pad
- * out to the box of the pad grown by the gap, a round pad's at 45 degrees and every other pad's along its own axes, turned with the pad.
+ * out to the box of the pad grown by the gap, a round pad's at 45 degrees and every other pad's along its own axes, turned with the pad. `reach` is half the width
+ * KiCad grows them by on top of that (`zone_half_width`): the minimum width's, and a hatched pour's line width's in KiCad 10.
  */
-function spokesOf(pad: WorldPad, project: Project, gap: number, spokeWidth: number, minWidth: number): Spoke[] {
+function spokesOf(pad: WorldPad, project: Project, gap: number, spokeWidth: number, minWidth: number, reach: number): Spoke[] {
   const f = padFrame(pad, project)
   const limit = Math.min(f.w, f.h)
   const sw = Math.min(spokeWidth, limit)
   // A spoke thinner than the zone's minimum width would be trimmed away, so KiCad makes none.
   if (sw < minWidth - 1e-9) return []
-  const hx = f.w / 2 + gap + SPOKE_REACH + minWidth / 2
-  const hy = f.h / 2 + gap + SPOKE_REACH + minWidth / 2
+  const hx = f.w / 2 + gap + SPOKE_REACH + reach
+  const hy = f.h / 2 + gap + SPOKE_REACH + reach
   // A pad's own `thermal_bridge_angle` (X7) replaces KiCad's default, which is 45 degrees for a round pad and none for any other; the spokes are four, a quarter turn apart, so it counts modulo 90.
   const own = pad.thermalAngle !== undefined ? pad.thermalAngle % 90 : undefined
   const base = ((own ?? (f.round ? 45 : 0)) + f.angle) * (Math.PI / 180)
@@ -237,6 +238,41 @@ function spokesOf(pad: WorldPad, project: Project, gap: number, spokeWidth: numb
   }
   return out
 }
+
+/** The vias and pads of the pour's net on a layer, which KiCad 9 and earlier keep from being isolated in a hole of a hatch (`zoneHatch.ts`). */
+function hatchNetOf(project: Project, items: ItemRec[], netId: string | null, layer: CopperLayer): HatchNet {
+  const net: HatchNet = { vias: [], pads: [] }
+  if (netId === null) return net
+  for (const { item: it, net: itemNet } of items) {
+    if (itemNet !== netId || !it.layers.includes(layer)) continue
+    if (it.kind === "via") {
+      const via = project.vias.find((v) => v.id === it.viaId)
+      if (via) net.vias.push({ at: it.at, drill: via.drill })
+    } else if (it.kind === "pad") {
+      const f = padFrame(it.pad, project)
+      net.pads.push({ shape: padShape(it.pad), width: Math.min(f.w, f.h), slot: it.pad.holeDiameter ?? 0 })
+    }
+  }
+  return net
+}
+
+/**
+ * The ring KiCad 10 puts round a thermal relief of a hatched pour (`buildHatchZoneThermalRings`): the band of the spokes' width just outside the relief's gap, kept inside `limit` (the pour's polygon).
+ * The webbing joins the ring and the spokes cross it, so that the pad does not depend on a hole of the grid being cut right. No ring for a spoke too thin for the pour's minimum width.
+ */
+function thermalRing(pad: WorldPad, project: Project, gap: number, spokeWidth: number, minWidth: number, limit: Paths64): Paths64 {
+  const f = padFrame(pad, project)
+  const sw = Math.min(spokeWidth, f.w, f.h)
+  if (sw < minWidth - 1e-9) return []
+  const circular = pad.shape === "circle" || (pad.shape === "pill" && pad.width === pad.height)
+  const ring = circular
+    ? difference([circlePath(pad.x, pad.y, Math.max(f.w, f.h) / 2 + gap + sw)], [circlePath(pad.x, pad.y, Math.max(f.w, f.h) / 2 + gap)])
+    : difference(inflate(padShape(pad), gap + sw), inflate(padShape(pad), gap))
+  return intersect(ring, limit)
+}
+
+/** A via of the pour's net, as the pad KiCad 10 treats it as in a hatched pour (a round one, its spokes along the axes). */
+const viaPad = (it: Extract<CopperItem, { kind: "via" }>): WorldPad => ({ componentId: "", pin: null, padNumber: null, shape: "circle", x: it.at.x, y: it.at.y, width: it.diameter, height: it.diameter, layers: it.layers, axisSpokes: true })
 
 /** A box grown by `d` on every side. */
 const pad0 = (b: Bounds, d: number): Bounds => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
@@ -616,6 +652,8 @@ function fillGroup(prep: Prepared, group: Zone[], settings: Map<string, ZoneSett
 
 /** The gap of a pad's thermal relief: its own (`thermal_gap`, X7) when it has one, else the zone's. */
 const thermalGapOf = (pad: WorldPad, set: ZoneSettings): number => (pad.thermalGap && pad.thermalGap > 0 ? pad.thermalGap : set.thermalGap)
+/** The width of a pad's thermal spokes: its own (`thermal_width`, X7) when it has one, else the zone's. */
+const spokeWidthOf = (pad: WorldPad, set: ZoneSettings): number => (pad.thermalWidth && pad.thermalWidth > 0 ? pad.thermalWidth : set.spokeWidth)
 
 /** The copper of one zone on one layer, before islands go. */
 function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string | null, set: ZoneSettings, fillOf: (z: Zone, l: CopperLayer) => Paths64 | null): Group[] {
@@ -666,6 +704,11 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   let reached: Region | null = null
   const thermalPads: WorldPad[] = []
   const thermalHoles: Paths64 = []
+  /** KiCad 10, a hatched pour: the pads the pour does not join (their clearance holes, which no hole of the grid may hold whole) and the vias it joins solid (which no hole may isolate). */
+  const noneHoles: Paths64 = []
+  const solidVias: Extract<CopperItem, { kind: "via" }>[] = []
+  // KiCad 10 hatches by other rules than KiCad 9 and earlier: thermal rings, via reliefs, an anchored grid (`zoneHatch.ts`)
+  const hatch10 = zone.hatch !== undefined && !zone.hatch.fromFill
   const holes: Paths64 = []
   /** Zones of higher priority and another net, kept apart so the thinnest copper is judged again after they cut in (KiCad 10, `postKnockoutMinWidthPrune`). */
   const zoneHoles: Paths64 = []
@@ -703,6 +746,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         } else if (connection === "none") {
           // The pad is cut out with the zone's own clearance, and its hole with the hole's.
           thermalHoles.push(...inflate(padShape(pad), set.clearance))
+          noneHoles.push(...inflate(padShape(pad), set.clearance))
         }
         continue
       }
@@ -722,7 +766,20 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
     } else if (it.kind === "via") {
       // X22: a backdrill or post-machining that cuts the via here keeps the pour from joining it and out of the hole it cuts (`zone_filler.cpp` 10.0 `:2345` and `:2609`).
       const cut = it.cut?.[layer] ?? 0
-      if (!on || (same && !cut)) continue
+      if (!on) continue
+      if (same && !cut) {
+        // KiCad 10 treats a via of the pour's net in a hatched pour as a pad: thermal relief, or solid with no hole of the grid to isolate it (a pour that joins no via leaves it alone).
+        if (hatch10) {
+          const connection = set.connect === "tht" ? "solid" : set.connect
+          if (connection === "solid") solidVias.push(it)
+          else if (connection === "thermal" && set.thermalGap > 0) {
+            const via = viaPad(it)
+            thermalPads.push(via)
+            thermalHoles.push(...inflate(padShape(via), set.thermalGap))
+          }
+        }
+        continue
+      }
       holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gapTo(net) + EXTRA))
       if (cut > 0) holes.push(circlePath(it.at.x, it.at.y, cut / 2 + Math.max(holeGap, 0) + EXTRA))
     } else if (it.kind === "shape") {
@@ -747,12 +804,19 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
 
   // Everything a thermal relief cuts out of the zone before the spokes go back in.
   if (thermalHoles.length) fill = difference(fill, union(thermalHoles))
+  // KiCad 10: a hatched pour gets a ring round each relief, which the grid's webbing joins instead of the pad.
+  let rings: Paths64 = []
+  if (hatch10) {
+    for (const pad of thermalPads) rings.push(...thermalRing(pad, project, thermalGapOf(pad, set), spokeWidthOf(pad, set), minWidth, startFill))
+    if (rings.length) fill = union(fill, rings)
+  }
   const clearance = holes.length ? union(holes) : []
   const zoneCut = zoneHoles.length ? union(zoneHoles) : []
 
   // ---- 4. thermal spokes ----
   const spokes: Spoke[] = []
-  for (const pad of thermalPads) spokes.push(...spokesOf(pad, project, thermalGapOf(pad, set), pad.thermalWidth && pad.thermalWidth > 0 ? pad.thermalWidth : set.spokeWidth, minWidth))
+  const spokeReach = hatch10 ? zone.hatch!.thickness / 2 : hmw
+  for (const pad of thermalPads) spokes.push(...spokesOf(pad, project, thermalGapOf(pad, set), spokeWidthOf(pad, set), minWidth, spokeReach))
   let withSpokes = fill
   if (spokes.length) {
     let test = difference(difference(fill, clearance), zoneCut)
@@ -777,8 +841,10 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   fill = difference(withSpokes, clearance)
 
   // ---- 5. the minimum width ----
-  if (prune) fill = inflate(fill, -shrink, SQUARE)
   if (prune) {
+    fill = inflate(fill, -shrink, SQUARE)
+    // The rings are shrunk to match, for the hatch's holes to be cut right round them.
+    if (rings.length) rings = inflate(rings, -shrink, SQUARE)
     // A piece no wider than the minimum is gone, as KiCad deletes it between shrinking and growing.
     // The outlines come out of the offset wound one way and the holes the other, so a small outline is told by its winding, and what lies in it goes too.
     const small: Bounds[] = []
@@ -793,8 +859,15 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
       const within = (b: Bounds) => small.some((s) => b.minX >= s.minX && b.maxX <= s.maxX && b.minY >= s.minY && b.maxY <= s.maxY)
       fill = fill.filter((p) => !tiny.includes(p) && (Clipper.isPositive(p) || !within(boundsOf([p]))))
     }
-    if (fill.length) fill = inflate(fill, shrink)
   }
+  // X24: a hatched pour has the grid's holes cut out of it while it is shrunk, as KiCad does.
+  if (zone.hatch && fill.length) {
+    const discs = solidVias.flatMap((v) => intersect([circlePath(v.at.x, v.at.y, v.diameter / 2)], startFill))
+    fill = hatchPaths(fill, zone.hatch, minWidth, flat, hatch10 ? { at: zone.hatchAt?.[layer], protect: union([...rings, ...noneHoles, ...clearance, ...discs]) } : { net: hatchNetOf(project, nearby, netId, layer) })
+  }
+  if (prune && fill.length) fill = inflate(fill, shrink)
+  // KiCad 10 adds the rings back after the growing, which can leave notches in the outline.
+  if (rings.length) fill = union(fill, rings)
 
   // ---- 6. kept inside the polygon and out of the clearances ----
   const padHoles: Paths64 = []
@@ -826,8 +899,6 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   // The zones of the same net that outrank this one are in charge of their own polygon.
   const outranking = project.zones.filter((o) => o !== zone && !isRuleArea(o) && o.net === zone.net && o.teardrop === undefined && zoneLayers(o).includes(layer) && (o.priority ?? 0) > (zone.priority ?? 0))
   if (outranking.length && fill.length) fill = difference(fill, union(outranking.flatMap((o) => outlinePaths(project, o))))
-  // X24: a hatched pour is the copper this far with the grid's holes cut out of it (KiCad hatches before it removes islands).
-  if (zone.hatch && fill.length) fill = hatchPaths(fill, zone.hatch, minWidth, zone.hatchAt?.[layer])
   // Outlines smaller than the resolution of the fill are noise (KiCad 10, `dropSubResolutionOutlines`).
   return groupsOf(fill).filter((g) => areaMm2([g.paths[0]]) >= ARC_NOISE_MM2)
 }

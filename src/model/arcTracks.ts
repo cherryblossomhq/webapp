@@ -25,6 +25,12 @@ export function arcOf(points: readonly Vec2[]): ArcTrack {
 /** X24: the tracks whose copper is open through the solder mask on one side. */
 export const bareTraces = (project: { traces: readonly Trace[] }, side: "top" | "bottom"): Trace[] => project.traces.filter((t) => t.bare && t.layer === side)
 
+/** The width of a bare track's opening in the solder mask: its own margin on each side (the board's mask expansion where it has none), which a negative margin may not take past the middle of the track (`PCB_TRACK::GetSolderMaskExpansion`). */
+export const bareOpeningWidth = (t: Pick<Trace, "width" | "bare">, expansion: number): number => {
+  const margin = t.bare?.margin ?? expansion
+  return t.width + 2 * (margin < 0 ? Math.max(margin, -t.width / 2) : margin)
+}
+
 /** Whether a trace is an arc track with its three points. */
 export const isArcTrace = (t: Pick<Trace, "arc" | "points">): boolean => t.arc === true && t.points.length === 3
 

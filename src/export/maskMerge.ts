@@ -1,8 +1,8 @@
 import type { WorldPad } from "../model/instances"
-import { arcPolyline, bareTraces, isArcTrace } from "../model/arcTracks"
+import { arcPolyline, bareOpeningWidth, bareTraces, isArcTrace } from "../model/arcTracks"
 import { maskMargin, padOpeningRings } from "../model/padOpening"
 import { padPaths, polygonKit, withMaxError, type FillPolygon } from "../model/pour"
-import { dashShape, flattenSeg, isClosedShape, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
+import { dashShape, flattenSeg, isClosedShape, lineEndParts, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
 import { smoothedOtherRings } from "../model/nonCopperFill"
 import { withPartZones } from "../model/partZones"
 import { textsOnLayer } from "../model/texts"
@@ -46,15 +46,21 @@ function shapePolygons(shape: BoardShape) {
     }
     if (shape.type === "circle" && !shape.dash) return out
   }
-  if (shape.width <= 0) return out
-  const half = shape.width / 2
-  if (shape.dash) {
-    for (const piece of dashShape(shape)) {
-      const pts = pieceOutline(piece)
-      if (pts.length >= 2) out.push(...polygonKit.stroke(pts, half))
+  if (shape.width > 0) {
+    const half = shape.width / 2
+    if (shape.dash) {
+      for (const piece of dashShape(shape)) {
+        const pts = pieceOutline(piece)
+        if (pts.length >= 2) out.push(...polygonKit.stroke(pts, half))
+      }
+    } else {
+      for (const line of shapePolylines(shape)) if (line.length >= 2) out.push(...polygonKit.stroke(line, half))
     }
-  } else {
-    for (const line of shapePolylines(shape)) if (line.length >= 2) out.push(...polygonKit.stroke(line, half))
+  }
+  // The ends of a line (X24): a closed one is a region, outlined by its own width where it has one; an open arrow is a stroke of its width.
+  for (const part of lineEndParts(shape)) {
+    if (!part.open) out.push(...polygonKit.unionEvenOdd([polygonKit.path(part.outline)]))
+    if (part.open || part.width > 0) out.push(...polygonKit.stroke(part.open ? part.outline : [...part.outline, part.outline[0]], part.width / 2))
   }
   return out
 }
@@ -76,7 +82,7 @@ export function maskRegions(project: Project, side: PcbSide, pads: WorldPad[], d
     for (const pad of pads) parts.push(...padOpening(pad, grow, project.rules))
     if (!tentVias) for (const v of project.vias) parts.push(...polygonKit.circle(v.x, v.y, v.diameter / 2 + grow))
     for (const shape of drawings) parts.push(...shapePolygons(shape))
-    for (const t of bareTraces(project, side)) parts.push(...polygonKit.stroke(isArcTrace(t) ? arcPolyline(t.points) : t.points, (t.width + 2 * (t.bare?.margin ?? grow)) / 2))
+    for (const t of bareTraces(project, side)) parts.push(...polygonKit.stroke(isArcTrace(t) ? arcPolyline(t.points) : t.points, bareOpeningWidth(t, grow) / 2))
     const layer = side === "top" ? "F.Mask" : "B.Mask"
     // X29: a zone on the mask layer opens it by its smoothed outline (`TransformSmoothedOutlineToPolygon`), not by its fill.
     const withParts = withPartZones(project)

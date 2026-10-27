@@ -1,6 +1,6 @@
 import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../model/board"
 import { isNpth, maskSides, padOnLayer, pasteSides, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
-import { arcOf, bareTraces } from "../model/arcTracks"
+import { arcOf, bareOpeningWidth, bareTraces } from "../model/arcTracks"
 import { copperLayers, kicadLayerName, viaDiameterOn, viaLayers } from "../model/stack"
 import { viaTentedOn } from "../model/viaRules"
 import type { CopperItem } from "../model/pcb"
@@ -12,7 +12,7 @@ import { polygonKit, withMaxError, type ZoneFill } from "../model/pour"
 import type { CopperLayer, PcbSide, Project, Trace, Vec2 } from "../model/types"
 import type { BoardShape } from "../model/types"
 import { worldShapes } from "../model/shapeItems"
-import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
+import { arcCircle, dashShape, drawnPaths, flattenSeg, isClosedShape, lineEndParts, segStart, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
 import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
 import { requireClosedOutline } from "./outlineGuard"
@@ -328,7 +328,7 @@ const padsOn = (project: Project, layer: CopperLayer, what: "copper" | "mask" | 
  * One drawing as KiCad plots it (plot_brditems_plotter.cpp, PlotShape): a stroke of its width along its
  * outline, exact arcs and circles; a filled circle as one flash of its diameter plus the width; any
  * other fill as a region of its edge with no width added, then the outline stroked; a bezier and an
- * ellipse, which Gerber has no primitive for, as the polyline they flatten to; a dashed outline as its dashes.
+ * ellipse, which Gerber has no primitive for, as the polyline they flatten to; a dashed outline as its dashes; a line with ends (X24) stopped short under them, which follow it.
  */
 function plotShape(w: GerberWriter, shape: BoardShape) {
   const filled = shape.fill === true && isClosedShape(shape)
@@ -341,9 +341,15 @@ function plotShape(w: GerberWriter, shape: BoardShape) {
       if (rings.length) w.region(rings.length > 1 ? fractureRings(rings[0], rings.slice(1)) : rings[0])
     }
   }
-  if (shape.width <= 0) return
-  if (shape.dash) for (const piece of dashShape(shape)) w.strokePiece(piece, shape.width)
-  else for (const path of shapePaths(shape)) w.strokeSegs(path.segs, shape.width)
+  if (shape.width > 0) {
+    if (shape.dash) for (const piece of dashShape(shape)) w.strokePiece(piece, shape.width)
+    else for (const path of drawnPaths(shape)) w.strokeSegs(path.segs, shape.width)
+  }
+  // The ends of a line (`LINE_ENDING::Plot`): a closed one is a region, outlined by its own width where it has one; an open arrow is a stroke of its width.
+  for (const part of lineEndParts(shape)) {
+    if (!part.open) w.region(part.outline)
+    if (part.open || part.width > 0) w.stroke(part.open ? part.outline : [...part.outline, part.outline[0]], part.width)
+  }
 }
 
 /** The drawings on one KiCad layer that are plotted: those of parts placed on the board, and the board's own. */
@@ -435,7 +441,7 @@ export function gerberMask(project: Project, side: PcbSide): string {
   // A via has an opening on a side when its copper reaches that outer layer and it is not tented there: by its own setting, else the board's (X5).
   for (const v of project.vias) if (viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)) w.flashCircle(v, viaDiameterOn(v, side) + grow * 2)
   // X24: a track's copper left open through the mask is an opening along it, wider by its own margin or the board's expansion on each side.
-  for (const t of bareTraces(project, side)) strokeTrace(w, t, t.width + 2 * (t.bare?.margin ?? grow))
+  for (const t of bareTraces(project, side)) strokeTrace(w, t, bareOpeningWidth(t, grow))
   for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
   plotOtherZones(w, project, side === "top" ? "F.Mask" : "B.Mask")
   plotTexts(w, project, side === "top" ? "F.Mask" : "B.Mask")

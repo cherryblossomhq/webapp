@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Clipper, FillRule, type Paths64 } from "@countertype/clipper2-ts"
+import { Clipper, EndType, FillRule, JoinType, PointInPolygonResult, type Paths64 } from "@countertype/clipper2-ts"
 import { describe, expect, it } from "vitest"
+import { gerberLayers } from "../src/export/gerber"
 import { kicadFiles } from "../src/export/kicad"
 import { computeConnectivity } from "../src/model/connectivity"
 import { BUILT_EXTENSIONS, importKicadBoard } from "../src/model/kicad/board"
+import { pcbPads } from "../src/model/instances"
 import { analyzePcb } from "../src/model/pcb"
+import { lineEndParts, shapePolylines } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
 import { parseSexpr } from "./kicad-census/sexpr.mjs"
 import { BY_DESIGN, diffProjects, REPAIRED } from "./kicad-roundtrip-check"
@@ -25,14 +28,29 @@ const num = (n: Node | undefined, at = 1) => Number(word(n, at))
 const read = (path: string) => parseSexpr(readFileSync(path, "utf8"))[0] as Node[]
 const pcb = (rel: string) => join(CORPUS!, rel)
 
-const HATCHED = [
-  { rel: "kicad-source/qa/data/pcbnew/hatch_thermal_connectivity/hatch_thermal_connectivity.kicad_pcb", release: 10, xor: 0.1 },
-  { rel: "projects/anway0404__Arduino_OpenTherm_shield/Arduino_OpenTherm_shield.kicad_pcb", release: 9, xor: 0.2 },
-  { rel: "projects/michpro__Arduino_LMeter_shield/Arduino_LMeter_shield.kicad_pcb", release: 9, xor: 0.2 },
-  { rel: "projects/rniwase__tsuraraGB/pcb/midi/tGB-midi.kicad_pcb", release: 6, xor: 0.8 },
-  { rel: "projects/rniwase__tsuraraGB/pcb/programmer/tGB-prog.kicad_pcb", release: 6, xor: 0.8 },
-  { rel: "projects/nodestark__mdb-esp32-cashless/kicad/mdb-slave-esp32s3-mini/mdb-slave-esp32s3-mini.kicad_pcb", release: 9, xor: 0.2 },
+// The standard of the solid fills (`kicad-zone-family-corpus.test.ts`): the copper differs from the stored copper by at most a hundredth of its area, or a tenth of a square millimetre.
+// `edge`: how near to the board's edge the file's own copper comes where the project file's rule (`min_copper_edge_clearance`) is not it. The fills of the two Arduino shields stop 0.45 mm from the edge,
+// which is the zone's own clearance (0.4) and half of the 0.1 mm edge line (0.05), as the filler of KiCad 9.0 measured it, not the project's 0.3.
+// `xor`: a board that misses the standard, and the share it misses by. The grid of KiCad 9 and earlier starts at the extreme corner of the copper, and the two shields' extreme corner is a rounded corner
+// of the board outline, which the stored copper reaches 0.04 mm further into than a uniform edge clearance does: the grid sits 0.039 mm off, which is all of the difference (with the grid moved by it
+// the same code is within 0.6% of the stored copper). Where KiCad 9.0 gets that corner from is not something the file says.
+// `keptHole`: the board's stored copper has a hole round the pad's thermal ring, which the filler of KiCad 10.0 drops (it fills a hole that holds a ring whole, `zone_filler.cpp` of 10.0, commit
+// 7a26dca71b of 2026-01-15, a fortnight after the stamp 20260101 of this file), so there the editor's copper has that hole filled and is compared outside it.
+const HATCHED: { rel: string; release: number; edge?: number; xor?: number; keptHole?: boolean }[] = [
+  { rel: "kicad-source/qa/data/pcbnew/hatch_thermal_connectivity/hatch_thermal_connectivity.kicad_pcb", release: 10, keptHole: true },
+  { rel: "projects/anway0404__Arduino_OpenTherm_shield/Arduino_OpenTherm_shield.kicad_pcb", release: 9, edge: 0.45, xor: 0.05 },
+  { rel: "projects/michpro__Arduino_LMeter_shield/Arduino_LMeter_shield.kicad_pcb", release: 9, edge: 0.45, xor: 0.05 },
+  { rel: "projects/rniwase__tsuraraGB/pcb/midi/tGB-midi.kicad_pcb", release: 7 },
+  { rel: "projects/rniwase__tsuraraGB/pcb/programmer/tGB-prog.kicad_pcb", release: 7 },
+  { rel: "projects/nodestark__mdb-esp32-cashless/kicad/mdb-slave-esp32s3-mini/mdb-slave-esp32s3-mini.kicad_pcb", release: 9 },
 ]
+
+/** The design rules of the board's project file that its zones are filled by and the board file does not say: how near to the board's edge and to a hole copper may come. */
+function projectRules(rel: string): { edge: number; hole: number } {
+  const pro = pcb(rel.replace(/\.kicad_pcb$/, ".kicad_pro"))
+  const rules = existsSync(pro) ? JSON.parse(readFileSync(pro, "utf8")).board?.design_settings?.rules : undefined
+  return { edge: rules?.min_copper_edge_clearance ?? 0.5, hole: rules?.min_hole_clearance ?? 0.25 }
+}
 
 const U = 1e4
 const mod = (a: number, g: number) => ((a % g) + g) % g
@@ -74,7 +92,7 @@ const widths = (phases: number[], pitch: number) => {
 }
 
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () => {
-  for (const { rel, release, xor } of HATCHED) {
+  for (const { rel, release, edge, xor, keptHole } of HATCHED) {
     it(`${rel.split("/").pop()}: every hatched pour is cut as its stored copper is, in its grid and its area`, () => {
       const text = readFileSync(pcb(rel), "utf8")
       const result = importKicadBoard(text)
@@ -86,6 +104,12 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
       const hatched = zones.filter((z) => word(kid(kid(z, "fill") ?? [], "mode")) === "hatch" && kids(z, "filled_polygon").length > 0)
       expect(hatched.length).toBeGreaterThan(0)
       const project = result.project
+      // the board's own rules for how near to its edge and to a hole the copper comes (the importer's defaults are KiCad's, and a project file sets them)
+      const rules = projectRules(rel)
+      for (const z of project.zones) {
+        z.edgeGap = edge ?? rules.edge
+        z.holeGap = rules.hole
+      }
       // the project's hatched pours are the file's, in the file's order
       const ofProject = project.zones.filter((z) => z.hatch)
       expect(ofProject).toHaveLength(hatched.length)
@@ -96,6 +120,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
         const fill = kid(z, "fill")!
         expect(mine.hatch, `zone ${i}`).toMatchObject({ thickness: num(kid(fill, "hatch_thickness")), gap: num(kid(fill, "hatch_gap")) })
         expect(mine.hatch!.angle ?? 0).toBe(num(kid(fill, "hatch_orientation")))
+        // the grid is laid out as the file's own release laid it: KiCad 9 and earlier from the corner of the copper, KiCad 10 from the origin
         expect(!!mine.hatch!.fromFill).toBe(release < 10)
         const pitch = mine.hatch!.thickness + mine.hatch!.gap
         for (const layer of ["F.Cu", "B.Cu"]) {
@@ -109,8 +134,8 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
           const angle = mine.hatch!.angle ?? 0
           const a = lattice(ours, angle, pitch)
           const b = lattice(file, angle, pitch)
-          // (a grid that is not turned has its lines along the pour's own edges and the clearances', which the edges of the copper are mostly, so only a turned one shows its grid in them)
-          for (const axis of angle === 0 ? [] : [0, 1]) {
+          // (a grid that is not turned has its lines along the pour's own edges and the clearances', which the edges of the copper are mostly, so of an older release only a turned one shows its grid in them)
+          for (const axis of angle === 0 && release < 10 ? [] : [0, 1]) {
             if (a[axis].length < 2 || b[axis].length < 2) continue
             const [wa, wb] = [widths(a[axis], pitch), widths(b[axis], pitch)]
             expect(Math.abs(wa[0] - wb[0]), `${rel} ${layer} axis ${axis} band ${wa} vs ${wb}`).toBeLessThan(0.02)
@@ -122,10 +147,24 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
           const fu = Clipper.union(toPaths(file.map((r) => r.map((p) => ({ x: p.x, y: -p.y })))), [], FillRule.NonZero)
           const mu = Clipper.union(toPaths(ours.map((r) => r.map((p) => ({ x: p.x, y: -p.y })))), [], FillRule.EvenOdd)
           const area = (p: Paths64) => Math.abs(Clipper.areaPaths(p)) / (U * U)
-          const [af, am] = [area(fu), area(mu)]
-          const diff = area(Clipper.difference(fu, mu, FillRule.NonZero)) + area(Clipper.difference(mu, fu, FillRule.NonZero))
-          expect(diff / af, `${rel} ${layer}: stored ${af.toFixed(1)}, ours ${am.toFixed(1)}`).toBeLessThan(xor)
-          expect(Math.abs(am - af) / af, `${rel} ${layer} area`).toBeLessThan(0.25)
+          // the hole round the thermal ring that KiCad 10.0 fills: the part of the stored copper's gap round the pad that is a hole of the grid, taken out of both before they are compared
+          let [theirs, ours2] = [fu, mu]
+          if (keptHole) {
+            const pad = project.components.flatMap((c) => pcbPads(c))[0]
+            const where = { x: Math.round((pad.x + 2.5) * U), y: Math.round(pad.y * U) }
+            const around = Clipper.difference([[{ x: Math.round((pad.x - 20) * U), y: Math.round((pad.y - 20) * U) }, { x: Math.round((pad.x + 20) * U), y: Math.round((pad.y - 20) * U) }, { x: Math.round((pad.x + 20) * U), y: Math.round((pad.y + 20) * U) }, { x: Math.round((pad.x - 20) * U), y: Math.round((pad.y + 20) * U) }]], fu, FillRule.NonZero)
+            const hole = around.filter((q) => Clipper.isPositive(q) && Clipper.pointInPolygon(where, q) !== PointInPolygonResult.IsOutside).sort((p, q) => Math.abs(Clipper.area(p)) - Math.abs(Clipper.area(q)))[0]
+            expect(hole, `${layer}: the stored hole round the ring`).toBeDefined()
+            // the editor fills that hole but for the clearance of the ring, so most of it is copper there; the rest agrees with the stored copper
+            expect(area(Clipper.intersect(mu, [hole], FillRule.NonZero)) / area([hole])).toBeGreaterThan(0.5)
+            theirs = Clipper.difference(fu, [hole], FillRule.NonZero)
+            ours2 = Clipper.difference(mu, [hole], FillRule.NonZero)
+          }
+          const [af, am] = [area(theirs), area(ours2)]
+          const diff = area(Clipper.difference(theirs, ours2, FillRule.NonZero)) + area(Clipper.difference(ours2, theirs, FillRule.NonZero))
+          const message = `${rel} ${layer}: stored ${af.toFixed(1)}, ours ${am.toFixed(1)}, differing by ${diff.toFixed(2)} mm2`
+          expect(diff <= 0.1 || diff / af <= (xor ?? 0.01), message).toBe(true)
+          expect(Math.abs(am - af) / af, `${rel} ${layer} area`).toBeLessThan(xor ?? 0.01)
           compared++
         }
       }
@@ -134,7 +173,9 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
   }
 
   it("a hatched pour of a KiCad 9 file is written and read back as it was", async () => {
-    const result = importKicadBoard(readFileSync(pcb(HATCHED[0].rel), "utf8"))
+    const nine = HATCHED.find((h) => h.release === 9)!
+    const result = importKicadBoard(readFileSync(pcb(nine.rel), "utf8"))
+    expect(result.status === "imported" && result.project.zones.some((z) => z.hatch?.fromFill)).toBe(true)
     expect(result.status).toBe("imported")
     if (result.status !== "imported") return
     const written = Object.entries((await kicadFiles(result.project)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
@@ -142,6 +183,20 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
     const again = importKicadBoard(written)
     expect(again.status).toBe("imported")
     if (again.status === "imported") expect(diffProjects(result.project, again.project).filter((d) => ![...BY_DESIGN, ...REPAIRED].some((re) => re.test(d.kind)))).toEqual([])
+  })
+
+  it("a hatched pour of a KiCad 10 file is written as KiCad 9 writes it and comes back laying its grid from the corner of the copper, which is the only change", async () => {
+    const ten = HATCHED.find((h) => h.release === 10)!
+    const result = importKicadBoard(readFileSync(pcb(ten.rel), "utf8"))
+    expect(result.status).toBe("imported")
+    if (result.status !== "imported") return
+    const written = Object.entries((await kicadFiles(result.project)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
+    const again = importKicadBoard(written)
+    expect(again.status).toBe("imported")
+    if (again.status !== "imported") return
+    const differences = diffProjects(result.project, again.project).filter((d) => ![...BY_DESIGN, ...REPAIRED].some((re) => re.test(d.kind)))
+    expect(differences).toEqual([])
+    expect(again.project.zones.some((z) => z.hatch?.fromFill)).toBe(true)
   })
 
   it("the copper thieving pattern of KiCad's own test is refused, named", () => {
@@ -173,6 +228,26 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X24 over the corpus", () 
       const withEnds = [...kids(root, "gr_line"), ...kids(root, "gr_arc"), ...kids(root, "gr_curve")].filter((s) => kid(s, "start_shape") || kid(s, "end_shape"))
       expect((ends.project.graphics ?? []).filter((g) => g.ends)).toHaveLength(withEnds.length)
       expect(withEnds.length).toBeGreaterThan(0)
+      // the board is KiCad's test that a pour floods round the shapes at the ends of lines: every one of its 21 copper drawings has the ends in the copper plot and the pour is kept 0.5 mm off the line and its ends
+      const project = ends.project
+      const copperEnds = (project.graphics ?? []).filter((g) => g.ends && g.layer === "F.Cu")
+      expect(copperEnds).toHaveLength(21)
+      const copperPlot = gerberLayers(project).F_Cu
+      const closed = copperEnds.flatMap((g) => lineEndParts(g)).filter((part) => !part.open).length
+      expect(closed).toBeGreaterThan(0)
+      expect((copperPlot.match(/G36\*/g) ?? []).length).toBeGreaterThanOrEqual(closed)
+      const zone = project.zones[0]
+      const fill = analyzePcb(project, computeConnectivity(project)).zoneFills.find((f) => f.zoneId === zone.id && f.layer === "top")!
+      const copper = Clipper.union(fill.polygons.flatMap((poly) => poly.map((ring) => ring.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) })))), [], FillRule.EvenOdd)
+      expect(copper.length).toBeGreaterThan(0)
+      for (const g of copperEnds) {
+        const reach = [
+          ...lineEndParts(g).map((part) => (part.open ? Clipper.inflatePaths([part.outline.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) }))], (part.width / 2 + 0.49) * U, JoinType.Round, EndType.Round, 2, 25) : Clipper.inflatePaths([part.outline.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) }))], 0.49 * U, JoinType.Round, EndType.Polygon, 2, 25))),
+          ...shapePolylines(g).map((line) => Clipper.inflatePaths([line.map((p) => ({ x: Math.round(p.x * U), y: Math.round(p.y * U) }))], (g.width / 2 + 0.49) * U, JoinType.Round, EndType.Round, 2, 25)),
+        ].flat()
+        const inside = Clipper.intersect(copper, reach, FillRule.NonZero)
+        expect(Math.abs(Clipper.areaPaths(inside)) / (U * U), "the pour reaches a line with ends (" + g.type + ")").toBeLessThan(1e-6)
+      }
     }
     const rel = "projects/cormoran__PMW3610-breakout/kicad_projects/PMW3610-breakout-v1/pmw2610-breakout.kicad_pcb"
     const coloured = importKicadBoard(readFileSync(pcb(rel), "utf8"))

@@ -1,4 +1,4 @@
-import { dashShape, shapeSvgPath, type DashPiece } from "../../model/shapes"
+import { dashShape, lineEndParts, shapeSvgPath, type DashPiece } from "../../model/shapes"
 import { shapeLayerInfo } from "../../model/shapeLayers"
 import type { BoardShape } from "../../model/types"
 import { layerOfKicadName } from "../../model/stack"
@@ -56,6 +56,14 @@ export function ShapeDraw({ shape, color, px, selected = false, opacity = 1 }: {
       ) : !shape.fill ? (
         <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" />
       ) : null}
+      {lineEndParts(shape).map((part, i) => {
+        const points = part.outline.map((p) => `${p.x},${p.y}`).join(" ")
+        return part.open ? (
+          <polyline key={i} points={points} fill="none" stroke={color} strokeWidth={Math.max(part.width, px)} strokeLinecap="round" strokeLinejoin="round" />
+        ) : (
+          <polygon key={i} points={points} fill={color} fillOpacity={soft ? 0.4 : 1} stroke={part.width > 0 ? color : "none"} strokeWidth={part.width} strokeLinejoin="round" />
+        )
+      })}
     </g>
   )
 }

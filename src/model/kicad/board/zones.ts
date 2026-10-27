@@ -1,3 +1,4 @@
+import type { Paths64 } from "@countertype/clipper2-ts"
 import { uid } from "../../../lib/id"
 import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
@@ -5,7 +6,8 @@ import { flipShapeLayer } from "../../shapeLayers"
 import { flipLayer } from "../../stack"
 import { anchorSide, isOtherZoneLayer, orderedOtherLayers } from "../../zoneLayers"
 import { hasOtherLayers, isOtherZone, kicadUuid } from "../../zones"
-import { DEFAULT_MIN_HOLE, DEFAULT_SMOOTH_VALUE } from "../../zoneHatch"
+import { pt } from "../../zoneGeom"
+import { DEFAULT_MIN_HOLE, DEFAULT_SMOOTH_VALUE, hatchTooFine, MAX_HOLES } from "../../zoneHatch"
 import { layerClass } from "./needs"
 import { layerMapOf, layersOfNames } from "./layers"
 import { resolveLayer } from "./graphics"
@@ -19,10 +21,10 @@ import type { KicadBoard, KicadFootprint, KicadZone, KicadZoneSeg, Pt } from "./
 // stored `filled_polygon` is not kept (docs/kicad-import.md section 10).
 
 /**
- * The last file stamp (KiCad 9.0) whose fills lay a hatch grid out from the corner of the copper; the one KiCad 10 board of the corpus that is hatched (stamp 20260101) lays it from the origin, and the
- * lattice of every hatched fill of a KiCad 6 to 9 file in the corpus (8 zones) is where the corner of its copper puts it, to a hundredth of a millimetre.
+ * The first file stamp (KiCad 10 development, 2025-03-02, "Zone Hatching Offsets", the commit that gave a zone's layers a hatch position) whose fills lay the hatch grid out from the board's origin; a
+ * file before it was filled by the code of KiCad 6 to 9, which lays it from the corner of the copper and has other rules at the edge and round vias and pads (`zoneHatch.ts`).
  */
-const LAST_FILL_ANCHORED_HATCH = 20241229
+const FIRST_ORIGIN_HATCH = 20250302
 
 const flip = (p: Pt): Vec2 => ({ x: p.x + 0, y: p.y === 0 ? 0 : -p.y })
 
@@ -72,6 +74,20 @@ export function splitZoneLayers(board: KicadBoard, names: readonly string[]): Zo
 }
 
 /** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points, each point through `map` (the file's frame is y down, the editor's y up). */
+/** The box of a zone's outline (its corners and arcs' middles) as a rectangle in clipper units (`zoneGeom.ts`), which is what the size of a hatch grid is judged by. */
+function boxOf(segs: KicadZoneSeg[]): Paths64 {
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const s of segs) {
+    for (const p of s.kind === "xy" ? [s.at] : [s.start, s.mid, s.end]) {
+      xs.push(p.x)
+      ys.push(p.y)
+    }
+  }
+  const [a, b, c, d] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+  return [[pt(a, c), pt(b, c), pt(b, d), pt(a, d)]]
+}
+
 function ringPath(segs: KicadZoneSeg[], map: (p: Pt) => Vec2 = flip): ShapePath | null {
   const out: PathSeg[] = []
   const at: { cur: Vec2 | null; first: Vec2 | null } = { cur: null, first: null }
@@ -163,6 +179,9 @@ function convertOne(z: KicadZone, cx: OneContext): One {
   if (!rule && z.fillMode === "thieving") return { lossy: "a zone filled with a copper thieving pattern (KiCad 11 development)" }
   if (!rule && z.hatch && !copperZone) return { lossy: "a hatched fill on a layer that is not copper" }
   if (!rule && z.hatch && !(z.hatch.thickness && z.hatch.thickness > 0 && z.hatch.gap && z.hatch.gap > 0)) return { lossy: "a hatched fill whose line width or gap the file does not give" }
+  if (!rule && z.hatch && hatchTooFine(boxOf(z.rings[0]), { thickness: z.hatch.thickness!, gap: z.hatch.gap!, angle: z.hatch.angle }, z.minThickness ?? rules.pourMinWidth)) {
+    return { lossy: `a hatched fill whose grid has more than ${MAX_HOLES.toLocaleString("en-US")} holes over the pour, more than the editor cuts` }
+  }
   if (z.node.some((c) => Array.isArray(c) && c[0] === "zone_type")) return { lossy: "a zone with a zone type (KiCad 11 development)" }
   const unknownProperty = z.properties.find((p) => p.other)
   if (unknownProperty) return { lossy: `a zone property other than a hatch position ("${unknownProperty.other}")` }
@@ -190,7 +209,8 @@ function convertOne(z: KicadZone, cx: OneContext): One {
     if (!p.at) continue
     const named = layersOfNames(map, [p.layer])
     const on = cx.bottomPart ? map.ids.filter((l) => named.includes(flipLayer(l, map.count))) : named
-    if (on[0] !== undefined && layers.includes(on[0])) hatchAt[on[0]] = cx.map(p.at)
+    // KiCad does not move or flip a zone's hatch position with its part, so it is kept as the file has it (y flipped to the editor's frame, on either side).
+    if (on[0] !== undefined && layers.includes(on[0])) hatchAt[on[0]] = flip(p.at)
   }
   if (Object.keys(hatchAt).length) zone.hatchAt = hatchAt
   if (rule) {
@@ -217,14 +237,16 @@ function convertOne(z: KicadZone, cx: OneContext): One {
   zone.spokeWidth = z.thermalBridge ?? 0.5
   if (z.smoothing !== "none" && z.radius > 0) zone.smoothing = { kind: z.smoothing, radius: z.radius }
   if (z.hatch) {
+    const oldHatch = board.version !== null && board.version < FIRST_ORIGIN_HATCH
     const level = Math.min(3, Math.max(0, Math.trunc(z.hatch.smoothLevel)))
     zone.hatch = {
       thickness: z.hatch.thickness!,
       gap: z.hatch.gap!,
       ...(z.hatch.angle !== 0 ? { angle: z.hatch.angle } : {}),
       ...(z.hatch.minHole !== null && z.hatch.minHole !== DEFAULT_MIN_HOLE ? { minHole: z.hatch.minHole } : {}),
-      ...(z.hatch.thinBorder ? { thinBorder: true as const } : {}),
-      ...(board.version !== null && board.version <= LAST_FILL_ANCHORED_HATCH ? { fromFill: true as const } : {}),
+      // The border algorithm is KiCad 9's and earlier's: KiCad 10 always leaves the band of the hatch thickness.
+      ...(oldHatch && z.hatch.thinBorder ? { thinBorder: true as const } : {}),
+      ...(oldHatch ? { fromFill: true as const } : {}),
       ...(level > 0 ? { smooth: { level: level as 1 | 2 | 3, value: z.hatch.smoothValue ?? DEFAULT_SMOOTH_VALUE } } : {}),
     }
   }

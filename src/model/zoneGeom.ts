@@ -2,7 +2,7 @@ import { Clipper, EndType, FillRule, JoinType, type Path64, type Paths64 } from 
 import { slotEnds, type WorldPad } from "./instances"
 import { holeCentre } from "./padDistance"
 import { outlineGeometry } from "./outline"
-import { flattenPath, shapePolylines, shapeRings } from "./shapes"
+import { flattenPath, lineEndParts, shapePolylines, shapeRings } from "./shapes"
 import type { CopperItem } from "./pcb"
 import type { Project, Vec2 } from "./types"
 
@@ -128,6 +128,11 @@ export function shapeObstacle(it: Extract<CopperItem, { kind: "shape" }>, d: num
   if (it.shape.fill) {
     const rings = shapeRings(it.shape).map(ring)
     if (rings.length) out.push(...inflate(union(rings, [], FillRule.EvenOdd), half))
+  }
+  // The ends of a line (X24), as KiCad keeps copper from them (`addLineEndingPolygon`): a closed one grown by the gap, its outline stroked by its own width and the gap, an open arrow's two strokes likewise.
+  for (const part of lineEndParts(it.shape)) {
+    if (!part.open) out.push(...inflate([upright(ring(part.outline))], d))
+    if (part.open || part.width > 0) out.push(...stroke(part.open ? part.outline : [...part.outline, part.outline[0]], part.width / 2 + d))
   }
   return out
 }

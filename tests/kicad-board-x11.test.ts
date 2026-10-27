@@ -113,10 +113,9 @@ describe("a dimension of the typed format", () => {
     expect(r.project.dimensions).toHaveLength(1)
     expect(r.report.entries.find((e) => e.code === "dimensions-flattened")).toMatchObject({ severity: "changed", count: 1 })
     expect(BUILT_EXTENSIONS.has("X27")).toBe(true)
-    // a file that stores a part's drawings in the part's own frame (stamp 20260616) says a point the part's pose would have to move, which is not held: refused as inexact, named
+    // a file of stamp 20260616 keeps a part's other drawings in the part's frame, but a dimension's points are the board's all the same (X27)
     const lib = importKicadBoard(board({ version: 20260616, body: [fp] }))
-    expect(lib.status === "refused" && lib.reason).toBe("inexact")
-    expect(lib.status === "refused" && lib.message).toMatch(/dimension inside R1/)
+    expect(lib.status === "imported" && lib.project.dimensions).toEqual(r.project.dimensions)
   })
 })
 

@@ -22,6 +22,8 @@ export function Collaborators() {
   if (!people.length) return null
   const shown = people.slice(0, MAX_FACES)
   const more = people.slice(MAX_FACES)
+  // Whose Sakura is working, by person (their first tab that says so): a small chip after the faces.
+  const working = people.flatMap((p) => peers.find((x) => x.userId === p.userId && x.state.copilot) ?? [])
   return (
     <div className="flex items-center pl-1 pr-1" aria-label="People on this project">
       {shown.map((p, i) => (
@@ -32,7 +34,32 @@ export function Collaborators() {
           <span className="-ml-1.5 flex size-7 items-center justify-center rounded-full bg-chrome-2 text-[11px] font-[650] text-ink-2 ring-2 ring-surface">+{more.length}</span>
         </Tooltip>
       )}
+      {working.length > 0 && <SakuraChip working={working} />}
     </div>
+  )
+}
+
+/** "Sakura for Ada: Routing", or for the first of several (the title says it in full). Next to the faces, in the colour of the person it works for. */
+function SakuraChip({ working }: { working: Collaborator[] }) {
+  const first = working[0]
+  const who = first.name.trim() || "Guest"
+  const more = working.length - 1
+  const doing = first.state.copilotLabel
+  return (
+    <span
+      role="status"
+      data-sakura-chip
+      className="ml-1.5 flex h-6 max-w-[200px] items-center gap-1 rounded-full px-2 text-[11.5px] font-[600] leading-none text-white"
+      style={{ backgroundColor: first.color }}
+      title={working.map((p) => `Sakura is working for ${p.name.trim() || "Guest"}${p.state.copilotLabel ? `: ${p.state.copilotLabel}` : ""}`).join(". ")}
+    >
+      <Sparkles size={11} className="shrink-0" />
+      <span className="truncate">
+        {`Sakura for ${who}`}
+        {doing ? `: ${doing}` : ""}
+        {more > 0 ? ` +${more}` : ""}
+      </span>
+    </span>
   )
 }
 
@@ -40,7 +67,7 @@ function Face({ peer, first, following, sessionId }: { peer: Collaborator; first
   const followsYou = !!sessionId && peer.state.following === sessionId
   const allowed = canFollow(peer, sessionId)
   const hint = [
-    peer.state.copilot ? "Sakura is working for them" : WHERE[peer.state.view],
+    peer.state.copilot ? `Sakura is working for them${peer.state.copilotLabel ? `: ${peer.state.copilotLabel}` : ""}` : WHERE[peer.state.view],
     followsYou ? "Following you" : following ? "Click to stop following" : allowed ? "Click to follow" : "",
   ]
     .filter(Boolean)

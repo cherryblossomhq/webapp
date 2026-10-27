@@ -5,6 +5,7 @@ import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
 import { findPart } from "../model/library"
 import type { Project } from "../model/types"
+import { acquireBoard, wholeBoardAction, type BoardLease } from "../store/boardLease"
 import { supplierParts } from "./supplierParts"
 import { createRepeatGuard } from "./repeatGuard"
 import { executeTool, TOOL_DEFINITIONS, type FunctionTool, type ToolContext, type ToolOutcome } from "./tools"
@@ -208,6 +209,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
   let stopReason: string | null = null
   // Per request: an identical call that keeps failing is refused after its second failure.
   const repeats = createRepeatGuard()
+  // The board leases this request holds for the whole-board tool it is running; every one is let go of when its call ends, and any left when the request does.
+  const leases = new Set<BoardLease & { ok: true }>()
   try {
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       if (signal?.aborted) {
@@ -278,6 +281,21 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
           onEvent({ type: "tool_end", id: call.id, name, summary: reason, isError: true, changed: false })
           continue
         }
+        // A tool that rewrites much of the board or sheet takes the board lease first. Another tab (a
+        // collaborator's Sakura, or this user's other tab) holding it means the tool does not run:
+        // Sakura is told who and what, and says so; nothing is queued.
+        let held: (BoardLease & { ok: true }) | null = null
+        const boardAction = wholeBoardAction(name, input)
+        if (boardAction) {
+          const lease = await acquireBoard(boardAction, true)
+          if (!lease.ok) {
+            history.push({ role: "tool", tool_call_id: call.id, content: `Error: ${lease.message}` })
+            onEvent({ type: "tool_end", id: call.id, name, summary: lease.message.split(". ")[0] + ".", isError: true, changed: false })
+            continue
+          }
+          held = lease
+          leases.add(lease)
+        }
         const context: ToolContext = { parts: supplierParts(), signal, looks, selection: () => useUi.getState().selection, start: project, sheet: { shown: () => useUi.getState().sheet, show: (path) => useUi.getState().setSheet(path) } }
         // A request's own tool set works on the project alone and runs at once; the whole kit's tools
         // with lookups await them first, then make their change to the project as it is then: an
@@ -308,6 +326,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
         }
         history.push({ role: "tool", tool_call_id: call.id, content: outcome.result })
         onEvent({ type: "tool_end", id: call.id, name, summary: outcome.summary, isError: outcome.isError, changed })
+        held?.release()
+        if (held) leases.delete(held)
       }
       // A tool result is text, so what a look drew comes as a user message after all the results.
       if (pictures.length) {
@@ -339,6 +359,7 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
       onEvent({ type: "error", message: err instanceof Error ? err.message : String(err), kind: "error" })
     }
   }
+  for (const lease of leases) lease.release()
   if (stopReason === "aborted") failed = true
   if (together && !failed) {
     // All of it or none: a sheet edited meanwhile, or work that is not finished, is not committed, and the user is told.

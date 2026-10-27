@@ -156,6 +156,7 @@ function Cursor({ peer, at, transition }: { peer: Collaborator; at: Vec2; transi
       >
         {firstName(peer.name)}
         {peer.state.copilot && <Sparkles size={11} aria-label="Sakura is working" />}
+        {peer.state.copilot && peer.state.copilotLabel && <span data-peer-activity>{peer.state.copilotLabel}</span>}
       </div>
     </div>
   )

@@ -1,3 +1,4 @@
+import { acquireBoard, type BoardLease } from "../../store/boardLease"
 import { shownProject } from "../../store/sheetScope"
 import { isHierarchical } from "../../model/sheets"
 import { create } from "zustand"
@@ -20,7 +21,16 @@ interface CleanupState {
 
 export const useCleanup = create<CleanupState>(() => ({ phase: { kind: "idle" } }))
 
-const setPhase = (phase: CleanupPhase) => useCleanup.setState({ phase })
+/** Lets go of the board lease while Clean up runs, when it ends however it ends. */
+let releaseLease: (() => void) | null = null
+
+const setPhase = (phase: CleanupPhase) => {
+  if (phase.kind !== "running") {
+    releaseLease?.()
+    releaseLease = null
+  }
+  useCleanup.setState({ phase })
+}
 
 /** Which run is current, so a worker's late answer to a cancelled one is ignored. */
 let run = 0
@@ -97,51 +107,71 @@ export function applyCleanup(timeoutMs = TIDY_TIMEOUT_MS): void {
   }
   const id = ++run
   setPhase({ kind: "running" })
-  const finish = (tidy: TidyResult) => {
-    if (id !== run) return
-    dropWorker()
-    setPhase({ kind: "idle" })
-    if (shownProject() !== plan.before) {
-      applyTidyResult(left(shownProject(), "The sheet changed while it was being cleaned up, so nothing was changed."))
+  // Tidying rewrites the sheet: one tab at a time (the board lease). Taken at once where there are no leases.
+  const begin = (lease: BoardLease) => {
+    // Cancelled while the lease was on its way.
+    if (id !== run) {
+      if (lease.ok) lease.release()
       return
     }
-    conclude(finishCleanup(plan, tidy))
+    if (!lease.ok) {
+      setPhase({ kind: "idle" })
+      applyTidyResult(left(plan.before, lease.message))
+      return
+    }
+    releaseLease = lease.release
+    work()
   }
-  const fail = (message: string, problems: string[] = []) => {
-    if (id !== run) return
-    dropWorker()
-    setPhase({ kind: "idle" })
-    applyTidyResult(left(plan.before, message, problems))
-  }
-
-  if (typeof Worker !== "function" || isHierarchical(plan.before)) {
-    // No workers (the unit tests): after the busy state is drawn, tidy here.
-    setTimeout(() => {
-      try {
-        finish(tidySchematic(plan.project))
-      } catch (e) {
-        fail("Clean up couldn't finish; nothing was changed.", [e instanceof Error ? e.message : String(e)])
+  const work = () => {
+    const finish = (tidy: TidyResult) => {
+      if (id !== run) return
+      dropWorker()
+      setPhase({ kind: "idle" })
+      if (shownProject() !== plan.before) {
+        applyTidyResult(left(shownProject(), "The sheet changed while it was being cleaned up, so nothing was changed."))
+        return
       }
-    }, 0)
-    return
-  }
-  try {
-    worker = new Worker(new URL("./tidy.worker.ts", import.meta.url), { type: "module" })
-  } catch {
-    worker = null
-    fail("Clean up couldn't start; nothing was changed.")
-    return
-  }
-  timer = setTimeout(() => fail("Clean up took too long and was stopped; nothing was changed."), timeoutMs)
-  worker.onmessage = (e: MessageEvent<TidyReply>) => {
-    const reply = e.data
-    if ("error" in reply) {
-      fail("Clean up couldn't finish; nothing was changed.", [reply.error])
+      conclude(finishCleanup(plan, tidy))
+    }
+    const fail = (message: string, problems: string[] = []) => {
+      if (id !== run) return
+      dropWorker()
+      setPhase({ kind: "idle" })
+      applyTidyResult(left(plan.before, message, problems))
+    }
+
+    if (typeof Worker !== "function" || isHierarchical(plan.before)) {
+      // No workers (the unit tests): after the busy state is drawn, tidy here.
+      setTimeout(() => {
+        try {
+          finish(tidySchematic(plan.project))
+        } catch (e) {
+          fail("Clean up couldn't finish; nothing was changed.", [e instanceof Error ? e.message : String(e)])
+        }
+      }, 0)
       return
     }
-    const project = reply.project ? parseProjectFile(reply.project, { id: plan.before.id, createdAt: plan.before.createdAt, updatedAt: Date.now() }) : plan.project
-    finish({ ...reply, project })
+    try {
+      worker = new Worker(new URL("./tidy.worker.ts", import.meta.url), { type: "module" })
+    } catch {
+      worker = null
+      fail("Clean up couldn't start; nothing was changed.")
+      return
+    }
+    timer = setTimeout(() => fail("Clean up took too long and was stopped; nothing was changed."), timeoutMs)
+    worker.onmessage = (e: MessageEvent<TidyReply>) => {
+      const reply = e.data
+      if ("error" in reply) {
+        fail("Clean up couldn't finish; nothing was changed.", [reply.error])
+        return
+      }
+      const project = reply.project ? parseProjectFile(reply.project, { id: plan.before.id, createdAt: plan.before.createdAt, updatedAt: Date.now() }) : plan.project
+      finish({ ...reply, project })
+    }
+    worker.onerror = () => fail("Clean up couldn't finish; nothing was changed.")
+    worker.postMessage({ file: serializeProject(plan.project) } satisfies TidyRequest)
   }
-  worker.onerror = () => fail("Clean up couldn't finish; nothing was changed.")
-  worker.postMessage({ file: serializeProject(plan.project) } satisfies TidyRequest)
+  const leased = acquireBoard("cleanup", false)
+  if (leased instanceof Promise) void leased.then(begin)
+  else begin(leased)
 }

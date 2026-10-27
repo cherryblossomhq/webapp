@@ -58,6 +58,8 @@ export interface PeerState {
   viewport?: Box
   /** Sakura is working in that tab. */
   copilot?: boolean
+  /** What it is doing, in a word or two ("Routing"): beside the face and the cursor while `copilot`. */
+  copilotLabel?: string
   /** The tab it is following, whose view it mirrors. */
   following?: string
 }
@@ -79,6 +81,7 @@ const CURSOR_MS = 90
 /** Alone on a project, what this tab is doing is news to nobody: say it at a walk. */
 const QUIET_MS = 1_500
 const MAX_SELECTION = 300
+const MAX_LABEL = 30
 
 /**
  * Collaborator colours: apart from each other, from the selection blue, and from the copper red
@@ -118,6 +121,8 @@ export function parsePeerState(text: string): PeerState {
       ...(Array.isArray(raw.selection) && { selection: raw.selection.filter((s): s is string => typeof s === "string").slice(0, MAX_SELECTION) }),
       ...(box(raw.viewport) && { viewport: raw.viewport }),
       ...(raw.copilot === true && { copilot: true }),
+      // Shown to everyone, so a tab can't make it long.
+      ...(raw.copilot === true && typeof raw.copilotLabel === "string" && raw.copilotLabel.trim() && { copilotLabel: raw.copilotLabel.trim().slice(0, MAX_LABEL) }),
       ...(typeof raw.following === "string" && { following: raw.following }),
     }
   } catch {
@@ -242,7 +247,7 @@ function ownState(): PeerState {
     ...(pointer?.view === view && { cursor: round(pointer.at) }),
     ...(ui.selection.length && { selection: ui.selection.slice(0, MAX_SELECTION) }),
     ...(viewports[view] && { viewport: viewports[view] }),
-    ...(useCopilot.getState().runningProject && { copilot: true }),
+    ...(useCopilot.getState().runningProject && { copilot: true, ...(useCopilot.getState().activity && { copilotLabel: useCopilot.getState().activity! }) }),
     ...(usePresence.getState().following && { following: usePresence.getState().following! }),
   }
 }
@@ -317,7 +322,7 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
     if (s.view !== prev.view || s.selection !== prev.selection || s.sheet !== prev.sheet) schedule("state")
   })
   const unsubscribeCopilot = useCopilot.subscribe((s, prev) => {
-    if (s.runningProject !== prev.runningProject) schedule("state")
+    if (s.runningProject !== prev.runningProject || s.activity !== prev.activity) schedule("state")
   })
   const unsubscribeFollow = usePresence.subscribe((s, prev) => {
     if (s.following !== prev.following) schedule("state")

@@ -5,7 +5,8 @@ import type { FailureKind } from "../ai/managedAi"
 import { openCleanup } from "../editor/schematic/cleanupAction"
 import { hasParts } from "../model/cleanup"
 import { announceTidy } from "../editor/schematic/tidyAction"
-import { toolActivityLabel } from "../ai/tools"
+import { toolActivityLabel, toolPhase } from "../ai/tools"
+import { acquireBoard, type BoardLease } from "./boardLease"
 import { useProjectStore } from "./projectStore"
 import { useUi } from "./uiStore"
 
@@ -23,6 +24,8 @@ export type PlanStatus = "pending" | "applying" | "applied" | "cancelled" | "sta
 interface CopilotState {
   threads: Record<string, Entry[]>
   runningProject: string | null
+  /** What Sakura is doing in a word or two while it runs ("Routing", "Thinking"): what collaborators see beside this user. Null when idle. */
+  activity: string | null
   controller: AbortController | null
   /** Text to start a project's composer with, once: a request handed over from the website's hero. */
   seeds: Record<string, string>
@@ -64,6 +67,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
           ...entries,
           { kind: "tool", id: nextEntryId++, toolId: e.id, label: toolActivityLabel(e.name, e.input), status: "running", changed: false },
         ])
+        set({ activity: toolPhase(e.name) })
         break
       case "tool_end":
         update(projectId, (entries) =>
@@ -73,12 +77,13 @@ export const useCopilot = create<CopilotState>((set, get) => {
               : x,
           ),
         )
+        set({ activity: "Thinking" })
         break
       case "error":
         update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind }])
         break
       case "done":
-        set({ runningProject: null, controller: null })
+        set({ runningProject: null, controller: null, activity: null })
         break
     }
   }
@@ -86,6 +91,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
   return {
     threads: {},
     runningProject: null,
+    activity: null,
     controller: null,
     seeds: {},
     cleanup: null,
@@ -98,7 +104,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       if (get().runningProject) return
       const controller = new AbortController()
       update(projectId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text }])
-      set({ runningProject: projectId, controller })
+      set({ runningProject: projectId, controller, activity: "Thinking" })
       void runCopilot(text, { signal: controller.signal, onEvent: (e) => apply(projectId, e) })
     },
     startCleanup: (projectId) => {
@@ -125,7 +131,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       const controller = new AbortController()
       const session = planningSession()
       update(projectId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text: CLEANUP_REQUEST }])
-      set({ runningProject: projectId, controller, cleanup: "planning" })
+      set({ runningProject: projectId, controller, cleanup: "planning", activity: "Planning blocks" })
       void runCopilot(CLEANUP_PROMPT, { signal: controller.signal, onEvent: (e) => apply(projectId, e), tools: session.tools }).then(() => {
         const plan = session.plan()
         if (plan && !controller.signal.aborted) update(projectId, (entries) => [...entries, { kind: "plan", id: nextEntryId++, plan, status: "pending" }])
@@ -152,31 +158,43 @@ export const useCopilot = create<CopilotState>((set, get) => {
       setStatus("applying")
       const applyId = nextEntryId
       update(projectId, (entries) => [...entries, { kind: "user", id: nextEntryId++, text: "Apply the plan" }])
-      set({ runningProject: projectId, controller, cleanup: "applying" })
-      void runCopilot(CLEANUP_APPLY_PROMPT, {
-        signal: controller.signal,
-        onEvent: (e) => {
-          if (e.type === "error") failed = true
-          apply(projectId, e)
-        },
-        tools: session.tools,
-      }).then(() => {
-        setStatus(failed || controller.signal.aborted ? "cancelled" : "applied")
-        // Nothing was kept, so the chat must not say it was: Sakura's report is dropped (the panel's line says what happened) and her steps show as not kept.
-        if (failed || controller.signal.aborted) {
-          update(projectId, (entries) =>
-            entries.flatMap((e): Entry[] =>
-              e.id <= applyId ? [e] : e.kind === "assistant" ? [] : e.kind === "tool" ? [{ ...e, status: "error", changed: false, label: `Not kept: ${e.label}` }] : [e],
-            ),
-          )
+      set({ runningProject: projectId, controller, cleanup: "applying", activity: "Tidying" })
+      // Tidying the whole sheet is a whole-board action: held under the board lease from here to the end.
+      const begin = (lease: BoardLease) => {
+        if (!lease.ok) {
+          setStatus("cancelled")
+          update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: lease.message }])
+          set({ runningProject: null, controller: null, cleanup: null, activity: null })
+          return
         }
-        set({ cleanup: null })
-        // The sheet is new: the toolbar says so and the view shows all of it.
-        const now = useProjectStore.getState().project
-        if (now && !failed && !controller.signal.aborted && now !== project) {
-          announceTidy({ project: now, changed: true, ok: true, message: "Cleaned up with Sakura.", renamed: {}, dropped: [], loose: { wires: 0, labels: 0, ports: 0 }, problems: [] })
-        }
-      })
+        void runCopilot(CLEANUP_APPLY_PROMPT, {
+          signal: controller.signal,
+          onEvent: (e) => {
+            if (e.type === "error") failed = true
+            apply(projectId, e)
+          },
+          tools: session.tools,
+        }).then(() => {
+          setStatus(failed || controller.signal.aborted ? "cancelled" : "applied")
+          // Nothing was kept, so the chat must not say it was: Sakura's report is dropped (the panel's line says what happened) and her steps show as not kept.
+          if (failed || controller.signal.aborted) {
+            update(projectId, (entries) =>
+              entries.flatMap((e): Entry[] =>
+                e.id <= applyId ? [e] : e.kind === "assistant" ? [] : e.kind === "tool" ? [{ ...e, status: "error", changed: false, label: `Not kept: ${e.label}` }] : [e],
+              ),
+            )
+          }
+          set({ cleanup: null })
+          // The sheet is new: the toolbar says so and the view shows all of it.
+          const now = useProjectStore.getState().project
+          if (now && !failed && !controller.signal.aborted && now !== project) {
+            announceTidy({ project: now, changed: true, ok: true, message: "Cleaned up with Sakura.", renamed: {}, dropped: [], loose: { wires: 0, labels: 0, ports: 0 }, problems: [] })
+          }
+        }).finally(lease.release)
+      }
+      const leased = acquireBoard("cleanup", true)
+      if (leased instanceof Promise) void leased.then(begin)
+      else begin(leased)
     },
     cancelPlan: (projectId, entryId) =>
       update(projectId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId && e.status === "pending" ? { ...e, status: "cancelled" } : e))),

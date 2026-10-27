@@ -1401,3 +1401,45 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return drawingToolLabel(name, i) ?? pcbToolLabel(name, i) ?? name
   }
 }
+
+/**
+ * What Sakura is doing, in a word or two with nothing of the user's text in it, for the people on
+ * the project with them (shown beside their face and cursor, `store/presence.ts`).
+ */
+export function toolPhase(name: string): string {
+  switch (name) {
+    case "get_design":
+    case "look":
+    case "read_datasheet":
+      return "Reading"
+    case "search_parts":
+    case "find_part":
+    case "get_part_data":
+    case "create_part":
+    case "verify_parts":
+      return "Finding parts"
+    case "add_component":
+    case "update_component":
+    case "remove_component":
+      return "Editing parts"
+    case "connect":
+      return "Wiring"
+    case "group_parts":
+    case "edit_block":
+    case "propose_blocks":
+      return "Grouping"
+    case "tidy_schematic":
+      return "Tidying"
+    case "run_checks":
+      return "Checking"
+    case "layout_pcb":
+    case "place_parts":
+      return "Placing parts"
+    case "route_pcb":
+    case "clear_routing":
+    case "set_net_width":
+      return "Routing"
+    default:
+      return "Working"
+  }
+}

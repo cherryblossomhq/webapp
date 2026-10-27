@@ -59,5 +59,6 @@ export type {
   StoredProjectSummary,
 } from "./store/storage"
 export type { PresenceMe, PresencePeer, PresenceSource } from "./store/presence"
+export type { LeaseAnswer, LeaseHolder, LockSource } from "./store/boardLease"
 export type { InviteResult, MemberRole, ShareInvite, ShareMember, SharePerson, SharingSource, SharingState } from "./store/sharing"
 export type { HistorySource, HistoryState, NameOutcome, OpenedVersion, RestoreOutcome, VersionCounts, VersionInfo, VersionPerson, VersionSummary } from "./store/history"

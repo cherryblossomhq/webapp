@@ -1206,11 +1206,13 @@ export function PcbEditor() {
                 ))}
 
               {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
-              {worldPoints(project, placed).map((pt, i) => (
-                <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
-                  <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
-                </g>
-              ))}
+              {worldPoints(project, placed)
+                .filter((pt) => otherShown(pt.layer))
+                .map((pt, i) => (
+                  <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
+                    <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
+                  </g>
+                ))}
 
               {/* Silkscreen: part outlines, designators and free text */}
               {layers.silk && (

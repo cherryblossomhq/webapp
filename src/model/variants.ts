@@ -200,6 +200,17 @@ export function removeVariant(project: Project, name: string): Project {
   return touch({ ...next, ...(list.length ? { variants: { ...rest, list, ...keep } } : { variants: undefined }) })
 }
 
+/** The changes of a footprint and of the symbol it is linked to, joined variant by variant, flag by flag and field by field, the symbol's word standing where both say one. */
+export function joinOverrides(footprint: Record<string, VariantOverride> | undefined, symbol: Record<string, VariantOverride> | undefined): Record<string, VariantOverride> | undefined {
+  if (!footprint) return symbol
+  const out: Record<string, VariantOverride> = { ...footprint }
+  for (const [name, o] of Object.entries(symbol ?? {})) {
+    const b = out[name]
+    out[name] = b ? { ...b, ...o, ...(b.fields || o.fields ? { fields: { ...b.fields, ...o.fields } } : {}) } : o
+  }
+  return out
+}
+
 /** An override with nothing in it says nothing: it is not kept. */
 export function isEmptyOverride(o: VariantOverride | undefined): boolean {
   return !o || (FLAG_KEYS.every((k) => o[k] === undefined) && (!o.fields || Object.keys(o.fields).length === 0))

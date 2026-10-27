@@ -214,7 +214,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X23 over the corpus", () 
         withUnits += part.units.length ? 1 : 0
         expect(c.points?.length ?? 0, `${ref} points`).toBe(part.points.length)
         part.points.forEach((p, i) => {
-          const w = partPointWorld(c, c.points![i])
+          const w = partPointWorld(c, c.points![i], 2)
           const [fx, fy] = fileWorld(facts, part, p)
           expect(w.x, `${ref} point ${i} x`).toBeCloseTo(fx, 4)
           expect(w.y, `${ref} point ${i} y`).toBeCloseTo(-fy, 4)

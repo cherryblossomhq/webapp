@@ -23,7 +23,7 @@ import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
 import { settleImportedLabelClasses } from "../../directives"
 import { flagOrigins, reportRuleAreaUnits, resolvedComponents } from "../../ruleAreas"
-import { normalizeProjectVariants } from "../../variants"
+import { joinOverrides, normalizeProjectVariants } from "../../variants"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
@@ -725,8 +725,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     const b = boardOf.get(c.id)
     const { flags: _symbolFlags, ...rest } = c
     void _symbolFlags
-    // X23: the footprint's units and points come over, and a variant the footprint has that the symbol says nothing of (the symbol's own word on a variant stands, as its flags do).
-    const variants = b?.variants ? { ...b.variants, ...c.variants } : c.variants
+    // X23: the footprint's units and points come over, and what the footprint's variants say that the symbol's do not (the symbol's own word stands, as its flags do, flag by flag and field by field).
+    const variants = joinOverrides(b?.variants, c.variants)
     return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}) }
   })
   if (differing.length) {

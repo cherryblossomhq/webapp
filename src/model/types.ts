@@ -981,7 +981,7 @@ export interface ComponentInstance {
   sheetPath?: string
   /** X23: the footprint's units (KiCad 10's `units`): which of its pads belong to which unit of its symbol, by the pad numbers the file gives. Absent: none. */
   units?: PartUnit[]
-  /** X23: the footprint's PCB points (KiCad 10), in the footprint's own frame. Absent: none. */
+  /** X23: the footprint's PCB points (KiCad 10), in the footprint's own frame as a pad is. Absent: none. */
   points?: PcbPoint[]
 }
 
@@ -992,8 +992,8 @@ export interface PartUnit {
 }
 
 /**
- * X23: a PCB point (KiCad 10): a reference mark that parts and tools can snap to. On a part it is in the footprint's own frame (as a pad is, y down, already flipped on a
- * part on the bottom); on the board it is in the board's frame (y up). It is drawn on one layer, as a circle with a cross of `size` across.
+ * X23: a PCB point (KiCad 10): a reference mark that parts and tools can snap to. On a part it is in the footprint's own frame (as a pad is: y up, laid out as for a part on the top, on the layer it has there,
+ * so a part on the bottom mirrors it and flips its layer); on the board it is in the board's frame (y up). It is drawn on one layer, as a circle with a cross of `size` across.
  */
 export interface PcbPoint {
   x: number

@@ -1,4 +1,4 @@
-import { ChevronLeft, Eye, Redo2, Settings, Undo2 } from "lucide-react"
+import { ChevronLeft, Eye, History, Redo2, Settings, Undo2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
 import { stopFollowing, usePresence } from "../store/presence"
@@ -25,6 +25,9 @@ export function TopBar() {
   const checksShown = panelOpen && sidePanel === "checks"
   const { errors, warnings } = checkTotals(useChecks())
   const viewer = useProjectStore((s) => s.role === "viewer")
+  // Looking at an older version reads as a viewer, but the banner says so, and the project is not view only.
+  const previewing = useProjectStore((s) => !!s.preview)
+  const historyOpen = useUi((s) => s.historyOpen)
   const together = usePresence((s) => s.peers.length > 0)
   const [draft, setDraft] = useState(name)
   // Someone else's rename shows at once, except over a name the user is typing: theirs lands, then
@@ -38,6 +41,7 @@ export function TopBar() {
   }, [name])
   const [sharing, setSharing] = useState(false)
   const canShare = !!projectStorage()?.sharing
+  const canSeeHistory = !!projectStorage()?.history
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-2.5">
@@ -71,7 +75,7 @@ export function TopBar() {
           }}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
         />
-        {viewer && (
+        {viewer && !previewing && (
           <Tooltip label="View only" hint="You can look around, select, run checks and export. Ask the owner for edit access to change it.">
             <span className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-chrome-2 px-2 text-[11.5px] font-[600] text-ink-2">
               <Eye size={12} />
@@ -98,6 +102,11 @@ export function TopBar() {
       <div className="flex flex-1 items-center justify-end gap-1.5">
         <OfflinePill />
         <Collaborators />
+        {canSeeHistory && (
+          <IconButton label="Version history" active={historyOpen} onClick={() => useUi.getState().toggleHistory()}>
+            <History size={17} />
+          </IconButton>
+        )}
         {canShare && <ShareButton onClick={() => setSharing(true)} />}
         {(canShare || viewer) && <span className="mx-1 h-4 w-px bg-line" />}
         <IconButton label="Undo" shortcut="⌘Z" hint={together ? "Undoes your own changes, not other people's" : undefined} disabled={!canUndo || viewer} onClick={() => projectApi().undo()}>

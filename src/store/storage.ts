@@ -2,6 +2,7 @@ import { applyChanges, type Change } from "@cherryblossom/project-changes"
 import { uid } from "../lib/id"
 import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject, summarizeProject, type ProjectSummary } from "../model/projectFile"
 import type { Project } from "../model/types"
+import type { HistorySource } from "./history"
 import type { PresenceSource } from "./presence"
 import type { SharingSource } from "./sharing"
 
@@ -52,6 +53,8 @@ export interface ProjectStorage {
   sharing?: SharingSource
   /** Who else has a project open (faces, cursors, selections). */
   presence?: PresenceSource
+  /** Version history: copies kept as the project is edited, named, previewed and restored. Absent where projects are one browser's. */
+  history?: HistorySource
 }
 
 /** What someone may do to a project: the owner and editors edit it, viewers look. */

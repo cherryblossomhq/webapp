@@ -292,7 +292,6 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
       pads: f.pads.map((p) => {
         let out = p
         if (p.layers?.inner) out = { ...out, layers: { ...out.layers, inner: p.layers.inner.map(id) } }
-        if (p.layers?.other) out = { ...out, layers: { ...out.layers, other: p.layers.other.map(mapShapeLayer) } }
         if (p.stack) {
           const layers = Object.fromEntries(Object.entries(p.stack.layers).map(([k, v]) => [k === "inner" || k === "top" || k === "bottom" ? k : id(k as CopperLayer), v]))
           out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
@@ -341,7 +340,7 @@ export function setCopperLayer(project: Project, layer: CopperLayer, patch: { la
 function normalizeStackOf(board: Project["board"]): Project["board"] {
   const s = board.stack
   if (!s) return board
-  const plain = s.copper.length === 2 && s.copper.every((c) => !c.label && !c.type) && !s.rows?.length && s.finish === undefined && s.edgePlating === undefined && s.dielectricConstraints === undefined && !s.edgeConnector && s.castellated === undefined
+  const plain = s.copper.length === 2 && s.copper.every((c) => !c.label && !c.type) && !s.rows?.length && s.finish === undefined && s.edgePlating === undefined && s.dielectricConstraints === undefined && !s.edgeConnector
   return plain ? without(board, "stack") : board
 }
 

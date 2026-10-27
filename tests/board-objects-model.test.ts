@@ -244,7 +244,7 @@ describe("dimensions, groups and images are stored compactly and read back as th
   it("groups: a name, a lock, a design block and members, with its id stored only when it is not gp<place>", () => {
     const groups: PcbGroup[] = [
       { id: "gp1", name: "", members: ["a", "b"] },
-      { id: "custom", name: "Antenna", members: ["c", "gp1"], locked: true, lib: "Lib:Block" },
+      { id: "custom", name: "Antenna", members: ["c", "gp1"], locked: true },
     ]
     expect(unpackGroups(packGroups(groups))).toEqual(groups)
     expect(packGroups(groups)[0][0]).toBe(0)

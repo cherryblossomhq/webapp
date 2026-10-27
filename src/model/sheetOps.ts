@@ -138,22 +138,15 @@ export function addSheetUse(project: Project, parent: string, child: string, box
 }
 
 /**
- * What a sheet symbol keeps by the path of a use (the variants of its flags on each use of its parent sheet, the page of each use) goes when that use does: a
- * symbol added later takes the id of one removed, so its uses would otherwise start with the removed one's variants.
+ * What a sheet symbol keeps by the path of a use (the variants of its flags on each use of its parent sheet) goes when that use does: a symbol added later
+ * takes the id of one removed, so its uses would otherwise start with the removed one's variants.
  */
 function forgetGoneUses(symbols: SheetSymbol[], live: Set<string>): SheetSymbol[] {
-  const keep = (rec: Record<string, unknown> | undefined) => !rec || Object.keys(rec).every((k) => live.has(k))
   return symbols.map((s) => {
-    if (keep(s.variants) && keep(s.pages)) return s
-    const next: SheetSymbol = { ...s }
-    for (const k of ["variants", "pages"] as const) {
-      const rec = s[k] as Record<string, unknown> | undefined
-      if (!rec || keep(rec)) continue
-      const kept = Object.fromEntries(Object.entries(rec).filter(([use]) => live.has(use)))
-      if (Object.keys(kept).length) (next as unknown as Record<string, unknown>)[k] = kept
-      else delete next[k]
-    }
-    return next
+    if (!s.variants || Object.keys(s.variants).every((k) => live.has(k))) return s
+    const kept = Object.fromEntries(Object.entries(s.variants).filter(([use]) => live.has(use)))
+    const { variants: _gone, ...rest } = s
+    return Object.keys(kept).length ? { ...s, variants: kept } : rest
   })
 }
 
@@ -266,7 +259,6 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
     let name = patch.name
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${patch.name}${i}`
     next.name = name
-    if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetname" ? { ...f, value: name } : f))
   }
   if (patch.flags === null) delete next.flags
   else if (patch.flags) {

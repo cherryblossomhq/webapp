@@ -63,10 +63,6 @@ function readLayers(raw: unknown): PadLayers | null | undefined {
     if (!Array.isArray(raw.inner) || !raw.inner.every(isCopperLayerId) || raw.inner.includes("top") || raw.inner.includes("bottom") || new Set(raw.inner).size !== raw.inner.length) return null
     out.inner = raw.inner as CopperLayer[]
   }
-  if (raw.other !== undefined) {
-    if (!Array.isArray(raw.other) || !raw.other.every((n) => typeof n === "string" && n.length > 0 && n.length < 64)) return null
-    if (raw.other.length) out.other = raw.other as string[]
-  }
   return out
 }
 

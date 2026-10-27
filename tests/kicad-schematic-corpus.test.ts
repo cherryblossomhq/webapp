@@ -132,9 +132,11 @@ function compareDrawing(d: ReturnType<typeof drawingFromLib>["drawing"], raw: Ra
     worst = Math.max(worst, e)
     if (e > 0.001) problems.push(`${what}: ${units * MM} against ${mm}`)
   }
-  if (d.items.length !== raw.shapes.length) problems.push(`${d.items.length} items against ${raw.shapes.length}`)
+  // A private shape is KiCad's symbol editor's alone, and is not brought.
+  const shapes = raw.shapes.filter((s) => !s.private)
+  if (d.items.length !== shapes.length) problems.push(`${d.items.length} items against ${shapes.length}`)
   d.items.forEach((item, i) => {
-    const r = raw.shapes[i]
+    const r = shapes[i]
     if (!r) return
     const kind = r.kind === "ellipse_arc" ? "ellipse" : r.kind
     if (item.kind !== kind) {
@@ -142,7 +144,6 @@ function compareDrawing(d: ReturnType<typeof drawingFromLib>["drawing"], raw: Ra
       return
     }
     if ((item.unit ?? 0) !== r.unit || (item.body ?? 0) !== r.body) problems.push(`item ${i}: unit and style`)
-    if (!!item.private !== r.private) problems.push(`item ${i}: private`)
     if (item.kind !== "text" && (item.fill ?? "none") !== r.fill) problems.push(`item ${i}: fill ${item.fill ?? "none"} against ${r.fill}`)
     check(`item ${i} width`, item.width ?? 0, r.width)
     const flat =

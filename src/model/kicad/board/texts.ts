@@ -68,7 +68,6 @@ function attrsOf(t: KicadText, cx: TextConversion, layer: string): (TextAttrs & 
     ...(t.justify.includes("left") ? { hj: "left" as const } : t.justify.includes("right") ? { hj: "right" as const } : {}),
     ...(t.justify.includes("top") ? { vj: "top" as const } : t.justify.includes("bottom") ? { vj: "bottom" as const } : {}),
     ...(t.lineSpacing !== 1 ? { spacing: t.lineSpacing } : {}),
-    ...(t.href ? { href: t.href } : {}),
     ...(t.locked ? { locked: true as const } : {}),
   }
   return attrs

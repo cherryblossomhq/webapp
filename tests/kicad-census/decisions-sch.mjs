@@ -15,6 +15,12 @@ const STYLE = "(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type))"
 const TEXT = "(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))"
 
 export const RULES_SCH = [
+  // ---- what only says how KiCad lays out and names its own files: read past, not kept (the export makes its own) ----
+  rule("(?:symbol|label|global_label|hierarchical_label|netclass_flag|sheet)>fields_autoplaced|(?:.*>)?property>do_not_autoplace|(?:.*>)?effects>href", "not-needed", "-", { note: "KiCad's autoplacing flags and a text's hyperlink" }),
+  rule("(?:label|global_label|hierarchical_label|netclass_flag)>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid", "not-needed", "-", { note: "KiCad's object identity" }),
+  rule("sheet>property>.+|sheet>instances>project>path>page|sheet_instances>path>page", "not-needed", "-", { note: "where a sheet's name and file are written on its box, and page numbers: the export lays them out and numbers the pages in the order of the tree" }),
+  rule("text>exclude_from_sim|text_box>exclude_from_sim|table>cells>table_cell>exclude_from_sim", "not-needed", "-", { note: "a text left out of a simulation" }),
+
   // ---- the file ----
   rule("version|generator|generator_version", "native", "-", { effort: "S", note: "the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)" }),
   rule("uuid", "native", "-", { effort: "S", note: "the sheet's id, the first part of every instance path" }),
@@ -43,7 +49,6 @@ export const RULES_SCH = [
   rule("symbol>(?:at|lib_id|lib_name|uuid)", "native", "ComponentInstance.sch, partId", { effort: "S", note: "a turn that is not a quarter turn does not occur in KiCad schematics" }),
   rule("symbol>(?:mirror|unit|body_style)", "extend", "-", { ext: "S5", note: "mirrored symbols, the unit of a multi-unit symbol, the body style" }),
   rule("symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files)", "extend", "-", { ext: "S7" }),
-  rule("symbol>fields_autoplaced", "native", "ComponentInstance.flags", { effort: "S", note: "KiCad's flag that it placed the fields itself: kept, so an export writes it back" }),
   rule("symbol>property(?:>.*)?", "extend", "ComponentInstance.props", { ext: "S5", note: "value is a property (native); place, size and visibility of each field are S5" }),
   rule("symbol>pin(?:>alternate)?", "extend", "-", { ext: "S5", note: "the alternate function chosen on this instance" }),
   rule("symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "one reference per use of a sheet; the path names the sheet instance" }),
@@ -146,7 +151,8 @@ export const TOKENS_SCH = [
   token("clock clock_low edge_clock_high inverted inverted_clock input_low output_low non_logic line", "extend", "S6", "pin graphic styles"),
   token("bidirectional tri_state passive input output free unspecified power_in power_out open_collector open_emitter no_connect", "extend", "S5", "pin electrical types and label shapes; the editor's PinDef.kind has fewer kinds, ERC needs all"),
   token("directive_label netclass_flag", "extend", "S8", "directive labels"),
-  token("do_not_autoplace show_name fields_autoplaced field fields private", "extend", "S5", "field flags and private fields"),
+  token("show_name field fields", "extend", "S5", "field flags"),
+  token("do_not_autoplace fields_autoplaced private", "not-needed", "", "KiCad's autoplacing flags, and the private items of a symbol, which KiCad draws in its symbol editor only"),
   token("associated_footprints", "native", "", "a symbol library's footprint filters, kept as a property"),
   token("in_pos_files exclude_from_sim in_bom on_board dnp", "extend", "S7", "symbol flags"),
   token("hatch cross_hatch reverse_hatch", "extend", "S6", "hatched fills of shapes (KiCad 9)"),

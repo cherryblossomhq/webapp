@@ -215,12 +215,12 @@ describe("groups", () => {
     expect(entries).toContain("group-member-moved")
     expect(entries).toContain("group-empty")
   })
-  it("a group's lock comes from the bare word or the node, and a design block is kept", () => {
+  it("a group's lock comes from the bare word or the node, and its design block is not kept", () => {
     const body = [items()[4], group("a", 20, [14], "locked"), `(group "b" (uuid "${U(21)}") (lib_id "Blocks:Power") (members "${U(14)}"))`]
     const g = imported(board({ nets, body })).project.groups!
     expect(g).toHaveLength(1)
-    // the second group takes the item, with its design block
-    expect(g[0].lib).toBe("Blocks:Power")
+    // the second group takes the item; the design block it came from is KiCad's library's alone
+    expect(g[0]).not.toHaveProperty("lib")
     const only = imported(board({ nets, body: [items()[4], group("a", 20, [14], "locked")] })).project.groups![0]
     expect(only.locked).toBe(true)
   })

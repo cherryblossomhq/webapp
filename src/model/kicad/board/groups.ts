@@ -98,7 +98,6 @@ export function resolveGroups(raw: KicadGroup[], refs: Map<string, string[]>, de
       name: g.name,
       members: held[i].flatMap((m) => ("item" in m ? [m.item] : finalId.has(m.group) ? [finalId.get(m.group)!] : [])),
       ...(g.locked ? { locked: true as const } : {}),
-      ...(g.libId !== null ? { lib: g.libId } : {}),
     }
   })
 }

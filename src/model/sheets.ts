@@ -49,7 +49,7 @@ export interface SheetUse {
   /** KiCad's human-readable path, which prefixes the names of local nets: `/` for the root, `/Power/Reg/` below it. */
   human: string
   depth: number
-  /** The page number. */
+  /** Its page number, in the order of the tree from 1 for the root (what a KiCad export numbers its pages by). */
   page: string
 }
 
@@ -89,7 +89,7 @@ const rootUse = (project: Pick<Project, "sheets">): SheetUse => ({
   name: rootSheetName(project),
   human: "/",
   depth: 0,
-  page: rootOf(project)?.page ?? "1",
+  page: "1",
 })
 
 function walk(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
@@ -109,7 +109,7 @@ function walk(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
       }
       const path = `${use.path}/${sym.id}`
       const name = sheetSymbolName(sym)
-      const child: SheetUse = { path, sheet: sym.child, symbol: sym, parent: use.path, name, human: `${use.human}${name}/`, depth: use.depth + 1, page: sym.pages?.[path] ?? "" }
+      const child: SheetUse = { path, sheet: sym.child, symbol: sym, parent: use.path, name, human: `${use.human}${name}/`, depth: use.depth + 1, page: "" }
       uses.push(child)
       ancestors.push(sym.child)
       visit(child)
@@ -117,9 +117,8 @@ function walk(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
     }
   }
   visit(root)
-  // Pages the file does not give follow the order of the tree, the root being 1.
   uses.forEach((u, i) => {
-    if (!u.page) u.page = String(i + 1)
+    u.page = String(i + 1)
   })
   return { uses, byPath: new Map(uses.map((u) => [u.path, u])), refused }
 }

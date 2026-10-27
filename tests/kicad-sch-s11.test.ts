@@ -248,7 +248,7 @@ describe("the flag is the project's, saved and loaded, and a sheet drawn in the 
     const imported = importKicadSchematic(text, { built: BUILT })
     if (imported.status !== "imported") throw new Error("not imported")
     const back = parseProjectFile(serializeProject(imported.project), { id: "x" })
-    expect(back.sheets).toEqual([{ id: "root", ...(back.sheets?.[0]?.uuid ? { uuid: back.sheets[0].uuid } : {}), kicadRules: true }])
+    expect(back.sheets).toEqual([{ id: "root", kicadRules: true }])
     expect(editorGroups(back)).toEqual([])
   })
 

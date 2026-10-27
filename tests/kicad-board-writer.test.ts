@@ -236,11 +236,9 @@ describe("text", () => {
     const p = imported(board({ version: 20241229, body, outline: '(gr_rect (start 0 0) (end 30 30) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' }))
     expect(p.texts.length).toBe(6)
     const { text: out, differences } = await roundTrip(p)
-    // a hyperlink is KiCad 10's: the project keeps it, the KiCad 9 file has none, and a note says so
-    expect(differences.every((d) => d.kind === "project.texts[].href")).toBe(true)
-    expect(differences.length).toBe(1)
+    // a hyperlink is not kept, so nothing differs and the file has none
+    expect(differences).toEqual([])
     expect(out).not.toContain("href")
-    expect((await kicadFiles(p)).notes.join(" ")).toContain("hyperlink")
     expect(out).toContain('(layer "F.Cu" knockout)')
     expect(out).toContain("(unlocked yes)")
     expect(out).toContain("(justify left bottom mirror)")

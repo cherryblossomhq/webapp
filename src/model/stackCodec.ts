@@ -65,6 +65,5 @@ export function normalizeStack(raw: unknown): BoardStack | undefined {
   if (raw.edgePlating === true || raw.edgePlating === false) stack.edgePlating = raw.edgePlating
   if (raw.dielectricConstraints === true || raw.dielectricConstraints === false) stack.dielectricConstraints = raw.dielectricConstraints
   if (raw.edgeConnector === "yes" || raw.edgeConnector === "bevelled") stack.edgeConnector = raw.edgeConnector
-  if (raw.castellated === true || raw.castellated === false) stack.castellated = raw.castellated
   return stack
 }

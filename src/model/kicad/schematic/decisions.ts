@@ -28,6 +28,26 @@ export interface TokenRule {
 
 export const PATH_RULES: PathRule[] = [
  {
+  "source": "^((?:symbol|label|global_label|hierarchical_label|netclass_flag|sheet)>fields_autoplaced|(?:.*>)?property>do_not_autoplace|(?:.*>)?effects>href)$",
+  "decision": "not-needed",
+  "note": "KiCad's autoplacing flags and a text's hyperlink"
+ },
+ {
+  "source": "^((?:label|global_label|hierarchical_label|netclass_flag)>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid)$",
+  "decision": "not-needed",
+  "note": "KiCad's object identity"
+ },
+ {
+  "source": "^(sheet>property>.+|sheet>instances>project>path>page|sheet_instances>path>page)$",
+  "decision": "not-needed",
+  "note": "where a sheet's name and file are written on its box, and page numbers: the export lays them out and numbers the pages in the order of the tree"
+ },
+ {
+  "source": "^(text>exclude_from_sim|text_box>exclude_from_sim|table>cells>table_cell>exclude_from_sim)$",
+  "decision": "not-needed",
+  "note": "a text left out of a simulation"
+ },
+ {
   "source": "^(version|generator|generator_version)$",
   "decision": "native",
   "note": "the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)"
@@ -149,11 +169,6 @@ export const PATH_RULES: PathRule[] = [
   "source": "^(symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files))$",
   "decision": "extend",
   "ext": "S7"
- },
- {
-  "source": "^(symbol>fields_autoplaced)$",
-  "decision": "native",
-  "note": "KiCad's flag that it placed the fields itself: kept, so an export writes it back"
  },
  {
   "source": "^(symbol>property(?:>.*)?)$",
@@ -796,16 +811,22 @@ export const TOKEN_RULES: TokenRule[] = [
  },
  {
   "names": [
-   "do_not_autoplace",
    "show_name",
-   "fields_autoplaced",
    "field",
-   "fields",
-   "private"
+   "fields"
   ],
   "decision": "extend",
   "ext": "S5",
-  "note": "field flags and private fields"
+  "note": "field flags"
+ },
+ {
+  "names": [
+   "do_not_autoplace",
+   "fields_autoplaced",
+   "private"
+  ],
+  "decision": "not-needed",
+  "note": "KiCad's autoplacing flags, and the private items of a symbol, which KiCad draws in its symbol editor only"
  },
  {
   "names": [

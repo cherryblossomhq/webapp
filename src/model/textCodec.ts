@@ -33,7 +33,6 @@ export interface TextStyleDef {
   u?: 0
   d?: 1
   c?: 1
-  hr?: string
 }
 
 type Entry = (string | number)[]
@@ -55,7 +54,6 @@ const styleOf = (t: Styled): TextStyleDef => ({
   ...(t.upright === false ? { u: 0 as const } : {}),
   ...(t.hide ? { d: 1 as const } : {}),
   ...(t.locked ? { c: 1 as const } : {}),
-  ...(t.href !== undefined ? { hr: t.href } : {}),
 })
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
@@ -80,7 +78,6 @@ function readStyle(raw: unknown): (TextAttrs & { layer: string; size: number }) 
     ...(d.u === 0 ? { upright: false as const } : {}),
     ...(d.d === 1 ? { hide: true as const } : {}),
     ...(d.c === 1 ? { locked: true as const } : {}),
-    ...(typeof d.hr === "string" ? { href: d.hr } : {}),
   }
 }
 
@@ -187,7 +184,7 @@ export function normalizePartTexts(raw: unknown): PartText[] | undefined {
     if (!item || typeof item !== "object") continue
     const t = item as Record<string, unknown>
     if (!["reference", "value", "user"].includes(t.kind as string) || !num(t.x) || !num(t.y) || !num(t.rot) || (t.text !== undefined && typeof t.text !== "string")) continue
-    const style = readStyle({ l: t.layer, s: t.size, w: t.w, t: t.thickness, b: t.bold ? 1 : 0, i: t.italic ? 1 : 0, m: t.mirror ? 1 : 0, k: t.knockout ? 1 : 0, h: t.hj === "left" ? "l" : t.hj === "right" ? "r" : undefined, v: t.vj === "top" ? "t" : t.vj === "bottom" ? "b" : undefined, sp: t.spacing, u: t.upright === false ? 0 : undefined, d: t.hide ? 1 : 0, c: t.locked ? 1 : 0, hr: t.href })
+    const style = readStyle({ l: t.layer, s: t.size, w: t.w, t: t.thickness, b: t.bold ? 1 : 0, i: t.italic ? 1 : 0, m: t.mirror ? 1 : 0, k: t.knockout ? 1 : 0, h: t.hj === "left" ? "l" : t.hj === "right" ? "r" : undefined, v: t.vj === "top" ? "t" : t.vj === "bottom" ? "b" : undefined, sp: t.spacing, u: t.upright === false ? 0 : undefined, d: t.hide ? 1 : 0, c: t.locked ? 1 : 0 })
     if (!style) continue
     const b = t.box as { w?: unknown; h?: unknown; border?: unknown; margins?: unknown } | undefined
     const box = b ? readBox(["", "", b.w as number, b.h as number, num(b.border) ? b.border : -1, ...((Array.isArray(b.margins) ? b.margins : []) as number[])].slice(2) as Entry, 0) : undefined

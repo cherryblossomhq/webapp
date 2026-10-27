@@ -61,25 +61,14 @@ describe("S1 nodes are held", () => {
   it("keeps the rectangle, its flags, its border and its fill", () => {
     expect([mm(sym.x), mm(-(sym.y + sym.h)), mm(sym.w), mm(sym.h)]).toEqual([76.2, 50.8, 25.4, 17.78])
     expect(sym.flags).toEqual({ dnp: true, excludeFromBom: true, notOnBoard: true, excludeFromSim: true })
-    expect(sym.fieldsAutoplaced).toBe(true)
     expect(sym.stroke).toMatchObject({ dash: "dash", color: "#ff0000" })
     expect(mm(sym.stroke!.width!)).toBeCloseTo(0.254, 3)
     expect(sym.fill).toEqual({ kind: "color", color: "#ffffc2" })
-    expect(sym.uuid).toBe(SHEET)
   })
 
-  it("keeps every field with its place and look, relative to the symbol", () => {
-    const name = sym.fields!.find((f) => f.name === "Sheetname")!
-    expect(name).toMatchObject({ value: "Power", place: { bold: true, italic: true, color: "#0000ff", h: "left", v: "bottom" } })
-    expect(mm(name.place.size!)).toBeCloseTo(1.524, 3)
-    const file = sym.fields!.find((f) => f.name === "Sheetfile")!
-    expect(file.place).toMatchObject({ showName: true, noAutoplace: true, h: "left", v: "top" })
-    const note = sym.fields!.find((f) => f.name === "Note")!
-    expect(note).toMatchObject({ value: "rev B", place: { angle: 90, hidden: true } })
-    expect(mm(note.place.thickness!)).toBeCloseTo(0.3, 3)
-    // relative to the lower-left corner, y up
-    expect(mm(name.place.x)).toBeCloseTo(0, 3)
-    expect(mm(name.place.y)).toBeCloseTo(17.78 + 0.635, 3)
+  it("keeps the name and none of KiCad's own bookkeeping: no field places, no autoplacing, no uuid", () => {
+    expect(sym.name).toBe("Power")
+    for (const k of ["fields", "fieldsAutoplaced", "uuid", "file", "pages"]) expect(sym, k).not.toHaveProperty(k)
   })
 
   it("keeps each pin where it is, with its shape, its turn and its text (a slash decoded)", () => {
@@ -90,27 +79,16 @@ describe("S1 nodes are held", () => {
       ["TRI", "tri_state", 270, 88.9, 68.58],
     ])
     expect(sym.pins[0].look).toMatchObject({ italic: true, h: "right" })
-    expect(sym.pins[0].uuid).toBe("00000000-0000-4000-8000-0000000000c1")
   })
 
-  it("keeps a sub-sheet's own title block, which the project's properties do not hold", () => {
-    expect(project.sheets![1].titleBlock).toEqual([
-      { key: "Title", value: "Power stage" },
-      { key: "Date", value: "2026-01-01" },
-      { key: "Rev", value: "B" },
-      { key: "Company", value: "ACME" },
-      { key: "Comment1", value: "first" },
-    ])
-  })
-
-  it("keeps the pages of the root and of the use", () => {
-    expect(project.sheets![0]).toMatchObject({ id: "root", page: "3" })
-    expect(sheetUses(project).map((u) => u.page)).toEqual(["3", "5"])
+  it("numbers the pages in the order of the tree, whatever the file numbered them", () => {
+    expect(project.sheets!.map((s) => s.id)).toEqual(["root", "s1"])
+    expect(sheetUses(project).map((u) => u.page)).toEqual(["1", "2"])
   })
 
   it("keeps a hierarchical label's shape and look, and the reference the use gives the symbol", () => {
     const hl = project.labels.find((l) => l.name === "VIN")!
-    expect(hl).toMatchObject({ kind: "hierarchical", shape: "input", sheet: "s1", fieldsAutoplaced: true, look: { bold: true } })
+    expect(hl).toMatchObject({ kind: "hierarchical", shape: "input", sheet: "s1", look: { bold: true } })
     expect(project.labels.find((l) => l.name === "VOUT/A")).toMatchObject({ kind: "hierarchical", shape: "output" })
     expect(project.components.find((c) => c.inst)!.ref).toBe("R2")
   })
@@ -120,13 +98,14 @@ describe("S1 nodes are held", () => {
     expect(nets.map((n) => n.name)).toContain("/Power/VIN")
   })
 
-  it("counts no S1 node as pending or unknown, and says nothing was dropped", () => {
+  it("counts no S1 node as pending or unknown, holds what it brings, and reads past KiCad's own bookkeeping", () => {
     expect(report.account?.pending.size).toBe(0)
     expect(report.account?.unknownPaths.size).toBe(0)
     const held = [...(report.account?.importedPaths.keys() ?? [])]
-    for (const path of ["sheet", "sheet>at", "sheet>size", "sheet>dnp", "sheet>in_bom", "sheet>on_board", "sheet>exclude_from_sim", "sheet>fields_autoplaced", "sheet>fill>color", "sheet>stroke>color", "sheet>stroke>type", "sheet>stroke>width", "sheet>uuid", "sheet>property", "sheet>property>at", "sheet>property>effects>font>size", "sheet>pin", "sheet>pin>at", "sheet>pin>effects>justify", "sheet>pin>uuid", "sheet>instances>project>path>page", "hierarchical_label", "hierarchical_label>shape", "hierarchical_label>fields_autoplaced", "hierarchical_label>at", "sheet_instances>path>page"]) {
+    for (const path of ["sheet", "sheet>at", "sheet>size", "sheet>dnp", "sheet>in_bom", "sheet>on_board", "sheet>exclude_from_sim", "sheet>fill>color", "sheet>stroke>color", "sheet>stroke>type", "sheet>stroke>width", "sheet>property", "sheet>pin", "sheet>pin>at", "sheet>pin>effects>justify", "hierarchical_label", "hierarchical_label>shape", "hierarchical_label>at"]) {
       expect(held, path).toContain(path)
     }
+    for (const path of ["sheet>fields_autoplaced", "sheet>uuid", "sheet>property>at", "sheet>property>effects>font>size", "sheet>pin>uuid", "sheet>instances>project>path>page", "hierarchical_label>fields_autoplaced", "sheet_instances>path>page"]) expect(held, path).not.toContain(path)
   })
 
   it("survives a save and a load exactly", () => {
@@ -140,14 +119,13 @@ describe("S1 nodes are held", () => {
   it("is written to KiCad and read back with the same sheet symbol", async () => {
     const out = await kicadFiles(project)
     const names = Object.keys(out.files).filter((n) => n.endsWith(".kicad_sch"))
-    const rootName = names.find((n) => !n.startsWith("power"))!
+    const rootName = names.find((n) => n !== "Power.kicad_sch")!
     const again = importKicadSchematic({ files: new Map(names.map((n) => [n, out.files[n]])), root: rootName })
     if (again.status !== "imported") throw new Error(again.message)
     const s = again.project.sheetSymbols![0]
     expect(s).toMatchObject({ name: "Power", flags: { dnp: true, excludeFromBom: true, notOnBoard: true, excludeFromSim: true } })
     expect(s.pins.map((p) => [p.name, p.shape, p.rot])).toEqual(sym.pins.map((p) => [p.name, p.shape, p.rot]))
-    expect(sheetUses(again.project).map((u) => u.page)).toEqual(["3", "5"])
+    expect(sheetUses(again.project).map((u) => u.page)).toEqual(["1", "2"])
     expect(again.project.labels.find((l) => l.name === "VOUT/A")).toMatchObject({ kind: "hierarchical" })
-    expect(again.project.sheets![1].titleBlock).toEqual(project.sheets![1].titleBlock)
   })
 })

@@ -169,7 +169,7 @@ describe("a cached symbol as the symbol drawing the editor keeps", () => {
     expect(part.symbol.pinLabels?.[0]).toMatchObject({ number: "1", name: "IN", dx: 1, dy: 0, showName: true, showNumber: true })
   })
 
-  it("does not draw a symbol's hidden pins, its private shapes or its hidden text, and keeps them in the drawing", () => {
+  it("does not draw a symbol's hidden pins or its hidden text, and keeps them in the drawing; a private shape is not brought", () => {
     const text = `(symbol "T:H" (pin_numbers hide)
       (symbol "H_0_1"
         (polyline (pts (xy 0 0) (xy 1 1)) (stroke (width 0) (type default)) (fill (type none)))
@@ -178,7 +178,7 @@ describe("a cached symbol as the symbol drawing the editor keeps", () => {
       (symbol "H_1_1" (pin power_in line (at 0 0 0) (length 2.54) hide (name "VCC") (number "1"))
         (pin passive line (at 2.54 0 180) (length 2.54) (name "A") (number "2"))))`
     const { drawing } = draw(text)
-    expect(drawing.items).toHaveLength(3)
+    expect(drawing.items).toHaveLength(2)
     expect(drawing.pins[0].hidden).toBe(true)
     const part = drawnPart(drawing)
     expect(part.symbol.primitives.filter((p) => p.type === "text")).toEqual([])

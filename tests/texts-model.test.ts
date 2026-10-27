@@ -375,7 +375,7 @@ describe("the project file", () => {
   })
   it("a box and a bold, italic, mirrored, knockout text with its justification survive a save and a load exactly", () => {
     let p = blinker()
-    p = addBoardText(p, { layer: "B.Cu", text: "all\nof it", x: 1.123456, y: -2.000001, rot: 33.333333, size: 1.4, w: 1.1, thickness: 0.22, bold: true, italic: true, mirror: true, knockout: true, hj: "right", vj: "top", spacing: 1.25, locked: true, href: "http://x", box: { w: 5, h: 3, border: 0.2, margins: [0.1, 0.2, 0.3, 0.4] } }).project
+    p = addBoardText(p, { layer: "B.Cu", text: "all\nof it", x: 1.123456, y: -2.000001, rot: 33.333333, size: 1.4, w: 1.1, thickness: 0.22, bold: true, italic: true, mirror: true, knockout: true, hj: "right", vj: "top", spacing: 1.25, locked: true, box: { w: 5, h: 3, border: 0.2, margins: [0.1, 0.2, 0.3, 0.4] } }).project
     const c = part(p)
     p = addPartText(p, c.id, { text: "${REFERENCE}", at: { x: 5, y: 5 } }).project
     p = updatePartText(p, c.id, 1, { hide: true, upright: false, mirror: true })

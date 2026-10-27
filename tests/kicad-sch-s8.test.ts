@@ -65,8 +65,6 @@ describe("S8: directive labels", () => {
   it("imports a directive label as a drawing with its place, turn, shape, pin, look and every property", () => {
     const [d] = dirs(p)
     expect([mm(d.x), mm(-d.y), d.rot, d.shape, mm(d.length), d.text]).toEqual([50.8, 57.15, 0, "round", 2.54, ""])
-    expect(d.fieldsAutoplaced).toBe(true)
-    expect(d.uuid).toBe("11111111-0000-4000-8000-000000000001")
     expect(d.look).toMatchObject({ h: "left", v: "bottom" })
     expect(d.fields.map((f) => [f.name, f.value])).toEqual([["Netclass", "Power"], ["Component Class", ""]])
     expect(d.fields[1].place).toMatchObject({ italic: true })
@@ -80,7 +78,7 @@ describe("S8: directive labels", () => {
     expect(r.report.account?.pending.size).toBe(0)
     expect(r.report.account?.unknownPaths.size).toBe(0)
     const held = [...(r.report.account?.importedPaths.keys() ?? [])]
-    for (const path of ["netclass_flag", "netclass_flag>at", "netclass_flag>length", "netclass_flag>shape", "netclass_flag>fields_autoplaced", "netclass_flag>uuid", "netclass_flag>effects", "netclass_flag>effects>justify", "netclass_flag>property", "netclass_flag>property>at", "netclass_flag>property>effects>font>italic", "netclass_flag>property>show_name", "netclass_flag>property>do_not_autoplace"]) {
+    for (const path of ["netclass_flag", "netclass_flag>at", "netclass_flag>length", "netclass_flag>shape", "netclass_flag>effects", "netclass_flag>effects>justify", "netclass_flag>property", "netclass_flag>property>at", "netclass_flag>property>effects>font>italic", "netclass_flag>property>show_name"]) {
       expect(held, path).toContain(path)
     }
   })
@@ -233,11 +231,11 @@ describe("S8: rule areas", () => {
   const text = sheet([AREA("(exclude_from_sim yes) (in_bom no) (on_board yes) (dnp yes)")])
   const p = load(text)
 
-  it("imports a rule area as a closed line with its flags, its stroke and its uuid", () => {
+  it("imports a rule area as a closed line with its flags and its stroke", () => {
     const [a] = areas(p)
     expect(a.closed).toBe(true)
     expect(a.points.map((q) => [mm(q.x), mm(-q.y)])).toEqual([[40, 58], [65, 58], [65, 70], [40, 70]])
-    expect(a.ruleArea).toEqual({ dnp: true, excludeFromBom: true, excludeFromSim: true, uuid: "22222222-0000-4000-8000-000000000002" })
+    expect(a.ruleArea).toEqual({ dnp: true, excludeFromBom: true, excludeFromSim: true })
     expect(a.stroke).toMatchObject({ dash: "dash" })
   })
 
@@ -246,7 +244,7 @@ describe("S8: rule areas", () => {
     if (r.status !== "imported") throw new Error(r.message)
     expect(r.report.account?.pending.size).toBe(0)
     const held = [...(r.report.account?.importedPaths.keys() ?? [])]
-    for (const path of ["rule_area", "rule_area>dnp", "rule_area>in_bom", "rule_area>on_board", "rule_area>exclude_from_sim", "rule_area>polyline", "rule_area>polyline>pts", "rule_area>polyline>pts>xy", "rule_area>polyline>stroke", "rule_area>polyline>stroke>type", "rule_area>polyline>stroke>width", "rule_area>polyline>fill", "rule_area>polyline>fill>type", "rule_area>polyline>uuid"]) {
+    for (const path of ["rule_area", "rule_area>dnp", "rule_area>in_bom", "rule_area>on_board", "rule_area>exclude_from_sim", "rule_area>polyline", "rule_area>polyline>pts", "rule_area>polyline>pts>xy", "rule_area>polyline>stroke", "rule_area>polyline>stroke>type", "rule_area>polyline>stroke>width", "rule_area>polyline>fill", "rule_area>polyline>fill>type"]) {
       expect(held, path).toContain(path)
     }
   })
@@ -390,10 +388,8 @@ describe("S8: the KiCad 9 file", () => {
     const area = /\(rule_area[\s\S]*?\n {2}\)\n/.exec(text)![0]
     expect(area).toContain("(polyline")
     expect(area).not.toMatch(/\((dnp|in_bom|on_board|exclude_from_sim)\b/)
-    expect(area).toContain("(uuid 22222222-0000-4000-8000-000000000002)")
     expect(text).toMatch(/\(netclass_flag ""\n {4}\(length 2\.54\)\n {4}\(shape round\)\n {4}\(at [\d.]+ [\d.]+ 0\)/)
     expect(text).toContain('(property "Netclass" "Power"')
-    expect(text).toContain("(fields_autoplaced yes)")
     // R2 is in the area: it is written do not populate and out of the BOM, R1 is not.
     const sym = (r: string) => text.split("\n  (symbol\n").find((chunk) => chunk.includes(`(property "Reference" "${r}"`))!
     expect(sym("R2")).toMatch(/\(dnp yes\)/)
@@ -409,7 +405,7 @@ describe("S8: the KiCad 9 file", () => {
     const q = again.project
     const [d0] = dirs(p)
     const [d1] = dirs(q)
-    expect(d1).toMatchObject({ rot: 0, shape: "round", length: d0.length, text: "", fieldsAutoplaced: true, uuid: d0.uuid })
+    expect(d1).toMatchObject({ rot: 0, shape: "round", length: d0.length, text: "" })
     expect(d1.fields.map((f) => [f.name, f.value])).toEqual(d0.fields.map((f) => [f.name, f.value]))
     // The export puts the sheet on its page: everything moved by the same amount, to the ten-thousandth of a unit the editor keeps a wire end to.
     const dx = d1.x - d0.x
@@ -421,7 +417,7 @@ describe("S8: the KiCad 9 file", () => {
     expect(q.rules.netClasses).toEqual(p.rules.netClasses)
     // The flags are now the symbol's own, and the effective flags are the same.
     expect(ref(q, "R2").flags).toMatchObject({ dnp: true, excludeFromBom: true })
-    expect(areas(q)[0].ruleArea).toEqual({ uuid: "22222222-0000-4000-8000-000000000002" })
+    expect(areas(q)[0].ruleArea).toEqual({})
     const eff = (x: Project) => x.components.map((c) => [c.ref, !!withRuleAreaFlags(x).components.find((y) => y.id === c.id)!.flags?.dnp])
     expect(eff(q)).toEqual(eff(p))
     expect(computeConnectivity(q).nets.map((n) => n.name).sort()).toEqual(computeConnectivity(p).nets.map((n) => n.name).sort())
@@ -494,15 +490,12 @@ describe("S8: hostile files and cost", () => {
 })
 
 describe("S8: copies", () => {
-  it("a copy of a directive label or a rule area is another item: it has no KiCad uuid, and the copy still counts (a net it is on is in its class)", async () => {
+  it("a copy of a directive label or a rule area is another item, and the copy still counts (a net it is on is in its class)", async () => {
     const { copyDrawings } = await import("../src/model/drawings")
     const p = load(sheet([directive("50.8 57.15 0", "Power"), AREA("(dnp yes)")]))
     const copies = copyDrawings(p.drawings!, { x: 0, y: 0 })
     expect(copies.map((c) => c.id)).not.toEqual(p.drawings!.map((c) => c.id))
-    expect(copies.find(isDirective)!.uuid).toBeUndefined()
-    expect(copies.find(isRuleArea)!.ruleArea.uuid).toBeUndefined()
     expect(copies.find(isRuleArea)!.ruleArea.dnp).toBe(true)
-    expect(p.drawings!.find(isDirective)!.uuid).toBeDefined()
   })
 })
 

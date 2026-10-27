@@ -1,6 +1,5 @@
 import { normalizeAngle, rotate90, round } from "../../../lib/geometry"
 import { defaultFaces } from "../../padFaces"
-import { flipShapeLayer } from "../../shapeLayers"
 import { DEFAULT_SHAPE_WIDTH, isClosedShape, mapShape } from "../../shapes"
 import { flipLayer } from "../../stack"
 import type { BoardShape, CopperLayer, PadDef, PadLayerShape, PadLayers, PadProperty, PadSides, Vec2, ZoneConnect } from "../../types"
@@ -115,8 +114,6 @@ function layersOf(pad: KicadPad, board: KicadBoard, bottom: boolean): PadLayers 
   const all = innerOf(map.ids)
   const byDefault = kind.copper === "both" && got.copper === "both" ? all : []
   if (own.length !== byDefault.length || own.some((l, i) => l !== byDefault[i])) out.inner = own
-  const other = lay.other.map((n) => (bottom ? flipShapeLayer(n, map.count) : n))
-  if (other.length) out.other = other
   return Object.keys(out).length ? out : undefined
 }
 

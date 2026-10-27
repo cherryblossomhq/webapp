@@ -100,13 +100,12 @@ describe("B1: the variant changes of one use of a sheet are that use's", () => {
       sheets: [...(project.sheets ?? []), { id: "s9" }],
       sheetSymbols: [
         ...project.sheetSymbols!,
-        { id: "h9", sheet: a.child, child: "s9", x: 0, y: 0, w: 5, h: 5, name: "Inner", pins: [], variants: { [uses[1].path]: { Lite: { dnp: true } }, [uses[2].path]: { Lite: { excludeFromBom: true } } }, pages: { [`${uses[1].path}/h9`]: "7", [`${uses[2].path}/h9`]: "8" } },
+        { id: "h9", sheet: a.child, child: "s9", x: 0, y: 0, w: 5, h: 5, name: "Inner", pins: [], variants: { [uses[1].path]: { Lite: { dnp: true } }, [uses[2].path]: { Lite: { excludeFromBom: true } } } },
       ],
     }
     const without = removeSheetSymbols(withInner, [a.id])
     const inner = without.sheetSymbols!.find((s) => s.id === "h9")!
     expect(inner.variants).toEqual({ [uses[2].path]: { Lite: { excludeFromBom: true } } })
-    expect(inner.pages).toEqual({ [`${uses[2].path}/h9`]: "8" })
     void b
   })
 })

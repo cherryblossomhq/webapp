@@ -103,7 +103,6 @@ export function buildStack(board: KicadBoard): BoardStack | undefined {
     if (sk.edgePlating !== undefined) stack.edgePlating = sk.edgePlating
     if (sk.dielectricConstraints !== undefined) stack.dielectricConstraints = sk.dielectricConstraints
     if (sk.edgeConnector === "yes" || sk.edgeConnector === "bevelled") stack.edgeConnector = sk.edgeConnector
-    if (sk.castellated !== undefined) stack.castellated = sk.castellated
   }
   return stack
 }

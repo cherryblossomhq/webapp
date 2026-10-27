@@ -35,9 +35,9 @@ export function uuidFrom(text: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`
 }
 
-/** The uuid of the file a sheet is: the root's is the one the project came with, else made from the sheet's id. */
-export const sheetUuid = (project: Project, sheet: string) => sheetsOf(project).find((s) => s.id === sheet)?.uuid ?? uuidFrom(`sheet:${project.id}:${sheet}`)
-export const symbolUuid = (sym: SheetSymbol) => sym.uuid ?? uuidFrom(`sheet-symbol:${sym.id}`)
+/** The uuid of the file a sheet is, and of a sheet symbol: made from their ids, so a project exported twice says the same. */
+export const sheetUuid = (project: Project, sheet: string) => uuidFrom(`sheet:${project.id}:${sheet}`)
+export const symbolUuid = (sym: SheetSymbol) => uuidFrom(`sheet-symbol:${sym.id}`)
 
 /** KiCad's instance path of a use: the root's uuid, then the uuid of each sheet symbol down to it. */
 export function instancePath(project: Project, use: SheetUse): string {
@@ -49,18 +49,6 @@ export function instancePath(project: Project, use: SheetUse): string {
     at = all.find((u) => u.path === at!.parent)
   }
   return `/${[sheetUuid(project, ROOT_SHEET), ...chain].join("/")}`
-}
-
-/** A sub-sheet's own title block, from the entries it was read with (the root's is the project's, `titleBlock` in `kicadPost.ts`). */
-export function sheetTitleBlock(project: Project, sheet: string): { title: string; date?: string; revision?: string; company?: string; comments: { index: number; text: string }[] } | null {
-  const entries = sheetsOf(project).find((s) => s.id === sheet)?.titleBlock
-  if (!entries?.length) return null
-  const get = (key: string) => entries.find((e) => e.key === key)?.value
-  const comments = entries.flatMap((e) => {
-    const m = /^Comment(\d+)$/.exec(e.key)
-    return m ? [{ index: Number(m[1]), text: e.value }] : []
-  })
-  return { title: get("Title") ?? "", ...(get("Date") ? { date: get("Date") } : {}), ...(get("Rev") ? { revision: get("Rev") } : {}), ...(get("Company") ? { company: get("Company") } : {}), comments }
 }
 
 /** The file name of each sheet: the root's is the project's, the others are named after the sheet (its first symbol's name); each is its own. */
@@ -92,7 +80,6 @@ function effects(look: TextLook | undefined, place?: FieldPlace): string {
   const parts = [`(font ${font.join(" ")})`]
   const words = [look?.h ?? place?.h, look?.v ?? place?.v, look?.mirror ? "mirror" : undefined].filter(Boolean)
   if (words.length) parts.push(`(justify ${words.join(" ")})`)
-  if (look?.href) parts.push(`(href ${quote(look.href)})`)
   if (look?.hidden || place?.hidden) parts.push("(hide yes)")
   return `(effects ${parts.join(" ")})`
 }
@@ -158,24 +145,24 @@ export function sharedSheetNotes(project: Project, symbolFlags: ReadonlyMap<stri
 /** A sheet symbol as KiCad 9 writes it, with a pin for each of its pins and the page of each use of its parent. */
 export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: Vec2) => Vec2, files: Map<string, string>, variants: "keep" | "apply" = "apply"): string {
   const top = toPage({ x: sym.x, y: sym.y + sym.h })
-  const origin = toPage({ x: sym.x, y: sym.y })
   // S9: KiCad 9 has no variants, so a sheet symbol's flags are the active variant's on its first use; a project written as KiCad 10 files keeps the variants in each use.
   const flags = sheetFlagsWritten(project, sym, variants) ?? {}
   const stroke = sym.stroke
   const out: string[] = ["  (sheet", `    (at ${mm6(top.x)} ${mm6(top.y)})`, `    (size ${mm6(sym.w * MM)} ${mm6(sym.h * MM)})`]
   out.push(`    (exclude_from_sim ${yn(!!flags.excludeFromSim)})`, `    (in_bom ${yn(!flags.excludeFromBom)})`, `    (on_board ${yn(!flags.notOnBoard)})`, `    (dnp ${yn(!!flags.dnp)})`)
-  if (sym.fieldsAutoplaced) out.push("    (fields_autoplaced yes)")
   out.push(`    (stroke (width ${mm6((stroke?.width ?? 0.012) * MM)}) (type ${stroke?.dash ?? "solid"})${stroke?.color ? ` ${colorNode(stroke.color)}` : ""})`)
   out.push(`    ${sym.fill ? (sym.fill.kind === "color" ? `(fill ${colorNode(sym.fill.color ?? "#000000")})` : `(fill (type ${sym.fill.kind}))`) : "(fill (color 0 0 0 0.0000))"}`)
   out.push(`    (uuid ${symbolUuid(sym)})`)
-  const fields = sym.fields?.length ? sym.fields : [{ name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0 as const, h: "left" as const, v: "bottom" as const } }, { name: "Sheetfile", value: "", place: { x: 0, y: -0.05, angle: 0 as const, h: "left" as const, v: "top" as const } }]
+  // The name above the box and the file below it, where KiCad puts them on a sheet it draws.
+  const fields: { name: string; value: string; place: FieldPlace }[] = [
+    { name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0, h: "left", v: "bottom" } },
+    { name: "Sheetfile", value: files.get(sym.child) ?? "", place: { x: 0, y: -0.05, angle: 0, h: "left", v: "top" } },
+  ]
   for (const f of fields) {
-    const value = f.name === "Sheetname" ? sym.name : f.name === "Sheetfile" ? (files.get(sym.child) ?? "") : f.value
     const at = toPage({ x: sym.x + f.place.x, y: sym.y + f.place.y })
-    void origin
-    out.push(`    (property ${quote(f.name)} ${quote(value)}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${f.place.angle})`, ...(f.place.showName ? ["      (show_name yes)"] : []), ...(f.place.noAutoplace ? ["      (do_not_autoplace yes)"] : []), `      ${effects(undefined, f.place)}`, "    )")
+    out.push(`    (property ${quote(f.name)} ${quote(f.value)}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${f.place.angle})`, `      ${effects(undefined, f.place)}`, "    )")
   }
-  for (const p of sym.pins) out.push(pinNode(p, toPage))
+  for (const p of sym.pins) out.push(pinNode(sym, p, toPage))
   const parents = usesOfSheet(project, sym.sheet)
   const uses = sheetUses(project)
   const entries = parents.map((u) => {
@@ -187,15 +174,14 @@ export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: 
   return out.join("\n")
 }
 
-function pinNode(p: SheetPin, toPage: (p: Vec2) => Vec2): string {
+function pinNode(sym: SheetSymbol, p: SheetPin, toPage: (p: Vec2) => Vec2): string {
   const at = toPage(p)
-  return [`    (pin ${quote(escapeNetName(p.name))} ${p.shape}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${p.rot})`, `      (uuid ${p.uuid ?? uuidFrom(`sheet-pin:${p.id}:${p.name}`)})`, `      ${effects(p.look)}`, "    )"].join("\n")
+  return [`    (pin ${quote(escapeNetName(p.name))} ${p.shape}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${p.rot})`, `      (uuid ${uuidFrom(`sheet-pin:${sym.id}:${p.id}`)})`, `      ${effects(p.look)}`, "    )"].join("\n")
 }
 
 /** The sheet's file with its own id (the converter writes a new one) and the sheet symbols drawn on it. */
-export function retarget(text: string, uuid: string, symbols: string[], page?: string): string {
+export function retarget(text: string, uuid: string, symbols: string[]): string {
   let out = text.replace(/\(uuid [0-9a-f-]+\)/, `(uuid ${uuid})`)
-  if (page && page !== "1") out = out.replace(/(\(sheet_instances\s*\(path "\/"\s*\(page )"1"/, `$1${quote(page)}`)
   if (symbols.length) {
     const at = out.indexOf("\n  (sheet_instances")
     out = at < 0 ? out : `${out.slice(0, at)}\n${symbols.join("\n")}${out.slice(at)}`

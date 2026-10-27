@@ -203,7 +203,7 @@ export function withCopperCount(board: BoardDef, count: number): BoardDef {
   const { rows: _rows, ...rest } = board.stack ?? { copper }
   const stack: BoardStack = { ...rest, copper }
   const { stack: _old, ...plain } = board
-  if (n === 2 && !stack.finish && !stack.edgePlating && !stack.dielectricConstraints && !stack.edgeConnector && !stack.castellated && copper.every((c) => !c.label && !c.type)) return plain
+  if (n === 2 && !stack.finish && !stack.edgePlating && !stack.dielectricConstraints && !stack.edgeConnector && copper.every((c) => !c.label && !c.type)) return plain
   return { ...plain, stack }
 }
 

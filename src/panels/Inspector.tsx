@@ -38,6 +38,8 @@ import { Button, Field } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 import { CommitInput, LengthInput, Row, Section, Switch, useLengthUnit } from "../ui/form"
 import { PartPadsSection } from "./PadPanels"
+import { ViaMachiningSection } from "./MachiningPanels"
+import { NetLengthSection } from "./GeneratorPanels"
 import { DrawingInspector } from "./DrawingInspector"
 import { ModelSection } from "./ModelSection"
 import { ProjectInspector } from "./ProjectInspector"
@@ -184,6 +186,7 @@ export function Inspector() {
     return (
       <Section title={`${selection.length} selected`}>
         <p className="text-[13px] text-ink-2">{counts.map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")}</p>
+        {view === "pcb" && vias.length === selection.length && <ViaMachiningSection vias={project.vias.filter((v) => vias.includes(v.id))} project={project} />}
         {view === "pcb" && <GroupSection project={project} />}
         <div className="flex flex-wrap gap-1.5">
           {schematic && (comps.length > 0 || blocks.length > 0) && (
@@ -282,6 +285,7 @@ function TraceInspector({ trace: t, net, project }: { trace: Trace; net: string;
       {t.net && net === "Short circuit" && <p className="text-[12px] text-danger">This trace is on {t.net}, but it touches copper of another net. Checks lists the short.</p>}
       {t.net && net !== "Short circuit" && net !== t.net && <p className="text-[12px] text-ink-2">The board it came from puts this trace on {t.net}.</p>}
       <Row label="Length" value={formatLength(length, unit, true)} />
+      <NetLengthSection project={project} net={net} />
       {isArc && arc && <Row label="Radius" value={`${formatLength(arc.r, unit, true)}, ${Math.abs(Math.round((arc.sweep * 18000) / Math.PI) / 100)}°`} />}
       {isArc && (
         <div className="flex flex-wrap gap-1.5">
@@ -463,6 +467,7 @@ function ViaInspector({ via: v, net, project }: { via: Via; net: string; project
           </select>
         </Field>
       )}
+      <ViaMachiningSection vias={[v]} project={project} />
       {v.drill < minDrill - 1e-6 && <p className="text-[12px] text-danger">Drill is under the design rules' minimum{micro ? " for a micro via" : ""}.</p>}
       {ring < minAnnularRing - 1e-6 && <p className="text-[12px] text-danger">The copper ring is under the design rules' minimum.</p>}
       <div className="flex items-center justify-between">

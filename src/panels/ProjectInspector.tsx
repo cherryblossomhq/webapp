@@ -40,6 +40,8 @@ import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, S
 import { onBoard } from "../model/partFlags"
 import { LayersSection } from "./LayersSection"
 import { VariantsSection } from "./VariantPanels"
+import { ViaProtectRules } from "./MachiningPanels"
+import { NetChainsSection } from "./GeneratorPanels"
 
 const commitProject = (fn: (p: Project) => Project) => projectApi().commit((p) => ({ ...fn(p), updatedAt: Date.now() }))
 const setBoard = (patch: Partial<Project["board"]>) => commitProject((p) => ({ ...p, board: { ...p.board, ...patch } }))
@@ -74,6 +76,7 @@ export function ProjectInspector({ project }: { project: Project }) {
       <PoursSection project={project} />
       <NetsSection project={project} />
       <NetClassesSection project={project} />
+      <NetChainsSection project={project} />
     </div>
   )
 }
@@ -548,6 +551,7 @@ function RulesSection({ project }: { project: Project }) {
             </RuleRow>
           </>
         )}
+        <ViaProtectRules project={project} />
         {project.vias.some((v) => v.kind === "micro") || r.minMicroVia ? (
           <RuleRow label="Smallest micro via" hint="KiCad's minimum micro via diameter and drill, which Checks holds micro vias to">
             <span className="mono text-[12.5px] text-ink-2">{r.minMicroVia ? `${r.minMicroVia.diameter} / ${r.minMicroVia.drill} mm` : "not set"}</span>

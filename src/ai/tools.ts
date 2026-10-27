@@ -17,6 +17,8 @@ import { tidySchematic } from "../model/tidy"
 import { decouplingSummary } from "../model/decoupling"
 import { pcbToolLabel, pcbToolSpecs } from "./pcbTools"
 import { dimensionsReport, drawingsReport, groupsReport, imagesReport, textsReport } from "./shapeReport"
+import { padMachining, protectionWords, viaProtection } from "../model/machining"
+import { padDieTimes, tuningPatterns } from "../model/netLengths"
 import { stageGaps } from "../model/powerStage"
 import { projectPartDefs } from "../model/customParts"
 import { findPart } from "../model/library"
@@ -417,6 +419,7 @@ const getDesign: ToolSpec = {
       ...(texts ? { texts } : {}),
       ...(dimensions ? { dimensions } : {}),
       ...(groups ? { groups } : {}),
+      ...machiningReport(project),
       ...(images ? { images } : {}),
       ...(zones ? { zones } : {}),
       checks: {
@@ -441,6 +444,30 @@ const getDesign: ToolSpec = {
     }
     return ok(project, JSON.stringify(overview), `Read the design's parts and nets by name (${components.length} components, ${nets.length} nets)`)
   },
+}
+
+/**
+ * X22 and X21, what get_design says of via protection (how many vias have each combination, in words), backdrills and post-machining (vias and pads), tuning patterns and the lengths inside
+ * pad packages. Each is listed only when the board has it, so a board that has none looks as it always did.
+ */
+function machiningReport(project: Project) {
+  const protection: Record<string, number> = {}
+  for (const v of project.vias) {
+    const words = protectionWords(viaProtection(project.rules, v, project.board)).join(", ")
+    if (words) protection[words] = (protection[words] ?? 0) + 1
+  }
+  const pads = padMachining(project)
+  const drills = { vias: project.vias.reduce((n, v) => n + (v.backdrill ? 1 : 0) + (v.tertiary ? 1 : 0), 0), pads: pads.reduce((n, p) => n + (p.backdrill ? 1 : 0) + (p.tertiary ? 1 : 0), 0) }
+  const posts = { vias: project.vias.reduce((n, v) => n + (v.post?.front ? 1 : 0) + (v.post?.back ? 1 : 0), 0), pads: pads.reduce((n, p) => n + (p.front ? 1 : 0) + (p.back ? 1 : 0), 0) }
+  const patterns = tuningPatterns(project)
+  const dies = padDieTimes(project).length
+  return {
+    ...(Object.keys(protection).length ? { via_protection: protection } : {}),
+    ...(drills.vias || drills.pads ? { backdrills: drills } : {}),
+    ...(posts.vias || posts.pads ? { post_machining: posts } : {}),
+    ...(patterns.length ? { tuning_patterns: patterns.map((t) => ({ name: t.name, layer: t.layer, target_mm: t.target })) } : {}),
+    ...(dies ? { package_lengths: dies } : {}),
+  }
 }
 
 /** Components by designator, or an error naming the ones the design doesn't have. All units of a part go with it. */

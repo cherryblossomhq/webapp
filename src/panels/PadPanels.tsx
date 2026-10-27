@@ -1,13 +1,19 @@
 import { useState } from "react"
+import { updateLandPadMachining, type PadMachiningPatch } from "../model/machiningOps"
 import { hasPadFeatures } from "../model/padGeom"
 import { padSummary, updateLandPad, type PadPatch } from "../model/padOps"
 import { formatLength } from "../model/rules"
 import { ownLand } from "../model/shapeOps"
-import type { ComponentInstance, PadDef, Project, ZoneConnect } from "../model/types"
+import type { ComponentInstance, CopperLayer, PadDef, Project, ZoneConnect } from "../model/types"
 import { projectApi } from "../store/projectStore"
 import { Field } from "../ui/controls"
 import { CommitInput, LengthInput, Row, Section, useLengthUnit } from "../ui/form"
+import { copperLayers, layerLabel } from "../model/stack"
+import { HoleMachining } from "./MachiningPanels"
 import { landUsers } from "./shapeInspector"
+
+/** X22 and X21: whether a pad has a backdrill, a post-machining, or a length or delay inside its package. */
+const hasMachiningFeatures = (pad: PadDef) => pad.backdrill !== undefined || pad.tertiary !== undefined || pad.post !== undefined || pad.dieLength !== undefined || pad.dieDelay !== undefined
 
 const ZONE_OPTIONS: { value: ZoneConnect | ""; label: string }[] = [
   { value: "", label: "The pour's own" },
@@ -28,7 +34,7 @@ export function PartPadsSection({ c, project }: { c: ComponentInstance; project:
   const unit = useLengthUnit()
   const [picked, setPicked] = useState(0)
   const land = ownLand(project, c.id)
-  if (!land || !land.pads.some(hasPadFeatures)) return null
+  if (!land || !land.pads.some((p) => hasPadFeatures(p) || hasMachiningFeatures(p))) return null
   const index = Math.min(picked, land.pads.length - 1)
   const pad: PadDef = land.pads[index]
   const edit = (patch: PadPatch) => projectApi().commit((p) => updateLandPad(p, land.name, index, patch))
@@ -81,7 +87,36 @@ export function PartPadsSection({ c, project }: { c: ComponentInstance; project:
       </Field>
       {len("Thermal gap", "thermalGap", "Rules'")}
       {len("Spoke width", "thermalWidth", "Rules'")}
+      <PadMachining pad={pad} project={project} edit={(patch) => projectApi().commit((p) => updateLandPadMachining(p, land.name, index, patch))} />
       <p className="text-[12px] text-ink-3">A margin or clearance left empty is the board's. The paste ratio is a fraction of the pad's size (0.1 is 10%).</p>
     </Section>
+  )
+}
+
+/** The pad's backdrill, tertiary drill and post-machining, and the length and delay of its wire inside the package. Layers are seen from the part's own side. */
+function PadMachining({ pad, project, edit }: { pad: PadDef; project: Project; edit: (patch: PadMachiningPatch) => void }) {
+  const layerName = (l: CopperLayer) => (l === "top" ? "Part's face" : l === "bottom" ? "Far face" : layerLabel(project.board, l))
+  return (
+    <>
+      <HoleMachining
+        holes={[{ drill: pad.holeDiameter ?? 0, backdrill: pad.backdrill, tertiary: pad.tertiary, post: pad.post }]}
+        layers={copperLayers(project.board)}
+        layerName={layerName}
+        sides={{ front: "part's face", back: "far face" }}
+        edit={(make) => edit(make({ drill: pad.holeDiameter ?? 0, backdrill: pad.backdrill, tertiary: pad.tertiary, post: pad.post }))}
+      />
+      <Field label="Length in package">
+        <LengthInput ariaLabel="Length in package" optional placeholder="None" value={pad.dieLength ?? null} onCommit={(mm) => edit({ dieLength: mm })} />
+      </Field>
+      <Field label="Delay in package">
+        <CommitInput
+          mono
+          ariaLabel="Delay in package"
+          placeholder="None (ps)"
+          value={pad.dieDelay ?? ""}
+          onCommit={(v) => (v.trim() === "" ? edit({ dieDelay: null }) : Number.isFinite(Number(v)) && Number(v) >= 0 && edit({ dieDelay: Number(v) }))}
+        />
+      </Field>
+    </>
   )
 }

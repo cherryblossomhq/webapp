@@ -10,8 +10,9 @@
 import { rotate90 } from "../../../lib/geometry"
 import { kiRound, mmToIu } from "../../../lib/kicadText"
 import { flipShapeLayer } from "../../shapeLayers"
-import { isTextLayer, partTextWorld, textInk } from "../../texts"
-import type { BoardText, ComponentInstance, PartText, PcbSide, Project, TextAttrs } from "../../types"
+import { boardTextWorld, isTextLayer, outlineSignatureOf, partTextWorld, textInk, textPose, type WorldText } from "../../texts"
+import { packRings } from "../../textOutlines"
+import type { BoardText, ComponentInstance, PartText, PcbSide, Project, TextAttrs, TextOutline } from "../../types"
 import { resolveLayer } from "./graphics"
 import type { KicadBoard, KicadText } from "./types"
 
@@ -28,11 +29,25 @@ const r6 = (n: number) => {
 
 const norm360 = (a: number) => ((a % 360) + 360) % 360
 
-/** KiCad's name for its own stroke font; any other face is a TrueType font, which is X19. */
+/** KiCad's name for its own stroke font; any other face is a TrueType font (X19). */
 export const KICAD_FONT_NAME = "KiCad Font"
 
-/** Whether a text is drawn with a font other than KiCad's stroke font. */
-export const needsOutlineFont = (t: KicadText) => t.renderCache || (t.face !== null && !t.face.startsWith(KICAD_FONT_NAME))
+/** The font a text names that is not KiCad's own, or null for a text in KiCad's stroke font. A cache with no face is a font the file does not name. */
+export function faceOf(t: KicadText): string | null {
+  if (t.face !== null && !t.face.startsWith(KICAD_FONT_NAME)) return t.face
+  return t.renderCache && t.face === null ? UNNAMED_FONT : null
+}
+
+/** What a text is said to be in when the file caches its outlines and names no font. */
+export const UNNAMED_FONT = "a font the file does not name"
+
+/** The outlines of a text, kept with the pose and the look they were drawn at: the world text is the text as the model has it. */
+function outlineOf(t: KicadText, wt: WorldText): TextOutline | undefined {
+  const c = t.renderCache
+  if (!c) return undefined
+  const { x, y, rot, mirror } = textPose(wt)
+  return { text: c.text, angle: c.angle, sig: outlineSignatureOf(wt), at: { x, y, rot, ...(mirror ? { mirror: true as const } : {}) }, rings: packRings(c.polygons) }
+}
 
 /** The first stamp whose files store a bold text's thickness without the bold multiplier (master parser line 898: `MigrateLegacyBoldStrokeWidth` runs for older ones; KiCad 10.0 has no migration). */
 export const BOLD_BASE_THICKNESS_FROM = 20260826
@@ -54,7 +69,7 @@ export interface TextConversion {
 
 /** The attributes a text carries besides its place, or null when its layer is not one the editor has (said through `lose`). */
 function attrsOf(t: KicadText, cx: TextConversion, layer: string): (TextAttrs & { size: number }) | null {
-  if (needsOutlineFont(t)) cx.lose(`text in the font ${t.face ?? "KiCad drew from a cache"} (${cx.where})`)
+  const face = faceOf(t)
   const thickness = baseThickness(t, cx.board.version)
   const attrs: TextAttrs & { size: number } = {
     layer,
@@ -70,6 +85,7 @@ function attrsOf(t: KicadText, cx: TextConversion, layer: string): (TextAttrs & 
     ...(t.lineSpacing !== 1 ? { spacing: t.lineSpacing } : {}),
     ...(t.href ? { href: t.href } : {}),
     ...(t.locked ? { locked: true as const } : {}),
+    ...(face !== null ? { face } : {}),
   }
   return attrs
 }
@@ -140,7 +156,9 @@ export function convertBoardText(t: KicadText, cx: TextConversion, id: string): 
   const { size, ...rest } = attrs
   // Board text cannot be hidden in KiCad (`parsePCB_TEXT`, 10.0.0 parser lines 3846-3854: a hide node of a board text is refused, master 4586), and has no keep upright.
   const at = box ? { x: box.cx, y: box.cy } : { x: t.at.x, y: -t.at.y }
-  return { ...rest, ...(box ? { box: box.box } : {}), id, text: t.text, x: r6(at.x), y: r6(at.y), size, rot: r6(norm360(t.angle)), side: sideOf(layer) }
+  const made: BoardText & { layer: string } = { ...rest, ...(box ? { box: box.box } : {}), id, text: t.text, x: r6(at.x), y: r6(at.y), size, rot: r6(norm360(t.angle)), side: sideOf(layer), layer }
+  const outline = made.face !== undefined ? outlineOf(t, boardTextWorld(made)) : undefined
+  return outline ? { ...made, outline } : made
 }
 
 /** Where the part sits, for turning a text's place on the board into a place in its land. */
@@ -199,7 +217,7 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     origins?.push(source)
     // A reference or value says what it shows only when that is not the part's own (a part KiCad names `REF**` is renamed).
     const text = kind === "user" ? t.text : kind === "reference" && t.text !== shown.ref ? t.text : undefined
-    out.push({
+    const made: PartText = {
       ...rest,
       layer,
       ...(mirror ? { mirror: true as const } : {}),
@@ -211,7 +229,14 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
       y: r6(ly),
       size,
       rot: r6(norm360(landAngle)),
-    })
+    }
+    // The outlines are kept with the pose the part gives the text, worked out by the very function the editor draws it by (the part is as the component will have it).
+    if (made.face !== undefined && t.renderCache) {
+      const stub = { id: "", partId: "", ref, props: {}, footprint: "", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: place.x, y: place.y, rot: place.rot, side: place.bottom ? "bottom" : "top", placed: true } } as unknown as ComponentInstance
+      const outline = outlineOf(t, partTextWorld(stub, made, out.length, cx.board.copper.names.length || 2))
+      if (outline) made.outline = outline
+    }
+    out.push(made)
   }
   return out
 }

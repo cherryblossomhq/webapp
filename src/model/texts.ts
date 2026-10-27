@@ -10,12 +10,13 @@
 import { copperCount } from "./stack"
 import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
 import { transformPoint } from "../lib/geometry"
-import { inkBox, iuToMm, kiRound, knockoutMargin, layoutText, linebreakText, mmToIu, strokeFont, type IuBox, type StrokeFontData, type TextAttrsIu, type TextStrokes } from "../lib/kicadText"
+import { effectivePenWidth, inkBox, iuToMm, kiRound, knockoutMargin, layoutText, linebreakText, mmToIu, strokeFont, type IuBox, type StrokeFontData, type TextAttrsIu, type TextStrokes } from "../lib/kicadText"
+import { outlineRings, ringsToPolygons, textOutlineSignature, type Pose } from "./textOutlines"
 import { dimensionDrawing } from "./dimensions"
 import { findPart } from "./library"
 import { isPhysical, valueText } from "./instances"
 import { flipShapeLayer, shapeLayerInfo, type ShapeLayerKind } from "./shapeLayers"
-import type { BoardDimension, BoardText, ComponentInstance, PartText, Project, TextAttrs, Vec2 } from "./types"
+import type { BoardDimension, BoardText, ComponentInstance, PartText, Project, TextAttrs, TextOutline, Vec2 } from "./types"
 
 // Text objects on the board (X9): board text, and the reference, value and own text of each part, with
 // where each is and how it is drawn as KiCad draws it. A text is laid out by `lib/kicadText.ts` in KiCad's
@@ -237,6 +238,9 @@ export interface WorldText {
   source: BoardText | PartText
   box?: NonNullable<TextAttrs["box"]>
   component?: ComponentInstance
+  /** X19: the TrueType font the text names, and the outlines KiCad drew it with (see `textOutline`). */
+  face?: string
+  outline?: TextOutline
 }
 
 export const boardTextId = (id: string) => `x:${id}`
@@ -291,8 +295,20 @@ function fromAttrs(base: Pick<WorldText, "id" | "owner" | "index" | "kind" | "pl
     spacing: t.spacing ?? 1,
     upright,
     ...(t.box ? { box: t.box } : {}),
+    ...(t.face !== undefined ? { face: t.face } : {}),
+    ...(t.outline ? { outline: t.outline } : {}),
   }
 }
+
+/** A board text as a world text (the editor's own silkscreen text is not one). */
+export const boardTextWorld = (t: BoardText & { layer: string }, index = 0): WorldText =>
+  fromAttrs({ id: boardTextId(t.id), owner: "#board", index, kind: "board", placed: true, source: t, content: t.text }, t, { x: t.x, y: t.y, rot: t.rot, mirror: t.mirror === true, layer: t.layer }, false)
+
+/** A text's pose: where it is, the angle it is drawn at and whether it is mirrored; what a cached outline is mapped by. */
+export const textPose = (wt: WorldText): Pose => ({ x: wt.x, y: wt.y, rot: wt.drawRot, mirror: wt.mirror })
+
+/** What a text's cached outlines are drawn for as it is now (`TextOutline.sig`). */
+export const outlineSignatureOf = (wt: WorldText): string => textOutlineSignature(outlineLook(wt))
 
 /** A part's text where the part has put it. */
 export function partTextWorld(c: ComponentInstance, t: PartText, index: number, copperCount: number): WorldText {
@@ -411,6 +427,8 @@ export interface TextInk {
   /** The strokes in the board's frame (mm, y up), and the pen they are drawn with (mm). */
   strokes: Vec2[][]
   pen: number
+  /** A text drawn from KiCad's cached outlines of a TrueType font (X19): its letters as polygons, each its outer ring then its holes. It has no strokes. */
+  outlines?: Vec2[][][]
   /** A knockout text's box, which is filled round the strokes: its corners (counter-clockwise), and the box of a text box's border. */
   hull?: Vec2[]
   /** A text box's border as a closed outline, and the width it is stroked with. */
@@ -506,8 +524,87 @@ export function textInk(project: Project, wt: WorldText): TextInk {
   return ink
 }
 
+/** What a text's cached outlines were drawn for, which is what they depend on besides the text it shows and its pose. */
+const outlineLook = (wt: WorldText) => ({ face: wt.face ?? "", size: wt.size, w: wt.w, bold: wt.bold, italic: wt.italic, hj: wt.hj, vj: wt.vj, spacing: wt.spacing, ...(wt.box ? { box: wt.box } : {}) })
+
+/** A text box wraps its text at the box's width, and KiCad caches the wrapped text: the words are what is compared. */
+const words = (s: string) => s.replace(/\s+/g, " ").trim()
+
+/**
+ * The outlines KiCad drew a text with, when they still are the text's shape: the text still shows what they were drawn for and its size, width, weight, slant,
+ * justification, line spacing and face are as they were. KiCad's own cache is thrown away on these edits (and compared with the shown text on every draw); the
+ * editor has no TrueType rasteriser, so a text that has lost them is drawn in the stroke font and says so (`textFontState`).
+ */
+export function currentOutline(project: Project, wt: WorldText): TextOutline | null {
+  const o = wt.outline
+  if (!o || wt.face === undefined || o.sig !== textOutlineSignature(outlineLook(wt))) return null
+  const shown = shownOf(project, wt)
+  return (wt.box ? words(o.text) === words(shown) : o.text === shown) ? o : null
+}
+
+/**
+ * How a text is drawn with respect to its font (X19): `null` for a text in KiCad's own stroke font, `outline` when it is KiCad's cached outlines of the font, `edited`
+ * when it had outlines and an edit took them away, `uncached` when the board names a font and has no outlines for it. The last two are drawn in the stroke font.
+ */
+export function textFontState(project: Project, wt: WorldText): "outline" | "edited" | "uncached" | null {
+  if (wt.face === undefined) return null
+  if (currentOutline(project, wt)) return "outline"
+  return wt.outline ? "edited" : "uncached"
+}
+
+/** The ink of a text drawn from its cached outlines (X19): the letters as polygons in place, and for a knockout the box round them, for a text box its border. */
+function outlineInk(wt: WorldText, o: TextOutline, a: TextAttrsIu): TextInk {
+  const rings = outlineRings(o, { x: wt.x, y: wt.y, rot: wt.drawRot, mirror: wt.mirror }).flat()
+  const outlines = ringsToPolygons(rings)
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const r of rings) {
+    for (let i = 0; i < r.length; i += 2) {
+      minX = Math.min(minX, r[i])
+      maxX = Math.max(maxX, r[i])
+      minY = Math.min(minY, r[i + 1])
+      maxY = Math.max(maxY, r[i + 1])
+    }
+  }
+  const ink: TextInk = { strokes: [], pen: 0, outlines, box: Number.isFinite(minX) ? { minX: minX / NM, maxX: maxX / NM, minY: minY / NM, maxY: maxY / NM } : null }
+  if (wt.knockout) {
+    if (wt.box) ink.hull = boxCorners(wt, wt.drawRot).map(toBoard)
+    else if (ink.box) {
+      const place = { x: mmToIu(wt.x), y: -mmToIu(wt.y), angle: wt.drawRot }
+      const margin = knockoutMargin(a.h, effectivePenWidth(a.thickness, a.bold, a.w, a.h))
+      // The outlines' box in the text's own turn, grown by the margin, then turned back, as for strokes (`PCB_TEXT::buildBoundingHull`).
+      let x0 = Infinity
+      let y0 = Infinity
+      let x1 = -Infinity
+      let y1 = -Infinity
+      for (const r of rings) {
+        for (let i = 0; i < r.length; i += 2) {
+          const p = turnPoint({ x: r[i], y: -r[i + 1] }, place, -place.angle)
+          x0 = Math.min(x0, p.x)
+          x1 = Math.max(x1, p.x)
+          y0 = Math.min(y0, p.y)
+          y1 = Math.max(y1, p.y)
+        }
+      }
+      const corners = [
+        { x: x0 - margin, y: y0 - margin },
+        { x: x1 + margin, y: y0 - margin },
+        { x: x1 + margin, y: y1 + margin },
+        { x: x0 - margin, y: y1 + margin },
+      ].map((p) => turnPoint(p, place, place.angle))
+      ink.hull = corners.map(toBoard)
+    }
+  }
+  if (wt.box?.border !== undefined && wt.box.border > 0) ink.border = { points: boxCorners(wt, wt.drawRot).map(toBoard), width: wt.box.border }
+  return ink
+}
+
 function computeInk(project: Project, wt: WorldText): TextInk {
   const a = toIuAttrs(wt)
+  const outline = currentOutline(project, wt)
+  if (outline) return outlineInk(wt, outline, a)
   let shown = shownOf(project, wt)
   let place = { x: mmToIu(wt.x), y: -mmToIu(wt.y), angle: wt.drawRot }
   const multiline = wt.kind === "board" || !!wt.box
@@ -574,10 +671,11 @@ const NM = 1e6
 const p64 = (p: Vec2) => ({ x: Math.round(p.x * NM), y: Math.round(p.y * NM) })
 const back = (p: { x: number; y: number }): Vec2 => ({ x: p.x / NM, y: p.y / NM })
 
-/** The ink of a text as polygons (each stroke grown by half the pen, round ends): what KiCad's `TransformTextToPolySet` makes of it. */
+/** The ink of a text as polygons (each stroke grown by half the pen, round ends): what KiCad's `TransformTextToPolySet` makes of it. A text drawn from outlines is its outlines. */
 export function inkPaths(ink: TextInk, grow = 0): Paths64 {
   const half = (ink.pen / 2 + grow) * NM
   const out: Paths64 = []
+  if (ink.outlines) for (const polygon of ink.outlines) for (const ring of polygon) out.push(ring.map(p64))
   for (const line of ink.strokes) {
     if (line.length < 1) continue
     const path: Path64 = line.length === 1 ? [p64(line[0]), p64({ x: line[0].x + 1e-6, y: line[0].y })] : line.map(p64)
@@ -632,7 +730,7 @@ export interface LayerText {
 /** The ink of a text as a layer draws it, or null when there is nothing to draw. */
 export function layerText(project: Project, wt: WorldText): LayerText | null {
   const ink = textInk(project, wt)
-  const fills = wt.knockout ? knockoutPolygons(ink) : []
+  const fills = wt.knockout ? knockoutPolygons(ink) : (ink.outlines ?? [])
   if (!ink.strokes.length && !fills.length && !ink.border) return null
   let box = ink.box
   if (ink.hull) {

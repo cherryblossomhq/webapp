@@ -35,7 +35,6 @@ export function needs(b) {
   if (b.tracks.segments + b.tracks.vias > 0) need("X13", "tracks and vias carry a net in the file")
   if (has(b, /^image$/)) need("X14", "reference image")
   if (Object.keys(b.fps.attr).some((a) => !["smd", "through_hole", "(none)"].includes(a)) || has(b, /^footprint>(net_tie_pad_groups|jumper_pad_groups|duplicate_pad_numbers_are_jumpers)/)) need("X15", "footprint flags or net ties")
-  if (has(b, /render_cache$/) || has(b, /^(footprint>)?embedded_fonts$/)) need("X19", "TrueType text outlines or embedded fonts")
   if (has(b, /^(footprint>)?zone>placement$/) || has(b, /^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
   if (has(b, /^generated$/) || has(b, /^footprint>pad>(die_length|die_delay)$/)) need("X21", "tuning patterns or pad lengths")
   if (has(b, /^via>(capping|covering|plugging|filling|backdrill|tertiary_drill)/) || has(b, /^footprint>pad>(backdrill|tertiary_drill|front_post_machining|back_post_machining)/)) need("X22", "via protection or backdrill")

@@ -213,6 +213,33 @@ export function reportUnknown(account: NodeAccount, report: ImportReport) {
 }
 
 /**
+ * The font files a board embeds are brought in (X19), though the table reports the `embedded_files` subtree as a whole (the models and the other files
+ * in it are named one by one): the nodes of each font file move from reported to imported.
+ */
+export function acceptEmbeddedFonts(account: NodeAccount, board: KicadBoard) {
+  const fonts = new Set(board.embeddedFonts.files.map((f) => f.name))
+  if (!fonts.size) return
+  const accept = (list: List, path: string) => {
+    for (const file of list.slice(1)) {
+      if (!Array.isArray(file) || file[0] !== "file") continue
+      const name = file.find((c): c is List => Array.isArray(c) && c[0] === "name")?.[1]
+      if (typeof name !== "string" || !fonts.has(name)) continue
+      const walk = (node: List, at: string) => {
+        if (account.reported > 0) {
+          account.reported--
+          account.imported++
+          account.importedPaths.set(at, (account.importedPaths.get(at) ?? 0) + 1)
+        }
+        for (const c of node.slice(1)) if (Array.isArray(c) && typeof c[0] === "string") walk(c, `${at}>${c[0]}`)
+      }
+      walk(file, `${path}>file`)
+    }
+  }
+  for (const e of board.tree.slice(1)) if (Array.isArray(e) && e[0] === "embedded_files") accept(e, "embedded_files")
+  for (const fp of board.footprints) for (const e of fp.node.slice(1)) if (Array.isArray(e) && e[0] === "embedded_files") accept(e, "footprint>embedded_files")
+}
+
+/**
  * The nodes of the models the project does not hold (hidden, scaled, a second one, not in the
  * stock library) are not imported, whatever the table says of a model node: they move from
  * imported to reported, and `build.ts` names each model in the report.

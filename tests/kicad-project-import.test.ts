@@ -263,8 +263,8 @@ describe("refused whole when one half is", () => {
   })
 
   it("the board is refused: the project is, with the board's own reason, and the board alone is no help", () => {
-    // Text in a font of the computer is one thing the board importer does not build yet (X19).
-    const font = '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'
+    // A text with an expression is one thing the board importer does not build yet (X25).
+    const font = '(gr_text "@{1+1}" (at 3 3) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))'
     const r = refused(importKicadProject(files(dividerBoard({ extra: [font] }), divider())))
     expect(r.reason).toBe("unsupported")
     expect(r.message).toMatch(/^This board uses .+, which (is|are) not supported yet\.$/)

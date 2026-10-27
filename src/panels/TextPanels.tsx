@@ -9,7 +9,7 @@ import { uiApi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
 import { LayerSelect, LengthInput, Section, switchRow } from "../ui/form"
 import { MIXED } from "./shapeInspector"
-import { textFacts, textLayerGroups, textRowText } from "./textInspector"
+import { fontNotes, textFacts, textLayerGroups, textRowText } from "./textInspector"
 
 /** The properties of one or several texts, the same for board text and a part's. */
 function TextFields({ texts, project }: { texts: WorldText[]; project: Project }) {
@@ -125,6 +125,16 @@ function TextFields({ texts, project }: { texts: WorldText[]; project: Project }
       {f.allPart && switchRow("Keep upright", "Turns upside-down text half a turn so it reads from the bottom or the right", f.upright, (upright) => edit({ upright }))}
       {switchRow("Locked", "A locked text stays where it is when it is moved", f.locked, (locked) => edit({ locked }))}
       {f.anyBox && <p className="text-[12px] text-ink-2">A text box wraps its text inside its rectangle.</p>}
+      {fontNotes(project, texts).map((note) => (
+        <p key={note} className="text-[12px] text-ink-2">
+          {note}
+        </p>
+      ))}
+      {texts.some((t) => t.face !== undefined) && (
+        <Button onClick={() => edit({ face: null })} title="Draw this text in KiCad's own stroke font and forget the font's name">
+          Use KiCad's stroke font
+        </Button>
+      )}
     </>
   )
 }

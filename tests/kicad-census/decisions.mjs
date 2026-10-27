@@ -136,8 +136,8 @@ export const RULES = [
   rule("gr_text|gr_text_box", "extend", "BoardText: quarter turns, silk only", { ext: "X9", note: "text on any layer, any angle, mirrored, justified, bold or italic, knockout; text boxes (KiCad 7 and later)" }),
   rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>(?:at|layer|effects|hide|unlocked|locked|uuid|tstamp|border|end|start|margins|knockout|stroke|stroke>(?:type|width)|effects>justify|effects>hide|effects>font|effects>font>(?:size|thickness|bold|italic|face|line_spacing)|angle)", "extend", "BoardText", { ext: "X9" }),
   rule("gr_text_box>pts(?:>xy)?", "extend", "-", { ext: "X25", note: "a text box that is an outline of points (a box turned by other than a quarter turn, KiCad 8 and later), which no corpus board has" }),
-  rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>render_cache(?:>polygon(?:>pts(?:>xy)?)?)?", "extend", "-", { ext: "X19", note: "the outlines KiCad drew a TrueType text with; they decide the silkscreen shapes, so they are stored and plotted" }),
-  rule("embedded_fonts|footprint>embedded_fonts", "extend", "-", { ext: "X19", note: "the fonts a board embeds (KiCad 9); needed to redraw its text outlines" }),
+  rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>render_cache(?:>polygon(?:>pts(?:>xy)?)?)?", "extend", "-", { ext: "X19", note: "the outlines KiCad drew a TrueType text with; they decide the silkscreen shapes, so they are stored, drawn, plotted and written back" }),
+  rule("embedded_fonts|footprint>embedded_fonts", "extend", "-", { ext: "X19", note: "whether the board or the footprint may use fonts embedded in the file (KiCad 9); kept, and written back" }),
   rule("(?:footprint>)?table(?:>.*)?|barcode(?:>.*)?|drill_chart(?:>.*)?|drill_map(?:>.*)?", "extend", "-", { ext: "X25", note: "tables (KiCad 9), barcodes (KiCad 10), and drill charts and maps, which are tables and drawings KiCad generates from the drill data" }),
 
   // ---- dimensions ----
@@ -164,7 +164,7 @@ export const RULES = [
   rule("footprint>model>uuid", "not-needed", "-", { note: "KiCad's object identity" }),
   rule("footprint>model>(?:opacity|type|layer|color|body_pcb_gap|material|overall_height)", "report", "-", { note: "a 3D model's opacity, colour, material, gap to the board and body type: the editor places a model and does not restyle it" }),
   rule("footprint>group(?:>.*)?", "extend", "-", { ext: "X12" }),
-  rule("footprint>embedded_files(?:>.*)?|embedded_files(?:>.*)?", "report", "-", { note: "founder decision, 24 October 2026: no 3D models packed inside the file for now. Each embedded file (KiCad 9) is a report entry named per file, \"3D model embedded in the KiCad file was not brought in\", and never dropped silently; a model referenced by path or library name is still imported as a model assignment where the editor can resolve it" }),
+  rule("footprint>embedded_files(?:>.*)?|embedded_files(?:>.*)?", "report", "-", { note: "founder decision, 24 October 2026: no 3D models packed inside the file for now. Each embedded file (KiCad 9) is a report entry named per file, \"3D model embedded in the KiCad file was not brought in\", and never dropped silently; a model referenced by path or library name is still imported as a model assignment where the editor can resolve it. A font file in it is the exception: it is brought in (X19, kept with the project's files and written back), and the nodes of each move from reported to imported" }),
   rule("footprint>component_classes(?:>class)?", "extend", "-", { ext: "X20", note: "component classes (KiCad 9) that placement rule areas refer to" }),
   rule("footprint>units(?:>unit(?:>(?:name|pins))?)?", "extend", "-", { ext: "X23", note: "footprint units, which pins belong to which unit (KiCad 10)" }),
   rule("footprint>point(?:>(?:at|layer|size|uuid))?", "extend", "-", { ext: "X23", note: "PCB points (KiCad 10); in a footprint before 20260616 in board frame" }),

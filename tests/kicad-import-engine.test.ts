@@ -57,7 +57,7 @@ describe("the outcomes", () => {
     expect(o.project).toBeNull()
     expect(o.summary.status).toBe("refused")
     expect(o.summary.reason).toBe("unsupported")
-    expect(o.summary.missing).toEqual([{ id: "X19", name: PLAIN_NAMES.X19, why: expect.stringMatching(/Arial/) }])
+    expect(o.summary.missing).toEqual([{ id: "X25", name: PLAIN_NAMES.X25, why: expect.stringMatching(/expression/) }])
   })
 
   it("refused for size: the message names the size and the limit, and nothing is built for saving", async () => {
@@ -236,12 +236,12 @@ ${LIB_R.replace('"Device:R"', '"R"')}
   })
 
   it("a refusal of the project's board or schematic says project, with the board's own reason", async () => {
-    const font = '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'
+    const font = '(gr_text "@{1+1}" (at 3 3) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))'
     const o = outcomeOf(await run([entry("demo.kicad_pcb", board({ nets: ['(net 0 "")', '(net 1 "VCC")'], body: [font] })), entry("demo.kicad_sch", divider())]))
     expect(o.summary.kind).toBe("project")
     expect(o.summary.reason).toBe("unsupported")
     expect(o.summary.message).toBe("This project uses 1 thing Cherry Blossom cannot hold yet, listed below.")
-    expect(o.summary.missing[0].name).toBe(PLAIN_NAMES.X19)
+    expect(o.summary.missing[0].name).toBe(PLAIN_NAMES.X25)
   })
 
   it("KiCad 5's schematic beside a board is set aside with its reason, and the board imports alone", async () => {

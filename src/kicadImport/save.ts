@@ -50,13 +50,13 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
   if (bytes > STORED_PROJECT_LIMIT_BYTES) {
     throw new SaveRefused(`This board needs ${sizeText(bytes)} and projects hold up to ${sizeText(STORED_PROJECT_LIMIT_BYTES)}. Nothing was saved.`, "final")
   }
-  // The pictures the project names go to the file store first, so a project is never saved naming files that are not kept (and a refused one leaves only files, which cost nothing but room).
+  // The files the project names (reference images, embedded fonts) go to the file store first, so a project is never saved naming files that are not kept (and a refused one leaves only files, which cost nothing but room).
   for (const f of outcome.files ?? []) {
     try {
       const kept = await putImageFile(f.name, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
-      if (kept !== f.id) throw new Error("The picture was kept under another name than the project's.")
+      if (kept !== f.id) throw new Error("The file was kept under another name than the project's.")
     } catch (e) {
-      throw new SaveRefused(`Couldn't keep the board's reference image${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")
+      throw new SaveRefused(`Couldn't keep the board's files (reference images and embedded fonts)${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")
     }
   }
   let id: string

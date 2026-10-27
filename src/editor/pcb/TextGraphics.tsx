@@ -1,4 +1,4 @@
-import { layerText, textLayerKind, textLayerSide, type LayerText, type WorldText } from "../../model/texts"
+import { layerText, textFontState, textLayerKind, textLayerSide, type LayerText, type WorldText } from "../../model/texts"
 import type { Project } from "../../model/types"
 import { PCB } from "../theme"
 import { shapeLayerColor } from "./ShapeGraphics"
@@ -25,6 +25,8 @@ export function TextDraw({ t, project, px, selected = false, opacity = 1 }: { t:
   const strokes = lt.strokes.map((s) => (s.length === 1 ? [s[0], s[0]] : s))
   const d = strokes.map((s) => `M${s.map((p) => `${p.x},${p.y}`).join("L")}`).join("")
   const fillD = lt.fills.flatMap((poly) => poly.map(ring)).join("")
+  // A text whose font the editor cannot draw (X19) and has no outlines for is drawn in the stroke font: a dashed amber box says it is not the shape KiCad draws.
+  const font = textFontState(project, t)
   const border = lt.border ? `M${lt.border.points.map((p) => `${p.x},${p.y}`).join("L")}Z` : ""
   return (
     <g opacity={opacity}>
@@ -39,6 +41,21 @@ export function TextDraw({ t, project, px, selected = false, opacity = 1 }: { t:
           strokeWidth={1.2 * px}
           rx={2 * px}
         />
+      )}
+      {(font === "edited" || font === "uncached") && (
+        <rect
+          x={lt.box.minX - 1.5 * px}
+          y={lt.box.minY - 1.5 * px}
+          width={lt.box.maxX - lt.box.minX + 3 * px}
+          height={lt.box.maxY - lt.box.minY + 3 * px}
+          fill="none"
+          stroke={PCB.warn}
+          strokeWidth={1 * px}
+          strokeDasharray={`${3 * px} ${2 * px}`}
+          pointerEvents="none"
+        >
+          <title>{`Drawn in KiCad's stroke font: the editor cannot draw ${t.face}`}</title>
+        </rect>
       )}
       {fillD && <path d={fillD} fill={color} fillOpacity={soft ? 0.4 : 1} fillRule="evenodd" />}
       {d && <path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" />}

@@ -9,7 +9,7 @@ import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } fro
 import { copperCount } from "../model/stack"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
-import { isDimensionText, worldTexts } from "../model/texts"
+import { isDimensionText, textFontState, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
 import { padMachining, postMachiningComment, protectionWords, viaProtection, viaBackdrills } from "../model/machining"
@@ -244,9 +244,14 @@ function textNotes(project: Project): string[] {
     skipped.set(what, (skipped.get(what) ?? 0) + 1)
   }
   const knockouts = drawn.filter((t) => t.knockout).length
+  const outlined = drawn.filter((t) => textFontState(project, t) === "outline").length
+  const stroked = drawn.filter((t) => ["edited", "uncached"].includes(textFontState(project, t) ?? ""))
+  const strokeFonts = [...new Set(stroked.map((t) => t.face!))]
   return [
     "TEXT",
     ...lines,
+    ...(outlined ? [`  TrueType outlines ${outlined}: plotted as KiCad drew them (the polygons of the board file)`] : []),
+    ...(stroked.length ? [`  Stroke font       ${stroked.length}: text in ${strokeFonts.slice(0, 3).join(", ")}${strokeFonts.length > 3 ? " and more" : ""} has no outlines here (none in the file, or edited since), so it is plotted in KiCad's stroke font and its letters are not the font's`] : []),
     ...(knockouts ? [`  Knockout          ${knockouts}: a filled box with the letters left out, plotted as a region`] : []),
     ...(skipped.size ? [`  Not plotted       ${[...skipped].map(([what, n]) => `${what} ${n}`).join(", ")}: fabrication, courtyard, adhesive and user layers are not in the files, as KiCad does not plot them by default`] : []),
     ...(placed.length > drawn.length ? [`  Hidden            ${placed.length - drawn.length}: hidden text is neither drawn nor plotted`] : []),

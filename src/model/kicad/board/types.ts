@@ -166,8 +166,11 @@ export interface KicadText {
   lineSpacing: number
   href: string | null
   locked: boolean
-  /** The outlines KiCad drew a TrueType text with (`render_cache`), which decide its silkscreen shapes (X19). */
-  renderCache: boolean
+  /**
+   * The outlines KiCad drew a TrueType text with (`render_cache`), which decide its silkscreen shapes (X19): the text and angle the file gives them, and the
+   * polygons, each a list of rings (its outline, then its holes) of x, y, x, y... in whole nanometres in the editor's frame (y up).
+   */
+  renderCache: { text: string; angle: number; polygons: number[][][] } | null
   /** The property's name when the text is a footprint field (`Reference`, `Value`, `Datasheet`...). */
   field: string | null
   /** A text box (`gr_text_box`, `fp_text_box`): its corners, whether it is an outline of points, its border and margins. */
@@ -391,6 +394,8 @@ export interface KicadFootprint {
   groups: KicadGroup[]
   /** Layers the footprint draws on that KiCad shows and plots on no board layer (`private_layers`, KiCad 7). */
   privateLayers: string[]
+  /** `(embedded_fonts yes)`: the footprint may use fonts embedded in the file (KiCad 9). */
+  embedFonts: boolean
   /** Net tie groups: lists of pad numbers whose nets may meet. KiCad 5 tags that say "net tie" make one group of every pad. */
   netTies: string[][]
   /** Jumper pad groups (KiCad 9): lists of pad numbers connected inside the part. */
@@ -480,6 +485,15 @@ export interface KicadStackupRow {
   sub: Omit<KicadStackupRow, "name" | "type" | "sub">[]
 }
 
+/** A font file embedded in a board or a footprint: its bytes as the file stores them (compressed by KiCad), and the checksum the file gives. */
+export interface KicadFontFile {
+  name: string
+  /** The footprint that embeds it; null for the board. */
+  owner: KicadFootprint | null
+  bytes: Uint8Array
+  checksum: string | null
+}
+
 export interface KicadBoard {
   /** The `(version N)` stamp; null when the file has none. */
   version: number | null
@@ -522,6 +536,8 @@ export interface KicadBoard {
   dimensions: KicadDimension[]
   groups: KicadGroup[]
   images: KicadImage[]
+  /** `(embedded_fonts yes)` of the board and the font files the board and its footprints embed (X19), their bytes as the file stores them. */
+  embeddedFonts: { board: boolean; files: KicadFontFile[] }
   /** Lists the typed fields do not cover, by token: dimensions, groups, images, targets, generated patterns... */
   others: Record<string, List[]>
   /** The root `(kicad_pcb ...)` list, whole. */

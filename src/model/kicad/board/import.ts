@@ -2,7 +2,7 @@ import { serializeProject } from "../../projectFile"
 import { crossingSentence, outlineCrossings } from "../../outlineCrossing"
 import type { Project } from "../../types"
 import type { KeptFile } from "./images"
-import { accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
+import { acceptEmbeddedFonts, accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
 import { buildKicadProject } from "./build"
 import { settleFor } from "./carried"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, needsOf, refusalMessage, unbuilt, type Need } from "./needs"
@@ -81,6 +81,7 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
   const missing = unbuilt(needs, built)
   const account = accountNodes(board.tree, text, new Set(missing.map((n) => n.ext)), paths, settleFor(board))
   reportDroppedModels(account, board)
+  acceptEmbeddedFonts(account, board)
   report.account = account
   noteRulesFile(board, report)
   reportUnknown(account, report)

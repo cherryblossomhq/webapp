@@ -8,6 +8,7 @@ import type {
   KicadArcTrack,
   KicadBoard,
   KicadDimension,
+  KicadFontFile,
   KicadFootprint,
   KicadGenerator,
   KicadGroup,
@@ -604,6 +605,28 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   /** A `(border yes)` or `(border)` flag. */
   const flagOrYes = (n: List) => n[1] === undefined || n[1] === "yes" || n[1] === "true"
 
+  /** The outlines KiCad cached for a text drawn in a TrueType font (`render_cache`): what it drew them for, and each polygon's rings in whole nanometres, the board's frame with y up. */
+  const renderCacheOf = (c: List, text: string): KicadText["renderCache"] => {
+    const node = kid(c, "render_cache")
+    if (!node) return null
+    const whole = (v: string | undefined) => {
+      const n = Number(v)
+      if (v === undefined || !Number.isFinite(n)) {
+        issues.note(`a text outline of "${text}"`)
+        return 0
+      }
+      return Math.round(n * 1e6) || 0
+    }
+    const polygons = kids(node, "polygon").map((poly) =>
+      kids(poly, "pts").map((pts) => {
+        const ring: number[] = []
+        for (const p of kids(pts, "xy")) ring.push(whole(strAt(p, 1)), 0 - whole(strAt(p, 2)))
+        return ring
+      }),
+    )
+    return { text: strAt(node, 1) ?? "", angle: numAt(node, 2, 0) || 0, polygons }
+  }
+
   /**
    * A text object: `(fp_text reference R1 (at ..))`, `(property "Reference" "R1" (at ..))`, `(gr_text "x" (at ..))`, or a
    * text box. The first number of a size is its height and the second its width (`parseEDA_TEXT`, 10.0.0 parser line 780, master 817).
@@ -664,7 +687,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       lineSpacing: kid(font, "line_spacing") ? numAt(kid(font, "line_spacing"), 1, 1) : 1,
       href: strAt(kid(effects, "href"), 1) ?? null,
       locked: flagOf(c, "locked") || c[1] === "locked",
-      renderCache: !!kid(c, "render_cache"),
+      renderCache: renderCacheOf(c, text),
       field: head === "property" ? (strAt(c, 1) ?? "") : null,
       box,
       node: c,
@@ -1261,6 +1284,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       netTies,
       jumperGroups,
       jumperDuplicates: flagOf(fp, "duplicate_pad_numbers_are_jumpers"),
+      embedFonts: strAt(kid(fp, "embedded_fonts"), 1) === "yes",
       node: fp,
     })
   }
@@ -1347,11 +1371,28 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     else if (!TYPED_ROOT.has(head)) (others[head] ??= []).push(c)
   }
 
-  // ---- embedded files are named, one report entry each (founder decision: no models packed in the file for now) ----
+  // ---- embedded files: a font is kept (X19), and every other file is named, one report entry each (founder decision: no models packed in the file for now) ----
   const embedded: { file: string; owner: string; what: string }[] = []
-  const embed = (f: List, owner: string) => embedded.push({ file: strAt(kid(f, "name"), 1) ?? "(unnamed)", owner, what: embeddedKind(strAt(kid(f, "name"), 1) ?? "", strAt(kid(f, "type"), 1) ?? "") })
-  for (const e of kids(tree, "embedded_files")) for (const f of kids(e, "file")) embed(f, "the board")
-  for (const fp of footprints) for (const e of kids(fp.node, "embedded_files")) for (const f of kids(e, "file")) embed(f, fp.ref || fp.name)
+  const fontFiles: KicadFontFile[] = []
+  const embed = (f: List, owner: string, from: KicadFootprint | null) => {
+    const name = strAt(kid(f, "name"), 1) ?? "(unnamed)"
+    const what = embeddedKind(name, strAt(kid(f, "type"), 1) ?? "")
+    if (what !== "Font") {
+      embedded.push({ file: name, owner, what })
+      return
+    }
+    // The data is the font as KiCad stores it (compressed with zstd, in base64 between two bars): its bytes are kept as they are and written back as they were.
+    const dataNode = kid(f, "data")
+    const bytes = dataNode ? decodeBase64(dataNode.slice(1).filter((x): x is string => typeof x === "string").join("").replace(/\|/g, "")) : null
+    if (!bytes || !bytes.length) {
+      report.entries.push({ code: "embedded-font", severity: "not-brought", object: `${name} (in ${owner})`, why: "The font embedded in the KiCad file has no data that decodes, so it was not brought in; the text that names it is drawn as the file's outlines say, and KiCad finds the font on its own computer." })
+      return
+    }
+    const sum = strAt(kid(f, "checksum"), 1)
+    fontFiles.push({ name, owner: from, bytes, checksum: sum ?? null })
+  }
+  for (const e of kids(tree, "embedded_files")) for (const f of kids(e, "file")) embed(f, "the board", null)
+  for (const fp of footprints) for (const e of kids(fp.node, "embedded_files")) for (const f of kids(e, "file")) embed(f, fp.ref || fp.name, fp)
   for (const e of embedded) {
     report.entries.push({ code: "embedded-file", severity: "not-brought", object: `${e.file} (in ${e.owner})`, why: `${e.what} embedded in the KiCad file was not brought in.` })
   }
@@ -1399,6 +1440,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     netChains: netChainsOf(tree),
     ...(setupProtectionOf(kid(tree, "setup")) ? { viaProtect: setupProtectionOf(kid(tree, "setup")) } : {}),
     images,
+    embeddedFonts: { board: strAt(kid(tree, "embedded_fonts"), 1) === "yes", files: fontFiles },
     others,
     tree,
   }

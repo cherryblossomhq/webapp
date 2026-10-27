@@ -22,6 +22,8 @@ export interface DimensionConversion {
   board: KicadBoard
   /** What cannot be held, by reason. */
   lose: (what: string) => void
+  /** A dimension's text names a font other than KiCad's own (X19): its outlines are not kept, and the report names the font. */
+  fontOf?: (face: string) => void
 }
 
 /** The size KiCad gives a text it is not given one for (60 mils), and the arrow length a radial dimension's default leader is three of (50 mils). */
@@ -47,13 +49,14 @@ export function convertDimension(k: KicadDimension, cx: DimensionConversion, id:
     cx.lose("a KiCad 5 dimension whose text names a unit other than inches, mils or millimetres")
     return null
   }
-  // The text: its own place, size and flags, by the rules of any board text (a font other than KiCad's is X19's). A centre mark has none.
+  // The text: its own place, size and flags, by the rules of any board text (a font other than KiCad's is noted, X19). A centre mark has none.
   let at = { x: k.start.x, y: -k.start.y }
   let rot = 0
   let attrs: Pick<BoardDimension, "size" | "w" | "tw" | "bold" | "italic" | "mirror" | "hj" | "vj" | "spacing"> = { size: DEFAULT_TEXT_SIZE }
   if (k.text) {
     const t = convertBoardText(k.text, { board: cx.board, lose: cx.lose, where: "a dimension" }, "")
     if (!t) return null
+    if (t.face !== undefined) cx.fontOf?.(t.face)
     at = { x: t.x, y: t.y }
     rot = t.rot
     attrs = {

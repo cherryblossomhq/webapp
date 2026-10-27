@@ -37,6 +37,8 @@ export interface TextPatch {
   upright?: boolean
   hide?: boolean
   locked?: boolean
+  /** `null` draws the text in KiCad's own stroke font: its font's name and the outlines KiCad drew it with are dropped (X19). */
+  face?: null
   /** The angle on the board (degrees counter-clockwise). */
   rot?: number
   /** Where it is on the board. */
@@ -65,6 +67,10 @@ function applyAttrs<T extends BoardText | PartText>(t: T, patch: TextPatch, part
   if (patch.thickness !== undefined) {
     if (patch.thickness === null || (finite(patch.thickness) && patch.thickness <= 0)) delete next.thickness
     else if (finite(patch.thickness)) next.thickness = r6(patch.thickness)
+  }
+  if (patch.face === null) {
+    delete next.face
+    delete next.outline
   }
   setFlag(next, "bold", patch.bold)
   setFlag(next, "italic", patch.italic)

@@ -27,7 +27,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   X13: "tracks and vias that carry a net",
   X14: "reference images",
   X15: "part flags (virtual, board only, not in the parts list or position files, do not populate) and net ties",
-  X19: "text in a font other than KiCad's own, text outlines and embedded fonts",
+  X19: "fonts embedded in a schematic file (a board's are built)",
   X20: "placement rule areas and component classes",
   X21: "tuning patterns, pad lengths and net chains",
   X22: "via protection, backdrill and post-machining",

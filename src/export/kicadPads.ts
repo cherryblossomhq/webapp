@@ -203,8 +203,10 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
     } else if (d.shape === "circle") {
       shape = "circle"
       size = `${mm6(w)} ${mm6(w)}`
-    } else if (d.shape === "pill") shape = "oval"
-    else if (d.round || d.chamfer) {
+    } else if (d.shape === "pill") {
+      // A circle of a non-plated hole with an oval drill is a stadium of equal sides in the project (`landPad`), and is written as the circle it was.
+      shape = d.plated === false && d.slotLength !== undefined && Math.abs(d.width - d.height) < 1e-6 ? "circle" : "oval"
+    } else if (d.round || d.chamfer) {
       shape = "roundrect"
       extras.push(`(roundrect_rratio ${mm6(d.round ?? 0)})`)
       if (d.chamfer) {

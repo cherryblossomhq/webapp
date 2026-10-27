@@ -6,7 +6,7 @@ import { projectApi, useProjectStore } from "../store/projectStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, Row, Section } from "../ui/form"
 
-// S9: schematic variants in the Inspector. The project section lists the variants and chooses the one the BOM, the position file, the do not
+// S9: variants in the Inspector (a schematic's, and X23's board variants, which are the same per-part changes). The project section lists the variants and chooses the one the BOM, the position file, the do not
 // populate marks and the board follow (`model/variants.ts` is the one resolver); a symbol's section says what each variant changes on it.
 
 const commit = (fn: (p: Project) => Project | null) => projectApi().commit((p) => fn(p) ?? p)
@@ -137,7 +137,7 @@ export function ComponentVariantsSection({ c, project }: { c: ComponentInstance;
             disabled={viewer}
             onChange={(e) => commit((p) => setVariantOverride(p, c.id, name, { [f.key]: e.target.value === "" ? null : e.target.value === "on" }))}
           >
-            <option value="">As the symbol</option>
+            <option value="">Unchanged</option>
             <option value="on">Yes</option>
             <option value="off">No</option>
           </select>
@@ -157,7 +157,7 @@ export function ComponentVariantsSection({ c, project }: { c: ComponentInstance;
         .map(([f, v]) => (
           <Row key={f} label={f} value={v} mono />
         ))}
-      <p className="text-[12px] text-ink-2">A choice here applies in {name} only. Leave a flag as the symbol to keep what the symbol has.</p>
+      <p className="text-[12px] text-ink-2">A choice here applies in {name} only. Leave a flag unchanged to keep what the part has.</p>
     </Section>
   )
 }

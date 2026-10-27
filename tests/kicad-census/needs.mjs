@@ -38,7 +38,7 @@ export function needs(b) {
   if (has(b, /^(footprint>)?zone>placement$/) || has(b, /^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
   if (has(b, /^generated$/) || has(b, /^footprint>pad>(die_length|die_delay)$/)) need("X21", "tuning patterns or pad lengths")
   if (has(b, /^via>(capping|covering|plugging|filling|backdrill|tertiary_drill)/) || has(b, /^footprint>pad>(backdrill|tertiary_drill|front_post_machining|back_post_machining)/)) need("X22", "via protection or backdrill")
-  if (has(b, /^(variants|footprint>variant|footprint>units|footprint>point)/)) need("X23", "variants, units or points")
+  if (has(b, /^(variants|point|footprint>variant|footprint>units|footprint>point)/)) need("X23", "variants, units or points")
   return n
 }
 

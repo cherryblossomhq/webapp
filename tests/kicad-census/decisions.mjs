@@ -39,7 +39,7 @@ export const RULES = [
   rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>(?:line_spacing|href))", "extend", "BoardText", { ext: "X9" }),
   rule("(?:footprint>)?table>cells>table_cell>ij", "extend", "-", { ext: "X25", note: "a table cell's row and column" }),
   rule("footprint>private_layers(?:><layer number>)?", "report", "-", { note: "layers a footprint draws on that KiCad does not show or plot on the board (KiCad 7): the footprint's drawings on them are not brought in, and the import report names how many" }),
-  rule("(?:[^>]+>)*custom_property(?:>.*)?", "extend", "-", { ext: "X23", note: "custom properties on any board object (KiCad 11 development)" }),
+  rule("(?:[^>]+>)*custom_property(?:>.*)?", "extend", "-", { ext: "X23X", note: "custom properties on any board object (KiCad 11 development)" }),
   rule("(?:footprint>)?variants?>(?:variant>)?(?:description|exclude_from_sim)|footprint>variant>(?:description|exclude_from_sim)", "extend", "-", { ext: "X23" }),
   rule("point(?:>(?:at|layer|size|uuid))?", "extend", "-", { ext: "X23", note: "PCB points at the board level (KiCad 10)" }),
   rule("footprint>units>unit>pins(?:>num)?", "extend", "-", { ext: "X23" }),
@@ -215,7 +215,7 @@ const atoms = (path, values, skip = []) => ({ path: new RegExp(`^(${path})$`), v
 const free = (path) => ({ path: new RegExp(`^(${path})$`), values: new Set(), skip: [], free: true })
 
 /** Tokens that hold a yes or no: `(locked yes)`, `(hide)`, `(enabled no)`. */
-const BOOLEAN_TOKENS = "start_end_only|locked|hide|unlocked|bold|italic|knockout|keep_text_aligned|suppress_zeroes|external|header|cols|rows|border|free|remove_unused_layers|keep_end_layers|enabled|prefer_zone_connections|allow_two_segments|curved_edges|stagger|island|filled_areas_thickness|totals|guide_cross|outline_slots|npth|plated|slots|vias|castellated|backdrill|dnp|duplicate_pad_numbers_are_jumpers|embedded_fonts|placed|capped|filled|is_time_domain|override_custom_rules|rounded|single_sided|use_netclass|castellated_pads|dielectric_constraints|exclude_from_sim|keep_upright|edge_plating|freeze_assignments|hide_dnp"
+const BOOLEAN_TOKENS = "start_end_only|locked|hide|unlocked|bold|italic|knockout|keep_text_aligned|suppress_zeroes|external|header|cols|rows|border|free|remove_unused_layers|keep_end_layers|enabled|prefer_zone_connections|allow_two_segments|curved_edges|stagger|island|filled_areas_thickness|totals|guide_cross|outline_slots|npth|plated|slots|vias|castellated|backdrill|dnp|duplicate_pad_numbers_are_jumpers|embedded_fonts|placed|capped|filled|is_time_domain|override_custom_rules|rounded|single_sided|use_netclass|castellated_pads|dielectric_constraints|exclude_from_sim|exclude_from_bom|exclude_from_pos_files|keep_upright|edge_plating|freeze_assignments|hide_dnp"
 
 export const ATOMS = [
   atoms("(?:module|footprint)>pad", ["thru_hole", "smd", "connect", "np_thru_hole", "circle", "rect", "oval", "trapezoid", "roundrect", "custom", "locked"], [1]),
@@ -329,7 +329,8 @@ export const TOKENS = [
   token("arrow arrow_open", "extend", "X24", "line end shapes (KiCad 10)"),
   token("linear", "report", "", "a word of KiCad's keyword list that the board writer does not use (grid or tuning, KiCad 11 development)"),
   token("private_layers", "report", "", "a footprint's own layers that KiCad does not show or plot on the board (KiCad 7)"),
-  token("custom_property description exclude_from_sim num", "extend", "X23", "custom properties, variant descriptions, simulation flag and unit pin numbers"),
+  token("description exclude_from_sim num", "extend", "X23", "variant descriptions, simulation flag and unit pin numbers"),
+  token("custom_property", "extend", "X23X", "custom properties (KiCad 11 development)"),
   token("lib_id", "extend", "X12", "the design block a group was made from (KiCad 10)"),
   token("affects connected_routing group_items locked_items other_items link start_end_only driving all cursor routing addsublayer", "extend", "X20", "rule area and copy-layout options (KiCad 9 and 10)"),
   token("bevelled square thru x", "extend", "X7", "pad and padstack shape words"),

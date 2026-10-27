@@ -59,3 +59,14 @@ export function ShapeDraw({ shape, color, px, selected = false, opacity = 1 }: {
     </g>
   )
 }
+
+/** X23: a PCB point, a circle of its size with a cross through it, in the colour of its layer; one too small to see is drawn a few pixels across. */
+export function PointMark({ x, y, size, color, px }: { x: number; y: number; size: number; color: string; px: number }) {
+  const r = Math.max(size, 6 * px) / 2
+  return (
+    <g fill="none" stroke={color} strokeWidth={Math.max(0.05, px)} strokeLinecap="round">
+      <circle cx={x} cy={y} r={r} />
+      <path d={`M${x - r} ${y}H${x + r}M${x} ${y - r}V${y + r}`} />
+    </g>
+  )
+}

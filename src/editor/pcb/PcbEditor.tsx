@@ -50,7 +50,8 @@ import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../mo
 import { makeArcTrace, makeVia, moveArcPoint, nextCopperLayer } from "../../model/layerOps"
 import { traceD } from "./traceGraphics"
 import { CanvasHint } from "../schematic/SchematicEditor"
-import { ShapeDraw, shapeLayerColor } from "./ShapeGraphics"
+import { PointMark, ShapeDraw, shapeLayerColor } from "./ShapeGraphics"
+import { worldPoints } from "../../model/pcbPoints"
 import { TextDraw, textSide } from "./TextGraphics"
 import { defaultTextStyle, hitText, marqueeTexts, movableTexts, textIds, TEXT_TOOL_KEY, visibleTexts } from "./textEditing"
 import {
@@ -1203,6 +1204,13 @@ export function PcbEditor() {
                 .map((tx) => (
                   <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85} />
                 ))}
+
+              {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
+              {worldPoints(project, placed).map((pt, i) => (
+                <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
+                  <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
+                </g>
+              ))}
 
               {/* Silkscreen: part outlines, designators and free text */}
               {layers.silk && (

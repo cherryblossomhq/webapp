@@ -23,6 +23,7 @@ import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
 import { settleImportedLabelClasses } from "../../directives"
 import { flagOrigins, reportRuleAreaUnits, resolvedComponents } from "../../ruleAreas"
+import { normalizeProjectVariants } from "../../variants"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
@@ -724,7 +725,9 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     const b = boardOf.get(c.id)
     const { flags: _symbolFlags, ...rest } = c
     void _symbolFlags
-    return { ...rest, ...(flags ? { flags } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath ? { sheetPath: b.sheetPath } : {}) }
+    // X23: the footprint's units and points come over, and a variant the footprint has that the symbol says nothing of (the symbol's own word on a variant stands, as its flags do).
+    const variants = b?.variants ? { ...b.variants, ...c.variants } : c.variants
+    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}) }
   })
   if (differing.length) {
     report.entries.push({
@@ -736,6 +739,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
       items: differing.map((d) => d.ref),
     })
   }
+  // The variants the schematic lists and the ones only the board does; the schematic's description of one stands.
+  const variants = normalizeProjectVariants({ list: [...(sch.project.variants?.list ?? []), ...(boardProject.variants?.list ?? [])], active: sch.project.variants?.active }, [...linkedComponents, ...placed], sch.project.sheetSymbols)
   const project: Project = {
     ...boardProject,
     components: [...linkedComponents, ...placed],
@@ -743,7 +748,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     labels: [...sch.project.labels, ...laid.labels],
     ...(sch.project.netNames ? { netNames: sch.project.netNames } : {}),
     ...(sch.project.sheets ? { sheets: sch.project.sheets } : {}),
-    ...(sch.project.variants ? { variants: sch.project.variants } : {}),
+    ...(variants ? { variants } : {}),
     ...(sch.project.sheetSymbols ? { sheetSymbols: sch.project.sheetSymbols } : {}),
     ...(sch.project.drawings ? { drawings: sch.project.drawings } : {}),
     ...(sch.project.busAliases ? { busAliases: sch.project.busAliases } : {}),

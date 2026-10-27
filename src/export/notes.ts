@@ -260,11 +260,11 @@ function textNotes(project: Project): string[] {
   ]
 }
 
-/** The schematic variant the files are made for, when the project has variants: its flags and field values are already on the parts below. */
+/** The variant (a schematic's or a board's) the files are made for, when the project has variants: its flags and field values are already on the parts below. */
 function variantNotes(project: Project): string[] {
   const active = activeVariant(project)
   if (!project.variants?.list.length) return []
-  return ["SCHEMATIC VARIANT", active === undefined ? `  Variant           none active: the symbols as they are (the project has ${variantNames(project).length}: ${variantNames(project).join(", ")})` : `  Variant           ${active}: bom.csv, pnp.csv, the drill and Gerber files are for this variant`, ""]
+  return ["VARIANT", active === undefined ? `  Variant           none active: the parts as they are (the project has ${variantNames(project).length}: ${variantNames(project).join(", ")})` : `  Variant           ${active}: bom.csv, pnp.csv, the drill and Gerber files are for this variant`, ""]
 }
 
 /** The flags on parts, and what each does to the files: only for a board that has any, so a board drawn here reads as it did. */

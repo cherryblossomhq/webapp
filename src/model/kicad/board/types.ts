@@ -386,6 +386,12 @@ export interface KicadFootprint {
   sheetfile: string
   /** X20: the footprint's `component_classes`, each name once, in the file's order. */
   classes: string[]
+  /** X23: what each board variant changes on the footprint (KiCad 10's `variant` nodes), in the file's order. */
+  variants: KicadVariant[]
+  /** X23: the footprint's `units`: a name and the pad numbers of each unit. */
+  units: { name: string; pins: string[] }[]
+  /** X23: the footprint's `point` nodes, in the footprint's own frame (an older file's, which has them in the board's, are brought into it). */
+  points: KicadPoint[]
   props: { key: string; value: string }[]
   pads: KicadPad[]
   /** The footprint's own margins, clearance and pour connection, which each of its pads that sets none of its own takes (`PAD::GetSolderMaskExpansion` and the others ask the footprint). */
@@ -406,6 +412,24 @@ export interface KicadFootprint {
   jumperGroups: string[][]
   /** `(duplicate_pad_numbers_are_jumpers yes)` (KiCad 9): pads that share a number are jumpers. */
   jumperDuplicates: boolean
+  node: List
+}
+
+/** X23: what one board variant changes on one footprint. A flag the node does not say is the footprint's own (`undefined`); `fields` are the field values the variant sets. */
+export interface KicadVariant {
+  name: string
+  dnp?: boolean
+  excludeFromBom?: boolean
+  excludeFromPos?: boolean
+  excludeFromSim?: boolean
+  fields: { name: string; value: string }[]
+}
+
+/** X23: a `point` node: a PCB point (KiCad 10) at a place, of a size, on a layer. */
+export interface KicadPoint {
+  at: Pt
+  size: number
+  layer: string
   node: List
 }
 
@@ -528,6 +552,10 @@ export interface KicadBoard {
   /** `(user_diff_pair width gap via_gap)` entries: the differential pair sizes offered while routing. */
   userDiffPairs: { width: number; gap: number; viaGap?: number }[]
   nets: KicadNet[]
+  /** X23: the board's `variants` list, a name and a description each. */
+  variants: { name: string; description: string }[]
+  /** X23: the board's own `point` nodes. */
+  points: KicadPoint[]
   /** `(padsonsilk true)` in the plot settings: a pad that lists a silkscreen layer is plotted there. */
   padsOnSilk: boolean
   netClasses: LegacyNetClass[]

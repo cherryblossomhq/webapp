@@ -1,7 +1,7 @@
 import { computeConnectivity } from "../src/model/connectivity"
 import { outlinePaths, PROVENANCE_PROPERTIES } from "../src/export/kicadBoard"
 import { dimensionDrawing } from "../src/model/dimensions"
-import { flattenPath } from "../src/model/shapes"
+import { flattenPath, shapePaths } from "../src/model/shapes"
 import type { BoardDimension, Project } from "../src/model/types"
 
 // The round trip's oracle for the board writer (X16): two projects, the one a board was imported as and the one its written file imports as,
@@ -105,6 +105,22 @@ export function canonicalProject(project: Project): Json {
   })
   flatten(plain.graphics)
   for (const f of plain.footprints ?? []) flatten(f.shapes)
+  // KiCad 9's rectangle has no corner radius, so a rounded one is written as the polygon with arc corners it is: both are compared as that outline, a ring turned the same way
+  // and started at its lowest corner (the polygon and the rectangle do not start at the same one).
+  const ringOf = (path: any) => {
+    let pts = flattenPath(path).map((q) => ({ x: Math.round(q.x * 1e5) / 1e5, y: Math.round(q.y * 1e5) / 1e5 }))
+    const area = pts.reduce((sum, q, k) => sum + (q.x * pts[(k + 1) % pts.length].y - pts[(k + 1) % pts.length].x * q.y), 0)
+    if (area < 0) pts = pts.reverse()
+    const first = pts.reduce((best, q, k) => (q.y < pts[best].y || (q.y === pts[best].y && q.x < pts[best].x) ? k : best), 0)
+    return { closed: path.closed, pts: [...pts.slice(first), ...pts.slice(0, first)] }
+  }
+  const outlined = (list: any[] | undefined) => list?.forEach((sh, i) => {
+    if (!((sh.type === "rect" && sh.radius > 0) || (sh.type === "polygon" && sh.pts?.some((p: any) => p.mid)))) return
+    const { type: _t, a: _a, b: _b, radius: _r, pts: _p, holes: _h, ...rest } = sh
+    list[i] = { ...rest, outline: shapePaths(sh).map(ringOf) }
+  })
+  outlined(plain.graphics)
+  for (const f of plain.footprints ?? []) outlined(f.shapes)
   // Tracks are compared as the segments they hold: where the import joins two segments (or breaks a chain) depends on a millionth of a millimetre the first import rounded away, and the copper is the same either way.
   // A via stack that lists a layer at the via's own diameter says the same as one that does not list it: the writer lists every layer, as KiCad does.
   for (const v of plain.vias ?? []) {
@@ -435,6 +451,10 @@ export const BY_DESIGN = [
   /^project\.footprints\[\]\.pads\[\]\.(backdrill|tertiary|post|dieDelay)(\.|$)/,
   /^project\.groups\[\]\.gen$/,
   /^project\.netChains(\[\]|\.length)?(\.|$)/,
+  // X23: a board's variants, what they change on a footprint, a footprint's units and the PCB points (a part's and the board's) are KiCad 10's words, which the 9.0 parser refuses, so they stay in the
+  // project and are not written; with a variant shown, the footprints are written as it makes them.
+  /^project\.(variants|points)(\.|\[|$)/,
+  /^project\.components\[\]\.(variants|units|points)(\.|\[|$)/,
   // KiCad 11's dielectric model and frequency of a stackup row are not in a KiCad 9 file (the writer says so), and KiCad 9 says a via's or pad's tenting by words for both sides together, so a side the file left
   // unset (KiCad 10 writes `none`) is written not tented (the writer's note says so).
   /^project\.board\.stack\.rows\[\](\.sub\[\])?\.(model|specFreq)$/,

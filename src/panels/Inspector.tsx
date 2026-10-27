@@ -559,7 +559,7 @@ export const parseClasses = (text: string): string[] => [...new Set(text.split("
 
 /**
  * X20: a part's component classes, which a placement area can pick it by, the sheet it is on, and the placement area (if any) that holds it, with whether it
- * sits there. Classes are names KiCad keeps on a footprint (set from schematic directives and design rules there); here they are typed.
+ * sits there; X23: the units its footprint lists and how many PCB points it has. Classes are names KiCad keeps on a footprint (set from schematic directives and design rules there); here they are typed.
  */
 function PlacementSection({ c, project }: { c: ComponentInstance; project: Project }) {
   const areas = areasOfPart(project, c)
@@ -580,6 +580,8 @@ function PlacementSection({ c, project }: { c: ComponentInstance; project: Proje
       </Field>
       <Row label="Sheet" value={partSheet(project, c)} mono />
       {areas.length > 0 && <Row label="Placement area" value={`${areaNames(areas)}${inside ? "" : ": the part is outside it"}`} />}
+      {c.units && <Row label="Footprint units" value={c.units.map((u) => `${u.name}: ${u.pins.join(" ")}`).join("; ")} mono />}
+      {c.points && <Row label="PCB points" value={String(c.points.length)} />}
     </Section>
   )
 }

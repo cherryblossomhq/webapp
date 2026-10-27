@@ -205,7 +205,7 @@ describe("the active variant is followed by the BOM, the position file, the mark
     expect(lite["bom.csv"]).not.toBe(all["bom.csv"])
     const gerber = (f: Record<string, string>) => Object.entries(f).filter(([k]) => /F_Cu|F_Paste/.test(k)).map(([, v]) => v).join("")
     expect(gerber(lite)).not.toBe(gerber(all))
-    expect(lite["fabrication-notes.txt"] ?? Object.values(lite).find((v) => /SCHEMATIC VARIANT/.test(v))).toMatch(/Variant +Lite/)
+    expect(lite["fabrication-notes.txt"] ?? Object.values(lite).find((v) => /^VARIANT$/m.test(v))).toMatch(/Variant +Lite/)
   })
 
   it("a variant the project does not list, and an unknown name, change nothing", () => {

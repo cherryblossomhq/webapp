@@ -18,12 +18,14 @@ import type {
   KicadPad,
   KicadPadLayer,
   KicadPadStack,
+  KicadPoint,
   KicadSegment,
   KicadStackup,
   KicadStackupRow,
   KicadShape,
   KicadTarget,
   KicadText,
+  KicadVariant,
   KicadVia,
   KicadZone,
   KicadZoneSeg,
@@ -148,7 +150,7 @@ const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
 const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
-const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image", "generated", "net_chains"])
+const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image", "generated", "net_chains", "variants", "point"])
 
 function kicadKind(text: string): string | null {
   const head = text.slice(0, 400).replace(/^﻿/, "").trimStart()
@@ -508,6 +510,31 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     return k ? pt(k, what) : undefined
   }
   const points = (pts: List | undefined, what: string): Pt[] => kids(pts, "xy").map((p) => pt(p, what))
+
+  // ---- X23: PCB points and the variants of a board (KiCad 10) ----
+  /** A `point` node. Switch 6: a footprint's point is in the board frame before stamp 20260616, and the footprint's own after. */
+  const pointOf = (c: List, fp: { at: Pt; angle: number } | null): KicadPoint => {
+    let at = ptOf(c, "at", "a PCB point") ?? { x: 0, y: 0 }
+    if (fp && !stampFrom(FIRST_FP_AFFINE_TRANSFORM)) at = rotK(at.x - fp.at.x, at.y - fp.at.y, -fp.angle)
+    return { at, size: numAt(kid(c, "size"), 1, 0), layer: strAt(kid(c, "layer"), 1) ?? "", node: c }
+  }
+  /** A flag a `variant` node says, in every spelling `flagOf` knows; undefined when it does not say it (the footprint's own stands). */
+  const variantFlag = (v: List, name: string): boolean | undefined => (kid(v, name) || v.includes(name) ? flagOf(v, name) : undefined)
+  const variantOf = (v: List): KicadVariant => {
+    const out: KicadVariant = {
+      name: strAt(kid(v, "name"), 1) ?? "",
+      fields: kids(v, "field").flatMap((f) => {
+        const name = strAt(kid(f, "name"), 1) ?? ""
+        return name ? [{ name, value: strAt(kid(f, "value"), 1) ?? "" }] : []
+      }),
+    }
+    const flags = { dnp: "dnp", excludeFromBom: "exclude_from_bom", excludeFromPos: "exclude_from_pos_files", excludeFromSim: "exclude_from_sim" } as const
+    for (const [key, word] of Object.entries(flags) as [keyof typeof flags, string][]) {
+      const on = variantFlag(v, word)
+      if (on !== undefined) out[key] = on
+    }
+    return out
+  }
 
   // ---- shapes (graphics) ----
   const shapeOf = (c: List, kind: ShapeKind): KicadShape => {
@@ -1284,6 +1311,9 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       sheetname: strAt(kid(fp, "sheetname"), 1) ?? "",
       sheetfile: strAt(kid(fp, "sheetfile"), 1) ?? "",
       classes: [...new Set(kids(fp, "component_classes").flatMap((n) => kids(n, "class").map((k) => strAt(k, 1) ?? "")).filter((n) => n !== ""))],
+      variants: kids(fp, "variant").map(variantOf).filter((v) => v.name !== ""),
+      units: kids(kid(fp, "units"), "unit").map((u) => ({ name: strAt(kid(u, "name"), 1) ?? "", pins: atomsOf(kid(u, "pins")) })),
+      points: kids(fp, "point").map((c) => pointOf(c, place)),
       props,
       pads,
       local: localOf(fp),
@@ -1436,6 +1466,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     userVias,
     userDiffPairs,
     nets,
+    variants: kids(kid(tree, "variants"), "variant").map((v) => ({ name: strAt(kid(v, "name"), 1) ?? "", description: strAt(kid(v, "description"), 1) ?? "" })).filter((v) => v.name !== ""),
+    points: kids(tree, "point").map((c) => pointOf(c, null)),
     padsOnSilk,
     netClasses,
     footprints,

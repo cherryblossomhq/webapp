@@ -49,6 +49,7 @@ describe("plain names for the extensions", () => {
     X21: [/tuning/, /pad lengths/],
     X22: [/via protection/, /backdrill/],
     X23: [/variants/, /units/, /points/],
+    X23X: [/custom properties/],
     X24: [/hatched fills/, /line end shapes/, /colours/, /negative width/, /solder mask/],
     X25: [/tables/, /barcodes/, /drill charts/, /text boxes/, /expressions/, /variables/],
     // the schematic's (docs/kicad-import-schematic.md section 3)
@@ -137,7 +138,7 @@ describe("every need shows what in the board raised it", () => {
   const boards: Record<string, string> = {
     "text in a font of the computer": board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }),
     "a barcode and a track": board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), "(barcode)", '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }),
-    "board variants": board({ body: ["(variants)"] }),
+    "a custom property": board({ body: ["(custom_property)"] }),
     "a hatched copper pour": board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (fill yes (mode hatch) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0)) (polygon (pts (xy 0 0) (xy 5 0) (xy 5 5))))'] }),
   }
 

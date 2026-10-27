@@ -86,6 +86,19 @@ export function variantSheetFlags(sym: Pick<SheetSymbol, "flags" | "variants">, 
   return overlayFlags(sym.flags, name === undefined ? undefined : sym.variants?.[parentUse]?.[name])
 }
 
+const CHANGE_WORDS: Record<VariantFlag, [string, string]> = {
+  dnp: ["do not populate", "populate"],
+  excludeFromBom: ["not in the BOM", "in the BOM"],
+  excludeFromPos: ["not in the position file", "in the position file"],
+  notOnBoard: ["not on the board", "on the board"],
+  excludeFromSim: ["left out of simulation", "in simulation"],
+}
+
+/** What a variant changes on a part, in words for a person or for Sakura: "do not populate", "in the BOM", "Value = 10k". */
+export function variantWords(o: VariantOverride): string[] {
+  return [...FLAG_KEYS.filter((k) => o[k] !== undefined).map((k) => CHANGE_WORDS[k][o[k] ? 0 : 1]), ...Object.entries(o.fields ?? {}).map(([f, v]) => `${f} = ${v}`)]
+}
+
 /**
  * What an export says about the variants: a format with no variants (Circuit JSON, KiCad 9) is written from the symbols as the active variant makes them,
  * and the variants themselves are not in the files. Empty when the project has none.

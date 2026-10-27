@@ -979,6 +979,28 @@ export interface ComponentInstance {
   classes?: string[]
   /** X20: the sheet path the footprint says it is from (`/Power/`), for a board brought in without a schematic to say it. A part of a schematic is on the sheet its symbol is on (`inst`). */
   sheetPath?: string
+  /** X23: the footprint's units (KiCad 10's `units`): which of its pads belong to which unit of its symbol, by the pad numbers the file gives. Absent: none. */
+  units?: PartUnit[]
+  /** X23: the footprint's PCB points (KiCad 10), in the footprint's own frame. Absent: none. */
+  points?: PcbPoint[]
+}
+
+/** X23: one unit of a footprint, as KiCad 10 lists it: its name (`A`) and the numbers of its pads. */
+export interface PartUnit {
+  name: string
+  pins: string[]
+}
+
+/**
+ * X23: a PCB point (KiCad 10): a reference mark that parts and tools can snap to. On a part it is in the footprint's own frame (as a pad is, y down, already flipped on a
+ * part on the bottom); on the board it is in the board's frame (y up). It is drawn on one layer, as a circle with a cross of `size` across.
+ */
+export interface PcbPoint {
+  x: number
+  y: number
+  size: number
+  /** KiCad's name of the layer it is drawn on (`F.Fab`). */
+  layer: string
 }
 
 export interface Wire {
@@ -2001,6 +2023,8 @@ export interface Project {
   groups?: PcbGroup[]
   /** Reference images, which are bitmaps held by the host's model file store. */
   images?: ReferenceImage[]
+  /** X23: the board's own PCB points (KiCad 10), in the board's frame. Absent: none. */
+  points?: PcbPoint[]
   /** X21: KiCad's net chains (a run of nets through series parts, tuned as one): by name, in file order. */
   netChains?: NetChain[]
   board: BoardDef

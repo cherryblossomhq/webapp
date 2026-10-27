@@ -359,6 +359,35 @@ describe("the fix round: what KiCad 9 refuses, parts added to an imported board,
   })
 })
 
+describe("what boards new to the round trip (X23) showed", () => {
+  it("a circle pad of a non-plated hole with an oval drill is written as the circle it was, and reads back the same", async () => {
+    const mount = footprint({ ref: "H1", at: "5 5", pads: [pad({ number: "", type: "np_thru_hole", shape: "circle", at: "0 0", size: "6 6", layers: '"*.Cu" "*.Mask"', extra: "(drill oval 4 2)" })] })
+    const p = imported(board({ body: [mount] }))
+    expect(p.footprints![0].pads[0].shape).toBe("pill")
+    const { text, differences } = await roundTrip(p)
+    expect(text).toMatch(/\(pad "" np_thru_hole circle/)
+    expect(differences).toEqual([])
+  })
+
+  it("a field's text that has %R in it is written as a field, which KiCad does not convert to ${REFERENCE}, and reads back the same", async () => {
+    const field = '(property "Description" "Sensor, 1%RH, 0.1%V" (at 0 3 0) (layer "F.Fab") (hide yes) (effects (font (size 1 1) (thickness 0.15))))'
+    const p = imported(board({ body: [footprint({ ref: "U1", at: "5 5", pads: [pad({ at: "0 0" })], extra: field })] }))
+    expect(p.components[0].texts!.some((t) => t.text === "Sensor, 1%RH, 0.1%V")).toBe(true)
+    const { text, differences } = await roundTrip(p)
+    expect(text).toMatch(/\(property "Text \d+" "Sensor, 1%RH, 0\.1%V"/)
+    expect(differences).toEqual([])
+  })
+
+  it("a rounded rectangle is written as the polygon with arc corners it is, and the round trip compares the two as one outline", async () => {
+    const rounded = '(gr_rect (start 2 2) (end 8 6) (radius 0.5) (stroke (width 0.1) (type default)) (fill none) (layer "F.SilkS"))'
+    const p = imported(board({ version: 20260206, body: [rounded] }))
+    expect(p.graphics![0]).toMatchObject({ type: "rect", radius: 0.5 })
+    const { differences, again } = await roundTrip(p)
+    expect(again.graphics![0].type).toBe("polygon")
+    expect(differences).toEqual([])
+  })
+})
+
 describe("the converter's zones sit where its parts do", () => {
   it("a zone's corner and a part are on one page: the polygon is offset as the footprints are", async () => {
     const p = withZone(twoResistors(), rectangle(-12, -8, 12, 4), { net: "GND", layers: ["top"] }, "g")

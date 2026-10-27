@@ -32,6 +32,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   X21: "tuning patterns, pad lengths and net chains",
   X22: "via protection, backdrill and post-machining",
   X23: "variants, units and points",
+  X23X: "custom properties on board objects in a KiCad 11 development file",
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width and tracks exposed through the solder mask",
   X25: "tables, barcodes and drill charts, text boxes inside parts, and text with expressions or variables the editor cannot fill in",
   S1: "sheets inside sheets (hierarchical sheets, sheet pins and hierarchical labels)",

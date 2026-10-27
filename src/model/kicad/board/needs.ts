@@ -335,7 +335,7 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   const { through_hole_min: holeMin, via_min_drill: viaMin } = board.setup
   if (holeMin !== undefined && viaMin !== undefined && Math.abs(holeMin - viaMin) > 1e-9) need("X10", "two different smallest drill sizes (a through hole's and a via's)", "importer")
   if (has(/^(footprint>)?dimension$/)) need("X11", "dimensions")
-  // A footprint's own dimension moves, turns and flips with its part by KiCad's rules for the part (the text's side of the crossbar does not follow a mirror), which the model does not hold yet.
+  // A footprint's own dimension moves, turns and flips with its part in KiCad (the text's side of the crossbar does not follow a mirror), which the model does not hold: X27 draws it as the board's dimension, and the gate names it.
   if (has(/^footprint>dimension$/)) need("X27", "a dimension inside a footprint", "importer")
   if (has(/^(footprint>)?group$/)) need("X12", "groups")
   if (board.images.some((m) => m.format === null)) need("X28", "a reference image that is neither a PNG nor a JPEG", "importer")

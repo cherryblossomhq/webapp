@@ -405,7 +405,7 @@ export interface KicadFootprint {
   texts: KicadText[]
   shapes: KicadShape[]
   zones: KicadZone[]
-  /** X27: the dimensions drawn inside the footprint; their points are the board's in every file before stamp 20260616, which is every file there is. */
+  /** X27: the dimensions drawn inside the footprint; their points are the board's in every file (KiCad's `PCB_DIMENSION_BASE::GetStart` applies the footprint's transform and the writer writes the result), whatever the stamp. */
   dimensions: KicadDimension[]
   /** Groups of the footprint's own pads, drawings, texts and groups: their members are ids of the footprint's children. */
   groups: KicadGroup[]

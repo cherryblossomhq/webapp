@@ -27,6 +27,7 @@ import {
   upright,
 } from "./zoneGeom"
 import { withPartZones } from "./partZones"
+import { hatchPaths } from "./zoneHatch"
 import { hasPolygon, higherPriority, isRuleArea, zoneLayers, zoneRings, zoneSettings, type ZoneSettings } from "./zones"
 import type { CopperLayer, Project, Vec2, Zone } from "./types"
 
@@ -41,7 +42,8 @@ import type { CopperLayer, Project, Vec2, Zone } from "./types"
 //   5. minimum width: the copper is shrunk by half of it less a thousandth of a millimetre and grown back, and what the shrinking
 //      removed stays gone
 //   6. the result is kept inside the zone's own polygon and out of every clearance, and out of the polygons of higher priority zones of the same net
-//   7. copper that touches no copper of its net is an island and goes, by the zone's island rule
+//   7. a hatched pour has the grid's holes cut out of it (`zoneHatch.ts`)
+//   8. copper that touches no copper of its net is an island and goes, by the zone's island rule
 //
 // Clipper does the sums, in tenths of a micron (`zoneGeom.ts`).
 
@@ -824,6 +826,8 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   // The zones of the same net that outrank this one are in charge of their own polygon.
   const outranking = project.zones.filter((o) => o !== zone && !isRuleArea(o) && o.net === zone.net && o.teardrop === undefined && zoneLayers(o).includes(layer) && (o.priority ?? 0) > (zone.priority ?? 0))
   if (outranking.length && fill.length) fill = difference(fill, union(outranking.flatMap((o) => outlinePaths(project, o))))
+  // X24: a hatched pour is the copper this far with the grid's holes cut out of it (KiCad hatches before it removes islands).
+  if (zone.hatch && fill.length) fill = hatchPaths(fill, zone.hatch, minWidth, zone.hatchAt?.[layer])
   // Outlines smaller than the resolution of the fill are noise (KiCad 10, `dropSubResolutionOutlines`).
   return groupsOf(fill).filter((g) => areaMm2([g.paths[0]]) >= ARC_NOISE_MM2)
 }

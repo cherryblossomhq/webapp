@@ -344,6 +344,17 @@ export type ShapeGeometry =
   | { type: "curve"; p0: Vec2; c1: Vec2; c2: Vec2; p1: Vec2 }
   | { type: "ellipse"; c: Vec2; rx: number; ry: number; rot: number; from?: number; to?: number }
 
+/**
+ * X24: what KiCad 10 draws at an end of a line (`start_shape`, `end_shape`): the shape, its length and width and the outline it is drawn with. The editor keeps it and writes it back; it does not draw or plot it.
+ */
+export interface LineEnd {
+  /** KiCad's word for it: `arrow`, `arrow_open`, `square`, `circle`, `diamond` or `dot`. */
+  style: string
+  length?: number
+  width?: number
+  stroke?: { width: number; dash?: ShapeDash }
+}
+
 /** What every drawing has, whatever it is. */
 export interface ShapeStyle {
   /**
@@ -359,6 +370,10 @@ export interface ShapeStyle {
   /** The net of copper that has one, by the project's net name; absent for a drawing with none. */
   net?: string
   locked?: true
+  /** X24: what KiCad 10 puts at the line's ends. Kept and written back, not drawn. */
+  ends?: { start?: LineEnd; end?: LineEnd }
+  /** X24: the colour KiCad 10 draws the line in (red, green, blue 0 to 255, then opacity 0 to 1). Kept and written back, not drawn. */
+  color?: [number, number, number, number]
 }
 
 /** A drawing: a line, arc, circle, rectangle, polygon, curve or ellipse on a named layer. */
@@ -1120,6 +1135,8 @@ export interface Trace {
    * counts as copper of that net even where it touches nothing, and touching another net is a short.
    */
   net?: string
+  /** X24: the track's copper is open through the solder mask along its length, on its own side (KiCad's `(layers "F.Cu" "F.Mask")`). The opening is wider than the track by `margin` on each side; absent is the board's mask expansion. */
+  bare?: { margin?: number }
   /**
    * An arc track (X4), KiCad's `arc`: `points` are its three points, start, a point on the arc between and end, as KiCad stores
    * it, so the circle and the way round follow from them and nothing is rounded to an angle. A trace without it is a polyline.
@@ -1344,6 +1361,27 @@ export interface ZoneKeepout {
 }
 
 /**
+ * X24: how a hatched pour is made (KiCad's `hatch_*` settings, `ZONE_FILLER::addHatchFillTypeOnZone`): a grid of lines `thickness` wide with square holes `gap` wide between them, turned by `angle`, kept
+ * as a band along the pour's edge and round everything cut out of it. Each optional field's absence is KiCad's default.
+ */
+export interface ZoneHatch {
+  /** The width of the grid's lines and of the band along the edge (mm). */
+  thickness: number
+  /** The width of the holes (mm). */
+  gap: number
+  /** The angle of the grid, degrees counter-clockwise; absent is 0. */
+  angle?: number
+  /** The smallest part of a hole that the edge may cut and the hole still stay, as a fraction of a whole hole; absent is 0.3. */
+  minHole?: number
+  /** The band along the edge is only the zone's minimum width, not the lines' (`hatch_border_algorithm min_thickness`). */
+  thinBorder?: true
+  /** The grid starts at the pour's own corner, as KiCad 9 and earlier lay it out (the corner of its copper in the grid's frame), not at the board's origin or the zone's hatch position as KiCad 10 does. */
+  fromFill?: true
+  /** Holes with their corners cut off (level 1) or rounded (level 2 and 3, the rounder the higher), by `value` times half the gap; absent is square holes. */
+  smooth?: { level: 1 | 2 | 3; value: number }
+}
+
+/**
  * A copper pour: the whole board on one layer, or (X3) any polygon on one layer or both, with its own settings; or a rule area
  * (keepout) that keeps tracks, vias, pads, pours or parts out of a polygon. The fill is not stored: it is computed from the zone,
  * the copper round it and the rules, and refilled whenever any of them changes (`model/pour.ts`, `model/zoneFill.ts`).
@@ -1392,6 +1430,10 @@ export interface Zone {
   spokeWidth?: number
   /** Rounded or cut off corners of the outline, by `radius` (mm). */
   smoothing?: { kind: "chamfer" | "fillet"; radius: number }
+  /** X24: a hatched pour, a grid of lines instead of solid copper (KiCad's `mode hatch`); absent is solid. */
+  hatch?: ZoneHatch
+  /** X24: where the hatch grid starts on each of the zone's layers (mm, y up; KiCad 10's `hatch_position`); a layer not listed starts at the board's origin. Kept whether or not the zone is hatched. */
+  hatchAt?: Partial<Record<CopperLayer, Vec2>>
   /** What happens to copper no same-net copper touches: removed (absent), kept (`never`), or removed when under that many square millimetres. */
   islands?: "never" | number
   /** Present: a rule area, not a pour; it has no net and no fill. */

@@ -41,7 +41,7 @@ const ROWS = [
   row(`${SHAPES}|${SHAPES}>(?:start|end|mid|center|layer|layers|pts|pts>xy|pts>arc|pts>arc>(?:start|mid|end)|angle|radius|major_radius|minor_radius|rotation_angle|start_angle|end_angle|solder_mask_margin)`, "built"),
   // Only copper has a net: the net of a drawing on any other layer means nothing (KiCad loads it, even with a number its table lacks) and is not brought; on copper it is written (a number the table lacks is no net, and says so).
   row(`${SHAPES}>net`, "derived", "the net a drawing names when it is not on a copper layer: only copper has a net, and KiCad draws and plots it the same without", "net"),
-  row(`${SHAPES}>(?:stroke|stroke>(?:type|width)|width|fill|locked)`, "derived", "the width and style of an outline line: the board is cut along the line's centre", "edge"),
+  row(`${SHAPES}>(?:stroke|stroke>(?:type|width|color)|width|fill|locked|(?:start|end)_shape(?:>.*)?)`, "derived", "the width, style, colour and line ends of an outline line: the board is cut along the line's centre", "edge"),
   row("target|target>(?:at|layer|size|width)", "built"),
   // Dimensions (X11), groups (X12) and reference images (X14) are built. KiCad does not read a KiCad 5 dimension's arrows (`parseDIMENSION`: "no longer saved; no-op"): it draws its own from the points, the height and the arrow length.
   row("dimension>arrow[12][ab]|dimension>arrow[12][ab]>pts|dimension>arrow[12][ab]>pts>xy", "derived", "a KiCad 5 dimension's arrows: KiCad does not read them and draws its own"),

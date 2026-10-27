@@ -213,6 +213,11 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
     return out
   }
   if (s.badNet !== undefined) cx.badNets.push(`${cx.where}: net ${s.badNet}`)
+  // X24 holds a pour's hatch, not a drawing's: the hatch lines KiCad 10 computes for a filled drawing are not held, so the board is not imported with the fill missing.
+  if (s.hatched) {
+    cx.lose(`a drawing filled with a hatch (${cx.where})`)
+    return out
+  }
   const closed = isClosedShape(geom)
   const net = s.netRaw ? cx.netName(s.netRaw) : undefined
   const mapped = roundGeometry(mapShape(geom, cx.map))
@@ -224,6 +229,8 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
     ...(s.filled && closed ? { fill: true as const } : {}),
     ...(net ? { net } : {}),
     ...(s.locked ? { locked: true as const } : {}),
+    ...(s.ends ? { ends: s.ends } : {}),
+    ...(s.color ? { color: s.color } : {}),
   })
   // KiCad gives a drawn (unfilled) shape with no width the default one; a filled one may have none.
   let width = s.width <= 0 && !(s.filled && closed) ? DEFAULT_SHAPE_WIDTH : s.width

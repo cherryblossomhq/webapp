@@ -459,6 +459,11 @@ export const BY_DESIGN = [
   // unset (KiCad 10 writes `none`) is written not tented (the writer's note says so).
   /^project\.board\.stack\.rows\[\](\.sub\[\])?\.(model|specFreq)$/,
   /^project\.(vias\[\]|footprints\[\]\.pads\[\])\.tent\.(front|back|top|bottom) \(unset in the first project\)$/,
+  // X24: a hatch position and the shapes at a line's ends are KiCad 10's words, which the 9.0 parser refuses (they stay in the project and are not written); a hatched pour of a KiCad 10 file lays its grid from the
+  // origin, and the KiCad 9 file the writer makes is read as one that lays it from the corner of its copper.
+  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatchAt$/,
+  /^project\.(zones\[\]|footprints\[\]\.zones\[\])\.hatch\.fromFill$/,
+  /^project\.(graphics\[\]|footprints\[\]\.shapes\[\])\.ends$/,
 ]
 
 /** The outline repair of the importer runs again on the outline the writer wrote, and moves a piece it had joined by its tolerance (never more than 0.1 mm; `diffProjects` names it). */

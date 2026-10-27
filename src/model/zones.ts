@@ -40,6 +40,8 @@ export function isWholeBoardPour(z: Zone): boolean {
     z.thermalGap === undefined &&
     z.spokeWidth === undefined &&
     z.smoothing === undefined &&
+    z.hatch === undefined &&
+    z.hatchAt === undefined &&
     z.islands === undefined &&
     z.edgeGap === undefined &&
     z.holeGap === undefined &&

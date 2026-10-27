@@ -22,6 +22,9 @@ export function arcOf(points: readonly Vec2[]): ArcTrack {
   return { start, mid, end, circle: arcCircle(start, mid, end) }
 }
 
+/** X24: the tracks whose copper is open through the solder mask on one side. */
+export const bareTraces = (project: { traces: readonly Trace[] }, side: "top" | "bottom"): Trace[] => project.traces.filter((t) => t.bare && t.layer === side)
+
 /** Whether a trace is an arc track with its three points. */
 export const isArcTrace = (t: Pick<Trace, "arc" | "points">): boolean => t.arc === true && t.points.length === 3
 

@@ -73,13 +73,10 @@ export function board(spec: BoardSpec = {}): string {
 }
 
 /**
- * A board the importer refuses for what stays unbuilt until phase 3 whatever the slices before it build: a part, a track, and a text with an
- * expression (X25). The import screen's tests use it for "a refusal", and read what is missing from the importer's own result.
+ * A board the importer refuses for what no slice builds soon: a part, a track, and a creepage rule (X26, which Checks cannot test yet). The import screen's tests use it for
+ * "a refusal", and read what is missing from the importer's own result.
  */
 export const REFUSED_BOARD = board({
-  body: [
-    footprint({ pads: [pad({ at: "0 0" })] }),
-    '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))',
-    '(gr_text "@{1+1}" (at 3 3) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))',
-  ],
+  setup: "(setup (pad_to_mask_clearance 0) (creepage 1.5))",
+  body: [footprint({ pads: [pad({ at: "0 0" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'],
 })

@@ -30,6 +30,9 @@ const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 
 const STROKE_TYPE = { dash: "dash", dot: "dot", dash_dot: "dash_dot", dash_dot_dot: "dash_dot_dot" } as const
 
+/** Said once in the export's notes when a drawing has shapes at its line ends. */
+export const LINE_END_NOTE = "KiCad 9 has no shapes at the ends of a line (arrowheads, KiCad 10's): they stay in the project and are not written to the file."
+
 /** KiCad's numbers for the user layers it has to be told about: `User.1` is 50 and `User.9` is 58, `User.10` is 60 (59 is the rescue layer). */
 export const userLayerNumber = (name: string): number | null => {
   const m = name.match(/^User\.(\d+)$/)
@@ -92,7 +95,9 @@ export function drawing(shape: BoardShape, fp: boolean, out: Out): string[][] {
   const type = shape.dash ? STROKE_TYPE[shape.dash] : "solid"
   const net = shape.net && shapeLayerInfo(shape.layer)?.kind === "copper" ? out.netCode(shape.net) : 0
   const tail = (): string[] => [`(layer ${quote(shape.layer)})`, ...(net > 0 ? [`(net ${net})`] : []), ...(shape.locked ? ["(locked yes)"] : []), `(uuid ${out.uuid()})`]
-  const stroke = (width = shape.width, kind: string = type) => [`(stroke`, `  (width ${mm6(width)})`, `  (type ${kind})`, `)`]
+  // X24: a drawing's colour is part of KiCad 9's stroke; the shapes at a line's ends are KiCad 10's, which a 9.0 parser stops at, so they stay in the project and are not written.
+  if (shape.ends) out.flattened.add("ends")
+  const stroke = (width = shape.width, kind: string = type) => [`(stroke`, `  (width ${mm6(width)})`, `  (type ${kind})`, ...(shape.color ? [`  (color ${shape.color.map((c, i) => (i === 3 ? round(c, 6) : c)).join(" ")})`] : []), `)`]
   const block = (name: string, body: string[]) => [`(${tag(name)}`, ...body.map((l) => `  ${l}`), `)`]
   const polyBlock = (items: string[], width: number, solid: boolean, kind: string = type) => block("poly", [`(pts`, ...items.map((i) => `  ${i}`), `)`, ...stroke(width, kind), `(fill ${solid ? "solid" : "none"})`, ...tail()])
   const filled = shape.fill === true
@@ -235,6 +240,7 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
   }
 
   const notes = ["Drawings (lines, arcs, circles, rectangles, polygons and curves on the board and in each part) are written as KiCad's own graphic items on their layers, with their stroke, dash and fill."]
+  if (out.flattened.has("ends")) notes.push(LINE_END_NOTE)
   if (out.flattened.has("ellipse")) notes.push("KiCad 9 has no ellipse: ellipses and elliptical arcs are written as polygons and lines within 0.5 micrometre of the true curve.")
   if (out.flattened.has("hole")) notes.push("KiCad 9's polygon has no holes: a filled polygon with holes is written as one outline joined to its holes by zero-width bridges, with its edges drawn on top.")
   return { text, notes, uuids }

@@ -607,11 +607,16 @@ function fitCopperToStack(traces: Trace[], vias: Via[], board: Project["board"])
   }
 }
 
-/** An arc track keeps its flag only with its three points: any other trace is a polyline. */
+/** An arc track keeps its flag only with its three points: any other trace is a polyline. Its bare copper (X24) is its opening in the mask: how much wider than the track, or the board's rule where that is not said. */
 function normalizeTrace(item: Json): Json {
-  if (item.arc === undefined) return item
-  const { arc, ...rest } = item
-  return arc === true && Array.isArray(item.points) && item.points.length === 3 ? item : rest
+  let out = item
+  if (out.bare !== undefined) {
+    const { bare, ...rest } = out
+    out = isObject(bare) && (bare.margin === undefined || (typeof bare.margin === "number" && Number.isFinite(bare.margin))) ? out : rest
+  }
+  if (out.arc === undefined) return out
+  const { arc, ...rest } = out
+  return arc === true && Array.isArray(out.points) && out.points.length === 3 ? out : rest
 }
 
 /** The embedded fonts (X19) as they read: files with a name, a SHA-256 id and a size, each owned by a part that exists or by the board; a bad entry is dropped, and none left is no `fonts`. */

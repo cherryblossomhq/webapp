@@ -1,4 +1,5 @@
 import type { WorldPad } from "../model/instances"
+import { arcPolyline, bareTraces, isArcTrace } from "../model/arcTracks"
 import { maskMargin, padOpeningRings } from "../model/padOpening"
 import { padPaths, polygonKit, withMaxError, type FillPolygon } from "../model/pour"
 import { dashShape, flattenSeg, isClosedShape, shapeRings, shapePolylines, type DashPiece } from "../model/shapes"
@@ -75,6 +76,7 @@ export function maskRegions(project: Project, side: PcbSide, pads: WorldPad[], d
     for (const pad of pads) parts.push(...padOpening(pad, grow, project.rules))
     if (!tentVias) for (const v of project.vias) parts.push(...polygonKit.circle(v.x, v.y, v.diameter / 2 + grow))
     for (const shape of drawings) parts.push(...shapePolygons(shape))
+    for (const t of bareTraces(project, side)) parts.push(...polygonKit.stroke(isArcTrace(t) ? arcPolyline(t.points) : t.points, (t.width + 2 * (t.bare?.margin ?? grow)) / 2))
     const layer = side === "top" ? "F.Mask" : "B.Mask"
     // X29: a zone on the mask layer opens it by its smoothed outline (`TransformSmoothedOutlineToPolygon`), not by its fill.
     const withParts = withPartZones(project)

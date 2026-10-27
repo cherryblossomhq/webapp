@@ -10,11 +10,11 @@
 import { rotate90 } from "../../../lib/geometry"
 import { kiRound, mmToIu } from "../../../lib/kicadText"
 import { flipShapeLayer } from "../../shapeLayers"
-import { boardTextWorld, isTextLayer, outlineSignatureOf, partTextWorld, textInk, textPose, type WorldText } from "../../texts"
+import { boardTextWorld, hasExpression, isTextLayer, outlineSignatureOf, partTextWorld, textInk, textPose, textVariables, UNSUPPORTED_VARIABLES, type WorldText } from "../../texts"
 import { packRings, UNNAMED_FONT } from "../../textOutlines"
 import type { BoardText, ComponentInstance, PartText, PcbSide, Project, TextAttrs, TextOutline } from "../../types"
 import { resolveLayer } from "./graphics"
-import type { KicadBoard, KicadText } from "./types"
+import type { KicadBoard, KicadFootprint, KicadText } from "./types"
 
 // KiCad's text objects (`gr_text`, `gr_text_box`, a footprint's `fp_text` and `property`) as the editor's texts
 // (X9). A text keeps what KiCad keeps: where it is, its size, thickness, justification, mirror, bold, italic,
@@ -117,33 +117,40 @@ export const BOX_LIB_FRAME_FROM = 20260616
 function boxOf(t: KicadText, size: number, stamp: number | null, lose: (what: string) => void, where: string): { cx: number; cy: number; box: NonNullable<TextAttrs["box"]> } | null {
   const b = t.box
   if (!b) return null
-  const dx = Math.abs(b.end.x - b.start.x)
-  const dy = Math.abs(b.end.y - b.start.y)
   const angle = norm360(t.angle)
+  // X25: a box that is an outline of points (KiCad 8 and later write a box turned by any other angle so) is the rectangle its four corners make, turned by the text's angle: its width runs along the first edge.
+  const corners = b.corners
+  if (b.hasOutline) {
+    // The file's y runs down and angles run counter-clockwise, so the first edge's angle is the negative of its slope.
+    const edge = norm360(-Math.atan2(corners[1]?.y - corners[0]?.y, corners[1]?.x - corners[0]?.x) * (180 / Math.PI))
+    if (corners.length !== 4 || Math.abs(((edge - angle + 540) % 360) - 180) > 0.01) {
+      lose(`a text box that is an outline of points but not the rectangle of its text's angle (${where})`)
+      return null
+    }
+  }
+  const dx = b.hasOutline ? Math.hypot(corners[1].x - corners[0].x, corners[1].y - corners[0].y) : Math.abs(b.end.x - b.start.x)
+  const dy = b.hasOutline ? Math.hypot(corners[2].x - corners[1].x, corners[2].y - corners[1].y) : Math.abs(b.end.y - b.start.y)
   const quarter = angle % 90 === 0
   const libFrame = stamp !== null && stamp >= BOX_LIB_FRAME_FROM
-  if (!libFrame && !quarter) {
+  if (!b.hasOutline && !libFrame && !quarter) {
     // KiCad 9 and 10 write such a box as a polygon (`pts`, refused above); a rectangle turned by another angle is what they cannot draw.
     lose(`a rectangular text box turned by ${angle} degrees in a file of stamp ${stamp ?? "unknown"}, which KiCad does not draw (${where})`)
     return null
   }
   // The text's own width is the stored box's width, unless the file stores the rectangle as drawn and the angle is 90 or 270.
-  const turned = !libFrame && (angle === 90 || angle === 270)
+  const turned = !b.hasOutline && !libFrame && (angle === 90 || angle === 270)
   const w = turned ? dy : dx
   const h = turned ? dx : dy
   // KiCad's default margin for a box that names none: half the stroke width (a nanometre when there is no stroke) plus three quarters of the text height (`GetLegacyTextMargin`, pcb_textbox.cpp:192).
   const legacy = kiRound((b.strokeWidth === null ? -1 : mmToIu(b.strokeWidth)) / 2) + kiRound(mmToIu(size) * 0.75)
   const margins: [number, number, number, number] = b.margins ? b.margins.map(r6) as [number, number, number, number] : [r6(legacy / 1e6), r6(legacy / 1e6), r6(legacy / 1e6), r6(legacy / 1e6)]
   const border = b.border && b.strokeWidth !== null && b.strokeWidth > 0 ? r6(b.strokeWidth) : undefined
-  return { cx: (b.start.x + b.end.x) / 2, cy: -(b.start.y + b.end.y) / 2, box: { w: r6(w), h: r6(h), ...(border !== undefined ? { border } : {}), margins } }
+  const mid = b.hasOutline ? { x: corners.reduce((n, p) => n + p.x, 0) / 4, y: corners.reduce((n, p) => n + p.y, 0) / 4 } : { x: (b.start.x + b.end.x) / 2, y: (b.start.y + b.end.y) / 2 }
+  return { cx: mid.x, cy: -mid.y, box: { w: r6(w), h: r6(h), ...(border !== undefined ? { border } : {}), margins } }
 }
 
 /** A `gr_text` or `gr_text_box` as a board text, or null when it cannot be one (said through `lose`). */
 export function convertBoardText(t: KicadText, cx: TextConversion, id: string): BoardText | null {
-  if (t.box?.hasOutline) {
-    cx.lose(`a text box that is an outline of points (${cx.where})`)
-    return null
-  }
   const layer = layerOf(t, cx)
   if (!layer) return null
   const attrs = attrsOf(t, cx, layer)
@@ -182,19 +189,18 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
   const c = Math.cos((place.angle * Math.PI) / 180)
   const s = Math.sin((place.angle * Math.PI) / 180)
   for (const [source, t] of texts.entries()) {
-    if (t.box) {
-      cx.lose(`a text box inside a footprint (${ref})`)
-      continue
-    }
     const where = `${ref}, ${t.kind === "user" ? (t.field ?? "text") : t.kind}`
     const here = { ...cx, where }
     const resolved = layerOf(t, here)
     if (!resolved) continue
     const attrs = attrsOf(t, here, resolved)
     if (!attrs) continue
+    // A text box sits by its centre: its corners are in the part's own frame like the part's other drawings, and the text's angle, as ever, is the board's, so the box is judged by its turn in the land.
+    const corners = t.box?.corners ?? []
+    const home = t.box ? (t.box.hasOutline && corners.length === 4 ? { x: corners.reduce((n, p) => n + p.x, 0) / 4, y: corners.reduce((n, p) => n + p.y, 0) / 4 } : { x: (t.box.start.x + t.box.end.x) / 2, y: (t.box.start.y + t.box.end.y) / 2 }) : t.at
     // The board's place of the text, then the editor's frame (y up), then the land's.
-    const wx = place.at.x + (t.at.x * c + t.at.y * s)
-    const wy = place.at.y + (-t.at.x * s + t.at.y * c)
+    const wx = place.at.x + (home.x * c + home.y * s)
+    const wy = place.at.y + (-home.x * s + home.y * c)
     const ex = wx
     const ey = -wy
     const dx = ex - place.x
@@ -209,6 +215,8 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const landAngle = place.bottom ? place.rot - world : world - place.rot
     const mirror = place.bottom ? !t.mirror : t.mirror
     const layer = place.bottom ? flipShapeLayer(resolved, cx.board.copper.names.length || 2) : resolved
+    const boxed = t.box ? boxOf({ ...t, angle: landAngle }, t.h, cx.board.version, cx.lose, where) : null
+    if (t.box && !boxed) continue
     const { size, mirror: _mirror, ...rest } = attrs
     const kind = t.kind === "reference" || t.kind === "value" ? t.kind : "user"
     origins?.push(source)
@@ -216,6 +224,7 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const text = kind === "user" ? t.text : kind === "reference" && t.text !== shown.ref ? t.text : undefined
     const made: PartText = {
       ...rest,
+      ...(boxed ? { box: boxed.box } : {}),
       layer,
       ...(mirror ? { mirror: true as const } : {}),
       ...(t.keepUpright ? {} : { upright: false as const }),
@@ -252,4 +261,33 @@ export function landTextBox(texts: PartText[]): { minX: number; minY: number; ma
   })
   const b = box as { minX: number; minY: number; maxX: number; maxY: number } | null
   return b ? { minX: r6(b.minX), minY: r6(b.minY), maxX: r6(b.maxX), maxY: r6(b.maxY) } : null
+}
+
+/**
+ * Every text of the board that is an expression, or uses a variable KiCad resolves from somewhere a board file is not (the clock, the footprint's library entry, the nets), or a field of its
+ * part, as words. X25: the editor keeps such a text as it is typed (`${NET_NAME(1)}`, `@{1+2}`) and says so in the report; KiCad shows what it works out.
+ */
+export function unresolvableTexts(board: KicadBoard): string[] {
+  const fieldNames = (fp: KicadFootprint) => new Set(fp.props.map((p) => p.key))
+  const check = (text: string, fp: KicadFootprint | null): string | null => {
+    if (hasExpression(text)) return `text with an expression @{...} (${JSON.stringify(text.slice(0, 40))})`
+    for (const token of textVariables(text)) {
+      if (UNSUPPORTED_VARIABLES.test(token)) return `text that uses the variable \${${token}}, which KiCad resolves from the footprint's library entry, the nets or the clock`
+      // A footprint's own field (Datasheet, a user field) that is not the reference or the value
+      if (fp && token !== "REFERENCE" && token !== "VALUE" && fieldNames(fp).has(token)) return `text that uses the part's field \${${token}}`
+    }
+    return null
+  }
+  const out: string[] = []
+  for (const t of board.texts) {
+    const why = check(t.text, null)
+    if (why) out.push(why)
+  }
+  for (const fp of board.footprints) {
+    for (const t of fp.texts) {
+      const why = check(t.text, fp)
+      if (why) out.push(`${why} (${fp.ref || fp.name})`)
+    }
+  }
+  return out
 }

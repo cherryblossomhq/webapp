@@ -5,6 +5,7 @@ import { flipShapeLayer } from "../../shapeLayers"
 import { flipLayer } from "../../stack"
 import { anchorSide, isOtherZoneLayer, orderedOtherLayers } from "../../zoneLayers"
 import { hasOtherLayers, isOtherZone, kicadUuid } from "../../zones"
+import { DEFAULT_MIN_HOLE, DEFAULT_SMOOTH_VALUE } from "../../zoneHatch"
 import { layerClass } from "./needs"
 import { layerMapOf, layersOfNames } from "./layers"
 import { resolveLayer } from "./graphics"
@@ -16,6 +17,12 @@ import type { KicadBoard, KicadFootprint, KicadZone, KicadZoneSeg, Pt } from "./
 // what the file says (its outline with holes and arcs, layers, net, priority, clearance, minimum width, how its pads join, the thermal
 // gap and spoke width, corner smoothing, island rule, keepout flags, teardrop), and the copper is the editor's own fill of it: KiCad's
 // stored `filled_polygon` is not kept (docs/kicad-import.md section 10).
+
+/**
+ * The last file stamp (KiCad 9.0) whose fills lay a hatch grid out from the corner of the copper; the one KiCad 10 board of the corpus that is hatched (stamp 20260101) lays it from the origin, and the
+ * lattice of every hatched fill of a KiCad 6 to 9 file in the corpus (8 zones) is where the corner of its copper puts it, to a hundredth of a millimetre.
+ */
+const LAST_FILL_ANCHORED_HATCH = 20241229
 
 const flip = (p: Pt): Vec2 => ({ x: p.x + 0, y: p.y === 0 ? 0 : -p.y })
 
@@ -152,6 +159,13 @@ function convertOne(z: KicadZone, cx: OneContext): One {
   // X29: a filled zone is on copper or on layers that are not, never both (KiCad would fill each layer of such a zone as copper, by the nets and pads of a layer that has none).
   if (!rule && layers.length && other.length) return { lossy: "a zone that is filled on a copper layer and on a layer that is not copper at once" }
   const copperZone = other.length === 0
+  // X24: a hatched fill is held (`Zone.hatch`) for a pour on copper; a thieving pattern, a hatch on a layer that is not copper (it has no hatch fill here) and a grid the file does not size are not.
+  if (!rule && z.fillMode === "thieving") return { lossy: "a zone filled with a copper thieving pattern (KiCad 11 development)" }
+  if (!rule && z.hatch && !copperZone) return { lossy: "a hatched fill on a layer that is not copper" }
+  if (!rule && z.hatch && !(z.hatch.thickness && z.hatch.thickness > 0 && z.hatch.gap && z.hatch.gap > 0)) return { lossy: "a hatched fill whose line width or gap the file does not give" }
+  if (z.node.some((c) => Array.isArray(c) && c[0] === "zone_type")) return { lossy: "a zone with a zone type (KiCad 11 development)" }
+  const unknownProperty = z.properties.find((p) => p.other)
+  if (unknownProperty) return { lossy: `a zone property other than a hatch position ("${unknownProperty.other}")` }
   // X30: a pour inside a part is on no net here: the net it names is one of the part's pads, which a land shared by several parts cannot say.
   if (cx.inPart && !rule && copperZone && z.netRaw) return { lossy: "a pour inside a part that is on a net" }
   const zone: Zone = { id: cx.id(), net: "", layer: layers[0] ?? anchorSide(other), outline: paths }
@@ -170,6 +184,15 @@ function convertOne(z: KicadZone, cx: OneContext): One {
     }
   }
   if (z.locked) zone.locked = true
+  // X24: where the hatch pattern starts on a layer (a zone keeps it whether or not it is hatched).
+  const hatchAt: NonNullable<Zone["hatchAt"]> = {}
+  for (const p of z.properties) {
+    if (!p.at) continue
+    const named = layersOfNames(map, [p.layer])
+    const on = cx.bottomPart ? map.ids.filter((l) => named.includes(flipLayer(l, map.count))) : named
+    if (on[0] !== undefined && layers.includes(on[0])) hatchAt[on[0]] = cx.map(p.at)
+  }
+  if (Object.keys(hatchAt).length) zone.hatchAt = hatchAt
   if (rule) {
     zone.keepout = {
       ...(z.keepout?.tracks ? { tracks: true as const } : {}),
@@ -193,6 +216,18 @@ function convertOne(z: KicadZone, cx: OneContext): One {
   zone.thermalGap = z.thermalGap ?? 0.5
   zone.spokeWidth = z.thermalBridge ?? 0.5
   if (z.smoothing !== "none" && z.radius > 0) zone.smoothing = { kind: z.smoothing, radius: z.radius }
+  if (z.hatch) {
+    const level = Math.min(3, Math.max(0, Math.trunc(z.hatch.smoothLevel)))
+    zone.hatch = {
+      thickness: z.hatch.thickness!,
+      gap: z.hatch.gap!,
+      ...(z.hatch.angle !== 0 ? { angle: z.hatch.angle } : {}),
+      ...(z.hatch.minHole !== null && z.hatch.minHole !== DEFAULT_MIN_HOLE ? { minHole: z.hatch.minHole } : {}),
+      ...(z.hatch.thinBorder ? { thinBorder: true as const } : {}),
+      ...(board.version !== null && board.version <= LAST_FILL_ANCHORED_HATCH ? { fromFill: true as const } : {}),
+      ...(level > 0 ? { smooth: { level: level as 1 | 2 | 3, value: z.hatch.smoothValue ?? DEFAULT_SMOOTH_VALUE } } : {}),
+    }
+  }
   if (z.islandMode === 1) zone.islands = "never"
   else if (z.islandMode === 2) zone.islands = z.islandArea ?? 10
   // KiCad 5 and earlier kept a pour its own clearance and half the edge line's width from the edge, and from a hole with no copper by the

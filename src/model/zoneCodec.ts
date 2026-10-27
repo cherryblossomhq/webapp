@@ -114,6 +114,25 @@ export function normalizeZones(raw: unknown): Zone[] {
     const sm = item.smoothing
     if (isObject(sm) && (sm.kind === "chamfer" || sm.kind === "fillet") && finite(sm.radius) && sm.radius > 0) z.smoothing = { kind: sm.kind, radius: sm.radius }
     if (item.islands === "never" || (finite(item.islands) && item.islands >= 0)) z.islands = item.islands as Zone["islands"]
+    // X24: a hatched pour's grid, and where it starts on each layer. A grid that does not read (no positive line width or hole) is a solid pour, which is what the zone would be without it.
+    const h = item.hatch
+    if (isObject(h) && finite(h.thickness) && h.thickness > 0 && finite(h.gap) && h.gap > 0) {
+      const sh = h.smooth
+      z.hatch = {
+        thickness: h.thickness,
+        gap: h.gap,
+        ...(finite(h.angle) && h.angle !== 0 ? { angle: h.angle } : {}),
+        ...(finite(h.minHole) && h.minHole >= 0 ? { minHole: h.minHole } : {}),
+        ...(h.thinBorder === true ? { thinBorder: true as const } : {}),
+        ...(h.fromFill === true ? { fromFill: true as const } : {}),
+        ...(isObject(sh) && (sh.level === 1 || sh.level === 2 || sh.level === 3) && finite(sh.value) && sh.value > 0 ? { smooth: { level: sh.level, value: sh.value } } : {}),
+      }
+    }
+    if (isObject(item.hatchAt)) {
+      const at: Partial<Record<CopperLayer, { x: number; y: number }>> = {}
+      for (const [l, p] of Object.entries(item.hatchAt)) if (isCopperLayerId(l) && isObject(p) && finite(p.x) && finite(p.y)) at[l] = { x: p.x, y: p.y }
+      if (Object.keys(at).length) z.hatchAt = at
+    }
     if (isObject(item.keepout)) {
       const k: ZoneKeepout = {}
       for (const f of FLAGS) if (item.keepout[f] === true) k[f] = true

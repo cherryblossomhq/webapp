@@ -101,13 +101,22 @@ describe("a dimension of the typed format", () => {
     const inner = importKicadBoard(board({ body: [aligned().replace(/"Dwgs.User"/g, '"In1.Cu"')] }))
     expect(inner.status).toBe("refused")
   })
-  it("a dimension inside a footprint is the one thing named as not built (X27); the board is refused by its name", () => {
+  it("a dimension inside a footprint is the board's dimension of the same points (X27), and the report says it no longer moves with the part", () => {
     const fp = footprint({ pads: [pad({ at: "0 0" })], extra: `(dimension (type aligned) (layer "F.Fab") (uuid "${U(7)}") (pts (xy -1 0) (xy 1 0)) (height 1) (gr_text "2" (at 0 1 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.1)))) (format (prefix "") (suffix "") (units 2) (units_format 1) (precision 4)) (style (thickness 0.1) (arrow_length 1.27) (text_position_mode 0) (extension_height 0.58642) (extension_offset 0)))` })
     const r = importKicadBoard(board({ body: [fp] }))
-    expect(r.status === "refused" && r.reason).toBe("unsupported")
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X27"])
-    expect(r.status === "refused" && r.message).toMatch(/dimensions inside footprints/)
-    expect(BUILT_EXTENSIONS.has("X27")).toBe(false)
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    // the same dimension drawn on the board itself is the same dimension (the points are the board's in every file the importer reads)
+    const own = fp.match(/\(dimension [\s\S]*?\(extension_offset 0\)\)\)/)![0]
+    const alone = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), own] }))
+    expect(alone.status === "imported" && alone.project.dimensions).toEqual(r.project.dimensions)
+    expect(r.project.dimensions).toHaveLength(1)
+    expect(r.report.entries.find((e) => e.code === "dimensions-flattened")).toMatchObject({ severity: "changed", count: 1 })
+    expect(BUILT_EXTENSIONS.has("X27")).toBe(true)
+    // a file that stores a part's drawings in the part's own frame (stamp 20260616) says a point the part's pose would have to move, which is not held: refused as inexact, named
+    const lib = importKicadBoard(board({ version: 20260616, body: [fp] }))
+    expect(lib.status === "refused" && lib.reason).toBe("inexact")
+    expect(lib.status === "refused" && lib.message).toMatch(/dimension inside R1/)
   })
 })
 
@@ -307,9 +316,9 @@ describe("reference images", () => {
 })
 
 describe("what the gate lets in and what the project holds", () => {
-  it("X11, X12 and X14 are built, X27 and X28 are not", () => {
-    for (const x of ["X11", "X12", "X14"]) expect(BUILT_EXTENSIONS.has(x)).toBe(true)
-    for (const x of ["X27", "X28"]) expect(BUILT_EXTENSIONS.has(x)).toBe(false)
+  it("X11, X12, X14 and X27 are built, X28 is not", () => {
+    for (const x of ["X11", "X12", "X14", "X27"]) expect(BUILT_EXTENSIONS.has(x)).toBe(true)
+    expect(BUILT_EXTENSIONS.has("X28")).toBe(false)
   })
   it("a board with a dimension, a group and a picture needs nothing that is not built, and every node of it is accounted for", () => {
     const text = board({ nets, body: [seg(2, 8, 4, 8, 11, "(net 1)"), aligned("", 17), group("g", 20, [11, 17]), image(png(4, 4))] })

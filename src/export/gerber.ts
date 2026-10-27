@@ -1,6 +1,6 @@
 import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../model/board"
 import { isNpth, maskSides, padOnLayer, pasteSides, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
-import { arcOf } from "../model/arcTracks"
+import { arcOf, bareTraces } from "../model/arcTracks"
 import { copperLayers, kicadLayerName, viaDiameterOn, viaLayers } from "../model/stack"
 import { viaTentedOn } from "../model/viaRules"
 import type { CopperItem } from "../model/pcb"
@@ -9,7 +9,7 @@ import { maskMargin, padOpeningRings, pasteMargins } from "../model/padOpening"
 import { onBoard } from "../model/partFlags"
 import { designatorStrokes, placeDesignators, SILK_WIDTH } from "../model/silk"
 import { polygonKit, withMaxError, type ZoneFill } from "../model/pour"
-import type { CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
+import type { CopperLayer, PcbSide, Project, Trace, Vec2 } from "../model/types"
 import type { BoardShape } from "../model/types"
 import { worldShapes } from "../model/shapeItems"
 import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
@@ -374,6 +374,13 @@ const ringArea = (ring: Vec2[]) => {
   return Math.abs(twice) / 2
 }
 
+/** A track as the plot draws it, `width` wide: an arc track is the arc it is, G02 or G03 about its centre (KiCad's `PlotArc`, X4), not chords. */
+function strokeTrace(w: GerberWriter, t: Trace, width: number) {
+  const arc = t.arc && t.points.length === 3 ? arcOf(t.points) : null
+  if (arc?.circle) w.strokeSegs([{ kind: "arc", start: arc.start, mid: arc.mid, end: arc.end }], width)
+  else w.stroke(arc ? [arc.start, arc.end] : t.points, width)
+}
+
 /**
  * Copper layer. Pours go first: each fill is a dark region with its holes cleared, and the
  * pads and traces drawn afterwards are dark again, so clearing never erases them.
@@ -400,13 +407,7 @@ export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFi
     }
   }
   for (const pad of padsOn(project, layer, "copper", flashed)) flashPad(w, pad)
-  for (const t of project.traces) {
-    if (t.layer !== layer) continue
-    // X4: an arc track is plotted as the arc it is, G02 or G03 about its centre (KiCad's `PlotArc`), not as chords.
-    const arc = t.arc && t.points.length === 3 ? arcOf(t.points) : null
-    if (arc?.circle) w.strokeSegs([{ kind: "arc", start: arc.start, mid: arc.mid, end: arc.end }], t.width)
-    else w.stroke(arc ? [arc.start, arc.end] : t.points, t.width)
-  }
+  for (const t of project.traces) if (t.layer === layer) strokeTrace(w, t, t.width)
   // Each via on the layers of its span, at its diameter there (a via stack has its own on some layers), where the copper is not dropped for being unused.
   const viaFlashed = new Map<string, Set<CopperLayer>>()
   if (items) for (const it of items) if (it.kind === "via") viaFlashed.set(it.viaId, new Set([...(viaFlashed.get(it.viaId) ?? []), ...it.layers]))
@@ -433,6 +434,8 @@ export function gerberMask(project: Project, side: PcbSide): string {
   for (const pad of padsOn(project, side, "mask")) flashPad(w, pad, pad.x7 ? maskMargin(pad, project.rules) : grow)
   // A via has an opening on a side when its copper reaches that outer layer and it is not tented there: by its own setting, else the board's (X5).
   for (const v of project.vias) if (viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)) w.flashCircle(v, viaDiameterOn(v, side) + grow * 2)
+  // X24: a track's copper left open through the mask is an opening along it, wider by its own margin or the board's expansion on each side.
+  for (const t of bareTraces(project, side)) strokeTrace(w, t, t.width + 2 * (t.bare?.margin ?? grow))
   for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
   plotOtherZones(w, project, side === "top" ? "F.Mask" : "B.Mask")
   plotTexts(w, project, side === "top" ? "F.Mask" : "B.Mask")

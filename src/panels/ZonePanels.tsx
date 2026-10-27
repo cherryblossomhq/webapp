@@ -196,6 +196,25 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
               </Field>
             )}
           </div>
+          <Field label="Fill">
+            <select className="field h-8" aria-label="Fill style" value={zone.hatch ? "hatch" : "solid"} onChange={(e) => patch({ hatch: e.target.value === "hatch" ? (zone.hatch ?? { thickness: 1, gap: 1.5 }) : undefined })}>
+              <option value="solid">Solid</option>
+              <option value="hatch">Hatched</option>
+            </select>
+          </Field>
+          {zone.hatch && (
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="Line width">
+                <LengthInput min={0.01} value={zone.hatch.thickness} ariaLabel="Hatch line width" onCommit={(v) => v !== null && patch({ hatch: { ...zone.hatch!, thickness: v } })} />
+              </Field>
+              <Field label="Hole size">
+                <LengthInput min={0.01} value={zone.hatch.gap} ariaLabel="Hatch hole size" onCommit={(v) => v !== null && patch({ hatch: { ...zone.hatch!, gap: v } })} />
+              </Field>
+              <Field label="Angle">
+                <input type="number" step={1} className="field h-8" aria-label="Hatch angle" key={zone.hatch.angle ?? 0} defaultValue={zone.hatch.angle ?? 0} onBlur={(e) => patch({ hatch: { ...zone.hatch!, angle: Number(e.target.value) || undefined } })} />
+              </Field>
+            </div>
+          )}
           <Field label="Copper no net copper touches">
             <select
               className="field h-8"

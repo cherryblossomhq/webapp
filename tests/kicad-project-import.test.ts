@@ -263,9 +263,9 @@ describe("refused whole when one half is", () => {
   })
 
   it("the board is refused: the project is, with the board's own reason, and the board alone is no help", () => {
-    // A text with an expression is one thing the board importer does not build yet (X25).
-    const font = '(gr_text "@{1+1}" (at 3 3) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))'
-    const r = refused(importKicadProject(files(dividerBoard({ extra: [font] }), divider())))
+    // A creepage rule is one thing the board importer does not build (X26).
+    const creepage = "(setup (creepage 1.5))"
+    const r = refused(importKicadProject(files(dividerBoard({ extra: [creepage] }), divider())))
     expect(r.reason).toBe("unsupported")
     expect(r.message).toMatch(/^This board uses .+, which (is|are) not supported yet\.$/)
     expect(r.boardAloneImports).toBe(false)

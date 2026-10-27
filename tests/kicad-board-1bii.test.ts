@@ -200,15 +200,20 @@ describe("layers", () => {
   })
 })
 
-describe("what stays refused: X24", () => {
+describe("X24 on drawings: line ends and colours are kept, a hatched fill is refused", () => {
   const real = (text: string) => importKicadBoard(text)
-  it("a hatched fill, a line end shape and a drawing's colour are X24", () => {
+  it("a drawing filled with a hatch is refused as inexact, in words: the editor holds a pour's hatch, not a drawing's", () => {
     const hatch = real(board({ body: [gr("rect", "(start 0 0) (end 4 3)", "F.SilkS", "(fill hatch)")] }))
-    expect(hatch.status === "refused" && hatch.needs.map((n) => n.ext)).toContain("X24")
-    const ending = real(board({ body: ['(gr_line (start 0 0) (end 4 0) (stroke (width 0.1) (type solid)) (layer "F.SilkS") (end_shape (style arrow)))'] }))
-    expect(ending.status === "refused" && ending.needs.map((n) => n.ext)).toContain("X24")
-    const color = real(board({ body: ['(gr_line (start 0 0) (end 4 0) (stroke (width 0.1) (type solid) (color 255 0 0 1)) (layer "F.SilkS"))'] }))
-    expect(color.status === "refused" && color.needs.map((n) => n.ext)).toContain("X24")
+    expect(hatch.status === "refused" && hatch.reason).toBe("inexact")
+    expect(hatch.status === "refused" && hatch.message).toMatch(/a drawing filled with a hatch/)
+    expect(hatch.status === "refused" && hatch.needs).toEqual([])
+  })
+  it("a line end shape and a drawing's colour come in with the drawing, whether it has a stroke width or not", () => {
+    const ending = real(board({ body: ['(gr_line (start 0 0) (end 4 0) (stroke (width 0.1) (type solid)) (layer "F.SilkS") (end_shape arrow (length 3) (width 2) (stroke (width 0.2) (type dash))) (start_shape circle))'] }))
+    expect(ending.status).toBe("imported")
+    expect(ending.status === "imported" && ending.project.graphics![0].ends).toEqual({ start: { style: "circle" }, end: { style: "arrow", length: 3, width: 2, stroke: { width: 0.2, dash: "dash" } } })
+    const color = real(board({ body: ['(gr_line (start 0 0) (end 4 0) (stroke (width 0.1) (type solid) (color 255 0 0 0.5)) (layer "F.SilkS"))'] }))
+    expect(color.status === "imported" && color.project.graphics![0].color).toEqual([255, 0, 0, 0.5])
   })
 })
 

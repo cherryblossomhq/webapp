@@ -27,7 +27,7 @@ describe("the kicad_import event", () => {
     const e = importEvent(withSecrets(refused), 1234.6)
     expect(e.name).toBe("kicad_import")
     expect(Object.keys(e.properties).sort()).toEqual(["board_kb", "duration_ms", "kicad_release", "kicad_stamp", "missing_extensions", "outcome"])
-    expect(e.properties).toEqual({ outcome: "refused_unsupported", kicad_stamp: "20240108", kicad_release: "kicad8", missing_extensions: ["X25"], board_kb: 3, duration_ms: 1235 })
+    expect(e.properties).toEqual({ outcome: "refused_unsupported", kicad_stamp: "20240108", kicad_release: "kicad8", missing_extensions: ["X26"], board_kb: 3, duration_ms: 1235 })
   })
 
   it("never holds a name from the file, a net, a part, the board's file name or a sentence", () => {

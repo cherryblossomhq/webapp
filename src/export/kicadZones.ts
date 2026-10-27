@@ -3,6 +3,7 @@ import type { ZoneFill } from "../model/pour"
 import { flattenPath, type PathSeg, type ShapePath } from "../model/shapes"
 import { nonCopperFills } from "../model/nonCopperFill"
 import { zoneLayers } from "../model/zones"
+import { DEFAULT_MIN_HOLE } from "../model/zoneHatch"
 import { kicadLayerName } from "../model/stack"
 import type { CopperLayer, Project, Vec2, Zone } from "../model/types"
 import { fractureRings } from "./fracture"
@@ -112,9 +113,17 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   }
   const filled = !rule && (fills.some((f) => f.zoneId === z.id) || otherFills.some((f) => f.polygons.length > 0))
   const fill = [filled ? " yes" : ""]
+  if (z.hatch) fill.push(" (mode hatch)")
   fill.push(` (thermal_gap ${mm6(set.gap)}) (thermal_bridge_width ${mm6(set.spoke)})`)
   if (z.smoothing) fill.push(` (smoothing ${z.smoothing.kind}) (radius ${mm6(z.smoothing.radius)})`)
   if (z.islands !== undefined) fill.push(` (island_removal_mode ${z.islands === "never" ? 1 : 2}) (island_area_min ${mm6(z.islands === "never" ? 10 : z.islands)})`)
+  // X24: the grid of a hatched pour, in the order KiCad writes it. A hatch position is KiCad 10's (a 9.0 parser stops at its `property` node), so it stays in the project and a note says so.
+  if (z.hatch) {
+    const h = z.hatch
+    fill.push(` (hatch_thickness ${mm6(h.thickness)}) (hatch_gap ${mm6(h.gap)}) (hatch_orientation ${mm6(h.angle ?? 0)})`)
+    if (h.smooth) fill.push(` (hatch_smoothing_level ${h.smooth.level}) (hatch_smoothing_value ${mm6(h.smooth.value)})`)
+    fill.push(` (hatch_border_algorithm ${h.thinBorder ? "min_thickness" : "hatch_thickness"}) (hatch_min_hole_area ${mm6(h.minHole ?? DEFAULT_MIN_HOLE)})`)
+  }
   o.push(`    (fill${fill.join("")})`)
   for (const ring of z.outline ?? boardRings ?? []) o.push(`    (polygon ${pts(ring, to)})`)
   if (!rule) {

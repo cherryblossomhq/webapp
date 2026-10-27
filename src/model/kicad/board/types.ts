@@ -1,3 +1,4 @@
+import type { LineEnd } from "../../types"
 import type { List } from "./sexpr"
 
 // A KiCad board as typed data, for every file version. Coordinates are KiCad's own: millimetres,
@@ -174,7 +175,7 @@ export interface KicadText {
   /** The property's name when the text is a footprint field (`Reference`, `Value`, `Datasheet`...). */
   field: string | null
   /** A text box (`gr_text_box`, `fp_text_box`): its corners, whether it is an outline of points, its border and margins. */
-  box: { start: Pt; end: Pt; hasOutline: boolean; border: boolean; strokeWidth: number | null; margins: [number, number, number, number] | null } | null
+  box: { start: Pt; end: Pt; hasOutline: boolean; corners: Pt[]; border: boolean; strokeWidth: number | null; margins: [number, number, number, number] | null } | null
   node: List
 }
 
@@ -216,9 +217,9 @@ export interface KicadShape {
   ellipse?: { center: Pt; major: number; minor: number; rotation: number; start?: number; end?: number }
   /** The shape's own solder mask margin, when it writes one. */
   maskMargin?: number
-  /** The shape has a start or end shape (an arrowhead), or its own colour: KiCad 10 things the editor does not hold. */
-  ending: boolean
-  colored: boolean
+  /** X24: what KiCad 10 puts at the line's ends (`start_shape`, `end_shape`) and the colour it draws it in (`stroke (color r g b a)`); the editor keeps both and draws neither. */
+  ends?: { start?: LineEnd; end?: LineEnd }
+  color?: [number, number, number, number]
   node: List
 }
 
@@ -353,6 +354,10 @@ export interface KicadZone {
   islandArea: number | null
   /** `fill (mode ...)`: segment (the old one, which KiCad 6 and later read as polygon), polygon and solid are one; hatch and thieving are not. */
   fillMode: "polygon" | "hatch" | "thieving"
+  /** X24: the grid of a hatched fill (`hatch_thickness`, `hatch_gap`, `hatch_orientation`, `hatch_border_algorithm`, `hatch_min_hole_area`, `hatch_smoothing_level`, `hatch_smoothing_value`); null for a fill that is not hatched, and a number is null where the file gives none. */
+  hatch: { thickness: number | null; gap: number | null; angle: number; minHole: number | null; thinBorder: boolean; smoothLevel: number; smoothValue: number | null } | null
+  /** X24: `property` (KiCad 10): the layer each names and where its hatch pattern starts; `other` is the name of any other setting in one, which the importer does not know. */
+  properties: { layer: string; at: Pt | null; other: string | null }[]
   teardrop: "padvia" | "track_end" | null
   /** The file has no `filled_areas_thickness`: its filled polygons are shrunk by half the minimum width and were drawn with a pen that wide (KiCad 5 and earlier), and KiCad 6 and later read them as the copper they drew. */
   strokedFill: boolean
@@ -400,6 +405,8 @@ export interface KicadFootprint {
   texts: KicadText[]
   shapes: KicadShape[]
   zones: KicadZone[]
+  /** X27: the dimensions drawn inside the footprint; their points are the board's in every file before stamp 20260616, which is every file there is. */
+  dimensions: KicadDimension[]
   /** Groups of the footprint's own pads, drawings, texts and groups: their members are ids of the footprint's children. */
   groups: KicadGroup[]
   /** Layers the footprint draws on that KiCad shows and plots on no board layer (`private_layers`, KiCad 7). */
@@ -438,6 +445,9 @@ export interface KicadSegment {
   end: Pt
   width: number
   layer: string
+  /** X24: the mask layers the track names beside its copper layer, which open the mask along it, and its own margin for the opening (null when the file gives none). */
+  mask: string[]
+  maskMargin: number | null
   net: string | null
   /** The net as the file spells it, the key everywhere a net is compared. */
   netRaw: string | null
@@ -453,6 +463,8 @@ export interface KicadArcTrack {
   end: Pt
   width: number
   layer: string
+  mask: string[]
+  maskMargin: number | null
   net: string | null
   netRaw: string | null
   badNet?: string

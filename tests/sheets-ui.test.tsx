@@ -4,18 +4,19 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { runErc } from "../src/model/erc"
-import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol } from "../src/model/sheetOps"
+import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, renameSheetUse, resizeSheetSymbol, setSheetSymbol, setSheetUsePage } from "../src/model/sheetOps"
 import { addWire, createProject } from "../src/model/ops"
 import { sheetUses } from "../src/model/sheets"
-import { SheetNavigator } from "../src/panels/SheetNavigator"
-import { SheetSymbolInspector } from "../src/panels/SheetInspectors"
+import { SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
+import { SheetTabs } from "../src/panels/SheetTabs"
+import { ReadOnly } from "../src/ui/form"
 import { projectApi } from "../src/store/projectStore"
 import { commitHere, shownProject } from "../src/store/sheetScope"
 import { uiApi } from "../src/store/uiStore"
 import { tidySelected } from "../src/editor/schematic/tidyAction"
 import { S1, S2, imp } from "./kicad-sheets-fixtures"
 
-// The editor with sheets: the navigator, the edits of one sheet at a time, the sheet symbol's panel and the operations on sheets.
+// The editor with sheets: the tabs, the edits of one sheet at a time, the panels of the sheet shown and of a sheet symbol, and the operations on sheets.
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -42,24 +43,69 @@ const open = (uses?: Parameters<typeof imp>[0]) => {
   return project
 }
 
-describe("the sheet navigator", () => {
-  it("is not there for a project of one sheet", () => {
+describe("the sheet tabs", () => {
+  const tabs = () => [...host.querySelectorAll("[role=tab]")]
+
+  it("are not there for a project of one sheet", () => {
     projectApi().open(createProject("one"))
-    mount(<SheetNavigator />)
+    mount(<SheetTabs />)
     expect(host.textContent).toBe("")
   })
 
-  it("shows the path to the sheet shown, goes up, and lists every sheet with its page", () => {
+  it("are one per use, Main first, each with its page, the sheet shown selected; a click shows that use", () => {
+    open([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }])
+    mount(<SheetTabs />)
+    expect(tabs().map((t) => t.textContent)).toEqual(["1Main", "2A", "3B"])
+    expect(tabs().map((t) => t.getAttribute("aria-selected"))).toEqual(["true", "false", "false"])
+    click(tabs()[2])
+    expect(uiApi().sheet).toBe("/h2")
+    expect(tabs()[2].getAttribute("aria-selected")).toBe("true")
+  })
+
+  it("open and close the sheet tree", () => {
     open()
-    mount(<SheetNavigator />)
-    expect(host.textContent).toContain("Power")
-    expect((button(/Up to the sheet above/) as HTMLButtonElement).disabled).toBe(true)
+    mount(<SheetTabs />)
+    const before = uiApi().sheetsOpen
+    click(button(/sheet tree/))
+    expect(uiApi().sheetsOpen).toBe(!before)
+  })
+})
+
+describe("the panel of the sheet shown", () => {
+  it("names and numbers the sheet, and goes up to the one it is on", () => {
+    const project = open()
     act(() => uiApi().setSheet("/h1"))
-    expect((button(/Up to the sheet above/) as HTMLButtonElement).disabled).toBe(false)
-    click(button(/Up to the sheet above/))
+    mount(<ShownSheetInspector project={project} path="/h1" />)
+    const values = [...host.querySelectorAll("input")].map((i) => i.value)
+    expect(values).toEqual(["Power", "2"])
+    click(button(/Up to Main/))
     expect(uiApi().sheet).toBe("")
-    const options = [...host.querySelectorAll("option")].map((o) => o.textContent?.replace(/\s+/g, " ").trim())
-    expect(options).toEqual(["Imported KiCad schematic (page 1)", "Power (page 2)"])
+  })
+
+  it("lets a viewer go up but not rename", () => {
+    const project = open()
+    act(() => uiApi().setSheet("/h1"))
+    mount(
+      <ReadOnly.Provider value={true}>
+        <ShownSheetInspector project={project} path="/h1" />
+      </ReadOnly.Provider>,
+    )
+    expect(host.querySelector("fieldset")!.disabled).toBe(true)
+    expect((button(/Up to Main/) as HTMLButtonElement).closest("fieldset")).toBeNull()
+    click(button(/Up to Main/))
+    expect(uiApi().sheet).toBe("")
+  })
+
+  it("renames and renumbers Main and the sheets below it where each keeps its name and page", () => {
+    const p = imp().project
+    const top = setSheetUsePage(renameSheetUse(p, "", "Board"), "", "0")
+    expect(top.sheets!.find((s) => s.id === "root")).toMatchObject({ name: "Board", page: "0" })
+    expect(sheetUses(top)[0]).toMatchObject({ name: "Board", page: "0" })
+    const below = setSheetUsePage(renameSheetUse(top, "/h1", "Supply"), "/h1", "7")
+    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply", pages: { "/h1": "7" } })
+    // An empty name or page, or a use the project hasn't, changes nothing.
+    expect(renameSheetUse(below, "/h1", "  ")).toBe(below)
+    expect(setSheetUsePage(below, "/gone", "3")).toBe(below)
   })
 })
 
@@ -172,6 +218,6 @@ describe("the operations on sheets", () => {
 
   it("a sheet used twice has a use of each name", () => {
     const { project } = imp([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }])
-    expect(sheetUses(project).map((u) => u.name)).toEqual([project.name, "A", "B"])
+    expect(sheetUses(project).map((u) => u.name)).toEqual(["Main", "A", "B"])
   })
 })

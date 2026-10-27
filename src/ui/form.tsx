@@ -219,12 +219,15 @@ export function Section({
   title,
   children,
   action,
+  navigation,
   id,
   collapsible = !!id,
 }: {
   title: string
   children: ReactNode
   action?: ReactNode
+  /** Controls that change nothing, only go somewhere: under the rest, and live for a viewer too. */
+  navigation?: ReactNode
   id?: string
   collapsible?: boolean
 }) {
@@ -252,6 +255,7 @@ export function Section({
           {children}
         </fieldset>
       )}
+      {!folded && navigation && <div className="mt-2.5 flex flex-wrap gap-1.5">{navigation}</div>}
     </section>
   )
 }

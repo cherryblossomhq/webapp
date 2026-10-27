@@ -3,7 +3,7 @@ import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { moveProblems } from "./merges"
 import { removeItems, stretchEnd } from "./ops"
-import { ROOT_SHEET, hasUse, sheetUses, sheetView, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
+import { MAIN_SHEET_NAME, ROOT_SHEET, hasUse, sheetsOf, sheetUses, sheetView, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
 import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
 
 // S1: editing the sheets of a schematic: adding a sheet (a sheet symbol on a sheet, with the sheet it stands for), using a sheet again,
@@ -252,6 +252,31 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   // The file name is the sheet's: the sheets the symbol stands for have it.
   if (patch.file !== undefined) sheets = (project.sheets ?? []).map((s) => (s.id === sym.child ? { ...s, file: patch.file } : s))
   return touch({ ...project, ...(sheets ? { sheets } : {}), sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
+}
+
+/**
+ * The sheet a use shows, renamed as the tree and the tabs name it: the root by its own name (none for `Main`), a sheet below it by the
+ * symbol that makes the use, as the Inspector renames it.
+ */
+export function renameSheetUse(project: Project, path: string, name: string): Project {
+  const title = name.trim()
+  const use = knownUse(project, path)
+  if (!title || !use || title === use.name) return project
+  if (use.symbol) return setSheetSymbol(project, use.symbol.id, { name: title })
+  const sheets = sheetsOf(project)
+  const root = sheets.find((s) => s.id === ROOT_SHEET)!
+  const { name: _old, ...plain } = root
+  const renamed = title === MAIN_SHEET_NAME ? plain : { ...plain, name: title }
+  return touch({ ...project, sheets: sheets.map((s) => (s === root ? renamed : s)) })
+}
+
+/** The page number of a use: the root's own, or the one its symbol keeps for that use, as the Inspector sets it. */
+export function setSheetUsePage(project: Project, path: string, page: string): Project {
+  const number = page.trim()
+  const use = knownUse(project, path)
+  if (!number || !use || number === use.page) return project
+  if (use.symbol) return setSheetSymbol(project, use.symbol.id, { page: { use: path, page: number } })
+  return touch({ ...project, sheets: sheetsOf(project).map((s) => (s.id === ROOT_SHEET ? { ...s, page: number } : s)) })
 }
 
 /**

@@ -12,8 +12,11 @@ const TEXT = 0.1
 /** A sheet symbol with its name and file, and its pins. */
 export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym: SheetSymbol; selected: boolean; hovered: boolean; px: number; openable: boolean }) {
   const sch = useSch()
-  const stroke = selected ? sch.select : (sym.stroke?.color ?? sch.block)
-  const fill = sym.fill?.kind === "color" ? (sym.fill.color ?? "none") : sym.fill ? sch.body : "none"
+  const border = sym.stroke?.color ?? sch.block
+  const stroke = selected ? sch.select : border
+  // With no fill of its own a sheet is a soft tint of its border, as Altium fills its sheet symbols: one thing to click and open, never mistaken for a block's frame.
+  const fill = sym.fill?.kind === "color" ? (sym.fill.color ?? "none") : sym.fill ? sch.body : border
+  const fillOpacity = sym.fill?.kind === "color" ? 1 : sym.fill ? 0.5 : hovered && openable ? 0.1 : 0.06
   const dash = sym.stroke?.dash === "dash" ? "0.08 0.04" : sym.stroke?.dash === "dot" ? "0.02 0.04" : undefined
   return (
     <g>
@@ -23,7 +26,7 @@ export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym:
         width={sym.w}
         height={sym.h}
         fill={fill}
-        fillOpacity={sym.fill?.kind === "color" ? 1 : 0.5}
+        fillOpacity={fillOpacity}
         stroke={stroke}
         strokeWidth={Math.max(sym.stroke?.width ?? 0.014, (selected || hovered ? 1.8 : 1.2) * px)}
         strokeDasharray={dash}

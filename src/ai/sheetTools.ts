@@ -25,7 +25,7 @@ export const sheetList = (project: Project) =>
     .map((u) => `${u.human} (page ${u.page})`)
     .join(", ")
 
-/** The use of a sheet a person means by a name: its path of names (`Power`, `/Power/Reg/`), its id path, `root` for the first, or its page. */
+/** The use of a sheet a person means by a name: its path of names (`Power`, `/Power/Reg/`), its id path, `root` or its own name (`Main`) for the first, or its page. */
 export function resolveSheet(project: Project, text: string): { use: SheetUse } | { error: string } {
   const uses = sheetUses(project)
   const want = norm(text)

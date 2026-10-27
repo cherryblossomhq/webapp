@@ -24,6 +24,9 @@ import { activeVariant, resolveVariant, variantSheetFlags } from "./variants"
 
 export const ROOT_SHEET = "root"
 
+/** What the root sheet is called until it is named: the top sheet of the schematic, which every other sheet hangs from. */
+export const MAIN_SHEET_NAME = "Main"
+
 /** The most uses of sheets a project may have, and the deepest it may nest (the importer refuses more, as KiCad's own projects stay far below). */
 export const MAX_SHEET_USES = 20000
 export const MAX_SHEET_DEPTH = 64
@@ -38,7 +41,7 @@ export interface SheetUse {
   symbol: SheetSymbol | null
   /** The path of the use this one is on a sheet of; null for the root. */
   parent: string | null
-  /** The name the tree shows: the symbol's `Sheetname`, or the sheet's own name for the root. */
+  /** The name the tree shows: the symbol's `Sheetname`, or for the root its own name (`Main` until it has one). */
   name: string
   /** KiCad's human-readable path, which prefixes the names of local nets: `/` for the root, `/Power/Reg/` below it. */
   human: string
@@ -70,12 +73,23 @@ const treeCache = new WeakMap<object, WeakMap<object, Tree>>()
 const NO_SHEETS: SchematicSheet[] = []
 const NO_SYMBOLS: SheetSymbol[] = []
 
-const rootUse = (project: Pick<Project, "sheets" | "name">): SheetUse => {
-  const root = sheetsOf(project)[0]
-  return { path: "", sheet: ROOT_SHEET, symbol: null, parent: null, name: root?.name ?? project.name, human: "/", depth: 0, page: root?.page ?? "1" }
-}
+const rootOf = (project: Pick<Project, "sheets">) => sheetsOf(project).find((s) => s.id === ROOT_SHEET)
 
-function walk(project: Pick<Project, "sheets" | "sheetSymbols" | "name">): Tree {
+/** The root sheet's own name, `Main` until it is given one. It is a sheet like the others, never the project: the tree is the project's sheets. */
+export const rootSheetName = (project: Pick<Project, "sheets">) => rootOf(project)?.name || MAIN_SHEET_NAME
+
+const rootUse = (project: Pick<Project, "sheets">): SheetUse => ({
+  path: "",
+  sheet: ROOT_SHEET,
+  symbol: null,
+  parent: null,
+  name: rootSheetName(project),
+  human: "/",
+  depth: 0,
+  page: rootOf(project)?.page ?? "1",
+})
+
+function walk(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
   const symbols = project.sheetSymbols ?? NO_SYMBOLS
   const bySheet = new Map<string, SheetSymbol[]>()
   for (const s of symbols) (bySheet.get(s.sheet) ?? bySheet.set(s.sheet, []).get(s.sheet)!).push(s)
@@ -107,14 +121,13 @@ function walk(project: Pick<Project, "sheets" | "sheetSymbols" | "name">): Tree 
   return { uses, byPath: new Map(uses.map((u) => [u.path, u])), refused }
 }
 
-function treeOf(project: Pick<Project, "sheets" | "sheetSymbols" | "name">): Tree {
+function treeOf(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
   const symbols = project.sheetSymbols ?? NO_SYMBOLS
   const sheets = project.sheets ?? NO_SHEETS
   let byShapes = treeCache.get(symbols)
   if (!byShapes) treeCache.set(symbols, (byShapes = new WeakMap()))
   let tree = byShapes.get(sheets)
-  // The root's name is the project's when it has none of its own: a rename of the project is a new tree.
-  if (!tree || tree.uses[0].name !== (sheetsOf(project)[0]?.name ?? project.name)) {
+  if (!tree) {
     tree = walk(project)
     byShapes.set(sheets, tree)
   }
@@ -122,21 +135,21 @@ function treeOf(project: Pick<Project, "sheets" | "sheetSymbols" | "name">): Tre
 }
 
 /** Every use of every sheet, root first, each sheet's uses after the one above them (depth first, in the order the symbols are listed). */
-export const sheetUses = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">): SheetUse[] => treeOf(project).uses
+export const sheetUses = (project: Pick<Project, "sheets" | "sheetSymbols">): SheetUse[] => treeOf(project).uses
 
 /** The use at a path, or the root when the project has none there (a path that went with a deleted symbol). */
-export const useAt = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">, path: string): SheetUse => treeOf(project).byPath.get(path) ?? treeOf(project).uses[0]
+export const useAt = (project: Pick<Project, "sheets" | "sheetSymbols">, path: string): SheetUse => treeOf(project).byPath.get(path) ?? treeOf(project).uses[0]
 
-export const hasUse = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">, path: string) => treeOf(project).byPath.has(path)
+export const hasUse = (project: Pick<Project, "sheets" | "sheetSymbols">, path: string) => treeOf(project).byPath.has(path)
 
 /** The symbols the tree could not follow: a sheet that holds itself, or that nests too deep. */
-export const refusedSheetSymbols = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">): SheetSymbol[] => treeOf(project).refused
+export const refusedSheetSymbols = (project: Pick<Project, "sheets" | "sheetSymbols">): SheetSymbol[] => treeOf(project).refused
 
 /** The uses of one sheet, in tree order. */
-export const usesOfSheet = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">, sheet: string): SheetUse[] => sheetUses(project).filter((u) => u.sheet === sheet)
+export const usesOfSheet = (project: Pick<Project, "sheets" | "sheetSymbols">, sheet: string): SheetUse[] => sheetUses(project).filter((u) => u.sheet === sheet)
 
 /** The uses on the sheet a use is (the children of a node of the tree), in order. */
-export const childUses = (project: Pick<Project, "sheets" | "sheetSymbols" | "name">, path: string): SheetUse[] => sheetUses(project).filter((u) => u.parent === path)
+export const childUses = (project: Pick<Project, "sheets" | "sheetSymbols">, path: string): SheetUse[] => sheetUses(project).filter((u) => u.parent === path)
 
 /** The sheet symbols drawn on a sheet. */
 export const symbolsOnSheet = (project: Pick<Project, "sheetSymbols">, sheet: string): SheetSymbol[] => (project.sheetSymbols ?? NO_SYMBOLS).filter((s) => s.sheet === sheet)
@@ -145,8 +158,8 @@ export const symbolsOnSheet = (project: Pick<Project, "sheetSymbols">, sheet: st
 export const useOfSymbol = (parentPath: string, symbol: Pick<SheetSymbol, "id">) => `${parentPath}/${symbol.id}`
 
 /** The name a sheet goes by: its symbol's name where it has one, else the sheet's own, else its id. */
-export function sheetName(project: Pick<Project, "sheets" | "sheetSymbols" | "name">, sheet: string): string {
-  if (sheet === ROOT_SHEET) return sheetsOf(project)[0]?.name ?? project.name
+export function sheetName(project: Pick<Project, "sheets" | "sheetSymbols">, sheet: string): string {
+  if (sheet === ROOT_SHEET) return rootSheetName(project)
   const sym = (project.sheetSymbols ?? NO_SYMBOLS).find((s) => s.child === sheet)
   return sym?.name || sheetsOf(project).find((s) => s.id === sheet)?.name || sheet
 }

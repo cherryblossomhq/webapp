@@ -47,20 +47,23 @@ type Ring = [number, number][]
 interface RawText {
   text: string
   rings: Ring[]
+  /** Whether the text that owns the cache is mirrored (`(justify ... mirror)`): a text and its mirror image at one anchor have the same box, so the box alone cannot tell their caches apart. */
+  mirror: boolean
 }
 
 /** The render caches of a raw file, each as its text and rings (the file's frame, y down, millimetres). */
 function rawCaches(tree: unknown[]): RawText[] {
   const out: RawText[] = []
-  const visit = (n: unknown) => {
+  const isMirrored = (parent: unknown[]) => parent.some((e) => Array.isArray(e) && e[0] === "effects" && e.some((j) => Array.isArray(j) && j[0] === "justify" && j.includes("mirror")))
+  const visit = (n: unknown, parent: unknown[] = []) => {
     if (!Array.isArray(n)) return
     if (n[0] === "render_cache") {
       const rings: Ring[] = []
       for (const poly of n.slice(3)) for (const pts of (poly as unknown[]).slice(1)) rings.push((pts as unknown[]).slice(1).map((p) => [Number((p as string[])[1]), Number((p as string[])[2])] as [number, number]))
-      out.push({ text: String(n[1]), rings })
+      out.push({ text: String(n[1]), rings, mirror: isMirrored(parent) })
       return
     }
-    for (const c of n) visit(c)
+    for (const c of n) visit(c, n)
   }
   visit(tree)
   return out
@@ -207,6 +210,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
         void first
         const cands = (rawBy.get(wt.outline!.text) ?? []).filter((q) => q.rings.length)
         const rings = cands.find((q) => {
+          if (q.mirror !== !!wt.mirror) return false
           const xs = q.rings.flatMap((rg) => rg.map((pt) => pt[0]))
           const ys = q.rings.flatMap((rg) => rg.map((pt) => -pt[1]))
           return Math.abs(Math.min(...xs) - lt.box.minX) < 1e-6 && Math.abs(Math.max(...xs) - lt.box.maxX) < 1e-6 && Math.abs(Math.min(...ys) - lt.box.minY) < 1e-6 && Math.abs(Math.max(...ys) - lt.box.maxY) < 1e-6

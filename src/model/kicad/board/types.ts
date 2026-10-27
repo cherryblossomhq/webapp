@@ -359,7 +359,7 @@ export interface KicadZone {
   /** X24: `property` (KiCad 10): the layer each names and where its hatch pattern starts; `other` is the name of any other setting in one, which the importer does not know. */
   properties: { layer: string; at: Pt | null; other: string | null }[]
   teardrop: "padvia" | "track_end" | null
-  /** The file has no `filled_areas_thickness`: its filled polygons are shrunk by half the minimum width and were drawn with a pen that wide (KiCad 5 and earlier), and KiCad 6 and later read them as the copper they drew. */
+  /** The filled polygons are shrunk by half the minimum width and were drawn with a pen that wide: the file says `filled_areas_thickness yes`, or has no such node and is older than stamp 20250210 (KiCad reads a missing node as stroked until then). */
   strokedFill: boolean
   locked: boolean
   inFootprint: boolean

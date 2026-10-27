@@ -97,6 +97,14 @@ let holds = 0
 let pendingAcquires = 0
 let renewTimer: ReturnType<typeof setInterval> | null = null
 let expiryTimer: ReturnType<typeof setTimeout> | null = null
+/** The action in hand, for the label when the lease is taken again. */
+let heldAction = ""
+
+/** Renew now: a long synchronous action (the router) blocks the timer, so it renews just before and after. */
+export function renewBoardNow(): void {
+  const b = binding
+  if (b && holds > 0) void b.source.renew(b.projectId, b.sessionId).catch(() => {})
+}
 
 function stopRenewing() {
   if (renewTimer) clearInterval(renewTimer)
@@ -131,7 +139,13 @@ export function startBoardLease(projectId: string, sessionId: string, source: Lo
     expiryTimer = setTimeout(() => useBoardLease.setState({ holder: null }), holder.expiresAt - Date.now() + 50)
   }
   const unwatch = source.watch(projectId, show, () => {})
+  // A closed or reloaded tab lets go at once, so the next one is not told "your other tab" for a minute.
+  const onPageHide = () => {
+    if (holds > 0 || pendingAcquires > 0) void source.release(projectId, sessionId).catch(() => {})
+  }
+  if (typeof window !== "undefined") window.addEventListener("pagehide", onPageHide)
   return () => {
+    if (typeof window !== "undefined") window.removeEventListener("pagehide", onPageHide)
     unwatch()
     stopRenewing()
     if (expiryTimer) clearTimeout(expiryTimer)
@@ -166,9 +180,11 @@ export function acquireBoard(action: string, viaSakura: boolean): BoardLease | P
   if (holds > 0 && pendingAcquires === 0) {
     // Already ours: the lease is only noted, the server has it.
     holds++
+    heldAction = action
     return holdHandle(b)
   }
   pendingAcquires++
+  heldAction = action
   return b.source.acquire(b.projectId, b.sessionId, b.me(), action, viaSakura).then(
     (answer): BoardLease => {
       pendingAcquires--
@@ -181,7 +197,7 @@ export function acquireBoard(action: string, viaSakura: boolean): BoardLease | P
               .renew(b.projectId, b.sessionId)
               .then((kept) => {
                 // It ran out (a long pause) and nobody took it: take it again, quietly.
-                if (!kept && holds > 0) void b.source.acquire(b.projectId, b.sessionId, b.me(), action, viaSakura).catch(() => {})
+                if (!kept && holds > 0) void b.source.acquire(b.projectId, b.sessionId, b.me(), heldAction, viaSakura).catch(() => {})
               })
               .catch(() => {})
           }, RENEW_MS)

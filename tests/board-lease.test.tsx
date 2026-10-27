@@ -256,6 +256,32 @@ describe("holding, renewing and releasing", () => {
     expect(server.calls.filter((c) => c.startsWith("acquire"))).toEqual(["acquire:cleanup"])
   })
 
+  it("releases on pagehide, so a reloaded tab is not told 'your other tab' for a minute", async () => {
+    open()
+    const noop = () => {}
+    let finish: () => void = noop
+    const running = withBoard("autoroute", () => new Promise<void>((resolve) => (finish = resolve)))
+    await vi.waitFor(() => expect(finish).not.toBe(noop))
+    window.dispatchEvent(new Event("pagehide"))
+    expect(server.calls).toContain("release")
+    expect(server.holder).toBeNull()
+    finish()
+    await running
+  })
+
+  it("keeps the label of the action in hand when it takes the lease again after a lost renewal", async () => {
+    vi.useFakeTimers()
+    open()
+    let finish: () => void = () => {}
+    const running = withBoard("autoroute", () => new Promise<void>((resolve) => (finish = resolve)))
+    await vi.advanceTimersByTimeAsync(0)
+    server.free()
+    await vi.advanceTimersByTimeAsync(RENEW_MS + 10)
+    expect(server.holder).toMatchObject({ sessionId: "tab_me", action: "autoroute" })
+    finish()
+    await running
+  })
+
   it("lets a tab that holds nothing through when the lease can't be reached", async () => {
     open()
     server.source.acquire = async () => {

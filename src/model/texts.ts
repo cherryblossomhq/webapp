@@ -55,7 +55,7 @@ export const isTextLayer = (layer: string) => layer === "Edge.Cuts" || shapeLaye
 export const UNSUPPORTED_VARIABLES = /^(FILEPATH|PROJECTNAME|VARIANT|VARIANT_DESC|DRILL_OPERATIONS|DRILL_SITES|DRILL_GROUPS|CURRENT_DATE|DNP|EXCLUDE_FROM_[A-Z_]+|PROPERTY\..*|(SHORT_NET_NAME|NET_NAME|NET_CLASS|PIN_NAME)\(.*\))$/
 
 /** The title block's variable names and the property of the project each reads (the importer keeps the title block as properties). */
-const TITLE_BLOCK: Record<string, string> = { TITLE: "Title", ISSUE_DATE: "Date", REVISION: "Rev", COMPANY: "Company" }
+export const TITLE_BLOCK: Record<string, string> = { TITLE: "Title", ISSUE_DATE: "Date", REVISION: "Rev", COMPANY: "Company" }
 
 /** Every `${...}` token of a text, outermost first, nested ones inside their parent, without the braces. */
 export function textVariables(text: string): string[] {

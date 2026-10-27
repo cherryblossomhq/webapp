@@ -1,6 +1,7 @@
-// A QR code (ISO/IEC 18004) for a text, as the grid of its dark modules: byte mode, the smallest version that holds it at the error correction level asked for, and the mask with the
-// lowest penalty. This is the standard's own procedure (data and error correction codewords, Reed-Solomon over GF(256) with the polynomial 0x11D, the function patterns, the eight
-// masks and their four penalty rules), written out from the standard; any reader decodes the grid to the text.
+// A QR code (ISO/IEC 18004) for a text, as the grid of its dark modules, chosen as zint chooses (backend/qr.c, the library KiCad draws barcodes with): the cheapest mix of numeric,
+// alphanumeric and byte segments (`qr_define_mode`, after Nayuki), a UTF-8 ECI for a text that is not ASCII, the smallest version that holds it at the error correction level asked
+// for, and the mask with the lowest penalty by zint's reading of the standard's four rules. The rest is the standard's own procedure (data and error correction codewords,
+// Reed-Solomon over GF(256) with the polynomial 0x11D, the function patterns and the eight masks); any reader decodes the grid to the text.
 
 export type QrLevel = "L" | "M" | "Q" | "H"
 
@@ -67,15 +68,118 @@ function remainder(data: number[], degree: number): number[] {
 
 const utf8 = (text: string): number[] => [...new TextEncoder().encode(text)]
 
-/** The text as bits: the byte mode indicator, the length, the bytes, a terminator and padding, as codewords of the version. */
-function codewordsOf(bytes: number[], version: number, level: QrLevel): number[] {
+type Mode = "N" | "A" | "B"
+
+const MODES: Mode[] = ["N", "A", "B"]
+const ALPHANUMERIC = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
+const isDigit = (c: number) => c >= 0x30 && c <= 0x39
+const isAlpha = (c: number) => c < 0x80 && ALPHANUMERIC.includes(String.fromCharCode(c))
+/** ECI 26, UTF-8: what zint writes before the data of a text that is not ASCII. */
+const ECI_UTF8 = 26
+
+/** The bits of a segment's character count, by mode and the version's size class (the standard's table 3). */
+const countBits = (version: number, mode: Mode) => [[10, 12, 14], [9, 11, 13], [8, 16, 16]][MODES.indexOf(mode)][version < 10 ? 0 : version < 27 ? 1 : 2]
+
+/**
+ * The mode of each character that costs the fewest bits, as zint finds it (`qr_define_mode`): a dynamic programme over the modes the text can be in, costs in sixths of a
+ * bit so that numeric's 10 bits for 3 digits and alphanumeric's 11 for 2 are whole numbers. A segment starts at the cost of its header, and the cost of a digit or a
+ * letter is that of the group of three or two it starts, which zint works out where the group begins (so the last letter of an odd run costs a whole 6 bits).
+ */
+function modesOf(codes: number[], version: number): Mode[] {
+  const head = MODES.map((m) => (countBits(version, m) + 4) * 6)
+  const length = codes.length
+  const chosen: (Mode | "")[][] = []
+  let prev = head.slice()
+  let numericEnd = 0
+  let numericCost = 0
+  let alphaEnd = 0
+  let alphaCost = 0
+  for (let i = 0; i < length; i++) {
+    const cur = [0, 0, 0]
+    const at: (Mode | "")[] = ["", "", ""]
+    if (i >= numericEnd) {
+      let j = i
+      while (j < length && j < i + 3 && isDigit(codes[j])) j++
+      numericEnd = j === i ? 0 : j
+      numericCost = j - i === 1 ? 24 : j - i === 2 ? 21 : 20
+    }
+    if (i < numericEnd) {
+      cur[0] = prev[0] + numericCost
+      at[0] = "N"
+    }
+    const last = i + 1 === length
+    if (i < alphaEnd) alphaCost = last ? 36 : 33
+    else if (isAlpha(codes[i])) {
+      const two = !last && isAlpha(codes[i + 1])
+      alphaEnd = two ? i + 2 : i + 1
+      alphaCost = two ? 33 : 36
+    } else alphaEnd = 0
+    if (i < alphaEnd) {
+      cur[1] = prev[1] + alphaCost
+      at[1] = "A"
+    }
+    cur[2] = prev[2] + 48
+    at[2] = "B"
+    for (let j = 0; j < 3; j++) {
+      for (let k = 0; k < 3; k++) {
+        if (j !== k && at[k]) {
+          const cost = cur[k] + head[j]
+          if (!at[j] || cost < cur[j]) {
+            cur[j] = cost
+            at[j] = MODES[k]
+          }
+        }
+      }
+    }
+    chosen.push(at)
+    prev = cur
+  }
+  let mode = MODES[prev.indexOf(Math.min(...prev))]
+  const out: Mode[] = new Array(length)
+  for (let i = length - 1; i >= 0; i--) {
+    mode = chosen[i][MODES.indexOf(mode)] as Mode
+    out[i] = mode
+  }
+  return out
+}
+
+/** The runs of one mode among the characters, and the bits they take at a version (`qr_calc_binlen`): the ECI, then for each run its indicator, count and data. */
+function segmentsOf(codes: number[], modes: Mode[]): { mode: Mode; codes: number[] }[] {
+  const out: { mode: Mode; codes: number[] }[] = []
+  codes.forEach((c, i) => {
+    if (out.length && out[out.length - 1].mode === modes[i]) out[out.length - 1].codes.push(c)
+    else out.push({ mode: modes[i], codes: [c] })
+  })
+  return out
+}
+
+function bitLength(segments: { mode: Mode; codes: number[] }[], version: number, eci: boolean): number {
+  let bits = eci ? 12 : 0
+  for (const { mode, codes } of segments) {
+    const n = codes.length
+    bits += 4 + countBits(version, mode)
+    bits += mode === "B" ? n * 8 : mode === "A" ? Math.floor(n / 2) * 11 + (n % 2) * 6 : Math.floor(n / 3) * 10 + [0, 4, 7][n % 3]
+  }
+  return bits
+}
+
+/** The text as bits: the ECI, each segment's mode indicator, count and characters, a terminator and padding, as codewords of the version. */
+function codewordsOf(segments: { mode: Mode; codes: number[] }[], eci: boolean, version: number, level: QrLevel): number[] {
   const bits: number[] = []
   const push = (value: number, length: number) => {
     for (let i = length - 1; i >= 0; i--) bits.push((value >>> i) & 1)
   }
-  push(0b0100, 4)
-  push(bytes.length, version < 10 ? 8 : 16)
-  for (const b of bytes) push(b, 8)
+  if (eci) {
+    push(0b0111, 4)
+    push(ECI_UTF8, 8)
+  }
+  for (const { mode, codes } of segments) {
+    push({ N: 0b0001, A: 0b0010, B: 0b0100 }[mode], 4)
+    push(codes.length, countBits(version, mode))
+    if (mode === "B") for (const c of codes) push(c, 8)
+    else if (mode === "A") for (let i = 0; i < codes.length; i += 2) i + 1 < codes.length ? push(ALPHANUMERIC.indexOf(String.fromCharCode(codes[i])) * 45 + ALPHANUMERIC.indexOf(String.fromCharCode(codes[i + 1])), 11) : push(ALPHANUMERIC.indexOf(String.fromCharCode(codes[i])), 6)
+    else for (let i = 0; i < codes.length; i += 3) push(Number(String.fromCharCode(...codes.slice(i, i + 3))), [0, 4, 7, 10][Math.min(3, codes.length - i)])
+  }
   const capacity = dataCodewords(version, level) * 8
   push(0, Math.min(4, capacity - bits.length))
   push(0, (8 - (bits.length % 8)) % 8)
@@ -202,49 +306,71 @@ const MASKS: ((x: number, y: number) => boolean)[] = [
   (x, y) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0,
 ]
 
-/** The standard's penalty for a masked symbol: runs of five or more, 2 by 2 blocks, finder-like patterns, and an unbalanced count of dark modules. */
+/**
+ * zint's penalty for a masked symbol (`qr_evaluate`): runs of five or more in a row or column, 2 by 2 blocks, the 1:1:3:1:1 pattern with four light modules before it or after it
+ * (the edge counts as light), and the share of dark modules in steps of 5%.
+ */
 function penalty(dark: boolean[][]): number {
   const size = dark.length
   let result = 0
-  const finderLike = (line: boolean[]) => {
-    let n = 0
-    for (let i = 0; i + 11 <= line.length; i++) {
-      const w = line.slice(i, i + 11).map((b) => (b ? 1 : 0)).join("")
-      if (w === "10111010000" || w === "00001011101") n++
-    }
-    return n
-  }
-  const lines = [...dark, ...Array.from({ length: size }, (_, x) => dark.map((row) => row[x]))]
-  for (const line of lines) {
-    let run = 1
-    for (let i = 1; i <= line.length; i++) {
-      if (i < line.length && line[i] === line[i - 1]) run++
-      else {
-        if (run >= 5) result += 3 + (run - 5)
-        run = 1
+  // each row, then each column: `get(a, b)` is the module b along line a
+  for (const get of [(a: number, b: number) => dark[a][b], (a: number, b: number) => dark[b][a]]) {
+    for (let a = 0; a < size; a++) {
+      let run = 0
+      let state = false
+      for (let b = 0; b < size; b++) {
+        if (get(a, b) === state) run++
+        else {
+          if (run >= 5) result += run - 2
+          run = 1
+          state = get(a, b)
+        }
+      }
+      if (run >= 5) result += run - 2
+      for (let b = 0; b <= size - 7; b++) {
+        if (!(get(a, b) && !get(a, b + 1) && get(a, b + 2) && get(a, b + 3) && get(a, b + 4) && !get(a, b + 5) && get(a, b + 6))) continue
+        const light = (from: number, step: number) => {
+          for (let k = 0; k < 4; k++) {
+            const c = from + k * step
+            if (c < 0 || c >= size) return true
+            if (get(a, c)) return false
+          }
+          return true
+        }
+        if (light(b - 1, -1) || light(b + 7, 1)) result += 40
+        b += 3
       }
     }
-    result += finderLike(line) * 40
   }
   for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++) if (dark[y][x] === dark[y][x + 1] && dark[y][x] === dark[y + 1][x] && dark[y][x] === dark[y + 1][x + 1]) result += 3
-  const total = size * size
   const count = dark.reduce((n, row) => n + row.filter(Boolean).length, 0)
-  result += (Math.ceil(Math.abs(count * 20 - total * 10) / total) - 1) * 10
-  return result
+  return result + 10 * Math.floor(Math.abs((100 * count) / (size * size) - 50) / 5)
 }
 
 /**
  * The QR code of a text at an error correction level: the grid of its modules, `true` for a dark one, with no quiet zone. A text too long for version 40 at that level is `null`.
  */
-export function qrCode(text: string, level: QrLevel = "M"): boolean[][] | null {
-  const bytes = utf8(text)
-  let version = 1
-  for (; version <= 40; version++) {
-    const countBits = version < 10 ? 8 : 16
-    if (bytes.length < 2 ** countBits && 4 + countBits + bytes.length * 8 <= dataCodewords(version, level) * 8) break
+export function qrCode(text: string, level: QrLevel = "L"): boolean[][] | null {
+  const codes = utf8(text)
+  // zint sets the UTF-8 ECI for any text that is not ASCII, and none for one that is.
+  const eci = codes.some((c) => c >= 0x80)
+  const plan = (version: number) => {
+    const segments = segmentsOf(codes, modesOf(codes, version))
+    return { segments, bits: bitLength(segments, version, eci) }
   }
-  if (version > 40) return null
-  const all = interleaved(codewordsOf(bytes, version, level), version, level)
+  const capacity = (version: number) => dataCodewords(version, level) * 8
+  if (plan(40).bits > capacity(40)) return null
+  // The smallest version the version 40 costing fits, then smaller while the costing for that version still fits.
+  let version = 1
+  while (version < 40 && capacity(version) < plan(40).bits) version++
+  let best = plan(version)
+  while (version > 1) {
+    const smaller = plan(version - 1)
+    if (capacity(version - 1) < smaller.bits) break
+    version--
+    best = smaller
+  }
+  const all = interleaved(codewordsOf(best.segments, eci, version, level), version, level)
   const base = functionPatterns(version)
   // The codewords' bits go in zigzag columns of two from the lower right, skipping the vertical timing pattern, over every module no function pattern holds.
   const place = (g: Grid) => {
@@ -263,7 +389,7 @@ export function qrCode(text: string, level: QrLevel = "M"): boolean[][] | null {
       }
     }
   }
-  let best: { dark: boolean[][]; score: number } | null = null
+  let masked: { dark: boolean[][]; score: number } | null = null
   for (let mask = 0; mask < 8; mask++) {
     const g = new Grid(base.size)
     for (let y = 0; y < base.size; y++) {
@@ -274,7 +400,7 @@ export function qrCode(text: string, level: QrLevel = "M"): boolean[][] | null {
     for (let y = 0; y < g.size; y++) for (let x = 0; x < g.size; x++) if (!g.fixed[y][x] && MASKS[mask](x, y)) g.dark[y][x] = !g.dark[y][x]
     formatBits(g, LEVELS[level].format, mask)
     const score = penalty(g.dark)
-    if (!best || score < best.score) best = { dark: g.dark, score }
+    if (!masked || score < masked.score) masked = { dark: g.dark, score }
   }
-  return best!.dark
+  return masked!.dark
 }

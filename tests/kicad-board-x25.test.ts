@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
+import { inkBox, layoutText } from "../src/lib/kicadText"
 import { qrCode, type QrLevel } from "../src/lib/qrCode"
 import { BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, readKicadBoard } from "../src/model/kicad/board"
 import { countPaths } from "../src/model/kicad/board/account"
@@ -65,26 +66,88 @@ describe("the QR code", () => {
     for (const [i, level] of LEVELS.entries()) expect(format(qrCode("x", level)!)?.level).toBe([1, 0, 3, 2][i])
   })
 
-  it("reads back as the text it was made for: mode, length and bytes in the first codewords, after the mask the format says", () => {
-    for (const text of ["hello", "abc.com/x?y=1", "café"]) {
-      const g = qrCode(text, "L")!
-      const mask = format(g)!.mask
-      const MASKS = [(x: number, y: number) => (x + y) % 2 === 0, (_: number, y: number) => y % 2 === 0, (x: number) => x % 3 === 0, (x: number, y: number) => (x + y) % 3 === 0, (x: number, y: number) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0, (x: number, y: number) => ((x * y) % 2) + ((x * y) % 3) === 0, (x: number, y: number) => (((x * y) % 2) + ((x * y) % 3)) % 2 === 0, (x: number, y: number) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0]
-      const bytes = [...new TextEncoder().encode(text)]
-      const n = g.length
-      // version 1: the first 12 rows of the two rightmost columns hold 24 bits, zigzag upward from the lower right corner
-      const bits: number[] = []
-      for (let i = 0; i < 24; i++) {
-        const x = n - 1 - (i % 2)
-        const y = n - 1 - Math.floor(i / 2)
-        bits.push(g[y][x] !== MASKS[mask](x, y) ? 1 : 0)
+  /** The segments a version 1 symbol holds, read back from its codewords after the mask its format says: the ECI if any, each segment's mode, and the text of them all. */
+  function readBack(g: boolean[][]) {
+    const MASKS = [(x: number, y: number) => (x + y) % 2 === 0, (_: number, y: number) => y % 2 === 0, (x: number) => x % 3 === 0, (x: number, y: number) => (x + y) % 3 === 0, (x: number, y: number) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0, (x: number, y: number) => ((x * y) % 2) + ((x * y) % 3) === 0, (x: number, y: number) => (((x * y) % 2) + ((x * y) % 3)) % 2 === 0, (x: number, y: number) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0]
+    const mask = format(g)!.mask
+    const n = g.length
+    expect(n).toBe(21)
+    const bits: number[] = []
+    for (let right = n - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5
+      for (let v = 0; v < n; v++) {
+        for (let j = 0; j < 2; j++) {
+          const x = right - j
+          const y = ((right + 1) & 2) === 0 ? n - 1 - v : v
+          if (!((x < 9 && y < 9) || (x > n - 9 && y < 9) || (x < 9 && y > n - 9) || x === 6 || y === 6)) bits.push(g[y][x] !== MASKS[mask](x, y) ? 1 : 0)
+        }
       }
-      expect(n).toBe(21)
-      const word = (from: number, len: number) => parseInt(bits.slice(from, from + len).join(""), 2)
-      expect(word(0, 4)).toBe(0b0100)
-      expect(word(4, 8)).toBe(bytes.length)
-      expect(word(12, 8)).toBe(bytes[0])
     }
+    let at = 0
+    const take = (len: number) => {
+      const v = parseInt(bits.slice(at, at + len).join("") || "0", 2)
+      at += len
+      return v
+    }
+    const ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
+    const modes: string[] = []
+    const bytes: number[] = []
+    let eci: number | null = null
+    for (let mode = take(4); mode !== 0; mode = take(4)) {
+      if (mode === 7) {
+        eci = take(8)
+        continue
+      }
+      const count = take(mode === 1 ? 10 : mode === 2 ? 9 : 8)
+      modes.push({ 1: "N", 2: "A", 4: "B" }[mode]!)
+      if (mode === 4) for (let i = 0; i < count; i++) bytes.push(take(8))
+      else if (mode === 2) {
+        for (let i = 0; i < count; i += 2) {
+          if (i + 1 < count) {
+            const v = take(11)
+            bytes.push(ALNUM.charCodeAt(Math.floor(v / 45)), ALNUM.charCodeAt(v % 45))
+          } else bytes.push(ALNUM.charCodeAt(take(6)))
+        }
+      } else {
+        for (let i = 0; i < count; i += 3) {
+          const k = Math.min(3, count - i)
+          bytes.push(...String(take([0, 4, 7, 10][k])).padStart(k, "0").split("").map((c) => c.charCodeAt(0)))
+        }
+      }
+    }
+    return { modes, eci, text: new TextDecoder().decode(new Uint8Array(bytes)) }
+  }
+
+  it("reads back as the text it was made for, in the segments zint chooses: the cheapest mix of numeric, alphanumeric and byte, and a UTF-8 ECI for what is not ASCII", () => {
+    const cases: [string, string[], number | null][] = [
+      ["hello", ["B"], null],
+      ["abc.com/x?y=1", ["B"], null],
+      ["0123456789", ["N"], null],
+      ["AC-42 $%*+-./:", ["A"], null],
+      // a few letters then a long run of digits: a byte segment and a numeric one, not eleven more bytes
+      ["ab12345678901", ["B", "N"], null],
+      ["ID 12345 abc", ["A", "B"], null],
+      ["café", ["B"], 26],
+      ["é", ["B"], 26],
+    ]
+    for (const [text, modes, eci] of cases) {
+      const back = readBack(qrCode(text, "L")!)
+      expect(back.text, text).toBe(text)
+      expect(back.modes, text).toEqual(modes)
+      expect(back.eci, text).toBe(eci)
+    }
+  })
+
+  it("is the smallest version for the segments, so a long run of capitals or digits fits where bytes would not", () => {
+    // ISO/IEC 18004 table 7: version 1-L holds 41 digits, 25 capitals and 17 bytes
+    expect(qrCode("1".repeat(41), "L")!.length).toBe(21)
+    expect(qrCode("1".repeat(42), "L")!.length).toBe(25)
+    expect(qrCode("A".repeat(25), "L")!.length).toBe(21)
+    expect(qrCode("A".repeat(26), "L")!.length).toBe(25)
+    // the ECI takes 12 bits: 16 bytes of UTF-8 and it make the 152 bits of version 1-L, 17 do not (17 ASCII bytes do)
+    expect(qrCode("é".repeat(8), "L")!.length).toBe(21)
+    expect(qrCode("é".repeat(8) + "a", "L")!.length).toBe(25)
+    expect(qrCode("a".repeat(17), "L")!.length).toBe(21)
   })
 
   /** A product in GF(256) modulo 0x11D, from tables. */
@@ -161,15 +224,16 @@ describe("X25 is built, and the gate still names it", () => {
 })
 
 describe("a table", () => {
-  it("is the lines of its border and separators, and a text box for each cell, in the same place and layer", () => {
+  it("is the lines of its border and separators, a cell at a time as KiCad draws them, and a text box for each cell, in the same place and layer", () => {
     const r = imp([tableFor(grid)])
     const l = lines(r.project)
-    // the border (4), the line between the columns (1) and the one between the rows (1); the header line is the row separator
-    expect(l).toHaveLength(6)
+    // the right edge of each cell not on the table's right, the bottom edge of each cell not on its bottom, then the border
+    expect(l).toHaveLength(8)
     const ends = (g: (typeof l)[number]) => [g.a, g.b].map((p) => `${p.x},${p.y}`).join(" ")
-    expect(l.map(ends)).toEqual(["10,-3 20,-3", "20,-3 20,-7", "20,-7 10,-7", "10,-7 10,-3", "10,-5 20,-5", "16,-3 16,-7"])
-    expect(l.slice(0, 4).every((g) => g.width === 0.2 && g.dash === undefined && g.layer === "F.SilkS")).toBe(true)
-    expect(l.slice(4).every((g) => g.width === 0.1 && g.dash === "dash")).toBe(true)
+    expect(l.map(ends)).toEqual(["16,-3 16,-5", "16,-5 16,-7", "16,-5 10,-5", "20,-5 16,-5", "10,-3 20,-3", "20,-3 20,-7", "20,-7 10,-7", "10,-7 10,-3"])
+    // the header row's separators, the line under it and the border are the border's stroke; the other separator is the separators'
+    expect(l.filter((_, i) => i !== 1).every((g) => g.width === 0.2 && g.dash === undefined && g.layer === "F.SilkS")).toBe(true)
+    expect(l[1]).toMatchObject({ width: 0.1, dash: "dash" })
     const texts = r.project.texts.filter((t) => t.box)
     expect(texts.map((t) => t.text)).toEqual(["a", "b", "c", "d"])
     expect(texts[0]).toMatchObject({ layer: "F.SilkS", x: 13, y: -4, rot: 0, hj: "left", box: { w: 6, h: 2, margins: [0.5, 0.5, 0.5, 0.5] } })
@@ -182,18 +246,39 @@ describe("a table", () => {
     const plain = imp([tableFor(grid, { border: "(external no) (header no) (stroke (width 0.2) (type solid))", separators: "(rows no) (cols no) (stroke (width 0.1) (type solid))" })])
     expect(lines(plain.project)).toHaveLength(0)
     expect(plain.project.texts.filter((t) => t.box)).toHaveLength(4)
+    // KiCad 10 draws the header row's lines, those between its columns as well as the one under it, in the border's stroke with the separators off
     const header = imp([tableFor(grid, { border: "(external no) (header yes) (stroke (width 0.3) (type solid))", separators: "(rows no) (cols no) (stroke (width 0.1) (type solid))" })])
-    expect(lines(header.project).map((g) => [g.a, g.b, g.width])).toEqual([[{ x: 10, y: -5 }, { x: 20, y: -5 }, 0.3]])
+    expect(lines(header.project).map((g) => [g.a, g.b, g.width])).toEqual([[{ x: 16, y: -3 }, { x: 16, y: -5 }, 0.3], [{ x: 16, y: -5 }, { x: 10, y: -5 }, 0.3], [{ x: 20, y: -5 }, { x: 16, y: -5 }, 0.3]])
+  })
+
+  it("starts with every flag on, as KiCad's table does, and draws no border without a width", () => {
+    const bare = `(table (column_count 2) (uuid "00000000-0000-4000-8000-000000000d01") (layer "F.SilkS") (cells ${grid.join(" ")}))`
+    const r = imp([bare])
+    // no stroke is a width of -1: the lines between the cells are drawn, the border is not
+    expect(lines(r.project)).toHaveLength(4)
+    expect(imp([bare.replace("(cells", "(border (external yes) (stroke (width 0.2))) (cells")]).project.graphics!.filter((g) => g.type === "line")).toHaveLength(8)
   })
 
   it("does not draw a separator through a cell that spans it", () => {
-    const merged = [cell("top", "10 3", "20 5", "F.SilkS", "2 1"), cell("c", "10 5", "16 7"), cell("d", "16 5", "20 7")]
+    // the merged cell spans both columns and the cell it covers is `span 0 0`, which KiCad draws nothing for
+    const merged = [cell("top", "10 3", "20 5", "F.SilkS", "2 1"), cell("", "16 3", "20 5", "F.SilkS", "0 0"), cell("c", "10 5", "16 7"), cell("d", "16 5", "20 7")]
     const r = imp([tableFor(merged)])
     // the line between the columns is below the merged cell only: from y 5 to 7
-    const col = lines(r.project).find((g) => g.a.x === 16 && g.b.x === 16)!
-    expect([col.a.y, col.b.y]).toEqual([-5, -7])
-    // the line between the rows is whole
-    expect(lines(r.project).some((g) => g.a.y === -5 && g.b.y === -5 && g.a.x === 10 && g.b.x === 20)).toBe(true)
+    const col = lines(r.project).filter((g) => g.a.x === 16 && g.b.x === 16)
+    expect(col.map((g) => [g.a.y, g.b.y])).toEqual([[-5, -7]])
+    // the line between the rows is the merged cell's whole bottom edge
+    expect(lines(r.project).filter((g) => g.a.y === -5 && g.b.y === -5).map((g) => [g.a.x, g.b.x])).toEqual([[20, 10]])
+    expect(r.project.texts.filter((t) => t.box).map((t) => t.text)).toEqual(["top", "c", "d"])
+  })
+
+  it("a table turned a quarter turn is drawn where its cells are: its columns run up the board and its rows across", () => {
+    // text turned 90 degrees reads up the board, so the first column is at the bottom and the first row at the left (file frame, y down)
+    const turned = (text: string, a: string, b: string) => cell(text, a, b).replace("(span 1 1)", "(span 1 1) (angle 90)")
+    const cells = [turned("a", "10 1", "12 7"), turned("b", "10 -3", "12 1"), turned("c", "12 1", "14 7"), turned("d", "12 -3", "14 1")]
+    const r = imp([tableFor(cells, { widths: "6 4", heights: "2 2" })])
+    const ends = (g: ReturnType<typeof lines>[number]) => [g.a, g.b].map((p) => `${p.x},${p.y}`).join(" ")
+    expect(lines(r.project).map(ends)).toEqual(["10,-1 12,-1", "12,-1 14,-1", "12,-1 12,-7", "12,3 12,-1", "10,-7 10,3", "10,3 14,3", "14,3 14,-7", "14,-7 10,-7"])
+    expect(r.project.texts.filter((t) => t.box).map((t) => t.rot)).toEqual([90, 90, 90, 90])
   })
 
   it("reads a cell that is the four corners of a rectangle, as a table inside a part that was turned has them", () => {
@@ -205,7 +290,7 @@ describe("a table", () => {
     const r = imp([tableFor(cells, { heights: "2" })])
     // the grid starts at the corners' box, not at the origin the missing `start` would give
     const round = (v: number) => Math.round(v * 1e4) / 1e4
-    expect(lines(r.project).slice(0, 4).map((g) => `${round(g.a.x)},${round(g.a.y)} ${round(g.b.x)},${round(g.b.y)}`)).toEqual(["10,-3 20,-3", "20,-3 20,-5", "20,-5 10,-5", "10,-5 10,-3"])
+    expect(lines(r.project).map((g) => `${round(g.a.x)},${round(g.a.y)} ${round(g.b.x)},${round(g.b.y)}`)).toEqual(["16,-3 16,-5", "10,-3 20,-3", "20,-3 20,-5", "20,-5 10,-5", "10,-5 10,-3"])
     expect(r.project.texts.filter((t) => t.box).map((t) => [t.text, round(t.box!.w)])).toEqual([["a", 6], ["b", 4]])
   })
 
@@ -220,7 +305,7 @@ describe("a table", () => {
     const r = imp([withTable("10 5")])
     const land = r.project.footprints![0]
     expect(land.shapes!.filter((s) => s.type === "line").length).toBeGreaterThanOrEqual(5)
-    expect(land.shapes![0]).toMatchObject({ type: "line", layer: "F.SilkS", a: { x: -2, y: -3 }, b: { x: 8, y: -3 } })
+    expect(land.shapes![0]).toMatchObject({ type: "line", layer: "F.SilkS", a: { x: 4, y: -3 }, b: { x: 4, y: -5 } })
     const texts = r.project.components[0].texts!.filter((t) => t.box)
     expect(texts.map((t) => [t.text, t.x, t.y, t.rot])).toEqual([["hi", 1, -4, 0], ["yo", 6, -4, 0]])
     expect(texts[0].box).toMatchObject({ w: 6, h: 2 })
@@ -228,7 +313,16 @@ describe("a table", () => {
     const turned = imp([withTable("10 5 90")])
     expect(turned.project.components[0].texts!.filter((t) => t.box).map((t) => t.rot)).toEqual([0, 0])
     expect(turned.project.components[0].pcb.rot).toBe(90)
-    expect(turned.project.footprints![0].shapes![0]).toMatchObject({ a: { x: -2, y: -3 } })
+    expect(turned.project.footprints![0].shapes![0]).toMatchObject({ a: { x: 4, y: -3 } })
+  })
+
+  it("a cell inside a part keeps its own angle on top of the part's, as KiCad's parser turns it by the part's (and a bottom part adds nothing of its own)", () => {
+    const withCell = (at: string, angle: number, layer = "F.Cu") => footprint({ ref: "U1", at, layer, pads: [pad({ at: "0 0" })], extra: tableFor([cell("hi", "-2 3", "4 5").replace("(span 1 1)", `(span 1 1) (angle ${angle})`)], { columns: 1, widths: "6", heights: "2", layer: layer === "B.Cu" ? "B.SilkS" : "F.SilkS" }) })
+    const rot = (body: string) => imp([body]).project.components[0].texts!.find((t) => t.box)!.rot
+    expect(rot(withCell("10 5", 90))).toBe(90)
+    // board angle 90 + 90, in the part's frame 90 more than the part's own turn
+    expect(rot(withCell("10 5 90", 90))).toBe(90)
+    expect(rot(withCell("10 5 90", 0))).toBe(0)
   })
 
   it("is written as KiCad 9 writes drawings and text boxes, and read back as the same project", async () => {
@@ -267,46 +361,134 @@ describe("a drill chart and a drill map", () => {
 })
 
 describe("a barcode", () => {
-  const code = (extra = "", text = "hello", at = "10 5 0", size = "8 8") => `(barcode (at ${at}) (layer "F.SilkS") (size ${size}) (text "${text}") (text_height 1) (type qr) (ecc_level M) ${extra} (uuid "00000000-0000-4000-8000-000000000f01"))`
+  const code = (extra = "", text = "hello", at = "10 5 0", size = "8 8", layer = "F.SilkS") => `(barcode (at ${at}) (layer "${layer}") (size ${size}) (text "${text}") (text_height 1) (type qr) (ecc_level M) ${extra} (uuid "00000000-0000-4000-8000-000000000f01"))`
   const filled = (p: Project) => (p.graphics ?? []).filter((g) => g.type === "polygon" && g.fill)
+  const only = (p: Project) => {
+    const g = filled(p)
+    expect(g).toHaveLength(1)
+    return g[0] as Extract<(typeof g)[number], { type: "polygon" }>
+  }
+  const area = (p: Project) => Math.abs(shapeArea(only(p)))
+  const boxOf = (p: Project) => {
+    const b = shapeBox(only(p))
+    return { minX: b.minX, maxX: b.maxX, minY: b.minY, maxY: b.maxY }
+  }
+  const near = (a: number, b: number, tolerance = 0.01) => expect(Math.abs(a - b), `${a} against ${b}`).toBeLessThan(tolerance)
+  /** Whether a point is inside the polygon (even-odd: the bridges that join its pieces cover nothing). */
+  const inside = (pt: { x: number; y: number }, ring: { x: number; y: number }[]) => {
+    let in_ = false
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) if (ring[i].y > pt.y !== ring[j].y > pt.y && pt.x < ((ring[j].x - ring[i].x) * (pt.y - ring[i].y)) / (ring[j].y - ring[i].y) + ring[i].x) in_ = !in_
+    return in_
+  }
+  const modules = qrCode("hello", "M")!
+  const n = modules.length
+  const dark = modules.flat().filter(Boolean).length
+  /** The ink KiCad's text of "hello" at 1 mm takes: its height, from the top of the letters to the bottom of the pen's width, in mm. */
+  const captionHeight = () => {
+    const ink = inkBox(layoutText("hello", { x: 0, y: 0, angle: 0 }, { w: 1e6, h: 1e6, thickness: 125000, bold: false, italic: false, mirror: false, hAlign: 0, vAlign: 0, lineSpacing: 1 }, true))!
+    return (ink.maxY - ink.minY) / 1e6
+  }
 
-  it("is the QR code of its text as filled squares, centred on its point and as large as its smaller side", () => {
-    const r = imp([code("(hide no) (knockout no)")])
-    const g = filled(r.project)
-    expect(g.length).toBeGreaterThan(10)
-    const n = qrCode("hello", "M")!.length
-    const dark = qrCode("hello", "M")!.flat().filter(Boolean).length
-    const cellMm = 8 / n
-    const area = g.reduce((s, x) => s + Math.abs(shapeArea(x)), 0)
-    expect(area).toBeCloseTo(dark * cellMm * cellMm, 3)
-    const box = g.map(shapeBox).reduce((b, c) => ({ minX: Math.min(b.minX, c.minX), maxX: Math.max(b.maxX, c.maxX), minY: Math.min(b.minY, c.minY), maxY: Math.max(b.maxY, c.maxY) }))
-    expect([box.minX, box.maxX, box.minY, box.maxY].map((v) => Math.round(v * 1000) / 1000)).toEqual([6, 14, -9, -1])
-    expect(g.every((x) => x.layer === "F.SilkS" && x.width === 0)).toBe(true)
+  it("is the QR code of its text as one filled shape, stretched to its whole size and centred on its point, margins or not", () => {
+    const r = imp([code("(hide yes) (knockout no)")])
+    // one polygon, whatever the number of modules: the pieces are joined by bridges that cover no area
+    expect(area(r.project)).toBeCloseTo(dark * (8 / n) * (8 / n), 3)
+    const b = boxOf(r.project)
+    expect([b.minX, b.maxX, b.minY, b.maxY].map((v) => Math.round(v * 1000) / 1000)).toEqual([6, 14, -9, -1])
+    expect(only(r.project)).toMatchObject({ layer: "F.SilkS", width: 0 })
     expect(r.report.entries.find((e) => e.code === "barcodes-flattened")?.count).toBe(1)
+    // a barcode wider than it is tall has modules that are: its margins do not shrink the symbol
+    const wide = imp([code("(hide yes) (margins 1 1)", "hello", "10 5 0", "10 6")])
+    expect(area(wide.project)).toBeCloseTo(dark * (10 / n) * (6 / n), 3)
+    const w = boxOf(wide.project)
+    expect([w.minX, w.maxX, w.minY, w.maxY].map((v) => Math.round(v * 1000) / 1000)).toEqual([5, 15, -8, -2])
+    // the level L is the default, the word `qrcode` a QR code, and a level may be in lower case
+    const same = (a: string, b: string) => expect(only(imp([a]).project).pts).toEqual(only(imp([b]).project).pts)
+    same(code("(hide yes)").replace("(ecc_level M)", ""), code("(hide yes)").replace("(ecc_level M)", "(ecc_level L)"))
+    same(code("(hide yes)").replace("(type qr)", "(type qrcode)").replace("(ecc_level M)", "(ecc_level m)"), code("(hide yes)"))
   })
 
-  it("a knockout is the box with the symbol cut out of it, and a barcode that is turned is turned about its point", () => {
-    const n = qrCode("hello", "M")!.length
-    const dark = qrCode("hello", "M")!.flat().filter(Boolean).length
-    const cellMm = 8 / n
-    const ko = filled(imp([code("(knockout yes)")]).project)
-    expect(ko.reduce((s, x) => s + Math.abs(shapeArea(x)), 0)).toBeCloseTo(64 - dark * cellMm * cellMm, 3)
-    const turned = filled(imp([code("", "hello", "10 5 90")]).project)
-    const box = turned.map(shapeBox).reduce((b, c) => ({ minX: Math.min(b.minX, c.minX), maxX: Math.max(b.maxX, c.maxX), minY: Math.min(b.minY, c.minY), maxY: Math.max(b.maxY, c.maxY) }))
-    expect([box.minX, box.maxX].map((v) => Math.round(v * 1000) / 1000)).toEqual([6, 14])
-    const side = filled(imp([code("", "hello", "10 5 33")]).project)
-    expect(side.reduce((s, x) => s + Math.abs(shapeArea(x)), 0)).toBeCloseTo(dark * cellMm * cellMm, 3)
+  /** Whether the polygon is dark exactly where the QR code is, at every module's centre: the code of "hello" stretched over 10 by 6 mm about (10, 5), turned by `angle` degrees as KiCad turns it (`RotatePoint` in the file's frame, y down), and mirrored first when `mirror`. */
+  const agrees = (g: { pts: { x: number; y: number }[] }, angle: number, mirror: boolean) => {
+    const a = (angle * Math.PI) / 180
+    let wrong = 0
+    modules.forEach((row, y) => row.forEach((on, x) => {
+      const local = { x: (mirror ? -1 : 1) * (-5 + (x + 0.5) * (10 / n)), y: -3 + (y + 0.5) * (6 / n) }
+      // the project's y is up
+      const at = { x: 10 + local.x * Math.cos(a) + local.y * Math.sin(a), y: -(5 - local.x * Math.sin(a) + local.y * Math.cos(a)) }
+      if (inside(at, g.pts) !== on) wrong++
+    }))
+    return wrong
+  }
+
+  it("is turned about its point the way KiCad turns it, counter-clockwise on screen", () => {
+    for (const angle of [0, 90, 180, 33, -20]) expect(agrees(only(imp([code("(hide yes)", "hello", `10 5 ${angle}`, "10 6")]).project), angle, false), `${angle} degrees`).toBe(0)
+    // the other way round would not agree
+    expect(agrees(only(imp([code("(hide yes)", "hello", "10 5 33", "10 6")]).project), -33, false)).toBeGreaterThan(20)
   })
 
-  it("a hidden barcode draws nothing and says so, a kind the editor cannot draw is refused in words", () => {
+  it("is mirrored about its point on a back layer, and not on a front one", () => {
+    const back = only(imp([code("(hide yes)", "hello", "10 5 0", "10 6", "B.SilkS")]).project)
+    expect(back.layer).toBe("B.SilkS")
+    expect(agrees(back, 0, true)).toBe(0)
+    expect(agrees(back, 0, false)).toBeGreaterThan(20)
+    // mirrored, then turned
+    expect(agrees(only(imp([code("(hide yes)", "hello", "10 5 90", "10 6", "B.Cu")]).project), 90, true)).toBe(0)
+    expect(agrees(only(imp([code("(hide yes)", "hello", "10 5 0", "10 6", "F.Cu")]).project), 0, false)).toBe(0)
+  })
+
+  it("hide hides its text and not the symbol, and the text is centred 1 mm under the symbol", () => {
     const hidden = imp([code("(hide yes)")])
-    expect(filled(hidden.project)).toHaveLength(0)
-    expect(hidden.report.entries.find((e) => e.code === "barcodes-hidden")?.count).toBe(1)
+    const shown = imp([code("(hide no)")])
+    expect(boxOf(hidden.project).minY).toBeCloseTo(-9, 3)
+    // the text's ink starts 1 mm under the symbol's bottom (file y 9)
+    near(boxOf(shown.project).minY, -(9 + 1 + captionHeight()))
+    expect(area(shown.project)).toBeGreaterThan(area(hidden.project) + 0.5)
+    // a text wider than the symbol is centred under it
+    const wide = imp([code("(hide no)", "hello world", "10 5 0", "2 2")])
+    const b = boxOf(wide.project)
+    near((b.minX + b.maxX) / 2, 10)
+    expect(b.maxX - b.minX).toBeGreaterThan(5)
+  })
+
+  it("a knockout is the box round the symbol and its text, grown by the margins or a tenth of its smaller side to the next 0.1 mm, with them cut out of it", () => {
+    const symbol = dark * (8 / n) * (8 / n)
+    // a tenth of 8 mm is 0.8
+    expect(area(imp([code("(hide yes) (knockout yes)")]).project)).toBeCloseTo(9.6 * 9.6 - symbol, 3)
+    // margins larger than that win, one axis at a time
+    expect(area(imp([code("(hide yes) (knockout yes) (margins 2 0.1)")]).project)).toBeCloseTo(12 * 9.6 - symbol, 3)
+    // 7.05 mm: a tenth is 0.705, which goes up to 0.8
+    const odd = dark * (7.05 / n) * (7.05 / n)
+    expect(area(imp([code("(hide yes) (knockout yes)", "hello", "10 5 0", "7.05 7.05")]).project)).toBeCloseTo(8.65 * 8.65 - odd, 3)
+    // with its text the box takes in the text too: 1 mm and the text's height further down
+    const withText = imp([code("(hide no) (knockout yes)")])
+    const b = boxOf(withText.project)
+    near(b.minY, -(9 + 1 + captionHeight() + 0.8))
+    near(b.maxY, -(1 - 0.8))
+    near(b.maxX - b.minX, 9.6)
+    expect(area(withText.project)).toBeLessThan(9.6 * (b.maxY - b.minY) - symbol)
+  })
+
+  it("an empty text draws nothing and says so, a kind the editor cannot draw and a text it cannot fill in are refused in words", () => {
+    const empty = imp([code("", "")])
+    expect(filled(empty.project)).toHaveLength(0)
+    expect(empty.report.entries.find((e) => e.code === "barcodes-empty")?.count).toBe(1)
     const other = importKicadBoard(board({ body: [code().replace("(type qr)", "(type datamatrix)")] }))
     expect(other.status === "refused" && other.reason).toBe("inexact")
     expect(other.status === "refused" && other.message).toMatch(/a datamatrix barcode, which the editor cannot draw yet/)
     const long = importKicadBoard(board({ body: [code("", "a".repeat(3000))] }))
     expect(long.status === "refused" && long.message).toMatch(/more text than version 40 holds/)
+    const unknown = importKicadBoard(board({ body: [code("", "${FILENAME}")] }))
+    expect(unknown.status === "refused" && unknown.message).toMatch(/a barcode whose text uses \$\{FILENAME\}, which the editor cannot draw yet/)
+  })
+
+  it("encodes the text its variables show: the layer, the title block and the board's properties", () => {
+    const text = (s: string) => imp([`(title_block (title "T1") (comment 1 "c1"))`, `(property "Maker" "me")`, code("(hide yes)", s)])
+    const pts = (b: ReturnType<typeof text>) => only(b.project).pts
+    expect(pts(text("${TITLE}-${COMMENT1}-${LAYER}-${Maker}-${REVISION}."))).toEqual(pts(imp([code("(hide yes)", "T1-c1-F.SilkS-me-.")])))
+    // an escaped one is the text itself, and is no variable the editor lacks a value for
+    expect(only(imp([code("(hide yes)", "\\\\${FILENAME}")]).project).pts.length).toBeGreaterThan(8)
+    expect(pts(text("\\\\${TITLE}"))).not.toEqual(pts(text("${TITLE}")))
   })
 
   it("is written as KiCad 9 writes drawings, and read back as the same project", async () => {
@@ -316,6 +498,10 @@ describe("a barcode", () => {
     const b = importKicadBoard(text)
     expect(b.status).toBe("imported")
     if (b.status === "imported") expect(diffProjects(a.project, b.project)).toEqual([])
+    const ko = imp([code("(knockout yes) (margins 1 1)", "hello", "10 5 33", "9 7", "B.SilkS")])
+    const again = importKicadBoard(await pcbOf(ko.project))
+    expect(again.status).toBe("imported")
+    if (again.status === "imported") expect(diffProjects(ko.project, again.project)).toEqual([])
   })
 })
 

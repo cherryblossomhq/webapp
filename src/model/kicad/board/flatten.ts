@@ -1,10 +1,15 @@
-import { qrCode } from "../../../lib/qrCode"
-import { atomsOf, kid, kids, numAt, strAt, type List } from "./sexpr"
+import { Clipper, Clipper64, ClipType, EndType, FillRule, JoinType, PolyTree64, type Path64, type Paths64 } from "@countertype/clipper2-ts"
+import { fractureRings } from "../../../export/fracture"
+import { inkBox, layoutText, type TextAttrsIu } from "../../../lib/kicadText"
+import { qrCode, type QrLevel } from "../../../lib/qrCode"
+import { collect } from "../../textOutlines"
+import { expandTextVars } from "../../texts"
+import { kid, kids, numAt, strAt, type List } from "./sexpr"
 import type { KicadShape, Pt } from "./types"
 
-// KiCad 9's tables (`table`, and the `drill_chart` KiCad generates from the drill data, which is a table with more nodes) as the lines KiCad draws for their borders and
-// separators (`TABLE_BASE::DrawBorders`, pcbnew/pcb_table.cpp) and the cells, each of which is a text box. The editor has no table: an imported one is these plain drawings (X25),
-// in the table's own frame (the board's, or the footprint's for a table inside one), as the file gives it (y down).
+// KiCad 9's tables (`table`, and the `drill_chart` of KiCad 11 development, which KiCad fills from the drill data and is a table with more nodes) as the lines KiCad draws for their
+// borders and separators (`PCB_TABLE::DrawBorders`, pcbnew/pcb_table.cpp) and the cells, each of which is a text box. The editor has no table: an imported one is these plain drawings
+// (X25), in the table's own frame (the board's, or the footprint's for a table inside one), as the file gives it (y down).
 
 export interface TableLine {
   a: Pt
@@ -16,97 +21,112 @@ export interface TableLine {
 export interface TableParts {
   layer: string
   lines: TableLine[]
-  /** The `table_cell` nodes, in the file's order. */
+  /** The `table_cell` nodes KiCad draws, in the file's order: the cells a merged cell covers (`span 0 0`) are not drawn. */
   cells: List[]
 }
 
-const strokeOf = (node: List | undefined): { width: number; dash: string | null } => {
+interface Stroke {
+  /** KiCad's -1 is a width the file did not give. */
+  width: number
+  dash: string | null
+}
+
+/** A table's stroke: the width the file gives (a table starts with -1, `PCB_TABLE(aParent, -1)` as the parser makes it) and its style word. */
+function strokeOf(node: List | undefined): Stroke {
   const s = kid(node, "stroke")
   const dash = strAt(kid(s, "type"), 1)
-  return { width: s && kid(s, "width") ? numAt(kid(s, "width"), 1, 0) : 0, dash: dash && dash !== "default" && dash !== "solid" ? dash : null }
+  return { width: s && kid(s, "width") ? numAt(kid(s, "width"), 1, -1) : -1, dash: dash && dash !== "default" && dash !== "solid" ? dash : null }
 }
 
-const yes = (node: List | undefined, name: string) => {
+/** A yes/no flag of a node: `parseBool`, and the default the item starts with when the file has none. */
+const flag = (node: List | undefined, name: string, fallback: boolean) => {
   const n = kid(node, name)
-  return !!n && (n[1] === undefined || n[1] === "yes" || n[1] === "true")
+  return n ? n[1] !== "no" && n[1] !== "false" : fallback
 }
 
-/** A cell's rectangle: its `start` and `end`, or the box of the four corners of its `pts` (a table in a part that was turned writes them so, a thousandth of a micrometre off the rectangle). */
-function rectOf(cell: List): { x0: number; y0: number; x1: number; y1: number } {
-  const corners = kids(kid(cell, "pts"), "xy").map((p) => ({ x: numAt(p, 1, 0), y: numAt(p, 2, 0) }))
-  if (corners.length) return { x0: Math.min(...corners.map((p) => p.x)), y0: Math.min(...corners.map((p) => p.y)), x1: Math.max(...corners.map((p) => p.x)), y1: Math.max(...corners.map((p) => p.y)) }
-  return { x0: numAt(kid(cell, "start"), 1, 0), y0: numAt(kid(cell, "start"), 2, 0), x1: numAt(kid(cell, "end"), 1, 0), y1: numAt(kid(cell, "end"), 2, 0) }
+/** A cell's corners: those of its `pts` when it is an outline of points (a table inside a part that was turned writes them so, a thousandth of a micrometre off the rectangle), or of its `start` and `end`. */
+function cornersOf(cell: List): Pt[] {
+  const pts = kids(kid(cell, "pts"), "xy").map((p) => ({ x: numAt(p, 1, 0), y: numAt(p, 2, 0) }))
+  if (pts.length) return pts
+  const [x0, y0, x1, y1] = [numAt(kid(cell, "start"), 1, 0), numAt(kid(cell, "start"), 2, 0), numAt(kid(cell, "end"), 1, 0), numAt(kid(cell, "end"), 2, 0)]
+  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]
 }
 
-/** The grid of a table: the lines of its border, header and separators, and its cells. */
-export function tableParts(table: List): TableParts {
-  const cells = kids(kid(table, "cells"), "table_cell")
-  const columns = Math.max(1, Math.trunc(numAt(kid(table, "column_count"), 1, 1)))
-  const widths = atomsOf(kid(table, "column_widths")).map(Number).filter(Number.isFinite)
-  const heights = atomsOf(kid(table, "row_heights")).map(Number).filter(Number.isFinite)
-  const layer = strAt(kid(table, "layer"), 1) ?? ""
-  const rects = cells.map(rectOf)
-  const origin = rects.length ? { x: Math.min(...rects.map((r) => r.x0)), y: Math.min(...rects.map((r) => r.y0)) } : { x: 0, y: 0 }
-  // The grid's lines, from the first cell's corner by the widths and heights the file gives (a cell's own corners are what the table was last laid out with).
-  const xs = [origin.x]
-  for (let i = 0; i < Math.min(columns, widths.length); i++) xs.push(xs[i] + widths[i])
-  const ys = [origin.y]
-  for (const h of heights) ys.push(ys[ys.length - 1] + h)
-  const cols = xs.length - 1
-  const rows = ys.length - 1
-  if (cols < 1 || rows < 1) return { layer, lines: [], cells }
-
-  // Which cells a merged cell covers: `(span columns rows)` from the cell's own place, row by row, `columns` to a row.
-  const owner = new Map<string, number>()
-  cells.forEach((cell, i) => {
-    const [c, r] = [Math.max(1, Math.trunc(numAt(kid(cell, "span"), 1, 1))), Math.max(1, Math.trunc(numAt(kid(cell, "span"), 2, 1)))]
-    const col = xs.findIndex((x) => Math.abs(x - rects[i].x0) < 1e-3)
-    const row = ys.findIndex((y) => Math.abs(y - rects[i].y0) < 1e-3)
-    if (col < 0 || row < 0) return
-    for (let dr = 0; dr < r; dr++) for (let dc = 0; dc < c; dc++) owner.set(`${row + dr},${col + dc}`, i)
-  })
-  const same = (r1: number, c1: number, r2: number, c2: number) => {
-    const a = owner.get(`${r1},${c1}`)
-    return a !== undefined && a === owner.get(`${r2},${c2}`)
+/**
+ * A cell's corners in the order of the text's own frame, top left, top right, bottom right, bottom left (`EDA_SHAPE::GetCornersInSequence`, common/eda_shape.cpp): the box's corners
+ * from the one the angle starts at for a quarter turn, and for any other angle the outline's extreme points, in the order of the quadrant the angle is in.
+ */
+function cornersInSequence(corners: Pt[], angle: number): Pt[] {
+  const [minX, maxX] = [Math.min(...corners.map((p) => p.x)), Math.max(...corners.map((p) => p.x))]
+  const [minY, maxY] = [Math.min(...corners.map((p) => p.y)), Math.max(...corners.map((p) => p.y))]
+  const a = ((angle % 360) + 360) % 360
+  if (a % 90 === 0) {
+    const [tl, tr, br, bl] = [{ x: minX, y: minY }, { x: maxX, y: minY }, { x: maxX, y: maxY }, { x: minX, y: maxY }]
+    return a === 0 ? [tl, tr, br, bl] : a === 90 ? [bl, tl, tr, br] : a === 180 ? [br, bl, tl, tr] : [tr, br, bl, tl]
   }
+  const pts = [...corners]
+  while (pts.length < 4) pts.push({ x: pts[pts.length - 1].x + 1e-5, y: pts[pts.length - 1].y + 1e-5 })
+  // the first point to reach each extreme, as KiCad's `<` and `>` choose it
+  const extreme = (better: (p: Pt, m: Pt) => boolean) => pts.reduce((m, p) => (better(p, m) ? p : m))
+  const left = extreme((p, m) => p.x < m.x)
+  const right = extreme((p, m) => p.x > m.x)
+  const top = extreme((p, m) => p.y < m.y)
+  const bottom = extreme((p, m) => p.y > m.y)
+  return a < 90 ? [left, top, right, bottom] : a < 180 ? [bottom, left, top, right] : a < 270 ? [right, bottom, left, top] : [top, right, bottom, left]
+}
+
+/**
+ * The grid of a table as KiCad draws it (`PCB_TABLE::DrawBorders`): each cell is at its row and column of the file's order, and the line on its right and the one under it are the cell's own
+ * corners, a cell at a time, so a table that is turned or flipped is drawn where its cells are. The header row's separators are the border's stroke whatever the others are; the border is
+ * drawn when it is on and has a width.
+ */
+export function tableParts(table: List): TableParts {
+  const all = kids(kid(table, "cells"), "table_cell")
+  const layer = strAt(kid(table, "layer"), 1) ?? ""
+  const columns = Math.trunc(numAt(kid(table, "column_count"), 1, 0))
+  const rows = columns > 0 ? Math.floor(all.length / columns) : 0
+  const cells = all.filter((c) => numAt(kid(c, "span"), 1, 1) > 0 || numAt(kid(c, "span"), 2, 1) > 0)
+  if (rows < 1) return { layer, lines: [], cells }
 
   const border = kid(table, "border")
   const separators = kid(table, "separators")
   const borderStroke = strokeOf(border)
   const separatorStroke = strokeOf(separators)
+  const header = flag(border, "header", true)
+  const drawAngle = numAt(kid(all[0], "angle"), 1, 0)
+  const at = (row: number, col: number) => all[row * columns + col]
+  const corners = (cell: List) => cornersInSequence(cornersOf(cell), drawAngle)
+  const spanOf = (cell: List) => ({ cols: Math.trunc(numAt(kid(cell, "span"), 1, 1)), rows: Math.trunc(numAt(kid(cell, "span"), 2, 1)) })
   const lines: TableLine[] = []
-  /** A run of the lines of one boundary, the pieces that meet joined. */
-  const run = (pieces: [Pt, Pt][], stroke: { width: number; dash: string | null }) => {
-    const out: [Pt, Pt][] = []
-    for (const [a, b] of pieces) {
-      const last = out[out.length - 1]
-      if (last && Math.abs(last[1].x - a.x) < 1e-9 && Math.abs(last[1].y - a.y) < 1e-9) last[1] = b
-      else out.push([a, b])
+  const draw = (a: Pt, b: Pt, stroke: Stroke) => lines.push({ a, b, width: Math.max(0, stroke.width), dash: stroke.dash })
+
+  // between the columns: the right edge of each cell that is not on the table's right
+  for (let col = 0; col < columns - 1; col++) {
+    for (let row = 0; row < rows; row++) {
+      const stroke = row === 0 && header ? borderStroke : flag(separators, "cols", true) ? separatorStroke : null
+      const cell = at(row, col)
+      if (!stroke || spanOf(cell).cols === 0 || col + spanOf(cell).cols === columns) continue
+      const c = corners(cell)
+      draw(c[1], c[2], stroke)
     }
-    for (const [a, b] of out) lines.push({ a, b, ...stroke })
   }
-  if (yes(border, "external")) {
-    run([[{ x: xs[0], y: ys[0] }, { x: xs[cols], y: ys[0] }]], borderStroke)
-    run([[{ x: xs[cols], y: ys[0] }, { x: xs[cols], y: ys[rows] }]], borderStroke)
-    run([[{ x: xs[cols], y: ys[rows] }, { x: xs[0], y: ys[rows] }]], borderStroke)
-    run([[{ x: xs[0], y: ys[rows] }, { x: xs[0], y: ys[0] }]], borderStroke)
-  }
-  // The line under the header row is the border's own stroke, unless every row has a separator.
-  const rowLines = yes(separators, "rows")
-  const colLines = yes(separators, "cols")
-  const boundary = (r: number, stroke: typeof borderStroke) => {
-    const pieces: [Pt, Pt][] = []
-    for (let c = 0; c < cols; c++) if (!same(r - 1, c, r, c)) pieces.push([{ x: xs[c], y: ys[r] }, { x: xs[c + 1], y: ys[r] }])
-    run(pieces, stroke)
-  }
-  if (yes(border, "header") && !rowLines && rows > 1) boundary(1, borderStroke)
-  if (rowLines) for (let r = 1; r < rows; r++) boundary(r, separatorStroke)
-  if (colLines) {
-    for (let c = 1; c < cols; c++) {
-      const pieces: [Pt, Pt][] = []
-      for (let r = 0; r < rows; r++) if (!same(r, c - 1, r, c)) pieces.push([{ x: xs[c], y: ys[r] }, { x: xs[c], y: ys[r + 1] }])
-      run(pieces, separatorStroke)
+  // between the rows: the bottom edge of each cell that is not on the table's bottom
+  for (let row = 0; row < rows - 1; row++) {
+    const stroke = row === 0 && header ? borderStroke : flag(separators, "rows", true) ? separatorStroke : null
+    if (!stroke) continue
+    for (let col = 0; col < columns; col++) {
+      const cell = at(row, col)
+      if (spanOf(cell).rows === 0 || row + spanOf(cell).rows === rows) continue
+      const c = corners(cell)
+      draw(c[2], c[3], stroke)
     }
+  }
+  if (flag(border, "external", true) && borderStroke.width >= 0) {
+    const [topLeft, topRight, bottomRight, bottomLeft] = [corners(at(0, 0)), corners(at(0, columns - 1)), corners(at(rows - 1, columns - 1)), corners(at(rows - 1, 0))]
+    draw(topLeft[0], topRight[1], borderStroke)
+    draw(topRight[1], bottomRight[2], borderStroke)
+    draw(bottomRight[2], bottomLeft[3], borderStroke)
+    draw(bottomLeft[3], topLeft[0], borderStroke)
   }
   return { layer, lines, cells }
 }
@@ -121,61 +141,127 @@ function fillShape(layer: string, pts: Pt[], node: List): KicadShape {
   return { kind: "poly", layer, layers: [layer], pts, width: 0, filled: true, hatched: false, dash: null, locked: false, net: null, netRaw: null, radius: 0, node }
 }
 
-/** The word of a barcode's `type` that this importer can draw. */
-const DRAWN_BARCODES = new Set(["qr"])
-
 export interface BarcodeParts {
-  /** The filled pieces of the symbol, in the file's frame (y down). */
+  /** The symbol as one filled polygon, in the file's frame (y down). */
   shapes: KicadShape[]
-  /** Why a symbol is not drawn: it is hidden, or its kind or length is beyond this importer. */
-  skipped: "hidden" | { unsupported: string } | null
+  /** Why a symbol is not drawn: its text is empty (KiCad draws nothing for it), or its kind, length or text is beyond this importer. */
+  skipped: "empty" | { unsupported: string } | null
 }
+
+/** Millimetres to the nanometres KiCad counts in, which the symbol is worked out in. */
+const NM = 1e6
+
+/** The outlines of a clipping, each with its holes. */
+function groupsOf(op: ClipType, subject: Paths64, clip: Paths64 = []): Path64[][] {
+  const tree = new PolyTree64()
+  const c = new Clipper64()
+  c.addSubject(subject)
+  if (clip.length) c.addClip(clip)
+  c.execute(op, FillRule.NonZero, tree)
+  const out: Path64[][] = []
+  collect(tree, out)
+  return out
+}
+
+/** Several rings as one, each joined to the one before it by a bridge out and back along the same line, which covers no area (what KiCad's `Fracture` does with holes). */
+function chain(rings: Pt[][]): Pt[] {
+  const sorted = [...rings].sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x)
+  const anchors = sorted.map((r) => r[0])
+  return [anchors[0], ...sorted.slice(1).flatMap((r) => [...r, r[0]]), ...anchors.slice(0, -1).reverse(), ...sorted[0].slice(1)]
+}
+
+/** A barcode's layer is one of the back side's, so that KiCad draws its symbol mirrored (`BOARD_ITEM::IsSideSpecific` and `BOARD::IsBackLayer`). */
+const BACK_LAYER = /^B\.(Cu|SilkS|Mask|Paste|Adhes|CrtYd|Fab)$/
+
+/** The size a text starts with in KiCad: 60 mils. */
+const DEFAULT_TEXT_HEIGHT = 1.524
 
 /**
- * A barcode (`barcode`, KiCad 10) as the filled squares its symbol is made of. The symbol is centred on the barcode's point and turned about it by its angle, a square as large as the
- * barcode's smaller side less its margins; the dark modules are filled, merged along each row, or the light ones and the box round them when the barcode is a knockout (the symbol
- * is then cut out of a filled box). The symbol is the standard's QR code for the text at the error correction level: KiCad draws its own encoder's, which differs in the mask it picks and
- * not in what a reader decodes.
+ * A barcode (`barcode`, KiCad 10) as the one filled polygon its symbol is (`PCB_BARCODE::AssembleBarcode`, pcbnew/pcb_barcode.cpp). The symbol is stretched to the barcode's whole `size`,
+ * centred on its point, one module being the width over the number of modules across and the height over the number down; under it, a gap of 1 mm below, is its text unless the barcode
+ * says `hide` (which hides the text and not the symbol). A knockout barcode is the box round both, grown by its margins and at least a tenth of its smaller side to the next 0.1 mm, with the
+ * symbol and the text cut out of it. On a back layer the symbol is mirrored about its point, and then turned about it by its angle. The symbol is the QR code zint makes of the text
+ * (`lib/qrCode.ts`); `variable` is what a `${...}` of the text shows, and null for a name the editor has no value for.
  */
-export function barcodeParts(node: List, layer: string): BarcodeParts {
+export function barcodeParts(node: List, layer: string, variable: (token: string) => string | null): BarcodeParts {
   const kind = strAt(kid(node, "type"), 1) ?? ""
-  if (yes(node, "hide")) return { shapes: [], skipped: "hidden" }
-  if (!DRAWN_BARCODES.has(kind)) return { shapes: [], skipped: { unsupported: `a ${kind || "barcode"} barcode` } }
-  const level = strAt(kid(node, "ecc_level"), 1)
-  const modules = qrCode(strAt(kid(node, "text"), 1) ?? "", level === "L" || level === "Q" || level === "H" ? level : "M")
-  if (!modules) return { shapes: [], skipped: { unsupported: "a QR code with more text than version 40 holds" } }
-  const at = kid(node, "at")
-  const centre = { x: numAt(at, 1, 0), y: numAt(at, 2, 0) }
-  const angle = (numAt(at, 3, 0) * Math.PI) / 180
-  const marginX = numAt(kid(node, "margins"), 1, 0)
-  const marginY = numAt(kid(node, "margins"), 2, 0)
-  const width = numAt(kid(node, "size"), 1, 0)
-  const height = numAt(kid(node, "size"), 2, 0)
-  const side = Math.min(width - 2 * marginX, height - 2 * marginY)
+  const unsupported = (what: string): BarcodeParts => ({ shapes: [], skipped: { unsupported: what } })
+  if (kind !== "qr" && kind !== "qrcode") return unsupported(`a ${kind || "barcode"} barcode`)
+  const left: string[] = []
+  const shown = expandTextVars(strAt(kid(node, "text"), 1) ?? "", (token) => {
+    const value = variable(token)
+    if (value === null) left.push(token)
+    return value
+  })
+  if (left.length) return unsupported(`a barcode whose text uses \${${left[0]}}`)
+  if (!shown) return { shapes: [], skipped: "empty" }
+  const level = (strAt(kid(node, "ecc_level"), 1) ?? "L").toUpperCase()
+  const modules = qrCode(shown, level === "M" || level === "Q" || level === "H" ? (level as QrLevel) : "L")
+  if (!modules) return unsupported("a QR code with more text than version 40 holds")
   const n = modules.length
-  const cell = side / n
-  const knockout = yes(node, "knockout")
-  // A point of the symbol's own frame (x right, y down, from the centre) in the file's.
-  const place = (x: number, y: number): Pt => ({ x: centre.x + x * Math.cos(angle) - y * Math.sin(angle), y: centre.y + x * Math.sin(angle) + y * Math.cos(angle) })
-  const shapes: KicadShape[] = []
-  const box = (x0: number, y0: number, x1: number, y1: number) => shapes.push(fillShape(layer, [place(x0, y0), place(x1, y0), place(x1, y1), place(x0, y1)], node))
-  const half = side / 2
-  if (knockout) {
-    // The box is the barcode's whole size; its light modules are filled, the symbol's dark ones cut out.
-    const [bx, by] = [width / 2, height / 2]
-    box(-bx, -by, bx, -half)
-    box(-bx, half, bx, by)
-    box(-bx, -half, -half, half)
-    box(half, -half, bx, half)
-  }
-  for (let row = 0; row < n; row++) {
-    for (let col = 0; col < n; col++) {
-      if (modules[row][col] === knockout) continue
-      let end = col
-      while (end + 1 < n && modules[row][end + 1] !== knockout) end++
-      box(-half + col * cell, -half + row * cell, -half + (end + 1) * cell, -half + (row + 1) * cell)
-      col = end
+  const width = Math.round(numAt(kid(node, "size"), 1, 40) * NM)
+  const height = Math.round(numAt(kid(node, "size"), 2, 40) * NM)
+
+  // The symbol in its own frame (nm, y down) with its centre at the origin: the dark modules, a row at a time.
+  const edge = (total: number, i: number) => Math.round(-total / 2 + (i * total) / n)
+  const symbol: Paths64 = []
+  modules.forEach((row, y) => {
+    for (let x = 0; x < n; x++) {
+      if (!row[x]) continue
+      let end = x
+      while (end + 1 < n && row[end + 1]) end++
+      const [x0, x1, y0, y1] = [edge(width, x), edge(width, end + 1), edge(height, y), edge(height, y + 1)]
+      symbol.push([{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }])
+      x = end
+    }
+  })
+
+  // The text: centred under the symbol, its ink's top 1 mm below the symbol's bottom.
+  const ink: Paths64 = []
+  if (!yes(node, "hide")) {
+    const size = Math.max(1, Math.round(numAt(kid(node, "text_height"), 1, DEFAULT_TEXT_HEIGHT) * NM))
+    const attrs: TextAttrsIu = { w: size, h: size, thickness: Math.max(1, Math.round(size / 8)), bold: false, italic: false, mirror: false, hAlign: 0, vAlign: 0, lineSpacing: 1 }
+    const strokes = layoutText(shown, { x: 0, y: 0, angle: 0 }, attrs, true)
+    const box = inkBox(strokes)
+    if (box) {
+      const dx = -Math.round((box.minX + box.maxX) / 2)
+      const dy = Math.round(height / 2 - box.minY + NM)
+      for (const line of strokes.polylines) {
+        const path: Path64 = line.map((p) => ({ x: Math.round(p.x) + dx, y: Math.round(p.y) + dy }))
+        if (path.length === 1) path.push({ x: path[0].x + 1, y: path[0].y })
+        ink.push(...Clipper.inflatePaths([path], strokes.pen / 2, JoinType.Round, EndType.Round, 2, 0.005 * NM))
+      }
     }
   }
-  return { shapes, skipped: null }
+  const solid = Clipper.union([...symbol, ...ink], [], FillRule.NonZero)
+
+  let groups: Path64[][]
+  if (yes(node, "knockout")) {
+    const all = solid.flat()
+    const [minX, maxX] = [Math.min(...all.map((p) => p.x)), Math.max(...all.map((p) => p.x))]
+    const [minY, maxY] = [Math.min(...all.map((p) => p.y)), Math.max(...all.map((p) => p.y))]
+    // at least a tenth of the smaller side, rounded up to 0.1 mm
+    const tenth = Math.ceil(Math.ceil(Math.min(width, height) / 10) / (NM / 10)) * (NM / 10)
+    const growX = Math.max(Math.round(numAt(kid(node, "margins"), 1, 0) * NM), tenth)
+    const growY = Math.max(Math.round(numAt(kid(node, "margins"), 2, 0) * NM), tenth)
+    const box: Path64 = [{ x: minX - growX, y: minY - growY }, { x: maxX + growX, y: minY - growY }, { x: maxX + growX, y: maxY + growY }, { x: minX - growX, y: maxY + growY }]
+    groups = groupsOf(ClipType.Difference, [box], solid)
+  } else groups = groupsOf(ClipType.Union, solid)
+  if (!groups.length) return { shapes: [], skipped: "empty" }
+
+  // mirrored on the back, then turned about the point (`RotatePoint` in the file's frame, y down), the quarter turns exact
+  const at = kid(node, "at")
+  const centre = { x: Math.round(numAt(at, 1, 0) * NM), y: Math.round(numAt(at, 2, 0) * NM) }
+  const angle = ((numAt(at, 3, 0) % 360) + 360) % 360
+  const [sin, cos] = angle % 90 === 0 ? [[0, 1, 0, -1][angle / 90], [1, 0, -1, 0][angle / 90]] : [Math.sin((angle * Math.PI) / 180), Math.cos((angle * Math.PI) / 180)]
+  const mirrored = BACK_LAYER.test(layer)
+  const place = (p: Pt): Pt => {
+    const x = mirrored ? -p.x : p.x
+    return { x: (centre.x + Math.round(x * cos + p.y * sin)) / NM, y: (centre.y + Math.round(-x * sin + p.y * cos)) / NM }
+  }
+  const rings = groups.map((g) => fractureRings(g[0], g.slice(1)))
+  return { shapes: [fillShape(layer, chain(rings).map(place), node)], skipped: null }
 }
+
+/** A flag of a barcode that is on: `(hide yes)`, `(knockout yes)`. */
+const yes = (node: List, name: string) => flag(node, name, false)

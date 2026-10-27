@@ -139,8 +139,8 @@ export const RULES = [
   rule("gr_text_box>pts(?:>xy)?", "extend", "BoardText.box", { ext: "X25", note: "a text box that is an outline of points (a box turned by other than a quarter turn, KiCad 8 and later), which no corpus board has" }),
   rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>property)>render_cache(?:>polygon(?:>pts(?:>xy)?)?)?", "extend", "-", { ext: "X19", note: "the outlines KiCad drew a TrueType text with; they decide the silkscreen shapes, so they are stored, drawn, plotted and written back" }),
   rule("embedded_fonts|footprint>embedded_fonts", "extend", "-", { ext: "X19", note: "whether the board or the footprint may use fonts embedded in the file (KiCad 9); kept, and written back" }),
-  rule("drill_map(?:>.*)?", "report", "-", { note: "a drill map: a drawing KiCad generates from the board's drill data (its outline with a symbol at every hole), which the editor does not draw; KiCad draws it again when the board is opened there" }),
-  rule("(?:footprint>)?table(?:>.*)?|barcode(?:>.*)?|drill_chart(?:>.*)?", "extend", "BoardShape, BoardText", { ext: "X25", note: "tables (KiCad 9), barcodes (KiCad 10) and drill charts, which are tables KiCad fills from the drill data: drawn as lines, text boxes and filled squares" }),
+  rule("drill_map(?:>.*)?", "report", "-", { note: "a drill map (KiCad 11 development, not in 10.0): a drawing KiCad generates from the board's drill data (its outline with a symbol at every hole), which the editor does not draw; KiCad draws it again when the board is opened there" }),
+  rule("(?:footprint>)?table(?:>.*)?|barcode(?:>.*)?|drill_chart(?:>.*)?", "extend", "BoardShape, BoardText", { ext: "X25", note: "tables (KiCad 9), barcodes (KiCad 10) and drill charts (KiCad 11 development, not in 10.0), which are tables KiCad fills from the drill data: drawn as lines, text boxes and one filled shape" }),
 
   // ---- dimensions ----
   rule("(?:footprint>)?dimension(?:>.*)?", "extend", "-", { ext: "X11", note: "aligned, orthogonal, radial, leader and center dimensions; KiCad 5 writes feature and arrow lines; also inside footprints since KiCad 7" }),
@@ -297,8 +297,8 @@ export const ATOMS = [
   atoms("dimension>style|footprint>dimension>style", ["keep_text_aligned"]),
   // KiCad 6 and 7 wrote `locked` first in a dimension, which the parser frees ("Free 'locked' token from 6.0/7.0 formats")
   atoms("dimension|footprint>dimension", ["locked"]),
-  atoms("barcode>type", ["qr", "datamatrix", "code39", "code128", "micro_qr"]),
-  atoms("barcode>ecc_level", ["L", "M", "Q", "H"]),
+  atoms("barcode>type", ["qr", "qrcode", "datamatrix", "data_matrix", "code39", "code128", "microqr", "micro_qr"]),
+  atoms("barcode>ecc_level", ["L", "M", "Q", "H", "l", "m", "q", "h"]),
   atoms("(?:.*>)?(?:drill_chart>column>id|drill_map>span|drill_map>(?:style|origin|unit))", ["drill_diameter", "symbol", "count", "plated", "pth", "npth", "all", "size", "shape", "span", "operation", "plating", "post_machining", "slot"]),
   atoms("generated>type", ["tuning_pattern", "via_stack", "via_stitch"]),
   atoms("(?:module|footprint)>variant", [], [1]),

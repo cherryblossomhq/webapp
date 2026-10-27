@@ -328,8 +328,10 @@ export interface KicadZone {
   priority: number
   /** The zone's `uuid` (KiCad 7 and later) or `tstamp` (6), as written; absent in a file that gives none. */
   uuid?: string
-  /** `copper`, `keepout`, `rule-area`, `teardrop` or `placement`. */
+  /** `copper`, `keepout`, `rule-area` or `teardrop`. */
   kind: string
+  /** X20: the rule area's `placement` node: whether it places parts, and the sheet, component class or group it names (the file's default is a sheet with no name). Null when the file has none. */
+  placement: { enabled: boolean; by: "sheet" | "class" | "group"; name: string } | null
   keepout: { tracks: boolean; vias: boolean; pads: boolean; copperpour: boolean; footprints: boolean } | null
   polygon: Pt[]
   /** Every `(polygon (pts ...))` with its arcs: the first is the outline and the others are holes in it. */
@@ -382,6 +384,8 @@ export interface KicadFootprint {
   path: string
   sheetname: string
   sheetfile: string
+  /** X20: the footprint's `component_classes`, each name once, in the file's order. */
+  classes: string[]
   props: { key: string; value: string }[]
   pads: KicadPad[]
   /** The footprint's own margins, clearance and pour connection, which each of its pads that sets none of its own takes (`PAD::GetSolderMaskExpansion` and the others ask the footprint). */

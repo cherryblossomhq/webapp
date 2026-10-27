@@ -104,7 +104,11 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
     const k = z.keepout!
     const f = (b: boolean | undefined) => (b ? "not_allowed" : "allowed")
     o.push(`    (keepout (tracks ${f(k.tracks)}) (vias ${f(k.vias)}) (pads ${f(k.pads)}) (copperpour ${f(k.pour)}) (footprints ${f(k.footprints)}))`)
-    o.push(`    (placement (enabled no) (sheetname ""))`)
+    // X20: a rule area that names a sheet, a component class or a group places parts; KiCad writes the node on every rule area, switched off and naming no sheet when it places nothing.
+    // KiCad 9's parser has no `group` source (`parseZONE`, 9.0.0: "Expecting enabled, sheetname or component_class"), so a group area is written switched off.
+    const pl = z.placement
+    const by = pl?.by === "group" ? undefined : pl
+    o.push(`    (placement (enabled ${by && !by.off ? "yes" : "no"}) (${by?.by === "class" ? "component_class" : "sheetname"} ${quote(by?.name ?? "")}))`)
   }
   const filled = !rule && (fills.some((f) => f.zoneId === z.id) || otherFills.some((f) => f.polygons.length > 0))
   const fill = [filled ? " yes" : ""]

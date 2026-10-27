@@ -115,7 +115,7 @@ export const RULES = [
   rule("(?:footprint>)?zone>fill>thieving(?:>.*)?", "extend", "-", { ext: "X24", note: "copper thieving fill (KiCad 11 development)" }),
   rule("(?:footprint>)?zone>attr(?:>teardrop(?:>type)?)?", "native", "Zone.teardrop", { effort: "M", note: "a teardrop is a copper zone that joins its own net's pads solidly" }),
   rule("(?:footprint>)?zone>property(?:>.*)?", "extend", "-", { ext: "X24", note: "zone properties (hatch position, KiCad 10)" }),
-  rule("(?:footprint>)?zone>placement(?:>(?:component_class|enabled|sheetname))?", "extend", "-", { ext: "X20", note: "placement rule area: where parts of a sheet or class may sit (KiCad 9)" }),
+  rule("(?:footprint>)?zone>placement(?:>(?:component_class|enabled|sheetname|group))?", "extend", "-", { ext: "X20", note: "placement rule area: where parts of a sheet, a class or a group may sit (KiCad 9, group KiCad 10)" }),
   rule("(?:footprint>)?zone>filled_polygon(?:>.*)?", "not-needed", "the pour is filled again by model/zoneFill.ts", { note: "a filled polygon is KiCad's own result of its fill, which it recomputes on every refill; the editor fills the zone again from its outline and settings by KiCad's rules and the import report says so. Slices of the corpus compare the two (docs/kicad-import.md section 11)" }),
   rule("(?:footprint>)?zone>fill_segments(?:>.*)?", "not-needed", "-", { note: "the stripes of KiCad 5's segment fill, a mode KiCad 6 and later read as an ordinary polygon fill, as the editor does" }),
   rule("(?:footprint>)?zone>(?:tstamp|uuid)", "native", "Zone.uuid", { effort: "S", note: "what orders two zones of equal priority (KiCad 6 and later; KiCad 5 had no such order), and what a group's members name (X12)" }),

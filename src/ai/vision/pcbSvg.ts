@@ -11,6 +11,7 @@ import { nonCopperFills, type OtherFill } from "../../model/nonCopperFill"
 import { withPartZones } from "../../model/partZones"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
+import { PLACEMENT_COLOR } from "../../model/placementAreas"
 import { worldShapes } from "../../model/shapeItems"
 import { shapeLayerInfo } from "../../model/shapeLayers"
 import { dashShape, pathsSvgPath, shapeSvgPath, type DashPiece } from "../../model/shapes"
@@ -197,7 +198,9 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
     // Keepouts, as an outline with a light red tint, on the layers they are on; none on a board that has none.
     for (const z of withPartZones(project).zones) {
       if (!z.keepout || !z.outline || !(z.layers ?? [z.layer]).includes(l)) continue
-      body += `<path d="${pathsSvgPath(z.outline)}" fill="#ff5470" fill-opacity="0.15" fill-rule="evenodd" stroke="#ff5470" stroke-width="${n(Math.max(0.1, 1.5 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
+      // X20: a placement area is blue.
+      const color = z.placement ? PLACEMENT_COLOR : "#ff5470"
+      body += `<path d="${pathsSvgPath(z.outline)}" fill="${color}" fill-opacity="${z.placement ? "0.1" : "0.15"}" fill-rule="evenodd" stroke="${color}" stroke-width="${n(Math.max(0.1, 1.5 * px))}" stroke-dasharray="${n(5 * px)} ${n(3 * px)}"/>`
     }
     for (const t of project.traces) {
       if (t.layer !== l) continue

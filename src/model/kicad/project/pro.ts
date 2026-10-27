@@ -122,7 +122,8 @@ export const PRO_RULES: ProRule[] = [
   rule(`board>design_settings>(?:rule_severities|rule_severitieslegacy_[a-z_]+)${SUB}`, "not-needed", "how severe KiCad's own design rule checks are: the editor's checks have their own"),
   rule(`board>design_settings>drc_exclusions${SUB}`, "not-needed", "design rule check markers the user dismissed in KiCad"),
   rule(`board>design_settings>(?:meta|bom_[a-z_]+)${SUB}`, "not-needed", "a version and bill of materials presets"),
-  rule(`component_class_settings${SUB}`, "pending", "component classes", "X20"),
+  // X20 is built: the assignment rules are worked out for the footprints, and each one that is not is a report entry (`classRules.ts`).
+  rule(`component_class_settings${SUB}`, "used", "the component class rules: worked out for the footprints, or reported when they cannot be"),
   rule(`(?:tuning_profiles|time_domain_parameters)${SUB}`, "pending", "length and delay tuning profiles", "X21"),
   rule(`kicad_routing_tools${SUB}`, "not-needed", "settings of KiCad's interactive router"),
   // ---- the schematic's own settings ----

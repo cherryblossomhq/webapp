@@ -495,6 +495,9 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       props: fp.value ? { value: fp.value } : {},
       footprint: landName,
       ...(fp.name ? { fpid: fp.name } : {}),
+      // X20: the part's component classes, and the sheet its footprint says it is from.
+      ...(fp.classes.length ? { classes: fp.classes } : {}),
+      ...(fp.sheetname ? { sheetPath: fp.sheetname } : {}),
       sch: { x: 0, y: 0, rot: 0 },
       pcb: { x: round(at.x), y: round(at.y), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
       ...(flags ? { flags } : {}),

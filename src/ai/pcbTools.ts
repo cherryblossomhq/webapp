@@ -17,6 +17,7 @@ import { isKicadText, isTextLayer, textLayerKind } from "../model/texts"
 import { defaultTextStyle } from "../editor/pcb/textEditing"
 import { copperOn, removeCopper } from "../model/boardCopper"
 import { pointPadDistance, segmentPadDistance } from "../model/pcb"
+import { areaNames, areasOfPart, nearestInAreas, partInAreas } from "../model/placementAreas"
 import { findNearSpot, inflateBox, type NearAnchor } from "../model/placeNear"
 import { matchCapability } from "../model/rules"
 import type { ComponentInstance, CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
@@ -184,7 +185,7 @@ Per part, give one of:
 - dx and dy: move by that much from where it is.
 - or none of those, with rotation (degrees counter-clockwise, any angle), side (top, bottom) or lock alone.
 
-lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked part is refused unless the same entry says lock: false. List parts others are placed near first: each entry sees the ones before it. Existing traces are kept as they are, like dragging a part in the editor, and the result says how many ended on the old pad positions; clear_traces: true removes those unlocked ones, and route_pcb routes them again. The result gives where each part landed and the pad gap to the pin it was put beside.`,
+lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked part is refused unless the same entry says lock: false. A part a placement area holds is kept inside it (moved to the nearest spot, and said). List parts others are placed near first: each entry sees the ones before it. Existing traces are kept as they are, like dragging a part in the editor, and the result says how many ended on the old pad positions; clear_traces: true removes those unlocked ones, and route_pcb routes them again. The result gives where each part landed and the pad gap to the pin it was put beside.`,
   input_schema: {
     type: "object",
     properties: {
@@ -284,6 +285,19 @@ lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked
         pos = { ...pos, x: c.pcb.x + (item.dx ?? 0), y: c.pcb.y + (item.dy ?? 0), rot: item.rotation ?? c.pcb.rot, side: item.side ?? c.pcb.side }
       } else {
         pos = { ...pos, rot: item.rotation ?? c.pcb.rot, side: item.side ?? c.pcb.side }
+      }
+
+      // X20: a part a placement area holds stays inside it: a spot outside is moved to the nearest one inside, and said; one that cannot fit is refused.
+      const moves = pos.x !== c.pcb.x || pos.y !== c.pcb.y || pos.rot !== c.pcb.rot || pos.side !== c.pcb.side
+      const held = moves ? areasOfPart(next, c, undefined, pos.side) : []
+      if (held.length && !partInAreas(c, held, pos)) {
+        const fit = nearestInAreas(c, held, pos)
+        if (!fit) {
+          refused.push(`${c.ref}: it does not fit inside ${areaNames(held)}; make the area bigger (set_pour with its id)`)
+          continue
+        }
+        notes.push(`kept inside ${areaNames(held)}: (${mm(pos.x)}, ${mm(pos.y)}) is outside it, so it is at (${mm(fit.x)}, ${mm(fit.y)})`)
+        pos = { ...pos, x: fit.x, y: fit.y }
       }
 
       const lock = item.lock === undefined ? c.pcb.locked : item.lock || undefined

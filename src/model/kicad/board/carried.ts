@@ -59,8 +59,11 @@ const ROWS = [
   row("(?:segment|arc|via)>net", "built"),
   // Text (X9) is built: its place, layer, size, pen, justification, mirror, flags and content are written into the project. A board text cannot be hidden in KiCad.
   row("(?:gr_text|gr_text_box)>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503)"),
-  // A rule area's placement is X20, and a switched off one is what KiCad 9 writes on every keepout: it places nothing (a switched on one raises X20 and is refused first).
-  row("(?:footprint>)?zone>placement(?:>(?:enabled|sheetname|component_class))?", "derived", "a rule area's placement settings, switched off (KiCad 9 writes them on every keepout): they place nothing"),
+  // X20 is built: a rule area's placement (its target, and whether it is on) is `Zone.placement`, and a part's component classes are `ComponentInstance.classes`. A rule area that is switched off and names no sheet (what KiCad 9
+  // writes on every keepout) is a rule area with no placement, which is what the project holds for it. A rule area inside a part is X30's (it is named, and the board is refused, until X30 is built).
+  row("zone>placement(?:>(?:enabled|sheetname|component_class|group))?", "built"),
+  row("footprint>component_classes(?:>class)?", "built"),
+  row("footprint>zone>placement(?:>(?:enabled|sheetname|component_class|group))?", "derived", "a rule area's placement settings inside a part, switched off (KiCad 9 writes them on every keepout): they place nothing"),
   // X1 and X5 are built: what becomes of a pad's copper on layers nothing connects to (`PadDef.unused`) and its own tenting of the mask (`PadDef.tent`) are written into the project.
   row("footprint>pad>(?:remove_unused_layers|keep_end_layers)", "built"),
   row("footprint>pad>tenting(?:>(?:front|back))?", "built"),

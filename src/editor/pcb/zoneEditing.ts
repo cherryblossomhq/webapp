@@ -34,6 +34,8 @@ export function zoneHit(project: Project, at: Vec2, tol: number, layer: CopperLa
     if (!zoneLayers(z).includes(layer)) continue
     const area = zoneArea(z)
     if (z.keepout) {
+      // X20: a placement area that keeps nothing out is picked by its edge only: it usually holds half the board, and the board's own edge and the parts inside it would be out of reach.
+      if (z.placement && Object.keys(z.keepout).length === 0) continue
       if (area && areaContains(area, at)) return z.id
       continue
     }
@@ -65,3 +67,4 @@ export const closesPolygon = (points: Vec2[], at: Vec2, reach: number): boolean 
 
 export const ZONE_TOOL_KEY = "Z"
 export const KEEPOUT_TOOL_KEY = "K"
+export const PLACEMENT_TOOL_KEY = "J"

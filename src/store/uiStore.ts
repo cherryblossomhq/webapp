@@ -8,7 +8,7 @@ import { loadSettings, saveSettings, type Settings } from "./settings"
 export type View = "schematic" | "pcb" | "3d"
 /** The schematic's tools: editing, then the block tool, then the drawing tools. */
 export type SchTool = "select" | "wire" | "label" | "block" | "text" | "line" | "rect" | "sheet" | "bus" | "busentry"
-export type PcbTool = "select" | "route" | "via" | "line" | "arc" | "circle" | "rect" | "polygon" | "text" | "slot" | "dimension" | "zone" | "keepout"
+export type PcbTool = "select" | "route" | "via" | "line" | "arc" | "circle" | "rect" | "polygon" | "text" | "slot" | "dimension" | "zone" | "keepout" | "placement"
 export type SidePanel = "inspector" | "checks"
 
 /** Properties and footprint a placed part starts with, e.g. from a "10k 0603" search. */

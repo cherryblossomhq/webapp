@@ -11,8 +11,9 @@ import { classIndex } from "./netClasses"
 import { pointPadDistance, segmentPadDistance } from "./pcb"
 import { placeStage, powerStages, STAGE_GAP, type PowerStage } from "./powerStage"
 import { stitchVias } from "./stitch"
-import type { ComponentInstance, PcbSide, Project, Rotation, Vec2 } from "./types"
+import type { ComponentInstance, PcbSide, Project, Rotation, Vec2, Zone } from "./types"
 import { onBoard } from "./partFlags"
+import { areasOfPart, boxInArea, placementAreas } from "./placementAreas"
 
 // Automatic placement: decoupling capacitors next to the supply pins they serve, then every
 // part (a chip with its capacitors as one) shelf-packed on the board.
@@ -341,6 +342,8 @@ function shelfPack(
   parts: Box[],
   keepouts: Box[],
   gap: number,
+  /** X20: whether a unit may stand with its origin there (it has to sit in the placement area of its parts). */
+  allowed?: (u: Unit, origin: Vec2) => boolean,
 ): { origins: Map<Unit, Vec2>; overflow: Unit[] } {
   const taken = [...parts.map((b) => inflate(b, gap)), ...keepouts]
   const origins = new Map<Unit, Vec2>()
@@ -370,6 +373,10 @@ function shelfPack(
         x = Math.max(x + 0.1, hit.maxX)
         continue
       }
+      if (allowed && !allowed(u, { x: x - u.box.minX, y: y - u.box.maxY })) {
+        x += 0.25
+        continue
+      }
       put(u, x, y)
       x += w + gap
       rowH = Math.max(rowH, h)
@@ -386,6 +393,10 @@ function shelfPack(
       for (let lx = area.minX; lx + w <= area.maxX + 1e-9; ) {
         const hit = blocker({ minX: lx, maxX: lx + w, minY: top - h, maxY: top })
         if (!hit) {
+          if (allowed && !allowed(u, { x: lx - u.box.minX, y: top - u.box.maxY })) {
+            lx += 0.25
+            continue
+          }
           put(u, lx, top)
           placed = true
           break
@@ -455,7 +466,7 @@ function improvePlacement(
   units: Unit[],
   origins: Map<Unit, Vec2>,
   nets: NetPins[],
-  bounds: { area: Box; parts: Box[]; keepouts: Box[]; gap: number },
+  bounds: { area: Box; parts: Box[]; keepouts: Box[]; gap: number; /** X20: where a unit has to stay: its placement area's box, and whether it sits in the area at an origin. */ home?: { box: (u: Unit) => Box | null; fits: (u: Unit, o: Vec2) => boolean } },
 ) {
   const placed = units.filter((u) => origins.has(u))
   const index = new Map(placed.map((u, i) => [u, i]))
@@ -505,6 +516,7 @@ function improvePlacement(
   const legal = (u: number, o: Vec2, skip: number) => {
     const box = boxAt(u, o)
     if (!inside(box, bounds.area)) return false
+    if (bounds.home && !bounds.home.fits(placed[u], o)) return false
     if (staticGrid.some(box, (i) => overlaps(box, statics[i]))) return false
     const grown = inflate(box, bounds.gap)
     return !unitGrid.some(grown, (v) => v !== u && v !== skip && overlaps(grown, indexed[v]))
@@ -619,7 +631,7 @@ function improvePlacement(
         seenUnit.add(v)
       })
       // And the board: its edge blocks everything the unit would stick out at.
-      const area = bounds.area
+      const area = bounds.home?.box(placed[u]) ?? bounds.area
       const ia0 = first(xs, area.minX - 1e-9 - box.minX, true)
       const ia1 = first(xs, area.maxX + 1e-9 - box.maxX, false)
       const ja0 = first(ys, area.minY - 1e-9 - box.minY, true)
@@ -713,6 +725,21 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   const occupied: { box: Box; owner: string | null }[] = fixed.map((c) => ({ box: pcbCourtyard(c)!, owner: c.id }))
   const keepouts = boardObstacles(base)
 
+  // X20: placement rule areas. The parts an area picks are packed inside it and never moved out of it; a project with none runs exactly as before.
+  const placeAreas = placementAreas(base)
+  const areaOf = new Map<string, Zone[]>()
+  for (const c of placeAreas.length ? physical : []) {
+    const mine = areasOfPart(base, c, placeAreas)
+    if (mine.length) areaOf.set(c.id, mine)
+  }
+  /** The box a part with placement areas has to stay in (the first of them), cut to the board; the fallback for a part with none. */
+  const keepInOf = (id: string, fallback: Box | null): Box | null => {
+    const a = areaOf.get(id)?.[0]
+    const zone = a ? zoneArea(a) : null
+    if (!zone || !fallback) return fallback
+    return { minX: Math.max(zone.box.minX, fallback.minX), maxX: Math.min(zone.box.maxX, fallback.maxX), minY: Math.max(zone.box.minY, fallback.minY), maxY: Math.min(zone.box.maxY, fallback.maxY) }
+  }
+
   const sch = computeConnectivity(base)
   const byId = new Map(resolvedComponents(base).map((c) => [c.id, c]))
   const capsOf = new Map<string, DecouplingPair[]>()
@@ -751,7 +778,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
       // Spread a chip's capacitors over its supply pins before doubling up on one.
       const crowding = (pad: WorldPad) =>
         0.6 * placed.filter((p) => p.pair.netId === pair.netId && boxPointDistance(p.spot.box, pad) < 2.5).length
-      const spot = bestCapSpot(cap, pair, chip, { blocked: others, corridors, keepIn, crowding })
+      const spot = bestCapSpot(cap, pair, chip, { blocked: others, corridors, keepIn: keepInOf(cap.id, keepIn), crowding })
       if (spot) placed.push({ pair, spot })
     }
     return placed
@@ -816,10 +843,80 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   const loose = units.sort((p, q) => size(q) - size(p))
 
   const taken = occupied.map((o) => o.box)
+  // The areas a unit has to sit in: those of the first of its parts that has any. Its other parts are held to their own areas wherever a unit moves.
+  const unitAreas = (u: Unit): Zone[] => {
+    for (const m of u.members) {
+      const a = areaOf.get(m.c.id)
+      if (a) return a
+    }
+    return []
+  }
+  const homed = placeAreas.length ? loose.filter((u) => unitAreas(u).length) : []
+  const unitFits = (u: Unit, o: Vec2): boolean =>
+    u.members.every((m) => {
+      const mine = areaOf.get(m.c.id)
+      if (!mine) return true
+      const box = shift(localCourtyard(m.c, m.rot, m.side), o.x + m.x, o.y + m.y)
+      return mine.some((z) => {
+        const a = zoneArea(z)
+        return !!a && boxInArea(a, box)
+      })
+    })
+  const homeBox = (u: Unit): Box | null => {
+    const list = unitAreas(u)
+    if (!list.length) return null
+    const out = emptyBox()
+    for (const z of list) {
+      const a = zoneArea(z)
+      if (!a) continue
+      expandBox(out, { x: Math.max(a.box.minX, area.minX), y: Math.max(a.box.minY, area.minY) })
+      expandBox(out, { x: Math.min(a.box.maxX, area.maxX), y: Math.min(a.box.maxY, area.maxY) })
+    }
+    return Number.isFinite(out.minX) ? out : null
+  }
+  const packWith = (gap: number): ReturnType<typeof shelfPack> => {
+    if (!homed.length) return shelfPack(loose, area, taken, keepouts, gap)
+    const origins = new Map<Unit, Vec2>()
+    const standing: Box[] = []
+    const settle = (res: ReturnType<typeof shelfPack>) => {
+      for (const [u, o] of res.origins) {
+        origins.set(u, o)
+        standing.push(shift(u.box, o.x, o.y))
+      }
+    }
+    // Units with an area first, each in its first area, then the units that did not fit in the next of theirs: what no area has room for goes with the rest
+    // (Checks reports it).
+    let rest = homed
+    for (let k = 0; rest.length; k++) {
+      const groups = new Map<Zone, Unit[]>()
+      for (const u of rest) {
+        const z = unitAreas(u)[k]
+        if (z) (groups.get(z) ?? groups.set(z, []).get(z)!).push(u)
+      }
+      if (!groups.size) break
+      const next: Unit[] = []
+      for (const [z, us] of groups) {
+        const a = zoneArea(z)
+        const within = a ? { minX: Math.max(a.box.minX, area.minX), maxX: Math.min(a.box.maxX, area.maxX), minY: Math.max(a.box.minY, area.minY), maxY: Math.min(a.box.maxY, area.maxY) } : null
+        if (!within || within.minX >= within.maxX || within.minY >= within.maxY) {
+          next.push(...us)
+          continue
+        }
+        const res = shelfPack(us, within, [...taken, ...standing], keepouts, gap, unitFits)
+        settle(res)
+        next.push(...res.overflow)
+      }
+      rest = next
+    }
+    const free = [...loose.filter((u) => !homed.includes(u)), ...rest]
+    const last = shelfPack(free, area, [...taken, ...standing], keepouts, gap)
+    settle(last)
+    return { origins, overflow: last.overflow }
+  }
   let packed!: ReturnType<typeof shelfPack>
   let gap = MIN_GAP
   for (gap of GAPS) {
-    packed = shelfPack(loose, area, taken, keepouts, gap)
+    packed = packWith(gap)
     if (!packed.overflow.length) break
   }
 
@@ -834,7 +931,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
     const dx = round(Math.round((b.x - (block.minX + block.maxX) / 2) / 0.25) * 0.25, 2)
     const dy = round(Math.round((b.y - (block.minY + block.maxY) / 2) / 0.25) * 0.25, 2)
     const moved = [...packed.origins].map(([u, o]) => shift(u.box, o.x + dx, o.y + dy))
-    if (moved.every((box) => !taken.some((t) => overlaps(box, inflate(t, MIN_GAP))) && !keepouts.some((k) => overlaps(box, k)))) {
+    if (moved.every((box) => !taken.some((t) => overlaps(box, inflate(t, MIN_GAP))) && !keepouts.some((k) => overlaps(box, k))) && [...packed.origins].every(([u, o]) => unitFits(u, { x: o.x + dx, y: o.y + dy }) || !unitFits(u, o))) {
       for (const [u, o] of packed.origins) packed.origins.set(u, { x: o.x + dx, y: o.y + dy })
     }
   }
@@ -858,7 +955,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   loose.forEach((u, i) => {
     for (const m of u.members) pinsOf(at(m.c, m.x, m.y, m.rot, m.side), (net, p) => netEntry(net).moving.push({ unit: i, x: p.x, y: p.y }))
   })
-  improvePlacement(loose, packed.origins, [...netPins.values()], { area, parts: taken, keepouts, gap })
+  improvePlacement(loose, packed.origins, [...netPins.values()], { area, parts: taken, keepouts, gap, ...(homed.length ? { home: { box: homeBox, fits: unitFits } } : {}) })
 
   for (const [u, o] of packed.origins) {
     for (const m of u.members) positions.set(m.c.id, { x: o.x + m.x, y: o.y + m.y, rot: m.rot, side: m.side })

@@ -3,6 +3,8 @@ import { round } from "../lib/geometry"
 import { findPart } from "../model/library"
 import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes } from "../model/partFlags"
+import { partSheet } from "../model/placementAreas"
+import { isHierarchical } from "../model/sheets"
 import { zoneClearance } from "../model/rules"
 import type { ComponentInstance, PinType, Project } from "../model/types"
 import { quoteFlat as quote } from "../lib/kicadQuote"
@@ -153,6 +155,27 @@ export function applyFootprintFlags(pcb: string, project: Project): string {
     const attr = /\n {4}\(attr[^\n]*\)/
     if (attr.test(block)) return block.replace(attr, () => lines.join(""))
     // No attribute line from the converter: after the position.
+    return block.replace(/(\n {4}\(at [^\n]*\))/, (m) => `${m}${lines.join("")}`)
+  })
+}
+
+/**
+ * X20: the converter's footprints get the component classes of their parts and, in a hierarchical project, the sheet each is from, found by reference: KiCad's
+ * `(component_classes (class ...))` and `(sheetname ...)`, which come before the footprint's attributes. Parts with neither are left as the converter wrote them.
+ */
+export function applyComponentClasses(pcb: string, project: Project): string {
+  const hierarchical = isHierarchical(project)
+  const wanted = new Map(project.components.filter((c) => c.classes?.length || hierarchical || c.sheetPath !== undefined).map((c) => [c.ref, c]))
+  if (!wanted.size) return pcb
+  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
+    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const c = ref === undefined ? undefined : wanted.get(ref)
+    if (!c) return block
+    const lines: string[] = []
+    if (c.classes?.length) lines.push(`\n    (component_classes${c.classes.map((n) => ` (class ${quote(n)})`).join("")})`)
+    if (hierarchical || c.sheetPath !== undefined) lines.push(`\n    (sheetname ${quote(partSheet(project, c))})`)
+    const attr = /\n {4}\(attr[^\n]*\)/
+    if (attr.test(block)) return block.replace(attr, (m) => `${lines.join("")}${m}`)
     return block.replace(/(\n {4}\(at [^\n]*\))/, (m) => `${m}${lines.join("")}`)
   })
 }

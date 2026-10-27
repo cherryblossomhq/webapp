@@ -415,7 +415,11 @@ export function renameGroup(project: Project, groupId: string, name: string): Pr
   const g = project.groups?.find((x) => x.id === groupId)
   const next = name.trim()
   if (!g || g.name === next) return project
-  return touch({ ...project, groups: project.groups!.map((x) => (x.id === groupId ? { ...x, name: next } : x)) })
+  const groups = project.groups!.map((x) => (x.id === groupId ? { ...x, name: next } : x))
+  // X20: a placement area names its group, so a group renamed takes the areas that name it along (unless another group still has the old name).
+  const shared = groups.some((x) => x.id !== groupId && x.name === g.name)
+  const zones = !shared && g.name !== "" && project.zones.some((z) => z.placement?.by === "group" && z.placement.name === g.name) ? project.zones.map((z) => (z.placement?.by === "group" && z.placement.name === g.name ? { ...z, placement: { ...z.placement, name: next } } : z)) : project.zones
+  return touch({ ...project, groups, zones })
 }
 
 let aliveCache: { key: unknown[]; value: Set<string> } | null = null

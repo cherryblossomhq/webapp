@@ -32,6 +32,7 @@ import { BUILT_EXTENSIONS as SCHEMATIC_BUILT, EXTENSION_NAMES as SCHEMATIC_EXTEN
 import { normalizePath, type SchematicTree } from "../schematic/tree"
 import { KicadRulesFileError, accountRules, readKicadRules, reportUnknownRules, type KicadRules } from "./dru"
 import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegacyPro } from "./legacyPro"
+import { applyClassRules } from "./classRules"
 import { KicadProjectFileError, accountPro, designSettingsNeeds, proBusAliases, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
 
 // The KiCad project import: a `.kicad_pro`, the `.kicad_sch` sheets and the `.kicad_pcb`, as one
@@ -347,7 +348,11 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (!picked.root) {
     report.entries.push({ code: "no-schematic", severity: "note", object: "the project", why: "There is no schematic among the files, so the board came with a schematic generated from its nets." })
     report.account = boardResult.report.account
-    return { status: "imported", project: boardResult.project, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
+    // X20: the class rules of the project file, worked out for the footprints.
+    const classed = applyClassRules(pro, boardResult.project.components)
+    report.entries.push(...classed.entries)
+    const boardProject = classed.components === boardResult.project.components ? boardResult.project : { ...boardResult.project, components: classed.components }
+    return { status: "imported", project: boardProject, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
   }
   const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
   const boardAlone = "importing the .kicad_pcb alone gives the board with a schematic generated from its nets"
@@ -420,6 +425,10 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
   // S8: the net classes the schematic's labels give, on top of the project file's.
   merged.project = settleImportedLabelClasses(merged.project, report)
+  // X20: the class rules of the project file, worked out for the footprints.
+  const classed = applyClassRules(pro, merged.project.components)
+  report.entries.push(...classed.entries)
+  if (classed.components !== merged.project.components) merged.project = { ...merged.project, components: classed.components }
   reportRuleAreaUnits(merged.project, report)
   lateParts.push(...(merged.project.parts ?? []).filter((p) => !isRegistered(p.id)).map((p) => p.id))
   registerProjectParts(merged.project)
@@ -496,11 +505,9 @@ export function projectNeeds(pro: KicadPro | null, rules: KicadRules | null): Ne
     // One top level sheet is the root the importer already picks; several are KiCad 10's virtual root, which the sheet tree does not have yet.
     if (Array.isArray(schematic.top_level_sheets) && schematic.top_level_sheets.length > 1) need("S1T", "several top level sheets")
     if (Object.keys(pro.textVariables).length) need("S4", "text variables")
-    for (const k of ["component_class_settings", "tuning_profiles"]) {
-      const v = j[k] as Record<string, unknown> | undefined
-      if (k === "component_class_settings" && v && nonEmpty((v as { assignments?: unknown }).assignments)) need("X20", "component classes")
-      if (k === "tuning_profiles" && v && nonEmpty((v as { tuning_profiles_impedance_geometric?: unknown }).tuning_profiles_impedance_geometric)) need("X21", "tuning profiles")
-    }
+    // X20 is built: the class rules are worked out (`classRules.ts`) or reported one by one; only the tuning profiles are still pending.
+    const tuning = j.tuning_profiles as Record<string, unknown> | undefined
+    if (tuning && nonEmpty((tuning as { tuning_profiles_impedance_geometric?: unknown }).tuning_profiles_impedance_geometric)) need("X21", "tuning profiles")
   }
   if (rules && rules.rules.length) need("X10", `${rules.rules.length} custom design rule${rules.rules.length > 1 ? "s" : ""}`)
   // One need per extension, with every reason.
@@ -717,7 +724,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     const b = boardOf.get(c.id)
     const { flags: _symbolFlags, ...rest } = c
     void _symbolFlags
-    return { ...rest, ...(flags ? { flags } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}) }
+    return { ...rest, ...(flags ? { flags } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath ? { sheetPath: b.sheetPath } : {}) }
   })
   if (differing.length) {
     report.entries.push({

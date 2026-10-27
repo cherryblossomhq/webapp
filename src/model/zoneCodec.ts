@@ -119,6 +119,9 @@ export function normalizeZones(raw: unknown): Zone[] {
       const k: ZoneKeepout = {}
       for (const f of FLAGS) if (item.keepout[f] === true) k[f] = true
       z.keepout = k
+      // X20: what a placement rule area picks; only a rule area has one, and one that does not read is a rule area that places nothing.
+      const pl = item.placement
+      if (isObject(pl) && (pl.by === "sheet" || pl.by === "class" || pl.by === "group") && typeof pl.name === "string") z.placement = { by: pl.by, name: pl.name, ...(pl.off === true ? { off: true as const } : {}) }
       // A rule area has no net and is its polygon; one without a polygon is nothing.
       z.net = ""
       if (!z.outline) continue

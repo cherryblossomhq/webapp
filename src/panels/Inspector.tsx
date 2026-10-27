@@ -11,6 +11,7 @@ import { componentFootprint, isPhysical, pcbCourtyard, pcbPads, schematicBounds,
 import { forgetStoredNets, sameStoredNet } from "../model/copperNets"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { cleanFlags, setFlags } from "../model/partFlags"
+import { areaNames, areasOfPart, partInAreas, partSheet } from "../model/placementAreas"
 import { isExact } from "../model/sheetItems"
 import { typedNetName } from "../model/busNames"
 import { removeItems, updateComponent } from "../model/ops"
@@ -553,6 +554,36 @@ function FlagsSection({ c, physical, project }: { c: ComponentInstance; physical
   )
 }
 
+/** "Power, Fast" as a list of class names: trimmed, none empty, each once. */
+export const parseClasses = (text: string): string[] => [...new Set(text.split(",").map((x) => x.trim()).filter(Boolean))]
+
+/**
+ * X20: a part's component classes, which a placement area can pick it by, the sheet it is on, and the placement area (if any) that holds it, with whether it
+ * sits there. Classes are names KiCad keeps on a footprint (set from schematic directives and design rules there); here they are typed.
+ */
+function PlacementSection({ c, project }: { c: ComponentInstance; project: Project }) {
+  const areas = areasOfPart(project, c)
+  const inside = !c.pcb.placed || partInAreas(c, areas)
+  return (
+    <Section title="Placement" id="placement">
+      <Field label="Component classes">
+        <CommitInput
+          mono
+          placeholder="e.g. Power, Fast"
+          value={(c.classes ?? []).join(", ")}
+          onCommit={(v) => {
+            const classes = parseClasses(v)
+            if (classes.join("|") !== (c.classes ?? []).join("|")) projectApi().commit((p) => updateComponent(p, c.id, { classes: classes.length ? classes : undefined }))
+          }}
+          ariaLabel="Component classes"
+        />
+      </Field>
+      <Row label="Sheet" value={partSheet(project, c)} mono />
+      {areas.length > 0 && <Row label="Placement area" value={`${areaNames(areas)}${inside ? "" : ": the part is outside it"}`} />}
+    </Section>
+  )
+}
+
 /** The block picker's choice that puts a part in a block of its own. */
 const NEW_BLOCK = "__new"
 
@@ -748,6 +779,8 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
       )}
 
       {(physical || (view === "schematic" && !isPower && (c.flags || project.netNames))) && <FlagsSection c={c} physical={physical} project={project} />}
+
+      {physical && <PlacementSection c={c} project={project} />}
 
       {(physical || (view === "schematic" && !isPower)) && <ComponentVariantsSection c={c} project={project} />}
 

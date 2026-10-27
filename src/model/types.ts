@@ -975,6 +975,10 @@ export interface ComponentInstance {
   inst?: string
   /** S1: on a use of a sheet after the first, the symbol of the first use this one is a copy of: editing the sheet edits every copy. */
   tpl?: string
+  /** X20: the part's component classes (KiCad's `component_classes`): names a placement rule area can pick the part by. Absent: none. */
+  classes?: string[]
+  /** X20: the sheet path the footprint says it is from (`/Power/`), for a board brought in without a schematic to say it. A part of a schematic is on the sheet its symbol is on (`inst`). */
+  sheetPath?: string
 }
 
 export interface Wire {
@@ -1296,6 +1300,18 @@ export interface StackRow {
 export type ZoneConnection = "thermal" | "tht" | "solid" | "none"
 
 /** What a rule area keeps out, in KiCad's words: each flag set is "not allowed" inside it. A rule area with no flag set restricts nothing (it is there for rules). */
+/**
+ * X20: what a placement rule area holds, as KiCad's rule area `placement` node has it: the parts of a sheet (by its path, `/Power/`),
+ * the parts of a component class, or the members of a PCB group (by its name). Every part it picks has to sit inside the area.
+ */
+export interface ZonePlacement {
+  by: "sheet" | "class" | "group"
+  /** The sheet path, the class name or the group name. Empty picks no part. */
+  name: string
+  /** KiCad kept the target on a rule area whose placement is switched off. Absent: on. */
+  off?: true
+}
+
 export interface ZoneKeepout {
   tracks?: true
   vias?: true
@@ -1358,6 +1374,8 @@ export interface Zone {
   islands?: "never" | number
   /** Present: a rule area, not a pour; it has no net and no fill. */
   keepout?: ZoneKeepout
+  /** X20: a rule area that places parts: the parts it picks stay inside it (autoplace, Sakura, Checks). Only on a rule area. */
+  placement?: ZonePlacement
   /** KiCad's teardrop zone, made at a pad or via (`padvia`) or the end of a track (`track_end`): it joins its own net's pads solidly, and rule areas and lower zones do not cut into it. */
   teardrop?: "padvia" | "track_end"
   /** How far the fill keeps from the board's edge (mm); defaults to the edge clearance rule. A board brought in from KiCad 5 or earlier says it itself: that KiCad kept a pour its clearance and half the edge line's width from the edge. */

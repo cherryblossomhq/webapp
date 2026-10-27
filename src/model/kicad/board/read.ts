@@ -700,10 +700,20 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const restricted = (k: string) => strAt(kid(keepoutNode, k), 1) === "not_allowed"
     const keepout = keepoutNode ? { tracks: restricted("tracks"), vias: restricted("vias"), pads: restricted("pads"), copperpour: restricted("copperpour"), footprints: restricted("footprints") } : null
     const anyRestricted = !!keepout && Object.values(keepout).some(Boolean)
-    // KiCad 9 writes a `placement` node on every rule area, switched off (`enabled no`) on an ordinary keepout: only a switched on one places parts.
+    // KiCad 9 writes a `placement` node on every rule area, switched off (`enabled no`) on an ordinary keepout: only a switched on one places parts (X20).
+    // The parser (`parseZONE`, 9.0.0 line 6911, 10.0.0 line 8100) takes the last of `sheetname`, `component_class` and `group` as the source (a sheet with no name by default).
     const placementNode = kid(z, "placement")
-    const placing = !!placementNode && strAt(kid(placementNode, "enabled"), 1) === "yes"
-    const kind = placing ? "placement" : keepout ? (anyRestricted ? "keepout" : "rule-area") : placementNode ? "rule-area" : kid(z, "teardrop") || kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper"
+    let placement: KicadZone["placement"] = null
+    if (placementNode) {
+      placement = { enabled: strAt(kid(placementNode, "enabled"), 1) === "yes", by: "sheet", name: "" }
+      for (const c of placementNode.slice(1)) {
+        if (!Array.isArray(c)) continue
+        if (c[0] === "sheetname") placement = { ...placement, by: "sheet", name: strAt(c, 1) ?? "" }
+        else if (c[0] === "component_class") placement = { ...placement, by: "class", name: strAt(c, 1) ?? "" }
+        else if (c[0] === "group") placement = { ...placement, by: "group", name: strAt(c, 1) ?? "" }
+      }
+    }
+    const kind = keepout ? (anyRestricted ? "keepout" : "rule-area") : placementNode ? "rule-area" : kid(z, "teardrop") || kid(kid(z, "attr"), "teardrop") ? "teardrop" : "copper"
     const pts = kid(kid(z, "polygon"), "pts")
     const ringOf = (node: List): KicadZoneSeg[] => {
       const segs: KicadZoneSeg[] = []
@@ -750,6 +760,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       priority: numAt(kid(z, "priority"), 1, 0),
       uuid: strAt(kid(z, "uuid"), 1) ?? strAt(kid(z, "tstamp"), 1),
       kind,
+      placement,
       keepout,
       polygon,
       rings,
@@ -1272,6 +1283,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       path: strAt(kid(fp, "path"), 1) ?? "",
       sheetname: strAt(kid(fp, "sheetname"), 1) ?? "",
       sheetfile: strAt(kid(fp, "sheetfile"), 1) ?? "",
+      classes: [...new Set(kids(fp, "component_classes").flatMap((n) => kids(n, "class").map((k) => strAt(k, 1) ?? "")).filter((n) => n !== ""))],
       props,
       pads,
       local: localOf(fp),

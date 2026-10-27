@@ -60,7 +60,8 @@ function drawnInEditor(files: Map<string, string>): Project {
 
 const netNamesOf = (p: Project) => computeConnectivity(p).nets.map((n) => n.name).filter((n) => /GNDL/.test(n)).sort()
 const schFiles = (out: Awaited<ReturnType<typeof kicadFiles>>) => new Map(Object.entries(out.files).filter(([n]) => n.endsWith(".kicad_sch")))
-const rootOf = (m: Map<string, string>) => [...m.keys()].find((n) => !n.startsWith("child"))!
+// The sheet used as A and B is written to a file named after its first use.
+const rootOf = (m: Map<string, string>) => [...m.keys()].find((n) => n !== "A.kicad_sch")!
 
 describe("S1 export: a hierarchy drawn in the editor keeps its hierarchy", () => {
   it("the project has no netNames and two local GNDL nets, one per use", () => {
@@ -72,7 +73,7 @@ describe("S1 export: a hierarchy drawn in the editor keeps its hierarchy", () =>
   it("writes the child's VIN as a hierarchical_label, never a global_label, and re-imports with the sheet pin joined to R1", async () => {
     const p = drawnInEditor(hierarchy())
     const files = schFiles(await kicadFiles(p))
-    const child = files.get([...files.keys()].find((n) => n.startsWith("child"))!)!
+    const child = files.get("A.kicad_sch")!
     expect(child).toMatch(/\(hierarchical_label "VIN"/)
     for (const [, text] of files) expect(text).not.toMatch(/\(global_label/)
     const back = load(files, rootOf(files))
@@ -84,7 +85,7 @@ describe("S1 export: a hierarchy drawn in the editor keeps its hierarchy", () =>
 
   it("writes a local label as a local label", async () => {
     const files = schFiles(await kicadFiles(drawnInEditor(hierarchy("local"))))
-    const child = files.get([...files.keys()].find((n) => n.startsWith("child"))!)!
+    const child = files.get("A.kicad_sch")!
     expect(child).toMatch(/\n {2}\(label "VIN"/)
     expect(child).not.toMatch(/hierarchical_label|global_label/)
   })
@@ -94,7 +95,7 @@ describe("S1 export: a local power symbol stays local", () => {
   it("writes (power local) for the lib symbol, and the uses stay two nets after a re-import", async () => {
     const p = drawnInEditor(hierarchy())
     const files = schFiles(await kicadFiles(p))
-    const child = files.get([...files.keys()].find((n) => n.startsWith("child"))!)!
+    const child = files.get("A.kicad_sch")!
     expect(child).toMatch(/\(power local\)/)
     expect(child).not.toMatch(/\(power global\)/)
     // KiCad 10 is the first version with (power local), so every sheet file carries its stamp, and the globals are bare.

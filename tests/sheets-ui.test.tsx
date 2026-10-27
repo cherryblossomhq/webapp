@@ -78,9 +78,9 @@ describe("the sheet tabs", () => {
     const input = host.querySelector<HTMLInputElement>("input[role=tab]")!
     expect(input.value).toBe("Sheet")
     type(input, "Power", "Enter")
-    // Its file was named after it, and follows the name it is given.
-    expect(projectApi().project!.sheetSymbols![0]).toMatchObject({ name: "Power", file: "Power.kicad_sch" })
-    expect(projectApi().project!.sheets!.find((x) => x.id === p.sheetSymbols![0].child)!.file).toBe("Power.kicad_sch")
+    // It is a name and nothing else: no file is kept for it.
+    expect(projectApi().project!.sheetSymbols![0]).toEqual(expect.objectContaining({ name: "Power" }))
+    expect(projectApi().project!.sheetSymbols![0]).not.toHaveProperty("file")
     expect(tabs().map((t) => t.textContent)).toEqual(["Main", "Power"])
     // A double-click on a tab renames it too; Escape gives the new name up.
     act(() => void tabs()[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true })))
@@ -175,8 +175,7 @@ describe("the panel of the sheet shown", () => {
     expect(top.sheets!.find((s) => s.id === "root")).toMatchObject({ name: "Board" })
     expect(sheetUses(top)[0]).toMatchObject({ name: "Board" })
     const below = renameSheetUse(top, "/h1", "Supply")
-    // A file KiCad named otherwise keeps its name.
-    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply", file: p.sheetSymbols![0].file })
+    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply" })
     // An empty name, or a use the project hasn't, changes nothing.
     expect(renameSheetUse(below, "/h1", "  ")).toBe(below)
     expect(renameSheetUse(below, "/gone", "X")).toBe(below)
@@ -239,7 +238,7 @@ describe("the operations on sheets", () => {
     const added = addSheet(p, "", { minX: 3, minY: -4, maxX: 4.5, maxY: -3 }, "Regulator")
     p = added.project
     expect(p.sheets?.map((s) => s.id)).toEqual(["root", "s1", "s2"])
-    expect(added.symbol).toMatchObject({ sheet: "root", child: "s2", name: "Regulator", file: "Regulator.kicad_sch" })
+    expect(added.symbol).toMatchObject({ sheet: "root", child: "s2", name: "Regulator" })
     p = addSheetPin(p, added.symbol.id, "VIN", "input", "left")
     p = addSheetPin(p, added.symbol.id, "VOUT", "output", "right")
     const pins = p.sheetSymbols!.find((s) => s.id === added.symbol.id)!.pins

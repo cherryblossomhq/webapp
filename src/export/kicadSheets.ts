@@ -63,7 +63,7 @@ export function sheetTitleBlock(project: Project, sheet: string): { title: strin
   return { title: get("Title") ?? "", ...(get("Date") ? { date: get("Date") } : {}), ...(get("Rev") ? { revision: get("Rev") } : {}), ...(get("Company") ? { company: get("Company") } : {}), comments }
 }
 
-/** The file name of each sheet: the root's is the project's, the others keep the name they had, or are named after the sheet; each is its own. */
+/** The file name of each sheet: the root's is the project's, the others are named after the sheet (its first symbol's name); each is its own. */
 export function sheetFileNames(project: Project, base: string): Map<string, string> {
   const out = new Map<string, string>()
   const taken = new Set<string>([`${base}.kicad_sch`.toLowerCase()])
@@ -71,8 +71,7 @@ export function sheetFileNames(project: Project, base: string): Map<string, stri
   for (const s of sheetsOf(project)) {
     if (s.id === ROOT_SHEET) continue
     const sym = (project.sheetSymbols ?? []).find((x) => x.child === s.id)
-    const wanted = (s.file || sym?.file || sym?.name || s.id).replace(/[\\/:*?"<>|]/g, "_")
-    const stem = wanted.replace(/\.kicad_sch$/i, "") || s.id
+    const stem = (sym?.name.trim() || s.id).replace(/[\\/:*?"<>|]/g, "_")
     let name = `${stem}.kicad_sch`
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${stem}_${i}.kicad_sch`
     taken.add(name.toLowerCase())
@@ -169,9 +168,9 @@ export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: 
   out.push(`    (stroke (width ${mm6((stroke?.width ?? 0.012) * MM)}) (type ${stroke?.dash ?? "solid"})${stroke?.color ? ` ${colorNode(stroke.color)}` : ""})`)
   out.push(`    ${sym.fill ? (sym.fill.kind === "color" ? `(fill ${colorNode(sym.fill.color ?? "#000000")})` : `(fill (type ${sym.fill.kind}))`) : "(fill (color 0 0 0 0.0000))"}`)
   out.push(`    (uuid ${symbolUuid(sym)})`)
-  const fields = sym.fields?.length ? sym.fields : [{ name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0 as const, h: "left" as const, v: "bottom" as const } }, { name: "Sheetfile", value: sym.file, place: { x: 0, y: -0.05, angle: 0 as const, h: "left" as const, v: "top" as const } }]
+  const fields = sym.fields?.length ? sym.fields : [{ name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0 as const, h: "left" as const, v: "bottom" as const } }, { name: "Sheetfile", value: "", place: { x: 0, y: -0.05, angle: 0 as const, h: "left" as const, v: "top" as const } }]
   for (const f of fields) {
-    const value = f.name === "Sheetname" ? sym.name : f.name === "Sheetfile" ? (files.get(sym.child) ?? sym.file) : f.value
+    const value = f.name === "Sheetname" ? sym.name : f.name === "Sheetfile" ? (files.get(sym.child) ?? "") : f.value
     const at = toPage({ x: sym.x + f.place.x, y: sym.y + f.place.y })
     void origin
     out.push(`    (property ${quote(f.name)} ${quote(value)}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${f.place.angle})`, ...(f.place.showName ? ["      (show_name yes)"] : []), ...(f.place.noAutoplace ? ["      (do_not_autoplace yes)"] : []), `      ${effects(undefined, f.place)}`, "    )")

@@ -36,17 +36,6 @@ function freshName(p: Project, base: string): string {
   return name
 }
 
-const slug = (name: string) => name.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "sheet"
-
-/** A file for a sheet named `name` that no other sheet has (KiCad keeps each sheet in a file of its own): `Power.kicad_sch`, `Power2.kicad_sch`. */
-function freeFile(p: Project, name: string, except?: string): string {
-  const taken = new Set([...(p.sheets ?? []).filter((s) => s.id !== except).map((s) => s.file?.toLowerCase()), ...(p.sheetSymbols ?? []).filter((s) => s.child !== except).map((s) => s.file.toLowerCase())])
-  const base = slug(name)
-  let file = `${base}.kicad_sch`
-  for (let i = 2; taken.has(file.toLowerCase()); i++) file = `${base}${i}.kicad_sch`
-  return file
-}
-
 export interface BoxLike {
   minX: number
   minY: number
@@ -61,7 +50,7 @@ export function addSheet(project: Project, parent: string, box: BoxLike, name?: 
   const id = nextId(sheetIds({ ...project, sheets }), "s")
   const symbolId = nextId(symbolIds(project), "h")
   const title = name?.trim() || freshName(project, "Sheet")
-  const sheet: SchematicSheet = { id, file: freeFile(project, title) }
+  const sheet: SchematicSheet = { id }
   const symbol: SheetSymbol = {
     id: symbolId,
     sheet: parentSheet,
@@ -71,7 +60,6 @@ export function addSheet(project: Project, parent: string, box: BoxLike, name?: 
     w: Math.max(snap(box.maxX - box.minX), GRID * 4),
     h: Math.max(snap(box.maxY - box.minY), GRID * 2),
     name: title,
-    file: sheet.file!,
     pins: [],
   }
   return { project: touch({ ...project, sheets: [...sheets, sheet], sheetSymbols: [...(project.sheetSymbols ?? []), symbol] }), symbol }
@@ -135,7 +123,6 @@ export function addSheetUse(project: Project, parent: string, child: string, box
     w: first?.w ?? Math.max(snap(box.maxX - box.minX), GRID * 4),
     h: first?.h ?? Math.max(snap(box.maxY - box.minY), GRID * 2),
     name: name?.trim() || freshName(project, first?.name ?? "Sheet"),
-    file: first?.file ?? sheet.file ?? `${slug(child)}.kicad_sch`,
     // The pins are those of the sheet, as on its first symbol, along the same edges.
     pins: (first?.pins ?? []).map((p) => ({ ...p, id: p.id, x: p.x - first!.x + snap(box.minX), y: p.y - first!.y + snap(box.minY), uuid: undefined })),
   }
@@ -268,8 +255,8 @@ export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): 
   }))
 }
 
-/** What a person may change about a sheet symbol: its name and file (the sheet's too), its flags and its look. */
-export function setSheetSymbol(project: Project, id: string, patch: { name?: string; file?: string; flags?: Partial<Record<"dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromSim", boolean>> | null; fill?: SheetSymbol["fill"] | null; stroke?: SheetSymbol["stroke"] | null }): Project {
+/** What a person may change about a sheet symbol: its name, its flags and its look. */
+export function setSheetSymbol(project: Project, id: string, patch: { name?: string; flags?: Partial<Record<"dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromSim", boolean>> | null; fill?: SheetSymbol["fill"] | null; stroke?: SheetSymbol["stroke"] | null }): Project {
   const sym = project.sheetSymbols?.find((s) => s.id === id)
   if (!sym) return project
   const next: SheetSymbol = { ...sym }
@@ -280,10 +267,6 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${patch.name}${i}`
     next.name = name
     if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetname" ? { ...f, value: name } : f))
-  }
-  if (patch.file !== undefined) {
-    next.file = patch.file
-    if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetfile" ? { ...f, value: patch.file! } : f))
   }
   if (patch.flags === null) delete next.flags
   else if (patch.flags) {
@@ -297,10 +280,7 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   else if (patch.fill) next.fill = patch.fill
   if (patch.stroke === null) delete next.stroke
   else if (patch.stroke) next.stroke = patch.stroke
-  let sheets = project.sheets
-  // The file name is the sheet's: the sheets the symbol stands for have it.
-  if (patch.file !== undefined) sheets = (project.sheets ?? []).map((s) => (s.id === sym.child ? { ...s, file: patch.file } : s))
-  return touch({ ...project, ...(sheets ? { sheets } : {}), sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
+  return touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
 }
 
 /**
@@ -311,12 +291,7 @@ export function renameSheetUse(project: Project, path: string, name: string): Pr
   const title = name.trim()
   const use = knownUse(project, path)
   if (!title || !use || title === use.name) return project
-  if (use.symbol) {
-    // A file still named after the sheet (as a new sheet's is) follows the new name; one named otherwise, as KiCad's are, stays.
-    const sym = use.symbol
-    const follows = sym.file.replace(/\d*\.kicad_sch$/, "") === slug(sym.name) && usesOfSheet(project, use.sheet).length === 1
-    return setSheetSymbol(project, sym.id, { name: title, ...(follows ? { file: freeFile(project, title, use.sheet) } : {}) })
-  }
+  if (use.symbol) return setSheetSymbol(project, use.symbol.id, { name: title })
   const sheets = sheetsOf(project)
   const root = sheets.find((s) => s.id === ROOT_SHEET)!
   const { name: _old, ...plain } = root

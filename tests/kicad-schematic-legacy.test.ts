@@ -747,7 +747,7 @@ describe("KiCad 5's rules", () => {
     const sheet = "$Sheet\nS 4000 3000 1200 800\nU 5B000001\nF0 \"Sub\" 60\nF1 \"sub.sch\" 60\n$EndSheet\n"
     const r = imp(files({ "t.sch": HEAD() + sheet + END, "sub.sch": HEAD() + END }))
     expect(r.status).toBe("imported")
-    expect(r.status === "imported" && r.project.sheetSymbols?.map((s) => [s.name, s.file])).toEqual([["Sub", "sub.sch"]])
+    expect(r.status === "imported" && r.project.sheetSymbols?.map((s) => s.name)).toEqual(["Sub"])
     const b = imp(mini("Wire Bus Line\n\t0 0 100 0\n"))
     expect(b.status).toBe("imported")
     expect(b.status === "imported" && b.project.drawings?.map((d) => d.type)).toEqual(["bus"])

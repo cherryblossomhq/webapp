@@ -22,6 +22,9 @@ import { activeVariant, resolveVariant, variantSheetFlags } from "./variants"
 // the project with only that use's items in `components`, `wires`, `labels`, `drawings` and `blocks`, and `scope` set to its
 // path. A view of the root of a project with one sheet is the project itself, so nothing changes for a project drawn in the editor.
 
+/** What a sheet symbol is called: its name, or `Sheet` for one with none. */
+export const sheetSymbolName = (sym: SheetSymbol): string => sym.name || "Sheet"
+
 export const ROOT_SHEET = "root"
 
 /** What the root sheet is called until it is named: the top sheet of the schematic, which every other sheet hangs from. */
@@ -105,7 +108,7 @@ function walk(project: Pick<Project, "sheets" | "sheetSymbols">): Tree {
         continue
       }
       const path = `${use.path}/${sym.id}`
-      const name = sym.name || sym.file || sym.child
+      const name = sheetSymbolName(sym)
       const child: SheetUse = { path, sheet: sym.child, symbol: sym, parent: use.path, name, human: `${use.human}${name}/`, depth: use.depth + 1, page: sym.pages?.[path] ?? "" }
       uses.push(child)
       ancestors.push(sym.child)

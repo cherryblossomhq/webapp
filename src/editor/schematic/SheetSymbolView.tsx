@@ -3,13 +3,13 @@ import type { SheetSymbol } from "../../model/types"
 import { useSch } from "../theme"
 import { WorldText } from "../viewport"
 
-// S1 on the canvas: a sheet symbol (KiCad's rectangle with the sheet's name above it and its file below) and its pins, each a flag
+// S1 on the canvas: a sheet symbol (a rectangle with the sheet's name above it) and its pins, each a flag
 // whose shape says which way the signal goes, drawn as a hierarchical label is. Everything at the numbers the file gave.
 
 const LINE = 0.012
 const TEXT = 0.1
 
-/** A sheet symbol with its name and file, and its pins. */
+/** A sheet symbol with its name and its pins. */
 export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym: SheetSymbol; selected: boolean; hovered: boolean; px: number; openable: boolean }) {
   const sch = useSch()
   const border = sym.stroke?.color ?? sch.block
@@ -33,7 +33,6 @@ export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym:
       />
       {selected && <rect x={sym.x} y={sym.y} width={sym.w} height={sym.h} fill={sch.selectSoft} stroke="none" pointerEvents="none" />}
       <WorldText x={sym.x} y={sym.y + sym.h + 0.03} text={sym.name} size={TEXT} extent={{ x: 1, y: -1 }} fill={selected ? sch.select : sch.ink2} weight={600} />
-      <WorldText x={sym.x} y={sym.y - 0.03} text={sym.file} size={TEXT} extent={{ x: 1, y: 1 }} fill={sch.ink3} weight={500} />
       {openable && hovered && <WorldText x={sym.x + sym.w / 2} y={sym.y + sym.h / 2} text="Double-click to open" size={TEXT} extent={{ x: 0, y: 0 }} fill={sch.ink3} weight={500} />}
       {sym.flags?.dnp && (
         <g stroke={sch.danger} strokeWidth={0.036} opacity={0.85} pointerEvents="none">

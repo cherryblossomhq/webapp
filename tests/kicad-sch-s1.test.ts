@@ -20,7 +20,7 @@ describe("S1: a sheet below the root", () => {
     expect(project.sheets?.map((s) => s.id)).toEqual([ROOT_SHEET, "s1"])
     expect(project.sheetSymbols).toHaveLength(1)
     const sym = project.sheetSymbols![0]
-    expect(sym).toMatchObject({ sheet: ROOT_SHEET, child: "s1", name: "Power", file: "child.kicad_sch" })
+    expect(sym).toMatchObject({ sheet: ROOT_SHEET, child: "s1", name: "Power" })
     expect(sym.pins.map((p) => [p.name, p.shape, p.rot])).toEqual([["VIN", "input", 180]])
     expect(sym.w).toBeCloseTo(20.32 / 12.7, 5)
   })
@@ -119,8 +119,8 @@ describe("S1: the KiCad export", () => {
     const out = await kicadFiles(project)
     const names = Object.keys(out.files).filter((n) => n.endsWith(".kicad_sch"))
     expect(names).toHaveLength(2)
-    const root = Object.entries(out.files).find(([n]) => n.endsWith(".kicad_sch") && !n.startsWith("child"))!
-    expect((out.files[names.find((n) => n.startsWith("child"))!].match(/\(symbol\n/g) ?? []).length).toBe(1)
+    const root = Object.entries(out.files).find(([n]) => n.endsWith(".kicad_sch") && n !== "A.kicad_sch")!
+    expect((out.files["A.kicad_sch"].match(/\(symbol\n/g) ?? []).length).toBe(1)
     expect(root[1].match(/\(sheet\n/g)).toHaveLength(2)
     expect(out.notes.join(" ")).toMatch(/2 files/)
     const files = new Map(Object.entries(out.files).filter(([n]) => n.endsWith(".kicad_sch")))

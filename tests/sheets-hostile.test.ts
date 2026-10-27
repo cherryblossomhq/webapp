@@ -10,7 +10,7 @@ import { imp } from "./kicad-sheets-fixtures"
 
 // Sheets from a file nobody checked: loops, depth, width, garbage numbers. A named refusal or a repair, never a hang or a crash.
 
-const symbol = (id: string, sheet: string, child: string, extra: Partial<SheetSymbol> = {}): SheetSymbol => ({ id, sheet, child, x: 0, y: 0, w: 1, h: 1, name: id, file: `${id}.kicad_sch`, pins: [], ...extra })
+const symbol = (id: string, sheet: string, child: string, extra: Partial<SheetSymbol> = {}): SheetSymbol => ({ id, sheet, child, x: 0, y: 0, w: 1, h: 1, name: id, pins: [], ...extra })
 const withSheets = (symbols: SheetSymbol[]): Project => {
   const ids = [...new Set(symbols.flatMap((s) => [s.sheet, s.child]))].filter((id) => id !== "root")
   return { ...createProject("hostile"), sheets: [{ id: "root" }, ...ids.map((id) => ({ id }))], sheetSymbols: symbols }

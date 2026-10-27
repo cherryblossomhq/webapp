@@ -170,12 +170,12 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X23 over the corpus", () 
 
   for (const file of found) {
     const rel = relative(CORPUS!, file).split(String.fromCharCode(92)).join("/")
-    // KiCad's own kitchen sink has a track and an arc track on no layer, which no importer can bring in exactly: it is refused whatever it needs, so there is nothing of it to compare.
+    // KiCad's own kitchen sink has a track and an arc track on no layer and a Data Matrix barcode, which no importer can bring in exactly: it is refused whatever it needs, so there is nothing of it to compare.
     if (rel.endsWith("api_kitchen_sink.kicad_pcb")) {
       it(`${rel}: is refused for what is not X23's`, () => {
         const r = importKicadBoard(readFileSync(file), { built: ALL_EXTENSIONS, limitBytes: Infinity })
         expect(r.status).toBe("refused")
-        expect(r.status === "refused" && r.message).toMatch(/a track on/)
+        expect(r.status === "refused" && r.message).toMatch(/a track on|a datamatrix barcode/)
       })
       continue
     }

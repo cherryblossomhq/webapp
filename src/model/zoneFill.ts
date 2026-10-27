@@ -683,7 +683,10 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         if (h && !isNpth(pad)) holes.push(...inflate(h, holeGap + EXTRA))
         continue
       }
-      if (same && !isNpth(pad)) {
+      // X22: where a backdrill or post-machining cuts the pad's copper, the pour does not join it and keeps out of the hole that is cut (`zone_filler.cpp` 10.0 `:2190` and `:2507`).
+      const cut = it.cut?.[layer] ?? 0
+      if (cut > 0) holes.push(circlePath(pad.hole?.x ?? pad.x, pad.hole?.y ?? pad.y, cut / 2 + Math.max(holeGap, 0) + EXTRA))
+      if (same && !isNpth(pad) && !cut) {
         // A teardrop zone joins its pads solidly; otherwise a pad's own connection (`zone_connect`, X7) replaces the zone's (KiCad: the pad's local setting
         // comes before the footprint's and the zone's, `EvalZoneConnection`), and through-hole-only is a relief on a pad with a hole and solid on any other.
         const wanted = teardrop ? "solid" : (pad.zoneConnect ?? set.connect)
@@ -715,8 +718,11 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
       if (!on || same) continue
       holes.push(...stroke(trackPoints(it), it.width / 2 + gapTo(net) + EXTRA))
     } else if (it.kind === "via") {
-      if (!on || same) continue
+      // X22: a backdrill or post-machining that cuts the via here keeps the pour from joining it and out of the hole it cuts (`zone_filler.cpp` 10.0 `:2345` and `:2609`).
+      const cut = it.cut?.[layer] ?? 0
+      if (!on || (same && !cut)) continue
       holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gapTo(net) + EXTRA))
+      if (cut > 0) holes.push(circlePath(it.at.x, it.at.y, cut / 2 + Math.max(holeGap, 0) + EXTRA))
     } else if (it.kind === "shape") {
       if (!on) continue
       if (same && !it.what) continue
@@ -844,6 +850,8 @@ function removeIslands(
     const list: { bounds: Bounds; paths: Paths64; at: { x: number; y: number } }[] = []
     for (const { item: it, net } of recs) {
       if (net !== netId || !it.layers.includes(layer)) continue
+      // X22: copper cut round its hole on this layer is not joined to the pour.
+      if ((it.kind === "pad" || it.kind === "via") && (it.cut?.[layer] ?? 0) > 0) continue
       let paths: Paths64
       let at: { x: number; y: number }
       if (it.kind === "pad") {

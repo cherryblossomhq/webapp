@@ -25,8 +25,9 @@ const netOf = (r: Extract<KicadImportResult, { status: "imported" }>, ref: strin
 describe("the gate", () => {
   const simple = board({ nets: ['(net 0 "")', '(net 1 "GND")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0" })] })] })
 
-  // a via with protection (KiCad 10's capping, covering, plugging and filling) needs X22, which is not built
-  const rounded = board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(via (at 5 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (capping yes) (net 0))'] })
+  // a barcode needs X25, which is not built (X22, via protection, is)
+  const text = '(barcode)'
+  const rounded = board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), text] })
 
   it("refuses a board that uses what the editor cannot hold yet, naming it, and imports nothing", () => {
     const r = importKicadBoard(rounded)
@@ -34,16 +35,16 @@ describe("the gate", () => {
     if (r.status !== "refused") return
     expect(r.reason).toBe("unsupported")
     expect(r.message).toMatch(/^This board uses .+, which (is|are) not supported yet\.$/)
-    expect(r.message).toMatch(/via protection/)
-    expect(r.needs.map((n) => n.ext)).toEqual(["X22"])
+    expect(r.message).toMatch(/tables, barcodes/)
+    expect(r.needs.map((n) => n.ext)).toEqual(["X25"])
     expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused")).toBe(true)
   })
 
   it("names every extension a board needs in the one sentence", () => {
-    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(via (at 5 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (capping yes) (net 0))', '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))', '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }))
+    const r = importKicadBoard(board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), text, '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))', '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }))
     // X13 (nets on tracks and vias) and X9 (text) are built: a board's tracks and its text are no reason to refuse it; a font of the computer is
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X19", "X22"])
-    if (r.status === "refused") expect(r.message).toMatch(/text in a font other than KiCad's own.+via protection.+, which are not supported yet\./)
+    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X19", "X25"])
+    if (r.status === "refused") expect(r.message).toMatch(/text in a font other than KiCad's own.+tables, barcodes.+, which are not supported yet\./)
   })
 
   it("a board that needs nothing the editor lacks is imported (every extension built, for the test)", () => {
@@ -62,7 +63,7 @@ describe("the gate", () => {
     expect(a.unknownAtoms.size).toBe(0)
     const sum = a.imported + [...a.notNeeded.values()].reduce((x, y) => x + y, 0) + [...a.pending.values()].reduce((x, y) => x + y, 0) + a.reported
     expect(sum).toBe(a.total)
-    expect(a.pending.get("X22")).toBeGreaterThan(0)
+    expect(a.pending.get("X25")).toBeGreaterThan(0)
     // text is built: its nodes are counted as imported, not left pending
     expect(a.pending.get("X9")).toBeUndefined()
   })

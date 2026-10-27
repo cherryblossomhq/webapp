@@ -20,7 +20,8 @@ import { defaultGraphicId } from "../../shapeCodec"
 import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
 import { convertBoardText, convertPartTexts, landTextBox, type PartPlacement, type TextConversion } from "./texts"
 import { convertDimension } from "./dimensions"
-import { groupParents, newGroupStats, resolveGroups } from "./groups"
+import { groupParents, newGroupStats, resolveGroups, type RawGroup } from "./groups"
+import { convertGenerator, convertNetChains, viaDrilling } from "./build22"
 import { convertImage, type KeptFile } from "./images"
 import { defaultDimensionId, defaultGroupId, defaultImageId, defaultPartGroupId } from "../../dimCodec"
 import { defaultTextId } from "../../textCodec"
@@ -34,7 +35,7 @@ import { importRulesX10 } from "./netClassImport"
 import { convertPartZones, convertZones, reportPartZones, reportZones } from "./zones"
 import { buildStack, layerMapOf, layersOfNames } from "./layers"
 import { copperLayers, viaBetween } from "../../stack"
-import type { KicadBoard, KicadFootprint } from "./types"
+import type { KicadBoard, KicadFootprint, KicadVia } from "./types"
 import type { List } from "./sexpr"
 import { kid, kids, strAt } from "./sexpr"
 
@@ -285,6 +286,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const lose = (what: string) => {
     if (!lossy.includes(what)) lossy.push(what)
   }
+  /** What X21 and X22 kept in the project that KiCad itself ignores or could not be brought, for the report. */
+  const x22Notes = new Set<string>()
   const title = board.properties.find((p) => p.key === "Title")?.value
   let project: Project = createProject(options.name ?? title ?? "Imported KiCad board", "")
 
@@ -377,7 +380,9 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     if (uuid !== null && !boardRefs.has(uuid)) boardRefs.set(uuid, ids)
   }
   /** The group each id belongs to, for the tracks: a track is joined with its neighbours only inside one group. */
-  const boardParents = groupParents(board.groups)
+  // X21: a generated item is a group of the tracks and vias it made (KiCad's `PCB_GENERATOR` is a `PCB_GROUP`), resolved after the plain groups (`resolveGroups`, parser `:1706-1710`).
+  const generatorGroups: RawGroup[] = board.generators.map((g) => ({ name: g.name, uuid: g.uuid, locked: g.locked, libId: null, members: g.members, node: g.node }))
+  const boardParents = groupParents([...board.groups, ...generatorGroups])
   const groupStats = newGroupStats()
   const compOf = new Map<KicadFootprint, ComponentInstance>()
   const landOrigins = new Map<KicadFootprint, { shapes: number[]; texts: number[] }>()
@@ -629,7 +634,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     traces.push(t)
     addRef(uuidOf(a.node), t.id)
   }
-  const vias: Via[] = board.vias.map((v) => {
+  const convertVia = (v: KicadVia): Via => {
     const net = v.netRaw ? labelText.get(v.netRaw) : undefined
     const via: Via = { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
     // X5: a via that is not a through via says which layers it joins. KiCad sorts the pair front to back and calls a `blind` between two inner layers buried.
@@ -665,8 +670,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
         via.stack = { layers: custom }
       }
     }
+    Object.assign(via, viaDrilling(v, layers, (what) => x22Notes.add(what)))
     return via
-  })
+  }
+  const vias: Via[] = board.vias.map(convertVia)
   board.vias.forEach((v, i) => addRef(uuidOf(v.node), vias[i].id))
   // Things a group cannot hold (zones: the project holds them since X3, but a group's members are parts, tracks, vias, drawings, texts, dimensions and images; tables, barcodes and the rest) are known to the file: a group that lists one says so, not that it names nothing.
   for (const z of board.zones) addRef(uuidOf(z.node))
@@ -747,7 +754,25 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     }
     addRef(k.uuid, ...(made ? [made.image.id] : []))
   }
-  const boardGroups = resolveGroups(board.groups, boardRefs, defaultGroupId, groupStats)
+  // X21: the generated items (tuning patterns, via stacks, via stitching) are groups with what made them. KiCad does not keep a tuning pattern or a via stack with no members (`parseGENERATOR`, parser `:8777`).
+  const generated: RawGroup[] = []
+  const droppedGenerators: string[] = []
+  board.generators.forEach((g, i) => {
+    if (!g.members.length && (g.kind === "tuning_pattern" || g.kind === "via_stack")) {
+      groupStats.empty++
+      addRef(g.uuid)
+      return
+    }
+    const made = convertGenerator(g, layers, convertVia)
+    if ("why" in made) {
+      droppedGenerators.push(made.why)
+      addRef(g.uuid)
+      return
+    }
+    generatorGroups[i].gen = made.gen
+    generated.push(generatorGroups[i])
+  })
+  const boardGroups = resolveGroups([...board.groups, ...generated], boardRefs, defaultGroupId, groupStats)
   // A part's groups: what they list are the part's own pads, drawings and texts, by their place in its land and in its list of texts.
   for (const fp of board.footprints) {
     const comp = compOf.get(fp)
@@ -770,6 +795,14 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const groups = resolveGroups(fp.groups, refs, defaultPartGroupId, groupStats)
     if (groups.length) partGroups.set(comp.id, groups)
   }
+
+  // X21: net chains, by the project's names for the nets and the pads' places in their parts.
+  const padPlaces = new Map<string, { component: string; pad: number }>()
+  for (const fp of board.footprints) {
+    const comp = compOf.get(fp)
+    if (comp) fp.pads.forEach((p, i) => (uuidOf(p.node) !== null ? padPlaces.set(uuidOf(p.node)!, { component: comp.id, pad: i }) : undefined))
+  }
+  const netChains = convertNetChains(board, (raw) => labelText.get(raw) ?? decodeNetName(raw).trim(), (u) => padPlaces.get(u))
 
   // ---------- the board ----------
   // A rectangle or a rounded rectangle is the board's own shape, as ever. Any other outline (X2) is held as the paths it is: loops with their cutouts, and what does not close, kept as drawn.
@@ -820,11 +853,13 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     ...(partGroups.size ? { components: project.components.map((c) => (partGroups.has(c.id) ? { ...c, groups: partGroups.get(c.id)! } : c)) } : {}),
     ...(dimensions.length ? { dimensions } : {}),
     ...(boardGroups.length ? { groups: boardGroups } : {}),
+    ...(netChains.length ? { netChains } : {}),
     ...(images.length ? { images } : {}),
     properties,
   }
   reportTexts(project, textCount, report)
   reportDimensionsGroupsImages(board, dimensions, groupStats, report)
+  reportX21X22(boardGroups, droppedGenerators, x22Notes, report)
 
   // ---------- every pad on the net the file gives it ----------
   const checked = verifyNets(project, padFacts, labelText, report)
@@ -838,6 +873,28 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   if (Object.keys(noConnect).length) project = { ...project, importMarks: { ...project.importMarks, noConnect } }
   const pins = components.reduce((n, c) => n + (padNets.get(c.id)?.size ?? 0), 0)
   return { project, files: [...keptFiles.values()], lossy, stats: { parts: components.length, lands: lands.size, pins, nets: checked.nets, padsWithNet: withNet, copperNetMismatches }, footprintComponents }
+}
+
+// ---------- X21 and X22 ----------
+
+/** What the report says of generated items, via protection, drills and post-machining, pad lengths and net chains that came in, and what KiCad itself ignores. */
+function reportX21X22(groups: PcbGroup[], dropped: string[], notes: ReadonlySet<string>, report: ImportReport) {
+  const word = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+  if (dropped.length) {
+    report.entries.push({ code: "generator-not-brought", severity: "not-brought", object: word(dropped.length, "generated item"), why: `${[...new Set(dropped)].slice(0, 3).join("; ")}. Its tracks and vias came in as plain ones, with nothing to tune again.`, count: dropped.length, items: dropped })
+  }
+  const kept = groups.filter((g) => g.gen)
+  const other = kept.filter((g) => g.gen!.kind !== "tuning_pattern")
+  if (other.length) {
+    report.entries.push({
+      code: "generator-via-kept",
+      severity: "note",
+      object: word(other.length, "generated via stack or via stitching group", "generated via stack or via stitching groups"),
+      why: "A via stack or via stitching is kept as a group with its settings, and its vias are ordinary vias. The editor does not lay out stitching or stacks again; take the group apart to edit its vias one by one. KiCad 9 has no such item, so a file written for it carries the vias only.",
+      count: other.length,
+    })
+  }
+  for (const n of notes) report.entries.push({ code: "drill-ignored", severity: "note", object: n, why: "KiCad's own reader keeps it but it drills nothing, so the project does not hold it." })
 }
 
 // ---------- dimensions, groups and images ----------

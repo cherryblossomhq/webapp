@@ -1,5 +1,6 @@
 import { rotate90, round } from "../lib/geometry"
 import { dimensionBox, imageBox, lockedByGroup, memberOfSelection, moveDimension, moveImages, pivotOf, rotateDimension } from "./boardObjects"
+import { carryGenerators } from "./generators"
 import { findPart } from "./library"
 import { isPhysical, pcbCourtyard } from "./instances"
 import { moveShape } from "./shapeOps"
@@ -60,6 +61,8 @@ export function moveObjects(project: Project, selection: string[], dx: number, d
   if (x.size) next = { ...next, texts: next.texts.map((q) => (x.has(q.id) && q.layer !== undefined ? { ...q, x: r6(q.x + dx), y: r6(q.y + dy) } : q)) }
   if (m.size && next.dimensions) next = { ...next, dimensions: next.dimensions.map((q) => (m.has(q.id) ? moveDimension(q, dx, dy) : q)) }
   if (i.size) next = moveImages(next, [...i], dx, dy)
+  // X21: a tuning pattern or other generated item that went whole takes its layout points with it.
+  next = carryGenerators(next, new Set([...c, ...t, ...v, ...g, ...x, ...m, ...i]), (p) => ({ x: p.x + dx, y: p.y + dy }))
   return next === project ? project : touch(next)
 }
 
@@ -154,5 +157,6 @@ export function rotateObjects(project: Project, selection: string[]): TurnResult
     ...(project.dimensions ? { dimensions: project.dimensions.map((q) => (m.has(q.id) ? rotateDimension(q, pivot) : q)) } : {}),
     ...(project.images ? { images: project.images.map((q) => (i.has(q.id) ? { ...q, ...turn({ x: q.x, y: q.y }) } : q)) } : {}),
   }
-  return { project: touch(next), notes }
+  const turned = carryGenerators(next, new Set([...c, ...t, ...v, ...g, ...x, ...m, ...i]), turn)
+  return { project: touch(turned), notes }
 }

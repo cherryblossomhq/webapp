@@ -268,6 +268,13 @@ export interface PadDef {
    * follows the mask layers of the pad (`layers.mask`) as ever.
    */
   tent?: { top?: boolean; bottom?: boolean }
+  /** X22: a backdrill and a tertiary drill of the pad's hole, and a counterbore or countersink at the part's own face (`front`) and the far one (`back`). */
+  backdrill?: Backdrill
+  tertiary?: Backdrill
+  post?: { front?: PostMachining; back?: PostMachining }
+  /** X21: the length of wire inside the package from the pad to the die, in mm, and the time a signal takes (KiCad 10's `die_delay`), in picoseconds: a net's length report adds them. */
+  dieLength?: number
+  dieDelay?: number
 }
 
 /** What one layer of a pad stack has where it is not the pad's own: its shape and size and the pour settings that go with them. */
@@ -439,6 +446,26 @@ export interface PcbGroup {
   locked?: true
   /** The design block the group was made from (KiCad 10). */
   lib?: string
+  /** X21: the group is a generated item (a tuning pattern, a via stack, via stitching): what made it, so it can be tuned again or taken apart. */
+  gen?: PcbGenerator
+}
+
+/** The value of a generator's parameter, as KiCad writes them: a number (mm, or a plain count), yes or no, a string, a point, a list of points, or a list of cells (index pairs). */
+export type GenValue = number | boolean | string | { xy: [number, number] } | { pts: [number, number][] } | { cells: [number, number][] }
+
+/**
+ * X21, KiCad's `generated` (`PCB_GENERATOR`): a group of tracks (a tuning pattern) or vias (a via stack, via stitching) with the parameters that made them. The members
+ * are the group's; moving or turning the group moves and turns every point in `props`, and taking the group apart (`ungroup`) leaves its members as plain tracks and vias.
+ * `props` is KiCad's own property list, keys as it names them (a tuning pattern's `target_length`, `min_spacing`, `base_line`...), points in the board's frame as the project has it
+ * (y up), numbers in mm (a time in ps).
+ */
+export interface PcbGenerator {
+  /** KiCad's `type`: `tuning_pattern`, `via_stack`, `via_stitch`. */
+  kind: string
+  layer: CopperLayer
+  props: Record<string, GenValue>
+  /** Via stitching's `templates`: the via it lays out, by name, at the origin. */
+  templates?: { name: string; via: Omit<Via, "id"> }[]
 }
 
 /** A bitmap on a layer (KiCad's reference image). Its bytes are a model file kept by the host (`store/modelFiles.ts`); the project holds only their id. */
@@ -1110,6 +1137,42 @@ export interface Via {
    * front, inner and back mode (the front is `diameter`); `layers` is its custom mode, a diameter for every copper layer but the front.
    */
   stack?: { inner: number; back: number } | { layers: Partial<Record<CopperLayer, number>> }
+  /** X22: the via's own protection (IPC-4761), each part of it where the via says; a part it does not say follows the board's (`DesignRules.viaProtect`). */
+  protect?: ViaProtection
+  /** X22: a larger bit that removes the barrel between two layers, from the front (KiCad's `backdrill`) and from the back (`tertiary_drill`). */
+  backdrill?: Backdrill
+  tertiary?: Backdrill
+  /** X22: a counterbore or countersink at the via's front and back (KiCad's `front_post_machining` and `back_post_machining`). */
+  post?: { front?: PostMachining; back?: PostMachining }
+}
+
+/**
+ * X22, via protection after IPC-4761 (KiCad 10): covering and plugging of each side, capping and filling of the hole. Every part is `true` or `false` where it is
+ * said and absent where it is not, which is the board's rule (`DesignRules.viaProtect`, where an absent part is off). A tri-state, as KiCad's `std::optional<bool>`.
+ */
+export interface ViaProtection {
+  cap?: boolean
+  fill?: boolean
+  cover?: { front?: boolean; back?: boolean }
+  plug?: { front?: boolean; back?: boolean }
+}
+
+/**
+ * X22: a backdrill (KiCad's `backdrill`, from the front side, or `tertiary_drill`, from the back): a bit of `size` that drills out the barrel of a via or a pad's hole
+ * from layer `from` to layer `to`, both included. On a pad the layers are those of a board seen from the part's own side, as `PadStack` has them.
+ */
+export interface Backdrill {
+  size: number
+  from: CopperLayer
+  to: CopperLayer
+}
+
+/** X22: a counterbore or countersink at one end of a hole (KiCad's `front_post_machining`): its diameter, depth and, for a countersink, the angle at the tip in degrees; absent where the file says nothing. */
+export interface PostMachining {
+  mode: "counterbore" | "countersink"
+  size?: number
+  depth?: number
+  angle?: number
 }
 
 /** How a via that is not a through via is told apart: a blind one has an outer end, a buried one has two inner ends, a micro via is a short blind one. */
@@ -1757,6 +1820,8 @@ export interface DesignRules {
   /** X5: what the board allows (KiCad 5's `uvias_allowed` and `blind_buried_vias_allowed`). Absent: allowed, as KiCad starts a board. A via of a kind the board does not allow is a check error. */
   microViasAllowed?: boolean
   blindBuriedViasAllowed?: boolean
+  /** X22: what the board does to a via that does not say (KiCad 10's `setup (covering ...) (plugging ...) (capping ...) (filling ...)`). Absent: nothing is on. */
+  viaProtect?: ViaProtection
 }
 
 /** A via size: pad diameter and drill, in mm. */
@@ -1918,6 +1983,8 @@ export interface Project {
   groups?: PcbGroup[]
   /** Reference images, which are bitmaps held by the host's model file store. */
   images?: ReferenceImage[]
+  /** X21: KiCad's net chains (a run of nets through series parts, tuned as one): by name, in file order. */
+  netChains?: NetChain[]
   board: BoardDef
   rules: DesignRules
   /** Functional blocks of the schematic, each drawn as a titled frame around its parts. */
@@ -1960,6 +2027,13 @@ export interface Project {
    * connect (`ComponentInstance.nc`) by component id.
    */
   importMarks?: { checks?: string[]; noConnect?: Record<string, string[]> }
+}
+
+/** X21: a net chain (KiCad 11): the nets it runs through, in order, and the pads it ends on, as a part's id and the pad's place in its land. */
+export interface NetChain {
+  name: string
+  nets: string[]
+  terminals?: { component: string; pad: number }[]
 }
 
 export interface PinRef {

@@ -15,7 +15,7 @@ import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { arcArcDistance, arcBox, arcOf, arcPolyline, isArcTrace, pointArcDistance, segmentArcDistance, type ArcTrack } from "./arcTracks"
 import { copperLayers, layerOfKicadName, viaDiameterOn, viaLayers } from "./stack"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
-import { hasCourtyard, isNpth, maskSides, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { componentFootprint, hasCourtyard, isNpth, maskSides, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
 import { maskMargin } from "./padOpening"
 import { holeCentre, padBox, padCopper, padEdgeDistance, padRingsOf, padRingWidth, pointPadDistance, segmentPadDistance } from "./padDistance"
 import { classIndex, hasNetClasses } from "./netClasses"
@@ -30,6 +30,8 @@ import { worldShapes } from "./shapeItems"
 import { segEnd, shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper } from "./shapes"
 import { layerText, worldTexts } from "./texts"
 import type { BoardDef, BoardShape, ComponentInstance, CopperLayer, Project, Vec2, Via } from "./types"
+import { lengthFindings } from "./netLengths"
+import { holeCuts, padInBoardFrame } from "./machining"
 
 export { pointPadDistance, segmentPadDistance }
 
@@ -37,7 +39,7 @@ export { pointPadDistance, segmentPadDistance }
 export const BOARD_OWNER = "#board"
 
 export type CopperItem =
-  | { kind: "pad"; id: string; pad: WorldPad; netId: string | null; layers: CopperLayer[]; box: Box; unflashed?: CopperLayer[] }
+  | { kind: "pad"; id: string; pad: WorldPad; netId: string | null; layers: CopperLayer[]; box: Box; unflashed?: CopperLayer[]; cut?: Partial<Record<CopperLayer, number>> }
   | {
       kind: "segment"
       id: string
@@ -65,6 +67,8 @@ export type CopperItem =
       netId?: string | null
       /** X1: the layers of its span where the via has no copper because nothing connects there (see `pruneUnused`). */
       unflashed?: CopperLayer[]
+      /** X22: the layers where a backdrill or post-machining cuts the via's copper, with the size of the hole there (`holeCuts`). */
+      cut?: Partial<Record<CopperLayer, number>>
     }
   | {
       /**
@@ -123,6 +127,7 @@ export interface DrcViolation {
     | "via-in-pad"
     | "mask-bridge"
     | "floating-copper"
+    | "length"
     | "decoupling"
     | "keepout"
   message: string
@@ -288,13 +293,18 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
   const idOf = (name: string | undefined) => (name && netByName ? (netByName.get(name.trim()) ?? null) : null)
   const stack = copperLayers(project.board)
   const count = stack.length
+  const machined = !!project.footprints?.some((f) => f.pads.some((p) => p.backdrill || p.tertiary || p.post))
   for (const c of resolvedComponents(project)) {
     if (!c.pcb.placed || !onBoard(c)) continue
+    const landPads = machined ? componentFootprint(c)?.pads : undefined
     pcbPads(c, count).forEach((pad, i) => {
       const netId = pad.pin ? (sch.pinNet.get(pinKey(c.id, pad.pin)) ?? null) : null
       // A pad stack (X1): a layer with a shape of its own is an item of its own, joined to the rest of the pad by its pin.
       const own = pad.variants ? pad.layers.filter((l) => !pad.variants![l]) : pad.layers
-      if (own.length) items.push({ kind: "pad", id: `pad:${c.id}:${i}`, pad, netId, layers: own, box: padBox(pad) })
+      // X22: where a backdrill or post-machining cuts the pad's copper round its hole.
+      const land = landPads?.[i]
+      const cut = land && (land.backdrill || land.tertiary || land.post) ? holeCuts(project.board, { drill: land.holeDiameter ?? 0, ...padInBoardFrame(land, c.pcb.side === "bottom", count) }, own) : undefined
+      if (own.length) items.push({ kind: "pad", id: `pad:${c.id}:${i}`, pad, netId, layers: own, box: padBox(pad), ...(cut ? { cut } : {}) })
       for (const [layer, v] of Object.entries(pad.variants ?? {}) as [CopperLayer, WorldPad][]) items.push({ kind: "pad", id: `pad:${c.id}:${i}@${layer}`, pad: v, netId, layers: [layer], box: padBox(v) })
     })
   }
@@ -358,6 +368,8 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
       if (g) g.push(l)
       else groups.set(d, [l])
     }
+    // X22: where a backdrill or post-machining cuts the via's copper.
+    const cut = v.backdrill || v.tertiary || v.post ? holeCuts(project.board, { drill: v.drill, backdrill: v.backdrill, tertiary: v.tertiary, post: v.post }, span) : undefined
     let k = 0
     for (const [diameter, layers] of groups) {
       const r = diameter / 2
@@ -370,6 +382,7 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
         layers,
         box: { minX: v.x - r, minY: v.y - r, maxX: v.x + r, maxY: v.y + r },
         ...(v.routedNet ? { netId: idOf(v.routedNet) } : {}),
+        ...(cut ? { cut: Object.fromEntries(Object.entries(cut).filter(([l]) => layers.includes(l as CopperLayer))) as NonNullable<typeof cut> } : {}),
       })
       k++
     }
@@ -978,6 +991,13 @@ export function analyzePcb(
       message: `${d.cap.ref} is ${d.gap.toFixed(1)} mm from ${d.chip.ref} pin ${d.pin} (${d.pinName}); aim for under ${DECOUPLING_WARN_MM} mm`,
       at: { x: d.cap.pcb.x, y: d.cap.pcb.y },
     })
+  }
+
+  // X21: a tuning pattern whose net is no longer the length it was tuned to.
+  if (project.groups?.some((g) => g.gen?.kind === "tuning_pattern")) {
+    for (const f of lengthFindings(project, sch, traceNet, viaNet)) {
+      push({ severity: "warning", kind: "length", message: `Net ${f.net} is ${f.total.toFixed(3)} mm (${f.detail}); its tuning pattern wants ${f.min.toFixed(3)} to ${f.max.toFixed(3)} mm`, at: f.at })
+    }
   }
 
   manufacturability(project, items, find, push)

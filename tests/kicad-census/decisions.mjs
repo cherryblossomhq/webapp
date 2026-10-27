@@ -45,7 +45,7 @@ export const RULES = [
   rule("footprint>units>unit>pins(?:>num)?", "extend", "-", { ext: "X23" }),
   rule("(?:footprint>)?group>lib_id", "extend", "-", { ext: "X12", note: "the design block a group was made from (KiCad 10)" }),
   rule("(?:footprint>)?zone>(?:link|connected_routing|group_items|locked_items|other_items|start_end_only|driving|all|addsublayer)", "extend", "-", { ext: "X20", note: "rule area and copy-layout options (KiCad 9 and 10)" }),
-  rule("net_chains(?:>(?:net_chain(?:>(?:name|nets|terminal_pad|net_class|members))?))?", "extend", "-", { ext: "X21", note: "net chains for length tuning (KiCad 11 development)" }),
+  rule("net_chains(?:>.*)?", "extend", "Project.netChains", { ext: "X21", note: "net chains for length tuning (KiCad 11 development): their nets by name and their terminal pads" }),
   rule("footprint>pad>(?:terminal_pad|bevelled|thru)", "report", "-", { note: "a word of KiCad's token list that no release writes in a pad: KiCad 10's own pad parser stops at it (parsePAD, pcb_io_kicad_sexpr_parser.cpp 10.0.0 `:6366`, \"Expecting\"), so such a file does not load there either" }),
   rule("footprint>pad>sim_electrical_type|footprint>attr>exclude_from_sim", "report", "-", { note: "simulation roles of pads and parts (KiCad 11 development); this editor does no circuit simulation on the board" }),
   rule("grid_item(?:>(?:at|polar|linear|extent|spacing|tick_interval|affects|affects>(?:cursor|routing|placement)|layer|uuid))?", "report", "-", { note: "grid items on the board (KiCad 11 development, stamp 20260728): not released, the format may change" }),
@@ -102,7 +102,8 @@ export const RULES = [
   rule("via>teardrops(?:>.*)?", "not-needed", "-", { note: "the settings KiCad reads when it generates teardrops (Edit, Teardrop, Add); the teardrops it generated are zones of the board, which are imported" }),
   rule("via>zone_layer_connections", "extend", "Via.zoneLayers", { ext: "X5", note: "the layers a via with unused layers removed connects to zones on (KiCad 9)" }),
   rule("via>(?:capping|covering|plugging|filling)(?:>(?:front|back))?", "extend", "-", { ext: "X22", note: "via protection (KiCad 10)" }),
-  rule("via>(?:backdrill|tertiary_drill)(?:>.*)?", "extend", "-", { ext: "X22", note: "backdrill specifications" }),
+  rule("via>(?:backdrill|tertiary_drill)(?:>.*)?", "extend", "Via.backdrill, tertiary", { ext: "X22", note: "backdrill specifications" }),
+  rule("via>(?:front_post_machining|back_post_machining)(?:>(?:size|depth|angle))?", "extend", "Via.post", { ext: "X22", note: "counterbore or countersink at a via's front and back (KiCad 10)" }),
 
   // ---- zones ----
   rule("(?:footprint>)?zone", "native", "Zone: a polygon or the whole board, on one layer or both", { effort: "L", note: "a copper zone, a keepout or rule area, or a teardrop" }),
@@ -191,7 +192,7 @@ export const RULES = [
   // ---- the rest of the board ----
   rule("group(?:>.*)?", "extend", "SchematicBlock is schematic-only", { ext: "X12" }),
   rule("image(?:>.*)?", "extend", "-", { ext: "X14", note: "reference image: a bitmap on a layer" }),
-  rule("generated(?:>.*)?", "extend", "-", { ext: "X21", note: "tuning patterns and via arrays: kept as a named group of tracks with their parameters, so a pattern can be re-tuned or taken apart" }),
+  rule("generated(?:>.*)?", "extend", "PcbGroup.gen", { ext: "X21", note: "tuning patterns, via stacks and via stitching: kept as a named group of tracks or vias with their parameters, so a pattern can be re-tuned or taken apart" }),
 ]
 
 /** The first rule that covers the whole path, or null. `module` is `footprint`. */
@@ -241,6 +242,7 @@ export const ATOMS = [
   atoms("(?:module|footprint)>pad>property", ["pad_prop_bga", "pad_prop_fiducial_loc", "pad_prop_fiducial_glob", "pad_prop_castellated", "pad_prop_testpoint", "pad_prop_heatsink", "pad_prop_mechanical", "pad_prop_pressfit"]),
   atoms("(?:module|footprint)>pad>sim_electrical_type", ["source", "sink", "bidirectional", "passive", "none"]),
   atoms("(?:module|footprint)>pad>(?:front|back)_post_machining", ["counterbore", "countersink"]),
+  atoms("via>(?:front|back)_post_machining", ["counterbore", "countersink"]),
   atoms("(?:(?:module|footprint)>fp|gr)_[a-z_]+>(?:start|end)_shape>style", ["arrow", "arrow_open", "square", "round", "diamond", "dot"]),
   atoms("(?:(?:module|footprint)>)?zone>fill>thieving>type", ["dots", "squares", "hatch"]),
   atoms("(?:module|footprint)>pad>padstack>mode", ["normal", "front_inner_back", "custom"]),

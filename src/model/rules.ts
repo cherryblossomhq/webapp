@@ -1,5 +1,6 @@
 import { normalizeDefaultClass, normalizeNetClasses } from "./netClasses"
 import { defaultStackup } from "./stack"
+import { boardProtection, readProtection } from "./viaCodec"
 import type { BoardDef, DesignRules, DiffPairSize, Project, StackRow, ThermalRelief, ViaSize } from "./types"
 
 /** What a typical two-layer fab makes without extra charge, and the sizes new copper gets. */
@@ -141,6 +142,11 @@ function normalizeNetClassRules(rules: DesignRules) {
     else delete rules[key]
   }
   for (const key of ["microViasAllowed", "blindBuriedViasAllowed"] as const) if (typeof rules[key] !== "boolean") delete rules[key]
+  // X22: the board's via protection, holding only what is switched on (an absent part is off)
+  const on = readProtection(rules.viaProtect)
+  const boardRule = on ? boardProtection(on) : undefined
+  if (boardRule) rules.viaProtect = boardRule
+  else delete rules.viaProtect
 }
 
 export const THERMAL_RELIEF_OPTIONS: { value: ThermalRelief; label: string; title: string }[] = [

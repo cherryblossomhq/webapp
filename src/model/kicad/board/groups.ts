@@ -8,7 +8,7 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of
 // the GNU General Public License along with this program; if not, see <https://www.gnu.org/licenses/>.
 
-import type { PcbGroup } from "../../types"
+import type { PcbGenerator, PcbGroup } from "../../types"
 import type { KicadGroup } from "./types"
 
 /** What became of the members the file lists. */
@@ -29,7 +29,10 @@ export const newGroupStats = (): GroupStats => ({ unresolved: 0, notBrought: 0, 
 
 type Member = { item: string } | { group: number }
 
-function simulate(raw: KicadGroup[], refs: Map<string, string[]>, stats: GroupStats): { held: Member[][]; parent: Map<string, number> } {
+/** A group as the file has it, with what made it when it is a generated item (X21): KiCad's `PCB_GENERATOR` is a `PCB_GROUP`. */
+export type RawGroup = KicadGroup & { gen?: PcbGenerator }
+
+function simulate(raw: RawGroup[], refs: Map<string, string[]>, stats: GroupStats): { held: Member[][]; parent: Map<string, number> } {
   const byUuid = new Map<string, number>()
   raw.forEach((g, i) => g.uuid !== null && !byUuid.has(g.uuid) && byUuid.set(g.uuid, i))
   const held: Member[][] = raw.map(() => [])
@@ -48,6 +51,8 @@ function simulate(raw: KicadGroup[], refs: Map<string, string[]>, stats: GroupSt
     }
     const key = keyOf(m)
     const was = parent.get(key)
+    // A track of the file that is several segments is one polyline of the project, and each segment names it: that is the group holding it once, not a move.
+    if (was === to) return
     if (was !== undefined) {
       held[was] = held[was].filter((x) => keyOf(x) !== key)
       stats.moved++
@@ -72,7 +77,7 @@ function simulate(raw: KicadGroup[], refs: Map<string, string[]>, stats: GroupSt
 }
 
 /** The group (by its place in the file) that holds each id the file lists, after the groups have taken items from each other: what a track is joined with its neighbours by. */
-export function groupParents(raw: KicadGroup[]): Map<string, number> {
+export function groupParents(raw: RawGroup[]): Map<string, number> {
   const refs = new Map<string, string[]>()
   for (const g of raw) for (const m of g.members) refs.set(m, [m])
   return simulate(raw, refs, newGroupStats()).parent
@@ -82,7 +87,7 @@ export function groupParents(raw: KicadGroup[]): Map<string, number> {
  * The groups of a file as the project's: `refs` says what each id of the file is in the project (a list of project ids, empty for something the project
  * does not hold) and has no entry for an id that names nothing. A group's members come out in the file's order, a member that is a group as that group's id.
  */
-export function resolveGroups(raw: KicadGroup[], refs: Map<string, string[]>, defaultId: (place: number) => string, stats: GroupStats): PcbGroup[] {
+export function resolveGroups(raw: RawGroup[], refs: Map<string, string[]>, defaultId: (place: number) => string, stats: GroupStats): PcbGroup[] {
   const { held } = simulate(raw, refs, stats)
   // A group with nothing in it, or only groups with nothing in them, is not kept.
   const alive = new Array<boolean | undefined>(raw.length)
@@ -99,6 +104,7 @@ export function resolveGroups(raw: KicadGroup[], refs: Map<string, string[]>, de
       members: held[i].flatMap((m) => ("item" in m ? [m.item] : finalId.has(m.group) ? [finalId.get(m.group)!] : [])),
       ...(g.locked ? { locked: true as const } : {}),
       ...(g.libId !== null ? { lib: g.libId } : {}),
+      ...(g.gen ? { gen: g.gen } : {}),
     }
   })
 }

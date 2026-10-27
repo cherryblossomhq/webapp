@@ -79,6 +79,8 @@ export function importRulesX10(board: KicadBoard, labelText: Map<string, string>
     out.tentVias = board.tenting.front && board.tenting.back
     if (board.tenting.front !== board.tenting.back) out.tentSides = { ...board.tenting }
   }
+  // X22: what the board does to a via that does not say (KiCad 10's covering, plugging, capping and filling); only what is switched on.
+  if (board.viaProtect) out.viaProtect = board.viaProtect
   const { through_hole_min: holeMin, via_min_drill: viaMin } = setup
   if (positive(holeMin) && positive(viaMin) && Math.abs(holeMin - viaMin) > 1e-9) out.minViaDrill = viaMin
 

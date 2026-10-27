@@ -29,7 +29,7 @@ export const PLAIN_NAMES: Record<string, string> = {
   X15: "part flags (virtual, board only, not in the parts list or position files, do not populate) and net ties",
   X19: "text in a font other than KiCad's own, text outlines and embedded fonts",
   X20: "placement rule areas and component classes",
-  X21: "tuning patterns and pad lengths",
+  X21: "tuning patterns, pad lengths and net chains",
   X22: "via protection, backdrill and post-machining",
   X23: "variants, units and points",
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width and tracks exposed through the solder mask",

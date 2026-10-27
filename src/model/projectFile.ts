@@ -1,6 +1,8 @@
 import { normalizeAngle } from "../lib/geometry"
 import { cleanBlockName } from "./blocks"
 import { clean, DEFAULT_TEXT_SIZE, isDrawingColor, isLineDash, isLineWeight } from "./drawings"
+import { normalizeNetChains } from "./netChains"
+import { hasViaX22, packVias, readViaX22, unpackVias } from "./viaCodec"
 import { packDimensions, packGroups, packImages, defaultPartGroupId, unpackDimensions, unpackGroups, unpackImages, type DimensionStyleDef } from "./dimCodec"
 import { buildCustomPart, customPartProblems, registerProjectParts } from "./customParts"
 import { registerProjectFootprints } from "./footprints"
@@ -222,6 +224,8 @@ export function serializeProject(project: Project, { pretty = false } = {}): str
     ...(dims.dimStyles ? { dimStyles: dims.dimStyles } : {}),
     ...(dims.dm ? { dm: dims.dm } : {}),
     ...(plain.groups?.length ? { grp: packGroups(plain.groups) } : {}),
+    // X22 on vias is stored once per setting (`model/viaCodec.ts`).
+    ...(hasViaX22(plain.vias) ? (({ vias, vx }) => ({ vias, vx }))(packVias(plain.vias)) : {}),
     ...(plain.images?.length ? { im: packImages(plain.images) } : {}),
     ...(packed.textStyles ? { textStyles: packed.textStyles } : {}),
     ...(packed.kt ? { kt: packed.kt } : {}),
@@ -581,6 +585,15 @@ function fitCopperToStack(traces: Trace[], vias: Via[], board: Project["board"])
         out = rest as Via
       }
       if (out.zoneLayers && !out.zoneLayers.every(known)) out = { ...out, zoneLayers: out.zoneLayers.filter(known) }
+      // X22: a backdrill between layers the board lacks has nothing to drill.
+      if (out.backdrill && !(known(out.backdrill.from) && known(out.backdrill.to))) {
+        const { backdrill: _b, ...rest } = out
+        out = rest as Via
+      }
+      if (out.tertiary && !(known(out.tertiary.from) && known(out.tertiary.to))) {
+        const { tertiary: _t, ...rest } = out
+        out = rest as Via
+      }
       if (out.stack && "layers" in out.stack) {
         const layers = Object.fromEntries(Object.entries(out.stack.layers).filter(([k]) => known(k)))
         const { stack: _s, ...rest } = out
@@ -603,9 +616,9 @@ const UNUSED = new Set(["remove", "keepEnds", "startEnd"])
 
 /** A via's X5 fields as they read: a kind needs both its ends, and every other field is dropped when it does not read, so a via is never half of a blind one. */
 function normalizeVia(item: Json): Json {
-  if (!("kind" in item || "from" in item || "to" in item || "tent" in item || "unused" in item || "zoneLayers" in item || "free" in item || "stack" in item)) return item
-  const { kind, from, to, tent, unused, zoneLayers, free, stack, ...rest } = item
-  const out: Json = { ...rest }
+  if (!("kind" in item || "from" in item || "to" in item || "tent" in item || "unused" in item || "zoneLayers" in item || "free" in item || "stack" in item || "protect" in item || "backdrill" in item || "tertiary" in item || "post" in item)) return item
+  const { kind, from, to, tent, unused, zoneLayers, free, stack, protect: _protect, backdrill: _backdrill, tertiary: _tertiary, post: _post, ...rest } = item
+  const out: Json = { ...rest, ...readViaX22(item) }
   if (typeof kind === "string" && VIA_KINDS.has(kind) && isCopperLayerId(from) && isCopperLayerId(to) && from !== to) Object.assign(out, { kind, from, to })
   if (isObject(tent)) {
     const t: Json = {}
@@ -957,12 +970,12 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
   const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
   const kicadTexts = [...normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set()), ...unpackBoardTexts((raw as { kt?: unknown }).kt, textStyles)]
   const models = normalizeModels(raw.models)
-  const { textStyles: _textStyles, kt: _kt, kp, dimStyles: _dimStyles, dm, grp, im, ...stored } = raw as typeof raw & { textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; im?: unknown }
+  const { textStyles: _textStyles, kt: _kt, kp, dimStyles: _dimStyles, dm, grp, im, vx, ...stored } = raw as typeof raw & { textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; im?: unknown; vx?: unknown }
   const dimensions = unpackDimensions(dm, dimStyles)
   const groups = unpackGroups(grp) ?? []
   const images = unpackImages(im) ?? []
   const board = normalizeBoard(raw.board)
-  const copper = fitCopperToStack(normalizeCopper<Trace>(raw.traces, "net"), normalizeCopper<Via>(raw.vias, "routedNet"), board)
+  const copper = fitCopperToStack(normalizeCopper<Trace>(raw.traces, "net"), normalizeCopper<Via>(unpackVias(raw.vias, vx), "routedNet"), board)
   return {
     ...stored,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name : "Untitled project",
@@ -980,6 +993,7 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
     dimensions: dimensions.length ? dimensions : undefined,
     groups: groups.length ? groups : undefined,
     images: images.length ? images : undefined,
+    netChains: normalizeNetChains((raw as { netChains?: unknown }).netChains),
     board,
     rules: normalizeRules(raw.rules),
     blocks: normalizeBlocks(raw.blocks, components),

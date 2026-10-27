@@ -1,4 +1,5 @@
 import { pinKey } from "./connectivity"
+import { renameChainNets } from "./netChains"
 import { getConnectivity, sameSchematic } from "./connectivityCache"
 import type { Project } from "./types"
 import { isWholeBoardPour } from "./zones"
@@ -29,7 +30,9 @@ export function renameStoredNets(project: Project, renamed: Record<string, strin
  */
 export function followNetRenames(before: Project, after: Project): Project {
   const names = storedNames(after)
-  if (!names.size) return after
+  // X21: the nets of a chain are stored by name too.
+  const chained = after.netChains?.some((c) => c.nets.length > 0) ?? false
+  if (!names.size && !chained) return after
   // Only a schematic edit can rename a net: a move, turn, flip or flag on the PCB changes nothing the names depend on.
   if (sameSchematic(before, after)) return after
   // Connectivity is cached by schematic: the state before the edit is usually known already, and the one after is what the panels draw next.
@@ -40,7 +43,7 @@ export function followNetRenames(before: Project, after: Project): Project {
   const byPins = !!after.netNames
   const renamed: Record<string, string> = {}
   for (const net of was.nets) {
-    if (!names.has(net.name)) continue
+    if (!names.has(net.name) && !(chained && after.netChains!.some((c) => c.nets.includes(net.name)))) continue
     const targets = new Set<string>()
     for (const pin of net.pins) {
       const id = now.pinNet.get(pinKey(pin.componentId, pin.pin))
@@ -53,6 +56,7 @@ export function followNetRenames(before: Project, after: Project): Project {
     }
   }
   if (!Object.keys(renamed).length) return after
+  after = renameChainNets(after, renamed)
   // Copper whose name the edit itself already changed (Tidy's renames) is left as the edit made it.
   const wasTrace = new Map(before.traces.map((t) => [t.id, t.net]))
   const wasVia = new Map(before.vias.map((v) => [v.id, v.routedNet]))

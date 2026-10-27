@@ -1,4 +1,5 @@
 import { isTextLayer } from "./texts"
+import { readGenerator } from "./generatorCodec"
 import type { BoardDimension, DimensionKind, PcbGroup, ReferenceImage } from "./types"
 import { finite as num } from "../lib/guards"
 
@@ -194,7 +195,8 @@ export const defaultGroupId = (place: number) => `gp${place + 1}`
 export const defaultPartGroupId = (place: number) => `g${place}`
 
 export function packGroups(groups: PcbGroup[], defaultId: (place: number) => string = defaultGroupId): Entry[] {
-  return groups.map((g, place): Entry => [g.id === defaultId(place) ? 0 : g.id, g.name, (g.locked ? 1 : 0) | (g.lib !== undefined ? 2 : 0), ...(g.lib !== undefined ? [g.lib] : []), ...g.members])
+  // Flag 4: a generated item (X21); its kind, layer, properties and templates follow the design block's id, as one object, before the members.
+  return groups.map((g, place): Entry => [g.id === defaultId(place) ? 0 : g.id, g.name, (g.locked ? 1 : 0) | (g.lib !== undefined ? 2 : 0) | (g.gen ? 4 : 0), ...(g.lib !== undefined ? [g.lib] : []), ...(g.gen ? [g.gen as unknown as string] : []), ...g.members])
 }
 
 /** Groups from stored entries; one that does not read, or whose id is taken, is dropped. */
@@ -207,12 +209,15 @@ export function unpackGroups(raw: unknown, defaultId: (place: number) => string 
     const flags = e[2]
     const lib = flags & 2 ? e[3] : undefined
     if (flags & 2 && typeof lib !== "string") return
-    const members = e.slice(flags & 2 ? 4 : 3)
+    const genAt = flags & 2 ? 4 : 3
+    const gen = flags & 4 ? readGenerator(e[genAt]) : undefined
+    if (flags & 4 && !gen) return
+    const members = e.slice(genAt + (flags & 4 ? 1 : 0))
     if (!members.every((m): m is string => typeof m === "string" && m !== "")) return
     const id = typeof e[0] === "string" && e[0] ? e[0] : defaultId(place)
     if (seen.has(id)) return
     seen.add(id)
-    out.push({ id, name: e[1], members: members as string[], ...(flags & 1 ? { locked: true as const } : {}), ...(lib !== undefined ? { lib: lib as string } : {}) })
+    out.push({ id, name: e[1], members: members as string[], ...(flags & 1 ? { locked: true as const } : {}), ...(lib !== undefined ? { lib: lib as string } : {}), ...(gen ? { gen } : {}) })
   })
   return out
 }

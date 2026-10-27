@@ -1,4 +1,5 @@
 import { legacyArc, rotK } from "./geometry"
+import { backdrillOf, generatorOf, netChainsOf, postMachiningOf, setupProtectionOf, viaProtectionOf } from "./drilling"
 import { decodeBase64, imageFacts } from "../../../lib/imageFacts"
 import { newReport, type ImportReport } from "./report"
 import { atomsOf, decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "./sexpr"
@@ -8,6 +9,7 @@ import type {
   KicadBoard,
   KicadDimension,
   KicadFootprint,
+  KicadGenerator,
   KicadGroup,
   KicadImage,
   KicadModel,
@@ -145,7 +147,7 @@ const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
 const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
-const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image"])
+const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image", "generated", "net_chains"])
 
 function kicadKind(text: string): string | null {
   const head = text.slice(0, 400).replace(/^﻿/, "").trimStart()
@@ -215,6 +217,8 @@ export function tentingOf(node: List | undefined, stamp: number | null): { front
     const out: { front?: boolean; back?: boolean } = {}
     for (const l of lists) {
       if (l[0] !== "front" && l[0] !== "back") continue
+      // `none` is no choice (KiCad 10's `parseOptBool`: `std::nullopt`), the side follows the board; KiCad 10 writes it for every side a via or pad does not set.
+      if (l[1] === "none") continue
       out[l[0]] = l[1] === undefined || l[1] === "yes" || l[1] === "true"
     }
     return out
@@ -316,6 +320,22 @@ export function viaStackOf(node: List | undefined): KicadVia["stack"] | undefine
     if (Number.isFinite(size)) sizes.push({ name: strAt(l, 1) ?? "", size })
   }
   return { mode: mode === "custom" ? "custom" : "front_inner_back", sizes }
+}
+
+/** X22: a via's or pad's backdrills and post-machining, and a via's own protection (a pad has none of the latter), each present only where the file says it. */
+function drilling(c: List, pad = false): Partial<Pick<KicadVia, "protect" | "backdrill" | "tertiary" | "post">> {
+  const out: Partial<Pick<KicadVia, "protect" | "backdrill" | "tertiary" | "post">> = {}
+  if (!pad) {
+    const protect = viaProtectionOf(c)
+    if (protect) out.protect = protect
+  }
+  const backdrill = backdrillOf(kid(c, "backdrill"))
+  if (backdrill) out.backdrill = backdrill
+  const tertiary = backdrillOf(kid(c, "tertiary_drill"))
+  if (tertiary) out.tertiary = tertiary
+  const post = postMachiningOf(c)
+  if (post) out.post = post
+  return out
 }
 
 /** The mode a via's words leave its copper in, as KiCad's parser applies them in order: `remove_unused_layers` (on) removes all, `keep_end_layers` (on) keeps the ends, `start_end_only` is KiCad 10's own mode; a word that says no changes nothing. */
@@ -1142,6 +1162,12 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         ...(kid(c, "tenting") ? { tenting: tentingOf(kid(c, "tenting"), version) } : {}),
         node: c,
       }
+      Object.assign(pad, drilling(c, true))
+      const dieLength = numAt(kid(c, "die_length"), 1, 0)
+      if (dieLength > 0) pad.dieLength = dieLength
+      // `die_delay` is in picoseconds in every release (the 20250926 files wrote the same number as a length, whose internal unit is the same one).
+      const dieDelay = numAt(kid(c, "die_delay"), 1, 0)
+      if (dieDelay > 0) pad.dieDelay = dieDelay
       if (removeUnused !== undefined) pad.removeUnused = removeUnused
       if (keepEnds !== undefined) pad.keepEnds = keepEnds
       if (anchorWord === "circle" || anchorWord === "rect") pad.anchor = anchorWord
@@ -1272,7 +1298,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     locked: flagOf(c, "locked") || lockedBit(c),
     node: c,
   }))
-  const vias: KicadVia[] = kids(tree, "via").map((c) => {
+  const viaOf = (c: List): KicadVia => {
     // Switch 4: a bare `blind`, `micro` or `buried` after `via`.
     const kind = c.includes("buried") ? "buried" : c.includes("blind") ? "blind" : c.includes("micro") ? "micro" : "through"
     return {
@@ -1286,11 +1312,13 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       ...(kid(c, "zone_layer_connections") ? { zoneLayers: atomsOf(kid(c, "zone_layer_connections")) } : {}),
       ...(kid(c, "tenting") ? { tenting: tentingOf(kid(c, "tenting"), version) } : {}),
       ...(kid(c, "padstack") ? { stack: viaStackOf(kid(c, "padstack")) } : {}),
+      ...drilling(c),
       ...copperNet(c),
       locked: flagOf(c, "locked") || lockedBit(c),
       node: c,
     }
-  })
+  }
+  const vias: KicadVia[] = kids(tree, "via").map(viaOf)
   const zones = kids(tree, "zone").map((z) => zoneOf(z, null))
   const targets: KicadTarget[] = kids(tree, "target").map((c) => ({
     shape: c.includes("x") ? "x" : "plus",
@@ -1304,6 +1332,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   const texts: KicadText[] = []
   const dimensions: KicadDimension[] = []
   const groups: KicadGroup[] = []
+  const generators: KicadGenerator[] = []
   const images: KicadImage[] = []
   const others: Record<string, List[]> = {}
   for (const c of tree) {
@@ -1313,6 +1342,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     else if (head === "gr_text" || head === "gr_text_box") texts.push(textOf(c, "board"))
     else if (head === "dimension") dimensions.push(dimensionOf(c))
     else if (head === "group") groups.push(groupOf(c))
+    else if (head === "generated") generators.push(generatorOf(c, viaOf))
     else if (head === "image") images.push(imageOf(c))
     else if (!TYPED_ROOT.has(head)) (others[head] ??= []).push(c)
   }
@@ -1365,6 +1395,9 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     texts,
     dimensions,
     groups,
+    generators,
+    netChains: netChainsOf(tree),
+    ...(setupProtectionOf(kid(tree, "setup")) ? { viaProtect: setupProtectionOf(kid(tree, "setup")) } : {}),
     images,
     others,
     tree,

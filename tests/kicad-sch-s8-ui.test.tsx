@@ -103,7 +103,8 @@ describe("S8 in the editor", () => {
     expect(now().drawings!.some(isDirective)).toBe(false)
     expect(now().rules.netClasses).toBeUndefined()
     act(() => projectApi().undo())
-    expect(now()).toBe(before)
+    // An undo puts back what the step changed (`store/projectStore.ts`), so the project is the one before in everything but its saved date.
+    expect({ ...now(), updatedAt: 0 }).toEqual({ ...before, updatedAt: 0 })
   })
 
   it("turns the flags of a rule area on and off in the Inspector, and the parts it touches follow", () => {

@@ -529,6 +529,27 @@ describe("the sheet tree under undo and other people's edits", () => {
     expect(jsonEqual(strip(await load()), strip(mine))).toBe(true)
   })
 
+  it("undo of a value edit reaches a third use that was added after it", async () => {
+    const { start, uses } = reused()
+    const { memory, id, load } = await open(start)
+    api().commit((p) => commitOnUse(p, uses[0], (v) => addComponent(v, "resistor").project))
+    await settle()
+    api().commit((p) => commitOnUse(p, uses[0], (v) => ({ ...v, components: v.components.map((c) => ({ ...c, props: { ...c.props, value: "47k" } })) })))
+    await settle()
+    const before = await load()
+    const child = sheetUses(before).find((u) => u.path === uses[0])!.sheet
+    await memory.pushAs("bob", id, projectChanges(before, addSheetUse(before, "", child, { minX: 40, minY: 0, maxX: 50, maxY: 6 }, "Cell C")!.project))
+    await settle()
+    expect(api().project!.components.map((c) => c.props?.value)).toEqual(["47k", "47k", "47k"])
+    api().undo()
+    await settle()
+    const mine = api().project!
+    expect(mine.components).toHaveLength(3)
+    expect(new Set(mine.components.map((c) => c.props?.value)).size).toBe(1)
+    expect(mine.components[0].props?.value).not.toBe("47k")
+    expect(jsonEqual(strip(await load()), strip(mine))).toBe(true)
+  })
+
   it("a trace on a layer that another copy removed is dropped", async () => {
     const start: Project = { ...createProject("Layers"), board: withCopperCount(createProject("x").board, 4) }
     const { memory, id, load } = await open(start)

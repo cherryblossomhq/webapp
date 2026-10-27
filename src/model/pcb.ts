@@ -825,7 +825,9 @@ export function analyzePcb(
   }
   // Edges that cross themselves or each other cannot be cut either: one error each, where they meet.
   for (const x of outlineCrossings(b.outline?.paths ?? [])) push({ severity: "error", kind: "outline", message: `${crossingSentence(x)}, so it cannot be cut out`, at: x.at })
-  for (const c of project.components) {
+  // A part a rule area, a sheet symbol or the active variant takes off the board has no courtyard on it (the resolved flags, as the plots read them).
+  const onBoardParts = resolvedComponents(project).filter((c) => onBoard(c))
+  for (const c of onBoardParts) {
     const cy = c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null
     if (cy && partOutsideBoard(project, c, cy)) {
       push({
@@ -838,7 +840,7 @@ export function analyzePcb(
   }
 
   // Courtyard overlap
-  const placed = project.components
+  const placed = onBoardParts
     .map((c) => ({ c, box: c.pcb.placed && hasCourtyard(c) ? pcbCourtyard(c) : null }))
     .filter((x): x is { c: (typeof project.components)[number]; box: Box } => !!x.box)
   for (let i = 0; i < placed.length; i++) {

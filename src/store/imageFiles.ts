@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { encodeBase64 } from "../lib/imageFacts"
 import type { Project, ReferenceImage } from "../model/types"
 import { modelFiles } from "./modelFiles"
+import { projectApi } from "./projectStore"
 
 // The bytes of a project's reference images, which the project names by the SHA-256 of their bytes and does not hold: the host keeps them
 // in the same file store as the 3D model files (`store/modelFiles.ts`), once per account however many projects use them. This reads each
@@ -37,8 +38,9 @@ export function loadImage(id: string): Promise<void> {
       return
     }
     try {
-      const bytes = await store.get(id)
-      entries.set(id, bytes ? { state: "ready", bytes } : { state: "missing", why: "This image's file isn't in this account." })
+      // On a shared project the file is often a collaborator's, kept in their account: the project is what lets the store find it.
+      const bytes = await store.get(id, undefined, projectApi().project?.id)
+      entries.set(id, bytes ? { state: "ready", bytes } : { state: "missing", why: "This image's file isn't in this account, or in the account of anyone this project is shared with." })
     } catch (e) {
       entries.set(id, { state: "missing", why: e instanceof Error ? e.message : "The image's file could not be read." })
     }

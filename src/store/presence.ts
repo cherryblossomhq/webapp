@@ -48,6 +48,8 @@ export interface PresenceSource {
 /** What a tab says about itself. */
 export interface PeerState {
   view: View
+  /** On the schematic, the use of a sheet it shows (a path of sheet symbols; absent: the root), whose world units the cursor and viewport are in. */
+  sheet?: string
   /** The pointer, in the view's world units; absent when it is off the canvas. */
   cursor?: Vec2
   /** What is selected, with the UI store's prefixes (`c:`, `w:`, `t:`...), up to `MAX_SELECTION`. */
@@ -111,6 +113,7 @@ export function parsePeerState(text: string): PeerState {
     const box = (b: unknown): b is Box => !!b && ["minX", "minY", "maxX", "maxY"].every((k) => Number.isFinite((b as Record<string, number>)[k]))
     return {
       view,
+      ...(typeof raw.sheet === "string" && raw.sheet && raw.sheet.length <= 500 && { sheet: raw.sheet }),
       ...(point(raw.cursor) && { cursor: raw.cursor }),
       ...(Array.isArray(raw.selection) && { selection: raw.selection.filter((s): s is string => typeof s === "string").slice(0, MAX_SELECTION) }),
       ...(box(raw.viewport) && { viewport: raw.viewport }),
@@ -190,10 +193,13 @@ export function followLeader(): () => void {
     }
     const ui = useUi.getState()
     const { view, viewport } = leader.state
-    const key = `${leader.sessionId}:${view}:${viewport ? [viewport.minX, viewport.minY, viewport.maxX, viewport.maxY].map((n) => n.toFixed(3)).join(",") : ""}`
+    const sheet = view === "schematic" ? (leader.state.sheet ?? "") : ""
+    const key = `${leader.sessionId}:${view}:${sheet}:${viewport ? [viewport.minX, viewport.minY, viewport.maxX, viewport.maxY].map((n) => n.toFixed(3)).join(",") : ""}`
     if (key === applied) return
     applied = key
     if (view !== ui.view) ui.setView(view)
+    // Their sheet is where their view is: the same coordinates mean another place on another sheet.
+    if (view === "schematic" && sheet !== ui.sheet) ui.setSheet(sheet)
     if (viewport && view !== "3d") ui.focus(view, (viewport.minX + viewport.maxX) / 2, (viewport.minY + viewport.maxY) / 2, viewport, true)
   }
   apply(usePresence.getState())
@@ -232,6 +238,7 @@ function ownState(): PeerState {
   const view = ui.view
   return {
     view,
+    ...(view === "schematic" && ui.sheet && { sheet: ui.sheet }),
     ...(pointer?.view === view && { cursor: round(pointer.at) }),
     ...(ui.selection.length && { selection: ui.selection.slice(0, MAX_SELECTION) }),
     ...(viewports[view] && { viewport: viewports[view] }),
@@ -307,7 +314,7 @@ export function startPresence(projectId: string, sessionId: string, source: Pres
     () => {},
   )
   const unsubscribeUi = useUi.subscribe((s, prev) => {
-    if (s.view !== prev.view || s.selection !== prev.selection) schedule("state")
+    if (s.view !== prev.view || s.selection !== prev.selection || s.sheet !== prev.sheet) schedule("state")
   })
   const unsubscribeCopilot = useCopilot.subscribe((s, prev) => {
     if (s.runningProject !== prev.runningProject) schedule("state")

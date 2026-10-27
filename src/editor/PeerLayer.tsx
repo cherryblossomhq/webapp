@@ -6,7 +6,7 @@ import { pcbCourtyard, pcbPads, schematicBounds } from "../model/instances"
 import { labelBox } from "../model/labels"
 import type { Project, Vec2 } from "../model/types"
 import { usePresence, type Collaborator } from "../store/presence"
-import type { View } from "../store/uiStore"
+import { useUi, type View } from "../store/uiStore"
 import { toScreen, type ViewTransform } from "./viewport"
 
 /**
@@ -20,7 +20,9 @@ import { toScreen, type ViewTransform } from "./viewport"
 function usePeersOn(view: View): Collaborator[] {
   const peers = usePresence((s) => s.peers)
   const self = usePresence((s) => s.selfUserId)
-  return peers.filter((p) => p.state.view === view && p.userId !== self)
+  const sheet = useUi((s) => s.sheet)
+  // On the schematic, only people on the sheet shown: their coordinates are those of their sheet.
+  return peers.filter((p) => p.state.view === view && p.userId !== self && (view !== "schematic" || (p.state.sheet ?? "") === sheet))
 }
 
 function union(boxes: Box[]): Box | null {

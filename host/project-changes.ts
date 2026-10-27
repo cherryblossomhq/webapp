@@ -18,6 +18,8 @@
  *
  * - **Deletion wins.** A change to an item someone deleted meanwhile does nothing; an item comes
  *   back only by being put back whole (an undo of the deletion).
+ * - **A list inside an object is a collection too.** The shape names it by its path from the root
+ *   (`variants.list`), and the changes that touch it carry that path as their `collection`.
  * - **Order within a list is not shared.** A new item goes where the edit put it, as far as the
  *   list as it then is allows; a list merely reordered sends nothing.
  * - **Nothing here knows what a project is.** The caller says which top-level fields are lists of
@@ -67,7 +69,10 @@ export type Change = PutChange | RemoveChange | SetChange
 
 /** What a document's fields are, for working out what an edit changed. */
 export interface DocumentShape {
-  /** Top-level fields that are lists of items edited one by one, each with the field that names an item. */
+  /**
+   * Lists of items edited one by one, each with the field that names an item. A top-level field is named as it is; a list
+   * inside objects by its path from the root, joined by dots (`variants.list`).
+   */
   collections: Readonly<Record<string, string>>
   /** Top-level fields that never travel: where a copy is kept (its id, its dates), not what it is. */
   ignore?: readonly string[]
@@ -107,6 +112,46 @@ export function jsonEqual(a: unknown, b: unknown): boolean {
   return false
 }
 
+// ---------- Lists inside objects ----------
+
+/** A collection's name as the keys from the root down to its list: null when a key is empty or would reach a prototype. */
+function pathOf(name: string): Path | null {
+  const segs = name.split(".")
+  return segs.every((k) => k.length > 0 && !UNSAFE_KEYS.has(k)) ? segs : null
+}
+
+const NOT_THERE = Symbol("not there")
+
+/**
+ * The value at `segs` under `root`: undefined when it is not there (or an object above it is not), NOT_THERE when something
+ * above it is there and is not an object (so the field is a value as a whole, not a list inside an object).
+ */
+function readAt(root: Obj, segs: Path): unknown {
+  let at: unknown = root
+  for (let i = 0; i < segs.length - 1; i++) {
+    const next = (at as Obj)[segs[i]]
+    // An object that is not there yet holds no list: its list is what a put makes.
+    if (next === undefined) return undefined
+    if (!isObject(next)) return NOT_THERE
+    at = next
+  }
+  return (at as Obj)[segs[segs.length - 1]]
+}
+
+/** `root` with the value at `segs` made by `fn` from what is there, the objects above it made when `make` and they are missing; `root` itself when nothing changed. */
+function updateAt(root: Obj, segs: Path, fn: (current: unknown) => unknown, make: boolean): Obj {
+  const [k, ...rest] = segs
+  if (!rest.length) {
+    const was = root[k]
+    const now = fn(was)
+    return now === was ? root : assign(root, k, now)
+  }
+  const child = root[k]
+  if (!isObject(child) && !make) return root
+  const next = updateAt(isObject(child) ? child : {}, rest, fn, make)
+  return next === child ? root : assign(root, k, next)
+}
+
 // ---------- Working out what changed ----------
 
 /**
@@ -123,11 +168,26 @@ export function diffDocuments(before: object, after: object, shape: DocumentShap
   const ignore = new Set(shape.ignore ?? [])
   const b = before as Obj
   const a = after as Obj
+  // Lists inside objects, named by path: those both sides can be read as lists of items are diffed item by item, and the walk below leaves them.
+  const nested = new Set<string>()
+  for (const [name, key] of Object.entries(shape.collections)) {
+    if (!name.includes(".") || ignore.has(name.split(".")[0])) continue
+    const segs = pathOf(name)
+    if (!segs) continue
+    const was = readAt(b, segs)
+    const now = readAt(a, segs)
+    if (was === NOT_THERE || now === NOT_THERE) continue
+    if (was === now) {
+      nested.add(name)
+      continue
+    }
+    if (diffCollection(name, key, was, now, changes)) nested.add(name)
+  }
   for (const field of fieldsOf(b, a)) {
     if (ignore.has(field)) continue
     const key = hasOwn(shape.collections, field) ? shape.collections[field] : undefined
     if (key !== undefined && diffCollection(field, key, b[field], a[field], changes)) continue
-    diffValue(b[field], a[field], [field], root)
+    diffValue(b[field], a[field], [field], root, nested)
   }
   if (root.set.length || root.unset.length) changes.unshift(setChange(undefined, undefined, undefined, root))
   return changes
@@ -144,10 +204,17 @@ function setChange(collection: string | undefined, key: string | undefined, id: 
   }
 }
 
-function diffValue(a: unknown, b: unknown, path: Path, out: { set: [Path, Json][]; unset: Path[] }) {
+function diffValue(a: unknown, b: unknown, path: Path, out: { set: [Path, Json][]; unset: Path[] }, skip?: ReadonlySet<string>) {
   if (a === b) return
+  if (skip?.size) {
+    const at = path.join(".")
+    if (skip.has(at)) return
+    // An object that was not there and holds a list kept item by item is made field by field: its list's items are puts, so two people who
+    // make it at once both keep theirs.
+    if (a === undefined && isObject(b) && [...skip].some((s) => s.startsWith(`${at}.`))) return diffValue({}, b, path, out, skip)
+  }
   if (isObject(a) && isObject(b)) {
-    for (const k of fieldsOf(a, b)) diffValue(a[k], b[k], [...path, k], out)
+    for (const k of fieldsOf(a, b)) diffValue(a[k], b[k], [...path, k], out, skip)
     return
   }
   if (b === undefined) {
@@ -217,32 +284,36 @@ const assign = (o: Obj, k: string, v: unknown): Obj => (o[k] === v && hasOwn(o, 
 
 function applyChange(root: Obj, change: Change): Obj {
   if (change.kind === "set" && change.collection === undefined) return applyValues(root, change)
-  const name = change.collection!
-  if (UNSAFE_KEYS.has(name)) return root
+  const segs = pathOf(change.collection!)
+  if (!segs) return root
   const key = change.key ?? "id"
-  const list = root[name]
-  const items: unknown[] = Array.isArray(list) ? list : []
   const id = change.kind === "put" ? change.item[key] : change.id
   if (typeof id !== "string") return root
-  const at = items.findIndex((x) => isObject(x) && x[key] === id)
+  // The list is edited where it is: at the root, or inside the objects its path names (made by a put, left alone by anything else).
+  return updateAt(root, segs, (list) => editList(list, change, key, id), change.kind === "put")
+}
 
+/** `list` with one change to one of its items applied; `list` itself when nothing changed. */
+function editList(list: unknown, change: Change, key: string, id: string): unknown {
+  const items: unknown[] = Array.isArray(list) ? list : []
+  const at = items.findIndex((x) => isObject(x) && x[key] === id)
   if (change.kind === "put") {
     if (at >= 0) {
       const next = items.slice()
       next[at] = change.item
-      return assign(root, name, next)
+      return next
     }
     const index = change.index === undefined || !Number.isFinite(change.index) ? items.length : Math.min(Math.max(0, Math.floor(change.index)), items.length)
-    return assign(root, name, [...items.slice(0, index), change.item, ...items.slice(index)])
+    return [...items.slice(0, index), change.item, ...items.slice(index)]
   }
-  if (at < 0) return root
-  if (change.kind === "remove") return assign(root, name, items.filter((_, i) => i !== at))
+  if (at < 0) return list
+  if (change.kind === "remove") return items.filter((_, i) => i !== at)
   const item = items[at] as Obj
-  const updated = applyValues(item, change)
-  if (updated === item) return root
+  const updated = applyValues(item, change as SetChange)
+  if (updated === item) return list
   const next = items.slice()
   next[at] = updated
-  return assign(root, name, next)
+  return next
 }
 
 function applyValues(target: Obj, change: SetChange): Obj {

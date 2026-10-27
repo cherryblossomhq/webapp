@@ -2,7 +2,7 @@ import { useState } from "react"
 import { findPart } from "../model/library"
 import type { ComponentInstance, Project } from "../model/types"
 import { activeVariant, addVariant, removeVariant, renameVariant, setActiveVariant, setVariantOverride, variantNames, type VariantFlag } from "../model/variants"
-import { projectApi } from "../store/projectStore"
+import { projectApi, useProjectStore } from "../store/projectStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, Row, Section } from "../ui/form"
 
@@ -17,6 +17,8 @@ const touched = (project: Project, name: string) => project.components.filter((c
 export function VariantsSection({ project }: { project: Project }) {
   const names = variantNames(project)
   const active = activeVariant(project)
+  // A viewer looks at the variants: the store would refuse each of these, so none is offered.
+  const viewer = useProjectStore((s) => s.role === "viewer")
   const [draft, setDraft] = useState("")
   const [removing, setRemoving] = useState<string | null>(null)
   const [error, setError] = useState("")
@@ -37,7 +39,7 @@ export function VariantsSection({ project }: { project: Project }) {
         <select
           className="field h-8"
           value={active ?? ""}
-          disabled={!names.length}
+          disabled={!names.length || viewer}
           onChange={(e) => commit((p) => setActiveVariant(p, e.target.value === "" ? undefined : e.target.value))}
           aria-label="Active variant"
         >
@@ -57,6 +59,7 @@ export function VariantsSection({ project }: { project: Project }) {
           {removing === n ? (
             <span className="flex shrink-0 items-center gap-1">
               <Button
+                disabled={viewer}
                 onClick={() => {
                   commit((p) => removeVariant(p, n))
                   setRemoving(null)
@@ -67,7 +70,7 @@ export function VariantsSection({ project }: { project: Project }) {
               <Button onClick={() => setRemoving(null)}>Keep</Button>
             </span>
           ) : (
-            <Button onClick={() => setRemoving(n)} aria-label={`Remove variant ${n}`}>
+            <Button disabled={viewer} onClick={() => setRemoving(n)} aria-label={`Remove variant ${n}`}>
               Remove
             </Button>
           )}
@@ -81,8 +84,10 @@ export function VariantsSection({ project }: { project: Project }) {
           add()
         }}
       >
-        <input className="field h-8 flex-1" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="New variant" aria-label="New variant name" />
-        <Button type="submit">Add</Button>
+        <input className="field h-8 flex-1" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="New variant" aria-label="New variant name" disabled={viewer} />
+        <Button type="submit" disabled={viewer}>
+          Add
+        </Button>
       </form>
       {error && <p className="text-[12px] text-danger">{error}</p>}
     </Section>
@@ -104,6 +109,7 @@ export function ComponentVariantsSection({ c, project }: { c: ComponentInstance;
   const names = variantNames(project)
   const active = activeVariant(project)
   const [picked, setPicked] = useState<string | null>(null)
+  const viewer = useProjectStore((s) => s.role === "viewer")
   if (!names.length) return null
   const name = picked && names.includes(picked) ? picked : (active ?? names[0])
   const o = c.variants?.[name]
@@ -128,6 +134,7 @@ export function ComponentVariantsSection({ c, project }: { c: ComponentInstance;
             className="field h-8 w-[130px]"
             value={stateOf(o?.[f.key])}
             aria-label={`${f.label} in ${name}`}
+            disabled={viewer}
             onChange={(e) => commit((p) => setVariantOverride(p, c.id, name, { [f.key]: e.target.value === "" ? null : e.target.value === "on" }))}
           >
             <option value="">As the symbol</option>

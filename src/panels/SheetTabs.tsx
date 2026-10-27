@@ -4,12 +4,13 @@ import { sheetUses, type SheetUse } from "../model/sheets"
 import { useProjectStore } from "../store/projectStore"
 import { shownPath } from "../store/sheetScope"
 import { uiApi, useUi } from "../store/uiStore"
-import { IconButton } from "../ui/controls"
+import { IconButton, useDismiss } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
+import { SheetMenu } from "./SheetMenu"
 
 // The schematic's sheets as tabs docked under the canvas, as Altium's document tabs and a spreadsheet's sheet tabs are: one per use of
-// a sheet, in page order, each with its page number, the one shown raised. A tab says where its sheet is in the tree when it is pointed
-// at; the tree itself is the button at the left (⌘B). A project of one sheet has no tabs.
+// a sheet, in tree order, the one shown raised. A tab says where its sheet is in the tree when it is pointed at; the button at the left
+// (⌘B) opens the menu of every sheet. A project of one sheet has no tabs.
 
 /** The names from Main down to a use: `Main › MCU › LED driver`. */
 function trail(byPath: Map<string, SheetUse>, use: SheetUse): string {
@@ -26,7 +27,11 @@ function trail(byPath: Map<string, SheetUse>, use: SheetUse): string {
 export function SheetTabs() {
   const project = useProjectStore((s) => s.project)
   const sheet = useUi((s) => s.sheet)
-  const treeOpen = useUi((s) => s.sheetsOpen)
+  const menuOpen = useUi((s) => s.sheetMenuOpen)
+  const menu = useRef<HTMLDivElement>(null)
+  useDismiss(menu, menuOpen, () => uiApi().setSheetMenu(false))
+  // The menu goes with the tabs (another view, another project).
+  useEffect(() => () => uiApi().setSheetMenu(false), [])
   const uses = useMemo(() => (project ? sheetUses(project) : []), [project])
   const byPath = useMemo(() => new Map(uses.map((u) => [u.path, u])), [uses])
   const copies = useMemo(() => {
@@ -48,10 +53,13 @@ export function SheetTabs() {
   if (!project || uses.length < 2) return null
 
   return (
-    <nav aria-label="Sheet tabs" className="flex h-9 shrink-0 items-center gap-1 border-t border-line bg-chrome pl-1 pr-2">
-      <IconButton label={treeOpen ? "Hide the sheet tree" : "Show the sheet tree"} shortcut="⌘B" className="h-7 w-7" onClick={() => uiApi().toggleSheets()}>
-        <ListTree size={15} />
-      </IconButton>
+    <nav aria-label="Sheet tabs" className="relative flex h-9 shrink-0 items-center gap-1 border-t border-line bg-chrome pl-1 pr-2">
+      <div ref={menu} className="relative">
+        <IconButton label="All sheets" shortcut="⌘B" active={menuOpen} aria-haspopup="dialog" aria-expanded={menuOpen} className="h-7 w-7" onClick={() => uiApi().setSheetMenu(!menuOpen)}>
+          <ListTree size={15} />
+        </IconButton>
+        {menuOpen && <SheetMenu />}
+      </div>
       <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-line" />
       <div
         ref={strip}
@@ -67,17 +75,16 @@ export function SheetTabs() {
           const current = u.path === here
           const n = copies.get(u.sheet) ?? 1
           return (
-            <Tooltip key={u.path || "root"} label={trail(byPath, u)} hint={n > 1 ? `Page ${u.page}, one of ${n} uses of this sheet` : `Page ${u.page}`}>
+            <Tooltip key={u.path || "root"} label={trail(byPath, u)} hint={n > 1 ? `One of ${n} uses of this sheet` : undefined}>
               <button
                 type="button"
                 role="tab"
                 aria-selected={current}
                 onClick={() => uiApi().setSheet(u.path)}
-                className={`flex h-7 shrink-0 items-center gap-1.5 rounded-[6px] px-2.5 text-[12px] transition-colors ${
+                className={`flex h-7 shrink-0 items-center rounded-[6px] px-3 text-[12px] transition-colors ${
                   current ? "bg-raised font-[600] text-ink shadow-chip" : "font-medium text-ink-2 hover:bg-hover hover:text-ink"
                 }`}
               >
-                <span className={`text-[10.5px] font-medium tabular-nums ${current ? "text-brand" : "text-ink-3"}`}>{u.page}</span>
                 <span className="max-w-[180px] truncate">{u.name}</span>
               </button>
             </Tooltip>

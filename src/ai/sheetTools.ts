@@ -19,17 +19,17 @@ export const SHEET_ARG = { type: "string", description: "Sheet name or path (def
 
 const norm = (s: string) => s.trim().toLowerCase().replace(/^\/+|\/+$/g, "")
 
-/** The sheets a project has, for a message: `/` for the root, then `/Power/`, each with its page. */
+/** The sheets a project has, for a message: `/` for the root, then `/Power/`. */
 export const sheetList = (project: Project) =>
   sheetUses(project)
-    .map((u) => `${u.human} (page ${u.page})`)
+    .map((u) => u.human)
     .join(", ")
 
-/** The use of a sheet a person means by a name: its path of names (`Power`, `/Power/Reg/`), its id path, `root` or its own name (`Main`) for the first, or its page. */
+/** The use of a sheet a person means by a name: its path of names (`Power`, `/Power/Reg/`), its id path, or `root` or its own name (`Main`) for the first. */
 export function resolveSheet(project: Project, text: string): { use: SheetUse } | { error: string } {
   const uses = sheetUses(project)
   const want = norm(text)
-  const hits = uses.filter((u) => norm(u.human) === want || norm(u.name) === want || (want !== "" && u.path === `/${want}`) || u.page === text.trim())
+  const hits = uses.filter((u) => norm(u.human) === want || norm(u.name) === want || (want !== "" && u.path === `/${want}`))
   const root = uses[0]
   if (!hits.length && (want === "" || want === "root" || want === norm(root.name))) hits.push(root)
   if (hits.length === 1) return { use: hits[0] }
@@ -144,10 +144,6 @@ function freeSheetSpot(project: Project, parent: SheetUse): { x: number; y: numb
   return xs.length ? { x: onGrid(Math.max(...xs) + 2), y: onGrid(Math.min(...ys)) } : { x: 0, y: 0 }
 }
 
-const pageTaken = (project: Project, page: string, except?: string) => sheetUses(project).find((u) => u.page === page && u.path !== except)
-
-const describeUse = (u: SheetUse) => `${u.human} (page ${u.page})`
-
 const sheetProp: JsonSchema = { type: "string", description: "Sheet name or path, e.g. /Power/" }
 
 const addSheetTool: ToolSpec = {
@@ -158,7 +154,6 @@ const addSheetTool: ToolSpec = {
     type: "object",
     properties: {
       name: { type: "string" },
-      page: { type: "string" },
       parent: { type: "string", description: "Default the sheet shown" },
       reuse: { type: "string" },
       x: { type: "number" },
@@ -193,19 +188,12 @@ const addSheetTool: ToolSpec = {
     } else {
       made = addSheet(project, parent.path, box, name)
     }
-    let next = made.project
-    const path = `${parent.path}/${made.symbol.id}`
-    const page = text(input.page)
-    if (page) {
-      const clash = pageTaken(next, page, path)
-      if (clash) return fail(project, `Page ${page} is already ${clash.human}. Pick another page, or leave it out.`)
-      next = setSheetSymbol(next, made.symbol.id, { page: { use: path, page } })
-    }
-    const use = useAt(next, path)
+    const next = made.project
+    const use = useAt(next, `${parent.path}/${made.symbol.id}`)
     const what = reuse ? `another use of ${reuse}` : "a new empty sheet"
     return ok(
       next,
-      `Added ${made.symbol.name} on ${parent.human}: ${what}, ${describeUse(use)}, box x ${made.symbol.x} y ${made.symbol.y}, ${made.symbol.w} by ${made.symbol.h}. Fill it with add_component, connect and group_parts (sheet "${use.human}").`,
+      `Added ${made.symbol.name} on ${parent.human}: ${what}, ${use.human}, box x ${made.symbol.x} y ${made.symbol.y}, ${made.symbol.w} by ${made.symbol.h}. Fill it with add_component, connect and group_parts (sheet "${use.human}").`,
       `Added sheet ${made.symbol.name}`,
     )
   },
@@ -214,13 +202,12 @@ const addSheetTool: ToolSpec = {
 const editSheetTool: ToolSpec = {
   name: "edit_sheet",
   description:
-    "Change a sheet symbol: rename, page, move (x, y lower-left), resize (w, h), add_pins, remove_pins, or delete. Deleting the last use of a sheet deletes its contents; undo restores. A refused call changes nothing.",
+    "Change a sheet symbol: rename, move (x, y lower-left), resize (w, h), add_pins, remove_pins, or delete. Deleting the last use of a sheet deletes its contents; undo restores. A refused call changes nothing.",
   input_schema: {
     type: "object",
     properties: {
       sheet: sheetProp,
       name: { type: "string" },
-      page: { type: "string" },
       x: { type: "number" },
       y: { type: "number" },
       w: { type: "number" },
@@ -253,14 +240,6 @@ const editSheetTool: ToolSpec = {
       if (nameTaken(project, sym.sheet, name, sym.id)) return fail(project, `${useAt(project, use.parent ?? "").human} already has a sheet called ${name}. Names are unique on a sheet: pick another.`)
       next = setSheetSymbol(next, sym.id, { name })
       done.push(`renamed to ${name}`)
-    }
-    const page = text(input.page)
-    if (page !== undefined) {
-      if (!page) return fail(project, "page is empty")
-      const clash = pageTaken(project, page, use.path)
-      if (clash) return fail(project, `Page ${page} is already ${clash.human}. Pick another page.`)
-      next = setSheetSymbol(next, sym.id, { page: { use: use.path, page } })
-      done.push(`on page ${page}`)
     }
     const w = num(input.w)
     const h = num(input.h)
@@ -301,7 +280,7 @@ const editSheetTool: ToolSpec = {
       next = addSheetPin(next, sym.id, pinName, shape, spec.side ?? (shape === "output" ? "right" : "left"))
       done.push(`pin ${pinName} added`)
     }
-    if (!done.length) return fail(project, "Nothing to change: give name, page, x, y, w, h, add_pins, remove_pins or delete.")
+    if (!done.length) return fail(project, "Nothing to change: give name, x, y, w, h, add_pins, remove_pins or delete.")
     return ok(next, `${sym.name}: ${done.join(", ")}.`, `Changed sheet ${sym.name}`)
   },
 }
@@ -411,7 +390,7 @@ const showSheetTool: ToolSpec = {
       target = r.use
     }
     if (target.path !== shown.path) ctx.sheet.show(target.path)
-    return ok(project, `Showing ${describeUse(target)}.`, `Showing sheet ${target.human}`)
+    return ok(project, `Showing ${target.human}.`, `Showing sheet ${target.human}`)
   },
 }
 

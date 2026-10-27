@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { runErc } from "../src/model/erc"
-import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, renameSheetUse, resizeSheetSymbol, setSheetSymbol, setSheetUsePage } from "../src/model/sheetOps"
+import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, renameSheetUse, resizeSheetSymbol, setSheetSymbol } from "../src/model/sheetOps"
 import { addWire, createProject } from "../src/model/ops"
 import { sheetUses } from "../src/model/sheets"
 import { SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
@@ -52,32 +52,36 @@ describe("the sheet tabs", () => {
     expect(host.textContent).toBe("")
   })
 
-  it("are one per use, Main first, each with its page, the sheet shown selected; a click shows that use", () => {
+  it("are one per use, Main first, by name alone, the sheet shown selected; a click shows that use", () => {
     open([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }])
     mount(<SheetTabs />)
-    expect(tabs().map((t) => t.textContent)).toEqual(["1Main", "2A", "3B"])
+    expect(tabs().map((t) => t.textContent)).toEqual(["Main", "A", "B"])
     expect(tabs().map((t) => t.getAttribute("aria-selected"))).toEqual(["true", "false", "false"])
     click(tabs()[2])
     expect(uiApi().sheet).toBe("/h2")
     expect(tabs()[2].getAttribute("aria-selected")).toBe("true")
   })
 
-  it("open and close the sheet tree", () => {
+  it("open and close the menu of every sheet from the button at their left", () => {
     open()
     mount(<SheetTabs />)
-    const before = uiApi().sheetsOpen
-    click(button(/sheet tree/))
-    expect(uiApi().sheetsOpen).toBe(!before)
+    expect(host.querySelector("[role=dialog]")).toBeNull()
+    click(button(/All sheets/))
+    expect(uiApi().sheetMenuOpen).toBe(true)
+    expect(host.querySelector("[role=dialog]")).not.toBeNull()
+    click(button(/All sheets/))
+    expect(uiApi().sheetMenuOpen).toBe(false)
+    expect(host.querySelector("[role=dialog]")).toBeNull()
   })
 })
 
 describe("the panel of the sheet shown", () => {
-  it("names and numbers the sheet, and goes up to the one it is on", () => {
+  it("names the sheet, and goes up to the one it is on", () => {
     const project = open()
     act(() => uiApi().setSheet("/h1"))
     mount(<ShownSheetInspector project={project} path="/h1" />)
     const values = [...host.querySelectorAll("input")].map((i) => i.value)
-    expect(values).toEqual(["Power", "2"])
+    expect(values).toEqual(["Power"])
     click(button(/Up to Main/))
     expect(uiApi().sheet).toBe("")
   })
@@ -96,16 +100,16 @@ describe("the panel of the sheet shown", () => {
     expect(uiApi().sheet).toBe("")
   })
 
-  it("renames and renumbers Main and the sheets below it where each keeps its name and page", () => {
+  it("renames Main and the sheets below it where each keeps its name", () => {
     const p = imp().project
-    const top = setSheetUsePage(renameSheetUse(p, "", "Board"), "", "0")
-    expect(top.sheets!.find((s) => s.id === "root")).toMatchObject({ name: "Board", page: "0" })
-    expect(sheetUses(top)[0]).toMatchObject({ name: "Board", page: "0" })
-    const below = setSheetUsePage(renameSheetUse(top, "/h1", "Supply"), "/h1", "7")
-    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply", pages: { "/h1": "7" } })
-    // An empty name or page, or a use the project hasn't, changes nothing.
+    const top = renameSheetUse(p, "", "Board")
+    expect(top.sheets!.find((s) => s.id === "root")).toMatchObject({ name: "Board" })
+    expect(sheetUses(top)[0]).toMatchObject({ name: "Board" })
+    const below = renameSheetUse(top, "/h1", "Supply")
+    expect(below.sheetSymbols![0]).toMatchObject({ name: "Supply" })
+    // An empty name, or a use the project hasn't, changes nothing.
     expect(renameSheetUse(below, "/h1", "  ")).toBe(below)
-    expect(setSheetUsePage(below, "/gone", "3")).toBe(below)
+    expect(renameSheetUse(below, "/gone", "X")).toBe(below)
   })
 })
 

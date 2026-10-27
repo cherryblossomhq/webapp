@@ -219,7 +219,7 @@ export function moveSheetSymbols(project: Project, ids: string[], delta: Vec2): 
 }
 
 /** What a person may change about a sheet symbol: its name and file (the sheet's too), its flags and its look. */
-export function setSheetSymbol(project: Project, id: string, patch: { name?: string; file?: string; flags?: Partial<Record<"dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromSim", boolean>> | null; fill?: SheetSymbol["fill"] | null; stroke?: SheetSymbol["stroke"] | null; page?: { use: string; page: string } }): Project {
+export function setSheetSymbol(project: Project, id: string, patch: { name?: string; file?: string; flags?: Partial<Record<"dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromSim", boolean>> | null; fill?: SheetSymbol["fill"] | null; stroke?: SheetSymbol["stroke"] | null }): Project {
   const sym = project.sheetSymbols?.find((s) => s.id === id)
   if (!sym) return project
   const next: SheetSymbol = { ...sym }
@@ -247,7 +247,6 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   else if (patch.fill) next.fill = patch.fill
   if (patch.stroke === null) delete next.stroke
   else if (patch.stroke) next.stroke = patch.stroke
-  if (patch.page) next.pages = { ...next.pages, [patch.page.use]: patch.page.page }
   let sheets = project.sheets
   // The file name is the sheet's: the sheets the symbol stands for have it.
   if (patch.file !== undefined) sheets = (project.sheets ?? []).map((s) => (s.id === sym.child ? { ...s, file: patch.file } : s))
@@ -268,15 +267,6 @@ export function renameSheetUse(project: Project, path: string, name: string): Pr
   const { name: _old, ...plain } = root
   const renamed = title === MAIN_SHEET_NAME ? plain : { ...plain, name: title }
   return touch({ ...project, sheets: sheets.map((s) => (s === root ? renamed : s)) })
-}
-
-/** The page number of a use: the root's own, or the one its symbol keeps for that use, as the Inspector sets it. */
-export function setSheetUsePage(project: Project, path: string, page: string): Project {
-  const number = page.trim()
-  const use = knownUse(project, path)
-  if (!number || !use || number === use.page) return project
-  if (use.symbol) return setSheetSymbol(project, use.symbol.id, { page: { use: path, page: number } })
-  return touch({ ...project, sheets: sheetsOf(project).map((s) => (s.id === ROOT_SHEET ? { ...s, page: number } : s)) })
 }
 
 /**

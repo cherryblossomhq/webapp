@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { addWire, createProject } from "../src/model/ops"
 import { addSheet } from "../src/model/sheetOps"
 import { sheetUses } from "../src/model/sheets"
-import { SheetsPanel, sheetRows } from "../src/panels/SheetsPanel"
+import { SheetMenu, sheetRows } from "../src/panels/SheetMenu"
 import { projectApi, useProjectStore } from "../src/store/projectStore"
-import { uiApi, useUi } from "../src/store/uiStore"
+import { uiApi } from "../src/store/uiStore"
 import { S1, S2, imp } from "./kicad-sheets-fixtures"
 
-// The sheet tree: the rows it is built from (Main, a sheet on it, a sheet nested, a sheet used twice), what a click does, and renaming.
+// The menu of every sheet: the rows it is built from (Main, a sheet on it, a sheet nested, a sheet used twice), what a click and the keys do, and renaming.
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -42,7 +42,7 @@ afterEach(() => {
   host.remove()
 })
 
-describe("the rows of the sheet tree", () => {
+describe("the rows of the sheet menu", () => {
   it("lists Main first, never the project, and each use of a sheet used twice with how many uses it has", () => {
     const { project } = imp([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }])
     const rows = sheetRows(sheetUses(project))
@@ -61,17 +61,20 @@ describe("the rows of the sheet tree", () => {
   })
 })
 
-describe("the sheet tree panel", () => {
-  it("draws the tree with the sheet shown marked, and a click shows that use", () => {
+describe("the sheet menu", () => {
+  it("lists the sheets with the one shown marked, and a click shows that use and closes the menu", () => {
     const project = imp([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }]).project
     projectApi().open(project)
-    mount(<SheetsPanel />)
+    uiApi().setSheetMenu(true)
+    mount(<SheetMenu />)
+    expect(document.activeElement).toBe(rowButton("Main"))
     expect(names()).toEqual(["Main", "A", "B"])
     expect(rowButton("Main")!.getAttribute("aria-current")).toBe("true")
     expect(rowButton("A")!.getAttribute("aria-current")).toBeNull()
     expect(rowButton("A")!.textContent).toContain("×2")
     click(rowButton("B"))
     expect(uiApi().sheet).toBe("/h2")
+    expect(uiApi().sheetMenuOpen).toBe(false)
     expect(rowButton("B")!.getAttribute("aria-current")).toBe("true")
     expect(rowButton("Main")!.getAttribute("aria-current")).toBeNull()
     click(rowButton("Main"))
@@ -80,27 +83,27 @@ describe("the sheet tree panel", () => {
 
   it("has no folds: nothing in it is a folder", () => {
     projectApi().open(addSheet(imp().project, "/h1", { minX: 0, minY: 0, maxX: 2, maxY: 1 }, "Deep").project)
-    mount(<SheetsPanel />)
+    mount(<SheetMenu />)
     expect(names()).toEqual(["Main", "Power", "Deep"])
     expect(host.querySelector("[aria-expanded]")).toBeNull()
   })
 
-  it("takes the editor to the schematic when a sheet is picked from the PCB, and closes itself with its button", () => {
-    projectApi().open(imp().project)
-    uiApi().setView("pcb")
-    uiApi().toggleSheets()
-    expect(uiApi().sheetsOpen).toBe(true)
-    mount(<SheetsPanel />)
-    click(rowButton("Power"))
-    expect(useUi.getState().view).toBe("schematic")
-    expect(uiApi().sheet).toBe("/h1")
-    click(host.querySelector("button[aria-label='Hide sheets']"))
-    expect(uiApi().sheetsOpen).toBe(false)
+  it("moves between rows with the arrows, round from the last to the first", () => {
+    projectApi().open(addSheet(imp().project, "/h1", { minX: 0, minY: 0, maxX: 2, maxY: 1 }, "Deep").project)
+    mount(<SheetMenu />)
+    const key = (k: string) => act(() => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })))
+    key("ArrowDown")
+    expect(document.activeElement).toBe(rowButton("Power"))
+    key("ArrowDown")
+    key("ArrowDown")
+    expect(document.activeElement).toBe(rowButton("Main"))
+    key("ArrowUp")
+    expect(document.activeElement).toBe(rowButton("Deep"))
   })
 
   it("renames Main and a sheet below it by a double-click, and Escape keeps the name", () => {
     projectApi().open(imp().project)
-    mount(<SheetsPanel />)
+    mount(<SheetMenu />)
     dblclick(rowButton("Main"))
     type("Top level", "Enter")
     expect(names()).toEqual(["Top level", "Power"])
@@ -120,7 +123,7 @@ describe("the sheet tree panel", () => {
   it("lets a viewer look but not rename", () => {
     projectApi().open(imp().project)
     useProjectStore.setState({ role: "viewer" })
-    mount(<SheetsPanel />)
+    mount(<SheetMenu />)
     dblclick(rowButton("Power"))
     expect(host.querySelector("input")).toBeNull()
     useProjectStore.setState({ role: "owner" })
@@ -128,7 +131,7 @@ describe("the sheet tree panel", () => {
 
   it("lists a project of one sheet as Main alone, for a host that draws it anyway", () => {
     projectApi().open(addWire(createProject("one"), [{ x: 0, y: 0 }, { x: 1, y: 0 }]).project)
-    mount(<SheetsPanel />)
+    mount(<SheetMenu />)
     expect(names()).toEqual(["Main"])
   })
 })

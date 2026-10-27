@@ -282,7 +282,7 @@ describe("B4: resizing or moving a sheet symbol keeps the wires on its pins", ()
   function labelled(): Project {
     let p = createProject("t")
     p = good(p, "add_component", { part_id: "resistor", x: 0, y: 0 })
-    p = good(p, "add_sheet", { name: "POWER", page: "2" })
+    p = good(p, "add_sheet", { name: "POWER" })
     p = good(p, "add_component", { part_id: "resistor", sheet: "POWER", x: 0, y: 0 })
     p = good(p, "add_component", { part_id: "capacitor", sheet: "POWER", x: 5, y: 0 })
     const inner = p.components.find((c) => c.inst)!

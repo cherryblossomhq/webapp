@@ -31,19 +31,18 @@ const refused = (p: Project, name: string, input: Record<string, unknown>, ctx?:
 function withPower() {
   let p = createProject("t")
   p = good(p, "add_component", { part_id: "resistor", x: 0, y: 0 })
-  p = good(p, "add_sheet", { name: "POWER", page: "2" })
+  p = good(p, "add_sheet", { name: "POWER" })
   p = good(p, "add_component", { part_id: "resistor", sheet: "POWER", x: 0, y: 0 })
   p = good(p, "add_component", { part_id: "capacitor", sheet: "POWER", x: 5, y: 0 })
   return p
 }
 
 describe("add_sheet", () => {
-  it("makes a sheet symbol on the root and the empty sheet it stands for, with a name and a page", () => {
-    const p = good(createProject("t"), "add_sheet", { name: "POWER", page: "7" })
+  it("makes a sheet symbol on the root and the empty sheet it stands for, with a name", () => {
+    const p = good(createProject("t"), "add_sheet", { name: "POWER" })
     expect(isHierarchical(p)).toBe(true)
     const uses = sheetUses(p)
     expect(uses.map((u) => u.human)).toEqual(["/", "/POWER/"])
-    expect(uses[1].page).toBe("7")
     expect(p.sheetSymbols![0]).toMatchObject({ name: "POWER", sheet: "root" })
   })
 
@@ -55,10 +54,9 @@ describe("add_sheet", () => {
     expect(b.name).toBe("Sheet")
   })
 
-  it("refuses a duplicate name on the same sheet, a taken page, and too small a box", () => {
-    const p = good(createProject("t"), "add_sheet", { name: "POWER", page: "2" })
+  it("refuses a duplicate name on the same sheet and too small a box", () => {
+    const p = good(createProject("t"), "add_sheet", { name: "POWER" })
     expect(refused(p, "add_sheet", { name: "power" })).toMatch(/already has a sheet called power/)
-    expect(refused(p, "add_sheet", { name: "IO", page: "2" })).toMatch(/Page 2 is already \/POWER\//)
     expect(refused(p, "add_sheet", { name: "IO", w: 0.1 })).toMatch(/too small/)
     expect(refused(p, "add_sheet", { name: "IO", parent: "Nowhere" })).toMatch(/No sheet Nowhere/)
   })
@@ -138,16 +136,16 @@ describe("add_hier_label and wire_sheet_pin", () => {
 })
 
 describe("edit_sheet", () => {
-  it("renames, pages, resizes and moves in one call, and the pins follow the move", () => {
+  it("renames, resizes and moves in one call, and the pins follow the move", () => {
     let p = withPower()
     const r = p.components.find((c) => c.inst)!
     p = good(p, "add_hier_label", { sheet: "POWER", name: "VOUT", pins: [`${r.ref}.2`], shape: "output" })
     const before = p.sheetSymbols![0]
     const pin = before.pins[0]
-    p = good(p, "edit_sheet", { sheet: "POWER", name: "SUPPLY", page: "3", w: 14, h: 10, x: before.x + 4, y: before.y + 2 })
+    p = good(p, "edit_sheet", { sheet: "POWER", name: "SUPPLY", w: 14, h: 10, x: before.x + 4, y: before.y + 2 })
     const sym = p.sheetSymbols![0]
     expect(sym).toMatchObject({ name: "SUPPLY", w: 14, h: 10 })
-    expect(sheetUses(p)[1]).toMatchObject({ human: "/SUPPLY/", page: "3" })
+    expect(sheetUses(p)[1]).toMatchObject({ human: "/SUPPLY/" })
     expect(sym.pins[0].x).toBeCloseTo(sym.x + 14, 3)
     expect(sym.pins[0].y).toBeGreaterThan(pin.y)
   })
@@ -168,7 +166,6 @@ describe("edit_sheet", () => {
     expect(refused(p, "edit_sheet", { sheet: "IO", w: 20, name: "POWER" })).toMatch(/already has a sheet called POWER/)
     expect(refused(p, "edit_sheet", { sheet: "IO", w: 20, remove_pins: ["x"] })).toMatch(/no pin x/)
     expect(refused(p, "edit_sheet", { sheet: "IO" })).toMatch(/Nothing to change/)
-    expect(refused(p, "edit_sheet", { sheet: "IO", page: "2" })).toMatch(/Page 2 is already/)
   })
 
   it("refuses the root and an unknown sheet", () => {
@@ -221,12 +218,12 @@ describe("show_sheet", () => {
 })
 
 describe("get_design lists the hierarchy", () => {
-  it("gives each sheet its path, page, box and pins", () => {
+  it("gives each sheet its path, box and pins", () => {
     let p = withPower()
     p = good(p, "edit_sheet", { sheet: "POWER", add_pins: [{ name: "EN", shape: "input" }] })
     const d = JSON.parse(run(p, "get_design", {}).result)
-    expect(d.sheets[0]).toMatchObject({ path: "/", page: "1" })
-    expect(d.sheets[1]).toMatchObject({ path: "/POWER/", page: "2", box: { w: 10, h: 8 }, pins: ["EN (input)"] })
+    expect(d.sheets[0]).toEqual({ path: "/" })
+    expect(d.sheets[1]).toMatchObject({ path: "/POWER/", box: { w: 10, h: 8 }, pins: ["EN (input)"] })
   })
 })
 

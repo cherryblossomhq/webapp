@@ -73,9 +73,9 @@ interface UiState {
   panelOpen: boolean
   /** The copilot (Sakura), a column of its own between the parts library and the canvas. */
   copilotOpen: boolean
-  /** The tree of the schematic's sheets, the leftmost column; it has nothing to show for a project of one sheet. */
-  sheetsOpen: boolean
-  /** Version history (`panels/HistoryPanel.tsx`), a column beside the sheet tree. Starts closed, and is not remembered. */
+  /** The menu of every sheet, over the left end of the sheet tabs (`panels/SheetMenu.tsx`); a project of one sheet has none. */
+  sheetMenuOpen: boolean
+  /** Version history (`panels/HistoryPanel.tsx`), a column on the left. Starts closed, and is not remembered. */
   historyOpen: boolean
   cursor: { x: number; y: number } | null
   /**
@@ -109,7 +109,7 @@ interface UiState {
   togglePanel: () => void
   setCopilotOpen: (open: boolean) => void
   toggleCopilot: () => void
-  toggleSheets: () => void
+  setSheetMenu: (open: boolean) => void
   toggleHistory: () => void
   setCursor: (c: { x: number; y: number } | null) => void
   focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
@@ -134,7 +134,7 @@ export const useUi = create<UiState>((set, get) => ({
   libraryOpen: wide(),
   panelOpen: wide(),
   copilotOpen: false,
-  sheetsOpen: false,
+  sheetMenuOpen: false,
   historyOpen: false,
   cursor: null,
   focusRequest: null,
@@ -171,7 +171,7 @@ export const useUi = create<UiState>((set, get) => ({
   togglePanel: () => set({ panelOpen: !get().panelOpen }),
   setCopilotOpen: (copilotOpen) => set({ copilotOpen }),
   toggleCopilot: () => set({ copilotOpen: !get().copilotOpen }),
-  toggleSheets: () => set({ sheetsOpen: !get().sheetsOpen }),
+  setSheetMenu: (sheetMenuOpen) => set({ sheetMenuOpen }),
   toggleHistory: () => set({ historyOpen: !get().historyOpen }),
   setCursor: (cursor) => set({ cursor }),
   focus: (view, x, y, box, fit) =>

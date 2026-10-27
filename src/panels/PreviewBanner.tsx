@@ -42,6 +42,7 @@ export function PreviewBanner() {
           </Button>
         )}
       </div>
+      {canRestore && <p className="text-[11.5px] text-ink-3">Restoring clears your undo history. The current state is kept as a version.</p>}
       {error && (
         <p role="alert" className="text-danger">
           {error}

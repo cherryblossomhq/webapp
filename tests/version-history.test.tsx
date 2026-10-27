@@ -219,6 +219,7 @@ describe("restoring with two copies open", () => {
     await click(rowOf("+1 part"))
     await flush()
     expect(api().project!.wires).toHaveLength(0)
+    expect(host.textContent).toContain("Restoring clears your undo history. The current state is kept as a version.")
     await click(button("Restore this version"))
     await flush(500)
 

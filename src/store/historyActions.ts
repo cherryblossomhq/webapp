@@ -55,8 +55,8 @@ export async function restorePreview(): Promise<ActionResult> {
     await settleSaves()
     const outcome = await source.restore(project.id, preview.version.id, PROJECT_FILE_VERSION)
     if (!outcome.ok) return { ok: false, message: RESTORE_REFUSED[outcome.reason] }
-    // What is shown is the project now; the log's entry for the restore makes every copy load it again.
-    projectApi().endPreview(true)
+    // The log's entry for the restore makes every copy, this one too, load the restored document at once.
+    projectApi().endPreview()
     projectApi().clearHistory()
     return { ok: true }
   } catch {

@@ -292,7 +292,7 @@ export function nearestInAreas(c: ComponentInstance, areas: Zone[], want: { x: n
       continue
     }
     // Any other shape: a grid over the positions the box allows, the nearest that fits.
-    const step = Math.max(0.25, Math.sqrt(((x1 - x0) * (y1 - y0)) / 30000))
+    const step = Math.max(0.25, Math.sqrt(((x1 - x0) * (y1 - y0)) / 8000))
     for (let x = x0; x <= x1 + 1e-9; x += step) {
       for (let y = y0; y <= y1 + 1e-9; y += step) if (closer(x, y) && fits(a, x, y)) take(x, y)
     }

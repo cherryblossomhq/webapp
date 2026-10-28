@@ -34,6 +34,7 @@ import { normalizePath, type SchematicTree } from "../schematic/tree"
 import { KicadRulesFileError, accountRules, readKicadRules, reportUnknownRules, type KicadRules } from "./dru"
 import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegacyPro } from "./legacyPro"
 import { applyClassRules } from "./classRules"
+import { applyProRules, lostRuleSettings } from "./rules"
 import { KicadProjectFileError, accountPro, designSettingsNeeds, proBusAliases, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
 
 // The KiCad project import: a `.kicad_pro`, the `.kicad_sch` sheets and the `.kicad_pcb`, as one
@@ -244,13 +245,40 @@ function compareNets(project: Project, pairs: { fp: KicadFootprint; components: 
   return out
 }
 
-function noteRulesFile(report: ImportReport) {
-  report.entries.push({
-    code: "rules-in-project-file",
-    severity: "note",
-    object: "the design rules",
-    why: "The project file's net classes and design rules are read and accounted for, but not brought into the project yet: they are pending the net class and rules extension (X10). The project has the editor's default rules.",
-  })
+/**
+ * What the project file and the rules file say that the project does not hold, once the project file's net classes and design rules are in
+ * (`applyProRules`): the settings the editor has no field for, and the custom rules of a `.kicad_dru`, which the editor does not apply.
+ */
+function noteRulesLeft(report: ImportReport, pro: KicadPro | null, rules: KicadRules | null, legacyPro: boolean) {
+  if (pro && !legacyPro) {
+    const lost = lostRuleSettings(pro)
+    if (lost.length) {
+      report.entries.push({
+        code: "rules-not-brought",
+        severity: "note",
+        object: "design settings with no counterpart",
+        why: `The project file sets ${lost.slice(0, 4).join(", ")}${lost.length > 4 ? ", ..." : ""}, which the editor has no setting for, so the project keeps its own.`,
+        count: lost.length,
+      })
+    }
+  }
+  if (rules && rules.rules.length) {
+    report.entries.push({
+      code: "custom-rules-not-applied",
+      severity: "note",
+      object: `${rules.rules.length} custom design rule${rules.rules.length > 1 ? "s" : ""} (.kicad_dru)`,
+      why: `The rules file is read and every rule is accounted for (${rules.rules.slice(0, 3).map((r) => JSON.stringify(r.name)).join(", ")}${rules.rules.length > 3 ? ", ..." : ""}), but the editor has no language for custom rules, so Checks do not apply them. KiCad would.`,
+      count: rules.rules.length,
+    })
+  }
+}
+
+/** The labels the board's nets have in the project, as the board builder makes them. */
+function boardNetLabels(board: KicadBoard): Map<string, string> {
+  const all = new Set<string>()
+  for (const f of board.footprints) for (const p of f.pads) if (p.netRaw) all.add(p.netRaw)
+  for (const o of [...board.segments, ...board.arcTracks, ...board.vias, ...board.shapes, ...board.footprints.flatMap((f) => f.shapes), ...board.zones]) if (o.netRaw) all.add(o.netRaw)
+  return netLabelNames(new Map(), { entries: [], account: null }, all)
 }
 
 /** The board as the board builder makes it with every approximation allowed: for measurement only. */
@@ -352,7 +380,13 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
     // X20: the class rules of the project file, worked out for the footprints.
     const classed = applyClassRules(pro, boardResult.project.components)
     report.entries.push(...classed.entries)
-    const boardProject = classed.components === boardResult.project.components ? boardResult.project : { ...boardResult.project, components: classed.components }
+    let boardProject = classed.components === boardResult.project.components ? boardResult.project : { ...boardResult.project, components: classed.components }
+    noteRulesLeft(report, pro, rules, !!picked.proIsLegacy)
+    if (pro && !picked.proIsLegacy) {
+      const withRules = applyProRules(boardProject, pro, kicadBoard, boardNetLabels(kicadBoard), report)
+      if (withRules.problems.length) return refuse("inexact", `The project file's net classes cannot be brought in exactly: ${withRules.problems.slice(0, 3).join("; ")}${withRules.problems.length > 3 ? "; ..." : ""}. Nothing is guessed, so the project is not imported.`)
+      boardProject = withRules.project
+    }
     return { status: "imported", project: boardProject, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
   }
   const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
@@ -368,7 +402,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
     for (const n of missingPro) report.entries.push({ code: "unsupported", severity: "refused", object: NAMES[n.ext] ?? n.ext, why: `${n.why} (${n.ext}); the editor cannot hold it yet.` })
     return refuse("unsupported", `${refusalMessage(missingPro, "This project's settings use", NAMES)} The project is not imported; ${boardAlone}.`, missingPro, true)
   }
-  if (pro || rules) noteRulesFile(report)
+  noteRulesLeft(report, pro, rules, !!picked.proIsLegacy)
 
   // The footprints of the board, linked to the symbols of the schematic.
   const link = linkFootprints(gate.tree, kicadBoard.footprints.map((f) => ({ ref: f.ref, path: f.path })))
@@ -424,6 +458,12 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- one project: the board's copper and lands, the schematic's parts, wires and labels ----------
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
+  // X10: the project file's net classes and design rules, before the classes the schematic's labels give.
+  if (pro && !picked.proIsLegacy) {
+    const withRules = applyProRules(merged.project, pro, kicadBoard, boardNetLabels(kicadBoard), report)
+    if (withRules.problems.length) return refuseBuilt("inexact", `The project file's net classes cannot be brought in exactly: ${withRules.problems.slice(0, 3).join("; ")}${withRules.problems.length > 3 ? "; ..." : ""}. Nothing is guessed, so the project is not imported.`, [], true)
+    merged.project = withRules.project
+  }
   // S8: the net classes the schematic's labels give, on top of the project file's.
   merged.project = settleImportedLabelClasses(merged.project, report)
   // X20: the class rules of the project file, worked out for the footprints.

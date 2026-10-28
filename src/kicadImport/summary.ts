@@ -196,6 +196,17 @@ function broughtOf(p: Project): ImportSummary["brought"] {
   ].filter((b) => b.count > 0)
 }
 
+/**
+ * Who wrote a file, from its `generator` and `generator_version`: KiCad's own programs (`pcbnew`, `eeschema`, the
+ * editors) say "KiCad 9.0", any other program by its own name ("circuit-json-to-kicad 0.0.1"). A version alone,
+ * which a file of KiCad 6 and 7 gives, is KiCad's.
+ */
+export function generatorLabel(name: string | null, version: string | null): string | null {
+  const own = !name || /^(?:pcbnew|eeschema|kicad|kicad_pcb|kicad_sch|kicad_symbol_editor|kicad_pcb_editor|pcb_editor|sch_editor)/i.test(name)
+  if (own) return version ? `KiCad ${version}` : name ? "KiCad" : null
+  return version ? `${name} ${version}` : name
+}
+
 /** The summary of an import result. Pass the project's own size, which the importer measured. */
 export function summarize(result: ImportResult, files: FileContext): ImportSummary {
   const board = result.board
@@ -206,7 +217,7 @@ export function summarize(result: ImportResult, files: FileContext): ImportSumma
     ...(kind !== "board" ? { kind } : {}),
     stamp: board?.version ?? result.file?.stamp ?? null,
     era: board?.era ?? result.file?.era ?? null,
-    generator: board?.generatorVersion ?? board?.generator ?? result.file?.generator ?? null,
+    generator: board ? generatorLabel(board.generator, board.generatorVersion) : (result.file?.generator ?? null),
     boardBytes: files.boardBytes,
     accounted: account
       ? {
@@ -283,7 +294,7 @@ export function reportText(s: ImportSummary, projectName: string): string {
   const section = (title: string, lines: string[]) => lines.length && out.push("", title, ...lines.map((l) => `  ${l}`))
   const entry = (e: EntryLine) => `${e.object}: ${e.why}`
   out.push(`KiCad import report: ${projectName}`, s.status === "imported" ? "Result: imported." : "Result: not imported.", s.message)
-  if (s.stamp !== null) out.push(`KiCad file version: ${s.stamp}${s.generator ? ` (written by KiCad ${s.generator})` : ""}`)
+  if (s.stamp !== null) out.push(`KiCad file version: ${s.stamp}${s.generator ? ` (written by ${s.generator})` : ""}`)
   if (s.detail) out.push(`Technical detail: ${s.detail}`)
   if (s.projectBytes !== null) out.push(`Project size: ${(s.projectBytes / 1024).toFixed(0)} KB`)
   section("Brought in", s.brought.map((b) => `${b.count} ${b.label}`))

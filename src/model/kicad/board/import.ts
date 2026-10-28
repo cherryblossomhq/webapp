@@ -156,7 +156,7 @@ function noteRulesFile(board: KicadBoard, report: ImportReport) {
     code: "rules-in-project-file",
     severity: "note",
     object: "the design rules",
-    why: "KiCad 6 and later keep the design rules (net classes, clearances, track and via sizes) in the project file, `.kicad_pro`, not in the board. Only the board was read, so the project has the editor's default rules, except for the few the board itself states (mask and paste margins, the mask web, the paste ratio, the smallest drill and annular ring, the hole to hole distance, the zone and edge clearances). Its net classes need the project file reader, which is not built yet.",
+    why: "KiCad 6 and later keep the design rules (net classes, clearances, track and via sizes) in the project file, `.kicad_pro`, not in the board. Only the board was read, so the project has the editor's default rules, except for the few the board itself states (mask and paste margins, the mask web, the paste ratio, the smallest drill and annular ring, the hole to hole distance, the zone and edge clearances). Its net classes and rules come in when the project is imported with its `.kicad_pro` beside the board.",
   })
 }
 

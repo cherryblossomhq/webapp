@@ -3,7 +3,7 @@ import type { KicadProjectResult } from "../model/kicad/project/import"
 import type { SchematicImportResult } from "../model/kicad/schematic/import"
 import { baseName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, type InputFile, type ProjectFiles } from "./pick"
 import type { StartRequest, WorkerEvent } from "./protocol"
-import { emptyContext, stoppedSummary, summarize, type FileContext, type ImportResult } from "./summary"
+import { emptyContext, generatorLabel, stoppedSummary, summarize, type FileContext, type ImportResult } from "./summary"
 
 // One import job, start to finish: open the zips, pick the board, read it, run the importer and
 // summarize. It runs in the worker (`worker.ts`) and, where the browser has no workers, on the page.
@@ -57,7 +57,7 @@ export function fromProjectResult(r: KicadProjectResult): ImportResult {
 /** The schematic importer's result as the report screen reads it; there is no board, so the file's own stamp and release are said. */
 export function fromSchematicResult(r: SchematicImportResult): ImportResult {
   const root = r.tree?.files.get(r.tree.root)?.schematic
-  const file = { stamp: root?.version ?? null, era: root?.era ?? null, generator: root?.generatorVersion ?? root?.generator ?? null }
+  const file = { stamp: root?.version ?? null, era: root?.era ?? null, generator: root ? generatorLabel(root.generator, root.generatorVersion) : null }
   if (r.status === "imported") return { status: "imported", project: r.project, report: r.report, bytes: r.bytes, file, kind: "schematic" }
   return { status: "refused", reason: r.reason, message: r.message, report: r.report, needs: r.needs, file, kind: "schematic" }
 }

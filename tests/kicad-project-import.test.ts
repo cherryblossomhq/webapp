@@ -70,7 +70,9 @@ describe("a board and its schematic", () => {
     expect(r.accounts.board?.unknownPaths.size).toBe(0)
     expect(r.accounts.schematic?.unknownPaths.size).toBe(0)
     expect(r.accounts.schematic?.paths.get("symbol")).toBe(4)
-    expect(r.accounts.pro?.pending.get("X10")).toBeGreaterThan(0)
+    // the net classes are brought into the project's rules, so they are imported, not pending
+    expect(r.accounts.pro?.pending.get("X10")).toBeUndefined()
+    expect(r.accounts.pro?.importedPaths.get("net_settings>classes")).toBe(1)
     expect(r.accounts.rules?.notNeeded.get("the rules file's own version")).toBe(1)
   })
 
@@ -332,14 +334,12 @@ describe("the project file and the design rules", () => {
     })
   const run = (more: ProjectFile[], built: ReadonlySet<string> = NO_X10) => importKicadProject(files(dividerBoard(), divider(), more), { built })
 
-  it("reads a project file with only the defaults, and says that its rules are not brought yet", () => {
+  it("reads a project file with only the defaults: nothing to say about rules, and the board importer's note about a file it did not read is gone", () => {
     const r = imported(run([{ path: "demo.kicad_pro", data: proJson() }]))
     expect(r.pro?.netClasses.map((c) => c.name)).toEqual(["Default"])
-    const note = r.report.entries.find((e) => e.code === "rules-in-project-file")!
-    expect(note.severity).toBe("note")
-    expect(note.why).toBe("The project file's net classes and design rules are read and accounted for, but not brought into the project yet: they are pending the net class and rules extension (X10). The project has the editor's default rules.")
-    // the board importer's own note about the rules being in a file it did not read is replaced
-    expect(r.report.entries.filter((e) => e.code === "rules-in-project-file")).toHaveLength(1)
+    expect(r.report.entries.filter((e) => e.code === "rules-in-project-file")).toHaveLength(0)
+    expect(r.report.entries.filter((e) => e.code === "rules-from-project-file")).toHaveLength(0)
+    expect(r.project.rules.netClasses).toBeUndefined()
   })
 
   it("net classes beyond the default, nets assigned to them, or custom rules are pending X10: the project is refused until it is built", () => {
@@ -403,7 +403,7 @@ describe("the project file and the design rules", () => {
     expect(a.pending.get("X10")).toBeGreaterThan(0)
     expect(a.pending.get("S4")).toBeGreaterThan(0)
     expect([...a.notNeeded.keys()]).toContain("the file's own name and version")
-    expect([...a.pending.values(), ...a.notNeeded.values()].reduce((x, y) => x + y, 0)).toBe(a.total)
+    expect(a.imported + [...a.pending.values(), ...a.notNeeded.values()].reduce((x, y) => x + y, 0)).toBe(a.total)
   })
 
   it("a rules file: comments are cut out, every rule is pending X10, and a damaged file is named", () => {

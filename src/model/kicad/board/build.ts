@@ -1128,7 +1128,7 @@ function compareCopperNets(project: Project, conn: SchematicConnectivity, board:
       code: "copper-net-differs",
       severity: "changed",
       object: `${items.length} trace${items.length > 1 ? "s and vias" : " or via"} whose net the editor derives differently (${items.slice(0, 3).join("; ")}${items.length > 3 ? "; ..." : ""})`,
-      why: "The editor works out a trace's net from the pads it touches. For these the file says another net, or none. The file's net is kept on the item, so Checks shows the difference as a short or an unrouted connection.",
+      why: "The editor works out a trace's net from the pads it touches and the copper pours it lies in. For these the file says another net, or none. The file's net is kept on the item, so Checks shows the difference as a short or an unrouted connection.",
       count: items.length,
       items,
     })

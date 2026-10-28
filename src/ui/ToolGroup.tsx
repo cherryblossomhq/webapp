@@ -42,12 +42,14 @@ export function ToolGroup<T extends string>({
   const [open, setOpen] = useState(false)
   const wrapper = useRef<HTMLDivElement>(null)
   useDismiss(wrapper, open, () => setOpen(false))
+  // Kept by the tools the group holds, not its label: the schematic's and the board's "Drawing tools" are two groups that share a label and some values.
+  const key = tools.map((t) => t.value).join(" ")
   const on = tools.find((t) => t.value === active)
-  const shown = on ?? tools.find((t) => t.value === shownByGroup.get(label)) ?? tools[0]
+  const shown = on ?? tools.find((t) => t.value === shownByGroup.get(key)) ?? tools[0]
   const onValue = on?.value
   useEffect(() => {
-    if (onValue) shownByGroup.set(label, onValue)
-  }, [label, onValue])
+    if (onValue) shownByGroup.set(key, onValue)
+  }, [key, onValue])
 
   const pick = (t: T) => {
     setOpen(false)

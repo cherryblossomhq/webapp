@@ -124,7 +124,7 @@ export function addSheetUse(project: Project, parent: string, child: string, box
     h: first?.h ?? Math.max(snap(box.maxY - box.minY), GRID * 2),
     name: name?.trim() || freshName(project, first?.name ?? "Sheet"),
     // The pins are those of the sheet, as on its first symbol, along the same edges.
-    pins: (first?.pins ?? []).map((p) => ({ ...p, id: p.id, x: p.x - first!.x + snap(box.minX), y: p.y - first!.y + snap(box.minY), uuid: undefined })),
+    pins: (first?.pins ?? []).map((p) => ({ ...p, id: p.id, x: p.x - first!.x + snap(box.minX), y: p.y - first!.y + snap(box.minY) })),
   }
   const before = new Set(sheetUses(project).map((u) => u.path))
   let next = touch({ ...project, sheetSymbols: [...(project.sheetSymbols ?? []), symbol] })

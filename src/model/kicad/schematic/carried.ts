@@ -1,3 +1,4 @@
+import { normalizeAngle } from "../../../lib/geometry"
 import { flagOf, kid, kids, numAt, strAt, type List } from "../board/sexpr"
 import { pinsOfUnit, resolveLibSymbol, toSheet } from "./symbols"
 import type { KicadSchematic, PlacedSymbol, Pt, SheetFile } from "./types"
@@ -100,7 +101,7 @@ const strokeIsPlain = (node: List | undefined): boolean => {
 
 /** The default justification of a label by its angle: KiCad writes it out in every file. */
 export function defaultJustify(angle: number): string {
-  const a = ((Math.round(angle) % 360) + 360) % 360
+  const a = normalizeAngle(Math.round(angle))
   return a === 180 || a === 270 ? "right bottom" : "left bottom"
 }
 

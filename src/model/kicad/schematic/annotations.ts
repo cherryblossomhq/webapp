@@ -1,4 +1,4 @@
-import { round } from "../../../lib/geometry"
+import { normalizeAngle, round } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
 import { kicadText } from "../../sheetItems"
 import type { DrawingTable, FillKind, LabelField, RuleAreaMark, SchematicDrawing, SheetFill, SheetStroke, StrokeDash, TableCell, TextLook, Vec2 } from "../../types"
@@ -81,7 +81,7 @@ export function textLookOf(node: List | undefined, notes?: Set<string>): TextLoo
 
 /** A turn of a sheet item: KiCad's angle, a quarter turn only. */
 function turnOf(angle: number): 0 | 90 | 180 | 270 | null {
-  const a = ((Math.round(angle) % 360) + 360) % 360
+  const a = normalizeAngle(Math.round(angle))
   return Math.abs(angle - Math.round(angle)) < 1e-9 && a % 90 === 0 ? (a as 0 | 90 | 180 | 270) : null
 }
 

@@ -1,4 +1,4 @@
-import { round } from "../../../lib/geometry"
+import { normalizeAngle, round } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
 import { computeConnectivity, pinKey } from "../../connectivity"
 import { labelJustify } from "../../labelShapes"
@@ -417,7 +417,7 @@ function buildPass(
       if (record) {
         if (use.first) recordOf.set(sym, record)
       }
-      const angle = ((Math.round(sym.angle) % 360) + 360) % 360
+      const angle = normalizeAngle(Math.round(sym.angle))
       if (angle % 90 !== 0) {
         lose("S5", "a symbol turned by other than a quarter turn")
         continue
@@ -789,7 +789,7 @@ function buildPass(
     // ---------- labels ----------
     /** A label with the kind, shape, size, style and fields its file gave it. */
     const labelOf = (l: SchLabel): NetLabel | null => {
-      const turn = ((Math.round(l.angle) % 360) + 360) % 360
+      const turn = normalizeAngle(Math.round(l.angle))
       if (turn % 90 !== 0 || Math.abs(l.angle - Math.round(l.angle)) > 1e-9) {
         report.entries.push({ code: "label-not-held", severity: "refused", object: `the label ${l.text}`, why: "It is turned by other than a quarter turn, which the editor cannot draw." })
         return null
@@ -818,7 +818,7 @@ function buildPass(
     }
     /** S8: a directive label (`netclass_flag`) as the drawing the editor holds: its pin, shape and turn, its look and every property it has. */
     const directiveOf = (l: SchLabel): DrawingDirective | null => {
-      const turn = ((Math.round(l.angle) % 360) + 360) % 360
+      const turn = normalizeAngle(Math.round(l.angle))
       if (turn % 90 !== 0 || Math.abs(l.angle - Math.round(l.angle)) > 1e-9) {
         report.entries.push({ code: "label-not-held", severity: "refused", object: "a directive label", why: "It is turned by other than a quarter turn, which the editor cannot draw." })
         return null
@@ -1055,7 +1055,7 @@ function buildPass(
   function sheetSymbolOf(f: SheetFile, s: SchSheet, id: string, parent: string, child: string): SheetSymbol | null {
     const stampOf = stamp(f)
     const props = readProps(s.node, stampOf)
-    const angled = s.pins.filter((p) => ![0, 90, 180, 270].includes(((Math.round(p.angle) % 360) + 360) % 360) || Math.abs(p.angle - Math.round(p.angle)) > 1e-9)
+    const angled = s.pins.filter((p) => ![0, 90, 180, 270].includes(normalizeAngle(Math.round(p.angle))) || Math.abs(p.angle - Math.round(p.angle)) > 1e-9)
     if (angled.length) {
       report.entries.push({ code: "sheet-pin-not-held", severity: "refused", object: `the pin ${angled[0].name} of the sheet ${s.name ?? ""}`, why: "It is turned by other than a quarter turn, which the editor cannot draw." })
       return null
@@ -1064,7 +1064,7 @@ function buildPass(
     const pins: SheetPin[] = s.pins.map((p, i) => {
       if (!SHAPES.has(p.type)) report.entries.push({ code: "sheet-pin-not-held", severity: "refused", object: `the pin ${p.name} of the sheet ${s.name ?? ""}`, why: `Its shape "${p.type}" is not one KiCad has.` })
       const look = textLookOf(p.node, textNotes)
-      return { id: `p${i + 1}`, name: p.name, shape: (SHAPES.has(p.type) ? p.type : "bidirectional") as LabelShape, x: pxOf(f)(p.at.x), y: pyOf(f)(p.at.y), rot: ((((Math.round(p.angle) % 360) + 360) % 360) as Rotation), ...(look ? { look } : {}) }
+      return { id: `p${i + 1}`, name: p.name, shape: (SHAPES.has(p.type) ? p.type : "bidirectional") as LabelShape, x: pxOf(f)(p.at.x), y: pyOf(f)(p.at.y), rot: (normalizeAngle(Math.round(p.angle)) as Rotation), ...(look ? { look } : {}) }
     })
     const out: SheetSymbol = {
       id,

@@ -1,4 +1,4 @@
-import { round } from "../../../lib/geometry"
+import { normalizeAngle, round } from "../../../lib/geometry"
 import { digest, drawingKey } from "../../customParts"
 import type {
   CustomPartSpec,
@@ -74,7 +74,7 @@ export function toSheet(p: Pt, sym: Pick<PlacedSymbol, "at" | "angle" | "mirror"
   // The symbol's frame is y up, the sheet's y down.
   const x0 = p.x
   const y0 = -p.y
-  const a = ((Math.round(sym.angle) % 360) + 360) % 360
+  const a = normalizeAngle(Math.round(sym.angle))
   let x = x0
   let y = y0
   // Counter-clockwise on a y-down screen: (x, y) becomes (x cos + y sin, -x sin + y cos), exact for quarter turns.
@@ -215,7 +215,7 @@ const PIN_SHAPES = new Set<string>(["line", "inverted", "clock", "inverted_clock
 function pinOf(p: LibPin): DrawingPin | string {
   if (!PIN_TYPES.has(p.type)) return `a pin of the type "${p.type}"`
   if (!PIN_SHAPES.has(p.shape)) return `a pin of the shape "${p.shape}"`
-  const angle = ((Math.round(p.angle) % 360) + 360) % 360
+  const angle = normalizeAngle(Math.round(p.angle))
   if (angle % 90 !== 0) return "a pin that does not point along an axis"
   const fontSize = (field: string) => {
     const size = numAt(kid(kid(kid(kid(p.node, field), "effects"), "font"), "size"), 1, 1.27)

@@ -1,5 +1,5 @@
 // What the importer does with every node and every value atom of a KiCad board, as data. The gap
-// list in `docs/kicad-import.md` and `docs/kicad-import-nodes.md` is generated from it
+// list in `docs/kicad-import.md` is generated from it
 // (`gap-table.mjs`), and Phase 1's reader is meant to read this table (or a typed copy) so that
 // "every node is imported, deliberately not needed, or reported" is a lookup and not a habit. A
 // node or atom the census sees that nothing here covers fails the run, and

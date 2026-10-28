@@ -1,4 +1,4 @@
-// The per-node gap table of `docs/kicad-import-nodes.md`, from the census and `decisions.mjs`.
+// The per-node gap table of `docs/kicad-import.md`, printed to stdout, from the census and `decisions.mjs`.
 //
 //   node tests/kicad-census/gap-table.mjs <census-out> [--summary]
 //

@@ -9,7 +9,7 @@ import { imageState } from "../store/imageFiles"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
-import { CommitInput, LengthInput, Row, Section, Switch, useLengthUnit } from "../ui/form"
+import { CommitInput, LayerSelect, LengthInput, Row, Section, switchRow, useLengthUnit } from "../ui/form"
 import { layerGroups } from "./shapeInspector"
 
 const MIXED = "\u0000mixed"
@@ -18,37 +18,6 @@ const MIXED = "\u0000mixed"
 function common<T, V>(items: T[], pick: (t: T) => V): V | typeof MIXED {
   const first = pick(items[0])
   return items.every((x) => pick(x) === first) ? first : MIXED
-}
-
-const flagRow = (label: string, hint: string, value: boolean | typeof MIXED, on: (v: boolean) => void) => (
-  <div className="flex items-center justify-between gap-3">
-    <span className="text-[12.5px] text-ink-2" title={hint}>
-      {label}
-      {value === MIXED ? " (mixed)" : ""}
-    </span>
-    <Switch label={label} checked={value === true} onChange={on} />
-  </div>
-)
-
-function LayerSelect({ layers, value, onChange }: { layers: string[]; value: string | typeof MIXED; onChange: (layer: string) => void }) {
-  return (
-    <select className="field h-8" aria-label="Layer" value={value === MIXED ? "" : value} onChange={(e) => e.target.value && onChange(e.target.value)}>
-      {value === MIXED && (
-        <option value="" disabled>
-          Mixed
-        </option>
-      )}
-      {layerGroups(layers).map((g) => (
-        <optgroup key={g.label} label={g.label}>
-          {g.layers.map((l) => (
-            <option key={l.name} value={l.name}>
-              {l.label}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
-  )
 }
 
 const UNIT_MODES = [
@@ -89,7 +58,7 @@ export function DimensionInspector({ dims, project }: { dims: BoardDimension[]; 
       {one && one.kind !== "center" && <Row label="Shows" value={text ? text : "(nothing)"} mono />}
       {one && <Row label="Measures" value={`${formatLength(dimensionDrawing(one).measured / 1e6, unit, true)}`} mono />}
       <Field label="Layer">
-        <LayerSelect layers={dims.map((d) => d.layer)} value={common(dims, (d) => d.layer)} onChange={(layer) => edit(ids, { layer })} />
+        <LayerSelect groups={layerGroups(dims.map((d) => d.layer))} value={common(dims, (d) => d.layer)} mixed={MIXED} onChange={(layer) => edit(ids, { layer })} />
       </Field>
       {kind !== "center" && (
         <>
@@ -134,7 +103,7 @@ export function DimensionInspector({ dims, project }: { dims: BoardDimension[]; 
               ))}
             </select>
           </Field>
-          {flagRow("Drop trailing zeros", "1.50 is shown as 1.5", common(dims, (d) => d.zeros === true), (zeros) => edit(ids, { zeros }))}
+          {switchRow("Drop trailing zeros", "1.50 is shown as 1.5", common(dims, (d) => d.zeros === true), (zeros) => edit(ids, { zeros }))}
           <Field label="Text size">
             <LengthInput min={0.1} value={common(dims, (d) => d.size) === MIXED ? null : dims[0].size} optional placeholder={common(dims, (d) => d.size) === MIXED ? "Mixed" : undefined} onCommit={(v) => v !== null && edit(ids, { size: v })} />
           </Field>
@@ -148,7 +117,7 @@ export function DimensionInspector({ dims, project }: { dims: BoardDimension[]; 
               ))}
             </select>
           </Field>
-          {flagRow("Text turns with the line", "Keep the text aligned with the crossbar", common(dims, (d) => d.keep === true), (keep) => edit(ids, { keep }))}
+          {switchRow("Text turns with the line", "Keep the text aligned with the crossbar", common(dims, (d) => d.keep === true), (keep) => edit(ids, { keep }))}
         </>
       )}
       {aligned && one && (
@@ -190,8 +159,8 @@ export function DimensionInspector({ dims, project }: { dims: BoardDimension[]; 
           <LengthInput min={0} value={common(dims, (d) => d.arrow) === MIXED ? null : dims[0].arrow} optional placeholder={common(dims, (d) => d.arrow) === MIXED ? "Mixed" : undefined} onCommit={(v) => v !== null && edit(ids, { arrow: v })} />
         </Field>
       </div>
-      {aligned && flagRow("Arrows point inwards", "From outside the crossbar, with a tail", common(dims, (d) => d.inward === true), (inward) => edit(ids, { inward }))}
-      {flagRow("Locked", "A locked dimension stays where it is when it is moved", common(dims, (d) => d.locked === true), (locked) => edit(ids, { locked }))}
+      {aligned && switchRow("Arrows point inwards", "From outside the crossbar, with a tail", common(dims, (d) => d.inward === true), (inward) => edit(ids, { inward }))}
+      {switchRow("Locked", "A locked dimension stays where it is when it is moved", common(dims, (d) => d.locked === true), (locked) => edit(ids, { locked }))}
       <GroupSection project={project} />
       <Button
         variant="danger"
@@ -223,7 +192,7 @@ export function ImageInspector({ images, project }: { images: ReferenceImage[]; 
   return (
     <Section title={images.length > 1 ? `${images.length} reference images` : "Reference image"}>
       <Field label="Layer">
-        <LayerSelect layers={images.map((m) => m.layer)} value={common(images, (m) => m.layer)} onChange={(layer) => editImage(ids, { layer })} />
+        <LayerSelect groups={layerGroups(images.map((m) => m.layer))} value={common(images, (m) => m.layer)} mixed={MIXED} onChange={(layer) => editImage(ids, { layer })} />
       </Field>
       {one && (
         <>
@@ -242,7 +211,7 @@ export function ImageInspector({ images, project }: { images: ReferenceImage[]; 
       <Field label="Scale">
         <CommitInput type="number" min={0.001} step={0.05} mono ariaLabel="Scale" value={common(images, (m) => m.scale) === MIXED ? "" : images[0].scale} onCommit={(v) => Number(v) > 0 && editImage(ids, { scale: Number(v) })} />
       </Field>
-      {flagRow("Locked", "A locked image stays where it is when it is moved", common(images, (m) => m.locked === true), (locked) => editImage(ids, { locked }))}
+      {switchRow("Locked", "A locked image stays where it is when it is moved", common(images, (m) => m.locked === true), (locked) => editImage(ids, { locked }))}
       {missing.length > 0 && <p className="text-[12px] text-danger">{missingWhy(missing[0])} It is drawn as a frame, and kept in the project.</p>}
       <p className="text-[12px] text-ink-2">Reference images are for tracing: they are never in the Gerber files.</p>
       <GroupSection project={project} />

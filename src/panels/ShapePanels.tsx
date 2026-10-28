@@ -7,7 +7,7 @@ import type { BoardGraphic, BoardShape, ComponentInstance, Project, ShapeDash } 
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
-import { LengthInput, Row, Section, Switch, useLengthUnit } from "../ui/form"
+import { LayerSelect, LengthInput, Row, Section, switchRow, useLengthUnit } from "../ui/form"
 import { DASH_OPTIONS, MIXED, landUsers, layerGroups, selectedLandIndices, shapeFacts, shapeRowText, sizeText, type ShapeFacts } from "./shapeInspector"
 
 /** What an edit of drawings does: change them, move them, remove them. Each is one undo step. */
@@ -24,36 +24,12 @@ function ShapeFields({ shapes, edits, frameNote }: { shapes: BoardShape[]; edits
   const [dy, setDy] = useState(0)
   const f: ShapeFacts = shapeFacts(shapes)
   const fmt = (mm: number) => formatLength(mm, unit)
-  const switchRow = (label: string, hint: string, value: boolean | typeof MIXED, on: (v: boolean) => void) => (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-[12.5px] text-ink-2" title={hint}>
-        {label}
-        {value === MIXED ? " (mixed)" : ""}
-      </span>
-      <Switch label={label} checked={value === true} onChange={on} />
-    </div>
-  )
   const netText = f.net === MIXED ? "" : f.net
   return (
     <>
       <Row label="Type" value={f.type} />
       <Field label="Layer">
-        <select className="field h-8" aria-label="Layer" value={f.layer === MIXED ? "" : f.layer} onChange={(e) => e.target.value && edits.patch({ layer: e.target.value })}>
-          {f.layer === MIXED && (
-            <option value="" disabled>
-              Mixed
-            </option>
-          )}
-          {layerGroups(shapes.map((s) => s.layer)).map((g) => (
-            <optgroup key={g.label} label={g.label}>
-              {g.layers.map((l) => (
-                <option key={l.name} value={l.name}>
-                  {l.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+        <LayerSelect groups={layerGroups(shapes.map((s) => s.layer))} value={f.layer} mixed={MIXED} onChange={(layer) => edits.patch({ layer })} />
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label={f.width === MIXED ? "Stroke (mixed)" : "Stroke"}>

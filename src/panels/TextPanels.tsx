@@ -7,7 +7,7 @@ import type { ComponentInstance, Project } from "../model/types"
 import { projectApi } from "../store/projectStore"
 import { uiApi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
-import { LengthInput, Section, Switch } from "../ui/form"
+import { LayerSelect, LengthInput, Section, switchRow } from "../ui/form"
 import { MIXED } from "./shapeInspector"
 import { textFacts, textLayerGroups, textRowText } from "./textInspector"
 
@@ -16,15 +16,6 @@ function TextFields({ texts, project }: { texts: WorldText[]; project: Project }
   const f = textFacts(texts)
   const one = texts.length === 1 ? texts[0] : null
   const edit = (patch: TextPatch) => projectApi().commit((p) => patchTexts(p, texts, patch))
-  const switchRow = (label: string, hint: string, value: boolean | typeof MIXED, on: (v: boolean) => void) => (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-[12.5px] text-ink-2" title={hint}>
-        {label}
-        {value === MIXED ? " (mixed)" : ""}
-      </span>
-      <Switch label={label} checked={value === true} onChange={on} />
-    </div>
-  )
   // A reference or a value shows the part's own; text of its own and board text has content to edit.
   const editable = one && (one.kind === "board" || one.kind === "user")
   const shown = one ? shownOf(project, one) : ""
@@ -48,22 +39,7 @@ function TextFields({ texts, project }: { texts: WorldText[]; project: Project }
       {one && !editable && <p className="text-[12.5px] text-ink-2">Shows {shown ? `"${shown}"` : "nothing"}: the {one.kind === "reference" ? "reference" : "value"} of the part, so change it on the part.</p>}
       {one && editable && shown !== one.content && <p className="text-[12px] text-ink-2">Shows "{shown}" (variables such as {"${REFERENCE}"} are filled in).</p>}
       <Field label="Layer">
-        <select className="field h-8" aria-label="Layer" value={f.layer === MIXED ? "" : f.layer} onChange={(e) => e.target.value && edit({ layer: e.target.value })}>
-          {f.layer === MIXED && (
-            <option value="" disabled>
-              Mixed
-            </option>
-          )}
-          {textLayerGroups(texts.map((t) => t.layer)).map((g) => (
-            <optgroup key={g.label} label={g.label}>
-              {g.layers.map((l) => (
-                <option key={l.name} value={l.name}>
-                  {l.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+        <LayerSelect groups={textLayerGroups(texts.map((t) => t.layer))} value={f.layer} mixed={MIXED} onChange={(layer) => edit({ layer })} />
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label={f.size === MIXED ? "Height (mixed)" : "Height"}>

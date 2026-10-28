@@ -207,6 +207,39 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
   )
 }
 
+/** A switch with its label. A `value` that is a string is the inspector's "mixed" marker: the selection disagrees, and the switch shows off. */
+export const switchRow = (label: string, hint: string, value: boolean | string, on: (v: boolean) => void) => (
+  <div className="flex items-center justify-between gap-3">
+    <span className="text-[12.5px] text-ink-2" title={hint}>
+      {label}
+      {typeof value === "string" ? " (mixed)" : ""}
+    </span>
+    <Switch label={label} checked={value === true} onChange={on} />
+  </div>
+)
+
+/** A layer choice: the layers in groups. `mixed` is the caller's marker for a selection on several layers, shown as a disabled "Mixed". */
+export function LayerSelect({ groups, value, mixed, onChange }: { groups: { label: string; layers: { name: string; label: string }[] }[]; value: string; mixed: string; onChange: (layer: string) => void }) {
+  return (
+    <select className="field h-8" aria-label="Layer" value={value === mixed ? "" : value} onChange={(e) => e.target.value && onChange(e.target.value)}>
+      {value === mixed && (
+        <option value="" disabled>
+          Mixed
+        </option>
+      )}
+      {groups.map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.layers.map((l) => (
+            <option key={l.name} value={l.name}>
+              {l.label}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  )
+}
+
 /**
  * True where the user may read the project but not change it (a viewer's Inspector): every
  * `Section` then disables its controls, and only its fold stays, so a folded section can still be

@@ -34,7 +34,12 @@ export const LINE_DASHES: LineDash[] = ["solid", "dashed", "dotted"]
 /** Stroke width of each weight, in schematic units: a symbol's outline is 0.02. */
 export const WEIGHT_WIDTH: Record<LineWeight, number> = { thin: 0.012, medium: 0.022, thick: 0.045 }
 
-/** Text sizes by name, the ones the Inspector and the copilot offer. A designator is 0.1. */
+/** A schematic unit in millimetres: ten of KiCad's 50 mil, so a text's size can be shown and typed in mm or mil. */
+export const SCH_UNIT_MM = 12.7
+/** The smallest and largest text the Inspector takes, in schematic units (10 mil and 5 inches). */
+export const TEXT_SIZE_RANGE = { min: 0.02, max: 10 }
+
+/** Text sizes by name: the copilot's, and the Inspector's presets beside its size field. A designator is 0.1. */
 export const TEXT_SIZES = [
   { id: "small", label: "Small", size: 0.1 },
   { id: "normal", label: "Normal", size: 0.14 },
@@ -321,7 +326,8 @@ export function clean<T extends SchematicDrawing>(d: T): T {
     for (const k of ["href", "face", "lineSpacing", "valign"] as const) if (!t[k]) delete t[k]
     t.x = round(t.x, digits)
     t.y = round(t.y, digits)
-    t.size = round(t.size, digits)
+    // Six digits whoever drew it: a size typed in millimetres or mil keeps its value to the micron.
+    t.size = round(t.size, 6)
   } else if (out.type === "line") {
     const l = out as DrawingLine & Record<string, unknown>
     if (!l.closed) delete l.closed

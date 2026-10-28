@@ -10,13 +10,15 @@ import {
   LINE_WEIGHTS,
   removeDrawings,
   reorderDrawings,
+  SCH_UNIT_MM,
+  TEXT_SIZE_RANGE,
   TEXT_SIZES,
   updateDrawings,
 } from "../model/drawings"
 import type { DrawingBox, DrawingColor, DrawingLine, DrawingStyle, DrawingText, SchematicDrawing } from "../model/types"
 import { uiApi } from "../store/uiStore"
 import { Button, IconButton, Segmented } from "../ui/controls"
-import { Group, Section, Switch } from "../ui/form"
+import { Group, LengthInput, Section, Switch } from "../ui/form"
 
 type TextPatch = Partial<Pick<DrawingText, "text" | "size" | "align" | "bold" | "italic" | "mono" | "border">>
 type LinePatch = Partial<Pick<DrawingLine, "arrows" | "closed">>
@@ -141,24 +143,7 @@ export function DrawingInspector({ drawings }: { drawings: SchematicDrawing[] })
         {one?.type === "text" && <TextContent key={one.id} text={one.text} onCommit={(text) => setText({ text })} />}
         {texts.length > 0 && (
           <>
-            <Group label="Size">
-              <select
-                className="field h-8"
-                aria-label="Text size"
-                value={shared(texts, (d) => d.size) ?? ""}
-                onChange={(e) => setText({ size: Number(e.target.value) })}
-              >
-                {shared(texts, (d) => d.size) === undefined && <option value="">Mixed</option>}
-                {TEXT_SIZES.map((s) => (
-                  <option key={s.id} value={s.size}>
-                    {s.label}
-                  </option>
-                ))}
-                {texts.some((t) => !TEXT_SIZES.some((s) => s.size === t.size)) && shared(texts, (d) => d.size) !== undefined && (
-                  <option value={texts[0].size}>{texts[0].size}</option>
-                )}
-              </select>
-            </Group>
+            <TextSizeField sizes={texts.map((t) => t.size)} onSize={(size) => setText({ size })} />
             <div className="flex items-center gap-1.5">
               <Segmented
                 size="sm"
@@ -200,6 +185,37 @@ export function DrawingInspector({ drawings }: { drawings: SchematicDrawing[] })
         <p className="text-[12px] text-ink-2">Drawings sit under the circuit and are never connected to it. Drag a handle to resize; R turns.</p>
       </Section>
     </div>
+  )
+}
+
+/**
+ * The size of the selected texts as a length, in the Inspector's unit (mm or mil), with the named sizes
+ * beside it to pick from; the list says Custom for a size none of them is, and Mixed for texts that differ.
+ */
+function TextSizeField({ sizes, onSize }: { sizes: number[]; onSize: (size: number) => void }) {
+  const size = sizes.every((s) => s === sizes[0]) ? sizes[0] : undefined
+  const preset = size === undefined ? undefined : TEXT_SIZES.find((s) => Math.abs(s.size - size) < 1e-6)
+  return (
+    <Group label="Size">
+      <div className="flex items-center gap-1.5">
+        <LengthInput
+          ariaLabel="Text size"
+          className="min-w-0 flex-1"
+          min={TEXT_SIZE_RANGE.min * SCH_UNIT_MM}
+          value={size === undefined ? null : size * SCH_UNIT_MM}
+          placeholder={size === undefined ? "Mixed" : undefined}
+          onCommit={(mm) => mm !== null && onSize(Math.min(TEXT_SIZE_RANGE.max, mm / SCH_UNIT_MM))}
+        />
+        <select className="field h-8 w-[96px]" aria-label="Named text size" value={preset?.id ?? ""} onChange={(e) => onSize(TEXT_SIZES.find((s) => s.id === e.target.value)!.size)}>
+          {!preset && <option value="">{size === undefined ? "Mixed" : "Custom"}</option>}
+          {TEXT_SIZES.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </Group>
   )
 }
 

@@ -18,6 +18,7 @@ import {
   hitDrawing,
   reorderDrawings,
   rotateDrawing,
+  SCH_UNIT_MM,
   textBox,
   textFrame,
   updateDrawings,
@@ -55,6 +56,13 @@ describe("drawings in the model", () => {
     // A polygon has no arrowheads.
     const poly = withDrawings({ type: "line", points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], closed: true, arrows: "both" }).d[0]
     expect(poly).not.toHaveProperty("arrows")
+  })
+
+  it("keeps a text size typed in millimetres or mil to the micron", () => {
+    const { p, d } = withDrawings(text("1 mm", 0, 0, { size: 1 / SCH_UNIT_MM }))
+    expect(d[0].type === "text" && d[0].size * SCH_UNIT_MM).toBeCloseTo(1, 5)
+    const mil = updateDrawings(p, [d[0].id], (x) => ({ ...x, size: (60 * 0.0254) / SCH_UNIT_MM })).drawings![0] as DrawingText
+    expect(mil.size).toBe(0.12)
   })
 
   it("puts a text's lines below its anchor, by its alignment, and turns them to read upwards", () => {

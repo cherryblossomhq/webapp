@@ -107,7 +107,9 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
   // ---- dimensions ----
   // A dimension on a layer the editor has not got, or in a unit it cannot hold, is a refusal the gate raises: nothing to compare.
   const skip = lossy.some((l) => /a dimension|a KiCad 5 dimension/.test(l))
-  out.counts = skip || o.dims.length === dims.length
+  // X27 draws a dimension inside a footprint as a board dimension, appended after the board's own (those on a private layer of the footprint stay out). So the project holds the file's top-level
+  // dimensions first, in order, and then at most `inFootprints` more: those extra ones are compared against the file by the X27 test (kicad-x24-corpus.test.ts), this check compares the first ones.
+  out.counts = skip || (dims.length >= o.dims.length && dims.length <= o.dims.length + o.inFootprints)
   if (!skip && out.counts) {
     o.dims.forEach((want: any, i: number) => {
       const got = dims[i]
@@ -200,10 +202,14 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
             if (comp.has(m)) sig.part.push(`${r(comp.get(m)!.pcb.x)},${r(comp.get(m)!.pcb.y)}`)
             else if (trace.has(m)) {
               const t = trace.get(m)!
+              // An arc track (`arc: true`, its three points) is no segment: the oracle leaves its `arctrack` out of what a group holds (BUILT_KINDS), a rounded tuning pattern has some.
+              if (t.arc) continue
               for (let i = 1; i < t.points.length; i++) {
                 const a = `${r(t.points[i - 1].x)},${r(t.points[i - 1].y)}`
                 const b = `${r(t.points[i].x)},${r(t.points[i].y)}`
-                sig.segment.push([t.layer === "top" ? "F.Cu" : "B.Cu", ...[a, b].sort()].join("|"))
+                // the file's name of the project's layer: `top` is F.Cu, `bottom` B.Cu, and `in3` is In3.Cu (an inner-layer track is in a via stack's or a tuning pattern's group)
+                const layerName = t.layer === "top" ? "F.Cu" : t.layer === "bottom" ? "B.Cu" : `In${t.layer.slice(2)}.Cu`
+                sig.segment.push([layerName, ...[a, b].sort()].join("|"))
               }
             } else if (via.has(m)) sig.via.push(`${r(via.get(m)!.x)},${r(via.get(m)!.y)}`)
             else if (graphic.has(m)) sig.shape.push(`${graphic.get(m)!.layer}|${kindOfShape(graphic.get(m)!.type)}`)

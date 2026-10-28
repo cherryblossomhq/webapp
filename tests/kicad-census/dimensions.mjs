@@ -611,7 +611,7 @@ export function groupOracle(text) {
     return kept.map((i) => {
       const g = groupNodes[i]
       return {
-        name: typeof g[1] === "string" && g[1] !== "locked" ? g[1] : "",
+        name: g[0] === "generated" ? (kid(g, "name")?.[1] ?? "") : typeof g[1] === "string" && g[1] !== "locked" ? g[1] : "",
         locked: g.slice(1).includes("locked") || yes(g, "locked"),
         items: held[i].filter((m) => "item" in m).map((m) => signature(byId.get(m.item), front, back)),
         groups: held[i].filter((m) => "group" in m && place.has(m.group)).map((m) => place.get(m.group)),
@@ -620,12 +620,17 @@ export function groupOracle(text) {
     })
   }
   const board = []
+  // KiCad's PCB_GENERATOR (a tuning pattern, a via stack, via stitching: the file's `(generated` node) is a PCB_GROUP, and the parser resolves it with the groups, after the plain ones.
+  // Its name is the node's `(name "...")`, not a bare string. KiCad treats both as groups (they select and move as one), so both count here.
+  const generated = []
   const rootItems = []
   for (const c of root.slice(1)) {
     if (!Array.isArray(c)) continue
     if (c[0] === "group") board.push(c)
+    else if (c[0] === "generated") generated.push(c)
     else rootItems.push([uuidOf(c), c])
   }
+  board.push(...generated)
   const partGroups = []
   const footprints = kids(root, "footprint").concat(kids(root, "module"))
   const parts = footprints.map((fp, i) => {

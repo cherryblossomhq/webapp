@@ -6,6 +6,7 @@ import { buildFabricationFiles } from "../src/export/bundle"
 import { kicadFiles } from "../src/export/kicad"
 import { loadKicadFont } from "../src/lib/kicadFont/load"
 import { importKicadBoard } from "../src/model/kicad/board"
+import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
 import { OutlineNotClosedError } from "../src/export/outlineGuard"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { textFontState, textInk, worldTexts } from "../src/model/texts"
@@ -28,7 +29,7 @@ import { unknownNodes } from "./kicad9-nodes"
 //    own error (about 2e-4 of the ink: the scanline sum is approximate); the tight checks are the 2 nm edge gap and the samples;
 //  - the Gerber files hold a region of the same area for every polygon the letters make (Gerber coordinates are whole nanometres);
 //  - a save and a load give the same project, and the KiCad export read again gives the same texts, the same fonts and the same outlines.
-// With no corpus the test is skipped.
+// KICAD_CORPUS_SAMPLE=N runs about N of the boards that use fonts or render caches (see kicad-corpus-shared.ts). With no corpus the test is skipped.
 
 const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_X19_OUT
@@ -154,7 +155,10 @@ function gerberRegionAreas(text: string): number[] {
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () => {
   it("imports, draws, plots, saves and writes every board that needed X19", async () => {
     await loadKicadFont({ cjk: true })
-    const files = walk(CORPUS!).sort()
+    const everyBoard = walk(CORPUS!).sort()
+    const usesFonts = everyBoard.filter((f) => /\(render_cache|\(embedded_fonts|\(face /.test(readFileSync(f, "utf8")))
+    const files = sampleOf(usesFonts)
+    const dog = startWatchdog("kicad-x19-corpus")
     const rows: Record<string, unknown>[] = []
     const problems: string[] = []
     const total = { boards: 0, imported: 0, refused: new Map<string, number>(), withCache: 0, caches: 0, points: 0, samples: 0, sampleWrong: 0, nearEdge: 0, areaWorst: 0, hausdorffWorst: 0, regions: 0, regionMissing: 0, saveLoadWrong: 0, roundTripWrong: 0, fonts: 0, onlyFlag: 0, bytesWorst: 0 }
@@ -163,9 +167,10 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
       if (!/\(render_cache|\(embedded_fonts|\(face /.test(text)) continue
       total.boards++
       const name = relative(CORPUS!, file).split("\\").join("/")
+      dog.board(name)
       const hasCache = /\(render_cache/.test(text)
       if (!hasCache && !/\(face /.test(text)) total.onlyFlag++
-      const r = importKicadBoard(new Uint8Array(readFileSync(file)))
+      const r = cachedParse(file, "importKicadBoard", () => importKicadBoard(new Uint8Array(readFileSync(file))))
       if (r.status !== "imported") {
         // A refusal is for another extension or the size limit: never for a font.
         total.refused.set(r.reason === "unsupported" ? r.needs.map((n) => n.ext).join("+") : r.reason, (total.refused.get(r.reason === "unsupported" ? r.needs.map((n) => n.ext).join("+") : r.reason) ?? 0) + 1)
@@ -324,7 +329,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
       }
       // 5. the KiCad export read again has the same texts, fonts and outlines
       try {
-        const k = await kicadFiles(p)
+        const k = await cachedExport("kicadFiles", p, () => kicadFiles(p))
         const pcb = Object.entries(k.files).find(([key]) => key.endsWith(".kicad_pcb"))![1]
         const un = unknownNodes(pcb)
         if (un.length) problems.push(`${name}: the written board has nodes KiCad 9 does not: ${un.join(", ")}`)
@@ -345,9 +350,11 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X19 over the corpus", () 
       if (p.fonts?.files.length) total.fonts += p.fonts.files.length
       rows.push(row)
     }
+    dog.stop()
     const summary = { ...total, refused: Object.fromEntries(total.refused), problems }
     if (OUT) writeFileSync(OUT, JSON.stringify({ summary, rows }, null, 1))
-    expect(total.boards).toBeGreaterThan(100)
+    // the count only means something for the whole set
+    if (files.length === usesFonts.length) expect(total.boards).toBeGreaterThan(100)
     expect(problems).toEqual([])
   }, 3_600_000)
 })

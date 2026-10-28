@@ -54,6 +54,60 @@ function segmentDistance(p, a, b) {
   return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy))
 }
 
+/**
+ * The distance from a point to the nearest of the lines' segments, clamped to `reach`: exactly `Math.min(nearest, reach)`, which is all the fill comparison keeps.
+ * `nearestIndex` indexes every segment in each cell within `reach` of it, so with a reach of 3 mm each cell holds hundreds of segments and a lookup measures them all
+ * (161 s of one 252 s run). Here a segment is indexed only in the cells it touches and a lookup widens ring by ring around the point's cell, stopping as soon as the best
+ * distance found cannot be beaten by a farther ring, so the answer is the same and a point on or near a line looks at a handful of segments.
+ */
+export function nearestWithin(lines, reach = 0.2) {
+  const CELL = 0.5
+  const grid = new Map()
+  const segs = []
+  const key = (x, y) => x * 200003 + y
+  for (const line of lines) {
+    for (let i = 1; i < line.length; i++) {
+      const id = segs.length
+      const a = line[i - 1]
+      const b = line[i]
+      segs.push([a, b])
+      const x0 = Math.floor(Math.min(a[0], b[0]) / CELL)
+      const x1 = Math.floor(Math.max(a[0], b[0]) / CELL)
+      const y0 = Math.floor(Math.min(a[1], b[1]) / CELL)
+      const y1 = Math.floor(Math.max(a[1], b[1]) / CELL)
+      const wide = (x1 - x0 + 1) * (y1 - y0 + 1) > 64
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          if (wide && segmentDistance([(x + 0.5) * CELL, (y + 0.5) * CELL], a, b) > CELL * 0.75) continue
+          const k = key(x, y)
+          const list = grid.get(k)
+          if (list) list.push(id)
+          else grid.set(k, [id])
+        }
+      }
+    }
+  }
+  const rings = Math.ceil(reach / CELL)
+  return (p) => {
+    if (!segs.length) return reach
+    const cx = Math.floor(p[0] / CELL)
+    const cy = Math.floor(p[1] / CELL)
+    let best = reach
+    for (let r = 0; r <= rings + 1; r++) {
+      // every segment in a ring beyond r - 1 is at least (r - 1) cells away; the ring r itself is at least (r - 1) * CELL from the point
+      if (best <= (r - 1) * CELL) break
+      for (let x = cx - r; x <= cx + r; x++) {
+        const edge = x === cx - r || x === cx + r
+        for (let y = cy - r; y <= cy + r; y += edge || r === 0 ? 1 : 2 * r) {
+          const list = grid.get(key(x, y))
+          if (list) for (const id of list) best = Math.min(best, segmentDistance(p, segs[id][0], segs[id][1]))
+        }
+      }
+    }
+    return best
+  }
+}
+
 /** A grid of the segments of some polylines, to ask how far a point is from the nearest (up to `reach`; beyond it, Infinity). */
 export function nearestIndex(lines, reach = 0.2) {
   const CELL = Math.max(reach, 0.5)

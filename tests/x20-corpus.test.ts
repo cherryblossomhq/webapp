@@ -3,6 +3,7 @@ import { join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
+import { cachedExport } from "./kicad-corpus-shared"
 
 /** Every extension, built or not (X19 has no entry in the names, it is built): these three boards need some of them besides X20. */
 const ALL_EXTENSIONS = new Set([...Object.keys(EXTENSION_NAMES), "X19"])
@@ -163,7 +164,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X20 over the corpus", () 
     it(`${rel}: written as a KiCad board and read again, the areas and classes are the same`, async () => {
       const a = importKicadBoard(readFileSync(file), { built: ALL_EXTENSIONS })
       if (a.status !== "imported") throw new Error(a.status)
-      const written = await kicadFiles(a.project)
+      const written = await cachedExport("kicadFiles", a.project, () => kicadFiles(a.project))
       const pcb = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
       const b = importKicadBoard(pcb, { built: ALL_EXTENSIONS })
       if (b.status !== "imported") throw new Error(`${b.status}: ${b.message}`)

@@ -6,6 +6,7 @@ import { importKicadBoard } from "../src/model/kicad/board"
 import { rememberImage } from "../src/store/imageFiles"
 import { diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
+import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
 
 // The round trip over a local corpus (not in the repo): every board that imports is written out by the KiCad export, read again, and the two
 // projects are compared item for item (`kicad-roundtrip-check.ts`). The table says how many have no difference and counts every kind of difference.
@@ -13,7 +14,7 @@ import { unknownNodes } from "./kicad9-nodes"
 //   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 \
 //     KICAD_ROUNDTRIP_OUT=<file> npx vitest run tests/kicad-roundtrip-corpus.test.ts
 //
-// KICAD_LIMIT / KICAD_ONLY (comma separated path fragments) narrow the run. With no corpus the test is skipped.
+// KICAD_LIMIT / KICAD_ONLY (comma separated path fragments) narrow the run; KICAD_CORPUS_SAMPLE=N runs about N boards (see kicad-corpus-shared.ts). With no corpus the test is skipped.
 
 const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_ROUNDTRIP_OUT
@@ -41,20 +42,23 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
     if (ONLY.length) files = files.filter((f) => ONLY.some((o) => f.split(String.fromCharCode(92)).join("/").includes(o)))
     if (EVERY > 1) files = files.filter((_, i) => i % EVERY === 0)
     if (LIMIT) files = files.slice(0, LIMIT)
+    files = sampleOf(files)
+    const dog = startWatchdog("kicad-roundtrip-corpus")
     const kinds = new Map<string, { boards: number; example: string; byDesign: boolean }>()
     const rows: { file: string; status: string; differences: number; unexpected?: number; kinds: string[]; ms: number; error?: string }[] = []
     for (const file of files) {
       const rel = relative(CORPUS!, file).split(String.fromCharCode(92)).join("/")
       const t0 = Date.now()
+      dog.board(rel)
       try {
-        const a = importKicadBoard(readFileSync(file))
+        const a = cachedParse(file, "importKicadBoard", () => importKicadBoard(readFileSync(file)))
         if (a.status !== "imported") {
           rows.push({ file: rel, status: `not imported (${a.reason})`, differences: 0, kinds: [], ms: Date.now() - t0 })
           continue
         }
         // The host keeps a reference image's bytes; here the page already has them, as it does right after an import.
         for (const f of a.files) rememberImage(f.id, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
-        const written = await kicadFiles(a.project)
+        const written = await cachedExport("kicadFiles", a.project, () => kicadFiles(a.project))
         const pcb = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
         const b = importKicadBoard(pcb)
         if (b.status !== "imported") {
@@ -82,6 +86,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the
       }
       if (OUT) appendFileSync(OUT + ".progress", `${rows.length}/${files.length} ${rows[rows.length - 1].status} ${rel}\n`)
     }
+    dog.stop()
     const imported = rows.filter((r) => ["same", "differs", "written file refused", "error"].some((s) => r.status.startsWith(s)))
     const summary = {
       boards: rows.length,

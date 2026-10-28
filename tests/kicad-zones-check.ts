@@ -8,7 +8,7 @@ import { worldPartZones } from "../src/model/partZones"
 import { zoneLayers, zoneRings } from "../src/model/zones"
 import { flattenPath } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
-import { nearestIndex, sample } from "./kicad-census/edge.mjs"
+import { nearestWithin, sample } from "./kicad-census/edge.mjs"
 import { importedZone, knownOther, zoneOracle } from "./kicad-census/zones.mjs"
 
 // The zones of an imported board against the raw file (`kicad-census/zones.mjs`, which shares no code with `src`): each zone's outline,
@@ -18,6 +18,14 @@ const U = 10_000
 const ARC = 25
 
 type Oracle = ReturnType<typeof zoneOracle>["zones"][number]
+
+// The oracle's reading of a file is a pure function of its text, and one board is asked for it by every check below and, in `compareFills`, once per zone and layer: on a board with
+// 267 zones that was 500 parses of a multi-megabyte file (240 of the 252 seconds the fill comparison took). The last reading is kept; nothing writes to it.
+let lastOracle: { text: string; value: ReturnType<typeof zoneOracle> } | null = null
+export function zoneOracleOf(text: string): ReturnType<typeof zoneOracle> {
+  if (lastOracle?.text !== text) lastOracle = { text, value: zoneOracle(text) }
+  return lastOracle.value
+}
 
 const toPath = (ring: number[][]): Path64 => ring.map(([x, y]) => ({ x: Math.round(x * U), y: Math.round(-y * U) }))
 const areaMm2 = (paths: Paths64) => Math.abs(Clipper.areaPaths(paths)) / (U * U)
@@ -39,7 +47,7 @@ export interface ZoneMismatch {
 
 /** The project's zones against the file's: the same zones in the same order, and every setting. Returns what differs. */
 export function checkZoneSettings(text: string, project: Project): { compared: number; mismatches: ZoneMismatch[]; oracle: Oracle[] } {
-  const raw = zoneOracle(text).zones
+  const raw = zoneOracleOf(text).zones
   const expected = raw.filter(importedZone)
   const out: ZoneMismatch[] = []
   if (expected.length !== project.zones.length) out.push({ zone: -1, what: `the file has ${expected.length} zones to import and the project ${project.zones.length}` })
@@ -122,7 +130,7 @@ const ringsOf = (paths: Paths64): number[][][] => paths.map((p) => [...p.map((q)
 /** The editor's copper of every zone and layer against KiCad's stored fill. */
 export function compareFills(text: string, project: Project, reach = 3, which: "copper" | "other" = "copper"): FillRow[] {
   const onlyOther = which === "other"
-  const expected = zoneOracle(text).zones.filter(importedZone)
+  const expected = zoneOracleOf(text).zones.filter(importedZone)
   const analysis = onlyOther ? null! : analyzePcb(project, computeConnectivity(project))
   const rows: FillRow[] = []
   const others = nonCopperFills(project)
@@ -132,8 +140,8 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
       r.xor = areaMm2(Clipper.xor(ours, theirs, FillRule.NonZero))
       const a = ringsOf(ours)
       const b = ringsOf(theirs)
-      const toTheirs = b.length ? nearestIndex(b, reach) : () => Infinity
-      const toOurs = a.length ? nearestIndex(a, reach) : () => Infinity
+      const toTheirs = b.length ? nearestWithin(b, reach) : () => Infinity
+      const toOurs = a.length ? nearestWithin(a, reach) : () => Infinity
       const dists: number[] = []
       for (const line of a) for (const p of sample(line, 0.05)) dists.push(Math.min(toTheirs(p), reach))
       for (const line of b) for (const p of sample(line, 0.05)) dists.push(Math.min(toOurs(p), reach))
@@ -159,7 +167,7 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
     }
     if (onlyOther || !zoneLayers(z).length) return
     for (const layer of zoneLayers(z)) {
-      const name = layer === "top" ? zoneOracle(text).front : zoneOracle(text).back
+      const name = layer === "top" ? zoneOracleOf(text).front : zoneOracleOf(text).back
       // KiCad 5's thermal relief leaves the zone's copper under the pad, and the editor's does not: the pad's own copper is on top of it either
       // way, so the two are compared with the pads of the layer added to both.
       const padCopper: Paths64 = analysis.items.flatMap((it) => (it.kind === "pad" && it.layers.includes(layer) && !isNpth(it.pad) ? padShape(it.pad) : []))
@@ -181,8 +189,8 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
         row.xor = areaMm2(Clipper.xor(ours, theirs, FillRule.NonZero))
         const a = ringsOf(ours)
         const b = ringsOf(theirs)
-        const toTheirs = b.length ? nearestIndex(b, reach) : () => Infinity
-        const toOurs = a.length ? nearestIndex(a, reach) : () => Infinity
+        const toTheirs = b.length ? nearestWithin(b, reach) : () => Infinity
+        const toOurs = a.length ? nearestWithin(a, reach) : () => Infinity
         const dists: number[] = []
         for (const line of a) for (const p of sample(line, 0.05)) dists.push(Math.min(toTheirs(p), reach))
         for (const line of b) for (const p of sample(line, 0.05)) dists.push(Math.min(toOurs(p), reach))
@@ -210,7 +218,7 @@ function zoneSignature(kind: string, surface: string[], other: string[], flags: 
  */
 export function checkPartZones(text: string, project: Project): { compared: number; skipped: number; mismatches: string[] } {
   const stamp = Number(/\(version\s+(\d+)\)/.exec(text)?.[1] ?? 0)
-  const raw = zoneOracle(text).zones.filter((z) => z.inFootprint && z.kind !== "placement" && z.rings.length > 0 && z.rings[0].length >= 3 && z.other.every(knownOther))
+  const raw = zoneOracleOf(text).zones.filter((z) => z.inFootprint && z.kind !== "placement" && z.rings.length > 0 && z.rings[0].length >= 3 && z.other.every(knownOther))
   const world = worldPartZones(project)
   if (stamp >= 20260616) return { compared: 0, skipped: raw.length, mismatches: [] }
   const flagsOf = (z: Zone) => (z.keepout ? (["tracks", "vias", "pads", "pour", "footprints"] as const).filter((k) => z.keepout![k]).join(",") : "pour-zone")

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -41,6 +41,7 @@ import { runTool } from "../src/ai/tools"
 import { parseProjectFile } from "../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
 import { emptyContext, reportText, summarize as summarizeImport } from "../src/kicadImport/summary"
+import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
 
 // The per-board pass or fail table of slice 1a over a local corpus (not in the repo):
 //
@@ -300,8 +301,13 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       const files = walk(CORPUS!).sort()
       const rows: Row[] = []
       const t0 = Date.now()
-      for (const path of (LIMIT ? files.slice(0, LIMIT) : files).filter((f) => !ONLY.length || ONLY.some((o) => f.includes(o)))) {
+      // KICAD_CORPUS_SAMPLE=N runs about N boards (see kicad-corpus-shared.ts); a board that stalls for KICAD_BOARD_TIMEOUT_S (300 s) is named and the run ends
+      mkdirSync(OUT, { recursive: true })
+      writeFileSync(join(OUT, "progress.log"), "")
+      const dog = startWatchdog("kicad-board-corpus")
+      for (const path of sampleOf((LIMIT ? files.slice(0, LIMIT) : files).filter((f) => !ONLY.length || ONLY.some((o) => f.includes(o))))) {
         const rel = relative(CORPUS!, path).split(sep).join("/")
+        dog.board(rel)
         const bytes = statSync(path).size
         const row: Row = {
           file: rel,
@@ -538,7 +544,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
 
           // ---- the importer, end to end ----
           const a0 = performance.now()
-          const imported = importKicadBoard(new Uint8Array(data))
+          const imported = cachedParse(path, "importKicadBoard", () => importKicadBoard(new Uint8Array(data)))
           row.ms.account = performance.now() - a0
           row.status = imported.status === "imported" ? "imported" : `refused:${imported.reason}`
           row.unknown = imported.report.account ? imported.report.account.unknownPaths.size + imported.report.account.unknownAtoms.size : 0
@@ -829,7 +835,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           if (imported.status === "imported") {
             if (imported.project.zones.length) {
               const f0 = performance.now()
-              const fills = compareFills(text, imported.project)
+              const fills = await cachedExport("compareFills", [text, imported.project], () => compareFills(text, imported.project), ["tests/kicad-zones-check.ts", "tests/kicad-census"])
               row.fillMs = performance.now() - f0
               row.fillLayers = fills.length
               row.fillStored = fills.filter((x) => x.stored).length
@@ -889,7 +895,10 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.status = "CRASH"
         }
         row.ms.total = performance.now() - start
+        appendFileSync(join(OUT, "progress.log"), `${rows.length} ${Math.round(row.ms.total)} ms ${rel}
+`)
       }
+      dog.stop()
       mkdirSync(OUT, { recursive: true })
       writeFileSync(join(OUT, "rows.json"), JSON.stringify(rows))
       writeFileSync(join(OUT, "table.md"), summarize(rows, (Date.now() - t0) / 1000))

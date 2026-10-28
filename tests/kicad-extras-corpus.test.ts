@@ -13,6 +13,7 @@ import { checkExtras } from "./kicad-extras-check"
 import { BY_DESIGN, canonicalProject, diffCanonical, diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
 
 import { unknownNodes } from "./kicad9-nodes"
+import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
 
 // X21 and X22 over the boards of the corpus that use them: every one imports (a board that also needs an extension another slice builds is imported with that one counted built, and said so), what
 // it holds is compared with an oracle that reads the raw file (`kicad-extras-check.ts`), its fabrication files export, it saves and loads with no difference, and it is written out and read back
@@ -20,7 +21,7 @@ import { unknownNodes } from "./kicad9-nodes"
 //
 //   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/kicad-extras-corpus.test.ts
 //
-// The boards are found from the census (`census/boards.json`), by the nodes the need rules look for. With no corpus the test is skipped.
+// The boards are found from the census (`census/boards.json`), by the nodes the need rules look for; KICAD_CORPUS_SAMPLE=N runs about N of them (see kicad-corpus-shared.ts). With no corpus the test is skipped.
 
 const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_EXTRAS_OUT
@@ -30,21 +31,24 @@ const X = /^(generated|net_chains|footprint>pad>(die_length|die_delay|backdrill|
 describe.skipIf(!CORPUS || !existsSync(join(CORPUS ?? "", "census", "boards.json")))("X21 and X22 over the corpus", () => {
   it("imports, matches the oracle, exports, saves and loads, and writes back", async () => {
     const boards: { file: string; nodes: Record<string, number> }[] = JSON.parse(readFileSync(join(CORPUS!, "census", "boards.json"), "utf8"))
-    const files = boards.filter((b) => Object.keys(b.nodes).some((n) => X.test(n))).map((b) => b.file)
+    const all = boards.filter((b) => Object.keys(b.nodes).some((n) => X.test(n))).map((b) => b.file)
+    const files = sampleOf(all)
+    const dog = startWatchdog("kicad-extras-corpus")
     const rows: Record<string, unknown>[] = []
     const problems: string[] = []
     for (const rel of files) {
       const row: Record<string, unknown> = { file: rel }
+      dog.board(rel)
       rows.push(row)
       try {
         const bytes = readFileSync(join(CORPUS!, rel))
         const text = bytes.toString("utf8")
-        let r = importKicadBoard(bytes, { limitBytes: Infinity })
+        let r = cachedParse(join(CORPUS!, rel), "importKicadBoard:unlimited", () => importKicadBoard(bytes, { limitBytes: Infinity }))
         row.status = r.status
         if (r.status === "refused") {
           row.refusedFor = r.needs?.map((n) => n.ext) ?? r.reason
           row.forced = true
-          r = importKicadBoard(bytes, { built: ALL, limitBytes: Infinity })
+          r = cachedParse(join(CORPUS!, rel), "importKicadBoard:unlimited:all-built", () => importKicadBoard(bytes, { built: ALL, limitBytes: Infinity }))
         }
         if (r.status !== "imported") {
           row.skipped = r.message.slice(0, 160)
@@ -83,7 +87,7 @@ describe.skipIf(!CORPUS || !existsSync(join(CORPUS ?? "", "census", "boards.json
         row.saveLoad = same.length
         if (same.length) problems.push(`${rel}: save and load differ: ${same.map((d) => `${d.path} ${d.first} / ${d.second}`).join("; ").slice(0, 300)}`)
         // the write back
-        const written = await kicadFiles(project)
+        const written = await cachedExport("kicadFiles", project, () => kicadFiles(project))
         const pcb = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
         const pro = Object.entries(written.files).find(([k]) => k.endsWith(".kicad_pro"))![1]
         const again = importKicadBoard(pcb, { built: ALL, limitBytes: Infinity })
@@ -105,8 +109,10 @@ describe.skipIf(!CORPUS || !existsSync(join(CORPUS ?? "", "census", "boards.json
       }
       if (OUT) appendFileSync(`${OUT}.progress`, `${rows.length}/${files.length} ${rel}\n`)
     }
+    dog.stop()
     if (OUT) writeFileSync(OUT, JSON.stringify({ boards: files.length, imported: rows.filter((r) => r.uses !== undefined).length, forced: rows.filter((r) => r.forced).length, problems, rows }, null, 1))
     expect(problems).toEqual([])
-    expect(files.length).toBeGreaterThan(30)
+    // the count only means something for the whole set
+    if (files.length === all.length) expect(files.length).toBeGreaterThan(30)
   }, 3 * 3600_000)
 })

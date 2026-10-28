@@ -9,6 +9,7 @@ import { OutlineNotClosedError } from "../src/export/outlineGuard"
 import { gerberLayers } from "../src/export/gerber"
 import { kicadFiles } from "../src/export/kicad"
 import { BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, readKicadBoard } from "../src/model/kicad/board"
+import { cachedExport, cachedParse } from "./kicad-corpus-shared"
 import { countPaths } from "../src/model/kicad/board/account"
 import { pcbPads } from "../src/model/instances"
 import { nonCopperFills } from "../src/model/nonCopperFill"
@@ -109,7 +110,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS))("the zone family on the corpus",
         const stoppedBy = needs.filter((n) => !without.has(n.ext)).map((n) => n.ext)
         if (!stoppedBy.length || stoppedBy.some((e) => !FAMILY.has(e))) bad(`was listed as stopped by the zone family alone, and its needs are ${stoppedBy.join(", ")}`)
 
-        const r = importKicadBoard(new Uint8Array(data))
+        const r = cachedParse(path, "importKicadBoard", () => importKicadBoard(new Uint8Array(data)))
         if (r.status !== "imported") {
           count.refusedOther++
           rows.push(`${rel}\trefused:${r.reason}\t${r.message.slice(0, 140)}`)
@@ -216,7 +217,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS))("the zone family on the corpus",
       const failures: string[] = []
       let done = 0
       for (const { rel, p } of pending) {
-        const out = await kicadFiles(p)
+        const out = await cachedExport("kicadFiles", p, () => kicadFiles(p))
         const file = Object.entries(out.files).find(([k]) => k.endsWith(".kicad_pcb"))
         if (!file) {
           failures.push(`${rel}: no board file`)

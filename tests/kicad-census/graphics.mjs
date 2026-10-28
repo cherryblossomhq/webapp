@@ -134,7 +134,9 @@ export function graphicsOracle(text) {
     const list = []
     for (const c of node.slice(1)) {
       if (!Array.isArray(c)) continue
-      const m = /^(?:gr|fp)_(line|arc|circle|rect|bbox|poly|curve|ellipse|ellipse_arc)$/.exec(c[0])
+      let m = /^(?:gr|fp)_(line|arc|circle|rect|bbox|poly|curve|ellipse|ellipse_arc)$/.exec(c[0])
+      // A KiCad 4 `segment` on a layer that is not copper, on no net and with no mask opening is a line on that layer (KiCad draws and plots it there).
+      if (!m && c[0] === "segment" && !kid(c, "layers") && !kid(c, "solder_mask_margin") && !numAt(kid(c, "net"), 1, 0) && !/\.Cu$/.test(strOf(kid(c, "layer"))) && !copperNames.includes(strOf(kid(c, "layer"))) && strOf(kid(c, "layer")) !== "Edge.Cuts") m = ["", "line"]
       if (!m) continue
       const type = m[1]
       const layerNames = kid(c, "layers") ? kid(c, "layers").slice(1).filter((x) => typeof x === "string") : [strOf(kid(c, "layer"))]

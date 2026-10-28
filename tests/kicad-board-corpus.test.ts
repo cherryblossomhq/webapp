@@ -492,7 +492,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
             row.counts =
               board.footprints.length === c.fps.total &&
               board.footprints.reduce((n, f) => n + f.pads.length, 0) === c.pads.total &&
-              board.segments.length === c.tracks.segments &&
+              board.segments.length + board.shapes.filter((s) => s.node[0] === "segment").length === c.tracks.segments &&
               board.arcTracks.length === c.tracks.arcs &&
               board.vias.length === c.tracks.vias &&
               board.zones.length + board.footprints.reduce((n, f) => n + f.zones.length, 0) === c.zones.total &&

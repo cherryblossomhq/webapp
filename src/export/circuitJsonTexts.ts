@@ -1,5 +1,5 @@
 import type { AnyCircuitElement } from "circuit-json"
-import { round } from "../lib/geometry"
+import { mm } from "./circuitJsonUnits"
 import { shownOf, textLayerKind, textLayerSide, worldTexts, type WorldText } from "../model/texts"
 import type { Project } from "../model/types"
 
@@ -11,7 +11,6 @@ import type { Project } from "../model/types"
 // alone at its anchor. Circuit JSON text has a size, an anchor, an alignment, a turn and a mirror and a knockout; it has no
 // pen width, bold or italic, which are left out. Text is written as it is shown, its variables resolved.
 
-const mm = (n: number) => round(n, 4)
 
 type Anchor = "top_left" | "top_center" | "top_right" | "center_left" | "center" | "center_right" | "bottom_left" | "bottom_center" | "bottom_right"
 

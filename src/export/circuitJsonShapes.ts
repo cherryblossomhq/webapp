@@ -1,5 +1,5 @@
 import type { AnyCircuitElement, BRepShape } from "circuit-json"
-import { round } from "../lib/geometry"
+import { mm } from "./circuitJsonUnits"
 import { worldShapes, BOARD_SHAPE_OWNER } from "../model/shapeItems"
 import { shapeLayerInfo } from "../model/shapeLayers"
 import { dashShape, flattenPath, shapePaths, shapeRings, type DashPiece } from "../model/shapes"
@@ -12,7 +12,6 @@ import type { BoardShape, Vec2 } from "../model/types"
 //   copper        pcb_trace (a stroke), pcb_copper_pour (a fill), on the net's source trace or net
 // Mask, paste, adhesive and the user layers have no element, and are left out.
 
-const mm = (n: number) => round(n, 4)
 const pt = (p: Vec2): Vec2 => ({ x: mm(p.x), y: mm(p.y) })
 
 export interface DrawingContext {

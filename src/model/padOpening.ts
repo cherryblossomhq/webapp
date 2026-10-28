@@ -1,7 +1,7 @@
-import { Clipper, EndType, FillRule, JoinType, type Path64, type Paths64 } from "@countertype/clipper2-ts"
+import { Clipper, EndType, FillRule, JoinType, type Paths64 } from "@countertype/clipper2-ts"
 import { rotate90, transformPoint, round } from "../lib/geometry"
 import type { WorldPad } from "./instances"
-import { circleRing, padLocalRings, pillRing, roundChamferRing } from "./padGeom"
+import { circleRing, mm, nm, NM, padLocalRings, pillRing, roundChamferRing } from "./padGeom"
 import { FLATTEN_TOLERANCE } from "./shapes"
 import type { DesignRules, PadDef, Vec2 } from "./types"
 
@@ -18,10 +18,6 @@ import type { DesignRules, PadDef, Vec2 } from "./types"
 // half the pad's shorter side; a paste margin is the absolute one and the ratio of the pad's size on each axis, kept from taking more than half the size
 // (`PAD::GetSolderMaskExpansion`, pad.cpp `:1639`; `GetSolderPasteMargin` `:1702`). Pads that have no copper layer in their set (a mask-only or paste-only
 // pad) are plotted as they are.
-
-const NM = 1e6
-const nm = (p: Vec2) => ({ x: Math.round(p.x * NM), y: Math.round(p.y * NM) })
-const mm = (path: Path64): Vec2[] => path.map((p) => ({ x: p.x / NM, y: p.y / NM }))
 
 /** Rings offset by `d` (outwards when positive) with round corners, in whole nanometres; the rings are counted even-odd, so holes shrink as the pad grows. */
 export function offsetRings(rings: Vec2[][], d: number): Vec2[][] {

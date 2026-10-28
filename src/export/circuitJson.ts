@@ -45,6 +45,7 @@ import { needsZoneEngine, zoneLayers } from "../model/zones"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
 import { textElements } from "./circuitJsonTexts"
+import { mm } from "./circuitJsonUnits"
 import { worldTexts } from "../model/texts"
 import { arcOf, samplePrimitive } from "../model/primitiveGeometry"
 import { componentFields, FIELD_SIZE, pinDisplayName, pinTexts, symbolOf } from "../model/symbolDrawing"
@@ -111,7 +112,6 @@ export interface CircuitJsonExport {
   symbols: KicadSymbolLink[]
 }
 
-const mm = (n: number) => round(n, 4)
 const pt = (p: Vec2): Vec2 => ({ x: mm(p.x), y: mm(p.y) })
 
 const numeric = (s: string) => /^\d+$/.test(s)

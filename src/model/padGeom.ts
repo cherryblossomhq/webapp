@@ -129,9 +129,10 @@ function dedupe(ring: Vec2[]): Vec2[] {
 
 // ---------- a custom pad's copper ----------
 
-const NM = 1e6
-const nm = (p: Vec2) => ({ x: Math.round(p.x * NM), y: Math.round(p.y * NM) })
-const mm = (path: Path64): Vec2[] => path.map((p) => ({ x: p.x / NM, y: p.y / NM }))
+/** Clipper units per millimetre of the pad paths: whole nanometres. */
+export const NM = 1e6
+export const nm = (p: Vec2) => ({ x: Math.round(p.x * NM), y: Math.round(p.y * NM) })
+export const mm = (path: Path64): Vec2[] => path.map((p) => ({ x: p.x / NM, y: p.y / NM }))
 const positive = (path: Path64): Path64 => (Clipper.isPositive(path) ? path : [...path].reverse())
 
 /** One of a custom pad's drawings as paths: its fill grown by half its line width, or its line stroked with a round pen (`EDA_SHAPE::TransformShapeToPolygon`, eda_shape.cpp 10.0.0 `:2363`). */

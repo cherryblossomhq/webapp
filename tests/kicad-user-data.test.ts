@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
-import { safeFileStem, sheetFileNames } from "../src/export/kicadSheets"
+import { safeFileStem, safePath, sheetFileNames } from "../src/export/kicadSheets"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { EXAMPLES } from "../src/model/examples"
@@ -135,3 +135,67 @@ describe("a sheet's file name in the KiCad export", () => {
     expect(out.files["child.kicad_sch"]).toBeDefined()
   })
 })
+
+describe("the file names and folders of an imported project in the KiCad export", () => {
+  const nested = (uses: { uuid: string; name: string; y: number }[], dir = "proj") => {
+    const f = sheetFiles(uses)
+    const root = f.get("root.kicad_sch")!.split('"child.kicad_sch"').join('"sheets/child.kicad_sch"')
+    return new Map([
+      [`${dir}/Main.kicad_sch`, root],
+      [`${dir}/sheets/child.kicad_sch`, f.get("child.kicad_sch")!],
+    ])
+  }
+  const run = (files: Map<string, string>, root: string) => {
+    const r = importKicadSchematic({ files, root })
+    if (r.status !== "imported") throw new Error(r.message)
+    return r.project
+  }
+
+  it("keeps the root schematic's file name, and the board and project files take it", async () => {
+    const p = run(nested([{ uuid: "00000000-0000-4000-8000-0000000000a1", name: "A", y: 60.96 }]), "proj/Main.kicad_sch")
+    const out = await kicadFiles(p)
+    expect(out.files["Main.kicad_sch"]).toBeDefined()
+    expect(out.files["Main.kicad_pro"]).toBeDefined()
+    expect(out.files["Main.kicad_pcb"]).toBeDefined()
+  })
+
+  it("round-trips a sheet in a subfolder with the same path, and the sheet symbol points to it", async () => {
+    const p = run(nested([{ uuid: "00000000-0000-4000-8000-0000000000a1", name: "A", y: 60.96 }]), "proj/Main.kicad_sch")
+    expect(p.sheets?.find((s) => s.id !== "root")?.file).toBe("sheets/child.kicad_sch")
+    const out = await kicadFiles(p)
+    expect(out.files["sheets/child.kicad_sch"]).toBeDefined()
+    expect(out.files["Main.kicad_sch"]).toContain('(property "Sheetfile" "sheets/child.kicad_sch"')
+  })
+
+  it("keeps one file for a sheet used twice from a subfolder", async () => {
+    const p = run(nested([{ uuid: "00000000-0000-4000-8000-0000000000a1", name: "A", y: 60.96 }, { uuid: "00000000-0000-4000-8000-0000000000a2", name: "B", y: 90 }]), "proj/Main.kicad_sch")
+    const out = await kicadFiles(p)
+    expect(Object.keys(out.files).filter((n) => n.endsWith(".kicad_sch")).sort()).toEqual(["Main.kicad_sch", "sheets/child.kicad_sch"])
+    expect(out.files["Main.kicad_sch"].match(/"Sheetfile" "sheets\/child\.kicad_sch"/g)).toHaveLength(2)
+  })
+
+  it("makes paths safe: forward slashes, no climbing, no absolute or drive paths, each segment cleaned, collisions by case", () => {
+    expect(safePath("sheets\\power")).toBe("sheets/power")
+    expect(safePath("../x/power")).toBe("power")
+    expect(safePath("/etc/power")).toBe("power")
+    expect(safePath("C:/x/power")).toBe("power")
+    expect(safePath("a/./CON/b?")).toBe("a/CON_/b_")
+    const p = {
+      ...EXAMPLES[0].project,
+      sheets: [{ id: "root" }, { id: "s1", file: "Sheets/Power.kicad_sch" }, { id: "s2", file: "sheets/power.kicad_sch" }, { id: "s3", file: "../../out.kicad_sch" }],
+      sheetSymbols: ["s1", "s2", "s3"].map((child, i) => ({ id: `h${i + 1}`, sheet: "root", child, x: 0, y: i * 5, w: 5, h: 3, name: child, pins: [] })),
+    } as Project
+    expect(Object.fromEntries(sheetFileNames(p, "demo"))).toEqual({ root: "demo.kicad_sch", s1: "Sheets/Power.kicad_sch", s2: "sheets/power_2.kicad_sch", s3: "out.kicad_sch" })
+  })
+
+  it("leaves a project made in the editor as it was", async () => {
+    const p = EXAMPLES[0].project
+    expect(sheetsFileOf(p)).toBeUndefined()
+    const out = await kicadFiles(p)
+    const names = Object.keys(out.files).sort()
+    expect(names.every((n) => !n.includes("/"))).toBe(true)
+    expect(names.filter((n) => n.endsWith(".kicad_sch"))).toHaveLength(1)
+  })
+})
+
+const sheetsFileOf = (p: Project) => p.sheets?.find((s) => s.id === "root")?.file

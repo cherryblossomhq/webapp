@@ -73,7 +73,24 @@ export function safeFileStem(stem: string): string {
 }
 
 /**
- * The file name of each sheet: the root's is the project's. A sheet that came from a KiCad project keeps the file it was read from (`SchematicSheet.file`), so the
+ * A relative path (`sheets/power`) made safe: forward slashes, each segment through `safeFileStem`, no empty or `.` segments. A path that climbs (`..`), is absolute
+ * or starts with a drive letter is cut to its last segment, so nothing is written outside the project's folder. Empty when nothing is left.
+ */
+export function safePath(path: string): string {
+  const parts = path.replace(/[\\]/g, "/").split("/")
+  const unsafe = path.startsWith("/") || path.startsWith("\\") || /^[a-zA-Z]:/.test(path) || parts.includes("..")
+  const kept = (unsafe ? parts.slice(-1) : parts).filter((x) => x !== "" && x !== ".").map(safeFileStem).filter(Boolean)
+  return kept.join("/")
+}
+
+/** The stem of an imported root schematic's file name, when the project keeps one. */
+export const rootFileStem = (project: Pick<Project, "sheets">) => {
+  const file = sheetsOf(project).find((s) => s.id === ROOT_SHEET)?.file
+  return file ? safeFileStem(file.replace(/[\\]/g, "/").split("/").pop()!.replace(/\.(kicad_sch|sch)$/i, "")) : ""
+}
+
+/**
+ * The file name of each sheet: the root's is the project's. A sheet that came from a KiCad project keeps the file it was read from (`SchematicSheet.file`, its path from the root's folder), so the
  * history of a KiCad project's files in git stays whole; any other is named after its sheet (its first symbol's name). Each name is its own, whatever the case.
  */
 export function sheetFileNames(project: Project, base: string): Map<string, string> {
@@ -81,7 +98,7 @@ export function sheetFileNames(project: Project, base: string): Map<string, stri
   const taken = new Set<string>([`${base}.kicad_sch`.toLowerCase()])
   out.set(ROOT_SHEET, `${base}.kicad_sch`)
   const give = (id: string, wanted: string) => {
-    const stem = safeFileStem(wanted) || safeFileStem(id) || "sheet"
+    const stem = safePath(wanted) || safeFileStem(id) || "sheet"
     let name = `${stem}.kicad_sch`
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${stem}_${i}.kicad_sch`
     taken.add(name.toLowerCase())

@@ -3,6 +3,8 @@ import { kicadFiles } from "../src/export/kicad"
 import { inkBox, layoutText } from "../src/lib/kicadText"
 import { qrCode, type QrLevel } from "../src/lib/qrCode"
 import { BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, readKicadBoard } from "../src/model/kicad/board"
+import { tableParts } from "../src/model/kicad/board/flatten"
+import { parseSexpr, type List } from "../src/model/kicad/board/sexpr"
 import { countPaths } from "../src/model/kicad/board/account"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { shapeBox } from "../src/model/shapes"
@@ -240,6 +242,15 @@ describe("a table", () => {
     expect(texts[3]).toMatchObject({ x: 18, y: -6, box: { w: 4, h: 2 } })
     expect(texts[0].box!.border).toBeUndefined()
     expect(r.report.entries.find((e) => e.code === "tables-flattened")).toMatchObject({ severity: "changed", count: 1 })
+  })
+
+  it("turns a cell given as start and end by an angle that is not a quarter about its centre, as KiCad does", () => {
+    const turned = grid.map((c) => c.replace("(margins", "(angle 30) (margins"))
+    const first = tableParts((Array.isArray(parseSexpr(tableFor(turned))[0]) ? parseSexpr(tableFor(turned))[0] : parseSexpr(tableFor(turned))) as List).lines[0]
+    expect(first.a.x).toBeCloseTo(15.098, 3)
+    expect(first.a.y).toBeCloseTo(1.634, 3)
+    expect(first.b.x).toBeCloseTo(16.098, 3)
+    expect(first.b.y).toBeCloseTo(3.366, 3)
   })
 
   it("draws only what the table says: no border, no separators, the header line alone", () => {

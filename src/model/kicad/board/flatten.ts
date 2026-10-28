@@ -95,9 +95,21 @@ export function tableParts(table: List): TableParts {
   const header = flag(border, "header", true)
   const drawAngle = numAt(kid(all[0], "angle"), 1, 0)
   const at = (row: number, col: number) => all[row * columns + col]
-  const corners = (cell: List) => cornersInSequence(cornersOf(cell), drawAngle)
+  const corners = (cell: List) => {
+    const own = cornersOf(cell)
+    // A cell given as `start` and `end` and turned by an angle that is not a quarter is the rectangle turned about its centre, its corners in the order top left, top right, bottom right, bottom left (as KiCad rotates the shape).
+    if (!kid(cell, "pts") && ((drawAngle % 90) + 90) % 90 !== 0) {
+      const [tl, tr, br, bl] = own
+      const [cx, cy] = [(tl.x + br.x) / 2, (tl.y + br.y) / 2]
+      const t = (drawAngle * Math.PI) / 180
+      const [cos, sin] = [Math.cos(t), Math.sin(t)]
+      return [tl, tr, br, bl].map((p) => ({ x: cx + (p.x - cx) * cos + (p.y - cy) * sin, y: cy - (p.x - cx) * sin + (p.y - cy) * cos }))
+    }
+    return cornersInSequence(own, drawAngle)
+  }
   const spanOf = (cell: List) => ({ cols: Math.trunc(numAt(kid(cell, "span"), 1, 1)), rows: Math.trunc(numAt(kid(cell, "span"), 2, 1)) })
   const lines: TableLine[] = []
+  // A width of 0 (a stroke left at -1, clamped) is drawn by the board builder as a hairline of the default shape width (`DEFAULT_SHAPE_WIDTH`), never as nothing.
   const draw = (a: Pt, b: Pt, stroke: Stroke) => lines.push({ a, b, width: Math.max(0, stroke.width), dash: stroke.dash })
 
   // between the columns: the right edge of each cell that is not on the table's right
@@ -174,6 +186,7 @@ function chain(rings: Pt[][]): Pt[] {
 const BACK_LAYER = /^B\.(Cu|SilkS|Mask|Paste|Adhes|CrtYd|Fab)$/
 
 /** The size a text starts with in KiCad: 60 mils. */
+// Unverified: KiCad takes a barcode's text height from the board's own default text size (`StyleFromSettings`) when the file has no `text_height`, and the file does not say what that is; 1.524 mm (60 mil) is the usual one. The pen is `GetPenSizeForNormal` of the height, taken as height / 8 (not checked digit for digit).
 const DEFAULT_TEXT_HEIGHT = 1.524
 
 /**

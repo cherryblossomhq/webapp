@@ -7,7 +7,7 @@ import { joinFlags } from "../../partFlags"
 import { labelBox } from "../../labels"
 import { findPart, isRegistered, projectPartIds, unregisterPart } from "../../library"
 import { SCH_GRID } from "../../symbols"
-import { sheetView, useAt, usesOfSheet } from "../../sheets"
+import { isHierarchical, sheetView, useAt, usesOfSheet } from "../../sheets"
 import { serializeProject } from "../../projectFile"
 import type { ComponentInstance, NetLabel, PartFlags, Project, Rotation, SchematicBlock, Wire } from "../../types"
 import type { KeptFile } from "../board/images"
@@ -719,6 +719,8 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
       if (unit && unit !== next) joinedOf.set(unit.id, flags)
     }
   }
+  // A part's `sheetPath` is only read when the part has no instance and the schematic is flat (`partSheet`), so it is stored only then.
+  const hierarchical = isHierarchical(sch.project)
   const linkedComponents = sch.project.components.map((c) => {
     if (!joinedOf.has(c.id)) return c
     const flags = joinedOf.get(c.id)
@@ -727,7 +729,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     void _symbolFlags
     // X23: the footprint's units and points come over, and what the footprint's variants say that the symbol's do not (the symbol's own word stands, as its flags do, flag by flag and field by field).
     const variants = joinOverrides(b?.variants, c.variants)
-    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}) }
+    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath && c.inst === undefined && !hierarchical ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}) }
   })
   if (differing.length) {
     report.entries.push({

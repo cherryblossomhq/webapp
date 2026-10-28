@@ -319,7 +319,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X25 and X27 over the corp
     }
   })
 
-  it("KiCad's API test board is stopped by its Data Matrix code alone (X23, variants, is another slice's), and a board with a QR code whose text is hidden gets past X24, X25 and X27", () => {
+  it("KiCad's API test board is stopped by its Data Matrix code alone , and a board with a QR code whose text is hidden gets past X24, X25 and X27", () => {
     const withVariants = new Set([...BUILT_EXTENSIONS, "X23"])
     const sink = importKicadBoard(readFileSync(pcb("kicad-source/qa/data/pcbnew/api_kitchen_sink.kicad_pcb"), "utf8"), { built: withVariants })
     expect(sink.status === "refused" && sink.report.entries.filter((e) => e.severity === "refused").map((e) => e.object)).toEqual(["a datamatrix barcode"])

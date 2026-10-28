@@ -8,6 +8,6 @@ export { resolveLibSymbol, drawingFromLib, specFromSymbol, toSheet, MM_PER_UNIT 
 export type * from "./types"
 export { readLegacySchematic, isLegacySchematic } from "./legacy/read"
 export { readLegacySchematicText, legacySchematicVersion, type LegacySchematic } from "./legacy/sch"
-export { readLegacyLibraryText, legacyPartToSymbolText, legacyLibraryVersion, type LegacyLibrary, type LegacyPart } from "./legacy/lib"
+export { readLegacyLibraryText, legacyPartToSymbolText, type LegacyLibrary, type LegacyPart } from "./legacy/lib"
 export { legacyToKicadText, orientationOf } from "./legacy/sexpr"
 export { LegacySources, type LegacySource } from "./legacy/sources"

@@ -128,14 +128,6 @@ const PIN_SHAPES: Record<number, string> = {
   [NONLOGIC]: "non_logic",
 }
 
-export const pinTypeOf = (letter: string) => PIN_TYPES[letter]
-
-/** Whether text is a legacy library, and its version. */
-export function legacyLibraryVersion(text: string): [number, number] | null {
-  const m = /^EESchema-LIB(?:RARY)?[ \t]+Version[ \t]+(\d+)\.(\d+)/i.exec(text.replace(/^﻿/, "").slice(0, 200))
-  return m ? [Number(m[1]), Number(m[2])] : null
-}
-
 /** `NORMALIZE_ANGLE_POS` in tenths of a degree. */
 const norm = (a: number) => ((a % 3600) + 3600) % 3600
 

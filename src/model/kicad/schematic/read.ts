@@ -34,12 +34,6 @@ import type {
 /** The newest stamp in the KiCad source this reader was written against (the corpus's newest file is 20260306). */
 export const NEWEST_KNOWN_STAMP = 20261018
 
-/** Switch 1: from this stamp a symbol and a sheet carry their own instance data; before, the root sheet lists it all. */
-export const INSTANCES_IN_SYMBOLS_FROM = 20221002
-/** Switch 2: `unconnected` is `no_connect` from this stamp (the reader accepts both). */
-export const NO_CONNECT_RENAMED_AT = 20210123
-/** Switch 3: `(hide yes)` for a bare `hide` from this stamp (the reader accepts both). */
-export const HIDE_BOOLEANS_FROM = 20241004
 /** Switch 4: `~NAME~` before this stamp is an overbar, `~{NAME}` from it (the parser converts pin names, label texts and a power symbol's value at the same stamp). */
 export const OVERBAR_NOTATION_FROM = 20210606
 export const NET_NAME_OVERBAR_FROM = 20210606

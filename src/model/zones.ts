@@ -75,22 +75,6 @@ export function polygonPath(points: Vec2[]): ShapePath {
   }
 }
 
-/** The corner points of a path: where each piece starts. */
-export function pathCorners(path: ShapePath): Vec2[] {
-  return path.segs.map((s) => {
-    switch (s.kind) {
-      case "line":
-        return s.a
-      case "arc":
-        return s.start
-      case "bezier":
-        return s.p0
-      default:
-        return flattenPath({ closed: false, segs: [s] })[0]
-    }
-  })
-}
-
 /** The settings of a zone with every default resolved: what the fill and the checks use. */
 export interface ZoneSettings {
   clearance: number
@@ -147,15 +131,6 @@ export function higherPriority(project: Pick<Project, "zones">, a: Zone, b: Zone
   if (a.uuid !== undefined && b.uuid !== undefined && a.uuid !== b.uuid) return a.uuid > b.uuid
   if (a.unordered && b.unordered) return false
   return project.zones.indexOf(a) > project.zones.indexOf(b)
-}
-
-/** The box of everything a zone can touch with its polygon grown by a gap. */
-export function zoneReach(z: Zone, gap: number, fallback: Box): Box {
-  const b = zoneBox(z) ?? fallback
-  const out = emptyBox()
-  expandBox(out, { x: b.minX - gap, y: b.minY - gap })
-  expandBox(out, { x: b.maxX + gap, y: b.maxY + gap })
-  return out
 }
 
 /** What a rule area keeps out, as a list of flags that are set. */

@@ -150,21 +150,11 @@ export const refusedSheetSymbols = (project: Pick<Project, "sheets" | "sheetSymb
 /** The uses of one sheet, in tree order. */
 export const usesOfSheet = (project: Pick<Project, "sheets" | "sheetSymbols">, sheet: string): SheetUse[] => sheetUses(project).filter((u) => u.sheet === sheet)
 
-/** The uses on the sheet a use is (the children of a node of the tree), in order. */
-export const childUses = (project: Pick<Project, "sheets" | "sheetSymbols">, path: string): SheetUse[] => sheetUses(project).filter((u) => u.parent === path)
-
 /** The sheet symbols drawn on a sheet. */
 export const symbolsOnSheet = (project: Pick<Project, "sheetSymbols">, sheet: string): SheetSymbol[] => (project.sheetSymbols ?? NO_SYMBOLS).filter((s) => s.sheet === sheet)
 
 /** The use of a symbol on a given use of its parent sheet: the child use the symbol stands for there. */
 export const useOfSymbol = (parentPath: string, symbol: Pick<SheetSymbol, "id">) => `${parentPath}/${symbol.id}`
-
-/** The name a sheet goes by: its symbol's name where it has one, else the sheet's own, else its id. */
-export function sheetName(project: Pick<Project, "sheets" | "sheetSymbols">, sheet: string): string {
-  if (sheet === ROOT_SHEET) return rootSheetName(project)
-  const sym = (project.sheetSymbols ?? NO_SYMBOLS).find((s) => s.child === sheet)
-  return sym?.name || sheetsOf(project).find((s) => s.id === sheet)?.name || sheet
-}
 
 // ---------- views: one use of a sheet at a time ----------
 
@@ -202,9 +192,6 @@ export function sheetView(project: Project, path: string): Project {
   views.set(path, view)
   return view
 }
-
-/** Whether a project is a view of one use of a sheet. */
-export const isView = (project: Pick<Project, "scope">) => project.scope !== undefined
 
 type Tagged = { id: string }
 

@@ -119,12 +119,3 @@ export function removeLandShapes(project: Project, land: string, indices: number
   // The parts drawn with this land hold groups of its drawings by place: the later places shift down.
   return { ...next, components: next.components.map((c) => (c.footprint === land ? remapPartGroups(c, "s", set) : c)) }
 }
-
-/** Adds a drawing to a land, in the land's own frame. */
-export function addLandShape(project: Project, land: string, shape: BoardShape): Project {
-  const def = project.footprints?.find((f) => f.name === land)
-  if (!def) return project
-  const next: FootprintDef = { ...def, shapes: [...(def.shapes ?? []), patchShape(shape, {})] }
-  registerProjectFootprints({ footprints: [next] })
-  return touch({ ...project, footprints: project.footprints!.map((f) => (f.name === land ? next : f)) })
-}

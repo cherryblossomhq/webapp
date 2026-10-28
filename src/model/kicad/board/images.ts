@@ -67,6 +67,3 @@ export function convertImage(k: KicadImage, cx: ImageConversion, id: string): { 
     file: { id: sha, name: `reference-image.${k.format}`, bytes: k.data },
   }
 }
-
-/** An image's size on the board in millimetres: its pixels at its resolution, times its scale. */
-export const imageSizeMm = (m: Pick<ReferenceImage, "px" | "py" | "ppi" | "scale">): { w: number; h: number } => ({ w: (m.px / m.ppi) * 25.4 * m.scale, h: (m.py / m.ppi) * 25.4 * m.scale })

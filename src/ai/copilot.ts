@@ -65,8 +65,6 @@ interface Conversation {
 
 const conversations = new Map<string, Conversation>()
 
-export const hasHistory = (projectId: string) => (conversations.get(projectId)?.messages.length ?? 0) > 0
-
 export function clearHistory(projectId: string) {
   conversations.delete(projectId)
 }

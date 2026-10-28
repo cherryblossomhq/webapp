@@ -1,5 +1,5 @@
 import { emptyBox, expandBox, pointSegmentDistance, segmentSegmentDistance, type Box } from "../lib/geometry"
-import { flattenPath, FLATTEN_TOLERANCE, pathsBox, segEnd, segStart, type ShapePath } from "./shapes"
+import { flattenPath, FLATTEN_TOLERANCE, pathsBox, type ShapePath } from "./shapes"
 import type { BoardDef, Vec2 } from "./types"
 
 // The board's shape when it is not the plain rectangle (X2): what the outline is as geometry, and how far a point or a
@@ -88,12 +88,6 @@ export function outlineState(b: Pick<BoardDef, "outline">): OutlineState {
 
 /** Whether the board has an outline of its own (any path), rather than being the rectangle. */
 export const hasOutline = (b: Pick<BoardDef, "outline">): boolean => !!b.outline && b.outline.paths.length > 0
-
-/** The box of a board with an outline: the box of everything drawn on it. A board with none has `width` and `height`. */
-export function outlineBox(b: Pick<BoardDef, "outline">): Box | null {
-  const paths = b.outline?.paths
-  return paths?.length ? pathsBox(paths) : null
-}
 
 class EdgeIndex {
   private readonly cell: number
@@ -252,11 +246,6 @@ function build(paths: ShapePath[]): OutlineGeometry {
   return g
 }
 
-/** The geometry's flattened rings as polygons for a clipping or triangulating library: each board piece's outer ring, then its holes. */
-export function outlinePolygons(g: OutlineGeometry): Vec2[][][] {
-  return g.regions.map((r) => [r.outer, ...r.holes])
-}
-
 /**
  * Whether each cell of a grid is on the board: cell `(i, j)` is at `(ox + i * step, oy + j * step)`. Scanline filled with the even-odd rule
  * from the loops, so it costs the cells and the edges once, not a point test per cell.
@@ -318,12 +307,6 @@ export function copperEdgeClearance(g: OutlineGeometry, edges: readonly Edge[], 
 
 /** The path a loop is, as the points of its flattened ring (clockwise or counter-clockwise as drawn). */
 export const pathPoints = (path: ShapePath, tol = FLATTEN_TOLERANCE): Vec2[] => flattenPath(path, tol)
-
-/** The two ends of an open path. */
-export function pathEnds(path: ShapePath): [Vec2, Vec2] | null {
-  if (!path.segs.length) return null
-  return [segStart(path.segs[0]), segEnd(path.segs[path.segs.length - 1])]
-}
 
 /** The box of one path. */
 export const pathBox = pathBoxOf

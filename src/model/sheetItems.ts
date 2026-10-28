@@ -392,8 +392,6 @@ export function kicadOnlyBox(item: KicadOnlyDrawing): Box {
 
 /** A directive label's symbol is 20 mil (0.508 mm) across, whatever its pin's length (`SCH_DIRECTIVE_LABEL`'s `m_symbolSize`). */
 export const DIRECTIVE_SYMBOL_MM = 0.508
-/** The pin length KiCad gives a new directive label: 100 mil (2.54 mm). */
-export const DIRECTIVE_LENGTH = 0.2
 
 /**
  * What a directive label draws, in the sheet's units with y up, as `SCH_DIRECTIVE_LABEL::CreateGraphicShape` and the painter lay it out

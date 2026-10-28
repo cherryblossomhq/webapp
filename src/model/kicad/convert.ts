@@ -30,19 +30,6 @@ export type SkipCode =
   | "pad_without_pin"
   | "bad_symbol"
 
-export const SKIP_TEXT: Record<SkipCode, string> = {
-  power_symbol: "a power port or flag, not a part",
-  no_pins: "the symbol has no pins",
-  no_footprint: "the symbol names no footprint (a family drawn for several packages)",
-  footprint_missing: "the footprint the symbol names isn't in the footprint libraries",
-  footprint_unsupported: "the footprint has a pad shape or hole the editor can't draw",
-  pin_conflict: "two pins share a number but not a name",
-  pin_without_number: "a pin has no number, so it can't be paired with a pad",
-  pin_without_pad: "a pin has no pad on the footprint",
-  pad_without_pin: "a pad on the footprint has no pin on the symbol",
-  bad_symbol: "the symbol can't be read",
-}
-
 export interface KicadPartRow {
   /** `Regulator_Linear:AMS1117-3.3`: the library and the symbol. */
   key: string

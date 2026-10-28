@@ -22,9 +22,6 @@ const FIXED_EXTENSIONS = {
   Edge_Cuts: "gm1",
 } as const
 
-/** The extensions of the fixed layers; an inner copper layer's comes from `gerberExtension`. */
-export const GERBER_EXTENSIONS: Record<string, string> = FIXED_EXTENSIONS
-
 /** The Protel extension of a Gerber layer: the fixed ones, and `.g1` to `.g30` for the inner copper layers (KiCad's). */
 export const gerberExtension = (name: GerberLayerName): string => {
   const m = /^In(\d+)_Cu$/.exec(name)

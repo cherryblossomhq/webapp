@@ -256,12 +256,6 @@ export function resetPartTexts(project: Project, componentId: string): Project {
   return touch({ ...project, components: project.components.map((x) => (x.id === componentId ? (({ texts: _texts, ...rest }) => rest)(x) : x)) })
 }
 
-/** The texts a selection names, as world texts, in the order of the selection. */
-export function selectedTexts(all: WorldText[], ids: string[]): WorldText[] {
-  const set = new Set(ids)
-  return all.filter((t) => set.has(t.id))
-}
-
 /** Applies a patch to world texts of the board and of parts, each edited where it is held. A place (`x`, `y`) is for one text. */
 export function patchTexts(project: Project, texts: WorldText[], patch: TextPatch): Project {
   let out = project

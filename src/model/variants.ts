@@ -8,7 +8,6 @@ import type { ComponentInstance, PartFlags, Project, ProjectVariants, SheetSymbo
 
 const FLAG_KEYS = ["dnp", "excludeFromBom", "notOnBoard", "excludeFromSim", "excludeFromPos"] as const
 export type VariantFlag = (typeof FLAG_KEYS)[number]
-export const VARIANT_FLAGS: readonly VariantFlag[] = FLAG_KEYS
 
 /** The names of a project's variants, in the order the project lists them. */
 export const variantNames = (project: Pick<Project, "variants">): string[] => project.variants?.list.map((v) => v.name) ?? []

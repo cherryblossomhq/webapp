@@ -97,13 +97,6 @@ export function makeArcTrace(project: Project, opts: { layer: CopperLayer; start
   return { project: touch({ ...project, traces: [...project.traces, t] }), trace: t }
 }
 
-/** Move traces to another copper layer. A trace that ends on a via that does not reach the new layer is not joined to it any more, which Checks reports as an unrouted connection. */
-export function setTraceLayer(project: Project, ids: Iterable<string>, layer: CopperLayer): Project {
-  const set = new Set(ids)
-  if (!copperLayers(project.board).includes(layer) || !project.traces.some((t) => set.has(t.id) && t.layer !== layer)) return project
-  return touch({ ...project, traces: project.traces.map((t) => (set.has(t.id) && t.layer !== layer ? { ...t, layer } : t)) })
-}
-
 /** An arc track with one of its three points moved to `to`: the circle follows, the ends and the middle are points on it as ever. Unchanged when the three points would lie on a line. */
 export function moveArcPoint(project: Project, id: string, index: 0 | 1 | 2, to: Vec2): Project {
   const t = project.traces.find((x) => x.id === id)

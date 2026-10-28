@@ -184,7 +184,4 @@ export function deleteZoneCorner(z: Zone, ring: number, index: number): Zone {
 /** The outline as a list of points (its corners), for a tool or a message; arcs are held by their ends. */
 export const outlinePoints = (z: Zone): Vec2[] => (z.outline?.[0] ? z.outline[0].segs.map(segStart) : [])
 
-/** Whether the project has any zone a tool should draw or list that is not the editor's whole-board pour. */
-export const hasPolygonZones = (project: Pick<Project, "zones">): boolean => project.zones.some((z) => z.outline !== undefined)
-
 export { zoneLayers }

@@ -153,9 +153,6 @@ export function localFrame(c: ComponentInstance) {
   }
 }
 
-/** Whether the project has any drawing that is written out: a board drawing, or one of a part placed on the board (a dimension's lines are written with the dimension). */
-export const hasDrawings = (project: Project) => worldShapes(project).some((s) => s.placed && !s.dim)
-
 /**
  * The board file with the project's drawings added: the board's own as top-level `gr_*` items and
  * each part's inside its footprint (found by reference) as `fp_*`; the user layers they are on in the

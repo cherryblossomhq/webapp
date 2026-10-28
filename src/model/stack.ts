@@ -47,13 +47,6 @@ export const innerNumber = (layer: CopperLayer): number => (isInner(layer) ? Num
 /** Whether a value reads as a copper layer's id, whatever board it is on (`in1` to `in30`). */
 export const isCopperLayerId = (v: unknown): v is CopperLayer => v === "top" || v === "bottom" || (typeof v === "string" && /^in([1-9]|[12]\d|30)$/.test(v))
 
-/** Whether a string is the id of a layer a stack of `count` layers has. */
-export const isLayerOf = (id: unknown, count: number): id is CopperLayer => {
-  if (id === "top" || id === "bottom") return true
-  if (typeof id !== "string" || !/^in[1-9]\d*$/.test(id)) return false
-  return Number(id.slice(2)) <= count - 2
-}
-
 /** KiCad's own name for a layer: `F.Cu`, `In1.Cu`, `B.Cu`. */
 export const kicadLayerName = (layer: CopperLayer): string => (layer === "top" ? "F.Cu" : layer === "bottom" ? "B.Cu" : `In${layer.slice(2)}.Cu`)
 
@@ -91,19 +84,10 @@ export function flipLayer(layer: CopperLayer, count: number): CopperLayer {
   return `in${Math.min(count - 2, Math.max(1, count - 1 - k))}` as CopperLayer
 }
 
-/** The layers a layer list names in the board's order, each once, with those the board does not have left out. */
-export function inStackOrder(board: { stack?: BoardStack }, layers: Iterable<CopperLayer>): CopperLayer[] {
-  const have = new Set(layers)
-  return copperLayers(board).filter((l) => have.has(l))
-}
-
 // ---------- vias ----------
 
 /** `through` for a via that reaches every layer, else its kind. */
 export const viaKind = (via: Pick<Via, "kind">): "through" | ViaKind => via.kind ?? "through"
-
-/** Whether a via runs the whole stack. */
-export const isThroughVia = (via: Pick<Via, "kind">): boolean => via.kind === undefined
 
 /**
  * Whether a via is a hole through the whole board as the fab sees it: a through via, or a `blind` one (not a micro via) whose ends are the two outer layers, which
@@ -127,11 +111,6 @@ export function viaLayers(board: { stack?: BoardStack }, via: Pick<Via, "kind" |
   return all.slice(Math.min(a, b), Math.max(a, b) + 1) as CopperLayer[]
 }
 
-/** Whether a via has copper on a layer. */
-export function viaOnLayer(board: { stack?: BoardStack }, via: Pick<Via, "kind" | "from" | "to">, layer: CopperLayer): boolean {
-  return via.kind === undefined ? true : viaLayers(board, via).includes(layer)
-}
-
 /** The diameter of a via's copper on a layer: its own, unless a via stack gives the layer another. */
 export function viaDiameterOn(via: Pick<Via, "diameter" | "stack">, layer: CopperLayer): number {
   const s = via.stack
@@ -139,14 +118,6 @@ export function viaDiameterOn(via: Pick<Via, "diameter" | "stack">, layer: Coppe
   if ("layers" in s) return s.layers[layer] ?? via.diameter
   if (layer === "bottom") return s.back
   return s.inner
-}
-
-/** The largest copper of a via on any layer it is on. */
-export function viaMaxDiameter(via: Pick<Via, "diameter" | "stack">): number {
-  const s = via.stack
-  if (!s) return via.diameter
-  if ("layers" in s) return Math.max(via.diameter, ...Object.values(s.layers).filter((n): n is number => typeof n === "number"))
-  return Math.max(via.diameter, s.inner, s.back)
 }
 
 /** Which kind a span of layers is on a board: through when it reaches both outer layers, blind with one outer end, buried with none. */

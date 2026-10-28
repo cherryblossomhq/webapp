@@ -44,9 +44,6 @@ export interface LegacyProReadResult {
   notes: string[]
 }
 
-/** Whether a text looks like a legacy project file. */
-export const looksLikeLegacyPro = (text: string) => !/^\s*[{[]\s*"/.test(text) && /^\s*(update|version|last_client|\[[^\]]+\])/m.test(text)
-
 const num = (v: string | undefined): number | undefined => {
   if (v === undefined || v.trim() === "") return undefined
   const x = Number(v)

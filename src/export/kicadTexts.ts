@@ -13,7 +13,7 @@ import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
 import type { WorldText } from "../model/texts"
 import { isDimensionText, shownOf, textBoxCorners, worldTexts } from "../model/texts"
-import type { ComponentInstance, Project, Vec2 } from "../model/types"
+import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 
 // The texts of a board brought in from KiCad, written into the board file the converter made: board text as
@@ -197,5 +197,3 @@ function shownOfRaw(project: Project, t: WorldText): string {
   if (t.kind === "reference" || t.kind === "value") return shownOf(project, t)
   return t.content
 }
-
-export const hasTexts = (project: Project, c?: ComponentInstance) => (c ? !!c.texts : worldTexts(project).some((t) => t.placed && !isDimensionText(t)))

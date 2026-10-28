@@ -148,13 +148,6 @@ export function moveDimension(d: BoardDimension, dx: number, dy: number): BoardD
   return { ...d, a: { x: r6(d.a.x + dx), y: r6(d.a.y + dy) }, b: { x: r6(d.b.x + dx), y: r6(d.b.y + dy) }, x: r6(d.x + dx), y: r6(d.y + dy) }
 }
 
-/** Moves the dimensions that are not locked; a locked one stays where it is. */
-export function moveDimensions(project: Project, ids: string[], dx: number, dy: number): Project {
-  const set = new Set(ids)
-  if (!project.dimensions?.some((d) => set.has(d.id) && !d.locked) || (dx === 0 && dy === 0)) return project
-  return touch({ ...project, dimensions: project.dimensions.map((d) => (set.has(d.id) && !d.locked ? moveDimension(d, dx, dy) : d)) })
-}
-
 /**
  * A dimension turned a quarter turn counter-clockwise about a point (`PCB_DIM_ORTHOGONAL::Rotate` and `PCB_DIMENSION_BASE::Rotate`, pcbnew/pcb_dimension.cpp): its points and its text
  * place turn, its text turns with it, and an orthogonal one that measured along x measures along y; one that measured along y measures along x with its crossbar on the other side.

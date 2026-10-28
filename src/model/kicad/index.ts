@@ -4,7 +4,7 @@
  * runs it to store each KiCad part whole, so the editor places one without
  * converting anything. Pure functions over file text: no DOM, store or footprinter.
  */
-export { convertSymbol, SKIP_TEXT, type Conversion, type ConvertContext, type KicadLandRow, type KicadPartRow, type SkipCode } from "./convert"
+export { convertSymbol, type Conversion, type ConvertContext, type KicadLandRow, type KicadPartRow, type SkipCode } from "./convert"
 export { convertFootprint, type FootprintResult } from "./footprint"
 export { all, first, flag, num, parseSexpr, str, type SNode } from "./sexpr"
 export { parseSymbols, resolveExtends, type KicadPin, type RawSymbol } from "./symbol"

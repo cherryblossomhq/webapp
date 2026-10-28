@@ -204,17 +204,3 @@ export function padRings(pad: PadDef): Vec2[][] {
     }),
   )
 }
-
-/** The extent of a pad's copper in the land's frame. */
-export function padExtent(pad: PadDef): { minX: number; minY: number; maxX: number; maxY: number } {
-  const b = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
-  for (const ring of padRings(pad)) {
-    for (const p of ring) {
-      b.minX = Math.min(b.minX, p.x)
-      b.minY = Math.min(b.minY, p.y)
-      b.maxX = Math.max(b.maxX, p.x)
-      b.maxY = Math.max(b.maxY, p.y)
-    }
-  }
-  return b
-}

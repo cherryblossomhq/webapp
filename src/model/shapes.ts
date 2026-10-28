@@ -443,14 +443,6 @@ export function pointShapeDistance(p: Vec2, c: ShapeCopper): number {
   return Math.max(0, best - c.half)
 }
 
-/** Distance from a segment (a trace piece without its width) to the copper of a shape, 0 where they touch. */
-export function segmentShapeDistance(a: Vec2, b: Vec2, c: ShapeCopper): number {
-  if (c.fill.length && (pointInRings(a, c.fill) || pointInRings(b, c.fill))) return 0
-  let best = Infinity
-  for (const [p, q] of c.edges) best = Math.min(best, segmentSegmentDistance(a, b, p, q))
-  return Math.max(0, best - c.half)
-}
-
 /** Distance between the copper of two shapes, 0 where they touch or one lies inside the other. */
 export function shapeShapeDistance(x: ShapeCopper, y: ShapeCopper): number {
   if (x.fill.length && y.edges.length && pointInRings(y.edges[0][0], x.fill)) return 0

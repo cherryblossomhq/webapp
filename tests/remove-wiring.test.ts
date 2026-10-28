@@ -77,6 +77,18 @@ describe("remove_wiring with pins", () => {
     expect(out.project.wires).toHaveLength(0)
   })
 
+  it("takes a wire whole rather than leave a piece of it ending on a pin it only passed over", () => {
+    // R3.1 lies under the middle of the wire from R1.2 to R2.1, which doesn't connect it.
+    let p = must(circuit(), "add_component", { part_id: "resistor", ref: "R3", x: 2, y: 0.3, rotation: 90 }).project
+    p = addWire(p, [{ x: 0.3, y: 0 }, { x: 3.7, y: 0 }]).project
+    expect(netOf(p, "R3", "1")).toBeNull()
+    const out = must(p, "remove_wiring", { pins: ["R1.2"] })
+    expect(joined(p, out.project)).toEqual([])
+    expect(netOf(out.project, "R3", "1")).toBeNull()
+    expect(out.project.wires).toHaveLength(0)
+    expect(out.result).toMatch(/Also cut off: R2\.1 no longer on /)
+  })
+
   it("says so when nothing is drawn at a pin, and changes nothing", () => {
     const p = circuit()
     const out = must(p, "remove_wiring", { pins: ["R1.1"] })

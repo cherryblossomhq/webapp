@@ -30,19 +30,11 @@ ${LOOKING_GUIDE}
 
 Replies are shown in a narrow side panel: keep them short and concrete. Say what you changed and any assumptions, as a sentence or two or a short list. No preamble.`
 
-
-
 /** The static prompt carries a cache breakpoint: tools and system are the same on every request. */
 const SYSTEM_MESSAGE: Extract<ChatMessage, { role: "system" }> = {
   role: "system",
   content: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
 }
-
-
-
-
-
-
 
 /**
  * The system message for a design: the static prompt as it always was (the same bytes, so its cache

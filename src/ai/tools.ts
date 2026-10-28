@@ -1196,8 +1196,15 @@ const removeWiringTool: ToolSpec = {
     let next = project
     const said: string[] = []
     if (refs.length) {
-      const taken = wiringAt(project, refs)
+      let taken = wiringAt(project, refs)
       next = withoutTaken(project, taken)
+      // What is left of a wire cut short ends where the cut was, which can be on a pin the wire only
+      // passed over (not connected to it) or where another wire's end met its side: that would join
+      // them. Deleting whole wires joins nothing, so those wires go whole instead.
+      if (taken.pieces.length && unrequestedMerges(next, getConnectivity(project), getConnectivity(next), new Set()).length) {
+        taken = { ...taken, pieces: [] }
+        next = withoutTaken(project, taken)
+      }
       const was = pinNetNames(project)
       const now = pinNetNames(next)
       const where = refs.map((r) => pinLabel(project, r)).join(", ")

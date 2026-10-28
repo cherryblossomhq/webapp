@@ -4,8 +4,8 @@ import type { Project } from "../model/types"
 
 // How to design in Cherry Blossom, as a model is told it: Sakura in its system prompt (`copilot.ts`)
 // and an assistant connected through MCP in the server's instructions (`mcp/instructions.ts`). One
-// text, so the two can't teach different rules. Sakura's prompt is these sections joined exactly as
-// they always were: the same bytes, so its prompt cache holds.
+// text, so the two can't teach different rules. Sakura's prompt is these sections joined in the
+// order they always were; a change to them is a change to Sakura's prompt, and its cache, too.
 
 /** How designs, parts and good practice work here: everything in Sakura's prompt but who it is, how it looks and how it replies. */
 export const DESIGN_GUIDE = `How designs work here:

@@ -1,32 +1,22 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
-import { join, relative, sep } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
-import { kicadFiles } from "../src/export/kicad"
-import { slugify } from "../src/export/bundle"
-import { computeConnectivity } from "../src/model/connectivity"
-import { importKicadSchematic } from "../src/model/kicad/schematic"
-import type { Project } from "../src/model/types"
-import { kicad9SheetProblems } from "./kicad9-strict"
+import { kicadFiles } from "../../src/export/kicad"
+import { slugify } from "../../src/export/bundle"
+import { computeConnectivity } from "../../src/model/connectivity"
+import { importKicadSchematic } from "../../src/model/kicad/schematic"
+import type { Project } from "../../src/model/types"
+import { kicad9SheetProblems } from "../kicad9-strict"
+import { CORPUS, walkSch as walk } from "./shared"
 
 // S3 over a local corpus (not in the repo): every schematic of the corpus that has buses, entries or aliases and imports is written to KiCad by the export,
 // read again, and compared with the project it was: the buses (each raw bus covered to a thousandth of a millimetre), the entries, the aliases, the nets
 // (pin by pin and by name), and the files carry no token KiCad 9's parser does not take inside a bus, an entry or an alias.
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/kicad-sch-s3-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/sch-buses.test.ts
 //
 // With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_sch")) out.push(p)
-  }
-  return out
-}
 
 const MM = 12.7
 const length = (p: Project) =>

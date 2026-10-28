@@ -1,14 +1,15 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import { describe, expect, it } from "vitest"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
-import { schematicPins } from "../src/model/instances"
-import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { BUILT_EXTENSIONS } from "../src/model/kicad/schematic/needs"
-import { readKicadSchematic } from "../src/model/kicad/schematic/read"
-import type { Project } from "../src/model/types"
-import { deriveNets } from "./kicad-census/netlist-sch.mjs"
+import { computeConnectivity, pinKey } from "../../src/model/connectivity"
+import { schematicPins } from "../../src/model/instances"
+import { importKicadSchematic } from "../../src/model/kicad/schematic"
+import { BUILT_EXTENSIONS } from "../../src/model/kicad/schematic/needs"
+import { readKicadSchematic } from "../../src/model/kicad/schematic/read"
+import type { Project } from "../../src/model/types"
+import { deriveNets } from "../kicad-census/netlist-sch.mjs"
+import { CORPUS, walkSch as walk, writeReport } from "./shared"
 
 // S11 over real files. No file of the corpus has a case of S11 (every wire end on a wire's side has a junction, nothing is a hair apart), so the real files are
 // changed to have them, and the editor's nets are compared with the independent derivation of the changed file (`tests/kicad-census/netlist-sch.mjs`, which reads
@@ -19,21 +20,9 @@ import { deriveNets } from "./kicad-census/netlist-sch.mjs"
 //
 // The first is KiCad's T rule at scale, the second its exact points. Each changed file is imported with S11 built and its pins' nets are compared, pin by pin.
 //
-//   KICAD_CORPUS=<corpus dir> npx vitest run tests/kicad-sch-s11-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> npx vitest run tests/corpus/sch-joining.test.ts
 
-const CORPUS = process.env.KICAD_CORPUS
 const BUILT = new Set([...BUILT_EXTENSIONS, "S2", "S5", "S6", "S10"])
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name === "census") continue
-      walk(p, out)
-    } else if (name.endsWith(".kicad_sch")) out.push(p)
-  }
-  return out
-}
 
 /** The text with every list that starts with `(name` cut out, by balanced brackets (strings respected). */
 function without(text: string, name: string): string {
@@ -151,8 +140,7 @@ describe("S11 over the real files, changed to have its cases", () => {
         rows.push(row)
       }
       const out = process.env.KICAD_CORPUS_OUT ?? dir
-      mkdirSync(out, { recursive: true })
-      writeFileSync(join(out, "s11-corpus-summary.json"), JSON.stringify(rows, null, 1))
+      writeReport(out, "s11-corpus-summary.json", JSON.stringify(rows, null, 1))
       console.log(JSON.stringify(rows))
       for (const row of rows) {
         expect(row.problems, row.mutation).toEqual([])

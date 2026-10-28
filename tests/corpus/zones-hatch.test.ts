@@ -2,24 +2,24 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Clipper, EndType, FillRule, JoinType, PointInPolygonResult, type Paths64 } from "@countertype/clipper2-ts"
 import { describe, expect, it } from "vitest"
-import { gerberLayers } from "../src/export/gerber"
-import { kicadFiles } from "../src/export/kicad"
-import { computeConnectivity } from "../src/model/connectivity"
-import { BUILT_EXTENSIONS, importKicadBoard } from "../src/model/kicad/board"
-import { pcbPads } from "../src/model/instances"
-import { analyzePcb } from "../src/model/pcb"
-import { lineEndParts, shapePolylines } from "../src/model/shapes"
-import type { Project, Zone } from "../src/model/types"
-import { parseSexpr } from "./kicad-census/sexpr.mjs"
-import { BY_DESIGN, diffProjects, REPAIRED } from "./kicad-roundtrip-check"
-import { unknownNodes } from "./kicad9-nodes"
+import { gerberLayers } from "../../src/export/gerber"
+import { kicadFiles } from "../../src/export/kicad"
+import { computeConnectivity } from "../../src/model/connectivity"
+import { BUILT_EXTENSIONS, importKicadBoard } from "../../src/model/kicad/board"
+import { pcbPads } from "../../src/model/instances"
+import { analyzePcb } from "../../src/model/pcb"
+import { lineEndParts, shapePolylines } from "../../src/model/shapes"
+import type { Project, Zone } from "../../src/model/types"
+import { parseSexpr } from "../kicad-census/sexpr.mjs"
+import { BY_DESIGN, diffProjects, REPAIRED } from "../kicad-roundtrip-check"
+import { unknownNodes } from "../kicad9-nodes"
+import { CORPUS } from "./shared"
 
 // X24, X25 and X27 over the corpus boards that use them. The oracle shares nothing with `src`: its own reader (`kicad-census/sexpr.mjs`) takes what the file says, and the hatched fills are compared with
 // the copper the file itself stored (`filled_polygon`), which KiCad drew with its own code.
 //
-//   KICAD_CORPUS=<corpus dir> npx vitest run tests/kicad-x24-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> npx vitest run tests/corpus/zones-hatch.test.ts
 
-const CORPUS = process.env.KICAD_CORPUS
 type Node = string | Node[]
 const kids = (n: Node, name: string): Node[][] => (Array.isArray(n) ? (n.filter((c) => Array.isArray(c) && c[0] === name) as Node[][]) : [])
 const kid = (n: Node, name: string) => kids(n, name)[0]
@@ -28,7 +28,7 @@ const num = (n: Node | undefined, at = 1) => Number(word(n, at))
 const read = (path: string) => parseSexpr(readFileSync(path, "utf8"))[0] as Node[]
 const pcb = (rel: string) => join(CORPUS!, rel)
 
-// The standard of the solid fills (`kicad-zone-family-corpus.test.ts`): the copper differs from the stored copper by at most a hundredth of its area, or a tenth of a square millimetre.
+// The standard of the solid fills (`corpus/zone-family.test.ts`): the copper differs from the stored copper by at most a hundredth of its area, or a tenth of a square millimetre.
 // `edge`: how near to the board's edge the file's own copper comes where the project file's rule (`min_copper_edge_clearance`) is not it. The fills of the two Arduino shields stop 0.45 mm from the edge,
 // which is the zone's own clearance (0.4) and half of the 0.1 mm edge line (0.05), as the filler of KiCad 9.0 measured it, not the project's 0.3.
 // `xor`: a board that misses the standard, and the share it misses by. The grid of KiCad 9 and earlier starts at the extreme corner of the copper, and the two shields' extreme corner is a rounded corner

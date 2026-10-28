@@ -15,13 +15,39 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Worker } from "node:worker_threads"
-import { kicadCjkLoaded, kicadFontLoaded } from "../src/lib/kicadFont/load"
-import { registerProjectParts } from "../src/model/customParts"
+import { kicadCjkLoaded, kicadFontLoaded } from "../../src/lib/kicadFont/load"
+import { registerProjectParts } from "../../src/model/customParts"
 import { deserialize, serialize } from "node:v8"
 import { gunzipSync, gzipSync } from "node:zlib"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const EDITOR = join(HERE, "..")
+const EDITOR = join(HERE, "..", "..")
+
+/** Where the local corpus is (`KICAD_CORPUS`); undefined when it is not set, and every test in this folder then skips. */
+export const CORPUS = process.env.KICAD_CORPUS
+
+/** Every file under `dir` that `keep` accepts (all of them when it is left out), in directory order, leaving out the `census` folder (the census's own output). */
+export function walkCorpus(dir: string, keep: (name: string) => boolean = () => true, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) {
+      if (name !== "census") walkCorpus(p, keep, out)
+    } else if (keep(name)) out.push(p)
+  }
+  return out
+}
+/** The `.kicad_pcb` files of the corpus. */
+export const walkPcb = (dir: string) => walkCorpus(dir, (n) => n.endsWith(".kicad_pcb"))
+/** The `.kicad_pcb` and legacy `.brd` boards of the corpus. */
+export const walkBoards = (dir: string) => walkCorpus(dir, (n) => n.endsWith(".kicad_pcb") || n.endsWith(".brd"))
+/** The `.kicad_sch` files of the corpus. */
+export const walkSch = (dir: string) => walkCorpus(dir, (n) => n.endsWith(".kicad_sch"))
+
+/** Writes a report file into `dir` (made if it is not there). */
+export function writeReport(dir: string, name: string, text: string): void {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, name), text)
+}
 
 /** Every k-th file of the (sorted) list so that about KICAD_CORPUS_SAMPLE remain; all of them when it is unset or 0. */
 export function sampleOf<T>(files: T[]): T[] {
@@ -142,7 +168,7 @@ export function startWatchdog(label: string, limitMs = Number(process.env.KICAD_
   const view = new Int32Array(cells)
   mkdirSync(CACHE_DIR, { recursive: true })
   const currentFile = join(CACHE_DIR, `${label}.${process.pid}.current`)
-  const worker = new Worker(join(HERE, "kicad-watchdog-worker.cjs"), { workerData: { label, limitMs, cells, currentFile, pid: process.pid } })
+  const worker = new Worker(join(HERE, "watchdog-worker.cjs"), { workerData: { label, limitMs, cells, currentFile, pid: process.pid } })
   worker.unref()
   return {
     board(name) {

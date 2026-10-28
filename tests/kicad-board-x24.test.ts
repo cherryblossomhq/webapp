@@ -15,7 +15,7 @@ import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
 
 // X24: a hatched pour (a grid of lines cut into the copper by KiCad's rules), tracks whose copper is open through the solder mask, and the line ends (KiCad 11 development's) and colours of drawings, which are
-// kept and written back where KiCad 9 reads them. The corpus run against the file's own filled polygons is `kicad-x24-corpus.test.ts`.
+// kept and written back where KiCad 9 reads them. The corpus run against the file's own filled polygons is `corpus/zones-hatch.test.ts`.
 
 const box = (x0: number, y0: number, x1: number, y1: number): Paths64 => [[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]]
 const inside = (paths: Paths64, x0: number, y0: number, x1: number, y1: number) => areaMm2(intersect(paths, box(x0, y0, x1, y1)))

@@ -1,40 +1,29 @@
-import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { join, relative } from "node:path"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { relative } from "node:path"
 import { describe, expect, it } from "vitest"
-import { kicadFiles } from "../src/export/kicad"
-import { importKicadBoard } from "../src/model/kicad/board"
-import { rememberImage } from "../src/store/imageFiles"
-import { diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
-import { unknownNodes } from "./kicad9-nodes"
-import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
+import { kicadFiles } from "../../src/export/kicad"
+import { importKicadBoard } from "../../src/model/kicad/board"
+import { rememberImage } from "../../src/store/imageFiles"
+import { diffProjects, proRulesDifferences } from "../kicad-roundtrip-check"
+import { unknownNodes } from "../kicad9-nodes"
+import { cachedExport, cachedParse, CORPUS, sampleOf, startWatchdog, walkPcb as walk } from "./shared"
 
 // The round trip over a local corpus (not in the repo): every board that imports is written out by the KiCad export, read again, and the two
 // projects are compared item for item (`kicad-roundtrip-check.ts`). The table says how many have no difference and counts every kind of difference.
 //
 //   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 \
-//     KICAD_ROUNDTRIP_OUT=<file> npx vitest run tests/kicad-roundtrip-corpus.test.ts
+//     KICAD_ROUNDTRIP_OUT=<file> npx vitest run tests/corpus/roundtrip.test.ts
 //
-// KICAD_LIMIT / KICAD_ONLY (comma separated path fragments) narrow the run; KICAD_CORPUS_SAMPLE=N runs about N boards (see kicad-corpus-shared.ts). With no corpus the test is skipped.
+// KICAD_LIMIT / KICAD_ONLY (comma separated path fragments) narrow the run; KICAD_CORPUS_SAMPLE=N runs about N boards (see corpus/shared.ts). With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_ROUNDTRIP_OUT
 const LIMIT = Number(process.env.KICAD_LIMIT ?? 0)
 /** Every Nth board only (KICAD_EVERY), for a quick sample. */
 const EVERY = Number(process.env.KICAD_EVERY ?? 1)
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
 
-import { BY_DESIGN, REPAIRED } from "./kicad-roundtrip-check"
+import { BY_DESIGN, REPAIRED } from "../kicad-roundtrip-check"
 export { BY_DESIGN, REPAIRED }
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_pcb")) out.push(p)
-  }
-  return out
-}
 
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("board round trip over the corpus", () => {
   it("writes every imported board out and reads it back as the same project", async () => {

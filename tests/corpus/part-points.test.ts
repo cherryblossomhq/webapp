@@ -1,15 +1,16 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
-import { kicadFiles } from "../src/export/kicad"
-import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
-import { importKicadProject } from "../src/model/kicad/project"
-import { partPointWorld } from "../src/model/pcbPoints"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { resolvedComponents } from "../src/model/ruleAreas"
-import { setActiveVariant } from "../src/model/variants"
-import { BY_DESIGN, REPAIRED, diffProjects } from "./kicad-roundtrip-check"
-import { unknownNodes } from "./kicad9-nodes"
+import { kicadFiles } from "../../src/export/kicad"
+import { EXTENSION_NAMES, importKicadBoard } from "../../src/model/kicad/board"
+import { importKicadProject } from "../../src/model/kicad/project"
+import { partPointWorld } from "../../src/model/pcbPoints"
+import { parseProjectFile, serializeProject } from "../../src/model/projectFile"
+import { resolvedComponents } from "../../src/model/ruleAreas"
+import { setActiveVariant } from "../../src/model/variants"
+import { BY_DESIGN, REPAIRED, diffProjects } from "../kicad-roundtrip-check"
+import { unknownNodes } from "../kicad9-nodes"
+import { CORPUS, walkPcb as walk } from "./shared"
 
 /** Every extension, built or not (X19 has no entry in the names, it is built): some of these boards need others besides X23. */
 const ALL_EXTENSIONS = new Set([...Object.keys(EXTENSION_NAMES), "X19"])
@@ -21,9 +22,8 @@ const ALL_EXTENSIONS = new Set([...Object.keys(EXTENSION_NAMES), "X19"])
 // `name`, `description`, the flags `dnp`, `exclude_from_bom`, `exclude_from_pos_files`, `exclude_from_sim`, and `field`s; `units` holds `(unit (name) (pins ...))`; a `point` has `at`, `size`
 // and `layer`, in the board's frame before stamp 20260616 and the footprint's after). A point is compared where it is on the board, which is the same for both frames.
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/x23-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/part-points.test.ts
 
-const CORPUS = process.env.KICAD_CORPUS
 
 type Node = string | Node[]
 
@@ -137,16 +137,6 @@ function fileWorld(facts: FileFacts, part: FileFacts["parts"] extends Map<string
   if (facts.stamp < 20260616) return p.at
   const a = (part.angle * Math.PI) / 180
   return [part.at[0] + p.at[0] * Math.cos(a) + p.at[1] * Math.sin(a), part.at[1] - p.at[0] * Math.sin(a) + p.at[1] * Math.cos(a)]
-}
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_pcb")) out.push(p)
-  }
-  return out
 }
 
 /** A list of one of these opens its own line (a dimension's `(units 3)` does not), as KiCad 10 writes them. */

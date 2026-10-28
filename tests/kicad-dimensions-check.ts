@@ -108,7 +108,7 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
   // A dimension on a layer the editor has not got, or in a unit it cannot hold, is a refusal the gate raises: nothing to compare.
   const skip = lossy.some((l) => /a dimension|a KiCad 5 dimension/.test(l))
   // X27 draws a dimension inside a footprint as a board dimension, appended after the board's own (those on a private layer of the footprint stay out). So the project holds the file's top-level
-  // dimensions first, in order, and then at most `inFootprints` more: those extra ones are compared against the file by the X27 test (kicad-x24-corpus.test.ts), this check compares the first ones.
+  // dimensions first, in order, and then at most `inFootprints` more: those extra ones are compared against the file by the X27 test (corpus/zones-hatch.test.ts), this check compares the first ones.
   out.counts = skip || (dims.length >= o.dims.length && dims.length <= o.dims.length + o.inFootprints)
   if (!skip && out.counts) {
     o.dims.forEach((want: any, i: number) => {

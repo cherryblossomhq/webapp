@@ -21,7 +21,7 @@ import { readSchematicTree } from "../src/model/kicad/schematic/tree"
 // KiCad 4 and 5 schematics (slice 3e): every record of the `.sch` format, the encodings, the `.lib` format
 // and the cache libraries, where a symbol comes from, the KiCad 5 rules for power symbols and net names,
 // the `.pro`, linking by timestamp, and the refusals. The fixtures are written by hand, in mils as the files
-// are; the real files are in the corpus test (`kicad-schematic-legacy-corpus.test.ts`).
+// are; the real files are in the corpus test (`corpus/schematic-legacy.test.ts`).
 
 const HEAD = (version = 4) => `EESchema Schematic File Version ${version}\nLIBS:power\nEELAYER 25 0\nEELAYER END\n$Descr A4 11693 8268\nencoding utf-8\nSheet 1 1\nTitle "Test"\nDate "2020-01-02"\nRev "B"\nComp "Acme"\nComment1 "one"\nComment2 ""\nComment3 ""\nComment4 ""\n$EndDescr\n`
 const END = "$EndSCHEMATC\n"

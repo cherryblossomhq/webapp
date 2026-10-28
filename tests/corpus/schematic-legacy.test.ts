@@ -1,31 +1,32 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
-import { schematicPins } from "../src/model/instances"
-import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES, readKicadBoard } from "../src/model/kicad/board"
-import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
-import { accountLegacyPro, readLegacyPro } from "../src/model/kicad/project/legacyPro"
-import { countPaths } from "../src/model/kicad/schematic/account"
-import { buildSchematicProject } from "../src/model/kicad/schematic/build"
-import { plainnessOf } from "../src/model/kicad/schematic/carried"
-import { needsOfFile, needsOfProject } from "../src/model/kicad/schematic/needs"
-import { gateSchematic, importKicadSchematic } from "../src/model/kicad/schematic/import"
-import { isLegacySchematic } from "../src/model/kicad/schematic/legacy/read"
-import { legacyPartToSymbolText, readLegacyLibraryText } from "../src/model/kicad/schematic/legacy/lib"
-import { linkFootprints } from "../src/model/kicad/schematic/link"
-import { readKicadSchematic } from "../src/model/kicad/schematic/read"
-import { drawingFromLib } from "../src/model/kicad/schematic/symbols"
-import { readSchematicTree } from "../src/model/kicad/schematic/tree"
-import { legacyNeeds, legacyRecordCounts, rawLegacySymbols, type RawLegacySymbol } from "./kicad-census/census-legacy.mjs"
-import { deriveLegacyNets, newOverbar } from "./kicad-census/netlist-legacy.mjs"
-import { boardPadNets } from "./kicad-census/netlist-sch.mjs"
+import { computeConnectivity, pinKey } from "../../src/model/connectivity"
+import { schematicPins } from "../../src/model/instances"
+import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES, readKicadBoard } from "../../src/model/kicad/board"
+import { importKicadProject, type ProjectFile } from "../../src/model/kicad/project"
+import { accountLegacyPro, readLegacyPro } from "../../src/model/kicad/project/legacyPro"
+import { countPaths } from "../../src/model/kicad/schematic/account"
+import { buildSchematicProject } from "../../src/model/kicad/schematic/build"
+import { plainnessOf } from "../../src/model/kicad/schematic/carried"
+import { needsOfFile, needsOfProject } from "../../src/model/kicad/schematic/needs"
+import { gateSchematic, importKicadSchematic } from "../../src/model/kicad/schematic/import"
+import { isLegacySchematic } from "../../src/model/kicad/schematic/legacy/read"
+import { legacyPartToSymbolText, readLegacyLibraryText } from "../../src/model/kicad/schematic/legacy/lib"
+import { linkFootprints } from "../../src/model/kicad/schematic/link"
+import { readKicadSchematic } from "../../src/model/kicad/schematic/read"
+import { drawingFromLib } from "../../src/model/kicad/schematic/symbols"
+import { readSchematicTree } from "../../src/model/kicad/schematic/tree"
+import { legacyNeeds, legacyRecordCounts, rawLegacySymbols, type RawLegacySymbol } from "../kicad-census/census-legacy.mjs"
+import { deriveLegacyNets, newOverbar } from "../kicad-census/netlist-legacy.mjs"
+import { boardPadNets } from "../kicad-census/netlist-sch.mjs"
+import { CORPUS, walkCorpus as walk, writeReport } from "./shared"
 
 // The pass or fail table of slice 3e (KiCad 4 and 5 schematics) over a local corpus (not in the repo):
 //
 //   KICAD_CORPUS=<corpus dir> KICAD_CENSUS=<corpus dir>/census \
-//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/kicad-schematic-legacy-corpus.test.ts
+//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/corpus/schematic-legacy.test.ts
 //
 // Every legacy `.sch` of the corpus with the files beside it: every record accounted for against the raw
 // census (`census-legacy.mjs`), the extensions each needs against the census's rules, the import with the
@@ -34,21 +35,9 @@ import { boardPadNets } from "./kicad-census/netlist-sch.mjs"
 // footprint links against `link.mjs`, the nets of each project against the nets its board carries, and
 // every symbol of every legacy library against the raw `.lib` to 0.001 mm. With no corpus it is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
 const OUT = process.env.KICAD_CORPUS_OUT ?? join(tmpdir(), "kicad-schematic-legacy-corpus")
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name === "census") continue
-      walk(p, out)
-    } else out.push(p)
-  }
-  return out
-}
 
 const rel = (path: string) => relative(CORPUS!, path).split(sep).join("/")
 const targeted = new Set(existsSync(join(CORPUS ?? "", "projects", "_targeted.txt")) ? readFileSync(join(CORPUS!, "projects", "_targeted.txt"), "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : [])
@@ -432,12 +421,11 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
       }
 
       // ---------- the table ----------
-      mkdirSync(OUT, { recursive: true })
       const lines: string[] = [`# Legacy schematic corpus, ${rows.length} files, ${projects.length} projects, ${Date.now() - t0} ms\n`, "| file | group | version | read | records | needs (importer) | needs (census) | difference | sources | now | raised | nets |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
       for (const r of rows) lines.push(`| ${r.file} | ${r.group} | ${r.version} | ${r.parse} | ${r.recordsEqual ? "ok" : `NO ${r.recordDiff}`} | ${r.needs.join(" ")} | ${r.census.join(" ")} | ${r.needsDiff} | ${r.sources} | ${r.import} | ${r.raised} | ${r.nets} |`)
       lines.push("", "| project | footprints | by path | by reference | none | links as link.mjs | nets of board and schematic | import (plain / raised) |", "|---|---|---|---|---|---|---|---|")
       for (const p of projects) lines.push(`| ${p.project} | ${p.footprints} | ${p.linkPath} | ${p.linkReference} | ${p.linkNone} | ${p.error ? `ERROR ${p.error}` : p.linkOk ? "yes" : "NO"} | ${p.boardNets}${p.detail ? ` (${p.detail})` : ""} | ${p.plain} / ${p.raised} |`)
-      writeFileSync(join(OUT, "legacy-corpus.md"), lines.join("\n"))
+      writeReport(OUT, "legacy-corpus.md", lines.join("\n"))
 
       const ok = rows.filter((r) => r.parse === "ok")
       const real = ok.filter((r) => REAL.includes(r.group))
@@ -471,8 +459,8 @@ describe.skipIf(!CORPUS)("the KiCad 5 schematic corpus", () => {
         worstMm: Number(worstMm.toFixed(6)),
         libErrors,
       }
-      writeFileSync(join(OUT, "legacy-corpus-summary.json"), JSON.stringify(sum, null, 1))
-      writeFileSync(join(OUT, "legacy-corpus-problems.txt"), [...problems, ...libProblems, ...proProblems].join("\n"))
+      writeReport(OUT, "legacy-corpus-summary.json", JSON.stringify(sum, null, 1))
+      writeReport(OUT, "legacy-corpus-problems.txt", [...problems, ...libProblems, ...proProblems].join("\n"))
       console.log(JSON.stringify(sum))
 
       expect(sum.crashes).toBe(0)

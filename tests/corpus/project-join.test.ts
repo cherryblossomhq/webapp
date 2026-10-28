@@ -1,22 +1,22 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { kicadFiles } from "../src/export/kicad"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
-import { pcbPads } from "../src/model/instances"
-import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../src/model/kicad/board"
-import { importKicadProject, type KicadProjectResult, type ProjectFile } from "../src/model/kicad/project"
-import type { Project } from "../src/model/types"
+import { kicadFiles } from "../../src/export/kicad"
+import { computeConnectivity, pinKey } from "../../src/model/connectivity"
+import { pcbPads } from "../../src/model/instances"
+import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../../src/model/kicad/board"
+import { importKicadProject, type KicadProjectResult, type ProjectFile } from "../../src/model/kicad/project"
+import type { Project } from "../../src/model/types"
+import { CORPUS } from "./shared"
 
 // B3 of the final review over a local corpus (not in the repo): a project is imported, written out by the KiCad export and read again, and every pad of
 // the board is on the net it was on. The pin numbers of a symbol (a diode's A and C, a connector's A1 to B12, an exposed pad EP, the power unit of a
 // multi-unit part) must come back as they were, or the pad finds no pin ("the symbol has no pin ...") and loses its net.
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/kicad-join-final-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/project-join.test.ts
 //
 // With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 
 /** The projects the final review found losing nets, and the folder of each (relative to the corpus's `projects`). */
 const PROJECTS = [

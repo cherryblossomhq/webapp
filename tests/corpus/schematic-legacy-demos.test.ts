@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { legacyPartToSymbolText, readLegacyLibraryText } from "../src/model/kicad/schematic/legacy/lib"
-import { readLegacySchematicText } from "../src/model/kicad/schematic/legacy/sch"
-import { legacyToKicadText } from "../src/model/kicad/schematic/legacy/sexpr"
-import { kid, numAt } from "../src/model/kicad/board/sexpr"
-import { readKicadSchematic } from "../src/model/kicad/schematic/read"
-import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
-import type { LibSymbol } from "../src/model/kicad/schematic/types"
+import { legacyPartToSymbolText, readLegacyLibraryText } from "../../src/model/kicad/schematic/legacy/lib"
+import { readLegacySchematicText } from "../../src/model/kicad/schematic/legacy/sch"
+import { legacyToKicadText } from "../../src/model/kicad/schematic/legacy/sexpr"
+import { kid, numAt } from "../../src/model/kicad/board/sexpr"
+import { readKicadSchematic } from "../../src/model/kicad/schematic/read"
+import { drawingFromLib, resolveLibSymbol } from "../../src/model/kicad/schematic/symbols"
+import type { LibSymbol } from "../../src/model/kicad/schematic/types"
+import { CORPUS } from "./shared"
 
 // KiCad ships its demos in both forms: the KiCad 4 files (`qa/data/pcbnew/plugins/legacy_demos`) and the
 // same designs as KiCad 6 converted them and later versions saved them (`demos`). The cached symbols of
@@ -15,7 +16,6 @@ import type { LibSymbol } from "../src/model/kicad/schematic/types"
 // the same symbols: pins, shapes, arcs, fills, widths, units and body styles, to 0.02 mm (KiCad rounds to 0.0001 mm,
 // and a later save re-derives the middle of an arc). With no corpus it is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const SRC = CORPUS ? join(CORPUS, "kicad-source") : ""
 const LEGACY = join(SRC, "qa/data/pcbnew/plugins/legacy_demos")
 const MODERN = join(SRC, "demos")

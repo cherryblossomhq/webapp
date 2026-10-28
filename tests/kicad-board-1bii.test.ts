@@ -357,22 +357,6 @@ describe("a net number on a drawing that the net table lacks (KiCad logs it and 
   })
 })
 
-import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
-const CORPUS = process.env.KICAD_CORPUS
-describe.skipIf(!CORPUS)("the corpus board with a bad net number on a footprint drawing", () => {
-  it("WCL-INU slave.kicad_pcb is read, not refused as unreadable", () => {
-    const file = join(CORPUS!, "projects/WCL-INU__beehive_temperature_humidity_x27_SHT40_PCB/slave/slave.kicad_pcb")
-    if (!existsSync(file)) return
-    const text = readFileSync(file, "utf8")
-    const real = importKicadBoard(text)
-    expect(real.status === "refused" && real.reason === "unreadable").toBe(false)
-    expect(real.report.entries.some((e) => e.code === "unreadable-value")).toBe(false)
-    const all = importKicadBoard(text, { built: ALL })
-    expect(all.status === "refused" && all.reason === "unreadable").toBe(false)
-  })
-})
-
 describe("a negative width", () => {
   it("is the default width on an unfilled drawing, none on a filled one when it is a nanometre, and refused when it is more", () => {
     const body = (w: string, extra: string) => board({ body: [`(gr_poly (pts (xy 0 0) (xy 2 0) (xy 2 2)) (stroke (width ${w}) (type solid)) ${extra} (layer "F.SilkS"))`] })

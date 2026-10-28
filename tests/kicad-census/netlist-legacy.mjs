@@ -1,7 +1,7 @@
 // The nets of a KiCad 5 (legacy) schematic project, derived from the raw files by KiCad 5.1's own
 // rules, sharing no code with `src`: it reads the `.sch`, `.lib` and `.pro` text with its own
 // small readers below. It is the oracle the importer's nets are checked against for legacy files
-// (`tests/kicad-schematic-legacy-corpus.test.ts`), and the board's own nets are its oracle in turn.
+// (`tests/corpus/schematic-legacy.test.ts`), and the board's own nets are its oracle in turn.
 //
 // The rules (eeschema/netlist_object_list.cpp and netlist_object.cpp of KiCad 5.1):
 //   - items whose connection points coincide are on one net, wire ends, pins, labels, junctions,

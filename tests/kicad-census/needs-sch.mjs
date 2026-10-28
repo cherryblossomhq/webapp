@@ -1,6 +1,6 @@
 // Which schematic extensions a `.kicad_sch` file needs to import exactly, by the census's rules:
 // the rule `slices-sch.mjs` judges the plan by, and the one the importer's own needs are compared
-// with (`tests/kicad-schematic-corpus.test.ts`). `d` is the `d` of a record of `census-sch.mjs`.
+// with (`tests/corpus/schematic.test.ts`). `d` is the `d` of a record of `census-sch.mjs`.
 //
 // Every file with symbols needs S5 (each symbol's fields have their own place), S6 (symbol
 // drawings use fills and strokes the editor's primitives lack) and S10 (a cached symbol must be

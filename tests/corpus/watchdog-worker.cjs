@@ -1,4 +1,4 @@
-// The watchdog of kicad-corpus-shared.ts, in a worker thread so that it still runs while the main thread is stuck in a loop.
+// The watchdog of corpus/shared.ts, in a worker thread so that it still runs while the main thread is stuck in a loop.
 // It looks once a second at the beat the main thread adds to cell 0 at the start of every board; when the beat has not moved for `limitMs`
 // it names the board (the main thread writes it to `currentFile`) and ends the whole process.
 const { workerData } = require("node:worker_threads")

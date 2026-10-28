@@ -1,25 +1,25 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { join, relative } from "node:path"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { relative } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { describe, expect, it } from "vitest"
-import { buildFabricationFiles } from "../src/export/bundle"
-import { kicadFiles } from "../src/export/kicad"
-import { loadKicadFont } from "../src/lib/kicadFont/load"
-import { importKicadBoard } from "../src/model/kicad/board"
-import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
-import { OutlineNotClosedError } from "../src/export/outlineGuard"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { textFontState, textInk, worldTexts } from "../src/model/texts"
-import { outlineState } from "../src/model/outline"
-import { parseSexpr } from "./kicad-census/sexpr.mjs"
-import { diffProjects } from "./kicad-roundtrip-check"
-import { unknownNodes } from "./kicad9-nodes"
+import { buildFabricationFiles } from "../../src/export/bundle"
+import { kicadFiles } from "../../src/export/kicad"
+import { loadKicadFont } from "../../src/lib/kicadFont/load"
+import { importKicadBoard } from "../../src/model/kicad/board"
+import { cachedExport, cachedParse, CORPUS, sampleOf, startWatchdog, walkPcb as walk } from "./shared"
+import { OutlineNotClosedError } from "../../src/export/outlineGuard"
+import { parseProjectFile, serializeProject } from "../../src/model/projectFile"
+import { textFontState, textInk, worldTexts } from "../../src/model/texts"
+import { outlineState } from "../../src/model/outline"
+import { parseSexpr } from "../kicad-census/sexpr.mjs"
+import { diffProjects } from "../kicad-roundtrip-check"
+import { unknownNodes } from "../kicad9-nodes"
 
 // X19 over the corpus: every board that has a `render_cache`, an `embedded_fonts` node or a font's `face` (the boards that needed X19), imported, drawn, plotted, saved,
 // loaded and exported to KiCad again, against an oracle that reads the raw file with the census's own reader (`tests/kicad-census/sexpr.mjs`) and shares no code with `src`.
 //
 //   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 KICAD_X19_OUT=<file> \
-//     npx vitest run tests/kicad-x19-corpus.test.ts
+//     npx vitest run tests/corpus/fonts.test.ts
 //
 // What is compared, per board:
 //  - every text that has a cache is drawn from it (`textFontState` is `outline`);
@@ -29,20 +29,9 @@ import { unknownNodes } from "./kicad9-nodes"
 //    own error (about 2e-4 of the ink: the scanline sum is approximate); the tight checks are the 2 nm edge gap and the samples;
 //  - the Gerber files hold a region of the same area for every polygon the letters make (Gerber coordinates are whole nanometres);
 //  - a save and a load give the same project, and the KiCad export read again gives the same texts, the same fonts and the same outlines.
-// KICAD_CORPUS_SAMPLE=N runs about N of the boards that use fonts or render caches (see kicad-corpus-shared.ts). With no corpus the test is skipped.
+// KICAD_CORPUS_SAMPLE=N runs about N of the boards that use fonts or render caches (see corpus/shared.ts). With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_X19_OUT
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_pcb")) out.push(p)
-  }
-  return out
-}
 
 type Ring = [number, number][]
 interface RawText {

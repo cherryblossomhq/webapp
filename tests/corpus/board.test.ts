@@ -1,52 +1,52 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
-import { pcbPads } from "../src/model/instances"
-import { serializeProject } from "../src/model/projectFile"
-import { buildKicadProject, BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, padWorld, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
-import { countPaths } from "../src/model/kicad/board/account"
-import { planModels } from "../src/model/kicad/board/models"
-import { needs as censusNeeds } from "./kicad-census/needs.mjs"
-import { copperOracle, oracle } from "./kicad-census/pads.mjs"
-import { decodeNetName } from "../src/model/kicad/board"
-import { cleanFlags } from "../src/model/partFlags"
-import { checkEdge } from "./kicad-edge-check"
-import { checkZoneSettings, compareFills } from "./kicad-zones-check"
-import { importedZone, zoneOracle } from "./kicad-census/zones.mjs"
-import { packZones } from "../src/model/zoneCodec"
-import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
-import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
-import { checkX10 } from "./kicad-x10-check"
-import { arcLength, layersOracle } from "./kicad-census/layers.mjs"
-import { checkLayers } from "./kicad-layers-check"
-import { autoroute } from "../src/model/autoroute"
-import { analyzePcb } from "../src/model/pcb"
-import { componentFootprint } from "../src/model/instances"
-import type { Project } from "../src/model/types"
-import { checkDimensions } from "./kicad-dimensions-check"
-import { checkPads } from "./kicad-x7-check"
-import { fontFromGlyphStrings, loadFontFile } from "./kicad-census/texts.mjs"
-import glyphsBase from "../src/lib/kicadFont/glyphsBase"
-import glyphsCjk from "../src/lib/kicadFont/glyphsCjk"
-import { loadKicadFont } from "../src/lib/kicadFont/load"
-import { buildFabricationFiles } from "../src/export/bundle"
-import { projectToCircuitJson } from "../src/export/circuitJson"
-import { OutlineNotClosedError } from "../src/export/outlineGuard"
-import { pnpCsv } from "../src/export/pnp"
-import { outlineState } from "../src/model/outline"
-import { outlineCrossings } from "../src/model/outlineCrossing"
-import { runTool } from "../src/ai/tools"
-import { parseProjectFile } from "../src/model/projectFile"
+import { computeConnectivity, pinKey } from "../../src/model/connectivity"
+import { pcbPads } from "../../src/model/instances"
+import { serializeProject } from "../../src/model/projectFile"
+import { buildKicadProject, BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, padWorld, readKicadBoard, type ImportReport } from "../../src/model/kicad/board"
+import { countPaths } from "../../src/model/kicad/board/account"
+import { planModels } from "../../src/model/kicad/board/models"
+import { needs as censusNeeds } from "../kicad-census/needs.mjs"
+import { copperOracle, oracle } from "../kicad-census/pads.mjs"
+import { decodeNetName } from "../../src/model/kicad/board"
+import { cleanFlags } from "../../src/model/partFlags"
+import { checkEdge } from "../kicad-edge-check"
+import { checkZoneSettings, compareFills } from "../kicad-zones-check"
+import { importedZone, zoneOracle } from "../kicad-census/zones.mjs"
+import { packZones } from "../../src/model/zoneCodec"
+import { checkGraphics, roundTripOk } from "../kicad-graphics-check"
+import { checkTexts, textsRoundTripOk } from "../kicad-texts-check"
+import { checkX10 } from "../kicad-x10-check"
+import { arcLength, layersOracle } from "../kicad-census/layers.mjs"
+import { checkLayers } from "../kicad-layers-check"
+import { autoroute } from "../../src/model/autoroute"
+import { analyzePcb } from "../../src/model/pcb"
+import { componentFootprint } from "../../src/model/instances"
+import type { Project } from "../../src/model/types"
+import { checkDimensions } from "../kicad-dimensions-check"
+import { checkPads } from "../kicad-x7-check"
+import { fontFromGlyphStrings, loadFontFile } from "../kicad-census/texts.mjs"
+import glyphsBase from "../../src/lib/kicadFont/glyphsBase"
+import glyphsCjk from "../../src/lib/kicadFont/glyphsCjk"
+import { loadKicadFont } from "../../src/lib/kicadFont/load"
+import { buildFabricationFiles } from "../../src/export/bundle"
+import { projectToCircuitJson } from "../../src/export/circuitJson"
+import { OutlineNotClosedError } from "../../src/export/outlineGuard"
+import { pnpCsv } from "../../src/export/pnp"
+import { outlineState } from "../../src/model/outline"
+import { outlineCrossings } from "../../src/model/outlineCrossing"
+import { runTool } from "../../src/ai/tools"
+import { parseProjectFile } from "../../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
-import { emptyContext, reportText, summarize as summarizeImport } from "../src/kicadImport/summary"
-import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
+import { emptyContext, reportText, summarize as summarizeImport } from "../../src/kicadImport/summary"
+import { cachedExport, cachedParse, CORPUS, sampleOf, startWatchdog, walkBoards as walk, writeReport } from "./shared"
 
 // The per-board pass or fail table of slice 1a over a local corpus (not in the repo):
 //
 //   KICAD_CORPUS=<corpus dir> KICAD_CENSUS=<corpus dir>/census \
-//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/kicad-board-corpus.test.ts
+//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/corpus/board.test.ts
 //
 // It reads every `.kicad_pcb` and `.brd` under the corpus, runs the importer's reader, accounting,
 // needs and project build over each, and compares them with the census (`tests/kicad-census`,
@@ -113,7 +113,6 @@ const ZONE_FILL_OUTLIERS: string[] = [
   ])
   .sort()
 
-const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
 const OUT = process.env.KICAD_CORPUS_OUT ?? join(tmpdir(), "kicad-board-corpus")
 const LIMIT = Number(process.env.KICAD_LIMIT ?? 0)
@@ -127,17 +126,6 @@ const INK_EVERY = Number(process.env.KICAD_INK_EVERY ?? 4)
 // With KICAD_NEWSTROKE naming a copy of KiCad's own `common/newstroke_font.cpp` the oracle reads its glyphs from that file (parsed by the oracle's own code), so the comparison
 // is against KiCad's real data and not only against what is shipped; without it, from the shipped strings.
 const oracleFont = process.env.KICAD_NEWSTROKE && existsSync(process.env.KICAD_NEWSTROKE) ? loadFontFile(process.env.KICAD_NEWSTROKE) : fontFromGlyphStrings([...glyphsBase.split("\n"), ...glyphsCjk.split("\n")])
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name === "census") continue
-      walk(p, out)
-    } else if (name.endsWith(".kicad_pcb") || name.endsWith(".brd")) out.push(p)
-  }
-  return out
-}
 
 interface Row {
   file: string
@@ -319,9 +307,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       const files = walk(CORPUS!).sort()
       const rows: Row[] = []
       const t0 = Date.now()
-      // KICAD_CORPUS_SAMPLE=N runs about N boards (see kicad-corpus-shared.ts); a board that stalls for KICAD_BOARD_TIMEOUT_S (300 s) is named and the run ends
-      mkdirSync(OUT, { recursive: true })
-      writeFileSync(join(OUT, "progress.log"), "")
+      // KICAD_CORPUS_SAMPLE=N runs about N boards (see corpus/shared.ts); a board that stalls for KICAD_BOARD_TIMEOUT_S (300 s) is named and the run ends
+      writeReport(OUT, "progress.log", "")
       const dog = startWatchdog("kicad-board-corpus")
       for (const path of sampleOf((LIMIT ? files.slice(0, LIMIT) : files).filter((f) => !ONLY.length || ONLY.some((o) => f.includes(o))))) {
         const rel = relative(CORPUS!, path).split(sep).join("/")
@@ -917,9 +904,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
 `)
       }
       dog.stop()
-      mkdirSync(OUT, { recursive: true })
-      writeFileSync(join(OUT, "rows.json"), JSON.stringify(rows))
-      writeFileSync(join(OUT, "table.md"), summarize(rows, (Date.now() - t0) / 1000))
+      writeReport(OUT, "rows.json", JSON.stringify(rows))
+      writeReport(OUT, "table.md", summarize(rows, (Date.now() - t0) / 1000))
       console.log(summarize(rows, (Date.now() - t0) / 1000))
 
       const bad = rows.filter((r) => r.status === "CRASH" || r.status.startsWith("FAIL"))

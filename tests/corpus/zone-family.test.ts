@@ -3,39 +3,38 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { describe, expect, it } from "vitest"
-import { runTool } from "../src/ai/tools"
-import { buildFabricationFiles } from "../src/export/bundle"
-import { OutlineNotClosedError } from "../src/export/outlineGuard"
-import { gerberLayers } from "../src/export/gerber"
-import { kicadFiles } from "../src/export/kicad"
-import { BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, readKicadBoard } from "../src/model/kicad/board"
-import { cachedExport, cachedParse } from "./kicad-corpus-shared"
-import { countPaths } from "../src/model/kicad/board/account"
-import { pcbPads } from "../src/model/instances"
-import { nonCopperFills } from "../src/model/nonCopperFill"
-import { outlineState } from "../src/model/outline"
-import { outlineCrossings } from "../src/model/outlineCrossing"
-import { worldPartZones } from "../src/model/partZones"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import type { Project } from "../src/model/types"
-import { isOtherZone } from "../src/model/zones"
-import { kids, kid, parseSexpr } from "./kicad-census/sexpr.mjs"
-import { checkPartZones, checkZoneSettings, compareFills } from "./kicad-zones-check"
-import { ZONE_FAMILY_BOARDS } from "./kicad-zone-family-boards"
-import { diffProjects } from "./kicad-roundtrip-check"
-import { unknownNodes } from "./kicad9-nodes"
+import { runTool } from "../../src/ai/tools"
+import { buildFabricationFiles } from "../../src/export/bundle"
+import { OutlineNotClosedError } from "../../src/export/outlineGuard"
+import { gerberLayers } from "../../src/export/gerber"
+import { kicadFiles } from "../../src/export/kicad"
+import { BUILT_EXTENSIONS, importKicadBoard, needsOf, outlineOf, readKicadBoard } from "../../src/model/kicad/board"
+import { cachedExport, cachedParse, CORPUS } from "./shared"
+import { countPaths } from "../../src/model/kicad/board/account"
+import { pcbPads } from "../../src/model/instances"
+import { nonCopperFills } from "../../src/model/nonCopperFill"
+import { outlineState } from "../../src/model/outline"
+import { outlineCrossings } from "../../src/model/outlineCrossing"
+import { worldPartZones } from "../../src/model/partZones"
+import { parseProjectFile, serializeProject } from "../../src/model/projectFile"
+import type { Project } from "../../src/model/types"
+import { isOtherZone } from "../../src/model/zones"
+import { kids, kid, parseSexpr } from "../kicad-census/sexpr.mjs"
+import { checkPartZones, checkZoneSettings, compareFills } from "../kicad-zones-check"
+import { ZONE_FAMILY_BOARDS } from "../kicad-zone-family-boards"
+import { diffProjects } from "../kicad-roundtrip-check"
+import { unknownNodes } from "../kicad9-nodes"
 
 // The corpus proof of X29 (zones on layers that are not copper), X30 (zones inside parts) and X31 (the layers a pour joins a pad on): the boards that only these three stopped (the list in
 // `kicad-zone-family-boards.ts`), imported through the real gate and checked against the raw file by oracles that share no code with `src`:
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/kicad-zone-family-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/zone-family.test.ts
 //
 // For each board that imports: every zone of the board and its layers, kind, settings and outline against the file (`checkZoneSettings`); each zone inside a part against the file, where the
 // board has it (`checkPartZones`); the editor's fill of each zone that is not on copper against the fill KiCad stored (`compareFills`, a few explained exceptions below); every pad's
 // `zone_layer_connections` against the file; the project through the stored form and back; the Gerbers and the fabrication files; Checks; and the native KiCad writer, whose file imports as
 // the same project. The table goes to KICAD_ZONE_OUT (the temp folder by default). With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_ZONE_OUT ?? join(tmpdir(), "kicad-zone-family-corpus.txt")
 const FAMILY = new Set(["X29", "X30", "X31"])
 /** The boards that imported, kept for the second test (the native writer's round trip). */
@@ -47,7 +46,7 @@ const FILL_EXPLAINED: Record<string, string> = {
   "pcbench/PCBs/card_card/raw.kicad_pcb": "a strip of the zone 0.250 mm wide, under its 0.254 mm minimum width: KiCad 5 kept it, KiCad 9 and the editor take it away",
 }
 
-/** The differences the writer's file has on purpose, as `kicad-roundtrip-corpus.test.ts` lists them (a copy: that file is a test and cannot be imported). */
+/** The differences the writer's file has on purpose, as `corpus/roundtrip.test.ts` lists them (a copy: that file is a test and cannot be imported). */
 const BY_DESIGN = [
   /^project\.zones\[\]\.(edgeGap|holeGap|unordered|uuid)$/,
   /^project\.components\[\]\.flags\.(virtual|excludeFromBom|excludeFromPos)$/,
@@ -230,7 +229,7 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS))("the zone family on the corpus",
           failures.push(`${rel}: the written board is refused: ${again.message}`)
           continue
         }
-        // What differs on purpose is what the round trip corpus says it is (`kicad-roundtrip-corpus.test.ts`): a KiCad 5 zone's missing uuid and gaps, flags KiCad 9 cannot say, copper the file put on no net.
+        // What differs on purpose is what the round trip corpus says it is (`corpus/roundtrip.test.ts`): a KiCad 5 zone's missing uuid and gaps, flags KiCad 9 cannot say, copper the file put on no net.
         const diff = diffProjects(p, again.project).filter((d) => !BY_DESIGN.some((re) => re.test(d.kind)))
         if (diff.length) failures.push(`${rel}: ${diff.length} differences after the round trip, the first ${JSON.stringify(diff[0]).slice(0, 200)}`)
         done++

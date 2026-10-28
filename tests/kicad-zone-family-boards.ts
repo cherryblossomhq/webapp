@@ -1,5 +1,5 @@
 // The boards of the corpus that only X29 (zones on layers that are not copper), X30 (zones inside parts) and X31 (the layers a pour joins a pad on) stopped, in the review of 26 October 2026:
-// 91 files, found by running the importer's own needs over all 1,499 with those three taken out of the built list. `kicad-zone-family-corpus.test.ts` imports and checks each.
+// 91 files, found by running the importer's own needs over all 1,499 with those three taken out of the built list. `corpus/zone-family.test.ts` imports and checks each.
 export const ZONE_FAMILY_BOARDS: string[] = [
   "kicad-source/qa/data/pcbnew/issue16182.kicad_pcb",
   "pcbench/PCBs/AVR-ISP_pogo-plug_1.27mm_AVR-ISP_pogo-plug_1.27mm/raw.kicad_pcb",

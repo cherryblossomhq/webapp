@@ -1,29 +1,28 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { buildFabricationFiles } from "../src/export/bundle"
-import { backdrillSets, excellonBackdrill, excellonDrill } from "../src/export/excellon"
-import { kicadFiles } from "../src/export/kicad"
-import { fabricationNotes } from "../src/export/notes"
-import { viaProtectionFiles } from "../src/export/viaProtection"
-import { BUILT_EXTENSIONS, importKicadBoard } from "../src/model/kicad/board"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { rememberImage } from "../src/store/imageFiles"
-import { checkExtras } from "./kicad-extras-check"
-import { BY_DESIGN, canonicalProject, diffCanonical, diffProjects, proRulesDifferences } from "./kicad-roundtrip-check"
+import { buildFabricationFiles } from "../../src/export/bundle"
+import { backdrillSets, excellonBackdrill, excellonDrill } from "../../src/export/excellon"
+import { kicadFiles } from "../../src/export/kicad"
+import { fabricationNotes } from "../../src/export/notes"
+import { viaProtectionFiles } from "../../src/export/viaProtection"
+import { BUILT_EXTENSIONS, importKicadBoard } from "../../src/model/kicad/board"
+import { parseProjectFile, serializeProject } from "../../src/model/projectFile"
+import { rememberImage } from "../../src/store/imageFiles"
+import { checkExtras } from "../kicad-extras-check"
+import { BY_DESIGN, canonicalProject, diffCanonical, diffProjects, proRulesDifferences } from "../kicad-roundtrip-check"
 
-import { unknownNodes } from "./kicad9-nodes"
-import { cachedExport, cachedParse, sampleOf, startWatchdog } from "./kicad-corpus-shared"
+import { unknownNodes } from "../kicad9-nodes"
+import { cachedExport, cachedParse, CORPUS, sampleOf, startWatchdog } from "./shared"
 
 // X21 and X22 over the boards of the corpus that use them: every one imports (a board that also needs an extension another slice builds is imported with that one counted built, and said so), what
 // it holds is compared with an oracle that reads the raw file (`kicad-extras-check.ts`), its fabrication files export, it saves and loads with no difference, and it is written out and read back
 // with only the differences that are by design (a KiCad 9 file cannot hold KiCad 10's words).
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/kicad-extras-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/extras.test.ts
 //
-// The boards are found from the census (`census/boards.json`), by the nodes the need rules look for; KICAD_CORPUS_SAMPLE=N runs about N of them (see kicad-corpus-shared.ts). With no corpus the test is skipped.
+// The boards are found from the census (`census/boards.json`), by the nodes the need rules look for; KICAD_CORPUS_SAMPLE=N runs about N of them (see corpus/shared.ts). With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const OUT = process.env.KICAD_EXTRAS_OUT
 const ALL = new Set([...BUILT_EXTENSIONS, ...Array.from({ length: 31 }, (_, i) => `X${i + 1}`)])
 const X = /^(generated|net_chains|footprint>pad>(die_length|die_delay|backdrill|tertiary_drill|front_post_machining|back_post_machining)|via>(capping|covering|plugging|filling|backdrill|tertiary_drill|front_post_machining|back_post_machining))/

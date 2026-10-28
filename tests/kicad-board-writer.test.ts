@@ -13,7 +13,7 @@ import { rectangle, twoResistors, withZone } from "./zones-fixtures"
 import { rememberImage } from "../src/store/imageFiles"
 
 // X16: the board writer for the round trip. A board is imported, written by the native writer, imported again, and the two projects are compared
-// item for item (`kicad-roundtrip-check.ts`); the corpus version of the same check is `kicad-roundtrip-corpus.test.ts`.
+// item for item (`kicad-roundtrip-check.ts`); the corpus version of the same check is `corpus/roundtrip.test.ts`.
 
 const U = (n: number) => `d0000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`
 const imported = (text: string): Project => {

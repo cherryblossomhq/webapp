@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
-import { join, relative } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { relative } from "node:path"
 import { describe, expect, it } from "vitest"
-import { kicadFiles } from "../src/export/kicad"
-import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
-import { cachedExport } from "./kicad-corpus-shared"
+import { kicadFiles } from "../../src/export/kicad"
+import { EXTENSION_NAMES, importKicadBoard } from "../../src/model/kicad/board"
+import { cachedExport, CORPUS, walkPcb as walk } from "./shared"
 
 /** Every extension, built or not (X19 has no entry in the names, it is built): these three boards need some of them besides X20. */
 const ALL_EXTENSIONS = new Set([...Object.keys(EXTENSION_NAMES), "X19"])
@@ -15,9 +15,8 @@ const ALL_EXTENSIONS = new Set([...Object.keys(EXTENSION_NAMES), "X19"])
 // (`parseZONE`, 9.0.0 line 6911 and 10.0.0 line 8100: the last of `sheetname`, `component_class` and `group` is the source, `enabled` yes switches it on;
 // `parseFOOTPRINT`: `component_classes` holds `(class name)`), the editor's frame being y up where the file's is y down.
 //
-//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/x20-corpus.test.ts
+//   KICAD_CORPUS=<corpus dir> NODE_OPTIONS=--max-old-space-size=10240 npx vitest run tests/corpus/class-rules.test.ts
 
-const CORPUS = process.env.KICAD_CORPUS
 
 type Node = string | Node[]
 
@@ -95,16 +94,6 @@ function fileFacts(text: string) {
     if (ref !== undefined && names.length) classes.set(ref, [...new Set(names)])
   }
   return { areas, classes }
-}
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_pcb")) out.push(p)
-  }
-  return out
 }
 
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("X20 over the corpus", () => {

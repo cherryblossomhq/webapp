@@ -1,37 +1,38 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { describe, expect, it } from "vitest"
-import { computeConnectivity, pinKey } from "../src/model/connectivity"
-import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES, readKicadBoard } from "../src/model/kicad/board"
-import { accountNodes, countPaths } from "../src/model/kicad/schematic/account"
-import { buildSchematicProject } from "../src/model/kicad/schematic/build"
-import { plainnessOf, settleFor } from "../src/model/kicad/schematic/carried"
-import { schematicPins } from "../src/model/instances"
-import { gateSchematic, importKicadSchematic } from "../src/model/kicad/schematic/import"
-import { linkFootprints } from "../src/model/kicad/schematic/link"
-import { needsOfFile } from "../src/model/kicad/schematic/needs"
-import { readKicadSchematic } from "../src/model/kicad/schematic/read"
-import { readSchematicTree } from "../src/model/kicad/schematic/tree"
-import { accountPro, readKicadPro } from "../src/model/kicad/project/pro"
-import { accountRules, readKicadRules } from "../src/model/kicad/project/dru"
-import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
-import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
-import { rawSymbols, type RawSymbol } from "./kicad-census/drawing-sch.mjs"
-import { boxCorners, boxTextAt, directiveShape, kicadOnlyBox } from "../src/model/sheetItems"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { computeConnectivity, pinKey } from "../../src/model/connectivity"
+import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES, readKicadBoard } from "../../src/model/kicad/board"
+import { accountNodes, countPaths } from "../../src/model/kicad/schematic/account"
+import { buildSchematicProject } from "../../src/model/kicad/schematic/build"
+import { plainnessOf, settleFor } from "../../src/model/kicad/schematic/carried"
+import { schematicPins } from "../../src/model/instances"
+import { gateSchematic, importKicadSchematic } from "../../src/model/kicad/schematic/import"
+import { linkFootprints } from "../../src/model/kicad/schematic/link"
+import { needsOfFile } from "../../src/model/kicad/schematic/needs"
+import { readKicadSchematic } from "../../src/model/kicad/schematic/read"
+import { readSchematicTree } from "../../src/model/kicad/schematic/tree"
+import { accountPro, readKicadPro } from "../../src/model/kicad/project/pro"
+import { accountRules, readKicadRules } from "../../src/model/kicad/project/dru"
+import { importKicadProject, type ProjectFile } from "../../src/model/kicad/project"
+import { drawingFromLib, resolveLibSymbol } from "../../src/model/kicad/schematic/symbols"
+import { rawSymbols, type RawSymbol } from "../kicad-census/drawing-sch.mjs"
+import { boxCorners, boxTextAt, directiveShape, kicadOnlyBox } from "../../src/model/sheetItems"
+import { parseProjectFile, serializeProject } from "../../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
-import { labelNetClasses } from "../src/model/directives"
-import { rawBuses, rawItems } from "./kicad-census/items-sch.mjs"
-import { kid, kids, numAt, parseSexpr, type Sexpr } from "./kicad-census/sexpr.mjs"
-import { boardPadNets, busMembers, deriveNets } from "./kicad-census/netlist-sch.mjs"
-import { parseBusName } from "../src/model/busNames"
-import { needsSch } from "./kicad-census/needs-sch.mjs"
+import { labelNetClasses } from "../../src/model/directives"
+import { rawBuses, rawItems } from "../kicad-census/items-sch.mjs"
+import { kid, kids, numAt, parseSexpr, type Sexpr } from "../kicad-census/sexpr.mjs"
+import { boardPadNets, busMembers, deriveNets } from "../kicad-census/netlist-sch.mjs"
+import { parseBusName } from "../../src/model/busNames"
+import { needsSch } from "../kicad-census/needs-sch.mjs"
+import { CORPUS, walkCorpus as walk, writeReport } from "./shared"
 
 // The per-file pass or fail table of slice 3a over a local corpus (not in the repo):
 //
 //   KICAD_CORPUS=<corpus dir> KICAD_CENSUS=<corpus dir>/census \
-//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/kicad-schematic-corpus.test.ts
+//     KICAD_CORPUS_OUT=<dir> npx vitest run tests/corpus/schematic.test.ts
 //
 // It reads every `.kicad_sch`, `.kicad_pro` and `.kicad_dru` under the corpus, and every project
 // (a board with its schematic beside it), and compares them with the census (`tests/kicad-census`,
@@ -40,21 +41,9 @@ import { needsSch } from "./kicad-census/needs-sch.mjs"
 // editor's own `computeConnectivity` against `netlist-sch.mjs`, pin by pin), and the nets of every
 // project against the nets the board itself carries. With no corpus the test is skipped.
 
-const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
 const OUT = process.env.KICAD_CORPUS_OUT ?? join(tmpdir(), "kicad-schematic-corpus")
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name === "census") continue
-      walk(p, out)
-    } else out.push(p)
-  }
-  return out
-}
 
 /**
  * S3: the buses of one imported sheet against its raw file. Each raw bus is covered, to a thousandth of a millimetre, by segments of the model that
@@ -760,7 +749,6 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       }
 
       // ---------- the table ----------
-      mkdirSync(OUT, { recursive: true })
       const real = rows.filter((r) => REAL.includes(r.group))
       const lines: string[] = []
       lines.push(`# Schematic corpus, ${rows.length} files, ${projects.length} projects, ${Date.now() - t0} ms\n`)
@@ -768,7 +756,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       for (const r of rows) lines.push(`| ${r.file} | ${r.group} | ${r.stamp ?? ""} | ${r.error ? `ERROR ${r.error}` : r.parse ? "ok" : "no"} | ${r.nodes ? "ok" : "NO"} | ${r.unknown} | ${r.needs.join(" ")} | ${r.census.join(" ")} | ${r.needsDiff} | ${r.needsWhy.join("; ")} | ${r.nets}${r.lossy.length ? ` (${r.lossy.join("; ")})` : ""} | ${r.import} | ${r.withNames} | ${r.ms} |`)
       lines.push("", "| project | group | stamp | sheets | footprints | by path | by reference | none | links as link.mjs | nets of board and schematic | pads | import (plain / raised) | ms |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|")
       for (const p of projects) lines.push(`| ${p.project} | ${p.group} | ${p.stamp ?? ""} | ${p.sheets} | ${p.footprints} | ${p.linkPath} | ${p.linkReference} | ${p.linkNone} | ${p.error ? `ERROR ${p.error}` : p.linkOk ? "yes" : "NO"} | ${p.boardNets}${p.detail ? ` (${p.detail})` : ""} | ${p.pads} | ${p.status} | ${p.ms} |`)
-      writeFileSync(join(OUT, "schematic-corpus.md"), lines.join("\n"))
+      writeReport(OUT, "schematic-corpus.md", lines.join("\n"))
 
       const sum = (f: (r: FileRow) => boolean) => rows.filter(f).length
       const summary = {
@@ -840,7 +828,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         proProblems,
         largest,
       }
-      writeFileSync(join(OUT, "schematic-corpus-summary.json"), JSON.stringify(summary, null, 1))
+      writeReport(OUT, "schematic-corpus-summary.json", JSON.stringify(summary, null, 1))
       console.log(JSON.stringify(summary))
 
       expect(summary.crashes).toBe(0)

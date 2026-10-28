@@ -1,29 +1,18 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { cleanupSheet } from "../src/model/cleanup"
-import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { netlistChanges, physicalNetlist, tidySchematic } from "../src/model/tidy"
-import { computeConnectivity } from "../src/model/connectivity"
-import { isSchematicPart } from "../src/model/instances"
-import { findPart } from "../src/model/library"
+import { cleanupSheet } from "../../src/model/cleanup"
+import { importKicadSchematic } from "../../src/model/kicad/schematic"
+import { netlistChanges, physicalNetlist, tidySchematic } from "../../src/model/tidy"
+import { computeConnectivity } from "../../src/model/connectivity"
+import { isSchematicPart } from "../../src/model/instances"
+import { findPart } from "../../src/model/library"
+import { CORPUS, walkSch as walk } from "./shared"
 
 // Tidy and Clean up on every importable schematic of the corpus (not in the repo). A part imported
 // from KiCad has no footprint until it is linked to a board, but it is a real part of the sheet:
 // Tidy and Clean up must see its pins. Each of them either leaves every connection as it was, pin
 // for pin, or refuses and says why; none may change a net.
 
-const CORPUS = process.env.KICAD_CORPUS
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) {
-      if (name !== "census") walk(p, out)
-    } else if (name.endsWith(".kicad_sch")) out.push(p)
-  }
-  return out
-}
 
 describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("Tidy and Clean up on the importable schematics of the corpus", () => {
   it("never change a net, and a refusal says what it refused", () => {

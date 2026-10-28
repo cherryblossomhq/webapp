@@ -5,9 +5,9 @@ import { decodeBytes } from "../board/sexpr"
 // The project file (`.kicad_pro`, JSON, KiCad 6 and later): the net classes and their assignments,
 // the design rules, the text variables and the many settings KiCad keeps beside a design. It is read
 // into a typed object that keeps the whole JSON, and every key of it is accounted for by a row of
-// the table below: imported, not needed with its reason, or pending an extension. Mapping net
-// classes and rules into the editor's model is board slice 1d (X10), so in 3a they are pending and
-// never dropped; a key that no row covers is unknown, and the project is refused.
+// the table below: imported, not needed with its reason, or pending an extension. Net classes and
+// rules are not mapped into the editor's model from here (X10), so they are pending and never
+// dropped; a key that no row covers is unknown, and the project is refused.
 
 export class KicadProjectFileError extends Error {
   constructor(
@@ -110,7 +110,7 @@ export const PRO_RULES: ProRule[] = [
   rule("net_settings>last_net_id", "not-needed", "the last number KiCad gave a net"),
   // The objects that hold the settings below: each key under them has a row of its own.
   rule("board|board>design_settings|net_settings|schematic", "not-needed", "a group of settings, each of which is accounted for below it"),
-  // ---- net classes, rules and what hangs on them: board slice 1d ----
+  // ---- net classes, rules and what hangs on them: X10 ----
   rule(`net_settings>classes${SUB}`, "pending", "net classes: clearance, track and via sizes, differential pair sizes", "X10"),
   rule(`net_settings>(?:netclass_assignments|netclass_patterns)${SUB}`, "pending", "which nets are in which net class", "X10"),
   rule(`net_settings>(?:net_chain_classes|net_chain_netclasses)${SUB}`, "pending", "net chains and their classes (KiCad 11 development)", "X21"),

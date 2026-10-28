@@ -9,13 +9,8 @@ import type { KicadSchematic } from "./types"
 // the plan by, with the differences named in `Need.source` and listed in the doc.
 
 /**
- * The extensions the editor has built. Each slice adds its own. Slice 3a built none: it read, linked and
- * checked. Slice 3b-i built the three that every symbol needs: S5 (units, body styles, alternates, mirror,
- * fields with a place of their own, hidden power pins, repeated pin numbers), S6 (the shapes, fills and
- * strokes of a symbol's drawing) and S10 (the drawings kept in the project). Slice 3b-ii built S2 (labels,
- * their shapes, sizes and styles, and the net names KiCad gives), S4 (text, text boxes, drawings,
- * pictures, tables, wire strokes, junction dots and no-connect flags of their own, locked groups) and
- * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated). S1 is the sheets, S3 the buses, bus entries and bus aliases, S8 directive labels and rule areas, S9 schematic variants,
+ * The extensions the editor has built: all of S1 to S12 below. S1 is the sheets, S2 labels and the net names KiCad gives, S3 the buses, bus entries and bus aliases, S4 text, drawings, pictures, tables and
+ * styled wires, S5 symbols as KiCad draws them (units, body styles, alternates, mirror, hidden power pins, repeated pin numbers), S6 the shapes of a symbol's drawing, S7 the flags of a symbol, S8 directive labels and rule areas, S9 schematic variants, S10 the drawings kept in the project,
  * S11 KiCad's rules for what a wire joins (on the sheets that need them), S12 the symbols a
  * schematic's cache lacks, taken from the project's own libraries and the parts database (a symbol found in neither is still refused, naming the libraries looked in).
  */

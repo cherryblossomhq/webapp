@@ -23,9 +23,9 @@ import type { KicadSchematic, LibPin, LibSymbol, PlacedSymbol, Pt, SchLabel, Sch
 
 // A KiCad schematic as an editor project. The editor is y up and KiCad's sheet y down, so every y
 // is negated and a rotation keeps its visual sense (both are counter-clockwise). KiCad's 1.27 mm
-// is the editor's 0.1. Slice 3a builds one flat sheet: components with their place and turn,
-// wires, junctions, no-connects, local labels, power symbols and groups; the rest (sheets, buses,
-// global labels, text...) is an extension and is refused before this runs.
+// is the editor's 0.1. It builds a sheet's components with their place and turn, wires, junctions,
+// no-connects, labels, power symbols, groups, sheet symbols, buses, text and drawings; what the model
+// cannot hold is refused before this runs (`needs.ts`).
 //
 // The editor works out its own nets from where things touch, KiCad from its own rules, and the two
 // differ in a few places. Each is handled so that the nets come out the same, or is an extension

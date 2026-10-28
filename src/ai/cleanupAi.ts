@@ -16,7 +16,8 @@ import { runTool, TOOL_DEFINITIONS, validateInput, type FunctionTool, type JsonS
 //    those two tools are on offer, and a call that isn't in the confirmed plan is refused, so what
 //    is done is what was shown. All of it is one undo step.
 //
-// TODO: take one look at the tidied sheet before the report, as the last step of the apply request.
+// The apply request does not take a look at the tidied sheet before the report: the look tool exists
+// (`lookTool.ts`), but only the two tools above are on offer in it.
 
 /** What the toolbar's button says in the Sakura panel. */
 export const CLEANUP_REQUEST = "Clean up the schematic with AI"

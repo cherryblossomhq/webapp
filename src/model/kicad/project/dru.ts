@@ -5,8 +5,8 @@ import { decodeBytes, kid, kids, KicadReadError, parseSexpr, strAt, type List } 
 
 // The custom design rules (`.kicad_dru`, KiCad 6 and later): `(version 1)` and a `(rule "name" ...)`
 // each with a condition, constraints, a severity and layers. They are read into typed objects that
-// keep their lists, and every node is accounted for: mapping rules into the editor's model is board
-// slice 1d (X10), so in 3a every rule is pending X10 and never dropped. KiCad lets a rules file hold
+// keep their lists, and every node is accounted for: rules are not mapped into the editor's model
+// (X10), so every rule is pending X10 and never dropped. KiCad lets a rules file hold
 // `#` comments, which the s-expression parser does not know; they are cut out first.
 
 export class KicadRulesFileError extends Error {

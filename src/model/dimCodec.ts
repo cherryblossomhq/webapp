@@ -1,5 +1,6 @@
 import { isTextLayer } from "./texts"
 import type { BoardDimension, DimensionKind, PcbGroup, ReferenceImage } from "./types"
+import { finite as num } from "../lib/guards"
 
 // How dimensions, groups and reference images are written in a stored project. A KiCad board has up to hundreds of dimensions and groups with
 // hundreds of members, and as objects each costs far more than it needs to. Stored, what dimensions share (layer, line width, arrow, units, digits and
@@ -43,7 +44,6 @@ export interface DimensionStyleDef {
   lk?: 1
 }
 
-const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const KINDS: Record<string, DimensionKind> = { A: "aligned", O: "orthogonal", V: "orthogonal", L: "leader", C: "center", R: "radial" }
 
 /** The id a board dimension has when none is stored. */

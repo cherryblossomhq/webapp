@@ -1,6 +1,7 @@
 import { isShapeLayer } from "./shapeLayers"
 import { normalizeShape } from "./shapes"
 import type { BoardGraphic, BoardShape, ShapeDash, ShapePoint } from "./types"
+import { finite as num } from "../lib/guards"
 
 // How drawings are written in a stored project. A board can have a million of them, and as objects
 // (`{"type":"line","a":{"x":..,"y":..},"b":{...},"layer":..}`) each costs 150 to 300 bytes. Stored, they
@@ -112,7 +113,6 @@ export const packShapes = (shapes: BoardShape[]): CompactShapes => pack(shapes)
 export const packGraphics = (graphics: BoardGraphic[]): CompactShapes =>
   pack(graphics, (place) => (graphics[place].id === defaultGraphicId(place) ? undefined : graphics[place].id))
 
-const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 
 /** One drawing's geometry from the numbers at `at` (a letter first), or null when the run is cut short; and how far it read. */
 function read(t: (string | number)[], at: number): { geometry: Record<string, unknown>; next: number } | null {

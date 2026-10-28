@@ -3,6 +3,7 @@ import { isCompactShapes, packShapes, unpackShapes } from "./shapeCodec"
 import { normalizeShape } from "./shapes"
 import { isCopperLayerId } from "./stack"
 import type { BoardShape, CopperLayer, PadDef, PadLayers, PadLayerShape, PadSides, PadStack, Vec2 } from "./types"
+import { isObject } from "../lib/guards"
 
 // How a land's pads are stored and read back (X7). A pad that has none of X7's fields is stored as it always was, one object with its
 // place, size, shape and hole: the same bytes as before the pad model grew, so the shipped examples and every project drawn here are
@@ -11,7 +12,6 @@ import type { BoardShape, CopperLayer, PadDef, PadLayers, PadLayerShape, PadSide
 // `custom.g` and, for the pad's proxy items, `custom.p`. Reading gives back exactly what was written.
 
 const finite = (...v: unknown[]) => v.every((x) => typeof x === "number" && Number.isFinite(x))
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
 const isPoint = (p: unknown): p is Vec2 => isObject(p) && finite(p.x, p.y)
 const SIDES = new Set<string>(["top", "bottom", "both", "none"])
 const ZONE = new Set<string>(["none", "thermal", "solid", "tht"])

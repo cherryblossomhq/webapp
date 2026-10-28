@@ -1,5 +1,6 @@
 import { ellipsePoint, segEnd, segStart, type PathSeg, type ShapePath } from "./shapes"
 import type { BoardOutline, Vec2 } from "./types"
+import { finite } from "../lib/guards"
 
 // A board outline stored compactly. A board brought in from KiCad can have thousands of edges, and as objects each costs 100 to 200
 // bytes against the project's 900 KB limit. The stored form is one flat array per path: `"c"` (closed) or `"o"` (open), the first
@@ -107,7 +108,6 @@ export function unpackOutline(raw: unknown): BoardOutline | null {
   return { paths, ...(seed && firstRead && paths[0].closed ? { seed: true as const } : {}) }
 }
 
-const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const point = (v: unknown): Vec2 | null => (v && typeof v === "object" && finite((v as Vec2).x) && finite((v as Vec2).y) ? { x: (v as Vec2).x, y: (v as Vec2).y } : null)
 
 /** The outline of a hand-written file, `{ paths: [{ closed, segs: [...] }] }`: each piece that reads is kept, a path with a piece that does not is dropped. */

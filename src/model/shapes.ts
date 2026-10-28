@@ -1,5 +1,6 @@
 import { dist, emptyBox, expandBox, pointSegmentDistance, segmentSegmentDistance, type Box } from "../lib/geometry"
 import type { BoardShape, ShapeDash, ShapeGeometry, ShapePoint, Vec2 } from "./types"
+import { finite as num } from "../lib/guards"
 
 // The geometry of a board or footprint drawing: its outline as exact pieces (lines, arcs, curves,
 // elliptical arcs), flattened where a tool needs points, mapped from a footprint's frame onto the
@@ -645,7 +646,6 @@ export const SHAPE_NAMES: Record<ShapeGeometry["type"], string> = { line: "Line"
 
 // ---------- reading a stored shape ----------
 
-const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const pt = (v: unknown): v is Vec2 => !!v && typeof v === "object" && num((v as Vec2).x) && num((v as Vec2).y)
 const cleanPt = (p: Vec2): Vec2 => ({ x: p.x, y: p.y })
 const DASHES = new Set(["dash", "dot", "dash_dot", "dash_dot_dot"])

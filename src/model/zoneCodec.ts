@@ -2,6 +2,7 @@ import { normalizeOutline, packOutline, unpackOutline } from "./outlineCodec"
 import { segStart, type ShapePath } from "./shapes"
 import { isCopperLayerId } from "./stack"
 import type { CopperLayer, Zone, ZoneConnection, ZoneKeepout } from "./types"
+import { finite, isObject } from "../lib/guards"
 
 // Zones stored compactly and exactly (X3). A zone of the editor's own whole-board kind is stored as it always was. A zone with a polygon
 // stores it as `ol`: one array per ring, `["p", x, y, x, y, ...]` for a ring of straight pieces (ten bytes a corner), or the outline
@@ -9,8 +10,6 @@ import type { CopperLayer, Zone, ZoneConnection, ZoneKeepout } from "./types"
 // as the zone has it, so a round trip gives the same zone.
 
 type Json = Record<string, unknown>
-const isObject = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v)
-const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const CONNECTIONS = new Set<ZoneConnection>(["thermal", "tht", "solid", "none"])
 const FLAGS = ["tracks", "vias", "pads", "pour", "footprints"] as const
 

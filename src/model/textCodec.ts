@@ -1,5 +1,6 @@
 import { isTextLayer } from "./texts"
 import type { BoardText, ComponentInstance, PartText, TextAttrs } from "./types"
+import { finite as num } from "../lib/guards"
 
 // How text objects are written in a stored project. A KiCad board has up to tens of thousands of them (every
 // part has a reference and a value, most have more), and as objects each costs 150 to 250 bytes. Stored, the
@@ -58,7 +59,6 @@ const styleOf = (t: Styled): TextStyleDef => ({
   ...(t.href !== undefined ? { hr: t.href } : {}),
 })
 
-const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 
 /** A style as the attributes and size it stands for, or null when it does not read. */
 function readStyle(raw: unknown): (TextAttrs & { layer: string; size: number }) | null {

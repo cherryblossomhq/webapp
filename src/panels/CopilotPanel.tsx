@@ -15,8 +15,8 @@ const SUGGESTIONS = [
   "Check the design and fix unconnected pins",
 ]
 
-/** Why the composer is off, if it is: no session, or a plan without the copilot. */
-type Gate = "signin" | Exclude<CopilotAccess, "ready"> | null
+/** Why the composer is off, if it is: no session, a plan without the copilot, or a project shared to view. */
+type Gate = "signin" | "viewer" | Exclude<CopilotAccess, "ready"> | null
 
 export function CopilotPanel() {
   const projectId = useProjectStore((s) => s.project?.id ?? null)
@@ -40,7 +40,8 @@ export function CopilotPanel() {
   }, [projectId])
 
   const access = account ? copilotAccess(account) : null
-  const gate: Gate = status === "signedOut" ? "signin" : access && access !== "ready" ? access : null
+  const viewer = useProjectStore((s) => s.role === "viewer")
+  const gate: Gate = status === "signedOut" ? "signin" : access && access !== "ready" ? access : viewer ? "viewer" : null
 
   // The panel mounts when it opens, from its tab or ⌘L: either way the next thing is to type. The
   // account may have been asked before the session was there (Clean up asks it too), so a composer
@@ -230,6 +231,9 @@ function Notice({ title, children, action }: { title: string; children: ReactNod
 
 function GateNotice({ gate }: { gate: Exclude<Gate, null> }) {
   const host = managedAiHost()
+  if (gate === "viewer") {
+    return <Notice title="This project is shared with you to view">Sakura changes the board, so it works on projects you can edit. Ask the owner for edit access.</Notice>
+  }
   if (gate === "signin") {
     return (
       <Notice

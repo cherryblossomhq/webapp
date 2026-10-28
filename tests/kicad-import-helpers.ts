@@ -69,7 +69,9 @@ export function fakeStorage(overrides: Partial<ProjectStorage> = {}) {
       created.push(record)
       return { id: `p${created.length}`, revision: 1 }
     },
-    save: async () => ({ ok: true, revision: 1 }),
+    push: async () => ({ ok: true, revision: 1 }),
+    replace: async () => ({ ok: true, revision: 1 }),
+    watchChanges: () => () => {},
     remove: async () => {},
     ...overrides,
   }

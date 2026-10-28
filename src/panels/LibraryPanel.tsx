@@ -21,7 +21,8 @@ export function LibraryPanel() {
   const startPlacing = useUi((s) => s.startPlacing)
   const projectParts = useProjectStore((s) => s.project?.parts)
   const viewer = useProjectStore((s) => s.role === "viewer")
-  const own = useMemo(() => projectPartDefs({ parts: projectParts }), [projectParts])
+  const projectSymbols = useProjectStore((s) => s.project?.symbols)
+  const own = useMemo(() => projectPartDefs({ parts: projectParts, symbols: projectSymbols }), [projectParts, projectSymbols])
   const searching = query.trim().length > 0
   const hits = useMemo(() => (searching ? searchLibrary(query, own) : []), [query, own, searching])
   // The parts database's answer, after the library's: KiCad parts the library doesn't have.
@@ -32,8 +33,9 @@ export function LibraryPanel() {
   // Enter on a part number asks LCSC as soon as the database has answered (tens of milliseconds)
   // instead of after the pause: the database is free, and a part it has never costs a lookup.
   const [pushed, setPushed] = useState<{ q: string; n: number } | null>(null)
+  // Not for a viewer, who can't place what it finds: each search spends one of their lookups.
   const supplierWanted =
-    searching && wantsSupplier({ query, databaseSettled: index.settled, hits: index.hits, libraryHasIt: hits.length > 0 && !hits[0].partial })
+    !viewer && searching && wantsSupplier({ query, databaseSettled: index.settled, hits: index.hits, libraryHasIt: hits.length > 0 && !hits[0].partial })
   const supplier = useSupplierSearch(query, supplierWanted, pushed)
   const total = hits.length + storedHits.length + supplier.candidates.length
   const indexPlace = usePartPlace(indexPicker)
@@ -97,7 +99,7 @@ export function LibraryPanel() {
                 e.preventDefault()
                 if (total) setActive((i) => (i + (e.key === "ArrowDown" ? 1 : total - 1)) % total)
               }
-              if (e.key === "Enter") {
+              if (e.key === "Enter" && !viewer) {
                 // Nothing to place: Enter asks LCSC once the database has answered, not after the pause (and not twice for one answer).
                 const q = query.trim()
                 if (active < total) pick(active)

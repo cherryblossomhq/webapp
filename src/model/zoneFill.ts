@@ -1,6 +1,8 @@
 import { Clipper, Clipper64, ClipType, FillRule, JoinType, PointInPolygonResult, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
 import type { SchematicConnectivity } from "./connectivity"
+import { classIndex, type ClassIndex } from "./netClasses"
 import { isNpth, type WorldPad } from "./instances"
+import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
 import type { FillPolygon, PourInput, ZoneFill } from "./pour"
 import {
@@ -12,6 +14,7 @@ import {
   holeShape,
   inflate,
   intersect,
+  padObstacle,
   padShape,
   pt,
   ring,
@@ -196,7 +199,9 @@ function spokesOf(pad: WorldPad, project: Project, gap: number, spokeWidth: numb
   if (sw < minWidth - 1e-9) return []
   const hx = f.w / 2 + gap + SPOKE_REACH + minWidth / 2
   const hy = f.h / 2 + gap + SPOKE_REACH + minWidth / 2
-  const base = ((f.round ? 45 : 0) + f.angle) * (Math.PI / 180)
+  // A pad's own `thermal_bridge_angle` (X7) replaces KiCad's default, which is 45 degrees for a round pad and none for any other; the spokes are four, a quarter turn apart, so it counts modulo 90.
+  const own = pad.thermalAngle !== undefined ? pad.thermalAngle % 90 : undefined
+  const base = ((own ?? (f.round ? 45 : 0)) + f.angle) * (Math.PI / 180)
   const out: Spoke[] = []
   for (let k = 0; k < 4; k++) {
     const a = base + (k * Math.PI) / 2
@@ -321,9 +326,30 @@ interface Prepared {
   sch: SchematicConnectivity
   input: PourInput
   recs: ItemRec[]
+  /** The widest clearance any pair of nets is held to (the board's, the classes' and the board minimum): how far to look, never a gap itself. */
   gapRule: number
+  /** The net classes' clearances (`netClasses.ts`): the gap two nets keep is the larger of their classes', raised to a zone's own clearance. */
+  classes: ClassIndex
+  /** What of the classes goes into the key a fill is kept under: a class's clearance or members changing must fill again. */
+  classKey: string
+  /** The most any pad asks of a pour on its own (its clearance, thermal gap), which the search for neighbours has to reach (X7). */
+  padReach: number
+  /** The name of a net by its id: classes are by name. */
+  netName: (id: string | null) => string | null
   netIdOf: Map<string, string | null>
   loops: Paths64
+}
+
+/** The widest gap a pad of the board asks for on its own: a clearance of its own or a thermal gap of its own. */
+function padReachOf(recs: ItemRec[]): number {
+  let m = 0
+  for (const { item } of recs) if (item.kind === "pad") m = Math.max(m, item.pad.clearance ?? 0, item.pad.thermalGap ?? 0)
+  return m
+}
+
+/** The part of the design rules that sets a gap between nets, as text: what a fill kept under a key depends on besides the copper and the zones. */
+function classSignature(rules: Project["rules"]): string {
+  return JSON.stringify([rules.clearance, rules.minClearance ?? 0, (rules.netClasses ?? []).map((c) => [c.nets, c.patterns ?? [], c.clearance ?? null])])
 }
 
 // ---------- Reusing fills (X3) ----------
@@ -417,7 +443,7 @@ function groupZones(prep: Prepared, settings: Map<string, ZoneSettings>, keepIsl
   const grown = zones.map((z) => {
     const set = settings.get(z.id)!
     const own = hasPolygon(z) ? boundsOf(zoneRings(z).map(ring)) : boundsOf(prep.loops)
-    const pad = Math.max(set.clearance, set.thermalGap, z.holeGap ?? 0, prep.gapRule, project.rules.clearance, set.edgeGap) + 2 * Math.max(0.01, set.minWidth) + 1
+    const pad = Math.max(set.clearance, set.thermalGap, z.holeGap ?? 0, prep.gapRule, prep.padReach, project.rules.clearance, set.edgeGap) + 2 * Math.max(0.01, set.minWidth) + 1
     return pad0(own, pad * U)
   })
   const parent = zones.map((_, i) => i)
@@ -447,7 +473,7 @@ function groupZones(prep: Prepared, settings: Map<string, ZoneSettings>, keepIsl
     }
     return t
   }
-  const base = `${keepIslands ? "k" : "-"}|${boardKey(project.board)}|${prep.gapRule}|${project.rules.clearance}`
+  const base = `${keepIslands ? "k" : "-"}|${boardKey(project.board)}|${prep.gapRule}|${prep.classKey}`
   return [...byRoot.values()].map((members) => {
     const group = members.map((i) => zones[i])
     const parts: string[] = [base]
@@ -477,7 +503,9 @@ export function fillPolygonZonesEx(project: Project, sch: SchematicConnectivity,
   const netIdOf = new Map<string, string | null>()
   for (const z of project.zones) netIdOf.set(z.net, z.net ? (sch.nets.find((n) => n.name === z.net)?.id ?? null) : null)
   const recs: ItemRec[] = input.items.flatMap((item, index) => (item.kind === "zone" ? [] : [{ index, item, net: input.netOf(index) }]))
-  const prep: Prepared = { project, sch, input, recs, gapRule: project.rules.clearance, netIdOf, loops: boardLoops(project.board) }
+  const classes = classIndex(project.rules)
+  const names = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const prep: Prepared = { project, sch, input, recs, gapRule: classes.worst, classes, padReach: padReachOf(recs), classKey: classSignature(project.rules), netName: (id) => (id ? (names.get(id) ?? null) : null), netIdOf, loops: boardLoops(project.board) }
   const settings = new Map(project.zones.map((z) => [z.id, zoneSettings(project, z)]))
 
   const byKey = new Map<string, ZoneFill>()
@@ -522,22 +550,25 @@ export const fillPolygonZones = (project: Project, sch: SchematicConnectivity, i
  * it adds copper (the router's steps); what it is judged by is filled in full. `fresh` is the copper added since the fills were made,
  * with the net of each.
  */
-export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: CopperItem; net: string | null }[]): ZoneFill[] {
+export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: CopperItem; net: string | null }[], netName: (id: string | null) => string | null = () => null): ZoneFill[] {
   if (!fresh.length) return fills
+  const classes = classIndex(project.rules)
   return fills.map((f) => {
     const zone = project.zones.find((z) => z.id === f.zoneId)
     if (!zone || !f.polygons.length) return f
-    const gap = Math.max(zoneSettings(project, zone).clearance, project.rules.clearance) + EXTRA
+    const own = zoneSettings(project, zone).clearance
+    const gapOf = (net: string | null) => Math.max(own, classes.pair(f.netName || null, netName(net))) + EXTRA
     const paths: Paths64 = f.polygons.flatMap((poly) => poly.map(ring))
     const box = boundsOf(paths)
     const holes: Paths64 = []
     for (const { item: it, net } of fresh) {
       if (!it.layers.includes(f.layer) || (net !== null && net === f.netId)) continue
       const b = it.box
+      const gap = gapOf(net)
       if (!overlaps({ minX: b.minX * U, maxX: b.maxX * U, minY: b.minY * U, maxY: b.maxY * U }, box, gap * U)) continue
-      if (it.kind === "segment") holes.push(...stroke([it.a, it.b], it.width / 2 + gap))
+      if (it.kind === "segment") holes.push(...stroke(trackPoints(it), it.width / 2 + gap))
       else if (it.kind === "via") holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap))
-      else if (it.kind === "pad") holes.push(...inflate(padShape(it.pad), gap))
+      else if (it.kind === "pad") holes.push(...padObstacle(it.pad, it.pad.clearance ? Math.max(gap, it.pad.clearance + EXTRA) : gap))
       else if (it.kind === "shape") holes.push(...shapeObstacle(it, gap))
     }
     if (!holes.length) return f
@@ -570,6 +601,9 @@ function fillGroup(prep: Prepared, group: Zone[], settings: Map<string, ZoneSett
   return result
 }
 
+/** The gap of a pad's thermal relief: its own (`thermal_gap`, X7) when it has one, else the zone's. */
+const thermalGapOf = (pad: WorldPad, set: ZoneSettings): number => (pad.thermalGap && pad.thermalGap > 0 ? pad.thermalGap : set.thermalGap)
+
 /** The copper of one zone on one layer, before islands go. */
 function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string | null, set: ZoneSettings, fillOf: (z: Zone, l: CopperLayer) => Paths64 | null): Group[] {
   const { project, recs } = prep
@@ -578,8 +612,12 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   const hmw = minWidth / 2
   const shrink = hmw - EPSILON_MM
   const prune = shrink > EPSILON_MM
-  // The gap to copper of another net: the zone's clearance, or the board's if that is more.
-  const gap = Math.max(set.clearance, prep.gapRule)
+  // The gap to copper of another net: the largest of the zone's own clearance, the larger of the two nets' class clearances and the board minimum.
+  // KiCad max's a zone's local clearance with the class value and does not substitute it (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063), and the
+  // class value is the larger of the two items' classes (9.0 :1383-1400). A board with no classes is the zone's clearance or the rules', as before.
+  const zoneNet = zone.net || null
+  const gapTo = (net: string | null) => Math.max(set.clearance, prep.classes.pair(zoneNet, prep.netName(net)))
+  const gap = gapTo(null)
   const holeGap = zone.holeGap ?? gap
 
   // ---- 1. the polygon, with same-net zones that overlap it, inside the board, and smoothed ----
@@ -609,7 +647,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   if (!fill.length) return []
 
   const box = boundsOf(fill)
-  const reach = pad0(box, (Math.max(gap, set.thermalGap, holeGap, project.rules.clearance) + minWidth) * U)
+  const reach = pad0(box, (Math.max(gap, set.clearance, prep.gapRule, prep.padReach, set.thermalGap, holeGap) + minWidth) * U)
 
   // ---- 2 and 3. what the fill keeps out of ----
   let reached: Region | null = null
@@ -635,13 +673,16 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         continue
       }
       if (same && !isNpth(pad)) {
-        const connection = teardrop ? "solid" : set.connect === "tht" ? (pad.holeDiameter !== undefined ? "thermal" : "solid") : set.connect
+        // A teardrop zone joins its pads solidly; otherwise a pad's own connection (`zone_connect`, X7) replaces the zone's (KiCad: the pad's local setting
+        // comes before the footprint's and the zone's, `EvalZoneConnection`), and through-hole-only is a relief on a pad with a hole and solid on any other.
+        const wanted = teardrop ? "solid" : (pad.zoneConnect ?? set.connect)
+        const connection = wanted === "tht" ? (pad.holeDiameter !== undefined ? "thermal" : "solid") : wanted
         if (connection === "thermal") {
-          // Only a pad the copper reaches gets a relief.
+          // Only a pad the copper reaches gets a relief, of the pad's own gap when it has one.
           const shape = padShape(pad)
           if (overlaps(boundsOf(shape), box) && (reached ??= new Region(fill)).touches(shape)) {
             thermalPads.push(pad)
-            thermalHoles.push(...inflate(shape, set.thermalGap))
+            thermalHoles.push(...inflate(shape, thermalGapOf(pad, set)))
           }
         } else if (connection === "none") {
           // The pad is cut out with the zone's own clearance, and its hole with the hole's.
@@ -654,19 +695,21 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         holes.push(...inflate(h, holeGap + EXTRA))
         continue
       }
-      holes.push(...inflate(padShape(pad), gap + EXTRA))
+      // A pad with a clearance of its own (X7) is kept that far from at least, as KiCad max's a local clearance with the class's (and the zone's, which `gapTo` has).
+      const padGap = pad.clearance ? Math.max(gapTo(net), pad.clearance) : gapTo(net)
+      holes.push(...padObstacle(pad, padGap + EXTRA))
       const h = holeShape(pad)
-      if (h) holes.push(...inflate(h, Math.max(gap, holeGap) + EXTRA))
+      if (h) holes.push(...inflate(h, Math.max(padGap, holeGap) + EXTRA))
     } else if (it.kind === "segment") {
       if (!on || same) continue
-      holes.push(...stroke([it.a, it.b], it.width / 2 + gap + EXTRA))
+      holes.push(...stroke(trackPoints(it), it.width / 2 + gapTo(net) + EXTRA))
     } else if (it.kind === "via") {
       if (!on || same) continue
-      holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap + EXTRA))
+      holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gapTo(net) + EXTRA))
     } else if (it.kind === "shape") {
       if (!on) continue
       if (same && !it.what) continue
-      holes.push(...shapeObstacle(it, gap + EXTRA))
+      holes.push(...shapeObstacle(it, gapTo(net) + EXTRA))
     }
   }
 
@@ -678,7 +721,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         if (other.keepout?.pour) holes.push(...outlinePaths(project, other))
       } else if (other.net !== zone.net && higherPriority(project, other, zone)) {
         const theirs = fillOf(other, layer)
-        if (theirs?.length) zoneHoles.push(...inflate(theirs, Math.max(gap, zoneSettings(project, other).clearance, prep.gapRule) + EXTRA))
+        if (theirs?.length) zoneHoles.push(...inflate(theirs, Math.max(set.clearance, zoneSettings(project, other).clearance, prep.classes.pair(zoneNet, other.net || null)) + EXTRA))
       }
     }
   }
@@ -690,7 +733,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
 
   // ---- 4. thermal spokes ----
   const spokes: Spoke[] = []
-  for (const pad of thermalPads) spokes.push(...spokesOf(pad, project, set.thermalGap, set.spokeWidth, minWidth))
+  for (const pad of thermalPads) spokes.push(...spokesOf(pad, project, thermalGapOf(pad, set), pad.thermalWidth && pad.thermalWidth > 0 ? pad.thermalWidth : set.spokeWidth, minWidth))
   let withSpokes = fill
   if (spokes.length) {
     let test = difference(difference(fill, clearance), zoneCut)
@@ -797,7 +840,7 @@ function removeIslands(
         paths = padShape(it.pad)
         at = pt(it.pad.x, it.pad.y)
       } else if (it.kind === "segment") {
-        paths = stroke([it.a, it.b], it.width / 2)
+        paths = stroke(trackPoints(it), it.width / 2)
         at = pt(it.a.x, it.a.y)
       } else if (it.kind === "via") {
         paths = [circlePath(it.at.x, it.at.y, it.diameter / 2)]

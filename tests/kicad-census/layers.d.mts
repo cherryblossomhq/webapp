@@ -10,6 +10,7 @@ export interface LayersOracle {
   segLen: number
   vias: { key: string; kind: string }[]
   padstacks: number
+  fpInner: string[]
 }
 export function layersOracle(text: string): LayersOracle | null
 export function arcLength(a: number[], m: number[], b: number[]): number

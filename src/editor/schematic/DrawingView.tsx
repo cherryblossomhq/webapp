@@ -2,15 +2,20 @@ import { createElement } from "react"
 import { drawingBounds, drawingHandles } from "../../model/drawings"
 import type { SchematicDrawing } from "../../model/types"
 import { useSch } from "../theme"
+import { WorldText } from "../viewport"
 import { paintDrawing } from "./drawingPaint"
 
-/** A drawing on the sheet: a line, a shape or a text. Never a pointer target; the editor hit-tests them itself. */
+/** A drawing on the sheet: a line, a shape, a text, or what a KiCad sheet draws (arcs, pictures, tables, dots). Never a pointer target; the editor hit-tests them itself. */
 export function DrawingView({ drawing, px, hidden = false, opacity }: { drawing: SchematicDrawing; px: number; hidden?: boolean; opacity?: number }) {
   const sch = useSch()
   return (
     <g opacity={hidden ? 0 : opacity} style={{ pointerEvents: "none" }}>
       {paintDrawing(drawing, sch, px).map((node, i) =>
-        createElement(node.tag, { key: i, ...node.attrs, ...(node.tag === "text" && node.mono && { style: { fontFamily: "var(--font-mono)" } }) }, node.text),
+        node.tag === "ktext" && node.kicad ? (
+          <WorldText key={i} x={node.kicad.x} y={node.kicad.y} text={node.text ?? ""} size={node.kicad.size} extent={node.kicad.extent as { x: -1 | 0 | 1; y: -1 | 0 | 1 }} vertical={node.kicad.vertical} fill={node.kicad.fill} weight={node.kicad.weight} italic={node.kicad.italic} markup={node.kicad.markup} />
+        ) : (
+          createElement(node.tag, { key: i, ...node.attrs, ...(node.tag === "text" && node.mono && { style: { fontFamily: "var(--font-mono)" } }) }, node.text)
+        ),
       )}
     </g>
   )

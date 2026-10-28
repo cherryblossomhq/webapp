@@ -24,6 +24,7 @@ export const PROJECT_SHAPE: DocumentShape = {
     zones: "id",
     texts: "id",
     blocks: "id",
+    drawings: "id",
     parts: "id",
     footprints: "name",
     // The KiCad model: sheets and what is drawn on them, the board's graphics, dimensions, groups and images.

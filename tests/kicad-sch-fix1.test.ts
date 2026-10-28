@@ -3,10 +3,11 @@ import { runTool } from "../src/ai/tools"
 import { copperOn } from "../src/model/boardCopper"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
-import { isOnBoard } from "../src/model/instances"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { renameReference, rekeyAutoNets, setFlags } from "../src/model/schematicEdit"
-import { boxTextAt, itemBox } from "../src/model/sheetItems"
+import { drawingBounds } from "../src/model/drawings"
+import { onBoard, setFlags } from "../src/model/partFlags"
+import { renameReference, rekeyAutoNets } from "../src/model/schematicEdit"
+import { boxTextAt } from "../src/model/sheetItems"
 import type { Project, Zone } from "../src/model/types"
 import { LIB_R, schematic } from "./kicad-schematic-fixtures"
 
@@ -40,13 +41,13 @@ describe("B1: a text box and a table cell are never turned, only their text", ()
     ],
   })
   const project = imp(text)
-  const box = project.items!.find((i) => i.kind === "textbox")!
-  const table = project.items!.find((i) => i.kind === "table")!
+  const box = project.drawings!.find((i) => i.type === "textbox")!
+  const table = project.drawings!.find((i) => i.type === "table")!
 
   it("draws the box from at to at + size, whatever the angle", () => {
-    if (box.kind !== "textbox") throw new Error("no box")
+    if (box.type !== "textbox") throw new Error("no box")
     expect(box.rot).toBe(90)
-    const b = itemBox(box)
+    const b = drawingBounds(box)
     expect(b.minX).toBeCloseTo(box.x, 6)
     expect(b.maxX).toBeCloseTo(box.x + box.w, 6)
     expect(b.maxY).toBeCloseTo(box.y, 6)
@@ -66,8 +67,8 @@ describe("B1: a text box and a table cell are never turned, only their text", ()
         body: [`(text_box "T" (exclude_from_sim no) (at 50.8 50.8 ${angle}) (size 20.32 10.16) (margins 0.9525 0.9525 0.9525 0.9525) (stroke (width 0.254) (type default)) (fill (type none)) (effects (font (size 1.27 1.27)) (justify ${justify})) (uuid tb2))`],
       }),
     )
-    const b = p.items!.find((i) => i.kind === "textbox")!
-    if (b.kind !== "textbox") throw new Error("no box")
+    const b = p.drawings!.find((i) => i.type === "textbox")!
+    if (b.type !== "textbox") throw new Error("no box")
     const at = boxTextAt(b, b.margins, b.look)
     return { x: at.x * MM, y: -at.y * MM }
   }
@@ -86,8 +87,8 @@ describe("B1: a text box and a table cell are never turned, only their text", ()
   })
 
   it("a table cell at 90 is the rectangle from at to at + size too", () => {
-    if (table.kind !== "table") throw new Error("no table")
-    const b = itemBox(table)
+    if (table.type !== "table") throw new Error("no table")
+    const b = drawingBounds(table)
     const c = table.cells[0]
     expect(c.rot).toBe(90)
     expect(b.minX).toBeCloseTo(c.x, 6)
@@ -164,7 +165,7 @@ describe("B3 and B4: a part off the board", () => {
 
   it("place_parts refuses it, and get_design leaves its pcb out", () => {
     const p = off().project
-    expect(isOnBoard(p.components.find((c) => c.ref === "R1")!)).toBe(false)
+    expect(onBoard(p.components.find((c) => c.ref === "R1")!)).toBe(false)
     const out = runTool(p, "place_parts", { placements: [{ ref: "R1", dx: 1 }] })
     expect(out.isError).toBe(true)
     expect(out.result).toContain("R1 is not on the board (on_board false)")
@@ -176,7 +177,7 @@ describe("B3 and B4: a part off the board", () => {
 
   it("layout_pcb and route_pcb say no part is on the board when every footprinted part is off it", () => {
     let p = blinker()
-    for (const c of p.components) if (c.footprint) p = setFlags(p, c.id, { onBoard: false })
+    for (const c of p.components) if (c.footprint) p = setFlags(p, c.id, { notOnBoard: true })
     for (const name of ["layout_pcb", "route_pcb"]) {
       const out = runTool(p, name, {})
       expect(out.isError, name).toBe(true)
@@ -202,7 +203,7 @@ describe("B3 and B4: a part off the board", () => {
   it("the model does the same through setFlags", () => {
     const p = blinker()
     const id = p.components.find((c) => c.ref === "R1")!.id
-    expect(setFlags(p, id, { onBoard: false }).traces.length).toBeLessThan(p.traces.length)
+    expect(setFlags(p, id, { notOnBoard: true }).traces.length).toBeLessThan(p.traces.length)
     expect(setFlags(p, id, { dnp: true }).traces.length).toBe(p.traces.length)
   })
 })

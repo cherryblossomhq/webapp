@@ -65,8 +65,8 @@ describe.skipIf(!CORPUS || !existsSync(CORPUS ?? ""))("Tidy and Clean up on the 
         const was = named(before)
         const now = named(t.project)
         if (JSON.stringify(was) !== JSON.stringify(now)) wrong.push(`${name} (tidy): names ${was.filter((x) => !now.includes(x)).slice(0, 2).join(", ")} became ${now.filter((x) => !was.includes(x)).slice(0, 2).join(", ")}`)
-        // items and labels' styles come through
-        if ((before.items?.filter((i) => i.kind !== "junction").length ?? 0) !== (t.project.items?.filter((i) => i.kind !== "junction").length ?? 0)) wrong.push(`${name} (tidy): items changed`)
+        // the sheet's drawings and labels' styles come through
+        if ((before.drawings?.filter((i) => i.type !== "junction").length ?? 0) !== (t.project.drawings?.filter((i) => i.type !== "junction").length ?? 0)) wrong.push(`${name} (tidy): drawings changed`)
         // a second Tidy of a tidied sheet leaves it as it is
         const again = tidySchematic(t.project)
         if (again.ok && again.changed) unstable.push(name)

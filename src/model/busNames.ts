@@ -297,8 +297,28 @@ export function parseBusName(text: string, aliases?: AliasLookup, gen: BusGenera
   return { kind: "group", names, locals }
 }
 
-/** A net name as it is typed into a label: spaces become underscores, except in a name with a brace, where a space separates the members of a bus group (`{A B}`). */
-export const typedNetName = (text: string) => (text.includes("{") ? text : text.replace(/\s+/g, "_"))
+/**
+ * A net name as it is typed into a label: spaces become underscores (`VCC {3V3}` is `VCC_{3V3}`), except where KiCad's bus group syntax needs them, between the
+ * members inside the braces of a name that is a bus group (`{A B}`, `USB{DP DM}`). A name with a brace that is no group keeps the old rule, so text markup
+ * (`~{RESET N}`, `V_{IO 1}`) and a prefix with a space are as they were. While the name is being typed (`typing`) a group whose closing brace is not typed yet keeps the
+ * spaces inside its open brace, or the member list could not be typed at all.
+ */
+export function typedNetName(text: string, typing = false): string {
+  const plain = text.replace(/\s+/g, "_")
+  if (!text.includes("{")) return plain
+  if (parseBusGroup(text, "kicad10") || parseBusGroup(text, "kicad9")) return text
+  if (!typing) return plain
+  // An open group is a brace no text markup (`~`, `_`, `^`) introduces and no closing brace has met yet: its spaces are kept, every other space is an underscore.
+  let open = 0
+  let out = ""
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === "{" && !(i > 0 && "~_^".includes(text[i - 1]))) open++
+    else if (c === "}" && open > 0) open--
+    out += /\s/.test(c) ? (open > 0 ? c : "_") : c
+  }
+  return out
+}
 
 /** Whether a label names a bus at all (`SCH_CONNECTION::IsBusLabel`), whatever it carries. */
 export function isBusName(text: string, gen: BusGeneration = "kicad10"): boolean {

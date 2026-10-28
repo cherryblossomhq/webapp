@@ -1,3 +1,4 @@
+import type { KeptFile } from "../model/kicad/board/images"
 import type { Project } from "../model/types"
 // Types only: the importer itself is loaded when an import starts (see `engine.ts`), never here.
 import type { KicadBoard } from "../model/kicad/board/types"
@@ -49,6 +50,12 @@ export const PLAIN_NAMES: Record<string, string> = {
   S11L: "KiCad 5's own rules for a no-connect pin and for label names",
   S11: "KiCad's own rules for what a wire joins (a wire end on the side of another wire, a label on a pin, points a hair apart)",
   S12: "symbols from the project's own libraries or the parts database",
+  X26: "a creepage rule (the shortest distance along a surface between copper of different nets), which Checks cannot test yet",
+  X27: "dimensions inside parts",
+  X28: "reference images in a format other than PNG or JPEG",
+  X29: "filled zones on layers that are not copper (solder mask, paste, silkscreen or user layers)",
+  X30: "zones that belong to a part (a keepout or a pour drawn inside a footprint)",
+  X31: "a pad that joins a pour on some copper layers and not others",
 }
 
 /** The plain name of an extension; one the table does not know is still named, never shown as a bare id. */
@@ -101,6 +108,8 @@ export type ImportResult =
       /** The stamp and release of the file that was read, when there is no board to say them. */
       file?: { stamp: number | null; era: string | null; generator: string | null }
       kind?: ImportKind
+      /** The files kept beside the project (reference images), when the board brought any. */
+      files?: KeptFile[]
     }
   | {
       status: "refused"

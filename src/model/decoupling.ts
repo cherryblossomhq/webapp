@@ -1,9 +1,10 @@
 import { parseFarads } from "../lib/values"
 import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey, type SchematicConnectivity } from "./connectivity"
-import { isOnBoard, isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
+import { isPhysical, pcbPads, schematicPins, unitOwners, type WorldPad } from "./instances"
 import { findPart } from "./library"
 import type { ComponentInstance, PartDef, PinDef, Project } from "./types"
+import { onBoard } from "./partFlags"
 
 // Which capacitor decouples which chip, and how far it sits from the pin it serves.
 //
@@ -63,7 +64,7 @@ const isCapacitor = (part: PartDef) =>
 export const isChip = (part: PartDef | undefined, c?: ComponentInstance): part is PartDef =>
   !!part &&
   isPhysical(part) &&
-  (!c || isOnBoard(c)) &&
+  (!c || onBoard(c)) &&
   (part.category === "ICs" || part.category === "Power" || (part.category === "Modules" && !!part.keywords?.includes("rf"))) &&
   part.pins.length >= 3
 

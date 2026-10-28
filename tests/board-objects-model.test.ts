@@ -272,21 +272,21 @@ describe("dimensions, groups and images are stored compactly and read back as th
     expect(back.groups).toEqual(p.groups)
     expect(back.images).toEqual(p.images)
   })
-  it("a document of version 4 opens as it was written, with none of them, and migrates unchanged", () => {
-    const v4 = { format: "cherryblossom.project", version: 4, project: { name: "old", description: "", components: [], wires: [], labels: [], traces: [], vias: [], zones: [], texts: [] } }
+  it("a document of version 2 opens as it was written, with none of them, and migrates unchanged", () => {
+    const v4 = { format: "cherryblossom.project", version: 2, project: { name: "old", description: "", components: [], wires: [], labels: [], traces: [], vias: [], zones: [], texts: [] } }
     expect(migrateProjectFile(v4)).toEqual({ ...v4.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v4, { id: "x" })
     expect(read.dimensions).toBeUndefined()
     expect(read.groups).toBeUndefined()
     expect(read.images).toBeUndefined()
     const written = JSON.parse(serializeProject(read))
-    expect(written.version).toBe(10)
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
     expect(written.project).not.toHaveProperty("dm")
     expect(written.project).not.toHaveProperty("grp")
     expect(written.project).not.toHaveProperty("im")
   })
   it("a newer file is still refused", () => {
-    expect(() => parseProjectFile({ format: "cherryblossom.project", version: 11, project: {} }, { id: "x" })).toThrow(/newer version/)
+    expect(() => parseProjectFile({ format: "cherryblossom.project", version: 4, project: {} }, { id: "x" })).toThrow(/newer version/)
   })
 })
 

@@ -2,6 +2,7 @@ import { emptyBox, expandBox, round, snap, type Box } from "../lib/geometry"
 import { blockFrames, componentTextBoxes, findBlock } from "../model/blocks"
 import {
   addDrawings,
+  applyStyle,
   CORNER_RADII,
   DRAWING_COLORS,
   drawingBounds,
@@ -16,7 +17,9 @@ import {
   updateDrawings,
   type NewDrawing,
 } from "../model/drawings"
+import { fieldClasses } from "../model/directives"
 import { schematicBounds } from "../model/instances"
+import { isExact } from "../model/sheetItems"
 import { SCH_GRID } from "../model/symbols"
 import type { DrawingColor, DrawingStyle, DrawingText, LineDash, LineWeight, Project, SchematicDrawing, Vec2 } from "../model/types"
 import { SHEET_ARG } from "./sheetTools"
@@ -176,18 +179,67 @@ function describe(d: SchematicDrawing): string {
   return `${d.id} ${what} over ${boxText(drawingBounds(d))}`
 }
 
+/** How many drawings get_design lists before the rest are only counted: a KiCad sheet can carry hundreds of dots and lines. */
+export const DRAWINGS_LISTED = 100
+
+/** What a drawing is called in a count: a text and its kin first. */
+const KIND_ORDER: SchematicDrawing["type"][] = ["text", "textbox", "table", "image", "line", "rect", "circle", "arc", "bezier", "junction", "noconnect", "directive"]
+
+/**
+ * The drawings get_design lists: all of them, or when there are more than `DRAWINGS_LISTED`, the ones drawn with the
+ * tools first (what the user or Sakura made, so Sakura always sees them), then the first of a KiCad sheet's that are
+ * not dots and flags, each in the sheet's order.
+ */
+function listed(project: Project): SchematicDrawing[] {
+  const all = project.drawings ?? []
+  if (all.length <= DRAWINGS_LISTED) return all
+  const own = all.filter((d) => !isExact(d))
+  const kicad = all.filter((d) => isExact(d) && d.type !== "junction" && d.type !== "noconnect")
+  return [...own, ...kicad].slice(0, DRAWINGS_LISTED)
+}
+
+/** What get_design says of the drawings it leaves out, or null when it lists them all. */
+export function drawingsMore(project: Project): string | null {
+  const all = project.drawings ?? []
+  const shown = new Set(listed(project))
+  const left = all.filter((d) => !shown.has(d))
+  if (!left.length) return null
+  const counts = new Map<string, number>()
+  for (const d of left) counts.set(d.type, (counts.get(d.type) ?? 0) + 1)
+  return `and ${left.length} more: ${KIND_ORDER.filter((k) => counts.has(k)).map((k) => `${counts.get(k)} ${k}`).join(", ")}`
+}
+
 /** Drawings as get_design reports them, small per drawing. */
 export function designDrawings(project: Project) {
-  return (project.drawings ?? []).map((d) => {
+  return listed(project).map((d) => {
     const b = drawingBounds(d)
     const style = { ...(d.color && { color: d.color }), ...(d.fill && { fill: d.fill }), ...(d.weight && { weight: d.weight }), ...(d.dash && { dash: d.dash }) }
     const box = { min_x: round(b.minX, 2), min_y: round(b.minY, 2), max_x: round(b.maxX, 2), max_y: round(b.maxY, 2) }
-    if (d.type === "text") {
-      const flags = { ...(d.align && { align: d.align }), ...(d.bold && { bold: true }), ...(d.italic && { italic: true }), ...(d.mono && { mono: true }), ...(d.border && { border: true }), ...(d.rot && { rotation: d.rot }) }
-      return { id: d.id, type: d.type, text: d.text, x: d.x, y: d.y, size: sizeName(d.size), ...flags, ...style, box }
+    switch (d.type) {
+      case "text": {
+        const flags = { ...(d.align && { align: d.align }), ...(d.bold && { bold: true }), ...(d.italic && { italic: true }), ...(d.mono && { mono: true }), ...(d.border && { border: true }), ...(d.rot && { rotation: d.rot }), ...(d.hidden && { hidden: true }) }
+        return { id: d.id, type: d.type, text: d.text, x: d.x, y: d.y, size: sizeName(d.size), ...flags, ...style, box }
+      }
+      case "line":
+        return { id: d.id, type: d.type, points: d.points, ...(d.closed && { closed: true }), ...(d.arrows && { arrows: d.arrows }), ...(d.ruleArea && { rule_area: { dnp: !!d.ruleArea.dnp, not_in_bom: !!d.ruleArea.excludeFromBom, not_on_board: !!d.ruleArea.notOnBoard, not_simulated: !!d.ruleArea.excludeFromSim } }), ...style }
+      case "rect":
+        return { id: d.id, type: d.type, x: d.x, y: d.y, width: d.width, height: d.height, ...(d.radius && { corners: CORNER_RADII.find((c) => c.radius === d.radius)?.id ?? "small" }), ...style }
+      case "textbox":
+        return { id: d.id, type: d.type, text: d.text, x: d.x, y: d.y, width: d.w, height: d.h, box }
+      case "table":
+        return { id: d.id, type: d.type, columns: d.columns, rows: d.rowHeights.length, cells: d.cells.slice(0, 40).map((c) => c.text), box }
+      case "circle":
+        return { id: d.id, type: d.type, x: d.x, y: d.y, radius: d.radius }
+      case "junction":
+      case "noconnect":
+      case "image":
+        return { id: d.id, type: d.type, x: d.x, y: d.y }
+      case "directive":
+        return { id: d.id, type: d.type, x: d.x, y: d.y, net_classes: fieldClasses(d.fields) }
+      case "arc":
+      case "bezier":
+        return { id: d.id, type: d.type, box }
     }
-    if (d.type === "line") return { id: d.id, type: d.type, points: d.points, ...(d.closed && { closed: true }), ...(d.arrows && { arrows: d.arrows }), ...style }
-    return { id: d.id, type: d.type, x: d.x, y: d.y, width: d.width, height: d.height, ...(d.radius && { corners: CORNER_RADII.find((c) => c.radius === d.radius)?.id ?? "small" }), ...style }
   })
 }
 
@@ -247,8 +299,8 @@ const editDrawingsTool: ToolSpec = {
     }
     const style = styleFrom(input)
     const edit = (d: SchematicDrawing): SchematicDrawing => {
-      let n: SchematicDrawing = { ...d, ...style }
-      if (input.fill === "none") n.fill = undefined
+      // The editor's styles replace a KiCad drawing's exact look (`applyStyle`); the shapes only KiCad has take none.
+      let n: SchematicDrawing = applyStyle(d, input.fill === "none" ? { ...style, fill: undefined } : style)
       if (n.type === "text") {
         if (typeof input.text === "string" && input.text.trim()) n.text = input.text.replace(/\s+$/, "")
         if (typeof input.size === "string" && SIZE_BY_NAME.has(input.size)) n.size = SIZE_BY_NAME.get(input.size)!
@@ -259,14 +311,14 @@ const editDrawingsTool: ToolSpec = {
         if (Array.isArray(input.points) && input.points.length >= 2) n.points = (input.points as Vec2[]).map((p) => ({ x: snapSch(p.x), y: snapSch(p.y) }))
         if (typeof input.closed === "boolean") n.closed = input.closed && n.points.length > 2
         if (typeof input.arrows === "string") n.arrows = input.arrows === "none" ? undefined : (input.arrows as "start" | "end" | "both")
-      } else {
+      } else if (n.type === "rect") {
         const w = num(input.width)
         const h = num(input.height)
         if (w !== undefined && w > 0) n.width = Math.max(SCH_GRID, snapSch(w))
         if (h !== undefined && h > 0) n.height = Math.max(SCH_GRID, snapSch(h))
-        if (n.type === "rect" && typeof input.corners === "string") n.radius = RADIUS_BY_NAME.get(input.corners) || undefined
+        if (typeof input.corners === "string") n.radius = RADIUS_BY_NAME.get(input.corners) || undefined
       }
-      if (n.type !== "line" && (num(input.x) !== undefined || num(input.y) !== undefined)) {
+      if (n.type !== "line" && "x" in n && (num(input.x) !== undefined || num(input.y) !== undefined)) {
         n = { ...n, x: num(input.x) !== undefined ? snapSch(input.x as number) : n.x, y: num(input.y) !== undefined ? snapSch(input.y as number) : n.y }
       }
       if (input.move_by) {

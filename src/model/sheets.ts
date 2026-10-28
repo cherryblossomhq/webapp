@@ -1,6 +1,6 @@
 import { uid } from "../lib/id"
 import type { ComponentInstance, NetLabel, Project, SchematicBlock, SchematicDrawing, SchematicSheet, SheetSymbol, Wire } from "./types"
-import { activeVariant, resolveVariant, variantSheetFlags } from "./variants"
+import { activeVariant, markSettled, resolveVariant, variantSheetFlags } from "./variants"
 
 // S1: hierarchical sheets.
 //
@@ -451,8 +451,14 @@ export function commitOnUse(project: Project, path: string, fn: (view: Project) 
  */
 export function withSheetFlags(source: Project): Project {
   // S9: the active variant first: its changes to a symbol, and to a sheet symbol's flags on each use, are what the flags below are inherited from.
-  const variant = activeVariant(source)
-  const project = resolveVariant(source)
+  return applySheetFlags(resolveVariant(source), activeVariant(source))
+}
+
+/**
+ * The sheet symbols' flags put on the symbols below them, for a project the variant is already put on (`resolveVariant`): each use of a sheet asks the variant
+ * for its own flags (`variantSheetFlags`). The flags are only put on, never cleared, so a variant that clears a symbol's own flag leaves one a sheet sets.
+ */
+export function applySheetFlags(project: Project, variant: string | undefined): Project {
   if (!project.sheetSymbols?.some((s) => (s.flags && Object.keys(s.flags).length) || (variant !== undefined && s.variants))) return project
   const uses = new Map(sheetUses(project).map((u) => [u.path, u]))
   const inherited = (path: string) => {
@@ -471,7 +477,7 @@ export function withSheetFlags(source: Project): Project {
     const f = inherited(c.inst ?? "")
     if (!Object.keys(f).length) return c
     changed = true
-    return { ...c, flags: { ...c.flags, ...f } }
+    return markSettled({ ...c, flags: { ...c.flags, ...f } })
   })
   return changed ? { ...project, components } : project
 }

@@ -2,6 +2,7 @@ import { Sparkles } from "lucide-react"
 import { useRef } from "react"
 import type { Box } from "../lib/geometry"
 import { blockFrames, componentTextBoxes } from "../model/blocks"
+import { drawingBounds } from "../model/drawings"
 import { pcbCourtyard, pcbPads, schematicBounds } from "../model/instances"
 import { labelBox } from "../model/labels"
 import type { Project, Vec2 } from "../model/types"
@@ -56,6 +57,10 @@ export function selectionBoxes(view: View, project: Project, selection: string[]
         const l = project.labels.find((x) => x.id === id)
         box = l ? labelBox(l) : null
       } else if (kind === "b") box = blockFrames(project).find((f) => f.id === id)?.box ?? null
+      else if (kind === "d") {
+        const d = project.drawings?.find((x) => x.id === id)
+        box = d ? drawingBounds(d) : null
+      }
     } else if (view === "pcb") {
       if (kind === "c") {
         const c = components.get(id)

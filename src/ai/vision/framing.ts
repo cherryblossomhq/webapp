@@ -1,10 +1,11 @@
 import { emptyBox, expandBox, type Box } from "../../lib/geometry"
-import { isPhysical, pcbCourtyard, schematicBounds } from "../../model/instances"
-import { findPart } from "../../model/library"
+import { resolvedComponents } from "../../model/ruleAreas"
+import { pcbCourtyard, schematicBounds } from "../../model/instances"
 import { blockFrames } from "../../model/blocks"
 import { drawingBounds } from "../../model/drawings"
 import { labelBox } from "../../model/labels"
 import type { Project } from "../../model/types"
+import { onBoard } from "../../model/partFlags"
 
 // Which part of a design a picture shows: all of it, some parts, what the user has selected, or
 // a rectangle. Pure, and the same boxes the renderers and the numbers use.
@@ -88,8 +89,8 @@ export function schematicContent(project: Project): Box | null {
 export function pcbContent(project: Project): Box {
   const bd = project.board
   const b: Box = { minX: bd.x - bd.width / 2, maxX: bd.x + bd.width / 2, minY: bd.y - bd.height / 2, maxY: bd.y + bd.height / 2 }
-  for (const c of project.components) {
-    const cy = c.pcb.placed && isPhysical(findPart(c.partId)) ? pcbCourtyard(c) : null
+  for (const c of resolvedComponents(project)) {
+    const cy = c.pcb.placed && onBoard(c) ? pcbCourtyard(c) : null
     if (!cy) continue
     expandBox(b, { x: cy.minX, y: cy.minY })
     expandBox(b, { x: cy.maxX, y: cy.maxY })
@@ -134,10 +135,10 @@ export function frame(project: Project, kind: ViewKind, req: FrameRequest, selec
     return true
   }
   const partBox = (id: string) => {
-    const c = project.components.find((x) => x.id === id)
+    const c = resolvedComponents(project).find((x) => x.id === id)
     if (!c) return false
     if (kind === "schematic") return add(schematicBounds(c))
-    return add(c.pcb.placed && isPhysical(findPart(c.partId)) ? pcbCourtyard(c) : null)
+    return add(c.pcb.placed && onBoard(c) ? pcbCourtyard(c) : null)
   }
 
   if (req.refs?.length) {

@@ -1,16 +1,20 @@
 import { viaLayers } from "../../model/stack"
 import { viaTentedOn } from "../../model/viaRules"
 import * as THREE from "three"
+import { resolvedComponents } from "../../model/ruleAreas"
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
 import { boardColors, boardFinish, finishMetal, mountingHoles } from "../../model/board"
 import { getFootprint } from "../../model/footprints"
 import { findPart } from "../../model/library"
 import { packageOf } from "../../model/partPackage"
-import { isNpth, isOnBoard, pcbPads, slotEnds, type WorldPad } from "../../model/instances"
-import type { ZoneFill } from "../../model/pour"
+import { isNpth, pcbPads, slotEnds, type WorldPad } from "../../model/instances"
+import { outlineGeometry, pointInRing } from "../../model/outline"
+import { holeCentre } from "../../model/padDistance"
+import { polygonKit, withMaxError, type ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
 import { buildBoardTextures, type BoardTextureSet } from "./boardTextures"
 import { buildComponentModel, type ModelMaterials } from "./models"
+import { onBoard } from "../../model/partFlags"
 
 // Finished copper plus surface finish stands this far proud of the mask (mm).
 const PAD_DEPTH = 0.035
@@ -113,17 +117,38 @@ function padShape(pad: WorldPad): THREE.Shape {
   } else if (pad.shape === "polygon" && pad.points && pad.points.length >= 3) {
     s = new THREE.Shape(pad.points.map((p) => new THREE.Vector2(p.x, p.y)))
   } else {
-    s = roundedRect(pad.x, pad.y, pad.width, pad.height, Math.min(pad.width, pad.height) * 0.12)
+    s = roundedRect(pad.x, pad.y, pad.width, pad.height, pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12)
   }
   if (pad.holeDiameter) s.holes.push(holePath(pad))
   return s
+}
+
+/**
+ * A pad as the shapes to extrude: one, or for a custom pad of several rings (holes in it, pieces) one per outer ring with the holes inside it.
+ * The pad's drill is cut from the shape it lies in.
+ */
+function padShapes(pad: WorldPad): THREE.Shape[] {
+  if (!pad.rings || pad.rings.length < 2) return [padShape(pad)]
+  const regions = withMaxError(undefined, () => polygonKit.regions(polygonKit.unionEvenOdd(pad.rings!.map((r) => polygonKit.path(r)))), 1e6)
+  const out = regions.map((poly) => {
+    const sh = new THREE.Shape(poly[0].map((p) => new THREE.Vector2(p.x, p.y)))
+    for (const hole of poly.slice(1)) sh.holes.push(new THREE.Path(hole.map((p) => new THREE.Vector2(p.x, p.y))))
+    return sh
+  })
+  if (pad.holeDiameter && out.length) {
+    const at = holeCentre(pad)
+    const owner = out.find((_, i) => pointInRing(at, regions[i][0])) ?? out[0]
+    owner.holes.push(holePath(pad))
+  }
+  return out
 }
 
 /** Outline of a pad's drill: a circle, or a capsule for a slot. */
 function holePath(pad: WorldPad): THREE.Path {
   const ends = slotEnds(pad)
   const r = (pad.holeDiameter ?? 0) / 2
-  return ends ? capsule(ends[0], ends[1], r) : circlePath(pad.x, pad.y, r)
+  const at = holeCentre(pad)
+  return ends ? capsule(ends[0], ends[1], r) : circlePath(at.x, at.y, r)
 }
 
 /** Extruded slab with only its top (or bottom) cap and walls; z0 is the face it sits on. */
@@ -146,7 +171,7 @@ function mergeInto(group: THREE.Group, geoms: THREE.BufferGeometry[], material: 
 }
 
 /** Flat face at height z with UVs spanning the board rectangle; `down` flips it to face -z. */
-function boardFace(outline: THREE.Shape, z: number, down: boolean, bounds: { minX: number; minY: number; w: number; h: number }) {
+function boardFace(outline: THREE.Shape | THREE.Shape[], z: number, down: boolean, bounds: { minX: number; minY: number; w: number; h: number }) {
   const g = new THREE.ShapeGeometry(outline, 32)
   const pos = g.attributes.position
   const uv = g.attributes.uv
@@ -177,7 +202,7 @@ export interface BoardBuild {
 }
 
 export function placedComponents(project: Project): ComponentInstance[] {
-  return project.components.filter((c) => c.pcb.placed && isOnBoard(c))
+  return resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
 }
 
 export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMaterials, anisotropy: number): BoardBuild {
@@ -187,8 +212,11 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
   const t = b.thickness
   const minX = b.x - b.width / 2
   const minY = b.y - b.height / 2
+  // A board with an outline of its own (and at least one loop in it): the pieces it is, cutouts and all. Otherwise the rectangle.
+  const found = outlineGeometry(b)
+  const custom = found && found.rings.length ? found : null
   const insideBoard = (x: number, y: number, r: number) =>
-    x - r > minX && x + r < minX + b.width && y - r > minY && y + r < minY + b.height
+    custom ? custom.contains({ x, y }) && custom.nearest({ x, y }, r + 1e-3) === Infinity : x - r > minX && x + r < minX + b.width && y - r > minY && y + r < minY + b.height
 
   const placed = placedComponents(project)
   const padsByComponent = new Map(placed.map((c) => [c.id, pcbPads(c)]))
@@ -200,14 +228,33 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     for (const p of pads) {
       if (!p.holeDiameter) continue
       const slot = slotEnds(p) ?? undefined
-      holes.push({ x: p.x, y: p.y, r: p.holeDiameter / 2, bare: isNpth(p), slot })
+      const at = holeCentre(p)
+      holes.push({ x: at.x, y: at.y, r: p.holeDiameter / 2, bare: isNpth(p), slot })
     }
   }
   // Only a through via is drilled through the whole board; blind, buried and micro vias are inside it (X5).
   for (const v of project.vias) if (!v.kind) holes.push({ x: v.x, y: v.y, r: v.drill / 2 })
   for (const h of holesMounting) holes.push({ x: h.x, y: h.y, r: h.drill / 2 })
 
-  const outline = roundedRect(b.x, b.y, b.width, b.height, b.cornerRadius)
+  const ringShape = (pts: Vec2[]) => {
+    const sh = new THREE.Shape()
+    pts.forEach((q, i) => (i ? sh.lineTo(q.x, q.y) : sh.moveTo(q.x, q.y)))
+    sh.closePath()
+    return sh
+  }
+  const outlines: THREE.Shape[] = custom
+    ? custom.regions.map((r) => {
+        const sh = ringShape(r.outer)
+        for (const hole of r.holes) sh.holes.push(new THREE.Path(hole.map((q) => new THREE.Vector2(q.x, q.y))))
+        return sh
+      })
+    : [roundedRect(b.x, b.y, b.width, b.height, b.cornerRadius)]
+  const outline = outlines
+  const shapeOf = (x: number, y: number) => {
+    if (!custom) return outlines[0]
+    const ring = custom.rings.find((q) => !q.hole && pointInRing({ x, y }, q.pts))
+    return ring ? outlines[ring.region] : outlines[0]
+  }
   const accepted: typeof holes = []
   // A slot is tested as the circle round its whole length.
   const reach = (h: (typeof holes)[number]) => (h.slot ? h.r + Math.hypot(h.slot[1].x - h.x, h.slot[1].y - h.y) : h.r)
@@ -216,7 +263,7 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     // Overlapping contours break triangulation; keep the first.
     if (accepted.some((o) => Math.hypot(o.x - h.x, o.y - h.y) < reach(o) + reach(h) + 0.02)) continue
     accepted.push(h)
-    outline.holes.push(h.slot ? capsule(h.slot[0], h.slot[1], h.r) : circlePath(h.x, h.y, h.r))
+    shapeOf(h.x, h.y).holes.push(h.slot ? capsule(h.slot[0], h.slot[1], h.r) : circlePath(h.x, h.y, h.r))
   }
 
   // Walls (outline edge and hole walls) in FR4; caps replaced by textured faces.
@@ -267,10 +314,12 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
   const bottomZ = -t / 2 - LIFT
   for (const pads of padsByComponent.values()) {
     for (const p of pads) {
-      if (!insideBoard(p.x, p.y, 0) || isNpth(p)) continue
-      const shape = padShape(p)
-      if (p.layers.includes("top")) copper.push(slab(shape, PAD_DEPTH, topZ, false))
-      if (p.layers.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true))
+      if (!insideBoard(p.x, p.y, 0) || (isNpth(p) && !p.ring)) continue
+      const sides = isNpth(p) ? p.ring! : p.layers
+      for (const shape of padShapes(p)) {
+        if (sides.includes("top")) copper.push(slab(shape, PAD_DEPTH, topZ, false))
+        if (sides.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true))
+      }
     }
   }
   const viaSide = (v: (typeof project.vias)[number], side: "top" | "bottom") => viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)

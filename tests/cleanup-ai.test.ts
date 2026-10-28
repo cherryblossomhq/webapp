@@ -19,6 +19,7 @@ import { useCopilot, type Entry } from "../src/store/copilotStore"
 import { useProjectStore } from "../src/store/projectStore"
 import { DEFAULT_SETTINGS } from "../src/store/settings"
 import { useUi } from "../src/store/uiStore"
+import { expectSameProject } from "./history"
 
 // Clean up with AI, run against a scripted model: no request leaves the test. The model's turns are
 // written down, and what the editor does with them is what is checked: the plan is only a plan until
@@ -202,7 +203,7 @@ describe("Clean up with AI: the plan", () => {
     expect(requests).toHaveLength(3)
     expect(planEntry(id)).toBeUndefined()
     expect(thread(id).some((e) => e.kind === "error" && e.text.includes("after 3 tries") && e.text.includes("Nothing was changed"))).toBe(true)
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
   })
 
   it("plans on a sheet Tidy has already tidied: the parts Tidy put in OTHER are loose", async () => {
@@ -233,7 +234,7 @@ describe("Clean up with AI: the plan", () => {
     ]
     useCopilot.getState().startCleanup(id)
     await settled()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     expect(planEntry(id)).toBeUndefined()
   })
 
@@ -280,7 +281,7 @@ describe("Clean up with AI: applying the plan", () => {
     // One undo step, though group_parts ran six times and Tidy once.
     expect(state.past).toHaveLength(1)
     state.undo()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
   })
 
   it("does only what the confirmed plan says", async () => {
@@ -353,7 +354,7 @@ describe("Clean up with AI: applying the plan", () => {
     script = [() => callsTurn(...applyCalls.slice(0, -1)), () => textTurn("Done.")]
     useCopilot.getState().applyPlan(id, planEntry(id)!.id)
     await settled()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     expect(useProjectStore.getState().past).toHaveLength(0)
     expect(thread(id).some((e) => e.kind === "error" && e.text === "Sakura did not tidy the sheet, so nothing was changed.")).toBe(true)
   })
@@ -378,7 +379,7 @@ describe("Clean up with AI: applying the plan", () => {
     script = [() => callsTurn(...applyCalls.slice(0, -2), tidy, applyCalls[applyCalls.length - 2]), () => textTurn("Done.")]
     useCopilot.getState().applyPlan(id, planEntry(id)!.id)
     await settled()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     expect(useProjectStore.getState().past).toHaveLength(0)
     expect(thread(id).some((e) => e.kind === "error" && e.text === "Sakura did not tidy the sheet, so nothing was changed.")).toBe(true)
   })
@@ -399,14 +400,14 @@ describe("Clean up with AI: applying the plan", () => {
     expect(requests).toHaveLength(0)
     // Nothing happens until the question is answered.
     expect(useCleanup.getState().phase.kind).toBe("preview")
-    expect(useProjectStore.getState().project).toBe(grouped)
+    expectSameProject(useProjectStore.getState().project, grouped)
     applyCleanup()
     await vi.waitFor(() => expect(useProjectStore.getState().past).toHaveLength(1))
     expect(planEntry(id)).toBeUndefined()
     expect(thread(id).some((e) => e.kind === "assistant" && e.text.includes("Every part is already in a block"))).toBe(true)
     expect(netlist(useProjectStore.getState().project!)).toEqual(netlist(before))
     useProjectStore.getState().undo()
-    expect(useProjectStore.getState().project).toBe(grouped)
+    expectSameProject(useProjectStore.getState().project, grouped)
   })
 
   it("says there is nothing to clean up on an empty sheet, and does not claim to tidy", () => {
@@ -426,7 +427,7 @@ describe("Clean up with AI: applying the plan", () => {
     script = [() => callsTurn(...applyCalls.slice(0, -1)), () => textTurn("I grouped all the parts."), () => textTurn("ok")]
     useCopilot.getState().applyPlan(id, planEntry(id)!.id)
     await settled()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     // The chat: no "I grouped" after the rollback, the steps marked as not kept, the panel's line there.
     expect(thread(id).some((e) => e.kind === "assistant" && e.text.includes("I grouped"))).toBe(false)
     expect(thread(id).filter((e) => e.kind === "tool" && e.label.startsWith("Not kept: ")).length).toBe(PLAN.length)
@@ -452,7 +453,7 @@ describe("Clean up with AI: applying the plan", () => {
     expect(grouped.OTHER).toBeUndefined()
     expect(state.past).toHaveLength(1)
     state.undo()
-    expect(useProjectStore.getState().project).toBe(tidied)
+    expectSameProject(useProjectStore.getState().project, tidied)
   })
 
   it("is not applied when the plan is out of date: the sheet changed after it was proposed", async () => {

@@ -15,10 +15,11 @@ import type { KicadSchematic } from "./types"
  * strokes of a symbol's drawing) and S10 (the drawings kept in the project). Slice 3b-ii built S2 (labels,
  * their shapes, sizes and styles, and the net names KiCad gives), S4 (text, text boxes, drawings,
  * pictures, tables, wire strokes, junction dots and no-connect flags of their own, locked groups) and
- * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated). S8 is directive labels and rule areas, S12 the symbols a
+ * S7 (the flags of a symbol: do not populate, not in the BOM, not on the board, not simulated). S1 is the sheets, S3 the buses, bus entries and bus aliases, S8 directive labels and rule areas, S9 schematic variants,
+ * S11 KiCad's rules for what a wire joins (on the sheets that need them), S12 the symbols a
  * schematic's cache lacks, taken from the project's own libraries and the parts database (a symbol found in neither is still refused, naming the libraries looked in).
  */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S10", "S12"])
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12"])
 
 /** What each extension is, for the sentence "This schematic uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -26,6 +27,7 @@ export const EXTENSION_NAMES: Record<string, string> = {
   S1T: "several top level sheets (a KiCad 10 project with more than one root sheet)",
   S2: "labels and net names as KiCad has them",
   S3: "buses",
+  S3B: "bus names the importer cannot read exactly (a bus name on a wire, a name KiCad 9 and 10 read differently, a bus too large)",
   S4: "annotations and styled wires",
   S5: "symbols as KiCad draws them (units, mirrors, hidden power pins, repeated pin numbers)",
   S6: "symbol drawings beyond lines and circles",
@@ -33,7 +35,9 @@ export const EXTENSION_NAMES: Record<string, string> = {
   S8: "directive labels and rule areas",
   S9: "schematic variants",
   S10: "symbols kept in the project",
+  S9X: "symbol overrides and custom properties (KiCad 11 development files)",
   S11: "KiCad's rules for what a wire joins (a wire end on a wire's side, a label on a pin, points a hair apart)",
+  S11L: "KiCad 5's rules for a no-connect pin and for label names, and for a label on a pin on a wire in a sheet that also needs KiCad 6's rules",
   S12: "symbols from a project's own libraries or the parts database",
   X19: "text outlines or embedded fonts",
 }
@@ -46,7 +50,7 @@ export interface Need {
   source: "slices" | "importer"
 }
 
-const extNumber = (ext: string) => (ext === "S1T" ? 1.5 : Number(ext.slice(1)) + (ext.startsWith("X") ? 100 : 0))
+const extNumber = (ext: string) => (ext === "S1T" ? 1.5 : ext === "S3B" ? 3.5 : ext === "S9X" ? 9.5 : ext === "S11L" ? 11.5 : Number(ext.slice(1)) + (ext.startsWith("X") ? 100 : 0))
 
 const GRAPHICS = ["polyline", "rectangle", "circle", "arc", "bezier"]
 

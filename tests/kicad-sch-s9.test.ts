@@ -10,7 +10,8 @@ import { onBoard } from "../src/model/partFlags"
 import { addComponent, createProject } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
-import { activeVariant, addVariant, removeVariant, renameVariant, resolveVariant, setActiveVariant, setVariantOverride, variantComponent, variantComponents } from "../src/model/variants"
+import { activeVariant, addVariant, removeVariant, renameVariant, resolveVariant, setActiveVariant, setVariantOverride, variantComponent } from "../src/model/variants"
+import { resolvedComponents } from "../src/model/ruleAreas"
 import { LIB_GND, LIB_R, schematic } from "./kicad-schematic-fixtures"
 import { files as sheetFiles, imp as importSheets, S1 } from "./kicad-sheets-fixtures"
 
@@ -156,7 +157,7 @@ describe("the active variant is followed by the BOM, the position file, the mark
     const p = board()
     expect(activeVariant(p)).toBeUndefined()
     expect(resolveVariant(p)).toBe(p)
-    expect(variantComponents(p)).toBe(p.components)
+    expect(resolvedComponents(p)).toBe(p.components)
     expect(bomRefs(p)).toEqual(["R1", "R2", "R3"])
     expect(pnpRefs(p)).toEqual(["R1", "R2", "R3"])
     const { variants: _v, ...bare } = p
@@ -184,16 +185,16 @@ describe("the active variant is followed by the BOM, the position file, the mark
   it("the DNP marks and the board side read the resolved parts, and the symbols themselves are never rewritten", () => {
     const p = setActiveVariant(board(), "Lite")
     const base = (ref: string) => p.components.find((c) => c.ref === ref)!
-    const seen = (ref: string) => variantComponents(p).find((c) => c.ref === ref)!
+    const seen = (ref: string) => resolvedComponents(p).find((c) => c.ref === ref)!
     expect(seen("R1").flags?.dnp).toBe(true)
     expect(base("R1").flags).toBeUndefined()
     expect(variantComponent(base("R1"), "Lite").flags?.dnp).toBe(true)
     expect(onBoard(seen("R2"))).toBe(false)
     expect(onBoard(base("R2"))).toBe(true)
     // a symbol the variant does not touch is the same object
-    expect(variantComponents(p).find((c) => c.ref === "R3")).not.toBe(base("R3"))
+    expect(resolvedComponents(p).find((c) => c.ref === "R3")).not.toBe(base("R3"))
     const q = setActiveVariant(p, undefined)
-    expect(variantComponents(q)).toBe(q.components)
+    expect(resolvedComponents(q)).toBe(q.components)
     expect(q.components.map((c) => c.flags)).toEqual([undefined, undefined, undefined])
   })
 

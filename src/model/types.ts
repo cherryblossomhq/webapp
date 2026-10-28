@@ -19,9 +19,37 @@ export type CopperLayer = "top" | "bottom" | `in${number}`
 
 // ---------- Library definitions ----------
 
+/** KiCad's line styles; a line with none of these is solid. */
+export type StrokeDash = "dash" | "dot" | "dash_dot" | "dash_dot_dot"
+
+/** How a closed shape is filled: with the outline's colour, the symbol's body colour, or a colour of its own. */
+export type FillKind = "outline" | "background" | "color"
+
+/**
+ * What a drawn shape looks like beyond its outline (S6). Every field absent is the editor's own
+ * look, which is what its own symbols have: a shape of an imported symbol has the width, dash,
+ * colour and fill its file gave it, exactly.
+ */
+export interface ShapeLook {
+  /** Line width in schematic units (KiCad's millimetres over 12.7); absent is the editor's own width. */
+  width?: number
+  dash?: StrokeDash
+  /** The line's colour, `#rrggbb` or `rgba(r,g,b,a)`; absent is the symbol's own colour. */
+  color?: string
+  /** `background` and `color` fills; a plain `fill: true` is the `outline` one. */
+  fillKind?: Exclude<FillKind, "outline">
+  fillColor?: string
+}
+
 export type SymbolPrimitive =
-  | { type: "path"; points: Vec2[]; fill: boolean; width?: number }
-  | { type: "circle"; x: number; y: number; radius: number; fill: boolean }
+  | { type: "path"; points: Vec2[]; fill: boolean; width?: number; look?: ShapeLook }
+  | { type: "circle"; x: number; y: number; radius: number; fill: boolean; look?: ShapeLook }
+  /** A circular arc through three points, as KiCad keeps it: from `start` through `mid` to `end`. */
+  | { type: "arc"; start: Vec2; mid: Vec2; end: Vec2; fill: boolean; look?: ShapeLook }
+  /** A cubic Bezier curve: two ends and two control points, in order. */
+  | { type: "bezier"; points: [Vec2, Vec2, Vec2, Vec2]; fill: boolean; look?: ShapeLook }
+  /** An ellipse, or the arc of one from `from` to `to` (degrees); `rotation` turns it about its centre. */
+  | { type: "ellipse"; x: number; y: number; rx: number; ry: number; rotation: number; from?: number; to?: number; fill: boolean; look?: ShapeLook }
   | {
       type: "text"
       text: string
@@ -32,6 +60,12 @@ export type SymbolPrimitive =
       role?: "ref" | "value" | "pin" | "pinNumber" | "label"
       /** Runs along its pin instead of across the symbol, e.g. long names of top and bottom pins. */
       alongPin?: boolean
+      /** Text of an imported symbol: its angle in degrees (0 across, 90 up) in the symbol's own frame. */
+      angle?: number
+      bold?: boolean
+      italic?: boolean
+      /** The text's colour of its own. */
+      color?: string
     }
 
 export type TextAnchor =
@@ -52,12 +86,66 @@ export interface SymbolPort {
   y: number
   /** Direction a wire leaves the pin, in symbol space. */
   dir: "left" | "right" | "up" | "down"
+  /** KiCad's electrical type of the pin, where the symbol came from KiCad. */
+  type?: PinType
+  /** A pin that is not drawn. A hidden power-input pin is on the global net of its name. */
+  hidden?: true
+}
+
+/** The name and number of a pin of an imported symbol, which are laid out by the pin's way in the sheet, not the symbol's (`model/pinText.ts`). */
+export interface PinLabel {
+  number: string
+  name: string
+  /** Where a wire meets the pin, in the symbol's frame. */
+  x: number
+  y: number
+  /** The unit vector from there toward the body. */
+  dx: number
+  dy: number
+  length: number
+  nameSize: number
+  numberSize: number
+  /** The largest name size among the symbol's pins: names above their pins all stand clear of the biggest. */
+  maxNameSize: number
+  showName: boolean
+  showNumber: boolean
 }
 
 export interface SymbolDef {
   primitives: SymbolPrimitive[]
   ports: SymbolPort[]
   bounds: { minX: number; minY: number; maxX: number; maxY: number }
+  /** S7: the body alone, without its pins, where the symbol is drawn from KiCad's: what a do-not-populate cross covers. */
+  bodyBounds?: { minX: number; minY: number; maxX: number; maxY: number }
+  /** Pins whose names and numbers are laid out as KiCad lays them out. Absent for the editor's own symbols, which carry their texts as primitives. */
+  pinLabels?: PinLabel[]
+  /** Pin names are drawn this far inside the body (0: above the pin line). */
+  pinNameOffset?: number
+}
+
+/** KiCad's electrical pin types: `PinDef.kind` is the editor's coarser role, this is what ERC compares. */
+export type PinType =
+  | "input"
+  | "output"
+  | "bidirectional"
+  | "tri_state"
+  | "passive"
+  | "free"
+  | "unspecified"
+  | "power_in"
+  | "power_out"
+  | "open_collector"
+  | "open_emitter"
+  | "no_connect"
+
+/** How KiCad draws the end of a pin. */
+export type PinShape = "line" | "inverted" | "clock" | "inverted_clock" | "input_low" | "clock_low" | "output_low" | "edge_clock_high" | "non_logic"
+
+/** A function a pin can be switched to on one placed symbol (a pin alternate). */
+export interface PinAlternate {
+  name: string
+  type: PinType
+  shape: PinShape
 }
 
 export interface PinDef {
@@ -66,6 +154,12 @@ export interface PinDef {
   name: string
   /** Electrical role, used for ERC-lite checks and box symbol placement. */
   kind?: "passive" | "input" | "output" | "power" | "ground" | "io" | "nc"
+  /** KiCad's electrical type, where it is known. */
+  type?: PinType
+  /** The symbol gives the pin no name (`~`): `name` is its number, so the editor has something to call it, and an export writes it empty. */
+  unnamed?: true
+  /** Functions the pin can be switched to (`ComponentInstance.pinAlt` says which one a placed symbol uses). */
+  alternates?: PinAlternate[]
 }
 
 export type PadShape = "rect" | "circle" | "pill" | "polygon"
@@ -383,6 +477,96 @@ export interface FootprintDef {
   package?: string
 }
 
+// ---------- Symbol drawings (S10) ----------
+
+/** What every item of a drawing says: which unit and body style it is drawn in, and how it looks. */
+export interface DrawingBase {
+  /** The unit it belongs to; absent or 0 is every unit. */
+  unit?: number
+  /** The body style it belongs to; absent or 0 is every style. */
+  body?: number
+  /** Line width in schematic units; absent is KiCad's default width. */
+  width?: number
+  dash?: StrokeDash
+  color?: string
+  /** Absent is no fill. */
+  fill?: FillKind
+  fillColor?: string
+  /** KiCad's private items: kept, and not drawn on a sheet. */
+  private?: true
+}
+
+export interface DrawingTextStyle {
+  /** Text height in schematic units. */
+  size?: number
+  bold?: true
+  italic?: true
+  /** Absent is centred. */
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+  hidden?: true
+  color?: string
+  thickness?: number
+}
+
+/** One drawn item of a symbol, in the symbol's own frame (schematic units, y up), as KiCad's cache has it. */
+export type DrawingItem =
+  | ({ kind: "polyline"; points: Vec2[] } & DrawingBase)
+  | ({ kind: "rectangle"; a: Vec2; b: Vec2; radius?: number } & DrawingBase)
+  | ({ kind: "circle"; c: Vec2; r: number } & DrawingBase)
+  | ({ kind: "arc"; start: Vec2; mid: Vec2; end: Vec2 } & DrawingBase)
+  | ({ kind: "bezier"; points: Vec2[] } & DrawingBase)
+  | ({ kind: "ellipse"; c: Vec2; rx: number; ry: number; rotation: number; from?: number; to?: number } & DrawingBase)
+  | ({ kind: "text"; text: string; at: Vec2; angle: number } & DrawingTextStyle & DrawingBase)
+
+/** A pin of a symbol drawing. Its number is as KiCad writes it: `[1-3]` is three pads at one place. */
+export interface DrawingPin {
+  number: string
+  name: string
+  type: PinType
+  shape: PinShape
+  /** Where a wire meets it, in the symbol's frame. */
+  x: number
+  y: number
+  /** The way it points from there to the body: 0 right, 90 up, 180 left, 270 down. */
+  angle: number
+  length: number
+  hidden?: true
+  unit?: number
+  body?: number
+  alternates?: PinAlternate[]
+  /** Text heights of its name and number, in schematic units. */
+  nameSize?: number
+  numberSize?: number
+}
+
+/**
+ * A symbol as KiCad's cache keeps it: the drawing of every unit and body style, its pins and the
+ * places of its fields. Kept whole in the project so that a part placed from it is drawn exactly
+ * as KiCad draws it; `model/symbolDrawing.ts` makes the drawings the editor works with.
+ */
+export interface SymbolDrawing {
+  /** The symbol's name in the library it came from, `Device:R`. */
+  name: string
+  /** Absent is one unit. */
+  units?: number
+  unitNames?: Record<number, string>
+  /** Absent is one body style; 2 is De Morgan. */
+  bodyStyles?: number
+  bodyStyleNames?: string[]
+  items: DrawingItem[]
+  pins: DrawingPin[]
+  /** Where pin names sit: `offset` from the pin's end into the body (0 draws them above the pin), and whether they are shown at all. */
+  pinNames?: { offset?: number; hidden?: true }
+  pinNumbersHidden?: true
+  /** A power symbol: its net is the Value; `local` keeps it on its sheet. */
+  power?: "global" | "local"
+  /** Pins of one number are one pad (jumpered), and groups of numbers that are joined inside the part. */
+  jumpers?: { duplicates?: true; groups?: string[][] }
+  /** The fields of the symbol and where each sits, in the symbol's frame. */
+  fields: { name: string; value: string; place: FieldPlace }[]
+}
+
 export type PartCategory =
   | "Passives"
   | "Diodes"
@@ -416,6 +600,58 @@ export interface PartDef {
   mpn?: string
   /** Made for one project (see CustomPartSpec) rather than shipped in the library. */
   custom?: boolean
+  /** S5: a part with several units or body styles has one drawing for each (`symbolOf` picks it). `symbol` is unit 1 in body style 1. */
+  units?: PartUnits
+  /**
+   * S5: present on a part drawn from a KiCad symbol, whose pins of one number are separate pins
+   * unless `duplicates` (they are one pad, jumpered); `groups` are numbers the part joins inside
+   * itself. The editor's own parts have none: they join pins of one number.
+   */
+  jumpers?: { duplicates: boolean; groups: string[][] }
+  /** S5: this is a placed unit of the part `unitOf`, with no footprint of its own: the part itself is on the board. */
+  unitOf?: string
+  /** S5: a power port that stays on its sheet (KiCad's local power symbol). */
+  powerLocal?: boolean
+  /** S5: where the symbol's own fields sit, in its frame, for a part placed from the library. */
+  fieldPlaces?: Record<string, FieldPlace>
+}
+
+/** S5: the drawings of a part's units and body styles, by `"unit:bodyStyle"` (both counted from 1). */
+export interface PartUnits {
+  count: number
+  bodyStyles: number
+  /** The name of each unit, from 1, where the symbol gives one. */
+  unitNames?: Record<number, string>
+  /** The name of each body style, from 1. */
+  bodyStyleNames?: string[]
+  symbols: Record<string, SymbolDef>
+}
+
+/**
+ * S5: where one field of a placed symbol (Reference, Value, Footprint, a user field...) is drawn:
+ * its own place, angle, size and justification, which are not the symbol's.
+ */
+export interface FieldPlace {
+  /** The text's anchor, from the symbol's origin, on the sheet (y up). Turning or mirroring the symbol leaves it where it is, as KiCad does. */
+  x: number
+  y: number
+  /** 0 across, 90 up. */
+  angle: 0 | 90
+  /** Text height in schematic units; absent is the editor's own text size. */
+  size?: number
+  hidden?: true
+  /** Justification as KiCad has it; absent is centred. */
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+  bold?: true
+  italic?: true
+  /** Draw `Name: value` instead of the value alone. */
+  showName?: true
+  color?: string
+  /** The thickness of the text's strokes, as the file has it (units). */
+  thickness?: number
+  /** KiCad's "do not autoplace": the field stays where it is put. */
+  noAutoplace?: true
 }
 
 export type PinSide = "left" | "right" | "top" | "bottom"
@@ -431,11 +667,13 @@ export interface CustomPartSpec {
   description: string
   category: PartCategory
   refPrefix: string
-  /** Footprinter string or data-defined footprint whose pads are numbered like the pins. */
+  /** Footprinter string or data-defined footprint whose pads are numbered like the pins. Empty for a part with a drawing and no footprint. */
   footprint: string
   pins: (PinDef & { side?: PinSide })[]
   /** A discrete symbol from CUSTOM_SYMBOLS; a box with the pins on its sides when absent. */
   symbol?: string
+  /** S10: the key of its drawing in `Project.symbols`. A part with a drawing takes its pins, units and symbols from it. */
+  drawing?: string
   /** Default properties: mpn, manufacturer, datasheet, value... */
   props: Record<string, string>
   valueProp?: string
@@ -471,13 +709,19 @@ export interface PartSource {
    * whole (KiCad's libraries; `database` says which). `memory`: written by the copilot from what it
    * recalled.
    */
-  pins: "supplier" | "database" | "memory"
+  pins: "supplier" | "database" | "memory" | "import"
   /**
    * `supplier`: the supplier's own land. `database`: the stored part's land (a KiCad footprint).
    * `checked`: a footprinter land checked pad by pad against the supplier's. `memory`: chosen
-   * without one.
+   * without one. `import`: the land (if any) is the one the imported board gave it.
    */
-  land: "supplier" | "database" | "checked" | "memory"
+  land: "supplier" | "database" | "checked" | "memory" | "import"
+  /**
+   * `import`: the part came from a KiCad schematic the user brought in, drawn and wired as that file
+   * has it, so there is nothing to check against a supplier. `file` is the schematic's file name and
+   * `libId` the symbol's `Library:Name` there.
+   */
+  imported?: { file: string; libId: string }
   /** The parts index part it was made from, when it was. */
   database?: PartDatabaseSource
   /** The supplier record the part was built from or checked against. */
@@ -574,6 +818,9 @@ export interface ModelAssignment {
 
 // ---------- Document ----------
 
+/** `x` flips the symbol top to bottom (about the x axis), `y` left to right, after its turn. */
+export type Mirror = "x" | "y"
+
 /**
  * What KiCad calls a footprint's attributes, and the pad groups it keeps beside them. Every field
  * is absent for a part drawn in the editor, which then behaves as it always did. `model/partFlags.ts`
@@ -592,6 +839,10 @@ export interface PartFlags {
   boardOnly?: true
   /** Do not populate: left out of the BOM and the position file (KiCad keeps it in both); its paste is still plotted. */
   dnp?: true
+  /** The symbol's `exclude_from_sim yes`: a simulation leaves the part out. */
+  excludeFromSim?: true
+  /** The symbol's `on_board no`: the part is in the schematic and has no footprint on the board. */
+  notOnBoard?: true
   /** The part has no courtyard and that is meant. */
   allowMissingCourtyard?: true
   /** Solder mask bridges between this part's pads are allowed. */
@@ -604,13 +855,45 @@ export interface PartFlags {
   netTies?: string[][]
 }
 
+/**
+ * S9: what one schematic variant changes on one symbol, as KiCad 10 keeps it in the symbol's instance (`variant`): only what differs from the
+ * symbol's own value is listed. A flag is the editor's own (`dnp`, `excludeFromBom`, `notOnBoard`, `excludeFromSim`, `excludeFromPos`), `true`
+ * where the variant sets it and `false` where the variant clears what the symbol sets; `fields` are field values (`Value`, `Footprint`, any user field).
+ */
+export interface VariantOverride {
+  dnp?: boolean
+  excludeFromBom?: boolean
+  notOnBoard?: boolean
+  excludeFromSim?: boolean
+  excludeFromPos?: boolean
+  fields?: Record<string, string>
+}
+
+/** S9: the schematic variants of a project, by the name KiCad gives them, with the one the editor shows now. */
+export interface ProjectVariants {
+  list: { name: string; description?: string }[]
+  /** The variant the BOM, the position file, the do not populate marks and the board follow; absent: the symbols as they are (KiCad's default variant). */
+  active?: string
+}
+
 export interface ComponentInstance {
   id: string
   partId: string
   ref: string
   props: Record<string, string>
   footprint: string
-  sch: { x: number; y: number; rot: Rotation }
+  /** Where it is on the sheet: its turn (counter-clockwise), then its mirror, as KiCad applies them. */
+  sch: { x: number; y: number; rot: Rotation; mirror?: Mirror }
+  /** S5: the unit of a part with several that this symbol is; 1 when absent. Symbols of one part share its reference. */
+  unit?: number
+  /** S5: the body style (De Morgan) it is drawn in; 1 when absent. */
+  bodyStyle?: number
+  /** S5: fields with a place of their own, by field name (`Reference`, `Value`, `Footprint`, a user field). Absent: the symbol's own places. */
+  fields?: Record<string, FieldPlace>
+  /** S5: the alternate function chosen for a pin, by pin number. */
+  pinAlt?: Record<string, string>
+  /** KiCad's `fields_autoplaced` on the symbol: its fields are laid out by KiCad's rules until one is moved by hand. */
+  fieldsAutoplaced?: true
   pcb: {
     x: number
     y: number
@@ -625,25 +908,126 @@ export interface ComponentInstance {
   nc?: string[]
   /** Footprint attributes and net ties, as a board brought in from KiCad has them (`PartFlags`). */
   flags?: PartFlags
+  /** S9: what each schematic variant changes on this symbol, by the variant's name. */
+  variants?: Record<string, VariantOverride>
   /** The part's reference, value and own text, where a board brought in from KiCad has them (`PartText`); absent for a part drawn in the editor. */
   texts?: PartText[]
   /** Groups inside the footprint, of its own pads, drawings, texts and dimensions (see `PcbGroup`). */
   groups?: PcbGroup[]
   /** The footprint's id in the KiCad board it came from, `Library:Name`, which `${FOOTPRINT_LIBRARY}` and `${FOOTPRINT_NAME}` in text show; absent for a part drawn in the editor, whose footprint name is `footprint`. */
   fpid?: string
+  /**
+   * S1: the use of a sheet this symbol is on, as the path of sheet symbols that lead to it (`/h1/h4`, see `model/sheets.ts`).
+   * Absent: the root sheet. A sheet used twice has its symbols twice, one for each use, each with its own reference and its
+   * own place on the board.
+   */
+  inst?: string
+  /** S1: on a use of a sheet after the first, the symbol of the first use this one is a copy of: editing the sheet edits every copy. */
+  tpl?: string
 }
 
 export interface Wire {
   id: string
+  /** S1: the sheet it is drawn on (`SchematicSheet.id`); absent is the root sheet. Wires, labels and drawings belong to a sheet, which every use of it shares. */
+  sheet?: string
   points: Vec2[]
+  /** S4: the line's own width, dash and colour (`width` in schematic units); absent is the editor's own wire. */
+  look?: Pick<ShapeLook, "width" | "dash" | "color">
+}
+
+/**
+ * S2, S1: the kinds of label. A local label joins the nets of its name on its own sheet, a global one on every sheet, and a
+ * hierarchical one joins its sheet to the pin of its name on the sheet symbol that holds the sheet (`model/sheets.ts`).
+ */
+export type LabelKind = "local" | "global" | "hierarchical"
+
+/** S2: what a label's flag says about its signal, as KiCad has it. */
+export type LabelShape = "input" | "output" | "bidirectional" | "tri_state" | "passive"
+
+/**
+ * S2, S4: how a text on the sheet is set (a label's, a note's, a table cell's). Every field absent is
+ * the editor's own text; sizes are in schematic units.
+ */
+export interface TextLook {
+  /** Text height; absent is the editor's own text size. */
+  size?: number
+  /** The stroke the letters are drawn with. */
+  thickness?: number
+  bold?: true
+  italic?: true
+  /** `#rrggbb` or `rgba(r,g,b,a)`; absent is the sheet's ink. */
+  color?: string
+  /** A font by name, which the editor does not have (it draws its own): kept, and said in the report. */
+  face?: string
+  /** Justification as KiCad has it; absent is centred. */
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+  /** KiCad's `mirror` justification: the text is drawn reversed. */
+  mirror?: true
+  /** A hyperlink the text carries. */
+  href?: string
+  /** `(hide yes)`: the text is there and not drawn. */
+  hidden?: true
+  /** KiCad's `line_spacing` (a factor of the text height). */
+  lineSpacing?: number
+}
+
+/** S2: a field of a label (a global label's intersheet references, or any other property it has), with the place and look KiCad gave it. */
+export interface LabelField {
+  name: string
+  value: string
+  place: FieldPlace
 }
 
 export interface NetLabel {
   id: string
+  /** S1: the sheet it is drawn on; absent is the root sheet. */
+  sheet?: string
   name: string
   x: number
   y: number
   rot: Rotation
+  /**
+   * S2: `local` joins the nets of its name on its own sheet and names the net `/NAME`, `global` joins them
+   * on every sheet and names the net as it is written. A label with no kind is the editor's own, which is
+   * KiCad's local label once a project names its nets as KiCad does (`Project.netNames`).
+   */
+  kind?: LabelKind
+  /** S2: a global or hierarchical label's flag shape. */
+  shape?: LabelShape
+  /** S2: size, style, justification and colour of the label's text. */
+  look?: TextLook
+  /** S2: the label's other fields (a global label's `Intersheetrefs`). */
+  fields?: LabelField[]
+  /** S2: KiCad's `fields_autoplaced`. */
+  fieldsAutoplaced?: true
+}
+
+// ---------- S4: the strokes, fills and cells a KiCad sheet draws with ----------
+
+/** A line's own look, in schematic units: KiCad's `(stroke ...)`; absent is the editor's own line. */
+export type SheetStroke = Pick<ShapeLook, "width" | "dash" | "color">
+
+/** How a box or shape is filled: KiCad's `(fill (type ...) (color ...))`; absent is none. */
+export interface SheetFill {
+  kind: FillKind
+  color?: string
+}
+
+/** One cell of a table: its own place and size on the sheet, as KiCad gives them, and how many columns and rows it spans. */
+export interface TableCell {
+  text: string
+  x: number
+  y: number
+  w: number
+  h: number
+  rot: Rotation
+  colSpan: number
+  rowSpan: number
+  margins?: [number, number, number, number]
+  look?: TextLook
+  fill?: SheetFill
+  excludeFromSim?: true
 }
 
 export interface Trace {
@@ -789,8 +1173,6 @@ export interface BoardStack {
   dielectricConstraints?: boolean
   /** `edge_connector`: `yes` or `bevelled` (absent or `none` is none). */
   edgeConnector?: "yes" | "bevelled"
-  /** KiCad 6 and 7's `castellated_pads yes`, which KiCad 8 and later read and drop. */
-  castellated?: boolean
 }
 
 export interface StackCopper {
@@ -974,9 +1356,13 @@ export interface PartText extends TextAttrs {
  */
 export interface SchematicBlock {
   id: string
+  /** S1: the use of a sheet it is drawn on (as `ComponentInstance.inst`); absent is the root sheet. A block holds the symbols of one use. */
+  inst?: string
   name: string
   /** Ids of its components. A component is in one block at most. */
   components: string[]
+  /** S4: KiCad's locked group: its parts cannot be moved, turned or deleted on the sheet until it is unlocked. */
+  locked?: true
   /** Set on the OTHER block Tidy makes for parts in no block: it holds loose parts, not a grouping someone chose. Renaming it clears this. */
   leftover?: boolean
   /**
@@ -1004,15 +1390,37 @@ export interface DrawingStyle {
   fill?: DrawingColor
   weight?: LineWeight
   dash?: LineDash
+  /**
+   * What a KiCad file said, exactly: the line's width, dash and colour (and a text's pen and letter
+   * colour). It wins over `color`, `weight` and `dash`; setting one of those in the editor clears it.
+   */
+  stroke?: SheetStroke
+  /** A KiCad file's fill (the outline's colour, the sheet's, or one of its own); it wins over `fill`. */
+  paint?: SheetFill
+  /** KiCad's `exclude_from_sim` on a text, a text box or a table cell. */
+  excludeFromSim?: true
 }
 
-/** A line through its points, or a polygon when closed. Arrowheads go on open lines only. */
+/** A line through its points, or a polygon when closed. Arrowheads go on open lines only. A KiCad polyline is one of these (`stroke`, and `paint` for its fill). */
 export interface DrawingLine extends DrawingStyle {
   id: string
   type: "line"
   points: Vec2[]
   closed?: boolean
   arrows?: "start" | "end" | "both"
+  /**
+   * S8: the polygon is a KiCad rule area. The symbols it covers take its flags (`model/ruleAreas.ts`), and a directive label on its edge
+   * puts the nets inside it in the label's net class. Present only on a closed line.
+   */
+  ruleArea?: RuleAreaMark
+}
+
+/** S8: what a rule area does to the symbols inside it, as KiCad's `(rule_area (dnp yes) (in_bom no) (on_board no) (exclude_from_sim yes) ...)`. Each flag is present only when set. */
+export interface RuleAreaMark {
+  dnp?: true
+  excludeFromBom?: true
+  notOnBoard?: true
+  excludeFromSim?: true
 }
 
 /** A rectangle, by its box: x and y are the lower-left corner (y is up). */
@@ -1028,8 +1436,13 @@ export interface DrawingBox extends DrawingStyle {
 }
 
 /**
- * Free text: a title, a note or a callout, on one or more lines. x and y are the top of its first
- * line: its left end, its middle or its right end as it is aligned. Turned 90° it reads upwards.
+ * Free text: a title, a note or a callout, on one or more lines. x and y are the text's anchor: its
+ * left end, its middle or its right end as it is aligned, and the top of its first line, unless
+ * `valign` says otherwise. Turned 90° it reads upwards.
+ *
+ * A text from a KiCad file always has `valign` (KiCad's own default is the middle, and its lines are 1.5
+ * sizes apart where the editor's are 1.3): that is what tells the two apart, and it is drawn and written
+ * back the way KiCad has it. The fields after `valign` only such a text has.
  */
 export interface DrawingText extends DrawingStyle {
   id: string
@@ -1045,14 +1458,190 @@ export interface DrawingText extends DrawingStyle {
   mono?: boolean
   /** An outline around the text, in its colour, weight and dash. */
   border?: boolean
-  rot?: 0 | 90
+  rot?: Rotation
+  /** Which end of the text's height `y` is: the top (the editor's own), the middle or the bottom (KiCad's justification). */
+  valign?: "top" | "middle" | "bottom"
+  /** KiCad's `mirror` justification: the text is drawn reversed. */
+  mirror?: true
+  /** A hyperlink the text carries. */
+  href?: string
+  /** `(hide yes)`: the text is there and not drawn. */
+  hidden?: true
+  /** A font by name, which the editor does not have (it draws its own): kept, and said in the report. */
+  face?: string
+  /** KiCad's `line_spacing` (a factor of the text height). */
+  lineSpacing?: number
+}
+
+/** A circle by its centre and radius. */
+export interface DrawingCircle extends DrawingStyle {
+  id: string
+  type: "circle"
+  x: number
+  y: number
+  radius: number
+}
+
+/** A circular arc through three points, as KiCad keeps it: from `start` through `mid` to `end`. */
+export interface DrawingArc extends DrawingStyle {
+  id: string
+  type: "arc"
+  start: Vec2
+  mid: Vec2
+  end: Vec2
+}
+
+/** A cubic Bezier curve: two ends and two control points, in order. */
+export interface DrawingCurve extends DrawingStyle {
+  id: string
+  type: "bezier"
+  points: [Vec2, Vec2, Vec2, Vec2]
+}
+
+/** Text in a box. `x`, `y` is the box's corner KiCad calls `at`, `w` and `h` its size along its own turn. */
+export interface DrawingTextBox extends DrawingStyle {
+  id: string
+  type: "textbox"
+  text: string
+  x: number
+  y: number
+  w: number
+  h: number
+  rot: Rotation
+  /** The gap between the box and its text: left, top, right, bottom. */
+  margins?: [number, number, number, number]
+  look?: TextLook
+}
+
+/** A picture on the sheet: a PNG, base64, drawn `scale` times its own size around `x`, `y`. */
+export interface DrawingImage extends DrawingStyle {
+  id: string
+  type: "image"
+  x: number
+  y: number
+  scale: number
+  data: string
+}
+
+/** A table (KiCad 8 on). */
+export interface DrawingTable extends DrawingStyle {
+  id: string
+  type: "table"
+  columns: number
+  columnWidths: number[]
+  rowHeights: number[]
+  cells: TableCell[]
+  border: { external: boolean; header: boolean; stroke?: SheetStroke }
+  separators: { rows: boolean; cols: boolean; stroke?: SheetStroke }
+}
+
+/** A junction dot of its own size and colour. It is drawn where it is, whether or not wires meet there. */
+export interface DrawingJunction extends DrawingStyle {
+  id: string
+  type: "junction"
+  x: number
+  y: number
+  /** The dot's diameter in schematic units; absent is the editor's own dot. */
+  diameter?: number
+  /** `#rrggbb` or `rgba(r,g,b,a)`. */
+  dotColor?: string
+}
+
+/** A no-connect flag that is not on a part's pin (one on a pin is that pin's `nc` mark). */
+export interface DrawingNoConnect extends DrawingStyle {
+  id: string
+  type: "noconnect"
+  x: number
+  y: number
+}
+
+/** S8: the shape at the end of a directive label's pin. */
+export type DirectiveShape = "dot" | "round" | "diamond" | "rectangle"
+
+/**
+ * S8: a directive label (KiCad's `netclass_flag`): a pin with a flag on its end, that is on a wire, a pin or the edge of a rule area at `x`, `y`.
+ * Its fields say what it does: a field named `Netclass` puts the net it is on in that class, and a field named `Component Class` names a
+ * class for the symbols in the rule area it is on (the editor keeps it and writes it back; it uses none).
+ */
+export interface DrawingDirective extends DrawingStyle {
+  id: string
+  type: "directive"
+  /** The label's own text, which KiCad leaves empty. */
+  text: string
+  /** Where the pin is attached (KiCad's `at`). */
+  x: number
+  y: number
+  /** The turn KiCad's `at` has: 0 sends the pin up, 90 left, 180 down, 270 right. */
+  rot: Rotation
+  shape: DirectiveShape
+  /** The pin's length in schematic units (KiCad's `length`). */
+  length: number
+  look?: TextLook
+  /** Every property of the label, with its place and look. */
+  fields: LabelField[]
+  fieldsAutoplaced?: true
 }
 
 /**
- * Lines, shapes and text drawn on the schematic to explain it, as Altium's drawing tools do. They
- * are graphics only: nothing connects to them, and no check reads them.
+ * S3: a bus: a line that carries several nets, which a label of its own names (`D[0..7]`, `{A B}`, see `model/busNames.ts`). It is
+ * a polyline of straight segments, each a KiCad `(bus ...)`; a net joins it only through a bus entry, or by the name of a member.
+ * Its own `stroke` is the line KiCad drew (width 0 is KiCad's default bus width).
  */
-export type SchematicDrawing = DrawingLine | DrawingBox | DrawingText
+export interface DrawingBus extends DrawingStyle {
+  id: string
+  type: "bus"
+  points: Vec2[]
+}
+
+/**
+ * S3: a bus entry, the short diagonal that leaves a bus for a wire: it runs from `x`, `y` to `x + dx`, `y + dy` (y up). A wire
+ * on one end and a bus on the other is the way a net leaves a bus; the net it joins is the member its label names. `toBus` is a
+ * KiCad 5 bus-to-bus entry, which joins two buses instead.
+ */
+export interface DrawingBusEntry extends DrawingStyle {
+  id: string
+  type: "busentry"
+  x: number
+  y: number
+  dx: number
+  dy: number
+  toBus?: true
+}
+
+/** S3: the names a bus alias stands for, and the sheet whose file keeps it (absent is the root's): any sheet's label may use any alias. */
+export interface BusAlias {
+  id: string
+  sheet?: string
+  name: string
+  members: string[]
+}
+
+/**
+ * Lines, shapes and text drawn on the schematic: by hand with the drawing tools, as Altium's do, and
+ * from a KiCad sheet, which also has arcs, curves, circles, text boxes, pictures, tables, junction
+ * dots and no-connect flags of its own. They are graphics only: nothing connects to them (a dot or
+ * flag only draws), and no check reads them, except the buses and bus entries (S3), which join nets
+ * by their members (`model/connectivity.ts`).
+ */
+export type SchematicDrawing = (
+  | DrawingLine
+  | DrawingBox
+  | DrawingText
+  | DrawingCircle
+  | DrawingArc
+  | DrawingCurve
+  | DrawingTextBox
+  | DrawingImage
+  | DrawingTable
+  | DrawingJunction
+  | DrawingNoConnect
+  | DrawingDirective
+  | DrawingBus
+  | DrawingBusEntry
+) & {
+  /** S1: the sheet it is drawn on; absent is the root sheet. */
+  sheet?: string
+}
 
 /** How pads join a pour of their own net: spokes on every pad, spokes on through-hole pads only, or solid. */
 export type ThermalRelief = "relief" | "relief-tht" | "direct"
@@ -1166,6 +1755,13 @@ export interface NetClass {
   nets: string[]
   /** Wildcard patterns (`*` and `?`, or a regular expression) that also put a net in the class, as KiCad's net class patterns do. */
   patterns?: string[]
+  /**
+   * S8: nets a directive label of the schematic puts in the class (`model/directives.ts`): worked out from the labels after every edit of the
+   * schematic, never set by hand, so a label that moves or goes takes its net out of the class. A net listed in `nets` is in the class either way.
+   */
+  labelNets?: string[]
+  /** S8: the class exists only because a directive label names it and the project does not define it (KiCad's implicit class: it sets no size). It goes when no label names it. */
+  implicit?: true
 }
 
 /** What the Default class has that the design rules do not hold: a name and description of its own and sizes that only a class has. */
@@ -1178,6 +1774,75 @@ export interface DefaultNetClass {
   diffPairGap?: number
 }
 
+/**
+ * S1: a sheet of the schematic, drawn once. The root sheet is `ROOT_SHEET` (it needs no entry: a project with no `sheets` is one sheet);
+ * every other is used by one or more sheet symbols (`SheetSymbol`) on a sheet above it. Its wires, labels, drawings and blocks are tagged
+ * with its id (`sheet`), its symbols with the use of it they are on (`ComponentInstance.inst`).
+ */
+export interface SchematicSheet {
+  id: string
+  /**
+   * The file a sheet imported from KiCad was read from, by its name alone (`power.kicad_sch`): the KiCad export writes the sheet back to the same name, so the
+   * history of a KiCad project's files in git stays whole. Never shown or asked for; absent for a sheet made here, which is named after its sheet symbol.
+   */
+  file?: string
+  /** The root's name, which the sheet tree and tabs show (`Main` when absent); a sheet below it is named by the symbol that uses it. */
+  name?: string
+  /** The sheet file's title block (Title, Date, Rev, Company, Comment1...), where it is not the root's, which the project's properties hold. */
+  titleBlock?: { key: string; value: string }[]
+  /**
+   * S11: the sheet is joined by KiCad's rules (a wire end on another wire's side joins only through a junction, a label on a pin on a wire's
+   * side joins the pin alone, points join only where they are exactly the same, to KiCad's 100 nm). Set on a sheet imported from KiCad that has
+   * such a case; absent on every sheet drawn in the editor, which keeps the editor's own rules.
+   */
+  kicadRules?: true
+}
+
+/** S1: a pin of a sheet symbol: where a net leaves the sheet for its parent. Its name is the text of a hierarchical label in the sheet. */
+export interface SheetPin {
+  id: string
+  name: string
+  /** The shape of the flag: the direction of the signal, as a label's shape. */
+  shape: LabelShape
+  x: number
+  y: number
+  /** Which edge of the symbol it is on and which way it points: 0 on the right edge, 90 top, 180 left, 270 bottom. */
+  rot: Rotation
+  /** Size, style and justification of its text. */
+  look?: TextLook
+}
+
+/**
+ * S1: a sheet symbol: the rectangle on a sheet that stands for a use of another sheet, with the pins that join them. Its `id` is
+ * short and is what the paths of a sheet's uses are made of.
+ */
+export interface SheetSymbol {
+  id: string
+  /** The sheet it is drawn on. */
+  sheet: string
+  /** The sheet it stands for. */
+  child: string
+  /** The rectangle, by its lower-left corner and size (y up). */
+  x: number
+  y: number
+  w: number
+  h: number
+  /** The `Sheetname` field: what the sheet is called on the parent. */
+  name: string
+  pins: SheetPin[]
+  /** The other fields and every field's place and look, by name (`Sheetname`, `Sheetfile`, a user field) with its value. */
+  fields?: { name: string; value: string; place: FieldPlace }[]
+  /** Its border and fill; absent is KiCad's default. */
+  stroke?: SheetStroke
+  fill?: SheetFill
+  /** The flags it carries as a symbol does: `dnp`, `excludeFromBom`, `notOnBoard`, `excludeFromSim` (each only when set). */
+  flags?: Pick<PartFlags, "dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromSim">
+  /** S9: what each variant changes on this sheet symbol, by the path of the use of its parent sheet it is drawn on (`` for the root), then the variant's name. */
+  variants?: Record<string, Record<string, VariantOverride>>
+  /** KiCad's `fields_autoplaced`. */
+  fieldsAutoplaced?: true
+}
+
 export interface Project {
   id: string
   name: string
@@ -1187,6 +1852,18 @@ export interface Project {
   components: ComponentInstance[]
   wires: Wire[]
   labels: NetLabel[]
+  /** S1: the sheets of the schematic besides what the root holds, and the sheet symbols that use them. Absent: one sheet. */
+  sheets?: SchematicSheet[]
+  sheetSymbols?: SheetSymbol[]
+  /** S3: the bus aliases of the schematic, in file order; any label may name one inside a bus group (`{USB CLK}`). */
+  busAliases?: BusAlias[]
+  /** S9: the schematic variants (KiCad 10) and the one shown. Absent: no variants. */
+  variants?: ProjectVariants
+  /**
+   * S1: set only on a view of one use of a sheet (`sheetView` in `model/sheets.ts`), whose items are that sheet's alone: the path
+   * of the use it shows. Never stored, never on a project the user has open.
+   */
+  scope?: string
   traces: Trace[]
   vias: Via[]
   zones: Zone[]
@@ -1205,8 +1882,16 @@ export interface Project {
   blocks?: SchematicBlock[]
   /** Lines, shapes and text drawn on the schematic, bottom first. */
   drawings?: SchematicDrawing[]
+  /**
+   * S2: how the project's nets are named. Absent: by the editor's rule (a label's text, `Net-(R1-2)` for the
+   * rest). `kicad`: as KiCad names them, from `/NAME` for a local label to `Net-(R1-Pad2)`, by its driver
+   * priority; `kicad6` is the same with KiCad 6's `Net-(R1-Pad2)` for every unnamed net; `kicad5` is KiCad 5's (a legacy `.sch`): those names, and its order of drivers (a hierarchical label above a local one, a nearer sheet first). Set by the import.
+   */
+  netNames?: "kicad" | "kicad6" | "kicad5"
   /** Parts made for this project that aren't in the library. */
   parts?: CustomPartSpec[]
+  /** S10: the symbol drawings the project's parts use, by key (a hash of the drawing), each stored once. */
+  symbols?: Record<string, SymbolDrawing>
   /**
    * Land patterns neither the library nor the footprinter has, such as those of a board brought
    * in from elsewhere. Components and project parts name them like any other footprint.
@@ -1237,4 +1922,12 @@ export interface Net {
   /** True when the name came from a label or power port. */
   named: boolean
   pins: PinRef[]
+  /**
+   * S2: in a project named as KiCad names its nets, the label that gives the net its name: the text to type
+   * and whether it is a local label (`/NAME`) or a global one (`NAME`). Absent when a power symbol names it
+   * or nothing does.
+   */
+  label?: { text: string; kind: LabelKind }
+  /** S2: the power symbol (or hidden power pin) that gives the net its name: the net it names, and whether it is a local power symbol (`/NAME`). */
+  power?: { text: string; local: boolean }
 }

@@ -1,4 +1,6 @@
 import { TRANSLATED_LAYER_NAMES } from "./graphics"
+import { defaultClassOf, derivedClassNodes } from "./netClassImport"
+import { buildStack } from "./layers"
 import type { KicadBoard } from "./types"
 import { kid, numAt, strAt, type List } from "./sexpr"
 
@@ -24,9 +26,11 @@ export interface Settled {
   derived?: number
 }
 
+const COPPER_ROW = new Set(["signal", "power", "mixed", "jumper"])
+
 const SHAPES = "(?:gr_|footprint>fp_)(?:line|arc|circle|rect|poly|curve|ellipse|ellipse_arc)"
 
-const row = (source: string, how: Settled["how"], reason?: string, scope?: "edge" | "net") => ({ re: new RegExp(`^(?:${source})$`), how, ...(reason ? { reason } : {}), ...(scope ? { scope } : {}) })
+const row = (source: string, how: Settled["how"], reason?: string, scope?: "edge" | "net" | "classes") => ({ re: new RegExp(`^(?:${source})$`), how, ...(reason ? { reason } : {}), ...(scope ? { scope } : {}) })
 
 const ROWS = [
   row("footprint>at", "built"),
@@ -42,11 +46,14 @@ const ROWS = [
   // Dimensions (X11), groups (X12) and reference images (X14) are built. KiCad does not read a KiCad 5 dimension's arrows (`parseDIMENSION`: "no longer saved; no-op"): it draws its own from the points, the height and the arrow length.
   row("dimension>arrow[12][ab]|dimension>arrow[12][ab]>pts|dimension>arrow[12][ab]>pts>xy", "derived", "a KiCad 5 dimension's arrows: KiCad does not read them and draws its own"),
   row("dimension>gr_text>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503), and a dimension's text is a board text"),
-  row("net_class>(?:clearance|trace_width|via_dia|via_drill)", "built"),
-  row("net_class", "derived", "the Default net class's name and description are KiCad's own; its clearance, track width and via size are the design rules, which are imported"),
-  row("net_class>add_net", "derived", "every net that no other class names is in the Default class, so listing them says nothing"),
-  row("net_class>(?:uvia_dia|uvia_drill)", "derived", "the micro via size of the Default class, which applies to nothing on a board with no micro via"),
-  row("layers|layers><layer number>", "derived", "the editor's layers are fixed: two copper layers, mask, silkscreen and the board edge. The copper rows say which layer is front and which is back (by position, whatever they are called)"),
+  // Net classes (X10) are written into `DesignRules` (`netClassImport.ts`): the Default class's four sizes are the rules, every other class is a `NetClass`
+  // with its nets and sizes, and a differential pair rule or a description of the Default class's own is `defaultClass`. What is derived is what says nothing:
+  // a Default class with nothing of its own, the nets listed in the Default class (every net no other class lists is in it), and a micro via size that is
+  // KiCad's own default or the Default class's (`derivedClassNodes` counts them from the board).
+  row("net_class>(?:clearance|trace_width|via_dia|via_drill|diff_pair_width|diff_pair_gap)", "built"),
+  row("net_class", "derived", "the Default net class with nothing of its own: its name and description are KiCad's own, and its clearance, track width and via size are the design rules, which are imported", "classes"),
+  row("net_class>add_net", "derived", "the nets of the Default net class: every net that no other class lists is in it, so listing them says nothing", "classes"),
+  row("net_class>(?:uvia_dia|uvia_drill)", "derived", "a micro via size that is KiCad's own default for the Default class, or the Default class's for another: the class that does not mention it has the same", "classes"),
   // X15 and X13 are built: the flags, the net tie and jumper groups, and the net of each track and via are written into the project.
   row("footprint>attr|footprint>net_tie_pad_groups|footprint>duplicate_pad_numbers_are_jumpers|footprint>jumper_pad_groups(?:><layer number>|>[^>]+)?", "built"),
   row("(?:segment|arc|via)>net", "built"),
@@ -54,18 +61,21 @@ const ROWS = [
   row("(?:gr_text|gr_text_box)>effects>hide", "derived", "KiCad draws a board text whatever the file says: hidden board text is no longer supported (`parsePCB_TEXT` makes it visible, parser line 4503)"),
   // A rule area's placement is X20, and a switched off one is what KiCad 9 writes on every keepout: it places nothing (a switched on one raises X20 and is refused first).
   row("(?:footprint>)?zone>placement(?:>(?:enabled|sheetname|component_class))?", "derived", "a rule area's placement settings, switched off (KiCad 9 writes them on every keepout): they place nothing"),
+  // X1 and X5 are built: what becomes of a pad's copper on layers nothing connects to (`PadDef.unused`) and its own tenting of the mask (`PadDef.tent`) are written into the project.
+  row("footprint>pad>(?:remove_unused_layers|keep_end_layers)", "built"),
+  row("footprint>pad>tenting(?:>(?:front|back))?", "built"),
   row("footprint>pad>layers", "derived", "the layers a pad is on are what the editor draws for its type and side (copper, mask, and paste on surface-mount pads); a pad whose layers differ needs X7"),
   row("footprint>pad>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)|footprint>(?:solder_mask_margin|solder_paste_margin|solder_paste_margin_ratio|clearance)", "derived", "a zero margin or clearance in a file up to stamp 20240201 means no setting (KiCad reads it as inherit)"),
 ]
 
 /** What the builder does with an `extend` node whose extension the board does not need, from its path alone. */
-export function settledFor(path: string, counts?: { edge?: ReadonlyMap<string, number>; net?: ReadonlyMap<string, number> }): Settled | null {
+export function settledFor(path: string, counts?: { edge?: ReadonlyMap<string, number>; net?: ReadonlyMap<string, number>; classes?: ReadonlyMap<string, number> }): Settled | null {
   const p = path.replace(/^module(?=$|>)/, "footprint")
   for (const r of ROWS) {
     if (!r.re.test(p)) continue
     if (r.how !== "derived") return { how: r.how }
     // Derived for the drawings on the board's edge only: with no count to say how many, it is for none of them.
-    if ("scope" in r) return { how: "derived", reason: r.reason, derived: (r.scope === "edge" ? counts?.edge : counts?.net)?.get(path) ?? 0 }
+    if ("scope" in r) return { how: "derived", reason: r.reason, derived: (r.scope === "edge" ? counts?.edge : r.scope === "net" ? counts?.net : counts?.classes)?.get(path) ?? 0 }
     return { how: r.how, reason: r.reason }
   }
   return null
@@ -105,8 +115,6 @@ function shapeNodeCounts(board: KicadBoard, pick: (layer: string | undefined, co
   return out
 }
 
-const DEFAULT_CLASS_NOTE = "This is the default net class."
-
 /** KiCad's default for a `setup` setting a board states. */
 function settleSetup(c: List, board: KicadBoard): string | null {
   const name = c[0] as string
@@ -118,7 +126,7 @@ function settleSetup(c: List, board: KicadBoard): string | null {
       return word === "no" ? "KiCad's default (no)" : null
     case "uvias_allowed":
     case "blind_buried_vias_allowed":
-      return word === "no" || noMicro ? "a permission for vias the board does not have" : null
+      return noMicro ? "a permission for vias the board does not have" : null
     case "solder_mask_min_width":
     case "pad_to_paste_clearance_ratio":
     case "clearance_min":
@@ -139,11 +147,8 @@ function settleSetup(c: List, board: KicadBoard): string | null {
     case "filling":
       return c.slice(1).every((x) => (Array.isArray(x) ? x.slice(1).every((y) => y === "no" || y === "none") : x === "no" || x === "none")) ? "via protection switched off" : null
     case "tenting": {
-      // Both sides tented is `DesignRules.tentVias`, which is the editor's default; KiCad 7 writes `(tenting front back)`, KiCad 8 `(tenting (front yes) (back yes))`.
-      const sides = c.slice(1)
-      const front = sides.includes("front") || strAt(kid(c, "front"), 1) === "yes"
-      const back = sides.includes("back") || strAt(kid(c, "back"), 1) === "yes"
-      return front && back && board.vias.every((v) => v.kind === "through") ? "both sides tented, which is the editor's default" : null
+      // Both sides tented is `DesignRules.tentVias`, which is the editor's default; any other is written (`tentSides`). KiCad 7 writes `(tenting front back)`, KiCad 8 `(tenting (front yes) (back yes))`.
+      return board.tenting?.front && board.tenting.back ? "both sides tented, which is the editor's default" : null
     }
     default:
       return null
@@ -166,14 +171,22 @@ export function netClassIsPlain(board: KicadBoard): boolean {
   if (board.netClasses.length === 0) return true
   if (board.netClasses.length > 1) return false
   const c = board.netClasses[0]
-  return c.name === "Default" && (c.description === "" || c.description === DEFAULT_CLASS_NOTE)
+  return c.name === "Default" && !defaultClassOf(c)
 }
 
 /** The path-and-board settle function the accounting uses. */
 export function settleFor(board: KicadBoard): (path: string) => Settled | null {
   const setup = settledSetup(board)
-  const counts = { edge: edgeNodeCounts(board), net: ignoredNetCounts(board) }
+  const counts = { edge: edgeNodeCounts(board), net: ignoredNetCounts(board), classes: derivedClassNodes(board) }
+  const rows = board.layers.filter((l) => COPPER_ROW.has(l.type))
+  const plainStack = buildStack(board) === undefined
   return (path) => {
+    // X1: the layer table is the board's copper layers (their order, names and types) and the fixed layers of the editor. The copper rows are written into the project's stack when it has one.
+    if (path === "layers") return plainStack ? { how: "derived", reason: "the editor's layers are fixed: two copper layers, mask, silkscreen and the board edge. The copper rows say which layer is front and which is back (by position, whatever they are called)" } : { how: "built" }
+    if (path === "layers><layer number>") {
+      const derived = board.layers.length - (plainStack ? 0 : rows.length)
+      return derived <= 0 ? { how: "built" } : { how: "derived", reason: plainStack ? "the editor's layers are fixed: two copper layers, mask, silkscreen and the board edge. The copper rows say which layer is front and which is back (by position, whatever they are called)" : "a layer that is not copper: the editor's layers for mask, paste, silkscreen, fabrication and drawings are fixed", derived }
+    }
     const reason = setup.get(path.replace(/^(setup>[^>]+).*$/, "$1"))
     if (path.startsWith("setup>") && reason) return { how: "derived", reason }
     return settledFor(path, counts)

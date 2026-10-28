@@ -1,5 +1,6 @@
 import { pointOnSegment } from "../lib/geometry"
 import { SegmentIndex } from "./connectivity"
+import { onSideExact, pkx } from "./kicadJoin"
 import { BusTooLarge, parseBusName, type AliasLookup, type BusName } from "./busNames"
 import type { BusAlias, DrawingBus, DrawingBusEntry, SheetSymbol, NetLabel, Project, Vec2, Wire } from "./types"
 import { sheetIdOf } from "./sheets"
@@ -65,16 +66,24 @@ export function aliasLookup(aliases: readonly BusAlias[] | undefined): AliasLook
 
 const DRIVER_RANK: Record<BusItem["kind"], number> = { global: 7, local: 4, hierarchical: 3, pin: 2 }
 
+/**
+ * Whether the point is on a segment: within the editor's tolerance, or (a sheet joined by KiCad's rules, S11) at KiCad's integer points, `kicadJoin.ts`:
+ * the same points the wires of that sheet are told apart by, so a bus and a wire that meet at one place meet in one place.
+ */
+function onLine(exact: boolean, p: Vec2, a: Vec2, b: Vec2): boolean {
+  return exact ? onSideExact(p, a, b) || pkx(p) === pkx(a) || pkx(p) === pkx(b) : pointOnSegment(p, a, b)
+}
+
 /** Whether any segment of the list passes through the point. */
-function touches(index: SegmentIndex, list: { points: Vec2[] }[], p: Vec2): boolean {
-  for (const [wi, segs] of index.near(p)) for (const i of segs) if (pointOnSegment(p, list[wi].points[i], list[wi].points[i + 1])) return true
+function touches(index: SegmentIndex, list: { points: Vec2[] }[], p: Vec2, exact = false): boolean {
+  for (const [wi, segs] of index.near(p)) for (const i of segs) if (onLine(exact, p, list[wi].points[i], list[wi].points[i + 1])) return true
   return false
 }
 
 /** Every segment of the list through the point, by the list's index. */
-function through(index: SegmentIndex, list: { points: Vec2[] }[], p: Vec2): number[] {
+function through(index: SegmentIndex, list: { points: Vec2[] }[], p: Vec2, exact = false): number[] {
   const out: number[] = []
-  for (const [wi, segs] of index.near(p)) if (segs.some((i) => pointOnSegment(p, list[wi].points[i], list[wi].points[i + 1]))) out.push(wi)
+  for (const [wi, segs] of index.near(p)) if (segs.some((i) => onLine(exact, p, list[wi].points[i], list[wi].points[i + 1]))) out.push(wi)
   return out
 }
 
@@ -89,7 +98,8 @@ export function mayHaveBuses(project: Pick<Project, "drawings" | "busAliases" | 
 
 /**
  * The buses of one sheet. A label or sheet pin whose name is a bus and that touches no wire names a bus (one that touches a bus line, or
- * nothing at all); a bus name on a wire is a net's name, as the editor has always taken it.
+ * nothing at all); a bus name on a wire is a net's name, as the editor has always taken it. With `exact` (a sheet joined by KiCad's rules, S11) the
+ * places are KiCad's integer points, and the end of a bus line on the side of another joins it only where a junction is, as for wires.
  */
 export function analyzeSheet(
   project: Pick<Project, "drawings">,
@@ -98,6 +108,7 @@ export function analyzeSheet(
   labels: readonly NetLabel[],
   symbols: readonly SheetSymbol[],
   aliases: AliasLookup | undefined,
+  exact = false,
 ): SheetBuses {
   const lines: DrawingBus[] = []
   const entryDrawings: DrawingBusEntry[] = []
@@ -111,7 +122,7 @@ export function analyzeSheet(
 
   // Which labels and pins name a bus.
   const items: BusItem[] = []
-  const bare = (p: Vec2) => (busIndex && touches(busIndex, lines, p)) || !(wireIndex && touches(wireIndex, wires as Wire[], p))
+  const bare = (p: Vec2) => (busIndex && touches(busIndex, lines, p, exact)) || !(wireIndex && touches(wireIndex, wires as Wire[], p, exact))
   const parse = (text: string): BusName | null => {
     try {
       return parseBusName(text, aliases)
@@ -153,19 +164,29 @@ export function analyzeSheet(
     if (ra !== rb) parent.set(ra, rb)
   }
   lines.forEach((l) => find(`l:${l.id}`))
+  const junctionAt = new Set<string>()
+  if (exact) for (const d of project.drawings ?? []) if (d.type === "junction" && sheetIdOf(d) === sheet) junctionAt.add(pkx({ x: d.x, y: d.y }))
+  const joinsAt = (p: Vec2, line: DrawingBus) => junctionAt.has(pkx(p)) || line.points.some((q) => pkx(q) === pkx(p))
   if (busIndex) {
     lines.forEach((l, li) => {
       // A line's ends on another line (an end on the other's side joins it, as a wire's does).
-      for (const end of [l.points[0], l.points[l.points.length - 1]]) for (const oi of through(busIndex, lines, end)) if (oi !== li) union(`l:${l.id}`, `l:${lines[oi].id}`)
+      for (const end of [l.points[0], l.points[l.points.length - 1]]) {
+        for (const oi of through(busIndex, lines, end, exact)) {
+          if (oi === li) continue
+          // KiCad's rules: an end on the other's side joins only at a junction (an end on an end joins as it is).
+          if (exact && !joinsAt(end, lines[oi])) continue
+          union(`l:${l.id}`, `l:${lines[oi].id}`)
+        }
+      }
     })
     for (const e of entryDrawings) {
       if (!e.toBus) continue
       find(`e:${e.id}`)
-      for (const end of [{ x: e.x, y: e.y }, { x: e.x + e.dx, y: e.y + e.dy }]) for (const oi of through(busIndex, lines, end)) union(`e:${e.id}`, `l:${lines[oi].id}`)
+      for (const end of [{ x: e.x, y: e.y }, { x: e.x + e.dx, y: e.y + e.dy }]) for (const oi of through(busIndex, lines, end, exact)) union(`e:${e.id}`, `l:${lines[oi].id}`)
     }
     items.forEach((it, i) => {
       find(`i:${i}`)
-      for (const oi of through(busIndex, lines, it.at)) union(`i:${i}`, `l:${lines[oi].id}`)
+      for (const oi of through(busIndex, lines, it.at, exact)) union(`i:${i}`, `l:${lines[oi].id}`)
     })
   } else items.forEach((_, i) => find(`i:${i}`))
 
@@ -200,7 +221,7 @@ export function analyzeSheet(
   for (const e of entryDrawings) {
     if (e.toBus) continue
     const ends = [{ x: e.x, y: e.y }, { x: e.x + e.dx, y: e.y + e.dy }]
-    const hits = ends.map((p) => (busIndex ? through(busIndex, lines, p) : []))
+    const hits = ends.map((p) => (busIndex ? through(busIndex, lines, p, exact) : []))
     const busIdx = hits.findIndex((h) => h.length > 0)
     const group = busIdx >= 0 ? groupOf.get(find(`l:${lines[hits[busIdx][0]].id}`))! : -1
     entries.push({ id: e.id, ends: [ends[0], ends[1]], onBus: [hits[0].length > 0, hits[1].length > 0], group })

@@ -34,7 +34,16 @@ export interface ImportOptions {
 }
 
 export type KicadImportResult =
-  | { status: "imported"; project: Project; report: ImportReport; board: KicadBoard; bytes: number; files: KeptFile[] }
+  | {
+      status: "imported"
+      project: Project
+      report: ImportReport
+      board: KicadBoard
+      bytes: number
+      files: KeptFile[]
+      /** The component each footprint became, by its index in `board.footprints` (`BuildResult.footprintComponents`). */
+      footprintComponents: Map<number, string>
+    }
   | {
       status: "refused"
       /** `unreadable`: not a board; `unsupported`: needs an extension not built; `too-large`: over the project limit; `unknown`: the file has a node or value the importer does not know; `inexact`: the generated project does not match the file. */
@@ -102,7 +111,7 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
     report.entries.push({ code: "too-large", severity: "refused", object: "the project", why: message })
     return { status: "refused", reason: "too-large", message, report, needs: missing, board }
   }
-  return { status: "imported", project: result.project, report, board, bytes, files: result.files }
+  return { status: "imported", project: result.project, report, board, bytes, files: result.files, footprintComponents: result.footprintComponents }
 }
 
 /** KiCad 6 and later keep the design rules in the project file beside the board, which a board alone does not have. */

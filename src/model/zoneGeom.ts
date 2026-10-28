@@ -1,5 +1,6 @@
 import { Clipper, EndType, FillRule, JoinType, type Path64, type Paths64 } from "@countertype/clipper2-ts"
 import { slotEnds, type WorldPad } from "./instances"
+import { holeCentre } from "./padDistance"
 import { outlineGeometry } from "./outline"
 import { flattenPath, shapePolylines, shapeRings } from "./shapes"
 import type { CopperItem } from "./pcb"
@@ -62,16 +63,56 @@ export function padShape(pad: WorldPad): Paths64 {
     const b = horizontal ? { x: pad.x + half, y: pad.y } : { x: pad.x, y: pad.y + half }
     return stroke([a, b], r)
   }
+  // X7: a custom pad of several rings (a hole in it, or pieces) is every ring counted even-odd, and a rectangle may have rounded corners.
+  if (pad.rings && pad.rings.length > 1) return Clipper.union(pad.rings.map(ring), [], FillRule.EvenOdd)
   if (pad.shape === "polygon" && pad.points && pad.points.length >= 3) return [upright(ring(pad.points))]
+  if (pad.corner) return [roundedRectPath(pad.x, pad.y, pad.width, pad.height, pad.corner)]
   return [rectPath(pad.x, pad.y, pad.width, pad.height)]
 }
+
+/** A level rectangle with rounded corners, each corner within `ARC_MM` of the circle. */
+function roundedRectPath(cx: number, cy: number, w: number, h: number, r: number): Path64 {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2))
+  const steps = rr <= ARC_MM ? 1 : Math.max(2, Math.ceil(Math.PI / 2 / (2 * Math.acos(1 - ARC_MM / rr))))
+  const path: Path64 = []
+  const corners: [number, number, number][] = [
+    [cx + w / 2 - rr, cy - h / 2 + rr, -Math.PI / 2],
+    [cx + w / 2 - rr, cy + h / 2 - rr, 0],
+    [cx - w / 2 + rr, cy + h / 2 - rr, Math.PI / 2],
+    [cx - w / 2 + rr, cy - h / 2 + rr, Math.PI],
+  ]
+  for (const [x, y, start] of corners) for (let i = 0; i <= steps; i++) path.push(pt(x + Math.cos(start + (i / steps) * (Math.PI / 2)) * rr, y + Math.sin(start + (i / steps) * (Math.PI / 2)) * rr))
+  return path
+}
+
+/** The convex hull of a custom pad's outline, for a pad whose pour clearance follows it (KiCad's `clearance convexhull`). */
+export function padHullShape(pad: WorldPad): Paths64 {
+  const pts = (pad.rings ?? (pad.points ? [pad.points] : [])).flat().map((p) => pt(p.x, p.y))
+  if (pts.length < 3) return padShape(pad)
+  pts.sort((a, b) => a.x - b.x || a.y - b.y)
+  const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+  const half = (list: typeof pts) => {
+    const out: typeof pts = []
+    for (const p of list) {
+      while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop()
+      out.push(p)
+    }
+    out.pop()
+    return out
+  }
+  return [[...half(pts), ...half([...pts].reverse())]]
+}
+
+/** A pad as an obstacle grown by `d`: its copper, or its hull when the pad's clearance follows that. */
+export const padObstacle = (pad: WorldPad, d: number): Paths64 => inflate(pad.hull ? padHullShape(pad) : padShape(pad), d)
 
 /** The drilled hole of a pad as a shape, or null for a pad with none: a circle, or a slot as a stroke between its two ends. */
 export function holeShape(pad: WorldPad): Paths64 | null {
   if (!pad.holeDiameter) return null
   const ends = slotEnds(pad)
   if (ends) return stroke([ends[0], ends[1]], pad.holeDiameter / 2)
-  return [circlePath(pad.x, pad.y, pad.holeDiameter / 2)]
+  const at = holeCentre(pad)
+  return [circlePath(at.x, at.y, pad.holeDiameter / 2)]
 }
 
 /** A copper drawing or a copper text, grown by `d`: its outline stroked with half its width plus `d`, and what a filled one covers. */

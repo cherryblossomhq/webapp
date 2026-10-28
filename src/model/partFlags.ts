@@ -1,7 +1,18 @@
+import { withoutCopperOf } from "./boardCopper"
+import { isPhysical, unitGroup } from "./instances"
+import { findPart } from "./library"
 import type { ComponentInstance, PartFlags, Project } from "./types"
 
 // What a footprint's KiCad attributes do in the editor (`ComponentInstance.flags`). A part with no
 // flags, which is every part drawn here, is in the BOM and the position file and has no net ties.
+
+/**
+ * Whether the part is on the board: a part with a footprint, unless its symbol says `on_board no`.
+ * Everything that draws, plots, drills or places a board part asks this.
+ */
+export function onBoard(c: Pick<ComponentInstance, "partId" | "flags">): boolean {
+  return !c.flags?.notOnBoard && isPhysical(findPart(c.partId))
+}
 
 /**
  * Whether the part is in the BOM: not virtual, not excluded, not do-not-populate. Board only (no
@@ -13,10 +24,10 @@ export function inBom(c: Pick<ComponentInstance, "flags">): boolean {
   return !f || !(f.virtual || f.excludeFromBom || f.dnp)
 }
 
-/** Whether the part is in the position (pick and place) file: not virtual, not excluded, not do-not-populate. */
-export function inPositionFile(c: Pick<ComponentInstance, "flags">): boolean {
+/** Whether the part is in the position (pick and place) file: on the board, and not virtual, not excluded, not do-not-populate. */
+export function inPositionFile(c: Pick<ComponentInstance, "partId" | "flags">): boolean {
   const f = c.flags
-  return !f || !(f.virtual || f.excludeFromPos || f.dnp)
+  return onBoard(c) && (!f || !(f.virtual || f.excludeFromPos || f.dnp))
 }
 
 /** The flags a part has, in words for a person or for Sakura: "do not populate, not in the BOM". Empty for none. */
@@ -28,6 +39,8 @@ export function flagWords(flags: PartFlags | undefined): string[] {
   if (flags.dnp) out.push("do not populate")
   if (flags.excludeFromBom) out.push("not in the BOM")
   if (flags.excludeFromPos) out.push("not in the position file")
+  if (flags.notOnBoard) out.push("not on the board")
+  if (flags.excludeFromSim) out.push("left out of simulation")
   if (flags.boardOnly) out.push("board only")
   if (flags.allowMissingCourtyard) out.push("missing courtyard allowed")
   if (flags.allowMaskBridges) out.push("mask bridges allowed")
@@ -41,7 +54,7 @@ export function cleanFlags(flags: unknown): PartFlags | undefined {
   const f = flags as Record<string, unknown>
   const out: PartFlags = {}
   if (f.mount === "smd" || f.mount === "through_hole") out.mount = f.mount
-  for (const key of ["virtual", "excludeFromBom", "excludeFromPos", "boardOnly", "dnp", "allowMissingCourtyard", "allowMaskBridges", "jumperDuplicates"] as const) {
+  for (const key of ["virtual", "excludeFromBom", "excludeFromPos", "notOnBoard", "excludeFromSim", "boardOnly", "dnp", "allowMissingCourtyard", "allowMaskBridges", "jumperDuplicates"] as const) {
     if (f[key] === true) out[key] = true
   }
   const groups = (g: unknown) =>
@@ -83,18 +96,27 @@ export function netTieGroups(c: Pick<ComponentInstance, "flags">): Set<string>[]
   return (c.flags?.netTies ?? []).map((g) => new Set(g))
 }
 
-/** The part with its flags changed: the keys of `patch` are set (`false` or undefined clears one), the rest stay. */
+/**
+ * The part with its flags changed: the keys of `patch` are set (`false` or undefined clears one), the rest stay.
+ * The flags are the part's, so every unit of a part that has several carries them. A part that leaves the board
+ * takes its copper with it: the unlocked traces and vias that touch its pads go, as they do when a part is moved away.
+ */
 export function setFlags(project: Project, id: string, patch: { [K in keyof PartFlags]?: PartFlags[K] | false }): Project {
-  return {
+  const part = project.components.find((c) => c.id === id)
+  if (!part) return project
+  const group = new Set(unitGroup(project, part).map((c) => c.id))
+  const changed: Project = {
     ...project,
     updatedAt: Date.now(),
     components: project.components.map((c) => {
-      if (c.id !== id) return c
+      if (!group.has(c.id)) return c
       const flags = cleanFlags({ ...c.flags, ...patch })
       const { flags: _old, ...rest } = c
       return flags ? { ...rest, flags } : rest
     }),
   }
+  const leaving = patch.notOnBoard === true ? project.components.filter((c) => group.has(c.id) && onBoard(c)) : []
+  return leaving.length ? withoutCopperOf(changed, leaving) : changed
 }
 
 /**

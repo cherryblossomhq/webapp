@@ -1,4 +1,7 @@
-import { isOnBoard } from "../model/instances"
+import { isHierarchical, sheetUses, useAt } from "../model/sheets"
+import { resolvedComponents } from "../model/ruleAreas"
+import { shownProject } from "../store/sheetScope"
+import { preloadImages } from "../store/imageFiles"
 import type { Project } from "../model/types"
 import { lookRenderer, type Board3dView, type LookImage, type LookRenderer } from "./vision/encode"
 import { frame, matchAspect, type FrameRequest } from "./vision/framing"
@@ -7,6 +10,7 @@ import { describePcb, describeSchematic, measurePcb, measureSchematic, pcbProble
 import { DEFAULT_PCB_EXTRAS, PCB_EXTRAS, pcbSvg, type PcbExtra, type PcbSide } from "./vision/pcbSvg"
 import { schematicSvg } from "./vision/schematicSvg"
 import { fail, ok, type ToolContext, type ToolInput, type ToolSpec } from "./toolKit"
+import { onBoard } from "../model/partFlags"
 
 // `look`: a picture of the schematic, the PCB or the 3D board for the model, drawn off screen
 // (nothing the user is looking at moves), with the numbers beside it. Models act on a number far
@@ -78,7 +82,7 @@ function pcbKey(side: PcbSide, extras: ReadonlySet<PcbExtra>) {
 }
 
 async function look3d(project: Project, input: ToolInput, ctx: ToolContext): Promise<Looked> {
-  if (!project.components.some((c) => c.pcb.placed && isOnBoard(c))) {
+  if (!resolvedComponents(project).some((c) => c.pcb.placed && onBoard(c))) {
     throw new Error("Nothing is placed on the PCB yet, so the 3D board is empty. Run layout_pcb first.")
   }
   const side = (input.side as PcbSide | undefined) ?? "both"
@@ -93,7 +97,9 @@ async function look3d(project: Project, input: ToolInput, ctx: ToolContext): Pro
   return { text: lines.join("\n"), image, problems: pcbProblems(m), target: "3d", what: "the whole board" }
 }
 
-async function lookFlat(project: Project, target: "schematic" | "pcb", input: ToolInput, ctx: ToolContext): Promise<Looked> {
+async function lookFlat(whole: Project, target: "schematic" | "pcb", input: ToolInput, ctx: ToolContext): Promise<Looked> {
+  // A design with sheets: the schematic is the sheet the editor shows (the picture says which); the PCB is the whole board.
+  const project = target === "schematic" && isHierarchical(whole) ? shownProject(whole) : whole
   const framed = frame(project, target, frameRequest(input), ctx.selection?.() ?? [])
   const size = fitSize((framed.box.maxX - framed.box.minX) / (framed.box.maxY - framed.box.minY), input.detail === "high" ? "high" : "normal")
   const box = matchAspect(framed.box, size.width / size.height)
@@ -109,6 +115,8 @@ async function lookFlat(project: Project, target: "schematic" | "pcb", input: To
     problems = schematicProblems(m)
   } else {
     const m = measurePcb(project)
+    // A board's reference images are read from the file store first, so the picture has them (a board with none waits for nothing).
+    if (project.images?.length) await preloadImages(project)
     const side = (input.side as PcbSide | undefined) ?? "both"
     const wanted = refList(input.layers)
     const extras = new Set<PcbExtra>(wanted ? wanted.filter((l): l is PcbExtra => (PCB_EXTRAS as string[]).includes(l)) : DEFAULT_PCB_EXTRAS)
@@ -118,7 +126,7 @@ async function lookFlat(project: Project, target: "schematic" | "pcb", input: To
     problems = pcbProblems(m)
   }
   const { image, note } = await makeImage((r) => r.svg(svg, size, MAX_IMAGE_BYTES), ctx.signal)
-  const lines = [header(framed.what, target === "schematic" ? "The schematic" : "The PCB", image), ...numbers, key]
+  const lines = [header(framed.what, target === "schematic" ? "The schematic" : "The PCB", image), ...(target === "schematic" && project !== whole ? [`This is the sheet ${useAt(whole, project.scope ?? "").human} of ${sheetUses(whole).length}; the editor shows it, and get_design lists the others.`] : []), ...numbers, key]
   if (framed.problem) lines.push(framed.problem)
   if (note) lines.push(note)
   return { text: lines.join("\n"), image, problems, target, what: framed.what }

@@ -114,7 +114,7 @@ describe("max_error (KiCad's largest gap between a polygon and the circle it sta
 })
 
 describe("a pour keeps a net class's clearance from its nets' copper", () => {
-  it("a zone with no clearance of its own is pulled back further from copper of a class that wants more; one with its own clearance is not", () => {
+  it("a zone is pulled back further from copper of a class that wants more than its own clearance, and a zone's own larger clearance is kept (KiCad max's the two)", () => {
     const base = built("regulator")
     const zoneNet = base.zones[0].net
     const conn = computeConnectivity(base)
@@ -126,10 +126,15 @@ describe("a pour keeps a net class's clearance from its nets' copper", () => {
     // the Default class's clearance, which is the rules', adds nothing to the pour's own
     const defaulted = withRules(base, { netClasses: [cls("Same", { nets: [other.name] })] })
     expect(area(defaulted)).toBeCloseTo(flat, 6)
-    // a zone that sets its own clearance keeps it: a local override wins over classes
+    // a zone that sets its own clearance is still pulled back to the class's when that is larger (KiCad max's a zone's local clearance with the class value: drc_engine.cpp)
     const own: Project = { ...classed, zones: classed.zones.map((z) => ({ ...z, clearance: base.rules.pourClearance })) }
     const ownFlat: Project = { ...base, zones: base.zones.map((z) => ({ ...z, clearance: base.rules.pourClearance })) }
-    expect(area(own)).toBeCloseTo(area(ownFlat), 6)
+    expect(area(own)).toBeLessThan(area(ownFlat))
+    expect(area(own)).toBeCloseTo(area(classed), 6)
+    // and one whose own clearance is larger than the class's keeps its own
+    const wide: Project = { ...classed, zones: classed.zones.map((z) => ({ ...z, clearance: 3 })) }
+    const wideFlat: Project = { ...base, zones: base.zones.map((z) => ({ ...z, clearance: 3 })) }
+    expect(area(wide)).toBeCloseTo(area(wideFlat), 6)
   })
 })
 
@@ -232,19 +237,19 @@ describe("the fabrication notes list what a fab needs", () => {
   })
 })
 
-describe("project file version 7 (X10): net classes and their rules", () => {
+describe("project file (X10): net classes and their rules", () => {
   const v4doc = {
     format: PROJECT_FILE_FORMAT,
-    version: 4,
-    project: { name: "v4", description: "", components: [], wires: [], labels: [], rules: { clearance: 0.3, traceWidth: 0.3, netWidths: { VCC: 0.8 } } },
+    version: 2,
+    project: { name: "v2", description: "", components: [], wires: [], labels: [], rules: { clearance: 0.3, traceWidth: 0.3, netWidths: { VCC: 0.8 } } },
   }
-  it("opens a version 4 document with no classes, and keeps what it had", () => {
+  it("opens a version 2 document with no classes, and keeps what it had", () => {
     const read = parseProjectFile(v4doc, { id: "p" })
     expect(read.rules.netWidths).toEqual({ VCC: 0.8 })
     expect(read.rules).not.toHaveProperty("netClasses")
     expect(migrateProjectFile(v4doc)).toEqual({ ...v4doc.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(10)
+    expect(PROJECT_FILE_VERSION).toBe(3)
     // no field of X10 is written for a project that has none
     const written = JSON.parse(serializeProject(read)).project.rules
     for (const k of ["netClasses", "defaultClass", "viaSizes", "diffPairSizes", "minViaDrill", "minClearance", "maskMinWidth", "pasteRatio", "maxError", "maskBridgesInParts"]) expect(written).not.toHaveProperty(k)
@@ -275,9 +280,9 @@ describe("project file version 7 (X10): net classes and their rules", () => {
     // and a second round trip changes nothing, whatever order the fields were built in
     expect(serializeProject(parseProjectFile(serializeProject(back), { id: "p" }))).toBe(serializeProject(back))
   })
-  it("a reader of version 6 would refuse this file, which is what keeps a class from being dropped", () => {
+  it("writes the current version, so a class is not dropped by an older reader", () => {
     const text = JSON.parse(serializeProject(parseProjectFile(v4doc, { id: "p" })))
-    expect(text.version).toBeGreaterThan(6)
+    expect(text.version).toBe(PROJECT_FILE_VERSION)
   })
 })
 

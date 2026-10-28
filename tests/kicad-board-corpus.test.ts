@@ -18,6 +18,15 @@ import { importedZone, zoneOracle } from "./kicad-census/zones.mjs"
 import { packZones } from "../src/model/zoneCodec"
 import { checkGraphics, roundTripOk } from "./kicad-graphics-check"
 import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
+import { checkX10 } from "./kicad-x10-check"
+import { arcLength, layersOracle } from "./kicad-census/layers.mjs"
+import { checkLayers } from "./kicad-layers-check"
+import { autoroute } from "../src/model/autoroute"
+import { analyzePcb } from "../src/model/pcb"
+import { componentFootprint } from "../src/model/instances"
+import type { Project } from "../src/model/types"
+import { checkDimensions } from "./kicad-dimensions-check"
+import { checkPads } from "./kicad-x7-check"
 import { fontFromGlyphStrings, loadFontFile } from "./kicad-census/texts.mjs"
 import glyphsBase from "../src/lib/kicadFont/glyphsBase"
 import glyphsCjk from "../src/lib/kicadFont/glyphsCjk"
@@ -89,6 +98,9 @@ const CORPUS = process.env.KICAD_CORPUS
 const CENSUS = process.env.KICAD_CENSUS ?? (CORPUS ? join(CORPUS, "census") : "")
 const OUT = process.env.KICAD_CORPUS_OUT ?? join(tmpdir(), "kicad-board-corpus")
 const LIMIT = Number(process.env.KICAD_LIMIT ?? 0)
+/** How many boards with net classes are routed from nothing to time the router and check it against the classes (KICAD_ROUTE_SAMPLE, 8 by default). */
+const ROUTE_SAMPLE = Number(process.env.KICAD_ROUTE_SAMPLE ?? 8)
+let ROUTED = 0
 const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
 // KiCad's stroke font is shipped (`src/lib/kicadFont`) and loaded for the run: the strokes of every Nth board's texts (KICAD_INK_EVERY, 4 by default;
 // 1 for all) are laid out by the importer's engine with it and by the oracle's own layout with the oracle's own decoding of the same glyph strings, and compared.
@@ -207,6 +219,35 @@ interface Row {
   textsInkWrong: number
   /** The texts survive the stored form. */
   textsRoundTrip: boolean
+  /** Slice X10: the file's net classes (other than Default) and the rules of setup against the project's `DesignRules`, by the oracle (`kicad-x10-check.ts`). */
+  x10Classes: number
+  x10Wrong: string[]
+  x10Nets: number
+  x10NetsSkipped: number
+  /** The file has net classes beyond Default, or any rule of X10. */
+  x10Uses: boolean
+  /** Slice X1, X4, X5: layers, stackup, arc tracks, via kinds and spans, padstacks, against the oracle (`kicad-layers-check.ts`). */
+  layersUse: boolean
+  layersCopper: number
+  layersArcs: number
+  layersPartialVias: number
+  layersPadstacks: number
+  layersWrong: string[]
+  /** A board with classes, routed from nothing with its project's rules: milliseconds, connections left, and the clearance errors it has beyond the board's pads. */
+  x10Route: { ms: number; routed: number; remaining: number; pads: number; classes: number; extraClearance: number } | null
+  /** Slice X7: every pad of the project against the oracle's reading of the raw file: its copper as a distance field, layers, margins, hole and number. */
+  x7Pads: number
+  x7Wrong: number
+  x7Samples: number
+  x7Notes: string[]
+  x7Features: Record<string, number>
+  /** The board objects slice: dimensions (what each draws and says, against an oracle), groups, images and the stored form. */
+  dims: Record<string, number>
+  dimsWrong: number
+  groupsWrong: number
+  imagesWrong: number
+  boardObjectsRoundTrip: boolean
+  dimNotes: string
   /** An imported board, end to end: it saves and loads the same, its Gerbers, drill, BOM, position file and notes generate, and run_checks runs ("" when it is not imported). */
   endToEnd: string
   /** The 3D models of the board: held, and not held by reason. */
@@ -340,6 +381,29 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           textsByOrder: 0,
           textsInkWrong: 0,
           textsRoundTrip: true,
+          x10Classes: 0,
+          x10Wrong: [],
+          x10Nets: 0,
+          x10NetsSkipped: 0,
+          x10Uses: false,
+          layersUse: false,
+          layersCopper: 0,
+          layersArcs: 0,
+          layersPartialVias: 0,
+          layersPadstacks: 0,
+          layersWrong: [],
+          x10Route: null,
+          x7Pads: 0,
+          x7Wrong: 0,
+          x7Samples: 0,
+          x7Notes: [],
+          x7Features: {},
+          dims: {},
+          dimsWrong: 0,
+          groupsWrong: 0,
+          imagesWrong: 0,
+          boardObjectsRoundTrip: true,
+          dimNotes: "",
           endToEnd: "",
           modelsKept: 0,
           modelsDropped: {},
@@ -524,12 +588,15 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               continue
             }
             for (let j = 0; j < world.length; j++) {
-              // a trapezoid is placed by the middle of its outline, which is not its pad's position
+              // a trapezoid is placed by the middle of its outline, which is not its pad's place; a custom pad is its anchor's, held with its drawings (compared as a distance field below)
               if (f.pads[j].shape === "trapezoid") continue
               compared++
               if (turned) row.turnedPads++
-              if (!near(world[j].x, f.pads[j].x) || !near(world[j].y, -f.pads[j].y)) {
-                if (!fail) row.notes.push(`${comp.ref} pad ${j}: project (${world[j].x}, ${world[j].y}), file (${f.pads[j].x}, ${-f.pads[j].y}), footprint at ${f.angle}${f.bottom ? " bottom" : ""}`)
+              // the copper's centre (a hole drilled off the pad's place moves it); a non-plated hole with no copper round it is held as its hole, at the pad's place
+              const noRing = world[j].plated === false && !world[j].ring
+              const at = noRing ? { x: f.pads[j].x, y: f.pads[j].y } : { x: f.pads[j].cx, y: f.pads[j].cy }
+              if (!near(world[j].x, at.x) || !near(world[j].y, -at.y)) {
+                if (!fail) row.notes.push(`${comp.ref} pad ${j}: project (${world[j].x}, ${world[j].y}), file (${at.x}, ${-at.y}), footprint at ${f.angle}${f.bottom ? " bottom" : ""}`)
                 fail = true
               }
               // the outline's extent, for the pads whose shape the project draws as the file does: quarter angles, no custom shape
@@ -538,7 +605,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               const own = (((f.pads[j].angle - f.angle) / 90) % 1 + 1) % 1
               const quarter = own < 1e-6 || own > 1 - 1e-6
               const hole = world[j].plated === false
-              if (box && quarter && !hole && ["rect", "oval", "circle"].includes(f.pads[j].shape)) {
+              // (a rounded rectangle off the board's axes has a box smaller than its square corners'; the X7 check below compares its real outline)
+              const roundedOffAxis = f.pads[j].shape === "roundrect" && Math.abs((((f.pads[j].angle % 90) + 90) % 90)) > 1e-6 && Math.abs((((f.pads[j].angle % 90) + 90) % 90) - 90) > 1e-6
+              if (box && quarter && !hole && !roundedOffAxis && ["rect", "oval", "circle", "roundrect"].includes(f.pads[j].shape) && f.pads[j].detail.eff === f.pads[j].shape) {
                 row.boxChecked++
                 if (turned) row.turnedBoxes++
                 if (!near(world[j].width, box.w) || !near(world[j].height, box.h)) {
@@ -548,6 +617,14 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               }
             }
           }
+          // ---- slice X7: every pad against the raw file, as a distance field, with its layers, settings, hole and number ----
+          const x7 = checkPads(o, built.project)
+          row.x7Pads = x7.pads
+          row.x7Wrong = x7.wrong
+          row.x7Samples = x7.samples
+          row.x7Notes = x7.notes
+          row.x7Features = x7.features
+          if (x7.wrong) row.notes.push(`pads: ${x7.notes[0]}`)
           row.buildRefusals = [...new Set(forced.entries.filter((e) => e.severity === "refused").map((e) => e.code))]
           for (const code of row.buildRefusals) row.notes.push(`${code}: ${forced.entries.find((e) => e.code === code)!.why.slice(0, 200)}`)
           // nets, pad by pad: every numbered pad of a part with a reference of its own is on the project net that stands for the net the
@@ -560,10 +637,13 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           for (const comp of built.project.components) {
             const f = o.find((q) => q.ref === comp.ref)
             if (!f || byRef.get(f.ref) !== 1) continue
-            for (const p of f.pads) {
-              if (!p.number || p.type === "np_thru_hole") continue
+            const land = componentFootprint(comp)
+            for (let j = 0; j < f.pads.length; j++) {
+              const p = f.pads[j]
+              // the pin the project puts this pad on (a pad of a number shared with others on other nets has a pin of its own; a pad with no number that has a net, too)
+              const pin = land?.pads[j]?.pin ?? null
               row.netPadsChecked++
-              const got = pinNet.get(pinKey(comp.id, p.number))
+              const got = pin === null ? undefined : pinNet.get(pinKey(comp.id, pin))
               let bad = false
               if (p.net === null) bad = got !== undefined
               else if (got === undefined) bad = true
@@ -614,8 +694,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           for (const comp of built.project.components) {
             const f = o.find((q) => q.ref === comp.ref)
             if (!f || byRef.get(f.ref) !== 1) continue
-            const numbers = [...new Set(f.pads.filter((p) => p.number && p.type !== "np_thru_hole").map((p) => p.number))]
-            const expected = numbers.filter((n) => !f.pads.some((p) => p.number === n && p.net !== null)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
+            const land = componentFootprint(comp)
+            const pins = [...new Set((land?.pads ?? []).flatMap((q) => (q.pin ? [q.pin] : [])))]
+            const expected = pins.filter((n) => !f.pads.some((p, j) => land!.pads[j].pin === n && p.net !== null)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
             row.ncChecked++
             row.ncPins += comp.nc?.length ?? 0
             if (JSON.stringify(comp.nc ?? []) !== JSON.stringify(expected)) {
@@ -625,13 +706,15 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           }
           // copper: per net, the track length and the via count, and the locked lengths, project against file. A net's name in the project is the label text of its raw name.
           if (cu.segments.length + cu.vias.length > 0) {
+            // tracks on the copper layers the file's own table lists (a track on a layer it lacks, or on a drawing layer, is a refusal and is not built)
+            const copperNames = new Set((layersOracle(Buffer.from(data).toString("utf8"))?.copper ?? []).map((r: { name: string }) => r.name))
             // (a board whose pads of one number sit on two nets has two raw names on one project net, which says nothing about a label)
             const text = (raw: string | null) => (raw === null ? "" : ((wrong === 0 ? projectOf.get(raw)?.slice(4) : undefined) ?? decodeNetName(raw).trim()))
             const fileLen = new Map<string, number>()
             const fileVias = new Map<string, number>()
             let fileLocked = 0
             for (const s of cu.segments) {
-              if (s.layer !== board.copper.front && s.layer !== board.copper.back) continue
+              if (!copperNames.has(s.layer)) continue
               fileLen.set(text(s.net), (fileLen.get(text(s.net)) ?? 0) + s.length)
               if (s.locked) fileLocked += s.length
             }
@@ -641,7 +724,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
             let projLocked = 0
             for (const t of built.project.traces) {
               let len = 0
-              for (let i = 1; i < t.points.length; i++) len += Math.hypot(t.points[i].x - t.points[i - 1].x, t.points[i].y - t.points[i - 1].y)
+              if (t.arc && t.points.length === 3) len = arcLength([t.points[0].x, t.points[0].y], [t.points[1].x, t.points[1].y], [t.points[2].x, t.points[2].y])
+              else for (let i = 1; i < t.points.length; i++) len += Math.hypot(t.points[i].x - t.points[i - 1].x, t.points[i].y - t.points[i - 1].y)
               projLen.set(t.net ?? "", (projLen.get(t.net ?? "") ?? 0) + len)
               if (t.locked) projLocked += len
             }
@@ -695,6 +779,45 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           row.edgeDropped = edge.dropped
           row.outlineHeld = built.project.board.outline ? (built.project.board.outline.paths.length ? (built.project.board.outline.paths.every((p) => p.closed) ? "outline" : "open") : "missing") : "rectangle"
           if (edge.note) row.notes.push(edge.note)
+          // ---- slice X1, X4, X5: layers, arcs, via kinds and padstacks, against the raw file ----
+          const layers = checkLayers(text, built.project, row.status === "imported" ? built.lossy : ["not imported"])
+          row.layersUse = layers.uses
+          row.layersCopper = layers.copper
+          row.layersArcs = layers.arcs
+          row.layersPartialVias = layers.partialVias
+          row.layersPadstacks = layers.padstacks
+          row.layersWrong = layers.wrong
+          if (layers.wrong.length) row.notes.push(`layers: ${layers.wrong.slice(0, 3).join("; ")}`)
+          // ---- slice X10: net classes and design rules, against the raw file ----
+          const x10 = checkX10(text, built.project, built.lossy)
+          row.x10Classes = x10.classes
+          row.x10Wrong = x10.wrong
+          row.x10Nets = x10.netsChecked
+          row.x10NetsSkipped = x10.netsSkipped
+          row.x10Uses = x10.uses
+          if (x10.wrong.length) row.notes.push(`x10: ${x10.wrong.slice(0, 3).join("; ")}`)
+          // timing and consistency of the router on a board with classes: some of the smaller ones are routed from nothing with their own rules
+          if (x10.classes > 0 && ROUTED < ROUTE_SAMPLE && row.pads_total <= 400 && !built.lossy.length) {
+            ROUTED++
+            const clear: Project = { ...built.project, traces: [], vias: [], zones: [] }
+            const count = (p: Project) => analyzePcb(p, computeConnectivity(p)).violations.filter((v) => v.kind === "clearance").length
+            const before = count(clear)
+            const t = performance.now()
+            const res = autoroute(clear, { timeLimitMs: 30_000 })
+            const ms = performance.now() - t
+            row.x10Route = { ms, routed: res.routed, remaining: res.remaining, pads: row.pads_total, classes: x10.classes + 1, extraClearance: Math.max(0, count(res.project) - before) }
+          }
+          // ---- the board objects slice: dimensions, groups and reference images, against the raw file ----
+          const bo = checkDimensions(text, built.project, oracleFont, built.lossy)
+          row.dims = { file: bo.file, project: bo.project, inFootprints: bo.inFootprints, legacy: bo.legacy, arrowsComparable: bo.arrowsComparable, arrowsSame: bo.arrowsSame, barSame: bo.barSame, featureSame: bo.featureSame, texts: bo.texts, groupsFile: bo.groupsFile, groupsProject: bo.groupsProject, partGroupsFile: bo.partGroupsFile, partGroupsProject: bo.partGroupsProject, imagesFile: bo.imagesFile, imagesProject: bo.imagesProject }
+          row.dimsWrong = bo.wrong + (bo.counts ? 0 : 1)
+          row.groupsWrong = bo.groupsWrong
+          row.imagesWrong = bo.imagesWrong
+          row.boardObjectsRoundTrip = bo.roundTrip
+          row.dimNotes = bo.note ?? ""
+          if (bo.note) row.notes.push(`board objects: ${bo.note}`)
+          // a KiCad 5 dimension whose cached arrows are KiCad's own length: every one is among the lines drawn
+          if (bo.arrowsSame !== bo.arrowsComparable) row.dimsWrong++
           // ---- X3: the zones of the file against the project's, setting by setting (oracle), and the stored form ----
           const zset = checkZoneSettings(text, built.project)
           row.zonesFile = zoneOracle(text).zones.filter(importedZone).length
@@ -721,7 +844,7 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
             const p = imported.project
             const problems: string[] = []
             const back = parseProjectFile(serializeProject(p), { id: p.id })
-            for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "zones", "board", "rules", "properties"] as const) {
+            for (const k of ["components", "texts", "graphics", "footprints", "traces", "vias", "labels", "wires", "board", "rules", "properties", "zones", "dimensions", "groups", "images"] as const) {
               if (!isDeepStrictEqual(back[k], p[k])) problems.push(`${k} differ after a save and a load`)
             }
             // An outline that does not close, or that crosses itself, cannot be cut out: the Gerber and drill exports refuse it with a message.
@@ -780,8 +903,17 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(rows.filter((r) => !r.gfxCounts || r.gfxWrong > 0 || !r.gfxRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("drawings"))}`)).toEqual([])
       // slice 1b-iii: every text object of the file is in the project, on its layer, with its place, size, angle, justification and content, to 0.001 mm; the texts survive the stored form; an imported board is whole end to end
       expect(rows.filter((r) => !r.textsCounts || r.textsWrong > 0 || r.textsInkWrong > 0 || !r.textsRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("texts"))}`)).toEqual([])
+      // slice X7: every pad of the file is in the project as the file's own rules draw it, on its layers, with its settings, hole and number
+      expect(rows.filter((r) => r.x7Wrong > 0).map((r) => `${r.file}: ${r.x7Notes.slice(0, 2).join(" | ")}`)).toEqual([])
       // slice 2c-i: every piece the file draws on Edge.Cuts is on the project's outline and the other way round, to 0.001 mm
       expect(rows.filter((r) => r.edgeWrong > 0).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("outline"))}`)).toEqual([])
+      // slices X1, X4, X5: layers, stackup, arcs, via kinds and spans and padstacks are what the file has (oracle)
+      expect(rows.filter((r) => r.layersWrong.length).map((r) => `${r.file}: ${r.layersWrong.slice(0, 3).join("; ")}`)).toEqual([])
+      // slice X10: every net class and rule of the file is in the project, and every net is in the class the file puts it in; the router adds no clearance error on a board with classes
+      expect(rows.filter((r) => r.x10Wrong.length).map((r) => `${r.file}: ${r.x10Wrong.slice(0, 3).join("; ")}`)).toEqual([])
+      expect(rows.filter((r) => r.x10Route && r.x10Route.extraClearance > 0).map((r) => `${r.file}: ${r.x10Route!.extraClearance} clearance errors beyond the pads'`)).toEqual([])
+      // the board objects slice: every dimension draws and says what the oracle says, every group holds what KiCad resolves, every image is as the file has it, and all survive the stored form
+      expect(rows.filter((r) => r.dimsWrong > 0 || r.groupsWrong > 0 || r.imagesWrong > 0 || !r.boardObjectsRoundTrip).map((r) => `${r.file}: ${r.dimNotes}`)).toEqual([])
       expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
       // X3: every zone of the file is in the project with its outline, layers, net and settings (oracle), the stored form gives them back, and on every board that imports the editor's fill is KiCad's within the measured bounds
       expect(rows.filter((r) => r.zonesWrong > 0 || !r.zoneRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("zones"))}`)).toEqual([])
@@ -811,8 +943,9 @@ function summarize(rows: Row[], seconds: number): string {
     ["pad positions within 0.001 mm (oracle)", (r) => r.pads],
     ["project pad positions within 0.001 mm", (r) => r.padsProject !== "fail"],
     ["project nets equal the file's (internal check)", (r) => r.netsProject !== "fail"],
-    ["project pads on the oracle's nets, pad by pad (a board that needs X7 for pads of one number may differ)", (r) => r.netPadsWrong === 0 || r.needsActual.includes("X7")],
+    ["project pads on the oracle's nets, pad by pad (pads of one number on two nets, and pads with no number that carry a net, have a pin each)", (r) => r.netPadsWrong === 0],
     ["project pad outlines within 0.001 mm of the oracle's", (r) => r.boxWrong === 0],
+    ["every pad's copper, layers, margins, hole and number equal the file's by its own rules (X7 oracle)", (r) => r.x7Wrong === 0],
     ["flags and net ties equal the file's, footprint by footprint (oracle)", (r) => r.flagsWrong === 0],
     ["no-connect pins are the pins the file gives no net, footprint by footprint (oracle)", (r) => r.ncWrong === 0],
     ["track length, via count and locked length per net equal the file's (oracle)", (r) => r.copperNets !== "fail" && r.copperLocked],
@@ -830,6 +963,12 @@ function summarize(rows: Row[], seconds: number): string {
     ["texts: strokes equal the oracle's layout with KiCad's font (boards sampled)", (r) => r.textsInkWrong === 0],
     ["texts: a save and a load give the same texts in memory (stored form)", (r) => r.textsRoundTrip],
     ["outline: every piece of the file's Edge.Cuts is on the project's outline, and the other way round, to 0.001 mm (oracle; repairs counted)", (r) => r.edgeWrong === 0],
+    ["layers, stackup, arc tracks, via kinds and padstacks: what the file has is in the project (oracle)", (r) => r.layersWrong.length === 0],
+    ["net classes and rules: every class, size, net and rule of the file is in the project, and every net is in the file's class for it (oracle)", (r) => r.x10Wrong.length === 0],
+    ["dimensions: every one draws (lines, circles, arrows) and says (text, place, angle) what the oracle derives from KiCad's rules", (r) => r.dimsWrong === 0],
+    ["groups: every group holds what KiCad resolves for it, nested ones included, and the groups inside parts are as many", (r) => r.groupsWrong === 0],
+    ["reference images: place, layer, scale, size, resolution and bytes as the file has them", (r) => r.imagesWrong === 0],
+    ["dimensions, groups and images: a save and a load give the same in memory (stored form)", (r) => r.boardObjectsRoundTrip],
     ["zones: every zone of the file in the project with its outline, layers, net and settings (oracle)", (r) => r.zonesWrong === 0],
     ["zones: a save and a load give the same zones in memory (stored form)", (r) => r.zoneRoundTrip],
     ["no crash", (r) => r.status !== "CRASH"],
@@ -843,6 +982,9 @@ function summarize(rows: Row[], seconds: number): string {
   lines.push(`outcome of the importer: ${[...status].map(([k, v]) => `${k} ${v}`).join(", ")}`)
   const refusalCodes = new Map<string, number>()
   for (const r of board) for (const c of r.buildRefusals) refusalCodes.set(c, (refusalCodes.get(c) ?? 0) + 1)
+  const feat: Record<string, number> = {}
+  for (const r of board) for (const [k, v] of Object.entries(r.x7Features)) feat[k] = (feat[k] ?? 0) + v
+  lines.push(`X7: pads checked against the oracle's reading of the file: ${board.reduce((n, r) => n + r.x7Pads, 0)}, wrong: ${board.reduce((n, r) => n + r.x7Wrong, 0)} (on ${count(board, (r) => r.x7Wrong > 0)} boards); points of the board compared with a pad's copper: ${board.reduce((n, r) => n + r.x7Samples, 0)}; by feature: ${Object.entries(feat).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k} ${v}`).join(", ")}`)
   lines.push(`pads checked against the oracle's nets: ${board.reduce((n, r) => n + r.netPadsChecked, 0)}, wrong: ${board.reduce((n, r) => n + r.netPadsWrong, 0)} (on boards that need no X7: ${board.filter((r) => !r.needsActual.includes("X7")).reduce((n, r) => n + r.netPadsWrong, 0)}); pad outlines checked: ${board.reduce((n, r) => n + r.boxChecked, 0)}, wrong: ${board.reduce((n, r) => n + r.boxWrong, 0)}`)
   lines.push(`boards whose project build raised a refusal: ${[...refusalCodes].map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`)
   lines.push(
@@ -884,8 +1026,19 @@ function summarize(rows: Row[], seconds: number): string {
   const importedReal = board.filter((r) => r.status === "imported" && ["pcbench", "github", "kicad-demos"].includes(r.group))
   lines.push(`real boards that import now: ${importedReal.length} of ${board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group)).length}; all boards: ${count(board, (r) => r.status === "imported")} of ${board.length}`)
   lines.push(`text strokes laid out against the oracle with KiCad's font: ${board.reduce((n, r) => n + r.textsInk, 0)} texts on ${count(board, (r) => r.textsInk > 0)} boards, ${board.reduce((n, r) => n + r.textsInkWrong, 0)} differ`)
+  const sum = (k: string) => board.reduce((n, r) => n + (r.dims[k] ?? 0), 0)
+  lines.push(`dimensions: ${sum("file")} in the files on ${count(board, (r) => (r.dims.file ?? 0) > 0)} boards, ${sum("project")} in the projects, ${sum("texts")} with text compared; ${board.reduce((n, r) => n + r.dimsWrong, 0)} differ from the oracle; ${sum("inFootprints")} more inside footprints (X26, refused)`)
+  lines.push(`KiCad 5 dimensions: ${sum("legacy")}; cached arrows of KiCad's own length ${sum("arrowsComparable")}, all among the lines drawn: ${sum("arrowsSame")}; cached crossbar ends drawn: ${sum("barSame")}; cached feature lines starting at the points and running the same way: ${sum("featureSame")}`)
+  lines.push(`groups: ${sum("groupsFile")} in the files (as KiCad resolves them) on ${count(board, (r) => (r.dims.groupsFile ?? 0) > 0)} boards, ${sum("groupsProject")} in the projects; inside parts ${sum("partGroupsFile")} and ${sum("partGroupsProject")}; ${board.reduce((n, r) => n + r.groupsWrong, 0)} differ; reference images ${sum("imagesFile")} in the files, ${sum("imagesProject")} in the projects, ${board.reduce((n, r) => n + r.imagesWrong, 0)} differ`)
   const imported = board.filter((r) => r.status === "imported")
-  lines.push(`imported boards end to end (save and load, Gerbers, drill, BOM, position file, notes, run_checks): ${count(imported, (r) => r.endToEnd === "ok")}/${imported.length} ok; of them ${count(imported, (r) => r.outlineRefused)} have an outline that does not close or is missing, and the Gerber export refuses them with the message, as it should`)
+  const layered = board.filter((r) => r.layersUse)
+  lines.push(`layers (X1, X4, X5): ${layered.length} boards use more than two copper layers, an arc track, a blind, buried or micro via, or a padstack; ${count(board, (r) => r.layersCopper > 2)} have more than two copper layers (most ${Math.max(0, ...board.map((r) => r.layersCopper))}), ${board.reduce((n, r) => n + r.layersArcs, 0)} arc tracks, ${board.reduce((n, r) => n + r.layersPartialVias, 0)} vias that are not through vias, ${board.reduce((n, r) => n + r.layersPadstacks, 0)} pads with a padstack; ${board.reduce((n, r) => n + r.layersWrong.length, 0)} differences`)
+  const classed = board.filter((r) => r.x10Classes > 0)
+  lines.push(`net classes (X10): ${classed.length} boards have a class beyond Default (${board.reduce((n, r) => n + r.x10Classes, 0)} classes), ${count(board, (r) => r.x10Uses)} use a class or a rule of X10; ${board.reduce((n, r) => n + r.x10Nets, 0)} nets looked up in the project's classes against the file's lists (${board.reduce((n, r) => n + r.x10NetsSkipped, 0)} not compared: a name two nets share); ${board.reduce((n, r) => n + r.x10Wrong.length, 0)} differences`)
+  const routed = board.filter((r) => r.x10Route)
+  if (routed.length) lines.push(`router on boards with classes, routed from nothing (${routed.length}): ${routed.map((r) => `${r.file.split("/").slice(-2).join("/")} ${r.x10Route!.pads} pads, ${r.x10Route!.classes} classes, ${(r.x10Route!.ms / 1000).toFixed(1)} s, ${r.x10Route!.routed} routed, ${r.x10Route!.remaining} open, ${r.x10Route!.extraClearance} new clearance errors`).join("; ")}`)
+  lines.push(`imported (the real gate, X10 built): ${imported.length} boards, ${imported.filter((r) => r.group !== "kicad-qa").length} outside KiCad's own folder (${imported.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group)).length} real: pcbench, github and demos); with a class beyond Default: ${imported.filter((r) => r.x10Classes > 0).length}`)
+  lines.push(`imported boards end to end (save and load, Gerbers, drill, BOM, position file, notes, run_checks): ${count(imported, (r) => r.endToEnd === "ok")}/${imported.length} ok; of them ${count(imported, (r) => r.outlineRefused)} have an outline that does not close, is missing or crosses itself, and the Gerber export refuses them with the message, as it should`)
   lines.push(`pins whose KiCad type was folded into a role: ${board.reduce((n, r) => n + r.foldedPins, 0)} on ${count(board, (r) => r.foldedPins > 0)} boards; single-pad nets accepted in Checks: ${board.reduce((n, r) => n + r.loneLabels, 0)} on ${count(board, (r) => r.loneLabels > 0)} boards`)
   const realRows = board.filter((r) => ["pcbench", "github", "kicad-demos"].includes(r.group))
   const exts = [...new Set(board.flatMap((r) => [...r.censusNeeds, ...r.needsActual]))].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))

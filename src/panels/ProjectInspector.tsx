@@ -1,4 +1,5 @@
 import { ChevronDown, Plus, Trash2 } from "lucide-react"
+import { resolvedComponents } from "../model/ruleAreas"
 import { useMemo, useState } from "react"
 import { uid } from "../lib/id"
 import { Shell } from "../kicadImport/KicadImportDialog"
@@ -8,7 +9,7 @@ import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTIN
 import { boardAreaMm2, describeOutline } from "../model/outline"
 import { resetOutline } from "../model/outlineOps"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
-import { isPhysical, valueText } from "../model/instances"
+import { valueText } from "../model/instances"
 import { classIndex, classNameOf, hasNetClasses } from "../model/netClasses"
 import { findPart } from "../model/library"
 import { netTraceWidth } from "../model/ops"
@@ -23,6 +24,7 @@ import {
   THERMAL_RELIEF_OPTIONS,
   zoneClearance,
 } from "../model/rules"
+import { copperLayers, layerLabel } from "../model/stack"
 import { removeStitching, STITCH_PITCHES, stitchCount, stitchPitch, stitchVias } from "../model/stitch"
 import type { CopperLayer, CopperWeight, DesignRules, Project, SurfaceFinish } from "../model/types"
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
@@ -32,10 +34,21 @@ import { isWholeBoardPour, keepoutFlags } from "../model/zones"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
 import { NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
+import { onBoard } from "../model/partFlags"
+import { LayersSection } from "./LayersSection"
+import { VariantsSection } from "./VariantPanels"
 
 const commitProject = (fn: (p: Project) => Project) => projectApi().commit((p) => ({ ...fn(p), updatedAt: Date.now() }))
 const setBoard = (patch: Partial<Project["board"]>) => commitProject((p) => ({ ...p, board: { ...p.board, ...patch } }))
-const setRules = (patch: Partial<DesignRules>) => commitProject((p) => ({ ...p, rules: { ...p.rules, ...patch } }))
+const setRules = (patch: Partial<DesignRules>) =>
+  commitProject((p) => {
+    const rules: DesignRules = { ...p.rules, ...patch }
+    // A field set to undefined is a field cleared.
+    for (const k of Object.keys(patch) as (keyof DesignRules)[]) if (patch[k] === undefined) delete rules[k]
+    return { ...p, rules }
+  })
+/** The via tenting rule for each side: one for both sides is `tentVias` alone, any other is the sides as well. */
+const tentRule = (t: { front: boolean; back: boolean }): Partial<DesignRules> => (t.front === t.back ? { tentVias: t.front, tentSides: undefined } : { tentVias: false, tentSides: t })
 
 export function ProjectInspector({ project }: { project: Project }) {
   const imported = importedNoConnectCount(project)
@@ -50,8 +63,10 @@ export function ProjectInspector({ project }: { project: Project }) {
         </Section>
       )}
       <PropertiesSection project={project} />
+      <VariantsSection project={project} />
       <KicadReportSection projectId={project.id} />
       <BoardSection project={project} />
+      <LayersSection project={project} />
       <RulesSection project={project} />
       <PoursSection project={project} />
       <NetsSection project={project} />
@@ -67,7 +82,7 @@ function ProjectSection({ project }: { project: Project }) {
   const stats = useMemo(() => {
     const conn = getConnectivity(project)
     const pcb = getLiveAnalysis(project)
-    const parts = project.components.filter((c) => isPhysical(findPart(c.partId)))
+    const parts = resolvedComponents(project).filter((c) => onBoard(c))
     const placed = new Set(parts.filter((c) => c.pcb.placed).map((c) => c.id))
     const lines = new Set(parts.map((c) => JSON.stringify([c.partId, valueText(c, findPart(c.partId)), c.footprint, c.props.mpn ?? ""])))
     // A net with n placed pins needs n - 1 connections; the ratsnest is the ones still open.
@@ -308,13 +323,13 @@ function Stackup({ project }: { project: Project }) {
   const layers = boardStackup(project.board)
   const open = useUi((s) => !s.folded["stackup"])
   const unit = useLengthUnit()
-  const swatch = { silk: boardColors(project.board).silk, mask: boardColors(project.board).mask, copper: "#c8803c", core: "#8f8358" }
+  const swatch = { silk: boardColors(project.board).silk, mask: boardColors(project.board).mask, paste: "#b9bcc4", copper: "#c8803c", core: "#8f8358" }
   return (
     <div>
       <button type="button" className="flex w-full items-center justify-between text-[12px] text-ink-2 hover:text-ink" aria-expanded={open} onClick={() => uiApi().toggleFolded("stackup")}>
         <span>Stackup</span>
         <span className="flex items-center gap-1 text-ink-3">
-          2 layers, {project.board.thickness} mm
+          {copperLayers(project.board).length} layers, {project.board.thickness} mm
           <ChevronDown size={13} className={`transition-transform ${open ? "" : "-rotate-90"}`} />
         </span>
       </button>
@@ -518,8 +533,23 @@ function RulesSection({ project }: { project: Project }) {
           />
         </RuleRow>
         <RuleRow label="Tent vias" hint="Cover vias with solder mask; untented vias are left open like pads">
-          <Switch label="Tent vias" checked={r.tentVias} onChange={(tentVias) => setRules({ tentVias })} />
+          <Switch label="Tent vias" checked={r.tentVias} onChange={(tentVias) => setRules({ tentVias, tentSides: undefined })} />
         </RuleRow>
+        {(r.tentSides || project.board.stack !== undefined) && (
+          <>
+            <RuleRow label="Tent the front" hint="The rule for vias on the front side; a via can say its own">
+              <Switch label="Tent the front" checked={r.tentSides ? r.tentSides.front : r.tentVias} onChange={(front) => setRules(tentRule({ front, back: r.tentSides ? r.tentSides.back : r.tentVias }))} />
+            </RuleRow>
+            <RuleRow label="Tent the back" hint="The rule for vias on the back side; a via can say its own">
+              <Switch label="Tent the back" checked={r.tentSides ? r.tentSides.back : r.tentVias} onChange={(back) => setRules(tentRule({ front: r.tentSides ? r.tentSides.front : r.tentVias, back }))} />
+            </RuleRow>
+          </>
+        )}
+        {project.vias.some((v) => v.kind === "micro") || r.minMicroVia ? (
+          <RuleRow label="Smallest micro via" hint="KiCad's minimum micro via diameter and drill, which Checks holds micro vias to">
+            <span className="mono text-[12.5px] text-ink-2">{r.minMicroVia ? `${r.minMicroVia.diameter} / ${r.minMicroVia.drill} mm` : "not set"}</span>
+          </RuleRow>
+        ) : null}
       </RuleGroup>
 
       <RuleGroup title="Copper pours">
@@ -569,7 +599,6 @@ function RulesSection({ project }: { project: Project }) {
   )
 }
 
-const LAYER_LABEL: Record<CopperLayer, string> = { top: "Top", bottom: "Bottom" }
 
 function PoursSection({ project }: { project: Project }) {
   useFillTick((s) => s.tick)
@@ -599,7 +628,7 @@ function PoursSection({ project }: { project: Project }) {
                 <span className={`text-[12.5px] ${z.outline ? "cursor-pointer" : ""}`} onClick={z.outline ? () => uiApi().select([`z:${z.id}`]) : undefined}>
                   <span className="mono text-ink">{z.keepout ? "Keepout" : z.net || "No net"}</span>
                   {z.name && <span className="text-ink-2"> {z.name}</span>}
-                  <span className="text-ink-2"> on {(z.layers ?? [z.layer]).map((l) => LAYER_LABEL[l].toLowerCase()).join(" and ")}</span>
+                  <span className="text-ink-2"> on {(z.layers ?? [z.layer]).map((l) => layerLabel(project.board, l).toLowerCase()).join(" and ")}</span>
                   {z.outline && <span className="text-ink-3">, {z.keepout ? "keeps out " + (keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join(", ") || "nothing") : "polygon"}</span>}
                   {z.clearance !== undefined && <span className="text-ink-3">, {formatLength(zoneClearance(project, z.clearance), unit, true)} gap</span>}
                   {empty && !z.keepout && <span className="text-warn"> (no copper to fill)</span>}
@@ -624,15 +653,13 @@ function PoursSection({ project }: { project: Project }) {
               </option>
             ))}
           </select>
-          <Segmented<CopperLayer>
-            size="sm"
-            value={layer}
-            onChange={setLayer}
-            options={[
-              { value: "top", label: "Top" },
-              { value: "bottom", label: "Bottom" },
-            ]}
-          />
+          <select aria-label="Pour layer" className="field h-8 w-[96px]" value={layer} onChange={(e) => setLayer(e.target.value as CopperLayer)}>
+            {copperLayers(project.board).map((l) => (
+              <option key={l} value={l}>
+                {layerLabel(project.board, l)}
+              </option>
+            ))}
+          </select>
           <Button
             disabled={!chosen || exists}
             onClick={() => commitProject((p) => ({ ...p, zones: [...p.zones, { id: uid("z"), net: chosen, layer }] }))}

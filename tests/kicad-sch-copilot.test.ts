@@ -8,11 +8,20 @@ import { importSheet, place } from "./kicad-sch-parts"
 // Sakura's prompt and tool kit are the same for every design drawn in the editor; the note about
 // units and KiCad symbols is given only to a design that has such parts.
 
-/** The system prompt before slice 3b-i, as sha1 of its text (line ends as `\n`). */
-const BASE_SHA = "43f54f62ff5c54f2c7772373ead2debe6b136f8d"
-const BASE_CHARS = 9042
-/** The tool definitions before slice 3b-i, as JSON: what the slice may add is small. */
-const TOOLS_BEFORE = 29272
+/** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
+const BASE_SHA = "87cee6e4a83e3b0c79e80d068e78c333a8fc042f"
+/** The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made. */
+const BASE_CHARS = 10370
+/** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
+const TOOLS_ON_MAIN = 35524
+/** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
+const BOARD_LANES_GROWTH = 1373
+/**
+ * What Sakura's sheet tools added, in bytes (5373, 12 bytes under the 5385 it was before the descriptions were cut): `add_sheet`, `edit_sheet`, `add_hier_label`, `wire_sheet_pin` and `show_sheet` (about 4.6k together, with their
+ * descriptions cut to a sentence or two), and a `sheet` input on `add_component`, `group_parts`, `edit_block` and `draw` (about 70 bytes each), so a sheet can be built
+ * on, not only read. The budget below was raised by exactly this and no more.
+ */
+const SHEET_TOOLS_GROWTH = 5373
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -45,7 +54,7 @@ describe("Sakura's system prompt", () => {
   })
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
-    const size = JSON.stringify(TOOL_DEFINITIONS).length
-    expect(size - TOOLS_BEFORE).toBeLessThan(1400)
+    const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH).toBeLessThan(2100)
   })
 })

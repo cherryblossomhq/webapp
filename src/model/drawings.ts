@@ -1,14 +1,33 @@
 import { emptyBox, expandBox, pointInBox, pointSegmentDistance, rotate90, round, snap, snapPoint, type Box } from "../lib/geometry"
 import { uid } from "../lib/id"
+import { hitKicadOnly, insidePolygon, isExact, isKicadOnly, kicadOnlyBox, kicadTextBox, moveKicadOnly } from "./sheetItems"
 import { SCH_GRID } from "./symbols"
-import type { DrawingBox, DrawingColor, DrawingLine, DrawingStyle, DrawingText, LineDash, LineWeight, Project, SchematicDrawing, Vec2 } from "./types"
+import type { DrawingBox, DrawingBus, DrawingBusEntry, DrawingColor, DrawingLine, DrawingStyle, DrawingText, LineDash, LineWeight, Project, SchematicDrawing, SheetFill, SheetStroke, Vec2 } from "./types"
 
 // Drawings: lines, rectangles and text on the schematic, for titles, notes, callouts and
-// the boxes and arrows that explain a sheet, as Altium's drawing tools make. They are graphics only:
-// connectivity, checks and exports never read them. The editor and the copilot both edit them
-// through these functions, so the two can draw the same things.
+// the boxes and arrows that explain a sheet, as Altium's drawing tools make, and what a KiCad sheet
+// draws (arcs, curves, circles, text boxes, pictures, tables, dots and flags: `sheetItems.ts` has the
+// geometry of those). They are graphics only: connectivity and checks never read them. The editor
+// and the copilot both edit them through these functions, so the two can draw the same things.
 
 export const DRAWING_COLORS: DrawingColor[] = ["ink", "gray", "red", "orange", "yellow", "green", "blue", "purple"]
+/** The named colours as the light sheet draws them, which is how a named colour becomes an exact one. */
+export const DRAWING_HEX: Record<DrawingColor, string> = {
+  ink: "#24211c",
+  gray: "#7d7a72",
+  red: "#c02a2a",
+  orange: "#c8600e",
+  yellow: "#b08600",
+  green: "#1f7f43",
+  blue: "#3a51c2",
+  purple: "#7a3fc4",
+}
+/** Opacity of a drawing's fill on the light sheet. */
+export const DRAWING_TINT = 0.13
+/** `#rrggbb` as the `rgba(r,g,b,a)` a KiCad file writes for a colour with an alpha. */
+export const withAlpha = (hex: string, alpha: number) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${alpha})`
+/** The shapes only KiCad has that are stroked, and so take a colour, a weight and a dash. */
+const STROKED_KICAD_ONLY: ReadonlySet<string> = new Set(["circle", "arc", "bezier", "textbox", "bus", "busentry"])
 export const LINE_WEIGHTS: LineWeight[] = ["thin", "medium", "thick"]
 export const LINE_DASHES: LineDash[] = ["solid", "dashed", "dotted"]
 
@@ -45,12 +64,44 @@ export const isDrawingColor = (v: unknown): v is DrawingColor => typeof v === "s
 export const isLineWeight = (v: unknown): v is LineWeight => typeof v === "string" && (LINE_WEIGHTS as string[]).includes(v)
 export const isLineDash = (v: unknown): v is LineDash => typeof v === "string" && (LINE_DASHES as string[]).includes(v)
 
-export const strokeWidth = (d: DrawingStyle) => WEIGHT_WIDTH[d.weight ?? "medium"]
+/** KiCad's default line width, 6 mil: a line with a KiCad look of its own and no width of its own. */
+export const KICAD_LINE = 0.012
+
+/** The width a drawing is stroked with: a KiCad file's own, else KiCad's default for a line of its look, else the weight's. */
+export const strokeWidth = (d: DrawingStyle) => d.stroke?.width ?? (d.stroke && !d.weight ? KICAD_LINE : WEIGHT_WIDTH[d.weight ?? "medium"])
 
 /** What a drawing is called in a sentence or a heading. */
 export function drawingKind(d: SchematicDrawing): string {
-  if (d.type === "line") return d.closed ? "Polygon" : d.arrows ? "Arrow" : "Line"
-  return d.type === "rect" ? "Rectangle" : "Text"
+  switch (d.type) {
+    case "line":
+      return d.ruleArea ? "Rule area" : d.closed ? "Polygon" : d.arrows ? "Arrow" : "Line"
+    case "rect":
+      return "Rectangle"
+    case "text":
+      return "Text"
+    case "textbox":
+      return "Text box"
+    case "circle":
+      return "Circle"
+    case "arc":
+      return "Arc"
+    case "bezier":
+      return "Curve"
+    case "image":
+      return "Picture"
+    case "table":
+      return "Table"
+    case "junction":
+      return "Junction dot"
+    case "noconnect":
+      return "No-connect flag"
+    case "directive":
+      return "Directive label"
+    case "bus":
+      return "Bus"
+    case "busentry":
+      return d.toBus ? "Bus-to-bus entry" : "Bus entry"
+  }
 }
 
 // ---------- Text ----------
@@ -101,7 +152,8 @@ export function drawnInside(d: SchematicDrawing, frame: Box): boolean {
 
 /** Everything a drawing covers. */
 export function drawingBounds(d: SchematicDrawing): Box {
-  if (d.type === "text") return textFrame(d)
+  if (isKicadOnly(d)) return kicadOnlyBox(d)
+  if (d.type === "text") return d.valign ? kicadTextBox(d) : textFrame(d)
   if (d.type === "line") {
     const b = emptyBox()
     for (const p of d.points) expandBox(b, p)
@@ -118,42 +170,54 @@ export function lineSegments(d: DrawingLine): [Vec2, Vec2][] {
   return segs
 }
 
-function insidePolygon(p: Vec2, pts: Vec2[]): boolean {
-  let inside = false
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const a = pts[i]
-    const b = pts[j]
-    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
-  }
-  return inside
-}
-
 /**
  * Is `at` on the drawing? Lines and outlines are picked up within `tol` of their stroke, filled
  * shapes and texts anywhere inside: an empty frame is clicked through, as a block's is.
  */
 export function hitDrawing(d: SchematicDrawing, at: Vec2, tol: number): boolean {
-  if (d.type === "text") return pointInBox(at, textFrame(d), tol * 0.5)
+  if (isKicadOnly(d)) return hitKicadOnly(d, at, tol)
+  if (d.type === "text") return pointInBox(at, d.valign ? kicadTextBox(d) : textFrame(d), tol * 0.5)
   if (d.type === "line") {
     if (lineSegments(d).some(([a, b]) => pointSegmentDistance(at, a, b) <= tol)) return true
-    return !!d.closed && !!d.fill && insidePolygon(at, d.points)
+    return ((!!d.closed && !!d.fill) || !!d.paint) && insidePolygon(d.points, at)
   }
   const b = drawingBounds(d)
   const inside = pointInBox(at, b, tol)
   const inner = pointInBox(at, { minX: b.minX + tol, minY: b.minY + tol, maxX: b.maxX - tol, maxY: b.maxY - tol })
-  return inside && (!inner || !!d.fill)
+  return inside && (!inner || !!d.fill || !!d.paint)
 }
 
-const shiftPoint = (p: Vec2, by: Vec2): Vec2 => ({ x: round(p.x + by.x), y: round(p.y + by.y) })
+const shiftPoint = (p: Vec2, by: Vec2, digits = 4): Vec2 => ({ x: round(p.x + by.x, digits), y: round(p.y + by.y, digits) })
 
+/** Moved to four digits, or six (a millionth of a unit, KiCad's own resolution) for a drawing a KiCad file gave, which keeps every digit it came with. */
 export function moveDrawing(d: SchematicDrawing, by: Vec2): SchematicDrawing {
-  if (d.type === "line") return { ...d, points: d.points.map((p) => shiftPoint(p, by)) }
-  return { ...d, ...shiftPoint(d, by) }
+  if (isKicadOnly(d)) return moveKicadOnly(d, by)
+  const digits = isExact(d) ? 6 : 4
+  if (d.type === "line") return { ...d, points: d.points.map((p) => shiftPoint(p, by, digits)) }
+  return { ...d, ...shiftPoint(d, by, digits) }
 }
 
 /** A quarter turn anticlockwise about the drawing's own middle, kept on the grid. */
 export function rotateDrawing(d: SchematicDrawing): SchematicDrawing {
   if (d.type === "text") return clean({ ...d, rot: d.rot === 90 ? 0 : 90 })
+  // What KiCad draws turns where it is for the shapes that have points; a text box turns its text, and a picture, a circle, a dot and a table stay.
+  if (d.type === "textbox") return { ...d, rot: d.rot === 90 || d.rot === 270 ? 0 : 90 }
+  if (d.type === "arc" || d.type === "bezier") {
+    const b = drawingBounds(d)
+    const c = snapPoint({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }, SCH_GRID)
+    const turn = (p: Vec2) => shiftPoint(rotate90({ x: p.x - c.x, y: p.y - c.y }, 90), c, 6)
+    return d.type === "arc" ? { ...d, start: turn(d.start), mid: turn(d.mid), end: turn(d.end) } : { ...d, points: d.points.map(turn) as typeof d.points }
+  }
+  // A directive label turns about its own point, as KiCad turns one: the pin goes up, then left, down and right.
+  if (d.type === "directive") return { ...d, rot: ((d.rot + 90) % 360) as typeof d.rot }
+  if (d.type === "bus") {
+    const b = drawingBounds(d)
+    const c = snapPoint({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }, SCH_GRID)
+    return { ...d, points: d.points.map((p) => shiftPoint(rotate90({ x: p.x - c.x, y: p.y - c.y }, 90), c, 6)) }
+  }
+  // An entry turns about its own corner: the quarter turn takes its far end to the next corner of its square.
+  if (d.type === "busentry") return { ...d, dx: round(-d.dy, 6), dy: round(d.dx, 6) }
+  if (isKicadOnly(d)) return d
   const b = drawingBounds(d)
   const c = snapPoint({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }, SCH_GRID)
   if (d.type === "line") {
@@ -168,7 +232,9 @@ export function rotateDrawing(d: SchematicDrawing): SchematicDrawing {
  * anticlockwise, or a line's points. A text has none; its size is a property.
  */
 export function drawingHandles(d: SchematicDrawing): Vec2[] {
-  if (d.type === "text") return []
+  if (d.type === "bus") return d.points
+  if (d.type === "busentry") return [d, { x: round(d.x + d.dx, 6), y: round(d.y + d.dy, 6) }]
+  if (d.type === "text" || isKicadOnly(d)) return []
   if (d.type === "line") return d.points
   const { minX, minY, maxX, maxY } = drawingBounds(d)
   const mx = round((minX + maxX) / 2)
@@ -199,7 +265,14 @@ export const BOX_HANDLE_SIDES: [number, number][] = [
 
 /** The drawing with one handle dragged to `to`. A box can't be dragged thinner than half a grid square. */
 export function dragHandle(d: SchematicDrawing, handle: number, to: Vec2): SchematicDrawing {
-  if (d.type === "text") return d
+  if (d.type === "bus") return { ...d, points: d.points.map((p, i) => (i === handle ? { x: round(to.x, 6), y: round(to.y, 6) } : p)) }
+  if (d.type === "busentry") {
+    // Either end moves the entry's own end; the other stays, so the entry may change its slant.
+    const far = { x: d.x + d.dx, y: d.y + d.dy }
+    const [a, b] = handle === 0 ? [{ x: round(to.x, 6), y: round(to.y, 6) }, far] : [{ x: d.x, y: d.y }, { x: round(to.x, 6), y: round(to.y, 6) }]
+    return a.x === b.x && a.y === b.y ? d : { ...d, x: a.x, y: a.y, dx: round(b.x - a.x, 6), dy: round(b.y - a.y, 6) }
+  }
+  if (d.type === "text" || isKicadOnly(d)) return d
   if (d.type === "line") return { ...d, points: d.points.map((p, i) => (i === handle ? { x: round(to.x), y: round(to.y) } : p)) }
   const [sx, sy] = BOX_HANDLE_SIDES[handle] ?? [0, 0]
   const least = SCH_GRID / 2
@@ -229,30 +302,49 @@ export function constrain45(from: Vec2, to: Vec2): Vec2 {
  */
 export function clean<T extends SchematicDrawing>(d: T): T {
   const out = { ...d } as T & Record<string, unknown>
+  // Four digits for what the drawing tools make, six (KiCad's own resolution) for what a KiCad file said.
+  const digits = isExact(d) ? 6 : 4
   if (!out.color || out.color === "ink") delete out.color
   if (!out.weight || out.weight === "medium") delete out.weight
   if (!out.dash || out.dash === "solid") delete out.dash
   if (!out.fill) delete out.fill
+  if (!out.paint) delete out.paint
+  // A KiCad look with nothing to say is kept when it is a line's or a box's (it says "KiCad's own line"), and dropped from the rest.
+  if (!out.stroke || (Object.keys(out.stroke).length === 0 && out.type !== "line" && out.type !== "rect")) delete out.stroke
+  if (!out.excludeFromSim) delete out.excludeFromSim
   if (out.type === "text") {
     const t = out as DrawingText & Record<string, unknown>
-    if (!t.align || t.align === "left") delete t.align
+    // Left is the editor's own alignment; a text KiCad justified says every one, since its own is the middle.
+    if (!t.align || (t.align === "left" && t.valign === undefined)) delete t.align
     if (!t.rot) delete t.rot
-    for (const k of ["bold", "italic", "mono", "border"] as const) if (!t[k]) delete t[k]
-    t.x = round(t.x)
-    t.y = round(t.y)
-    t.size = round(t.size)
+    for (const k of ["bold", "italic", "mono", "border", "mirror", "hidden"] as const) if (!t[k]) delete t[k]
+    for (const k of ["href", "face", "lineSpacing", "valign"] as const) if (!t[k]) delete t[k]
+    t.x = round(t.x, digits)
+    t.y = round(t.y, digits)
+    t.size = round(t.size, digits)
   } else if (out.type === "line") {
     const l = out as DrawingLine & Record<string, unknown>
     if (!l.closed) delete l.closed
+    if (!l.ruleArea) delete l.ruleArea
     if (l.closed || !l.arrows) delete l.arrows
-    l.points = l.points.map((p) => ({ x: round(p.x), y: round(p.y) }))
-  } else {
+    l.points = l.points.map((p) => ({ x: round(p.x, digits), y: round(p.y, digits) }))
+  } else if (out.type === "bus") {
+    const l = out as DrawingBus & Record<string, unknown>
+    l.points = l.points.map((p) => ({ x: round(p.x, digits), y: round(p.y, digits) }))
+  } else if (out.type === "busentry") {
+    const e = out as DrawingBusEntry & Record<string, unknown>
+    if (!e.toBus) delete e.toBus
+    e.x = round(e.x, digits)
+    e.y = round(e.y, digits)
+    e.dx = round(e.dx, digits)
+    e.dy = round(e.dy, digits)
+  } else if (out.type === "rect") {
     const b = out as DrawingBox & Record<string, unknown>
     if (!b.radius) delete b.radius
-    b.x = round(b.x)
-    b.y = round(b.y)
-    b.width = round(b.width)
-    b.height = round(b.height)
+    b.x = round(b.x, digits)
+    b.y = round(b.y, digits)
+    b.width = round(b.width, digits)
+    b.height = round(b.height, digits)
   }
   return out
 }
@@ -304,7 +396,44 @@ export function reorderDrawings(project: Project, ids: Iterable<string>, to: "fr
 
 /** Copies of drawings moved by `offset`, with ids of their own. */
 export function copyDrawings(drawings: SchematicDrawing[], offset: Vec2): SchematicDrawing[] {
-  return drawings.map((d) => ({ ...moveDrawing(d, offset), id: uid("d") }))
+  return drawings.map((d) => ({ ...moveDrawing(d, offset), id: uid("d") }) as SchematicDrawing)
+}
+
+/**
+ * A drawing with the editor's style fields set (`undefined` clears one). A drawing the tools made takes them as its
+ * named style. A drawing that says its look exactly (a KiCad file's `stroke` and `paint`, and the shapes only KiCad has
+ * that have a stroke: circles, arcs, curves and text boxes) changes only the part the patch names, as the exact
+ * Inspector does: a colour sets the stroke's colour (the light sheet's value for the name), a weight its width, a dash its
+ * dash, a fill its paint (the name's tint); the rest of the stroke stays, so a dashed KiCad line given a colour is still
+ * dashed and still an exact drawing that the KiCad export writes as it is. A text's stroke is its letters' pen, so only the colour
+ * of a text is set. The shapes with no stroke (junction dots, no-connect flags, pictures, tables) take none.
+ */
+export function applyStyle<T extends SchematicDrawing>(d: T, patch: DrawingStyle): T {
+  if (isKicadOnly(d) && !STROKED_KICAD_ONLY.has(d.type)) return d
+  if (!isExact(d)) return { ...d, ...patch } as T
+  const out = { ...d } as T & Record<string, unknown>
+  const stroke: SheetStroke = { ...(d as { stroke?: SheetStroke }).stroke }
+  const text = d.type === "text"
+  if ("color" in patch) {
+    if (patch.color) stroke.color = DRAWING_HEX[patch.color]
+    else delete stroke.color
+  }
+  if ("weight" in patch && !text) {
+    if (patch.weight) stroke.width = WEIGHT_WIDTH[patch.weight]
+    else delete stroke.width
+  }
+  if ("dash" in patch && !text) {
+    if (patch.dash === "dashed") stroke.dash = "dash"
+    else if (patch.dash === "dotted") stroke.dash = "dot"
+    else delete stroke.dash
+  }
+  if ((d as { stroke?: SheetStroke }).stroke || Object.keys(stroke).length) out.stroke = stroke
+  if ("fill" in patch && !text) {
+    // An open line takes no fill, so a fill asked of it only clears the file's.
+    if (patch.fill && (d.type !== "line" || d.closed)) out.paint = { kind: "color", color: withAlpha(DRAWING_HEX[patch.fill], DRAWING_TINT) } satisfies SheetFill
+    else delete out.paint
+  }
+  return out
 }
 
 /** Style fields a drawing of this type uses. */

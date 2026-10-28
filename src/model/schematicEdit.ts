@@ -5,6 +5,7 @@ import { createBlock } from "./blocks"
 import { copyDrawings } from "./drawings"
 import { withPartsFrom } from "./customParts"
 import { withModelsFrom } from "./models3d"
+import { rekeyAutoNets } from "./rekeyNets"
 import { isSchematicPart, schematicPins } from "./instances"
 import { findPart, unitTwinId } from "./library"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
@@ -23,7 +24,7 @@ import {
 } from "./ops"
 import { bodyStyleCount, fieldPlaceOf, fieldPlacesOf, unitCount } from "./symbolDrawing"
 import { repairUnits } from "./units"
-import type { ComponentInstance, FieldPlace, Mirror, Project, Rotation, Vec2, Wire } from "./types"
+import type { LabelKind, ComponentInstance, FieldPlace, LabelShape, Mirror, NetLabel, Project, Rotation, TextLook, Vec2, Wire } from "./types"
 
 /**
  * The canvas edits that move things without meaning to connect them: turning a part (R, the
@@ -268,8 +269,11 @@ export function renameReference(project: Project, id: string, ref: string): Proj
   const part = c && findPart(c.partId)
   if (!c || !part) return project
   const same = new Set(unitCount(part) > 1 ? project.components.filter((x) => x.ref === c.ref && !!findPart(x.partId)?.units).map((x) => x.id) : [c.id])
-  return { ...project, components: project.components.map((x) => (same.has(x.id) ? { ...x, ref } : x)), updatedAt: Date.now() }
+  const renamed = { ...project, components: project.components.map((x) => (same.has(x.id) ? { ...x, ref } : x)), updatedAt: Date.now() }
+  return rekeyAutoNets(project, renamed)
 }
+
+export { rekeyAutoNets }
 
 // ---------- dragging ----------
 
@@ -365,7 +369,7 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
   for (const id of clip.wires) {
     const w = clip.project.wires.find((x) => x.id === id)
     if (!w) continue
-    const copy = { id: uid("w"), points: w.points.map(sh) }
+    const copy = { id: uid("w"), points: w.points.map(sh), ...(w.look ? { look: w.look } : {}) }
     next = { ...next, wires: [...next.wires, copy] }
     selection.push(`w:${copy.id}`)
   }
@@ -407,4 +411,50 @@ export function placeComponent(
   const { project: next, component } = addComponent(project, partId, opts)
   const res = checkAdded(project, next, [component.id], `place ${component.ref}`, o)
   return res.ok ? { ok: true, project: res.project, component, inline: res.inline } : res
+}
+
+// ---------- S2, S4: labels and groups ----------
+
+/** A label's kind, shape, size and style changed. A global label has a shape; a local one has none. */
+export function setLabelStyle(project: Project, id: string, change: { name?: string; kind?: LabelKind; shape?: LabelShape; look?: Partial<TextLook> | null; turn?: Rotation }): Project {
+  const l = project.labels.find((x) => x.id === id)
+  if (!l) return project
+  const next: NetLabel = { ...l }
+  if (change.name !== undefined) next.name = change.name
+  if (change.kind) next.kind = change.kind
+  if (next.kind === "global" || next.kind === "hierarchical") next.shape = change.shape ?? next.shape ?? "bidirectional"
+  else delete next.shape
+  if (change.turn !== undefined) {
+    next.rot = change.turn
+    // The justification KiCad writes follows the turn: one that was the default stays the default.
+    if (next.look) {
+      const { h, v, ...rest } = next.look
+      next.look = Object.keys(rest).length ? rest : undefined
+      void h
+      void v
+    }
+  }
+  if (change.look === null) delete next.look
+  else if (change.look) {
+    const look: TextLook = { ...next.look, ...change.look }
+    for (const k of Object.keys(look) as (keyof TextLook)[]) if (look[k] === undefined || (look[k] as unknown) === false) delete look[k]
+    if (Object.keys(look).length) next.look = look
+    else delete next.look
+  }
+  if (!next.look) delete next.look
+  return { ...project, updatedAt: Date.now(), labels: project.labels.map((x) => (x.id === id ? next : x)) }
+}
+
+/** A group locked or unlocked. */
+export function setBlockLocked(project: Project, id: string, locked: boolean): Project {
+  return {
+    ...project,
+    updatedAt: Date.now(),
+    blocks: project.blocks?.map((b) => {
+      if (b.id !== id) return b
+      const { locked: _was, ...rest } = b
+      void _was
+      return locked ? { ...rest, locked: true as const } : rest
+    }),
+  }
 }

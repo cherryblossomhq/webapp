@@ -1,13 +1,15 @@
 import { boardAreaMm2, describeOutline } from "../../model/outline"
+import { resolvedComponents } from "../../model/ruleAreas"
 import { partOutsideBoard } from "../../model/pcb"
 import { boxesOverlap, type Box } from "../../lib/geometry"
-import { isPhysical, pcbCourtyard, schematicBounds } from "../../model/instances"
+import { isSchematicPart, pcbCourtyard, schematicBounds } from "../../model/instances"
 import { drawingBounds } from "../../model/drawings"
 import { labelBox } from "../../model/labels"
 import { findPart } from "../../model/library"
 import type { Project, Vec2 } from "../../model/types"
 import { getConnectivity, getPcbAnalysis } from "../../store/analysis"
 import { pcbContent, schematicContent } from "./framing"
+import { onBoard } from "../../model/partFlags"
 
 // What the model gets beside a picture: counts and positions it can act on. The old editor's
 // research found models fix what a number names far more reliably than what a picture hints at,
@@ -139,7 +141,7 @@ export function measureSchematic(project: Project): SchematicMeasure {
   for (const net of conn.nets) {
     if (net.named || net.pins.length > 1) for (const p of net.pins) connected.add(p.componentId)
   }
-  const isolatedParts = project.components.filter((c) => isPhysical(findPart(c.partId)) && !connected.has(c.id)).map((c) => c.ref)
+  const isolatedParts = project.components.filter((c) => isSchematicPart(findPart(c.partId)) && !connected.has(c.id)).map((c) => c.ref)
 
   return {
     parts: project.components.length,
@@ -183,7 +185,7 @@ export interface PcbMeasure {
 export function measurePcb(project: Project): PcbMeasure {
   const pcb = getPcbAnalysis(project)
   const conn = getConnectivity(project)
-  const physical = project.components.filter((c) => isPhysical(findPart(c.partId)))
+  const physical = resolvedComponents(project).filter((c) => onBoard(c))
   const placed = physical.filter((c) => c.pcb.placed)
   const bd = project.board
 

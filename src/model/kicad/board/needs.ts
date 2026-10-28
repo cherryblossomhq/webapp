@@ -17,18 +17,19 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // The rules are the ones of `tests/kicad-census/slices.mjs`, which the census judged the plan by,
 // with the differences named in `Need.source`.
 
-/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X2", "X3", "X6", "X8", "X9", "X13", "X15"])
+/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects), the board objects slice X11 (dimensions), X12 (groups) and X14 (reference images), the zones slice X3, and slice X7 the pad model. */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
-  X1: "more than two copper layers, or a stackup",
+  X1: "more than two copper layers, a stackup, pad stacks (a pad with a shape on each copper layer), or pads that drop their copper on layers nothing connects to",
   X2: "an outline that is not a plain or rounded rectangle, a cutout, or an outline that is not closed",
   X3: "copper zones, keepouts or teardrops",
-  X26: "filled zones on layers that are not copper (solder mask, paste, silkscreen or user layers)",
-  X27: "zones that belong to a part (a keepout or a pour drawn inside a footprint)",
+  X29: "filled zones on layers that are not copper (solder mask, paste, silkscreen or user layers)",
+  X30: "zones that belong to a part (a keepout or a pour drawn inside a footprint)",
+  X31: "a pad that joins a pour on some copper layers and not others",
   X4: "arc tracks",
-  X5: "blind, buried or micro vias, or via stacks",
+  X5: "blind, buried or micro vias, via stacks, or a pad that tents or opens its own solder mask",
   X6: "parts turned by other than a quarter turn",
   X7: "pads that are turned, rounded, custom, drilled off centre, on layers the editor does not draw, or have their own margins or their own nets",
   X8: "drawings beyond the editor's silkscreen lines, or parts with no pads",
@@ -45,6 +46,9 @@ export const EXTENSION_NAMES: Record<string, string> = {
   X22: "via protection, backdrill or post-machining",
   X23: "variants, units or points",
   X25: "tables, barcodes, drill charts, text boxes inside footprints, text with expressions or variables the editor cannot resolve",
+  X26: "a creepage rule (KiCad 10's minimum creepage distance), which Checks cannot test yet",
+  X27: "dimensions inside footprints",
+  X28: "reference images in a format other than PNG or JPEG",
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width, or tracks exposed through the solder mask",
 }
 
@@ -290,11 +294,19 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (zoneCount > 0) need("X3", "copper zones, keepouts or rule areas")
   if (board.zones.some((z) => z.kind === "teardrop")) need("X3", "teardrops")
   if (board.zones.some((z) => z.kind !== "placement" && z.fillMode !== "polygon")) need("X24", "a zone filled with a hatch or a thieving pattern", "importer")
-  if (board.zones.some((z) => z.kind !== "placement" && !zoneOnlyCopper(z, board))) need("X26", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
-  if (board.footprints.some((f) => f.zones.length)) need("X27", "a zone that belongs to a part (a keepout or pour drawn inside a footprint)", "importer")
+  if (board.zones.some((z) => z.kind !== "placement" && !zoneOnlyCopper(z, board))) need("X29", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
+  if (board.footprints.some((f) => f.zones.length)) need("X30", "a zone that belongs to a part (a keepout or pour drawn inside a footprint)", "importer")
   if (board.arcTracks.length > 0) need("X4", "arc tracks")
   const frontBack = (layers: string[]) => layers.includes(board.copper.front) && layers.includes(board.copper.back)
   if (board.vias.some((v) => v.kind !== "through" || (v.layers.length === 2 && !frontBack(v.layers))) || has(/^via>(free|tenting|remove_unused_layers|keep_end_layers|padstack)/)) need("X5", "blind, buried or micro vias, or via stacks")
+
+  // What a KiCad 9 pad can say that the pad model has no place for yet: a shape for each copper layer (X1), copper dropped on a layer nothing connects to (X1: on a
+  // two layer board only a pad with `remove_unused_layers` and no `keep_end_layers` loses any, an outer layer's), a pour's connection per layer (X3), and its own tenting of the mask (X5).
+  const pads = board.footprints.flatMap((f) => f.pads)
+  if (pads.some((p) => p.padstack)) need("X1", "a pad with a shape on each copper layer (a KiCad 9 pad stack)", "importer")
+  if (pads.some((p) => p.type === "thru_hole" && p.removeUnused === true && p.keepEnds !== true)) need("X1", "a through-hole pad that drops its copper on layers nothing connects to", "importer")
+  if (pads.some((p) => p.zoneLayers)) need("X31", "a pad that joins a pour on some copper layers and not others", "importer")
+  if (pads.some((p) => p.tented)) need("X5", "a pad that tents or opens its own solder mask", "importer")
 
   const why = new Map<string, string>()
   for (const fp of board.footprints) {
@@ -323,7 +335,10 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   const { through_hole_min: holeMin, via_min_drill: viaMin } = board.setup
   if (holeMin !== undefined && viaMin !== undefined && Math.abs(holeMin - viaMin) > 1e-9) need("X10", "two different smallest drill sizes (a through hole's and a via's)", "importer")
   if (has(/^(footprint>)?dimension$/)) need("X11", "dimensions")
+  // A footprint's own dimension moves, turns and flips with its part by KiCad's rules for the part (the text's side of the crossbar does not follow a mirror), which the model does not hold yet.
+  if (has(/^footprint>dimension$/)) need("X27", "a dimension inside a footprint", "importer")
   if (has(/^(footprint>)?group$/)) need("X12", "groups")
+  if (board.images.some((m) => m.format === null)) need("X28", "a reference image that is neither a PNG nor a JPEG", "importer")
   if (board.segments.length + board.vias.length > 0) need("X13", "tracks and vias that carry a net in the file")
   if (has(/^image$/)) need("X14", "a reference image")
   if (board.footprints.some((f) => f.attr.some((a) => !["smd", "through_hole"].includes(a))) || has(/^footprint>(net_tie_pad_groups|jumper_pad_groups|duplicate_pad_numbers_are_jumpers)/) || board.footprints.some((f) => f.netTies.length)) need("X15", "part flags (virtual, board only, not in the BOM or position files, do not populate) or net ties")
@@ -355,7 +370,7 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
     const rule = ruleFor(path)
     if (rule?.decision !== "extend" || !rule.ext || out.has(rule.ext)) continue
     const p = path.replace(/^module(?=$|>)/, "footprint")
-    if (settledFor(p)) continue
+    if (settledFor(p) || p === "layers" || p === "layers><layer number>") continue
     const top = /^setup>[^>]+/.exec(p)?.[0]
     if (top && setupOk.has(top)) continue
     need(rule.ext, `the node "${path}"`, "importer")

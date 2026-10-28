@@ -4,7 +4,7 @@ import type { ComponentInstance, PartFlags, Project, ProjectVariants, SheetSymbo
 // S9: schematic variants (KiCad 10). A project lists its variants by name (`Project.variants`); each symbol says what a variant changes on it
 // (`ComponentInstance.variants`: only what differs from the symbol's own, as KiCad 10 writes it), each sheet symbol the same for its flags.
 // One variant is active at a time. The symbols themselves are never rewritten by it: this file is the one resolver that turns "the symbols and the
-// active variant" into what the BOM, the position file, the do not populate marks and the board side use (`resolveVariant`, `variantComponents`).
+// active variant" into what the BOM, the position file, the do not populate marks and the board side use (`resolveVariant`).
 
 const FLAG_KEYS = ["dnp", "excludeFromBom", "notOnBoard", "excludeFromSim", "excludeFromPos"] as const
 export type VariantFlag = (typeof FLAG_KEYS)[number]
@@ -35,9 +35,16 @@ export function overlayFlags<F extends Partial<Record<VariantFlag, true>>>(flags
   return (Object.keys(out).length ? out : undefined) as F | undefined
 }
 
+/**
+ * The components the resolver (`resolvedComponents`) has already put the flags of a sheet symbol or a rule area on, with the variant before them. A variant's `false` is
+ * for the symbol's own flag only, so the variant is not put on one of these again (it would clear a flag a sheet or an area set): `variantComponent` returns it as it is.
+ */
+const settled = new WeakSet<object>()
+export const markSettled = <T extends object>(c: T): T => (settled.add(c), c)
+
 /** The component as the active variant makes it: flags and field values changed, nothing else. The same object when the variant changes nothing on it. */
 export function variantComponent(c: ComponentInstance, name: string | undefined): ComponentInstance {
-  const o = name === undefined ? undefined : c.variants?.[name]
+  const o = name === undefined || settled.has(c) ? undefined : c.variants?.[name]
   if (!o) return c
   const flags = overlayFlags<PartFlags>(c.flags, o)
   let props = c.props
@@ -74,9 +81,6 @@ export function resolveVariant(project: Project): Project {
   resolved.set(project, { name, project: out })
   return out
 }
-
-/** The components as the active variant makes them (the same array when none is active). The board side, the marks and the exports read this. */
-export const variantComponents = (project: Project): ComponentInstance[] => resolveVariant(project).components
 
 /** What a sheet symbol's flags are on one use of its parent sheet under the active variant. */
 export function variantSheetFlags(sym: Pick<SheetSymbol, "flags" | "variants">, parentUse: string, name: string | undefined): SheetSymbol["flags"] {

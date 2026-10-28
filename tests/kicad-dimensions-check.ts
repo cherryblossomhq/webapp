@@ -30,7 +30,7 @@ export interface DimensionsCheck {
   /** Dimensions of the board file and of the project. */
   file: number
   project: number
-  /** Dimensions inside footprints, which the editor does not hold yet (X26). */
+  /** Dimensions inside footprints, which the editor does not hold yet (X27). */
   inFootprints: number
   counts: boolean
   /** Dimensions whose lines, circles or text differ from the oracle's, and the first difference. */

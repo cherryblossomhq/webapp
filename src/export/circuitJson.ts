@@ -1,3 +1,5 @@
+import { flattenHierarchy } from "./flatten"
+import { variantExportNotes } from "../model/variants"
 import { fp } from "@tscircuit/footprinter"
 import { copperCount, copperLayers, viaLayers } from "../model/stack"
 import { arcPolyline, isArcTrace } from "../model/arcTracks"
@@ -27,11 +29,12 @@ import type {
   SourceTrace,
 } from "circuit-json"
 import { parseValue } from "../lib/values"
-import { emptyBox, expandBox, pointOnSegment, rotate90, round, transformPoint } from "../lib/geometry"
+import { emptyBox, expandBox, orientPoint, pointOnSegment, rotate90, round } from "../lib/geometry"
+import { anchorFromAxes, justifyAnchor, justifyOf, orientText } from "../ai/vision/svg"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { registerProjectParts } from "../model/customParts"
 import { libraryFootprint } from "../model/footprintLibrary"
-import { componentFootprint, isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, valueText, type WorldPad } from "../model/instances"
+import { componentFootprint, isNpth, isSchematicPart, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, unitOwners, valueText, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
 import { holeCentre, padOutline } from "../model/padDistance"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
@@ -43,8 +46,13 @@ import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
 import { textElements } from "./circuitJsonTexts"
 import { worldTexts } from "../model/texts"
+import { arcOf, samplePrimitive } from "../model/primitiveGeometry"
+import { componentFields, FIELD_SIZE, pinDisplayName, pinTexts, symbolOf } from "../model/symbolDrawing"
 import { getDesignators, SILK_WIDTH } from "../model/silk"
-import type { ComponentInstance, PartDef, PinDef, Project, Rotation, TextAnchor, Vec2 } from "../model/types"
+import { withRuleAreaFlags, withRuleAreaFlagsOnly } from "../model/ruleAreas"
+import { BUS_WIDTH, boxCorners, boxTextAt, directiveShape, isExact, lookOfText } from "../model/sheetItems"
+import type { ComponentInstance, Mirror, PartDef, PinDef, PinType, Project, Rotation, SchematicDrawing, SheetFill, SheetStroke, ShapeLook, SymbolPrimitive, TextAnchor, TextLook, Vec2 } from "../model/types"
+import { onBoard } from "../model/partFlags"
 
 // Circuit JSON, tscircuit's netlist-and-geometry format, written from a project: the inverse of
 // `model/circuitJsonImport.ts`. Every part is a source component with its ports, every net a
@@ -55,16 +63,86 @@ import type { ComponentInstance, PartDef, PinDef, Project, Rotation, TextAnchor,
 // drawn as schematic paths and circles rather than named after tscircuit's library, since ours
 // are drawn by us.
 
+/** A text of a symbol that has a place of its own: where it is anchored, in the schematic's units, and how it is set. */
+export interface PlacedText {
+  text: string
+  x: number
+  y: number
+  angle: 0 | 90
+  size: number
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+}
+
+/**
+ * A symbol drawn from a KiCad symbol, for the KiCad writer, which has places for what Circuit JSON
+ * has none: `owner` is the schematic component of the part's own symbol, and `unit` which unit of
+ * it this one draws (symbols of one part are units of one KiCad symbol); the reference and value are
+ * written where the symbol had them.
+ */
+export interface KicadSymbolLink {
+  id: string
+  owner: string
+  unit: number
+  /** A unit drawn only for the library symbol to have it (another use of the sheet takes it): its placed symbol is not written. */
+  virtual?: true
+  /** The part this is a unit of (its reference), for the units of one part on different sheets. */
+  part?: string
+  reference?: PlacedText
+  value?: PlacedText
+  /**
+   * The pins this symbol draws, with the name and electrical type they have on the sheet (an alternate applied), which the converter has no place for.
+   * `wrote` is the number the converter wrote for a pin whose number it cannot say (`writtenPinNumbers`), which the writer puts back as `number`.
+   */
+  pins: { number: string; wrote?: string; name: string; type?: PinType }[]
+}
+
+/** A unit of a part that one use of a sheet takes and the sheet's first use does not (a symbol drawn once is a different unit in each use): `unit` is the symbol as that use has it, `base` the component of the first use it is a unit alongside. */
+export interface ExtraUnit {
+  unit: ComponentInstance
+  base: string
+}
+
 export interface CircuitJsonExport {
   elements: AnyCircuitElement[]
   /** What didn't come across, in words for whoever exported it. */
   notes: string[]
+  /** The symbols that came from KiCad, and the others that have pins whose numbers the converter cannot say; empty for a project with neither. */
+  symbols: KicadSymbolLink[]
 }
 
 const mm = (n: number) => round(n, 4)
 const pt = (p: Vec2): Vec2 => ({ x: mm(p.x), y: mm(p.y) })
 
 const numeric = (s: string) => /^\d+$/.test(s)
+
+/** A pin number the converter reads back as the same text: Circuit JSON's `pin_number` is a number, so `EP`, `A1` and `0` (which the converter takes for "no number") are not. */
+const plainPinNumber = (s: string) => /^[1-9]\d{0,8}$/.test(s)
+/** The names the converter takes for a connector pin's own number when the port has no `pin_number` (`A1`, `B12`): it writes the name as the pin's number. */
+const CONNECTOR_PIN_NAME = /^[A-Z]+[1-9]\d*$/
+
+/**
+ * What the converter writes for the pins of a KiCad export. A pin whose number is not a plain number has no `pin_number`, and the converter would number it by its place
+ * among the pins (`EP` as `3`, a diode's `A` and `C` as `1` and `2`), a number the board's pad does not have. Each such pin is given a number of its own above the part's
+ * plain ones (on the schematic port only: the pads keep their numbers), and the writer puts the real number back in the file (`kicadPost.ts`, `patchPins`).
+ * Returns, for each pin number of the part, the number given to the schematic port and the number the converter then writes in the file: the same, except for a
+ * source port that has no `pin_number` and a name like a connector pin's (`A1`), whose name it writes.
+ */
+export function writtenPinNumbers(part: Pick<PartDef, "pins">): Map<string, { port: number | null; wrote: string }> {
+  const out = new Map<string, { port: number | null; wrote: string }>()
+  let next = Math.max(0, ...part.pins.filter((p) => plainPinNumber(p.number)).map((p) => Number(p.number)))
+  for (const pin of part.pins) {
+    if (out.has(pin.number)) continue
+    if (plainPinNumber(pin.number)) {
+      out.set(pin.number, { port: Number(pin.number), wrote: pin.number })
+      continue
+    }
+    const port = ++next
+    const name = pin.name || pin.number
+    out.set(pin.number, { port, wrote: !numeric(pin.number) && CONNECTOR_PIN_NAME.test(name) ? name : String(port) })
+  }
+  return out
+}
 
 /** tscircuit's names for what a transistor's pin does, which its own tools and our importer look for. */
 const ROLE_NAMES: Record<string, string> = { C: "collector", B: "base", E: "emitter", D: "drain", S: "source", G: "gate" }
@@ -128,9 +206,9 @@ const ANCHORS: Record<TextAnchor, [number, number]> = {
 
 type SchAnchor = NonNullable<SchematicText["anchor"]>
 
-function schAnchor(anchor: TextAnchor, rot: Rotation): SchAnchor {
+function schAnchor(anchor: TextAnchor, rot: Rotation, mirror?: Mirror): SchAnchor {
   const [x, y] = ANCHORS[anchor]
-  const r = rotate90({ x, y }, rot)
+  const r = mirror ? orientPoint({ x, y }, rot, mirror) : rotate90({ x, y }, rot)
   const name = (ax: number, ay: number): SchAnchor => {
     if (ax === 0 && ay === 0) return "center"
     if (ay === 0) return ax < 0 ? "left" : "right"
@@ -356,8 +434,234 @@ function npthElement(pad: WorldPad, pcbComponentId: string | undefined, id: stri
   return { type: "pcb_hole", pcb_hole_id: id, hole_shape: "circle", hole_diameter: mm(pad.holeDiameter!), ...at, ...owner }
 }
 
-/** Project to Circuit JSON, with notes on what it could not carry. */
-export function projectToCircuitJson(project: Project, options: { nameAllNets?: boolean; forKicad?: boolean } = {}): CircuitJsonExport {
+/** What a project's schematic uses that Circuit JSON cannot say exactly: the notes name only these. */
+interface SchematicUse {
+  curves: boolean
+  mixedDash: boolean
+  styledText: boolean
+  overbar: boolean
+  alternates: boolean
+  sharedNumbers: boolean
+  kicadPins: boolean
+}
+
+/** KiCad's fill for a shape filled with the background: the pale yellow of its body on the light sheet. */
+const BODY_FILL = "#ffffc2"
+const INK = "#000000"
+
+type Ids = { next: (prefix: string) => string }
+
+/** KiCad's dash lengths, in line widths: a dash is 12, a dot 2, the gap between them 4. */
+function dashFields(look: ShapeLook | undefined, width: number, drawn: SchematicUse) {
+  if (!look?.dash) return {}
+  if (look.dash === "dash_dot" || look.dash === "dash_dot_dot") drawn.mixedDash = true
+  const w = width > 0 ? width : 0.012
+  return { dash_length: round(w * (look.dash === "dot" ? 2 : 12), 4), dash_gap: round(w * 4, 4) }
+}
+
+/** The colour inside a shape: its own, the body's, or the line's when it is filled with it; none when it is not filled. */
+function fillColorOf(look: ShapeLook | undefined, fill: boolean): string | undefined {
+  if (look?.fillKind === "color") return look.fillColor ?? look.color ?? INK
+  if (look?.fillKind === "background") return BODY_FILL
+  return fill && look?.color ? look.color : undefined
+}
+
+/** One drawn shape of a symbol (not text) as Circuit JSON elements, turned and mirrored onto the sheet by `here`. */
+function shapeElements(p: SymbolPrimitive, here: (q: Vec2) => Vec2, schId: string | undefined, ids: Ids, drawn: SchematicUse): AnyCircuitElement[] {
+  if (p.type === "text") return []
+  const look = p.look
+  const filled = p.fill || !!look?.fillKind
+  const width = look?.width ?? (p.type === "path" ? p.width : undefined) ?? 0.01
+  const fillColor = fillColorOf(look, p.fill)
+  const path = (points: Vec2[], closed: boolean): AnyCircuitElement => ({
+    type: "schematic_path",
+    schematic_path_id: ids.next("schematic_path"),
+    schematic_component_id: schId,
+    points,
+    is_filled: closed && filled,
+    is_dashed: !!look?.dash,
+    stroke_width: width,
+    ...(look?.color ? { stroke_color: look.color } : {}),
+    ...(closed && filled && fillColor ? { fill_color: fillColor } : {}),
+    ...dashFields(look, width, drawn),
+  })
+  switch (p.type) {
+    case "path":
+      return [path(p.points.map(here), p.fill || !!look?.fillKind)]
+    case "circle":
+      return [
+        {
+          type: "schematic_circle",
+          schematic_circle_id: ids.next("schematic_circle"),
+          schematic_component_id: schId,
+          center: here(p),
+          radius: p.radius,
+          color: look?.color ?? INK,
+          is_filled: filled,
+          is_dashed: !!look?.dash,
+          stroke_width: look?.width ?? 0.01,
+          ...(filled && fillColor ? { fill_color: fillColor } : {}),
+        },
+      ]
+    case "arc": {
+      const [start, mid, end] = [p.start, p.mid, p.end].map(here)
+      const a = arcOf(start, mid, end)
+      if (!a) return [path([start, end], false)]
+      const out: AnyCircuitElement[] = []
+      if (filled) {
+        // A filled arc is a pie, the centre then the arc: Circuit JSON's arc has no fill, so the fill is a polygon under it.
+        drawn.curves = true
+        const rim = samplePrimitive({ type: "arc", start, mid, end, fill: false })
+        out.push({ ...path([pt(a.center), ...rim.map(pt), pt(a.center)], true), stroke_width: 0, is_dashed: false } as AnyCircuitElement)
+      }
+      const deg = (r: number) => round((r * 180) / Math.PI, 4)
+      out.push({
+        type: "schematic_arc",
+        schematic_arc_id: ids.next("schematic_arc"),
+        schematic_component_id: schId,
+        center: pt(a.center),
+        radius: mm(a.radius),
+        start_angle_degrees: deg(a.from),
+        end_angle_degrees: deg(a.from + a.sweep),
+        direction: a.sweep > 0 ? "counterclockwise" : "clockwise",
+        stroke_width: width,
+        color: look?.color ?? INK,
+        is_dashed: !!look?.dash,
+      })
+      return out
+    }
+    case "bezier":
+    case "ellipse": {
+      // Circuit JSON has no curve but the arc: these are short straight lines.
+      drawn.curves = true
+      const points = samplePrimitive(p).map(here)
+      const closed = p.type === "ellipse" ? p.from === undefined || p.to === undefined || filled : filled
+      return [path(closed && points.length ? [...points, points[0]] : points, closed)]
+    }
+    default:
+      return []
+  }
+}
+
+/** A symbol's own text: the editor's own parts keep the placement they have always had. */
+function textPrimitive(c: ComponentInstance, part: PartDef, p: Extract<SymbolPrimitive, { type: "text" }>, here: (q: Vec2) => Vec2, schId: string, ids: Ids, kicad: boolean, drawn: SchematicUse): SchematicText | null {
+  const text = p.role === "ref" ? c.ref : p.role === "value" ? valueText(c, part) : p.text
+  if (!text) return null
+  if (p.bold || p.italic) drawn.styledText = true
+  const base = { type: "schematic_text" as const, schematic_text_id: ids.next("schematic_text"), schematic_component_id: schId, text, font_size: p.size ?? 0.1, position: here(p) }
+  if (kicad) {
+    // Text of a KiCad symbol turns with it and stays readable.
+    const o = orientText(p.angle ?? 0, p.anchor, c.sch)
+    return { ...base, rotation: o.angle, anchor: schAnchor(o.anchor, 0), color: p.color ?? INK }
+  }
+  const vertical = c.sch.rot === 90 || c.sch.rot === 270
+  const pinText = p.role === "pin" || p.role === "pinNumber"
+  const turned = pinText && (p.alongPin ? !vertical : vertical)
+  return { ...base, rotation: turned ? 90 : 0, anchor: schAnchor(p.anchor, c.sch.rot, c.sch.mirror), color: INK }
+}
+
+/** Text the sheet writes at a place of its own (a field, a pin's name), already turned: `angle` is 0 or 90. */
+function sheetText(ids: Ids, schId: string, text: string, at: Vec2, size: number, angle: 0 | 90, anchor: TextAnchor, color?: string): SchematicText {
+  return {
+    type: "schematic_text",
+    schematic_text_id: ids.next("schematic_text"),
+    schematic_component_id: schId,
+    text,
+    font_size: Number.isFinite(size) && size > 0 ? size : FIELD_SIZE,
+    position: pt(at),
+    rotation: angle,
+    anchor: schAnchor(anchor, 0),
+    color: color ?? INK,
+  }
+}
+
+const ANCHOR_BY_JUSTIFY = (h?: "left" | "right", v?: "top" | "bottom"): TextAnchor => (!h && !v ? "center" : !h ? (v === "top" ? "middle_top" : "middle_bottom") : !v ? (h === "left" ? "middle_left" : "middle_right") : (`${v}_${h}` as TextAnchor))
+
+/** One drawing a KiCad sheet gave (a text, a shape, a picture, a table, a dot or a flag) as Circuit JSON elements, free of any component. */
+function drawingElements2(item: SchematicDrawing, ids: Ids, drawn: SchematicUse, notes: Set<string>): AnyCircuitElement[] {
+  const look = (stroke?: SheetStroke, fill?: SheetFill): ShapeLook => ({
+    ...(stroke?.width ? { width: stroke.width } : {}),
+    ...(stroke?.dash ? { dash: stroke.dash } : {}),
+    ...(stroke?.color ? { color: stroke.color } : {}),
+    ...(fill?.kind === "background" ? { fillKind: "background" as const } : fill?.kind === "color" ? { fillKind: "color" as const, ...(fill.color ? { fillColor: fill.color } : {}) } : {}),
+  })
+  const shape = (p: SymbolPrimitive) => shapeElements(p, pt, undefined as unknown as string, ids, drawn)
+  const text = (t: string, at: Vec2, rot: number, tl: TextLook | undefined): AnyCircuitElement => {
+    if (tl?.bold || tl?.italic) drawn.styledText = true
+    return { type: "schematic_text", schematic_text_id: ids.next("schematic_text"), text: t, font_size: tl?.size ?? 0.1, position: pt(at), rotation: rot, anchor: schAnchor(ANCHOR_BY_JUSTIFY(tl?.h, tl?.v), 0), color: tl?.color ?? INK } as SchematicText
+  }
+  const box = (corners: Vec2[], stroke?: SheetStroke, fill?: SheetFill) => shape({ type: "path", points: [...corners, corners[0]], fill: fill?.kind === "outline", look: look(stroke, fill) })
+  switch (item.type) {
+    case "text":
+      notes.add("Text, text boxes, drawings and tables are written as Circuit JSON text, paths, circles and arcs; a text's font, link and simulation flag are not.")
+      return [text(item.text, item, item.rot ?? 0, lookOfText(item))]
+    case "textbox": {
+      const c = boxCorners(item, item.w, item.h, item.rot)
+      return [...box(c, item.stroke, item.paint), text(item.text, boxTextAt(item, item.margins, item.look), item.rot, item.look)]
+    }
+    case "line":
+      return shape({ type: "path", points: item.points, fill: item.paint?.kind === "outline" && item.points.length > 2, look: look(item.stroke, item.paint) })
+    case "rect":
+      return box([{ x: item.x, y: item.y }, { x: item.x + item.width, y: item.y }, { x: item.x + item.width, y: item.y + item.height }, { x: item.x, y: item.y + item.height }], item.stroke, item.paint)
+    case "circle":
+      return shape({ type: "circle", x: item.x, y: item.y, radius: item.radius, fill: item.paint?.kind === "outline", look: look(item.stroke, item.paint) })
+    case "arc":
+      return shape({ type: "arc", start: item.start, mid: item.mid, end: item.end, fill: item.paint?.kind === "outline", look: look(item.stroke, item.paint) })
+    case "bezier":
+      return shape({ type: "bezier", points: item.points, fill: item.paint?.kind === "outline", look: look(item.stroke, item.paint) })
+    case "image":
+      notes.add("Pictures are left out of Circuit JSON, which has no picture on a schematic.")
+      return []
+    case "table":
+      return item.cells.flatMap((c) => [...box(boxCorners(c, c.w, c.h, c.rot), item.separators.rows || item.separators.cols ? item.separators.stroke : undefined, c.fill), ...(c.text ? [text(c.text, boxTextAt(c, c.margins, c.look), c.rot, c.look)] : [])])
+    case "bus":
+      notes.add("Buses and bus entries are drawn as lines: Circuit JSON has no bus, and the nets of a bus's members are nets like any other.")
+      return shape({ type: "path", points: item.points, fill: false, look: { ...look(item.stroke), width: item.stroke?.width ?? BUS_WIDTH } })
+    case "busentry":
+      notes.add("Buses and bus entries are drawn as lines: Circuit JSON has no bus, and the nets of a bus's members are nets like any other.")
+      return shape({ type: "path", points: [{ x: item.x, y: item.y }, { x: item.x + item.dx, y: item.y + item.dy }], fill: false, look: look(item.stroke) })
+    case "junction":
+      return [{ type: "schematic_circle", schematic_circle_id: ids.next("schematic_circle"), center: pt(item), radius: (item.diameter ?? 0.08) / 2, color: item.dotColor ?? INK, is_filled: true, fill_color: item.dotColor ?? INK, is_dashed: false, stroke_width: 0 } as AnyCircuitElement]
+    case "noconnect": {
+      const d = 0.06
+      return [
+        { type: "schematic_line", schematic_line_id: ids.next("schematic_line"), x1: item.x - d, y1: item.y - d, x2: item.x + d, y2: item.y + d, color: INK, is_dashed: false, stroke_width: 0.01 },
+        { type: "schematic_line", schematic_line_id: ids.next("schematic_line"), x1: item.x - d, y1: item.y + d, x2: item.x + d, y2: item.y - d, color: INK, is_dashed: false, stroke_width: 0.01 },
+      ] as AnyCircuitElement[]
+    }
+    case "directive": {
+      // S8: the pin and the flag as lines and a circle, and the text of each field that is shown; what the label does (a net class) is not a schematic drawing.
+      notes.add("A directive label is written as its pin, its flag and its shown fields; Circuit JSON has no net class on a label.")
+      const g = directiveShape(item)
+      return [
+        ...shape({ type: "path", points: [...g.pin], fill: false, look: {} }),
+        ...(g.circle ? shape({ type: "circle", x: g.circle.at.x, y: g.circle.at.y, radius: g.circle.r, fill: g.circle.filled, look: {} }) : []),
+        ...(g.outline ? shape({ type: "path", points: g.outline, fill: false, look: {} }) : []),
+        ...item.fields.filter((f) => !f.place.hidden && f.value.trim()).map((f) => text(f.place.showName ? `${f.name}: ${f.value}` : f.value, { x: item.x + f.place.x, y: item.y + f.place.y }, f.place.angle, { ...(f.place.size ? { size: f.place.size } : {}), ...(f.place.h ? { h: f.place.h } : {}), ...(f.place.v ? { v: f.place.v } : {}) })),
+      ]
+    }
+  }
+}
+
+/**
+ * Project to Circuit JSON, with notes on what it could not carry. A project with sheets is flattened first (`flatten.ts`): Circuit
+ * JSON has no sheets, and says so in the notes. A view of one sheet is exported as the sheet it is.
+ */
+export function projectToCircuitJson(source: Project, options: { nameAllNets?: boolean; forKicad?: boolean; keepVariants?: boolean; extraUnits?: ExtraUnit[] } = {}): CircuitJsonExport {
+  // S8, S9: a rule area's flags are the flags of the parts it touches, and Circuit JSON has no variants: the symbols are written as the active variant, the sheet symbols
+  // and the areas make them. (`keepVariants`: the KiCad export that writes the variants itself, so only the areas' flags are put on the symbols.)
+  const project = options.keepVariants ? withRuleAreaFlagsOnly(source) : withRuleAreaFlags(source)
+  const flat = flattenHierarchy(project)
+  const variantNotes = options.keepVariants || options.forKicad ? [] : variantExportNotes(source, "Circuit JSON")
+  if (flat.project === project) {
+    const out = projectToCircuitJsonFlat(project, options)
+    return variantNotes.length ? { ...out, notes: [...out.notes, ...variantNotes] } : out
+  }
+  const out = projectToCircuitJsonFlat(flat.project, options)
+  return { ...out, notes: [...flat.notes, ...out.notes, ...variantNotes] }
+}
+
+function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boolean; forKicad?: boolean; extraUnits?: ExtraUnit[] } = {}): CircuitJsonExport {
   registerProjectParts(project)
   const notes: string[] = []
   const elements: AnyCircuitElement[] = []
@@ -399,10 +703,12 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
 
   // ---------- Parts: source, schematic and board ----------
   const portIds = new Map<string, string>()
-  const parts: { c: ComponentInstance; part: PartDef; sourceId: string; pcbId: string; schId: string }[] = []
+  const parts: { c: ComponentInstance; part: PartDef; sourceId: string; pcbId: string; schId: string; onBoard: boolean }[] = []
   const unknown: string[] = []
   const droppedProps = new Set<string>()
   const ncPins = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
+  // A unit of a part whose other units are on another sheet is a symbol of its own in this sheet's file (a power unit on a sheet of its own is the usual one): it has no part on the sheet to be a unit of.
+  const unitParts = unitOwners(project.components)
 
   for (const c of project.components) {
     const part = findPart(c.partId)
@@ -410,11 +716,12 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       unknown.push(c.ref)
       continue
     }
-    if (!isPhysical(part)) continue
+    // A part with a footprint is on the board; a KiCad symbol with none is a part of the schematic alone. The other units of a part are symbols of the part.
+    if (!isSchematicPart(part) || (part.unitOf && unitParts.has(c.id))) continue
     const sourceId = ids.next("source_component")
     const pcbId = ids.next("pcb_component")
     const schId = ids.next("schematic_component")
-    parts.push({ c, part, sourceId, pcbId, schId })
+    parts.push({ c, part, sourceId, pcbId, schId, onBoard: onBoard(c) })
     elements.push(sourceComponent(c, part, sourceId, projectFootprints))
     const kept = new Set(["mpn", "lcsc", part.valueProp ?? "", ...(FTYPE_BY_PART[part.id] === "simple_resistor" ? ["resistance"] : []), ...(FTYPE_BY_PART[part.id] === "simple_capacitor" ? ["capacitance", "voltage"] : []), ...(FTYPE_BY_PART[part.id] === "simple_inductor" ? ["inductance"] : []), ...(FTYPE_BY_PART[part.id] === "simple_led" ? ["color"] : []), ...(FTYPE_BY_PART[part.id] === "simple_crystal" ? ["frequency"] : [])])
     for (const [k, v] of Object.entries(c.props)) if (v && !kept.has(k)) droppedProps.add(k)
@@ -505,7 +812,8 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
 
   // ---------- Each part on the board ----------
   const cad: CadComponent[] = []
-  for (const { c, part, sourceId, pcbId, schId } of parts) {
+  for (const { c, part, sourceId, pcbId, schId, onBoard } of parts) {
+    if (!onBoard) continue
     const fpDef = componentFootprint(c)
     const box = emptyBox()
     const court = pcbCourtyard(c)
@@ -528,6 +836,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       width: Number.isFinite(box.minX) ? mm(box.maxX - box.minX) : 0,
       height: Number.isFinite(box.minY) ? mm(box.maxY - box.minY) : 0,
       obstructs_within_bounds: false,
+      ...(c.flags?.dnp ? { do_not_place: true } : {}),
     }
     elements.push(component)
 
@@ -756,7 +1065,30 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   }
 
   // ---------- Schematic ----------
-  for (const { c, part, sourceId, schId } of parts) {
+  // A part with several units is several symbols that share a reference: the part's own and its
+  // twins' (`unitOwners`). Each is a schematic component of the part's one source component, and its
+  // ports are the part's source ports, so a pin drawn on another unit is still that pin.
+  const drawn: SchematicUse = { curves: false, mixedDash: false, styledText: false, overbar: false, alternates: false, sharedNumbers: false, kicadPins: false }
+  const owners = unitOwners(project.components)
+  const partOf = new Map(parts.map((p) => [p.c.id, p]))
+  const orphanUnits: string[] = []
+  const symbols: KicadSymbolLink[] = []
+  // The units another use of this sheet takes of a symbol drawn here (`extraUnits`) are drawn as units of the symbol the use has: the library symbol of the file must have them.
+  const extraBase = new Map((options.extraUnits ?? []).map((e) => [e.unit.id, e.base]))
+  for (const c of [...project.components, ...(options.extraUnits ?? []).map((e) => e.unit)]) {
+    const part = findPart(c.partId)
+    if (!part) continue
+    let own = extraBase.has(c.id) ? (partOf.get(extraBase.get(c.id)!) ?? partOf.get(owners.get(extraBase.get(c.id)!) ?? "")) : partOf.get(c.id)
+    let schId = extraBase.has(c.id) ? own && ids.next("schematic_component") : own?.schId
+    if (!own && part.unitOf) {
+      const ownerId = owners.get(c.id)
+      if (!ownerId) orphanUnits.push(c.ref)
+      own = partOf.get(ownerId ?? "")
+      schId = own && ids.next("schematic_component")
+    }
+    if (!own || !schId) continue
+    const { sourceId } = own
+    const ownerId = own.c.id
     const bounds = schematicBounds(c, part)
     const component: SchematicComponent = {
       type: "schematic_component",
@@ -768,8 +1100,11 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
       is_box_with_pins: false,
     }
     elements.push(component)
-    for (const pin of schematicPins(c, part)) {
-      const source = portIds.get(pinKey(c.id, pin.pin))
+    const worldPins = schematicPins(c, part)
+    // A KiCad file carries each pin's own number: a number the converter cannot say is written as one of ours and put back by the writer (`writtenPinNumbers`).
+    const written = options.forKicad ? writtenPinNumbers(own.part) : null
+    for (const pin of worldPins) {
+      const source = portIds.get(pinKey(ownerId, pin.pin))
       if (!source) continue
       const port: SchematicPort = {
         type: "schematic_port",
@@ -779,54 +1114,56 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
         center: pt(pin.pos),
         facing_direction: pin.dir,
         side_of_component: DIR_SIDE[pin.dir],
-        ...(numeric(pin.pin) ? { pin_number: Number(pin.pin) } : {}),
+        ...(written ? (written.get(pin.pin)?.port != null ? { pin_number: written.get(pin.pin)!.port! } : {}) : numeric(pin.pin) ? { pin_number: Number(pin.pin) } : {}),
       }
       elements.push(port)
+      if (pin.slot && part.jumpers && !part.jumpers.duplicates) drawn.sharedNumbers = true
     }
-    for (const p of part.symbol.primitives) {
-      if (p.type === "path") {
-        const points = p.points.map((q) => pt(transformPoint(q, c.sch, c.sch.rot)))
-        elements.push({
-          type: "schematic_path",
-          schematic_path_id: ids.next("schematic_path"),
-          schematic_component_id: schId,
-          points,
-          is_filled: p.fill,
-          is_dashed: false,
-          stroke_width: p.width ?? 0.01,
-        })
-      } else if (p.type === "circle") {
-        elements.push({
-          type: "schematic_circle",
-          schematic_circle_id: ids.next("schematic_circle"),
-          schematic_component_id: schId,
-          center: pt(transformPoint(p, c.sch, c.sch.rot)),
-          radius: p.radius,
-          color: "#000000",
-          is_filled: p.fill,
-          is_dashed: false,
-          stroke_width: 0.01,
-        })
-      } else {
-        const text = p.role === "ref" ? c.ref : p.role === "value" ? valueText(c, part) : p.text
-        if (!text) continue
-        const vertical = c.sch.rot === 90 || c.sch.rot === 270
-        const pinText = p.role === "pin" || p.role === "pinNumber"
-        const turned = pinText && (p.alongPin ? !vertical : vertical)
-        const el: SchematicText = {
-          type: "schematic_text",
-          schematic_text_id: ids.next("schematic_text"),
-          schematic_component_id: schId,
-          text,
-          font_size: p.size ?? 0.1,
-          position: pt(transformPoint(p, c.sch, c.sch.rot)),
-          rotation: turned ? 90 : 0,
-          anchor: schAnchor(p.anchor, c.sch.rot),
-          color: "#000000",
-        }
-        elements.push(el)
+    const symbol = symbolOf(part, c)
+    const here = (q: Vec2) => {
+      const o = orientPoint(q, c.sch.rot, c.sch.mirror)
+      return pt({ x: c.sch.x + o.x, y: c.sch.y + o.y })
+    }
+    const kicad = !!part.jumpers
+    for (const p of symbol.primitives) {
+      if (p.type === "text") {
+        const el = textPrimitive(c, part, p, here, schId, ids, kicad, drawn)
+        if (el) elements.push(el)
+      } else elements.push(...shapeElements(p, here, schId, ids, drawn))
+    }
+    // The number the converter wrote for a pin, where it is not the pin's own.
+    const wroteOf = (n: string) => (written?.get(n)?.wrote !== n ? written?.get(n)?.wrote : undefined)
+    if (!kicad) {
+      // A part drawn here keeps the converter's drawing, but its pins' numbers are put back (its own pins' names are the numbers, as the converter writes them).
+      const renumbered = worldPins.filter((w) => !w.slot && wroteOf(w.pin) !== undefined).map((w) => ({ number: w.pin, wrote: wroteOf(w.pin)!, name: w.pin }))
+      if (renumbered.length || extraBase.has(c.id)) symbols.push({ id: schId, owner: partOf.get(ownerId)!.schId, unit: c.unit ?? 1, ...(extraBase.has(c.id) ? { virtual: true as const } : {}), part: c.ref, pins: renumbered })
+      continue
+    }
+    // An imported part writes its fields and its pins' names and numbers on the sheet itself.
+    drawn.kicadPins = true
+    const link: KicadSymbolLink = { id: schId, owner: partOf.get(ownerId)!.schId, unit: c.unit ?? 1, ...(extraBase.has(c.id) ? { virtual: true as const } : {}), part: c.ref, pins: worldPins.filter((w) => !w.slot).map((w) => ({ number: w.pin, ...(wroteOf(w.pin) !== undefined ? { wrote: wroteOf(w.pin)! } : {}), name: part.pins.find((q) => q.number === w.pin)?.unnamed && !c.pinAlt?.[w.pin] ? "~" : w.name, ...(w.type ? { type: w.type } : {}) })) }
+    symbols.push(link)
+    for (const f of componentFields(c, part)) {
+      if (f.place.bold || f.place.italic) drawn.styledText = true
+      // The field's angle and justification are the symbol's own: on the sheet they follow its turn and mirror.
+      const drawnAs = orientText(f.place.angle, justifyAnchor(f.place.h, f.place.v), c.sch)
+      if (f.name === "Reference" || f.name === "Value") {
+        const placed: PlacedText = { text: f.text, x: c.sch.x + f.place.x, y: c.sch.y + f.place.y, angle: drawnAs.angle, size: f.place.size ?? FIELD_SIZE, ...justifyOf(drawnAs.anchor) }
+        if (f.name === "Reference") link.reference = placed
+        else link.value = placed
+      }
+      elements.push(sheetText(ids, schId, f.text, { x: c.sch.x + f.place.x, y: c.sch.y + f.place.y }, f.place.size ?? FIELD_SIZE, drawnAs.angle, drawnAs.anchor, f.place.color))
+    }
+    for (const label of symbol.pinLabels ?? []) {
+      const alt = c.pinAlt?.[label.number] ? worldPins.find((w) => w.pin === label.number)?.name : undefined
+      for (const t of pinTexts(label, c.sch, symbol.pinNameOffset ?? 0.04, alt)) {
+        const shown = t.number ? t.text : pinDisplayName(t.text, "")
+        if (!shown) continue
+        if (!t.number && /~\{/.test(t.text)) drawn.overbar = true
+        elements.push(sheetText(ids, schId, shown, { x: c.sch.x + t.x, y: c.sch.y + t.y }, t.size, t.angle, anchorFromAxes(t.h === "left" ? -1 : t.h === "right" ? 1 : 0, 0)))
       }
     }
+    if (part.pins.some((pin) => pin.alternates?.length)) drawn.alternates = true
   }
 
   // Power ports are net labels with their symbol.
@@ -835,7 +1172,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     const net = powerNetName(c, part)
     if (!part || !net) continue
     const pin = schematicPins(c, part)[0]
-    const netId = sch.nets.find((n) => n.name === net)?.id
+    const netId = (project.netNames || project.scope !== undefined) && pin ? sch.pinNet.get(pinKey(c.id, pin.pin)) : sch.nets.find((n) => n.name === net)?.id
     const sourceNetId = netId ? netIds.get(netId) : undefined
     if (!pin || !sourceNetId) continue
     const ground = part.pins[0]?.kind === "ground"
@@ -884,6 +1221,16 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
     elements.push(trace)
   }
 
+  // S4: the sheet's own items. The KiCad export writes them itself, in KiCad's own nodes.
+  const itemNotes = new Set<string>()
+  // What a KiCad sheet drew goes in; the drawings the editor's tools made stay out, as they always did (the note below).
+  const kicadDrawn = (project.drawings ?? []).filter(isExact)
+  if (!options.forKicad) for (const d of kicadDrawn) elements.push(...drawingElements2(d, ids, drawn, itemNotes))
+  if (kicadDrawn.length && !options.forKicad) notes.push(...itemNotes)
+  if (project.wires.some((w) => w.look) && !options.forKicad) notes.push("The widths, dashes and colours of wires are not in Circuit JSON.")
+  if (project.labels.some((l) => l.kind || l.look) && !options.forKicad) notes.push("A label is written as a net label of its text: whether it is local or global, its shape, size and style are not in Circuit JSON.")
+  if (project.components.some((c) => c.flags && (c.flags.excludeFromBom || c.flags.notOnBoard || c.flags.excludeFromSim || c.flags.excludeFromPos || c.flags.dnp)) && !options.forKicad) notes.push("A part marked do not populate is written as one not to be placed; the other flags (out of the BOM, off the board, out of simulation, out of the position file) have no field in Circuit JSON, and a part off the board has no board component.")
+
   // ---------- Notes ----------
   // The KiCad export says what it carries in its own words, since it carries more than Circuit JSON has a field for.
   const kicad = options.forKicad === true
@@ -892,8 +1239,16 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   layerNotesAfter()
   notes.push(...layerNotes)
   if (project.zones.length && !kicad) notes.push("Copper pours are exported as the copper they fill, not as pours that refill: change a pour's settings in Cherry Blossom, not after the export.")
+  if (orphanUnits.length) notes.push(`Left out ${orphanUnits.length === 1 ? "a unit symbol" : `${orphanUnits.length} unit symbols`} whose part is not on the sheet: ${orphanUnits.join(", ")}.`)
+  if (drawn.curves) notes.push("Bezier curves and ellipses, and the fill of filled arcs, are written as paths of short straight lines, since Circuit JSON has no curve for them.")
+  if (drawn.mixedDash) notes.push("Dash-dot and dash-dot-dot lines are written as plain dashes: Circuit JSON has one dash length and gap for a line.")
+  if (drawn.styledText) notes.push("Bold and italic text is written in plain type.")
+  if (drawn.overbar) notes.push("A pin name with an overbar is written with a trailing #.")
+  if (drawn.alternates) notes.push("Each pin carries the function chosen in the schematic; the other functions a pin can take are not in Circuit JSON.")
+  if (drawn.sharedNumbers) notes.push("Pins that share a number are one port in Circuit JSON, which names a port by its number; KiCad keeps them apart.")
+  if (drawn.kicadPins && !kicad) notes.push("KiCad's pin types (input, output, power and the others) are not in Circuit JSON: every pin is written as passive.")
   if (emptyZones.length) notes.push(`Pours that fill nothing were left out: ${emptyZones.join(", ")}.`)
-  if (project.drawings?.length) notes.push("The schematic's drawings (texts, lines and shapes) are left out.")
+  if (project.drawings?.some((d) => !isExact(d)) && !options.forKicad) notes.push("The schematic's drawings (texts, lines and shapes) are left out.")
   if (project.footprints?.length || project.parts?.length) notes.push("Parts and land patterns made for the project are exported as the parts and pads they are; they have no link to a library in the other tool.")
   if (!kicad && project.components.some((c) => onBoard(c) && pcbPads(c).some((p) => p.rings || p.shape === "polygon" && p.x7))) notes.push("A custom pad is written as the outline of its copper, and one with a hole in it or in pieces as its first outline: Circuit JSON has no pad with a cut-out. The KiCad export keeps it whole.")
   if (!kicad) {
@@ -902,7 +1257,7 @@ export function projectToCircuitJson(project: Project, options: { nameAllNets?: 
   }
   void projectFootprints
   notes.push(...drawingNotes, ...new Set(keepoutNotes))
-  return { elements, notes }
+  return { elements, notes, symbols }
 }
 
 /** The text of the .json file and the notes to show with it. */

@@ -1,3 +1,5 @@
+import { acquireBoard, type BoardLease } from "../../store/boardLease"
+import { projectApi } from "../../store/projectStore"
 import { commitHere, shownProject } from "../../store/sheetScope"
 import { isHierarchical } from "../../model/sheets"
 import type { Box } from "../../lib/geometry"
@@ -31,8 +33,15 @@ export function onTidyBusy(listener: (busy: boolean) => void): () => void {
   }
 }
 
+/** Lets go of the board lease the running tidy holds, when it ends however it ends. */
+let releaseLease: (() => void) | null = null
+
 const setBusy = (value: boolean) => {
   busy = value
+  if (!value) {
+    releaseLease?.()
+    releaseLease = null
+  }
   for (const l of busyListeners) l(value)
 }
 
@@ -141,6 +150,28 @@ export function startTidy(timeoutMs = TIDY_TIMEOUT_MS): void {
   // A viewer's tidy could only be refused, after the worker had done it all.
   if (busy || projectApi().role === "viewer") return
   setBusy(true)
+  // Tidying rewrites the sheet: one tab at a time (the board lease). Taken at once where there are no leases.
+  const begin = (lease: BoardLease) => {
+    if (!busy) {
+      // The editor closed while the lease was on its way.
+      if (lease.ok) lease.release()
+      return
+    }
+    if (!lease.ok) {
+      const project = shownProject()
+      setBusy(false)
+      if (project) for (const l of listeners) l({ ...unchanged(project, lease.message), whole: true })
+      return
+    }
+    releaseLease = lease.release
+    startTidyNow(timeoutMs)
+  }
+  const leased = acquireBoard("tidy", false)
+  if (leased instanceof Promise) void leased.then(begin)
+  else begin(leased)
+}
+
+function startTidyNow(timeoutMs: number): void {
   const w = tidyWorker()
   const before = shownProject()
   // A project with sheets is tidied one sheet at a time, here: the worker is given a file, which has no sheet shown.

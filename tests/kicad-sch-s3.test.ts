@@ -200,18 +200,22 @@ describe("S3: checks", () => {
 // ---------- what KiCad joins, what it does not ----------
 
 describe("S3: KiCad's rules for what a bus joins", () => {
-  it("cuts a bus at a junction on its body, so a bus that crosses there joins; and refuses a bus end on another bus's side with no junction (S11)", () => {
+  it("cuts a bus at a junction on its body, so a bus that crosses there joins; and a bus end on another bus's side with no junction is imported with KiCad's rules for the sheet (S11)", () => {
     const crossing = (junction: boolean) =>
       oneSheet({ extraBody: [bus(80, 40, 80, 50), bus(70, 45, 90, 45), ...(junction ? ["(junction (at 80 45) (diameter 0) (color 0 0 0 0) (uuid jj))"] : [])] })
     const ok = load(crossing(true))
     expect(ok.project.drawings!.filter((d) => d.type === "bus").length).toBeGreaterThan(4)
-    expect(refusal(oneSheet({ extraBody: [bus(80, 40, 80, 45), bus(70, 45, 90, 45)] }))?.message).toMatch(/S11|wire joins|side of another wire/i)
+    // S11 is built: the sheet is imported with KiCad's rules (the bus end joins nothing there), where it was refused before
+    const touching = load(oneSheet({ extraBody: [bus(80, 40, 80, 45), bus(70, 45, 90, 45)] }))
+    expect(touching.project.sheets?.some((x) => x.kicadRules)).toBe(true)
+    expect(ok.project.sheets?.some((x) => x.kicadRules)).toBeFalsy()
   })
 
-  it("refuses an entry whose end touches a wire's side with no junction (S11), and joins one with a junction", () => {
+  it("imports an entry whose end touches a wire's side with no junction with KiCad's rules for the sheet (S11), and joins one with a junction without them", () => {
     const wire = "(wire (pts (xy 100 60) (xy 100 80)) (stroke (width 0) (type default)) (uuid wide))"
-    expect(refusal(oneSheet({ extraBody: [wire, entry(100, 70, 2.54, -2.54)] }))?.message).toMatch(/wire joins|side of another wire/i)
-    expect(refusal(oneSheet({ extraBody: [wire, "(junction (at 100 70) (diameter 0) (color 0 0 0 0) (uuid jj))", entry(100, 70, 2.54, -2.54)] }))).toBeNull()
+    expect(load(oneSheet({ extraBody: [wire, entry(100, 70, 2.54, -2.54)] })).project.sheets?.some((x) => x.kicadRules)).toBe(true)
+    const joined = load(oneSheet({ extraBody: [wire, "(junction (at 100 70) (diameter 0) (color 0 0 0 0) (uuid jj))", entry(100, 70, 2.54, -2.54)] }))
+    expect(joined.project.sheets?.some((x) => x.kicadRules)).toBeFalsy()
   })
 
   it("an entry with neither end on a bus joins the wires at both ends, as any item of a net does", () => {
@@ -284,10 +288,10 @@ import { PROJECT_FILE_FORMAT, PROJECT_FILE_VERSION, migrateProjectFile } from ".
 import { createProject } from "../src/model/ops"
 
 describe("S3: the project file", () => {
-  // A version 12 document: what the file format was before buses (the other lane's step is 12; this step is 13).
+  // A version 3 document with no buses.
   const v12 = {
     format: PROJECT_FILE_FORMAT,
-    version: 12,
+    version: 3,
     project: {
       name: "v12",
       description: "",
@@ -302,19 +306,18 @@ describe("S3: the project file", () => {
     },
   }
 
-  it("reads a version 12 document unchanged, with no buses, and saves it as the current version", () => {
+  it("reads a document with no buses unchanged, and saves it as the current version", () => {
     expect(migrateProjectFile(v12)).toEqual(v12.project)
     const read = parseProjectFile(v12, { id: "x" })
     expect(read.busAliases).toBeUndefined()
     expect(read.drawings).toBeUndefined()
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(13)
+    expect(PROJECT_FILE_VERSION).toBe(3)
   })
 
   it("keeps a bus, an entry and an alias through a save and a load, and drops a malformed one without losing the rest", () => {
     const doc = {
       ...v12,
-      version: 13,
       project: {
         ...v12.project,
         drawings: [
@@ -337,10 +340,11 @@ describe("S3: the project file", () => {
     expect(again.busAliases).toEqual(read.busAliases)
   })
 
-  it("a reader of version 12 would refuse a version 13 file: the bump is what keeps a bus from being lost", () => {
+  it("writes the current version, and refuses a version above it", () => {
     const doc = JSON.parse(serializeProject(createProject("n")))
-    expect(doc.version).toBe(13)
-    expect(() => parseProjectFile({ ...doc, version: PROJECT_FILE_VERSION + 1 }, { id: "x" })).toThrow()
+    expect(doc.version).toBe(PROJECT_FILE_VERSION)
+    expect(() => parseProjectFile({ ...doc, version: 3 }, { id: "x" })).not.toThrow()
+    expect(() => parseProjectFile({ ...doc, version: 4 }, { id: "x" })).toThrow()
   })
 })
 

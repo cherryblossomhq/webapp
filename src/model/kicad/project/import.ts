@@ -7,8 +7,10 @@ import { joinFlags } from "../../partFlags"
 import { labelBox } from "../../labels"
 import { findPart, isRegistered, projectPartIds, unregisterPart } from "../../library"
 import { SCH_GRID } from "../../symbols"
+import { sheetView, useAt, usesOfSheet } from "../../sheets"
 import { serializeProject } from "../../projectFile"
 import type { ComponentInstance, NetLabel, PartFlags, Project, Rotation, SchematicBlock, Wire } from "../../types"
+import type { KeptFile } from "../board/images"
 import { importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, formatSize, type KicadImportResult } from "../board/import"
 import { buildKicadProject } from "../board/build"
 import { outlineOf } from "../board/outline"
@@ -20,17 +22,17 @@ import { refusals, type ImportReport, type NodeAccount } from "../board/report"
 import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
 import { settleImportedLabelClasses } from "../../directives"
-import { reportRuleAreaUnits } from "../../ruleAreas"
+import { flagOrigins, reportRuleAreaUnits, resolvedComponents } from "../../ruleAreas"
 import { buildSchematicProject, releaseBuild, type SchematicBuild } from "../schematic/build"
 import { flagVoice } from "../schematic/read"
 import { finishSchematic, gateSchematic } from "../schematic/import"
 import { legacyWarnings, librarySymbols, symbolRef } from "../schematic/legacy/report"
-import { linkFootprints, type LinkResult } from "../schematic/link"
+import { linkFootprints, type LinkResult, type SymbolRecord } from "../schematic/link"
 import { BUILT_EXTENSIONS as SCHEMATIC_BUILT, EXTENSION_NAMES as SCHEMATIC_EXTENSION_NAMES, refusalMessage, unbuilt, type Need } from "../schematic/needs"
 import { normalizePath, type SchematicTree } from "../schematic/tree"
 import { KicadRulesFileError, accountRules, readKicadRules, reportUnknownRules, type KicadRules } from "./dru"
 import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegacyPro } from "./legacyPro"
-import { KicadProjectFileError, accountPro, designSettingsNeeds, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
+import { KicadProjectFileError, accountPro, designSettingsNeeds, proBusAliases, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
 
 // The KiCad project import: a `.kicad_pro`, the `.kicad_sch` sheets and the `.kicad_pcb`, as one
 // project. The board is imported by the board importer, which draws a generated schematic (a label
@@ -92,6 +94,8 @@ export type KicadProjectResult =
       /** What became of every node or key of each file: the board's, the schematic sheets' together, the project file's and the rules file's. */
       accounts: { board: NodeAccount | null; schematic: NodeAccount | null; pro: NodeAccount | null; rules: NodeAccount | null }
       bytes: number
+      /** The files the board brings that are kept beside the project, not in it (reference images). */
+      files?: KeptFile[]
     }
   | {
       status: "refused"
@@ -105,7 +109,6 @@ export type KicadProjectResult =
     }
 
 const NAMES = { ...BOARD_EXTENSION_NAMES, ...SCHEMATIC_EXTENSION_NAMES }
-const natural = new Intl.Collator("en", { numeric: true, sensitivity: "base" })
 const byteLength = (text: string) => new TextEncoder().encode(text).length
 
 const extOf = (path: string) => path.slice(path.lastIndexOf(".")).toLowerCase()
@@ -152,47 +155,6 @@ export function pickProjectFiles(files: ProjectFile[]) {
   const rules = dru.find((d) => dirOf(d.path) === dirOf(board?.path ?? "")) ?? dru[0]
   // A KiCad 5 schematic is read with the libraries beside it: every file of the project goes to the reader.
   return { board, pro, proIsLegacy: !!pro && legacy && !pros.length, root, rules, legacy, sheets: new Map((legacy ? all : [...sheets, ...all.filter((f) => /(^|\/)sym-lib-table$/i.test(f.path) || /\.(kicad_sym|lib)$/i.test(f.path))]).map((s) => [s.path, s.data] as const)), all, notes }
-}
-
-/**
- * The component each footprint of the board became. The board builder makes them in the order of the
- * footprints' references, so that is tried first, and each pair is checked by place, side and reference.
- * When a footprint made no part (one with no pads) or the order has changed, they are matched by place,
- * side and reference together (a part's reference is the footprint's, or its rename: `R1_2`, or a made-up
- * one for a footprint that has none); a footprint that matches none has no part, and one that two parts
- * match is `ambiguous`, which the importer refuses.
- */
-function componentsByFootprint(project: Project, board: KicadBoard): { map: Map<number, ComponentInstance>; ambiguous: string[] } {
-  const stripped = (fp: KicadFootprint) => fp.ref.trim().replace(/\*/g, "")
-  // A footprint with no reference has a made-up one in the part: it is matched by its place in the board builder's order, never by a search (it would fit any part there).
-  const refOk = (fp: KicadFootprint, c: ComponentInstance, byOrder: boolean) => {
-    const ref = stripped(fp)
-    return ref === "" ? byOrder : c.ref === ref || c.ref.startsWith(`${ref}_`)
-  }
-  const same = (fp: KicadFootprint, c: ComponentInstance, byOrder = false) => c.pcb.x === round(fp.at.x, 4) && c.pcb.y === round(-fp.at.y, 4) && c.pcb.side === fp.side && refOk(fp, c, byOrder)
-  // The board builder makes a part of each footprint that has a numbered pad that is not a non-plated hole, and none of the others.
-  const makesPart = (fp: KicadFootprint) => fp.pads.some((p) => p.number && p.type !== "np_thru_hole")
-  const order = board.footprints.map((fp, i) => ({ fp, i })).filter(({ fp }) => makesPart(fp)).sort((a, b) => natural.compare(a.fp.ref, b.fp.ref))
-  const out = new Map<number, ComponentInstance>()
-  if (order.length === project.components.length && order.every(({ fp }, k) => same(fp, project.components[k], true))) {
-    order.forEach(({ i }, k) => out.set(i, project.components[k]))
-    return { map: out, ambiguous: [] }
-  }
-  const taken = new Set<string>()
-  const ambiguous: string[] = []
-  for (const { fp, i } of order) {
-    const found = project.components.filter((x) => !taken.has(x.id) && same(fp, x))
-    if (found.length > 1 && new Set(found.map((x) => x.ref)).size === 1 && found.length === order.filter((o) => same(o.fp, found[0])).length) {
-      // Several footprints and several parts at one place with one reference: taken in order.
-      taken.add(found[0].id)
-      out.set(i, found[0])
-    } else if (found.length > 1) ambiguous.push(fp.ref || "(no reference)")
-    else if (found.length === 1) {
-      taken.add(found[0].id)
-      out.set(i, found[0])
-    }
-  }
-  return { map: out, ambiguous }
 }
 
 const AUTO_NET = /^(?:Net-\(|unconnected-\()/
@@ -300,7 +262,7 @@ function importBoardLossy(data: string | Uint8Array, options: ProjectImportOptio
   }
   const outline = outlineOf(read.board)
   const result = buildKicadProject(read.board, outline, read.report, { name: options.name, source: options.source, allowLossy: true })
-  return { status: "imported", project: result.project, report: read.report, board: read.board, bytes: byteLength(serializeProject(result.project)) }
+  return { status: "imported", project: result.project, report: read.report, board: read.board, bytes: byteLength(serializeProject(result.project)), files: result.files, footprintComponents: result.footprintComponents }
 }
 
 /** Imports a KiCad project from its files. Never throws for a file: what cannot be imported is a refusal with its report. */
@@ -385,7 +347,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (!picked.root) {
     report.entries.push({ code: "no-schematic", severity: "note", object: "the project", why: "There is no schematic among the files, so the board came with a schematic generated from its nets." })
     report.account = boardResult.report.account
-    return { status: "imported", project: boardResult.project, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes }
+    return { status: "imported", project: boardResult.project, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
   }
   const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
   const boardAlone = "importing the .kicad_pcb alone gives the board with a schematic generated from its nets"
@@ -404,26 +366,41 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // The footprints of the board, linked to the symbols of the schematic.
   const link = linkFootprints(gate.tree, kicadBoard.footprints.map((f) => ({ ref: f.ref, path: f.path })))
-  const mapped = componentsByFootprint(boardResult.project, kicadBoard)
-  if (mapped.ambiguous.length) {
-    const message = `The footprints ${mapped.ambiguous.slice(0, 4).join(", ")}${mapped.ambiguous.length > 4 ? " and more" : ""} cannot be told apart from the parts the board importer made, so they cannot be linked to symbols.`
-    report.entries.push({ code: "footprint-parts-ambiguous", severity: "refused", object: "the footprints", why: message })
-    return refuse("inexact", message)
-  }
-  const componentOf = mapped.map
-  const symbolFootprint = new Map<object, { land: string; pcb: ComponentInstance["pcb"]; index: number }>()
+  // The board builder says which component each footprint became (every footprint is one, a padless logo too), so nothing is guessed from a reference and a place.
+  const byId = new Map(boardResult.project.components.map((c) => [c.id, c]))
+  const componentOf = new Map<number, ComponentInstance>([...boardResult.footprintComponents].flatMap(([i, id]) => (byId.has(id) ? [[i, byId.get(id)!] as const] : [])))
+  const symbolFootprint = new Map<SymbolRecord, { land: string; pcb: ComponentInstance["pcb"]; index: number }>()
+  const notOnBoardNote = (ref: string, via: string) => ({ code: "symbol-not-on-board", severity: "note" as const, object: `${ref || "a symbol"}`, why: `${via} marks ${ref || "this symbol"} as not on the board, but the board has its footprint. The footprint is kept as a part of the board, not linked to the symbol.` })
   for (const l of link.links) {
     if (!l.record) continue
     const c = componentOf.get(l.footprint)
     // One footprint belongs to one symbol: the other symbols of its unit group have none.
     // A symbol marked not on the board has no footprint (S7): the board's footprint, if it has one, stays a part of the board with its own nets.
     if (c && l.record.symbol.onBoard === false) {
-      report.entries.push({ code: "symbol-not-on-board", severity: "note", object: `${l.record.reference || "a symbol"}`, why: `The schematic marks ${l.record.reference || "this symbol"} as not on the board, but the board has its footprint. The footprint is kept as a part of the board, not linked to the symbol.` })
+      report.entries.push(notOnBoardNote(l.record.reference, "The schematic"))
       continue
     }
     if (c && !symbolFootprint.has(l.record)) symbolFootprint.set(l.record, { land: c.footprint, pcb: c.pcb, index: l.footprint })
   }
-  const sch = buildSchematicProject(gate.tree, gate.report, { name: options.name, source: options.source, built, footprintFor: (r) => symbolFootprint.get(r) })
+  const buildOptions = { name: options.name, source: options.source, built, busAliases: proBusAliases(pro), variants: proVariants(pro), footprintFor: (r: SymbolRecord) => symbolFootprint.get(r) }
+  const entriesBeforeBuild = gate.report.entries.length
+  let sch = buildSchematicProject(gate.tree, gate.report, buildOptions)
+  // A symbol a rule area, a sheet symbol or the active variant takes off the board is not on it either, whichever way the flag arrives: its footprint is kept as a part of the board, as for the symbol's own flag.
+  // (The resolved flags are known only from the built schematic, so a build that finds such a symbol is thrown away and made again without that link.)
+  const takenOff = [...symbolFootprint.keys()].flatMap((r) => {
+    const c = sch.byRecord.get(r)
+    const resolved = c ? resolvedComponents(sch.project).find((x) => x.id === c.id) : undefined
+    return c && resolved?.flags?.notOnBoard ? [{ record: r, via: flagOrigins(sch.project, c).notOnBoard } as const] : []
+  })
+  if (takenOff.length) {
+    releaseBuild(sch)
+    gate.report.entries.length = entriesBeforeBuild
+    for (const { record, via } of takenOff) {
+      symbolFootprint.delete(record)
+      report.entries.push(notOnBoardNote(record.reference, via === "rule area" ? "A rule area of the schematic" : via === "sheet" ? "The sheet symbol the symbol is on" : "The active variant"))
+    }
+    sch = buildSchematicProject(gate.tree, gate.report, buildOptions)
+  }
   const finished = finishSchematic(gate, sch, { limitBytes: options.limitBytes, built })
   if (finished.status === "refused") {
     report.entries.push(...gate.report.entries.filter((e) => !report.entries.includes(e)))
@@ -487,7 +464,18 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   }
   if (refusals(report).length) return refuseBuilt("inexact", refusals(report)[0].why)
   report.account = gate.report.account
-  return { status: "imported", project: merged.project, report, differences, link, board: kicadBoard, tree: gate.tree, pro, rules, accounts: { board: boardResult.report.account, schematic: gate.report.account, pro: proAccount, rules: rulesAccount }, bytes }
+  return { status: "imported", project: merged.project, report, differences, link, board: kicadBoard, tree: gate.tree, pro, rules, accounts: { board: boardResult.report.account, schematic: gate.report.account, pro: proAccount, rules: rulesAccount }, bytes, files: boardResult.files }
+}
+
+/** S9: the variants the project file lists (`schematic.variants`: a name and, in newer files, a description each). */
+function proVariants(pro: KicadPro | null): { name: string; description?: string }[] {
+  const list = ((pro?.json.schematic ?? {}) as { variants?: unknown }).variants
+  if (!Array.isArray(list)) return []
+  return list.flatMap((v) => {
+    const name = (v as { name?: unknown } | null)?.name
+    const description = (v as { description?: unknown } | null)?.description
+    return typeof name === "string" && name.trim() ? [{ name, ...(typeof description === "string" && description ? { description } : {}) }] : []
+  })
 }
 
 /** What the project file and the rules file need that is not built: customised net classes, assignments, patterns and rules, and anything of the schematic's settings that is more than empty. */
@@ -504,7 +492,6 @@ export function projectNeeds(pro: KicadPro | null, rules: KicadRules | null): Ne
     const j = pro.json
     const schematic = (j.schematic ?? {}) as Record<string, unknown>
     const nonEmpty = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === "object" && v !== null ? Object.keys(v).length > 0 : false)
-    if (nonEmpty(schematic.bus_aliases)) need("S3", "bus aliases in the project file")
     if (nonEmpty(schematic.variants)) need("S9", "schematic variants in the project file")
     // One top level sheet is the root the importer already picks; several are KiCad 10's virtual root, which the sheet tree does not have yet.
     if (Array.isArray(schematic.top_level_sheets) && schematic.top_level_sheets.length > 1) need("S1T", "several top level sheets")
@@ -578,7 +565,8 @@ function placeLoose(project: Project, parts: { c: ComponentInstance; fp: KicadFo
     }
     return b
   })
-  // Below everything the schematic has, from its left edge.
+  // Below everything the root sheet has, from its left edge (the parts with no symbol are placed on the root sheet).
+  const rootSheet = sheetView(project, "")
   let top = 0
   let left = 0
   let seen = false
@@ -587,12 +575,12 @@ function placeLoose(project: Project, parts: { c: ComponentInstance; fp: KicadFo
     left = seen ? Math.min(left, x) : x
     seen = true
   }
-  for (const c of project.components) {
+  for (const c of rootSheet.components) {
     const b = schematicBounds(c)
     grow(b.minX, b.minY)
   }
-  for (const w of project.wires) for (const p of w.points) grow(p.x, p.y)
-  for (const l of project.labels) {
+  for (const w of rootSheet.wires) for (const p of w.points) grow(p.x, p.y)
+  for (const l of rootSheet.labels) {
     const b = labelBox(l)
     grow(b.minX, b.minY)
   }
@@ -747,7 +735,11 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     wires: [...sch.project.wires, ...laid.wires],
     labels: [...sch.project.labels, ...laid.labels],
     ...(sch.project.netNames ? { netNames: sch.project.netNames } : {}),
-    ...(sch.project.items ? { items: sch.project.items } : {}),
+    ...(sch.project.sheets ? { sheets: sch.project.sheets } : {}),
+    ...(sch.project.variants ? { variants: sch.project.variants } : {}),
+    ...(sch.project.sheetSymbols ? { sheetSymbols: sch.project.sheetSymbols } : {}),
+    ...(sch.project.drawings ? { drawings: sch.project.drawings } : {}),
+    ...(sch.project.busAliases ? { busAliases: sch.project.busAliases } : {}),
     parts: parts.length ? parts : undefined,
     ...(sch.project.symbols ? { symbols: sch.project.symbols } : {}),
     footprints: footprints.length ? footprints : undefined,
@@ -771,10 +763,14 @@ function anchorLabels(project: Project, anchors: { name: string; pin: { componen
     const c = project.components.find((x) => x.id === a.pin.componentId)
     const pin = c && schematicPins(c).find((p) => p.pin === a.pin.pin)
     if (!c || !pin) continue
+    // The label goes on the sheet the pin is on; a sheet used more than once would carry it in every use, which would join the uses, so such a pin is left to be reported.
+    const use = useAt(project, c.inst ?? "")
+    if (usesOfSheet(project, use.sheet).length > 1) continue
+    const here = use.sheet === "root" ? {} : { sheet: use.sheet }
     const stub = pinStubPoint(pin, SCH_GRID * 3)
     const rot: Rotation = pin.dir === "left" ? 180 : pin.dir === "up" ? 90 : pin.dir === "down" ? 270 : 0
-    wires.push({ id: uid("w"), points: [pin.pos, stub] })
-    labels.push({ id: uid("l"), name: a.name, x: round(stub.x, 4), y: round(stub.y, 4), rot, kind: "global", shape: "bidirectional" })
+    wires.push({ id: uid("w"), ...here, points: [pin.pos, stub] })
+    labels.push({ id: uid("l"), ...here, name: a.name, x: round(stub.x, 4), y: round(stub.y, 4), rot, kind: "global", shape: "bidirectional" })
   }
   return { ...project, wires, labels }
 }

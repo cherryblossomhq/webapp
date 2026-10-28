@@ -3,21 +3,26 @@ import { renameStoredNets } from "../copperNets"
 import { renameClassNets } from "../netClasses"
 import { blockFrames, blocksWithout, componentTextBoxes, drawnIslands, uniqueBlockName } from "../blocks"
 import { blockPorts, readingOrder } from "../blockPorts"
-import { computeConnectivity, pinKey } from "../connectivity"
-import { moveDrawing } from "../drawings"
-import { isPhysical, pinStubPoint, schematicBounds, schematicPins } from "../instances"
+import { bareName, computeConnectivity, pinKey } from "../connectivity"
+import { drawingBounds, moveDrawing } from "../drawings"
+import { hasDirectives } from "../directives"
+import { hasFlaggedRuleAreas } from "../ruleAreas"
+import { settleKicadSheet } from "../kicadJoin"
+import { isExact } from "../sheetItems"
+import { isSchematicPart, pinStubPoint, schematicBounds, schematicPins, unitOwners } from "../instances"
 import { labelBox } from "../labels"
-import { findPart, getPart } from "../library"
+import { findPart } from "../library"
+import { componentFields, hasFieldPlaces } from "../symbolDrawing"
 import { naturalCompare } from "../../lib/natural"
 import { SCH_GRID } from "../symbols"
-import type { ComponentInstance, NetLabel, Project, Rotation, SchematicBlock, Vec2, Wire } from "../types"
+import type { ComponentInstance, NetLabel, Project, Rotation, SchematicBlock, SchematicDrawing, Vec2, Wire } from "../types"
 import type { BlockDrawing } from "./block"
 import { layoutBlock } from "./clusters"
 import { cutAtBlock, deadRuns, type Cut } from "./cut"
 import { flowOrder, packRows } from "./flow"
 import { isArranged, nameForNet, netInfo, type NetInfo } from "./nets"
 import { Room, type Terminal } from "./room"
-import { portShape, type Dir, type RailKind } from "./shapes"
+import { portInstance, portPrefix, portShape, reseat, tidyPinId, withoutTexts, withPortVias, type Dir, type PortVia, type RailKind } from "./shapes"
 
 // Tidy: the schematic redrawn as titled blocks in reading order (`flow.ts`), each split into a
 // drawing per chip with the parts that serve it (`clusters.ts`) and laid out about it (`block.ts`),
@@ -134,9 +139,58 @@ export function tidySchematic(project: Project, options: TidyOptions = {}): Tidy
 }
 
 function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
+  // S8: a directive label is on a wire or a pin, and a rule area's flags belong to the parts inside it: Tidy draws every wire anew and moves the parts, which would leave
+  // the labels on nothing and change which parts the areas hold. It leaves such a sheet as it is, and says why.
+  if (hasDirectives(project) || hasFlaggedRuleAreas(project)) return fail(project, "Tidy draws the wires again and moves the parts, and this sheet has directive labels or rule areas that belong to the wires and parts where they are, so nothing was changed. Arrange the parts by hand, or delete those first.")
   // S3: Tidy redraws every wire and leaves the drawings where they are, so a bus entry would stay where it was and the wire that met it would go: a sheet with buses is left as drawn, and the nets are the same by name either way.
   if (project.drawings?.some((d) => d.type === "bus" || d.type === "busentry")) return fail(project, "Tidy can't arrange a sheet with buses yet: it redraws the wires, and a bus entry would be left where it was with its wire gone, so nothing was changed.")
   const info = netInfo(project)
+  // Where a net has a power symbol brought in from KiCad, its ports are that symbol, not the editor's own.
+  const vias = new Map<string, PortVia>()
+  const stuck: string[] = []
+  for (const net of info.nets.values()) {
+    if (!net.port) continue
+    if (net.portProblem) stuck.push(`${net.name}: ${net.portProblem}`)
+    else vias.set(net.name, net.port)
+  }
+  // A power symbol Tidy can't redraw is left as drawn, and so is the whole sheet: it draws every port anew.
+  if (stuck.length) return fail(project, `Tidy can't redraw the power symbol on ${stuck.length === 1 ? "a net" : "some nets"}, so nothing was changed.`, stuck)
+  const unrouted = pinsKeptApart(project)
+  if (unrouted.length) return fail(project, "Tidy can't arrange a part with two pins of one number wired apart, so nothing was changed.", unrouted)
+  return withPortVias(vias, () => tidyRun(project, options, info))
+}
+
+/** The refusal for a block with no room: when it is the text of parts that leaves none, it says whose. */
+const noRoom = (text?: string | null) => `Tidy couldn't find room for everything; nothing was changed.${text ? ` ${text[0].toUpperCase()}${text.slice(1)}.` : ""}`
+
+/**
+ * Whether the text of KiCad-drawn parts is what leaves a block no room: a part's fields stay where its
+ * file puts them, and Tidy can't move them clear of the wires and ports it draws. Found by laying the
+ * block out again with the text of the part that is named (or of all of them) not counted; when that
+ * works, the answer names the parts and the fields.
+ */
+function textInTheWay(parts: ComponentInstance[], lay: (parts: ComponentInstance[]) => unknown, why: string): string | null {
+  const drawn = parts.filter((c) => {
+    const part = findPart(c.partId)
+    return !!part && hasFieldPlaces(part) && componentTextBoxes(c).length > 0
+  })
+  if (!drawn.length) return null
+  const named = /no room for ([^:]+):/.exec(why)?.[1]
+  const first = drawn.filter((c) => c.ref === named)
+  for (const group of first.length && first.length < drawn.length ? [first, drawn] : [drawn]) {
+    const ids = new Set(group.map((c) => c.id))
+    try {
+      withoutTexts(ids, () => lay(parts.map((c) => (ids.has(c.id) ? { ...c } : c))))
+    } catch {
+      continue
+    }
+    const list = group.slice(0, 4).map((c) => `${c.ref} (${componentFields(c, findPart(c.partId)!).map((f) => f.name).join(", ")})`)
+    return `the text of ${list.join(", ")}${group.length > 4 ? ` and ${group.length - 4} more` : ""} is where KiCad drew it, and Tidy can't move it clear of the wires`
+  }
+  return null
+}
+
+function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyResult {
   const byId = new Map(project.components.map((c) => [c.id, c]))
   const arranged = (id: string) => {
     const c = byId.get(id)
@@ -172,12 +226,16 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
   for (const b of blocks) for (const id of b.components) blockOf.set(id, b.id)
 
   // ---------- Names ----------
+  /** In a project named as KiCad names its nets, the style each label text has: the labels Tidy draws are of it. */
+  const styles = project.netNames ? labelStyles(project, info) : null
   const taken = new Set([...info.nets.values()].map((n) => n.name))
   for (const l of project.labels) taken.add(l.name.trim())
   const assigned = new Map<string, string>()
   const labelName = (net: string) => {
     const n = info.nets.get(net)!
     if (n.named) return n.name
+    // A project named as KiCad names its nets keeps the name KiCad gave a net nothing names: the label Tidy draws for it is a global one of that name.
+    if (project.netNames) return n.name
     let name = assigned.get(net)
     if (!name) assigned.set(net, (name = nameForNet(project, n, taken)))
     return name
@@ -207,15 +265,18 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
         const id = k.slice(0, k.lastIndexOf(":"))
         return arranged(id) && blockOf.get(id) !== b.id
       })
+    const lay = (list: ComponentInstance[]) => layoutBlock(list, { nets: info, external, labelName, facing: (net) => facing.get(net) ?? null, aliases: (net) => aliases.get(net) ?? [] })
     try {
-      drawings.set(b.id, layoutBlock(parts, { nets: info, external, labelName, facing: (net) => facing.get(net) ?? null, aliases: (net) => aliases.get(net) ?? [] }))
+      drawings.set(b.id, lay(parts))
     } catch (e) {
-      const why = e instanceof Error ? e.message : String(e)
-      if (options.blockId) return fail(project, "Tidy couldn't find room for everything; nothing was changed.", [why])
+      const raw = e instanceof Error ? e.message : String(e)
+      const text = textInTheWay(parts, lay, raw)
+      const why = text ?? raw
+      if (options.blockId) return fail(project, noRoom(text), [why])
       kept.push({ id: b.id, name: b.name, why })
     }
   }
-  if (!drawings.size) return fail(project, "Tidy couldn't find room for everything; nothing was changed.", kept.map((k) => k.why))
+  if (!drawings.size) return fail(project, noRoom(kept.find((k) => k.why.startsWith("the text of"))?.why), kept.map((k) => k.why))
   /** The parts of kept blocks: they stay where they are, with all of the drawing that is theirs alone. */
   const keptParts = new Set(kept.flatMap((k) => members.get(k.id)!.map((c) => c.id)))
 
@@ -356,7 +417,7 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
 
   // ---------- Where each block goes ----------
   const frames = new Map<string, Box>()
-  for (const [id, d] of drawings) frames.set(id, frameOf(project, blocks.find((b) => b.id === id)!, d))
+  for (const [id, d] of drawings) frames.set(id, frameOf(project, blocks.find((b) => b.id === id)!, d, styles))
   const offsets = new Map<string, Vec2>()
   /** What a whole-sheet tidy keeps where it is: what is kept below the blocks goes below this too. */
   let keptArea: Box | null = null
@@ -380,6 +441,12 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
     for (const [id, at] of packed) {
       const f = frames.get(id)!
       offsets.set(id, { x: round(corner.x + at.x - f.minX), y: round(corner.y + at.y - f.maxY) })
+    }
+    // What a KiCad sheet drew (its text, shapes and pictures) stays where it is: what is tidied goes below those it would cover.
+    const fixedDrawings = sheetFixed(project)
+    if (fixedDrawings.length && !kept.length) {
+      const dy = clearOfItems(fixedDrawings, [...offsets].map(([id, o]) => ({ f: frames.get(id)!, o })))
+      if (dy) for (const [id, o] of offsets) offsets.set(id, { x: o.x, y: round(o.y + dy) })
     }
   } else {
     const id = options.blockId
@@ -407,13 +474,14 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
     for (const w of d.wires) newWires.push({ net: w.net, points: w.points.map(at) })
     for (const l of d.labels) newLabels.push({ id: ids.next("l"), name: l.name, ...at(l), rot: l.rot })
     for (const p of d.ports) {
-      const part = getPart(p.partId)
-      const prefix = part.refPrefix as "#PWR" | "#GND"
+      const part = findPart(p.partId)!
+      const prefix = portPrefix(p.partId)
       newPorts.push({
         id: ids.next("c"),
         partId: p.partId,
         ref: `${prefix}${++counters[prefix]}`,
         props: { ...part.defaultProps, net: p.name },
+        ...(p.fields ? { fields: p.fields } : {}),
         footprint: "",
         sch: { ...at(p), rot: p.rot },
         pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
@@ -442,7 +510,8 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
   let next: Project = {
     ...base,
     components: [
-      ...base.components.map((c) => (moved.has(c.id) ? { ...c, sch: moved.get(c.id)! } : { ...c, sch: stow(c.sch, stowed.get(`c:${c.id}`)) })),
+      // A part keeps its mirror: Tidy picks where it stands and which way it is turned, nothing else.
+      ...base.components.map((c) => (moved.has(c.id) ? reseat(c, moved.get(c.id)!) : { ...c, sch: stow(c.sch, stowed.get(`c:${c.id}`)) })),
       ...newPorts,
     ],
     wires: [...base.wires.map((w) => ({ ...w, points: w.points.map((p) => stow(p, stowed.get(`w:${w.id}`))) })), ...wires],
@@ -455,6 +524,12 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
     const keptIds = new Set(kept.map((k) => k.id))
     next = { ...next, blocks: (next.blocks ?? []).flatMap((b) => (!keptIds.has(b.id) ? [b] : was.has(b.id) ? [was.get(b.id)!] : [])) }
   }
+
+  // S11: on a sheet joined by KiCad's rules a T that Tidy drew joins nothing until the wire is cut there, so the wires are cut where they meet, as KiCad cuts them.
+  next = settleKicadSheet(project, next)
+
+  // A project named as KiCad names its nets: the labels Tidy drew take the kind, shape, size and style of the labels they stand for.
+  if (styles) next = { ...next, labels: restyleLabels(next.labels, styles) }
 
   // ---------- Names, and the check ----------
   // A named net keeps its name. An unnamed net that got a label goes by the label's name.
@@ -477,7 +552,8 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
       .sort((a, b) => naturalCompare(pinKey(a.componentId, a.pin), pinKey(b.componentId, b.pin)))
     const id = pins.map((p) => connAfter.pinNet.get(pinKey(p.componentId, p.pin))).find((x) => !!x)
     if (!id) continue
-    const now = new Set(connAfter.conflicts.find((c) => c.netId === id)?.names ?? [connAfter.nets.find((n) => n.id === id)?.name ?? ""])
+    const named = connAfter.nets.find((n) => n.id === id)
+    const now = new Set(connAfter.conflicts.find((c) => c.netId === id)?.names ?? [named ? bareName(named) : ""])
     const missing = names.filter((n) => !now.has(n))
     if (!missing.length) continue
     nameRoom ??= new Room(next)
@@ -486,6 +562,14 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
       if (t) next = withTerminal(next, t, ids)
     }
     connAfter = computeConnectivity(next)
+  }
+  // A junction dot of its own size or colour that no wires meet at any more is gone with them; a second tidy finds none.
+  let droppedDots = 0
+  if (next.drawings?.some((d) => d.type === "junction")) {
+    const dots = new Set(connAfter.junctions.map((j) => `${j.x.toFixed(3)},${j.y.toFixed(3)}`))
+    const kept = next.drawings.filter((d) => d.type !== "junction" || dots.has(`${d.x.toFixed(3)},${d.y.toFixed(3)}`))
+    droppedDots = next.drawings.length - kept.length
+    if (droppedDots) next = { ...next, drawings: kept.length ? kept : undefined }
   }
   const before = physicalNetlist(project, info.conn)
   const after = physicalNetlist(next, connAfter)
@@ -496,7 +580,7 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
   }
   if (Object.keys(renamed).length) next = renameNets(next, renamed)
   const problems = compareNetlists(before, after, renamed, next)
-  if (problems.length) return fail(project, "Tidy would have changed a connection, so nothing was changed.", problems)
+  if (problems.length) return fail(project, "Tidy would have changed a connection, so nothing was changed.", withOffGridNote(project, problems))
   if (kept.length) {
     const wrong = keptProblems(project, next, kept, keptDrawing)
     if (wrong.length) return fail(project, `Tidy couldn't tidy around ${kept.map((k) => k.name).join(" and ")}, which it had to keep as drawn; nothing was changed.`, wrong)
@@ -519,6 +603,7 @@ function tidyCore(project: Project, options: TidyOptions = {}): TidyResult {
     options.blockId ? `Tidied ${scope[0].name}.` : `Tidied ${count} part${count === 1 ? "" : "s"} into ${drawings.size} block${drawings.size === 1 ? "" : "s"}.`,
     ...keptSaid,
     ...tidyNotes(renamed, dropped, stayed, !options.blockId),
+    ...(droppedDots ? [`${droppedDots} junction dot${droppedDots === 1 ? "" : "s"} of ${droppedDots === 1 ? "its" : "their"} own size or colour ${droppedDots === 1 ? "was" : "were"} left out where no wires meet any more.`] : []),
   ]
   return { project: { ...next, updatedAt: Date.now() }, changed: true, ok: true, message: notes.join(" "), renamed, dropped, loose: stayed, problems: [], kept: keptOut }
 }
@@ -621,7 +706,7 @@ function droppedNames(info: NetInfo, after: ReturnType<typeof computeConnectivit
     const id = pin && after.pinNet.get(pinKey(pin.componentId, pin.pin))
     const net = id ? afterNets.get(id) : undefined
     if (!net) continue
-    const now = afterNames.get(net.id) ?? (net.named ? [net.name] : [])
+    const now = afterNames.get(net.id) ?? (net.named ? [bareName(net)] : [])
     const gone = c.names.filter((n) => !now.includes(n))
     if (gone.length) out.push({ net: net.name, names: gone })
   }
@@ -631,16 +716,17 @@ function droppedNames(info: NetInfo, after: ReturnType<typeof computeConnectivit
 // ---------- Frames and placing blocks ----------
 
 /** The frame a block's drawing gets, in the drawing's own coordinates. */
-function frameOf(project: Project, block: SchematicBlock, d: BlockDrawing): Box {
+function frameOf(project: Project, block: SchematicBlock, d: BlockDrawing, styles: Map<string, Partial<NetLabel>> | null = null): Box {
   const byId = new Map(project.components.map((c) => [c.id, c]))
   const components: ComponentInstance[] = []
-  for (const [id, p] of d.parts) components.push({ ...byId.get(id)!, sch: p })
+  for (const [id, p] of d.parts) components.push(reseat(byId.get(id)!, p))
   d.ports.forEach((p, i) => {
     components.push({
       id: `port${i}`,
       partId: p.partId,
       ref: "#P",
       props: { net: p.name },
+      ...(p.fields ? { fields: p.fields } : {}),
       footprint: "",
       sch: { x: p.x, y: p.y, rot: p.rot },
       pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
@@ -650,7 +736,7 @@ function frameOf(project: Project, block: SchematicBlock, d: BlockDrawing): Box 
     ...project,
     components,
     wires: d.wires.map((w, i) => ({ id: `w${i}`, points: w.points })),
-    labels: d.labels.map((l, i) => ({ id: `l${i}`, name: l.name, x: l.x, y: l.y, rot: l.rot })),
+    labels: ((labels) => (styles ? restyleLabels(labels, styles) : labels))(d.labels.map((l, i) => ({ id: `l${i}`, name: l.name, x: l.x, y: l.y, rot: l.rot }))),
     blocks: [{ id: block.id, name: block.name, components: [...d.parts.keys()] }],
   }
   return blockFrames(temp)[0].box
@@ -693,6 +779,8 @@ function freeSpot(
     obstacles.push(schematicBounds(c), ...componentTextBoxes(c))
   }
   for (const l of project.labels) if (!removed.labels.has(l.id)) obstacles.push(labelBox(l))
+  // What a KiCad sheet drew stays where it is, and a block goes clear of it.
+  for (const d of sheetFixed(project)) obstacles.push(drawingBounds(d))
   for (const points of [...project.wires.filter((w) => !removed.wires.has(w.id)).map((w) => w.points), ...pieces]) {
     for (let i = 0; i < points.length - 1; i++) {
       const a = points[i]
@@ -745,6 +833,7 @@ function fixedDrawing(project: Project, keptBlocks: Set<string>, moving: Set<str
     componentTextBoxes(c).forEach(add)
   }
   for (const l of project.labels) if (!stowed.labels.has(l.id)) add(labelBox(l))
+  for (const d of sheetFixed(project)) add(drawingBounds(d))
   for (const w of project.wires) {
     if (stowed.wires.has(w.id)) continue
     for (let i = 1; i < w.points.length; i++) {
@@ -862,7 +951,7 @@ function terminalIds(ids: IdAllocator, counters: Record<"#PWR" | "#GND", number>
   return {
     label: () => ids.next("l"),
     port: (partId: string) => {
-      const prefix = getPart(partId).refPrefix as "#PWR" | "#GND"
+      const prefix = portPrefix(partId)
       return { id: ids.next("c"), ref: `${prefix}${++counters[prefix]}` }
     },
   }
@@ -894,7 +983,8 @@ function nameSpot(
   for (const p of pins) {
     const c = byId.get(p.componentId)
     const pin = c && schematicPins(c).find((q) => q.pin === p.pin)
-    if (!pin) continue
+    // A pin the symbol doesn't draw (a hidden power pin) is on its net by its name: nothing is hung on it.
+    if (!pin || pin.hidden) continue
     const t = room.place(pin.pos, [pin.dir], [2, 3, 4, 6, 8], null, name, ids)
     if (t) return t
   }
@@ -926,7 +1016,8 @@ function markOutside(
 ): Project {
   const c = project.components.find((x) => x.id === r.componentId)
   const pin = c && schematicPins(c).find((p) => p.pin === r.pin)
-  if (!pin) return project
+  // A pin the symbol doesn't draw is on its net by its name: it needs no wire, port or label.
+  if (!pin || pin.hidden) return project
   const found = room.place(pin.pos, [pin.dir], rail ? [2, 3, 1, 4, 5, 6, 8, 10] : [3, 2, 4, 1, 5, 6, 8, 10], rail, name, terminalIds(ids, counters))
   if (found) return withTerminal(project, found, ids)
   const taken = (p: Vec2) =>
@@ -944,17 +1035,8 @@ function markOutside(
   const wire = { id: ids.next("w"), points: [pin.pos, stub] }
   if (rail) {
     const shape = portShape(rail, name, pin.dir)
-    const part = getPart(shape.partId)
-    const prefix = part.refPrefix as "#PWR" | "#GND"
-    const port: ComponentInstance = {
-      id: ids.next("c"),
-      partId: shape.partId,
-      ref: `${prefix}${++counters[prefix]}`,
-      props: { ...part.defaultProps, net: name },
-      footprint: "",
-      sch: { x: round(stub.x + shape.ox * SCH_GRID), y: round(stub.y + shape.oy * SCH_GRID), rot: shape.rot },
-      pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
-    }
+    const prefix = portPrefix(shape.partId)
+    const port: ComponentInstance = { ...portInstance(shape, name, stub), id: ids.next("c"), ref: `${prefix}${++counters[prefix]}` }
     return { ...project, wires: [...project.wires, wire], components: [...project.components, port] }
   }
   const rot: Rotation = pin.dir === "left" ? 180 : pin.dir === "up" ? 90 : pin.dir === "down" ? 270 : 0
@@ -1078,17 +1160,8 @@ function tapAt(
   const dir = prefer.find((d) => t.free.includes(d)) ?? prefer[0]
   if (rail) {
     const shape = portShape(rail, name, dir)
-    const part = getPart(shape.partId)
-    const prefix = part.refPrefix as "#PWR" | "#GND"
-    const port: ComponentInstance = {
-      id: ids.next("c"),
-      partId: shape.partId,
-      ref: `${prefix}${++counters[prefix]}`,
-      props: { ...part.defaultProps, net: name },
-      footprint: "",
-      sch: { x: round(t.at.x + shape.ox * SCH_GRID), y: round(t.at.y + shape.oy * SCH_GRID), rot: shape.rot },
-      pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
-    }
+    const prefix = portPrefix(shape.partId)
+    const port: ComponentInstance = { ...portInstance(shape, name, t.at), id: ids.next("c"), ref: `${prefix}${++counters[prefix]}` }
     return { ...project, components: [...project.components, port] }
   }
   const rot: Rotation = dir === "left" ? 180 : dir === "up" ? 90 : dir === "down" ? 270 : 0
@@ -1184,12 +1257,41 @@ export function renameNets(project: Project, renamed: Record<string, string>): P
 
 // ---------- The check ----------
 
+/**
+ * Pins Tidy can't wire: the second pin of a number in a symbol that keeps such pins apart, standing
+ * where the first does not, with a wire, label or pin on it. Each is on a net of its own and the
+ * connectivity names no net for it, so Tidy could neither draw it to its net nor check it was. (One
+ * left alone is no trouble: Tidy keeps it as it is.)
+ */
+function pinsKeptApart(project: Project): string[] {
+  const out: string[] = []
+  const all = project.components.flatMap((c) => schematicPins(c))
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    if (!part?.jumpers || part.jumpers.duplicates) continue
+    const pins = schematicPins(c, part)
+    for (const pin of pins) {
+      if (!pin.slot || tidyPinId(part, pin, pins) === pin.pin) continue
+      const touched =
+        project.wires.some((w) => w.points.some((q, i) => samePoint(q, pin.pos) || (i > 0 && pointOnSegment(pin.pos, w.points[i - 1], q)))) ||
+        project.labels.some((l) => samePoint(l, pin.pos)) ||
+        all.some((o) => !(o.componentId === c.id && o.pin === pin.pin && o.slot === pin.slot) && samePoint(o.pos, pin.pos))
+      if (touched) out.push(`${c.ref} pin ${pin.pin} (the second of that number) is wired`)
+    }
+  }
+  return out
+}
+
 /** Each physical pin's net, by name, for pins on a net that connects something or is named. */
 export function physicalNetlist(project: Project, conn = computeConnectivity(project)): Map<string, { net: string; named: boolean }> {
   const byNet = new Map(conn.nets.map((n) => [n.id, n]))
   const out = new Map<string, { net: string; named: boolean }>()
+  const owners = unitOwners(project.components)
+  const byComponent = new Map(project.components.map((c) => [c.id, c]))
   for (const c of project.components) {
-    if (!isPhysical(findPart(c.partId))) continue
+    // The units of a part with several are components of their own; their pins are the part's, so they are checked too.
+    const owner = owners.get(c.id)
+    if (!isSchematicPart(findPart(c.partId)) && !(owner && isSchematicPart(findPart(byComponent.get(owner)?.partId ?? "")))) continue
     for (const pin of schematicPins(c)) {
       const id = conn.pinNet.get(pinKey(c.id, pin.pin))
       const net = id ? byNet.get(id) : undefined
@@ -1206,6 +1308,28 @@ export function physicalNetlist(project: Project, conn = computeConnectivity(pro
  */
 export function netlistChanges(before: Project, after: Project, renamed: Record<string, string> = {}): string[] {
   return compareNetlists(physicalNetlist(before), physicalNetlist(after), renamed, after)
+}
+
+/**
+ * The parts among those a refusal names whose pins are not on the editor's 0.1 grid: KiCad lets a symbol
+ * sit anywhere, and the editor draws its wires on a grid, so moving such a part would cut its pins off
+ * their nets. Null when none is.
+ */
+export function offGridNote(project: Project, problems: string[]): string | null {
+  const off: string[] = []
+  for (const c of project.components) {
+    if (!problems.some((p) => p.startsWith(`${c.ref}.`)) || off.includes(c.ref)) continue
+    const part = findPart(c.partId)
+    if (schematicPins(c, part).some((p) => Math.abs(p.pos.x * 10 - Math.round(p.pos.x * 10)) > 1e-6 || Math.abs(p.pos.y * 10 - Math.round(p.pos.y * 10)) > 1e-6)) off.push(c.ref)
+  }
+  if (!off.length) return null
+  return `The pins of ${off.slice(0, 3).join(", ")}${off.length > 3 ? " and others" : ""} are not on the editor's 0.1 grid (KiCad drew the part off its own grid), and the wires Tidy draws are, so it would cut them off their nets.`
+}
+
+/** The refusal's problems with the grid's note first when it is the cause: the toolbar shows the first. */
+export function withOffGridNote(project: Project, problems: string[]): string[] {
+  const note = offGridNote(project, problems)
+  return note ? [note, ...problems] : problems
 }
 
 function compareNetlists(
@@ -1269,3 +1393,83 @@ function sameDrawing(a: Project, b: Project): boolean {
 }
 
 export type { NetInfo }
+
+/**
+ * The drawings a KiCad sheet gave (`isExact`) that are not inside a block's frame: they stay where they are in a
+ * tidy. The drawings of the drawing tools, and any drawing inside a frame, go with their block (`carryDrawings`).
+ */
+function sheetFixed(project: Project): SchematicDrawing[] {
+  if (!project.drawings?.length) return []
+  const carried = new Set(blockFrames(project).flatMap((f) => f.contents.drawings))
+  return project.drawings.filter((d) => isExact(d) && !carried.has(d.id))
+}
+
+/** Where the tidied blocks must move, in y, to be clear of the sheet's drawings: below the lowest one they would cover, repeatedly; 0 when none is in the way. */
+function clearOfItems(items: SchematicDrawing[], drawn: { f: Box; o: Vec2 }[]): number {
+  const area = emptyBox()
+  for (const { f, o } of drawn) {
+    expandBox(area, { x: f.minX + o.x, y: f.minY + o.y })
+    expandBox(area, { x: f.maxX + o.x, y: f.maxY + o.y })
+  }
+  if (!Number.isFinite(area.minX)) return 0
+  const boxes = items.filter((it) => it.type !== "junction" && it.type !== "noconnect").map(drawingBounds)
+  let dy = 0
+  for (let i = 0; i < 50; i++) {
+    const a = { minX: area.minX, maxX: area.maxX, minY: area.minY + dy, maxY: area.maxY + dy }
+    const hit = boxes.filter((b) => b.minX < a.maxX && b.maxX > a.minX && b.minY < a.maxY && b.maxY > a.minY)
+    if (!hit.length) break
+    const lowest = Math.min(...hit.map((b) => b.minY))
+    // On the grid, and no further down than the room needs.
+    dy = round(Math.floor((lowest - BLOCK_GAP - area.maxY) / SCH_GRID + 1e-9) * SCH_GRID)
+  }
+  return dy
+}
+
+/** The kind, shape, size and style each label text has on the sheet: the first label with that text, and for a net nothing names the global label of its KiCad name. */
+function labelStyles(project: Project, info: NetInfo): Map<string, Partial<NetLabel>> {
+  const out = new Map<string, Partial<NetLabel>>()
+  const unnamed = new Set<string>()
+  for (const n of info.nets.values()) {
+    if (n.named) continue
+    out.set(n.name, { kind: "global", shape: "bidirectional" })
+    unnamed.add(n.name)
+  }
+  for (const l of project.labels) {
+    const text = l.name.trim()
+    // Tidy draws one label for each text, so it is the one of the highest priority: a global label over a local one of the same text.
+    const had = out.get(text)
+    if (!l.kind || (had && !(RANK[had.kind ?? "local"] < RANK[l.kind] && !unnamed.has(text)))) continue
+    // The justification a label has beyond the default belongs to the way it pointed, which is not the way the new one does.
+    const look = l.look ? (({ h: _h, v: _v, ...rest }) => (Object.keys(rest).length ? rest : undefined))(l.look) : undefined
+    out.set(text, { kind: l.kind, ...(l.shape ? { shape: l.shape } : {}), ...(look ? { look } : {}), ...(l.fields ? { fields: l.fields } : {}), ...(l.fieldsAutoplaced ? { fieldsAutoplaced: true as const } : {}) })
+  }
+  return out
+}
+
+/** Which label a text takes its style from where it has several: a global one, then a hierarchical one (the sheet's way out), then a local one. */
+const RANK = { local: 0, hierarchical: 1, global: 2 } as const
+
+/**
+ * The labels Tidy drew, with the style of their text; a text that is on the sheet nowhere else is a local label. Of the labels drawn for a
+ * text whose style is a hierarchical label the first is one and the rest are local labels of the same text, which join it by name: the sheet has
+ * its one way out and every pin that needs the name has a label, as a second Tidy draws them (a sheet pin joins every hierarchical label of its name).
+ */
+function restyleLabels(labels: NetLabel[], styles: Map<string, Partial<NetLabel>>): NetLabel[] {
+  const first = new Set<string>()
+  return labels.map((l) => {
+    if (l.kind) return l
+    const text = l.name.trim()
+    const style = styles.get(text) ?? { kind: "local" as const }
+    if (style.kind !== "hierarchical") return { ...l, ...style }
+    if (!first.has(text)) {
+      first.add(text)
+      return { ...l, ...style }
+    }
+    const { kind: _kind, shape: _shape, fields: _fields, fieldsAutoplaced: _auto, ...rest } = style
+    void _kind
+    void _shape
+    void _fields
+    void _auto
+    return { ...l, ...rest, kind: "local" as const }
+  })
+}

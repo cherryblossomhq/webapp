@@ -20,7 +20,7 @@ export function zoneCopperLayers(z: KicadZone, board: KicadBoard): CopperLayer[]
   return layersOfNames(layerMapOf(board), z.layers)
 }
 
-/** Whether every layer of a zone is a copper layer (a zone on mask, paste, silkscreen or a user layer is a different thing, X26). */
+/** Whether every layer of a zone is a copper layer (a zone on mask, paste, silkscreen or a user layer is a different thing, X29). */
 export function zoneOnlyCopper(z: KicadZone, board: KicadBoard): boolean {
   const names = new Set(board.copper.names)
   return z.layers.length > 0 && z.layers.every((n) => n === "*.Cu" || n === "F&B.Cu" || layerClass(n, names) === "copper")
@@ -81,7 +81,7 @@ export function convertZones(cx: ZoneContext): ZoneResult {
   const loose: string[] = []
   const widest = edgeWidth(board)
   for (const z of board.zones) {
-    // A zone with a layer that is not copper among its layers is X26 (the board is refused for it before it gets here).
+    // A zone with a layer that is not copper among its layers is X29 (the board is refused for it before it gets here).
     if (z.kind === "placement" || !zoneOnlyCopper(z, board)) continue
     const layers = zoneCopperLayers(z, board)
     const paths = z.rings.map(ringPath).filter((p): p is ShapePath => p !== null)

@@ -92,10 +92,13 @@ describe("importing a zone", () => {
     const hatch = refused([zone("(connect_pads (clearance 0.4)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (mode hatch) (thermal_gap 0.5) (thermal_bridge_width 0.5) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0))")])
     expect(hatch?.needs.map((n) => n.ext)).toEqual(["X24"])
     const mask = refused([zone(modernFill, square, '(layer "F.Mask")', '(net 0) (net_name "")')])
-    expect(mask?.needs.map((n) => n.ext)).toEqual(["X26"])
+    expect(mask?.needs.map((n) => n.ext)).toEqual(["X29"])
     const inPart = refused([footprint({ pads: [pad({ at: "0 0" })], extra: `(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed)) (polygon (pts (xy -1 -1) (xy 1 -1) (xy 1 1))))` })])
-    expect(inPart?.needs.map((n) => n.ext)).toContain("X27")
-    expect(refused([zone(modernFill, square, '(layer "In1.Cu")')])?.needs.map((n) => n.ext)).toContain("X1")
+    expect(inPart?.needs.map((n) => n.ext)).toContain("X30")
+    // a zone on an inner layer of a board that has one is imported (X1); one on a layer the board lacks is not brought in, and the report says so
+    const lacks = imported([zone(modernFill, square, '(layer "In1.Cu")')])
+    expect(lacks.project.zones).toHaveLength(0)
+    expect(lacks.report.entries.find((e) => e.code === "zones-degenerate")?.count).toBe(1)
   })
 
   it("zones with no fill in the file are filled, a zone with two corners is not brought in, a zone on a net no pin is on is said so", () => {

@@ -1,13 +1,16 @@
+import { round } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
-import type { FillKind, LabelField, SheetFill, SheetItem, SheetShape, SheetStroke, SheetTable, StrokeDash, TableCell, TextLook, Vec2 } from "../../types"
+import { kicadText } from "../../sheetItems"
+import type { DrawingTable, FillKind, LabelField, RuleAreaMark, SchematicDrawing, SheetFill, SheetStroke, StrokeDash, TableCell, TextLook, Vec2 } from "../../types"
 import { flagOf, kid, kids, numAt, strAt, type List } from "../board/sexpr"
 import { colorOf, placeOf, u } from "./symbols"
 import type { KicadSchematic, Pt, SchLabel, SchProperty } from "./types"
 
 // S4 and S2's text: what the sheet carries besides parts, wires and labels (free text, text boxes,
-// lines, rectangles, circles, arcs, curves, pictures, tables), a label's size and style, a wire's
-// stroke, a junction's size and colour. Every number is KiCad's own in the editor's units (KiCad's
-// 1.27 mm is 0.1, and y is negated), exact to 0.000001 of a unit (about 13 nm).
+// lines, rectangles, circles, arcs, curves, pictures, tables), read as drawings (`Project.drawings`, the
+// ones the drawing tools make), a label's size and style, a wire's stroke, a junction's size and colour.
+// Every number is KiCad's own in the editor's units (KiCad's 1.27 mm is 0.1, and y is negated), exact to
+// 0.000001 of a unit (about 13 nm).
 
 /** A point as the editor holds it: y up. */
 export const sheetPt = (p: Pt | undefined): Vec2 => ({ x: u(p?.x ?? 0), y: -u(p?.y ?? 0) === 0 ? 0 : -u(p?.y ?? 0) })
@@ -98,8 +101,8 @@ function marginsOf(node: List): [number, number, number, number] | undefined {
   return [u(numAt(m, 1)), u(numAt(m, 2)), u(numAt(m, 3)), u(numAt(m, 4))]
 }
 
-export interface SheetItems {
-  items: SheetItem[]
+export interface SheetDrawings {
+  drawings: SchematicDrawing[]
   /** What the editor cannot hold of what was read, in words: an item with an angle that is not a quarter turn, a shape with too few points. */
   problems: string[]
   /** What a text asks for that the editor draws its own way (a font of its own). */
@@ -112,12 +115,12 @@ function imageData(node: List): string {
   return (data?.slice(1) ?? []).filter((c): c is string => typeof c === "string").join("").replace(/\s+/g, "")
 }
 
-/** Every text, text box, drawing, picture and table of a sheet, from the lists the reader left in `others`. */
-export function readSheetItems(s: KicadSchematic): SheetItems {
-  const items: SheetItem[] = []
+/** Every text, text box, drawing, picture and table of a sheet, from the lists the reader left in `others`, as drawings. */
+export function readSheetItems(s: KicadSchematic): SheetDrawings {
+  const drawings: SchematicDrawing[] = []
   const problems: string[] = []
   const notes = new Set<string>()
-  const add = (item: SheetItem) => items.push(item)
+  const add = (d: SchematicDrawing) => drawings.push(d)
 
   for (const n of s.others.text ?? []) {
     const place = placeAt(n)
@@ -125,8 +128,7 @@ export function readSheetItems(s: KicadSchematic): SheetItems {
       problems.push("a text turned by other than a quarter turn")
       continue
     }
-    const look = textLookOf(n, notes)
-    add({ id: uid("n"), kind: "text", text: strAt(n, 1) ?? "", x: place.p.x, y: place.p.y, rot: place.rot, ...(look ? { look } : {}), ...simFlag(n) })
+    add(kicadText(uid("d"), strAt(n, 1) ?? "", place.p, place.rot, textLookOf(n, notes), !!simFlag(n).excludeFromSim))
   }
   for (const n of s.others.text_box ?? []) {
     const place = placeAt(n)
@@ -137,32 +139,63 @@ export function readSheetItems(s: KicadSchematic): SheetItems {
     const size = kid(n, "size")
     const look = textLookOf(n, notes)
     const stroke = strokeOf(n)
-    const fill = fillOf(n)
+    const paint = fillOf(n)
     const margins = marginsOf(n)
-    add({ id: uid("n"), kind: "textbox", text: strAt(n, 1) ?? "", x: place.p.x, y: place.p.y, w: u(numAt(size, 1)), h: u(numAt(size, 2)), rot: place.rot, ...(margins ? { margins } : {}), ...(look ? { look } : {}), ...(stroke ? { stroke } : {}), ...(fill ? { fill } : {}), ...simFlag(n) })
+    add({ id: uid("d"), type: "textbox", text: strAt(n, 1) ?? "", x: place.p.x, y: place.p.y, w: u(numAt(size, 1)), h: u(numAt(size, 2)), rot: place.rot, ...(margins ? { margins } : {}), ...(look ? { look } : {}), ...(stroke ? { stroke } : {}), ...(paint ? { paint } : {}), ...simFlag(n) })
   }
 
-  const shape = (n: List, body: Record<string, unknown>) => {
-    const stroke = strokeOf(n)
-    const fill = fillOf(n)
-    add({ id: uid("n"), ...body, ...(stroke ? { stroke } : {}), ...(fill ? { fill } : {}) } as SheetShape)
+  /** The look every shape of the file has: its stroke (an empty one says "KiCad's own line" for a line and a box) and fill. */
+  const look = (n: List, own: boolean) => {
+    const stroke = strokeOf(n) ?? (own ? {} : undefined)
+    const paint = fillOf(n)
+    return { ...(stroke ? { stroke } : {}), ...(paint ? { paint } : {}) }
   }
   const pts = (n: List) => kids(kid(n, "pts"), "xy").map((p) => sheetPt(pointOf(p)))
   for (const n of s.others.polyline ?? []) {
     const points = pts(n)
     if (points.length < 2) problems.push("a line with fewer than two points")
-    else shape(n, { kind: "polyline", points })
+    else add({ id: uid("d"), type: "line", points, ...look(n, true) })
+  }
+  // S8: a rule area is a closed polygon (`(rule_area (polyline ...))`, with the flags of KiCad 10's files beside the polyline): a line that is closed and says what it does.
+  for (const n of s.others.rule_area ?? []) {
+    const poly = kid(n, "polyline")
+    // A corner that is not a number is a damaged file, not a corner at 0.
+    const corners = kids(kid(poly, "pts"), "xy")
+    if (corners.some((c) => !Number.isFinite(Number(c[1])) || !Number.isFinite(Number(c[2])))) {
+      problems.push("a rule area with a corner that is not a number")
+      continue
+    }
+    const points = poly ? pts(poly) : []
+    // KiCad closes the polygon itself; a first point written again at the end is the same corner twice.
+    const first = points[0]
+    const last = points[points.length - 1]
+    if (points.length > 3 && first.x === last.x && first.y === last.y) points.pop()
+    if (!poly || points.length < 3) {
+      problems.push("a rule area with fewer than three corners")
+      continue
+    }
+    const mark: RuleAreaMark = {}
+    if (kid(n, "dnp") && flagOf(n, "dnp")) mark.dnp = true
+    if (kid(n, "in_bom") && !flagOf(n, "in_bom")) mark.excludeFromBom = true
+    if (kid(n, "on_board") && !flagOf(n, "on_board")) mark.notOnBoard = true
+    if (kid(n, "exclude_from_sim") && flagOf(n, "exclude_from_sim")) mark.excludeFromSim = true
+    add({ id: uid("d"), type: "line", points, closed: true, ...look(poly, true), ruleArea: mark })
   }
   for (const n of s.others.rectangle ?? []) {
+    const a = sheetPt(pointOf(kid(n, "start")))
+    const b = sheetPt(pointOf(kid(n, "end")))
     const radius = numAt(kid(n, "radius"), 1, 0)
-    shape(n, { kind: "rectangle", a: sheetPt(pointOf(kid(n, "start"))), b: sheetPt(pointOf(kid(n, "end"))), ...(radius > 0 ? { radius: u(radius) } : {}) })
+    add({ id: uid("d"), type: "rect", x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: round(Math.abs(b.x - a.x), 6), height: round(Math.abs(b.y - a.y), 6), ...(radius > 0 ? { radius: u(radius) } : {}), ...look(n, true) })
   }
-  for (const n of s.others.circle ?? []) shape(n, { kind: "circle", c: sheetPt(pointOf(kid(n, "center"))), r: u(numAt(kid(n, "radius"), 1)) })
-  for (const n of s.others.arc ?? []) shape(n, { kind: "arc", start: sheetPt(pointOf(kid(n, "start"))), mid: sheetPt(pointOf(kid(n, "mid"))), end: sheetPt(pointOf(kid(n, "end"))) })
+  for (const n of s.others.circle ?? []) {
+    const c = sheetPt(pointOf(kid(n, "center")))
+    add({ id: uid("d"), type: "circle", x: c.x, y: c.y, radius: u(numAt(kid(n, "radius"), 1)), ...look(n, false) })
+  }
+  for (const n of s.others.arc ?? []) add({ id: uid("d"), type: "arc", start: sheetPt(pointOf(kid(n, "start"))), mid: sheetPt(pointOf(kid(n, "mid"))), end: sheetPt(pointOf(kid(n, "end"))), ...look(n, false) })
   for (const n of s.others.bezier ?? []) {
     const points = pts(n)
     if (points.length !== 4) problems.push("a curve without four points")
-    else shape(n, { kind: "bezier", points })
+    else add({ id: uid("d"), type: "bezier", points: [points[0], points[1], points[2], points[3]], ...look(n, false) })
   }
 
   for (const n of s.others.image ?? []) {
@@ -170,17 +203,17 @@ export function readSheetItems(s: KicadSchematic): SheetItems {
     const scale = kid(n, "scale") ? numAt(kid(n, "scale"), 1, 1) : 1
     const data = imageData(n)
     if (!data) problems.push("a picture with no data")
-    else add({ id: uid("n"), kind: "image", x: at.x, y: at.y, scale, data })
+    else add({ id: uid("d"), type: "image", x: at.x, y: at.y, scale, data })
   }
 
   for (const n of s.others.table ?? []) {
     const table = readTable(n, notes, problems)
     if (table) add(table)
   }
-  return { items, problems, notes }
+  return { drawings, problems, notes }
 }
 
-function readTable(n: List, notes: Set<string>, problems: string[]): SheetTable | null {
+function readTable(n: List, notes: Set<string>, problems: string[]): DrawingTable | null {
   const cells: TableCell[] = []
   for (const c of kids(kid(n, "cells"), "table_cell")) {
     const place = placeAt(c)
@@ -214,8 +247,8 @@ function readTable(n: List, notes: Set<string>, problems: string[]): SheetTable 
   const ss = strokeOf(separators)
   const yes = (node: List | undefined, name: string) => flagOf(node, name)
   return {
-    id: uid("n"),
-    kind: "table",
+    id: uid("d"),
+    type: "table",
     columns: numAt(kid(n, "column_count"), 1, 0),
     columnWidths: (kid(n, "column_widths")?.slice(1) ?? []).map((v) => u(Number(v))),
     rowHeights: (kid(n, "row_heights")?.slice(1) ?? []).map((v) => u(Number(v))),

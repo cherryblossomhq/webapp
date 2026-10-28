@@ -1,56 +1,105 @@
+import { applyChanges, jsonEqual, type Change, type JsonObject } from "@cherryblossom/project-changes"
 import { pruneGroups } from "../model/boardObjects"
 import { followNetRenames } from "../model/copperNets"
 import { settleLabelNetClasses } from "../model/directives"
+import { followCopies, keepSheetsWithWork, settleStructure } from "../model/settleStructure"
 import { pruneImportMarks } from "../model/importMarks"
+import { settleKicadSheet } from "../model/kicadJoin"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
 import { registerProjectFootprints } from "../model/footprints"
+import { PROJECT_FILE_VERSION } from "../model/projectFile"
 import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
-import { projectRecord, type ProjectStorage, type SaveRefusal } from "./storage"
+import { projectChanges } from "./changes"
+import type { ProjectRole, ProjectStorage, RemoteBatch } from "./storage"
+import { ProjectSync, type SaveStatus, type SyncHost } from "./sync"
+
+export type { SaveStatus } from "./sync"
 
 const HISTORY_LIMIT = 200
 
 /**
  * Copper that names its net follows a rename, what an import marked that no longer holds is retired, and a group loses what an edit deleted (and goes when nothing is left in it).
  * The first two stop at once for an edit that left the schematic alone, the group one for a board with no groups, and the classes directive labels give (S8) for a project with none.
+ * S11: whatever made the edit, a sheet joined by KiCad's rules is left with its new T's cut, as KiCad cuts them (an edit that has done it already is unchanged by it, and a project with no such sheet is returned as it is).
  */
-const settleEdit = (before: Project, made: Project) => settleLabelNetClasses(before, pruneGroups(pruneImportMarks(before, followNetRenames(before, made))))
-/** Quiet time after an edit before it is saved, so a burst of edits is one save. */
-const SAVE_DELAY_MS = 600
-/** Waits before retrying a save that didn't arrive (offline, a server error). */
-const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000]
+const settleEdit = (before: Project, made: Project) => settleLabelNetClasses(before, pruneGroups(pruneImportMarks(before, followNetRenames(before, settleKicadSheet(before, made)))))
 
 /**
- * How saving the open project is going.
- *
- * - `saving`: an edit is waiting to be saved, or on its way.
- * - `retrying`: a save didn't arrive; it is tried again until it does.
- * - `refused`: storage turned it away (`SaveRefusal`), and autosave has stopped for anything but
- *   `too_large`, since asking again won't change the answer. The top bar says what to do.
+ * The project with its sheet tree and what hangs on it made whole (`settleStructure`): what is drawn on a sheet or use the tree no longer has goes, each use of a
+ * reused sheet gets the parts another use has, and nothing is left on a copper layer the board does not have. The project itself when there is nothing to do.
  */
-export type SaveStatus = { state: "saved" } | { state: "saving" } | { state: "retrying"; message: string } | { state: "refused"; reason: SaveRefusal }
+function settled(project: Project): Project {
+  const next = settleStructure(project)
+  return next !== project && projectChanges(project, next).length ? next : project
+}
+
+/**
+ * One undoable step, as the changes that undo it and the ones that redo it, rather than a copy of
+ * the project before it. With other people editing the same project, undo must take back this
+ * user's own step and nothing else: applying its `undo` changes to the project as it now is puts
+ * back the values this step replaced and leaves everyone else's edits alone (a part someone else
+ * deleted meanwhile stays deleted).
+ */
+export interface HistoryStep {
+  undo: Change[]
+  redo: Change[]
+}
+
+/**
+ * An older version of the project shown in place of it, read-only (`startPreview`). The live
+ * project is kept beside it, and follows everyone's edits meanwhile, so leaving the preview shows
+ * the project as it is by then.
+ */
+export interface Preview {
+  /** The version shown: its id (for restoring), when it was current and what to call it. */
+  version: { id: string; at: number; name: string | null; label: string }
+  /** The project as it is now, followed through the sync while the preview is open. */
+  live: Project
+  /** The user's role on the live project: the shown one is `viewer` while previewing, so nothing edits it. */
+  liveRole: ProjectRole
+}
 
 interface ProjectState {
   project: Project | null
-  past: Project[]
-  future: Project[]
+  past: HistoryStep[]
+  future: HistoryStep[]
   /** Snapshot taken when a drag/transient edit began. */
   transientBase: Project | null
   save: SaveStatus
-  /** Open a project loaded at `revision` of its stored copy. */
-  open: (p: Project, revision?: number) => void
+  /** What this user may do to the open project. A viewer's edits are refused before they happen. */
+  role: ProjectRole
+  /** Counts edits refused because the project is view-only, so the notice saying so shows each time. */
+  refusedEdits: number
+  /** A past version shown in place of `project`, or null. While set, `role` reads `viewer`. */
+  preview: Preview | null
+  /** Show an older version of the open project read-only, taking back the live one when `endPreview` is called. */
+  startPreview: (project: Project, version: Preview["version"]) => void
+  /** Leave the preview and show the live project, as it is by now. */
+  endPreview: () => void
+  /** Forget the undo history: after a restore, whose steps were worked out against a state that is gone. */
+  clearHistory: () => void
+  /** The open project was deleted, or stopped being shared with this user, while it was open. */
+  gone: boolean
+  /** This tab's session on the open project: names its batches and its presence. Null without storage. */
+  sessionId: string | null
+  /** Open a project loaded from storage at `stored.revision`; without `stored`, one that isn't stored yet. */
+  open: (p: Project, stored?: { revision: number; formatVersion?: number; role?: ProjectRole }) => void
   close: () => void
   /** Apply an undoable change. */
   commit: (fn: (p: Project) => Project) => void
   /**
-   * Apply a change that is not a step of the user's own: a background check's verdict on a part.
-   * It is saved but not put in the undo history, so Undo still undoes what the user did last. It is
-   * also applied to the snapshots Undo and Redo go back to (`fn` must be pure, and return a
-   * project it has nothing to change in as it was, so only the snapshots that have the part change),
-   * so the change survives them.
+   * Apply a change that is not a step of the user's own: a background check's verdict on a part,
+   * or the editor tidying up after someone else's edit (a designator both of them took at once).
+   * It is sent but not put in the undo history, so Undo still undoes what the user did last. It is
+   * also applied to every item a step puts back whole (`fn` must be pure, and return a project it
+   * has nothing to change in as it was), so Undo then Redo of a part's placement keeps it, even
+   * for a part undone before the change arrived.
    */
   patch: (fn: (p: Project) => Project) => void
+  /** Take down the strip saying the last edits were refused. */
+  dismissSaveNotice: () => void
   beginTransient: () => void
   /** Replace the document during a drag without creating history entries. */
   setTransient: (fn: (base: Project) => Project) => void
@@ -58,8 +107,6 @@ interface ProjectState {
   cancelTransient: () => void
   undo: () => void
   redo: () => void
-  /** After a `conflict`: save this copy over the one saved elsewhere. */
-  keepMine: () => Promise<void>
 }
 
 let storage: ProjectStorage | null = null
@@ -69,256 +116,335 @@ export function connectProjectStorage(next: ProjectStorage | null | undefined) {
   storage = next ?? null
 }
 
-/**
- * One opened project's saving. It outlives the project being on screen: closing a project, or
- * opening another, leaves the last edit's save to land rather than cancelling it.
- */
-class Autosave {
-  /** The newest edit not yet sent. */
-  private pending: Project | null = null
-  private timer: ReturnType<typeof setTimeout> | null = null
-  private inFlight: Promise<void> | null = null
-  private failures = 0
-  private stopped = false
+/** The storage the open project is kept in: its presence and sharing are the collaboration panels'. */
+export const projectStorage = () => storage
 
-  constructor(
-    readonly id: string,
-    private revision: number,
-    private readonly storage: ProjectStorage,
-  ) {}
+let sync: ProjectSync | null = null
+/** Syncs of projects no longer open whose last batches haven't landed: leaving the page still loses them. */
+const retired = new Set<ProjectSync>()
 
-  /** True while an edit hasn't been saved yet and is still going to be. */
-  get unsaved() {
-    return this.inFlight !== null || (this.pending !== null && !this.stopped)
-  }
-
-  schedule(project: Project) {
-    if (this.stopped) return
-    this.pending = project
-    this.report({ state: "saving" })
-    this.wait(SAVE_DELAY_MS)
-  }
-
-  /** Save the pending edit now. */
-  flush(): Promise<void> {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    // The save in flight sends whatever is pending once it lands.
-    if (this.inFlight) return this.inFlight
-    const project = this.pending
-    if (!project || this.stopped) return Promise.resolve()
-    this.pending = null
-    this.inFlight = this.storage
-      .save(this.id, this.revision, projectRecord(project))
-      .then(
-        (outcome) => {
-          this.failures = 0
-          if (outcome.ok) {
-            this.revision = outcome.revision
-            if (!this.pending) this.report({ state: "saved" })
-            return
-          }
-          // A smaller project may still fit, so the next edit tries again; nothing else changes by asking.
-          if (outcome.reason !== "too_large") this.stopped = true
-          this.report({ state: "refused", reason: outcome.reason })
-        },
-        (error: unknown) => {
-          this.pending ??= project
-          this.report({ state: "retrying", message: error instanceof Error ? error.message : String(error) })
-          this.wait(RETRY_DELAYS_MS[Math.min(this.failures++, RETRY_DELAYS_MS.length - 1)])
-        },
-      )
-      .finally(() => {
-        this.inFlight = null
-        // Edits made while that save was on its way.
-        if (this.pending && !this.timer && !this.stopped) void this.flush()
-        else if (!this.unsaved) closedUnsaved.delete(this)
-      })
-    return this.inFlight
-  }
-
-  /** Take over the stored copy at whatever revision it has reached, and save `project` over it. */
-  async overwrite(project: Project) {
-    const stored = await this.storage.load(this.id)
-    if (!stored) {
-      this.report({ state: "refused", reason: "not_found" })
-      return
-    }
-    this.revision = stored.revision
-    this.stopped = false
-    this.pending = project
-    this.report({ state: "saving" })
-    await this.flush()
-  }
-
-  private wait(ms: number) {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = setTimeout(() => {
-      this.timer = null
-      void this.flush()
-    }, ms)
-  }
-
-  private report(save: SaveStatus) {
-    // A project closed with a save still landing has nothing left on screen to tell.
-    if (autosave === this) useProjectStore.setState({ save })
-  }
+/** Stop following the open project and let its last batches land, keeping the page guard while they do. */
+function retireSync() {
+  if (!sync) return
+  sync.retire()
+  if (sync.unsaved) retired.add(sync)
+  sync = null
 }
 
-let autosave: Autosave | null = null
-/** Saves of projects no longer open that haven't landed: leaving the page still loses them. */
-const closedUnsaved = new Set<Autosave>()
-
-/** Send the open project's last edit and let it go, keeping the page guard while it lands. */
-function retireAutosave() {
-  if (!autosave) return
-  void autosave.flush()
-  if (autosave.unsaved) closedUnsaved.add(autosave)
-  autosave = null
+const unsavedSyncs = () => {
+  for (const s of retired) if (!s.unsaved) retired.delete(s)
+  return [sync, ...retired].filter((s): s is ProjectSync => !!s?.unsaved)
 }
-
-const unsavedAutosaves = () => [autosave, ...closedUnsaved].filter((a): a is Autosave => !!a?.unsaved)
 
 /** How long leaving the editor waits for its saves before going anyway: offline, a save never lands. */
 const SETTLE_LIMIT_MS = 3_000
 
 /**
- * Send every save that hasn't landed and wait for it, so a page load away from the editor needn't
+ * Send every edit that hasn't landed and wait for it, so a page load away from the editor needn't
  * ask the user to stay. A second round takes the edits made while the first was on its way. Past
  * the limit it resolves regardless, and the page guard asks as it always did.
  */
 export function settleSaves(): Promise<void> {
   const settle = async () => {
-    for (let round = 0; round < 2 && unsavedAutosaves().length; round++) {
-      await Promise.all(unsavedAutosaves().map((a) => a.flush()))
+    for (let round = 0; round < 3 && unsavedSyncs().length; round++) {
+      await Promise.all(unsavedSyncs().map((s) => s.flush()))
     }
   }
   return Promise.race([settle(), new Promise<void>((resolve) => setTimeout(resolve, SETTLE_LIMIT_MS))])
 }
 
-/** What is safe to store: never a drag in progress, which Esc may still take back. */
-const savable = (s: ProjectState) => s.transientBase ?? s.project
+/** Someone else's batches landed on the open project: what it was, and what it is now. */
+type RemoteListener = (batches: RemoteBatch[], before: Project, after: Project) => void
+const remoteListeners = new Set<RemoteListener>()
 
-const scheduleSave = (s: ProjectState) => {
-  const p = savable(s)
-  if (p) autosave?.schedule(p)
+/** Hear about other people's edits to the open project as they land (for toasts, and tidying the selection). */
+export function onRemoteChanges(listener: RemoteListener): () => void {
+  remoteListeners.add(listener)
+  return () => remoteListeners.delete(listener)
 }
 
-export const useProjectStore = create<ProjectState>((set, get) => ({
-  project: null,
-  past: [],
-  future: [],
-  transientBase: null,
-  save: { state: "saved" },
+/**
+ * Parts this tab added to the open project. When someone else added one at the same moment, both
+ * took the same designator; `model/designators.ts` decides which of the two is renumbered, and only
+ * the tab that added it can tell it is theirs.
+ */
+const createdHere = new Set<string>()
+export const isCreatedHere = (componentId: string) => createdHere.has(componentId)
 
-  open: (p, revision = 0) => {
-    retireAutosave()
-    registerProjectParts(p)
-    autosave = storage ? new Autosave(p.id, revision, storage) : null
-    set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" } })
-  },
-  close: () => {
-    retireAutosave()
-    set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" } })
-  },
+/** Send the changes from `before` to `after`. The changes, empty when nothing that travels changed (a new `updatedAt` alone). */
+function send(before: Project, after: Project): Change[] {
+  const redo = projectChanges(before, after)
+  if (!redo.length) return redo
+  for (const c of redo) if (c.kind === "put" && c.collection === "components") createdHere.add(String(c.item.id))
+  sync?.send(redo)
+  return redo
+}
 
-  commit: (fn) => {
-    const { project, past, transientBase } = get()
-    if (!project) return
-    const made = fn(project)
-    if (made === project) return
-    const next = settleEdit(project, made)
-    // A change that lands mid-drag (the copilot works in the background) ends the drag where it
-    // is: rebuilding the drag from its starting snapshot afterwards would drop the change.
-    const before = transientBase && transientBase !== project ? [transientBase, project] : [project]
-    set({ project: next, past: [...past, ...before].slice(-HISTORY_LIMIT), future: [], transientBase: null })
-    scheduleSave(get())
-  },
+/** Record an edit from `before` to `after` as a step, sending its changes. Null when nothing that travels changed. */
+function step(before: Project, after: Project): HistoryStep | null {
+  const redo = send(before, after)
+  return redo.length ? { undo: projectChanges(after, before), redo } : null
+}
 
-  patch: (fn) => {
-    const { project, past, future, transientBase } = get()
-    if (!project) return
-    const next = fn(project)
-    if (next === project) return
-    // A press that never moved has the base and the project as one object, and must stay one: two
-    // calls make two objects, and `endTransient` would take the pair for a drag and push an empty undo step.
-    const base = transientBase === project ? next : transientBase && fn(transientBase)
-    // The edit goes into every snapshot that has what it changes, or Undo then Redo (or placing
-    // again) would bring the part back without the verdict. A snapshot without it comes back as it was.
-    set({ project: next, past: past.map(fn), future: future.map(fn), ...(base && { transientBase: base }) })
-    scheduleSave(get())
-  },
-
-  beginTransient: () => {
-    const { project } = get()
-    if (project) set({ transientBase: project })
-  },
-  setTransient: (fn) => {
-    const base = get().transientBase
-    if (!base) return
-    set({ project: fn(base) })
-  },
-  endTransient: (finalize) => {
-    const { transientBase, project, past } = get()
-    if (!transientBase || !project) {
-      set({ transientBase: null })
-      return
-    }
-    // A press that never moved changed nothing, and must not cost the redo stack a step.
-    if (!finalize && project === transientBase) {
-      set({ transientBase: null })
-      return
-    }
-    // A fresh object lets caches that skipped work during the drag (copper pours) recompute.
-    const dropped = finalize ? finalize(project) : { ...project }
-    // What a schematic drag connected or renamed is settled as a commit settles it (a pin that now has a net loses its import mark); a PCB drag skips it at once.
-    const finalProject = settleEdit(transientBase, dropped)
-    if (finalProject === transientBase) {
-      set({ transientBase: null, project: finalProject })
-      return
-    }
-    set({
-      project: finalProject,
-      transientBase: null,
-      past: [...past, transientBase].slice(-HISTORY_LIMIT),
-      future: [],
+/**
+ * `fn` applied to each item `step` puts back whole (a part its undo or redo brings back), as it
+ * would apply to that item in `project`: the item is put back into `project` and `fn` tried on that,
+ * so what `fn` weighs it against (another part with its designator) is there too.
+ */
+function patchStep(s: HistoryStep, fn: (p: Project) => Project, project: Project): HistoryStep {
+  const patchPuts = (changes: Change[]) => {
+    let patched = false
+    const out = changes.map((c) => {
+      if (c.kind !== "put") return c
+      const probe = applyChanges(project, [c])
+      const after = fn(probe)
+      if (after === probe) return c
+      const key = c.key ?? "id"
+      const list = (after as unknown as Record<string, unknown>)[c.collection]
+      const item = Array.isArray(list) ? (list as JsonObject[]).find((i) => i?.[key] === c.item[key]) : undefined
+      if (!item || jsonEqual(item, c.item)) return c
+      patched = true
+      return { ...c, item }
     })
-    scheduleSave(get())
-  },
-  cancelTransient: () => {
-    const base = get().transientBase
-    if (base) set({ project: base, transientBase: null })
-  },
+    return patched ? out : changes
+  }
+  const undo = patchPuts(s.undo)
+  const redo = patchPuts(s.redo)
+  return undo === s.undo && redo === s.redo ? s : { undo, redo }
+}
 
-  // Both wait for a drag to end: its starting snapshot would otherwise outlive the step undone.
-  undo: () => {
-    const { past, project, future, transientBase } = get()
-    if (!past.length || !project || transientBase) return
-    const prev = past[past.length - 1]
-    set({ project: prev, past: past.slice(0, -1), future: [project, ...future] })
-    scheduleSave(get())
-  },
-  redo: () => {
-    const { past, project, future, transientBase } = get()
-    if (!future.length || !project || transientBase) return
-    const [next, ...rest] = future
-    set({ project: next, past: [...past, project], future: rest })
-    scheduleSave(get())
-  },
+/**
+ * An undo or a redo applied to the project as it is now, and settled: a sheet the step removes stays when others have put things on it (undoing a new sheet must not
+ * delete a collaborator's parts, nor leave them on no sheet), and the sheet tree, copies of reused sheets and layers are made whole. What it changed travels as part of
+ * the same step, so the other copies reach the same project.
+ */
+function applyStep(project: Project, changes: Change[]): Project {
+  const applied = applyChanges(project, changes)
+  const next = settled(followCopies(project, keepSheetsWithWork(project, applied)))
+  registerProjectParts(next)
+  send(project, next)
+  return next
+}
 
-  keepMine: async () => {
-    const p = savable(get())
-    if (p && autosave) await autosave.overwrite(p)
-  },
-}))
+export const useProjectStore = create<ProjectState>((set, get) => {
+  /** True, and the read-only notice shown again, when the open project can't be edited by this user. */
+  const readOnly = () => {
+    if (get().role !== "viewer") return false
+    // A preview says why itself, in its banner.
+    if (get().preview) return true
+    set((s) => ({ refusedEdits: s.refusedEdits + 1 }))
+    return true
+  }
+  /**
+   * A viewer pressed something that would start a drag. A press is also how they select, so it is
+   * refused silently, and said only if the pointer then moves (`setTransient`).
+   */
+  let viewerPress = false
+
+  const hostFor = (self: () => ProjectSync | null): SyncHost => ({
+    rebase(shown, batches) {
+      if (sync !== self()) return
+      // Someone else's batch, or a project read again, can leave the sheet tree with things on sheets it no longer has, or a reused sheet's new use without a part another use got
+      // meanwhile. Every copy settles it the same way (`settleStructure` is deterministic) and sends the difference; what is already settled sends nothing.
+      const view = settled(shown)
+      const { preview } = get()
+      if (view !== shown && (preview?.liveRole ?? get().role) !== "viewer") sync?.send(projectChanges(shown, view))
+      // A preview is on screen: the live project moves behind it, and is there when the preview closes.
+      if (preview) return set({ preview: { ...preview, live: view } })
+      const { transientBase, project: before } = get()
+      registerProjectParts(view)
+      if (transientBase && before) {
+        // Mid-drag: the drag so far goes back on top of the project as it now is.
+        set({ transientBase: view, project: applyChanges(view, projectChanges(transientBase, before)) })
+      } else {
+        set({ project: view })
+      }
+      const after = get().project
+      if (batches.length && before && after) for (const listener of remoteListeners) listener(batches, before, after)
+    },
+    status(save) {
+      if (sync === self()) set({ save })
+    },
+    role(role) {
+      if (sync !== self()) return
+      const { preview } = get()
+      if (preview) return set({ preview: { ...preview, liveRole: role } })
+      set({ role })
+      if (role === "viewer") get().cancelTransient()
+    },
+    gone() {
+      if (sync === self()) set({ gone: true })
+    },
+    refused() {
+      if (sync === self()) set({ past: [], future: [] })
+    },
+  })
+
+  return {
+    project: null,
+    past: [],
+    future: [],
+    transientBase: null,
+    save: { state: "saved" },
+    role: "owner",
+    refusedEdits: 0,
+    gone: false,
+    sessionId: null,
+    preview: null,
+
+    open: (p, stored) => {
+      retireSync()
+      createdHere.clear()
+      registerProjectParts(p)
+      const role = stored?.role ?? "owner"
+      let created: ProjectSync | null = null
+      if (storage) {
+        created = new ProjectSync(
+          p.id,
+          p,
+          stored?.revision ?? 0,
+          stored?.formatVersion ?? PROJECT_FILE_VERSION,
+          role,
+          storage,
+          hostFor(() => created),
+        )
+      }
+      sync = created
+      set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null })
+      created?.start()
+    },
+    close: () => {
+      retireSync()
+      set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" }, role: "owner", gone: false, sessionId: null, preview: null })
+    },
+
+    startPreview: (shown, version) => {
+      if (!get().project) return
+      get().cancelTransient()
+      const { project, role, preview } = get()
+      registerProjectParts(shown)
+      set({
+        project: shown,
+        role: "viewer",
+        transientBase: null,
+        preview: { version, live: preview?.live ?? project!, liveRole: preview?.liveRole ?? role },
+      })
+    },
+    endPreview: () => {
+      const { preview } = get()
+      if (!preview) return
+      registerProjectParts(preview.live)
+      set({ project: preview.live, role: preview.liveRole, transientBase: null, preview: null })
+    },
+    clearHistory: () => set({ past: [], future: [] }),
+
+    commit: (fn) => {
+      const { project, past, future, transientBase } = get()
+      if (!project || readOnly()) return
+      const made = fn(project)
+      if (made === project) return
+      const next = settleEdit(project, made)
+      // A change that lands mid-drag (the copilot works in the background) ends the drag where it
+      // is: rebuilding the drag from its starting snapshot afterwards would drop the change.
+      const steps = [transientBase && transientBase !== project ? step(transientBase, project) : null, step(project, next)].filter(
+        (s): s is HistoryStep => !!s,
+      )
+      set({
+        project: next,
+        transientBase: null,
+        ...(steps.length && { past: [...past, ...steps].slice(-HISTORY_LIMIT), future: [] }),
+        ...(!steps.length && { future }),
+      })
+    },
+
+    patch: (fn) => {
+      const { project, past, future, transientBase, role } = get()
+      if (!project || role === "viewer") return
+      const next = fn(project)
+      // A press that never moved has the base and the project as one object, and must stay one: two
+      // calls make two objects, and `endTransient` would take the pair for a drag and record a step.
+      const base = transientBase === project ? next : transientBase && fn(transientBase)
+      // Mid-drag only the drag's starting point is sent; the drag goes when it ends, over this.
+      if (transientBase && base) send(transientBase, base)
+      else send(project, next)
+      const patchAll = (steps: HistoryStep[]) => {
+        const out = steps.map((s) => patchStep(s, fn, next))
+        return out.some((s, i) => s !== steps[i]) ? out : steps
+      }
+      const history = { past: patchAll(past), future: patchAll(future) }
+      if (next === project && history.past === past && history.future === future) return
+      set({ project: next, ...history, ...(base && { transientBase: base }) })
+    },
+
+    dismissSaveNotice: () => sync?.dismiss(),
+
+    beginTransient: () => {
+      const { project, role } = get()
+      if (!project) return
+      viewerPress = role === "viewer"
+      if (!viewerPress) set({ transientBase: project })
+    },
+    setTransient: (fn) => {
+      const base = get().transientBase
+      if (!base) {
+        if (viewerPress) {
+          viewerPress = false
+          readOnly()
+        }
+        return
+      }
+      set({ project: fn(base) })
+    },
+    endTransient: (finalize) => {
+      viewerPress = false
+      const { transientBase, project, past } = get()
+      if (!transientBase || !project) {
+        set({ transientBase: null })
+        return
+      }
+      // A press that never moved changed nothing, and must not cost the redo stack a step.
+      if (!finalize && project === transientBase) {
+        set({ transientBase: null })
+        return
+      }
+      // A fresh object lets caches that skipped work during the drag (copper pours) recompute.
+      const dropped = finalize ? finalize(project) : { ...project }
+      // What a schematic drag connected or renamed is settled as a commit settles it (a pin that now has a net loses its import mark); a PCB drag skips it at once.
+      const finalProject = settleEdit(transientBase, dropped)
+      const s = finalProject === transientBase ? null : step(transientBase, finalProject)
+      set({ project: finalProject, transientBase: null, ...(s && { past: [...past, s].slice(-HISTORY_LIMIT), future: [] }) })
+    },
+    cancelTransient: () => {
+      viewerPress = false
+      const base = get().transientBase
+      if (base) set({ project: base, transientBase: null })
+    },
+
+    // Both wait for a drag to end: the drag's own changes would otherwise land on top of the step undone.
+    undo: () => {
+      const { past, project, future, transientBase } = get()
+      if (!past.length || !project || transientBase || readOnly()) return
+      const s = past[past.length - 1]
+      const next = applyStep(project, s.undo)
+      set({ project: next, past: past.slice(0, -1), future: [s, ...future] })
+    },
+    redo: () => {
+      const { past, project, future, transientBase } = get()
+      if (!future.length || !project || transientBase || readOnly()) return
+      const [s, ...rest] = future
+      const next = applyStep(project, s.redo)
+      set({ project: next, past: [...past, s], future: rest })
+    },
+  }
+})
 
 if (typeof window !== "undefined") {
-  window.addEventListener("pagehide", () => unsavedAutosaves().forEach((a) => void a.flush()))
-  // A save is a network request now, and one cut off by the page going away is work lost.
+  window.addEventListener("pagehide", () => unsavedSyncs().forEach((s) => void s.flush()))
+  // An edit is a network request, and one cut off by the page going away is work lost.
   window.addEventListener("beforeunload", (e) => {
-    const unsaved = unsavedAutosaves()
+    const unsaved = unsavedSyncs()
     if (!unsaved.length) return
-    unsaved.forEach((a) => void a.flush())
+    unsaved.forEach((s) => void s.flush())
     e.preventDefault()
   })
 }

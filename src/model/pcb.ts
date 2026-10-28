@@ -5,16 +5,21 @@ import {
   isQuarterTurn,
   pointSegmentDistance,
   segmentSegmentDistance,
-  segmentsIntersect,
   type Box,
 } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { mountingHoles } from "./board"
 import { crossingSentence, outlineCrossings } from "./outlineCrossing"
 import { boxOnBoard, convexOverlap, copperEdgeClearance, outlineGeometry, outlineState, ringOnBoard } from "./outline"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
+import { arcArcDistance, arcBox, arcOf, arcPolyline, isArcTrace, pointArcDistance, segmentArcDistance, type ArcTrack } from "./arcTracks"
+import { copperLayers, layerOfKicadName, viaDiameterOn, viaLayers } from "./stack"
 import { DECOUPLING_WARN_MM, decouplingGaps, decouplingPairs } from "./decoupling"
-import { findPart } from "./library"
-import { hasCourtyard, isNpth, isPhysical, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { hasCourtyard, isNpth, maskSides, pcbCourtyard, pcbCourtyardRing, pcbPads, slotEnds, type WorldPad } from "./instances"
+import { maskMargin } from "./padOpening"
+import { holeCentre, padBox, padCopper, padEdgeDistance, padRingsOf, padRingWidth, pointPadDistance, segmentPadDistance } from "./padDistance"
+import { classIndex, hasNetClasses } from "./netClasses"
+import { onBoard } from "./partFlags"
 import { keepoutViolations } from "./zoneChecks"
 import { carveFills, type PendingGroup } from "./zoneFill"
 import { fillTester, fillZones, fillZonesReusing, type FillPolygon, type ZoneFill } from "./pour"
@@ -25,11 +30,13 @@ import { segEnd, shapeCopper, shapeInkBox, shapeShapeDistance, type ShapeCopper 
 import { layerText, worldTexts } from "./texts"
 import type { BoardDef, BoardShape, ComponentInstance, CopperLayer, Project, Vec2, Via } from "./types"
 
+export { pointPadDistance, segmentPadDistance }
+
 /** componentId used for board-level copper such as mounting holes. */
 export const BOARD_OWNER = "#board"
 
 export type CopperItem =
-  | { kind: "pad"; id: string; pad: WorldPad; netId: string | null; layers: CopperLayer[]; box: Box }
+  | { kind: "pad"; id: string; pad: WorldPad; netId: string | null; layers: CopperLayer[]; box: Box; unflashed?: CopperLayer[] }
   | {
       kind: "segment"
       id: string
@@ -42,6 +49,8 @@ export type CopperItem =
       box: Box
       /** The net the trace says it is on (`Trace.net`), when it says one and the project has it. */
       netId?: string | null
+      /** X4: the track is this arc, from `a` to `b` through its middle point (a trace with `arc`), not the straight line between them. */
+      arc?: ArcTrack
     }
   | {
       kind: "via"
@@ -53,6 +62,8 @@ export type CopperItem =
       box: Box
       /** The net the via says it is on (`Via.routedNet`), when it says one and the project has it. */
       netId?: string | null
+      /** X1: the layers of its span where the via has no copper because nothing connects there (see `pruneUnused`). */
+      unflashed?: CopperLayer[]
     }
   | {
       /**
@@ -110,6 +121,7 @@ export interface DrcViolation {
     | "edge-clearance"
     | "outline"
     | "via-in-pad"
+    | "mask-bridge"
     | "floating-copper"
     | "decoupling"
     | "keepout"
@@ -132,10 +144,6 @@ export interface PcbAnalysis {
   zonesPending?: PendingGroup[]
 }
 
-function padBox(p: WorldPad): Box {
-  return { minX: p.x - p.width / 2, minY: p.y - p.height / 2, maxX: p.x + p.width / 2, maxY: p.y + p.height / 2 }
-}
-
 const segBox = (a: Vec2, b: Vec2, w: number): Box => ({
   minX: Math.min(a.x, b.x) - w / 2,
   minY: Math.min(a.y, b.y) - w / 2,
@@ -145,87 +153,9 @@ const segBox = (a: Vec2, b: Vec2, w: number): Box => ({
 
 const inflate = (b: Box, d: number): Box => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
 
-/** A polygon pad's corners when it has them (a part turned by other than a quarter turn has all its rectangular pads this way), else null. */
-const polygonRing = (pad: WorldPad): Vec2[] | null => (pad.shape === "polygon" && pad.points && pad.points.length >= 3 ? pad.points : null)
-
-function pointRingDistance(p: Vec2, ring: Vec2[]): number {
-  let inside = false
-  let best = Infinity
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const a = ring[i]
-    const b = ring[j]
-    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
-    best = Math.min(best, pointSegmentDistance(p, a, b))
-  }
-  return inside ? 0 : best
-}
-
-/** Distance from point to a pad's copper (0 inside). */
-export function pointPadDistance(p: Vec2, pad: WorldPad): number {
-  const ring = polygonRing(pad)
-  if (ring) return pointRingDistance(p, ring)
-  if (pad.shape === "circle") return Math.max(0, dist(p, pad) - pad.width / 2)
-  if (pad.shape === "pill") {
-    const r = Math.min(pad.width, pad.height) / 2
-    const half = Math.max(pad.width, pad.height) / 2 - r
-    const horizontal = pad.width >= pad.height
-    const a = horizontal ? { x: pad.x - half, y: pad.y } : { x: pad.x, y: pad.y - half }
-    const b = horizontal ? { x: pad.x + half, y: pad.y } : { x: pad.x, y: pad.y + half }
-    return Math.max(0, pointSegmentDistance(p, a, b) - r)
-  }
-  const dx = Math.max(Math.abs(p.x - pad.x) - pad.width / 2, 0)
-  const dy = Math.max(Math.abs(p.y - pad.y) - pad.height / 2, 0)
-  return Math.hypot(dx, dy)
-}
-
-function rectCorners(pad: WorldPad): Vec2[] {
-  const hw = pad.width / 2
-  const hh = pad.height / 2
-  return [
-    { x: pad.x - hw, y: pad.y - hh },
-    { x: pad.x + hw, y: pad.y - hh },
-    { x: pad.x + hw, y: pad.y + hh },
-    { x: pad.x - hw, y: pad.y + hh },
-  ]
-}
-
-export function segmentPadDistance(a: Vec2, b: Vec2, pad: WorldPad): number {
-  const ring = polygonRing(pad)
-  if (ring) {
-    if (pointRingDistance(a, ring) === 0 || pointRingDistance(b, ring) === 0) return 0
-    let best = Math.min(pointRingDistance(a, ring), pointRingDistance(b, ring))
-    for (let i = 0; i < ring.length; i++) {
-      const c = ring[i]
-      const d = ring[(i + 1) % ring.length]
-      if (segmentsIntersect(a, b, c, d)) return 0
-      best = Math.min(best, pointSegmentDistance(c, a, b))
-    }
-    return best
-  }
-  if (pad.shape === "circle") return Math.max(0, pointSegmentDistance(pad, a, b) - pad.width / 2)
-  if (pad.shape === "pill") {
-    const r = Math.min(pad.width, pad.height) / 2
-    const half = Math.max(pad.width, pad.height) / 2 - r
-    const horizontal = pad.width >= pad.height
-    const c = horizontal ? { x: pad.x - half, y: pad.y } : { x: pad.x, y: pad.y - half }
-    const d = horizontal ? { x: pad.x + half, y: pad.y } : { x: pad.x, y: pad.y + half }
-    return Math.max(0, segmentSegmentDistance(a, b, c, d) - r)
-  }
-  if (pointPadDistance(a, pad) === 0 || pointPadDistance(b, pad) === 0) return 0
-  const corners = rectCorners(pad)
-  let best = Math.min(pointPadDistance(a, pad), pointPadDistance(b, pad))
-  for (let i = 0; i < 4; i++) {
-    const c = corners[i]
-    const d = corners[(i + 1) % 4]
-    if (segmentsIntersect(a, b, c, d)) return 0
-    best = Math.min(best, pointSegmentDistance(c, a, b))
-  }
-  return best
-}
-
 function padPadDistance(p: WorldPad, q: WorldPad): number {
   if (p.shape === "circle" && q.shape === "circle") return Math.max(0, dist(p, q) - p.width / 2 - q.width / 2)
-  if (polygonRing(p) || polygonRing(q)) return shapeShapeDistance(padCopper(p), padCopper(q))
+  if (padRingsOf(p) || padRingsOf(q) || p.corner || q.corner) return shapeShapeDistance(padCopper(p), padCopper(q))
   const a = padBox(p)
   const b = padBox(q)
   const dx = Math.max(a.minX - b.maxX, b.minX - a.maxX, 0)
@@ -235,25 +165,12 @@ function padPadDistance(p: WorldPad, q: WorldPad): number {
 
 const copperCache = new WeakMap<CopperItem, ShapeCopper>()
 
-/** A pad as lines with a half width and a filled area. */
-function padCopper(p: WorldPad): ShapeCopper {
-  if (p.shape === "circle") return { edges: [[p, p]], half: p.width / 2, fill: [] }
-  if (p.shape === "pill") {
-    const r = Math.min(p.width, p.height) / 2
-    const half = Math.max(p.width, p.height) / 2 - r
-    const horizontal = p.width >= p.height
-    return { edges: [horizontal ? [{ x: p.x - half, y: p.y }, { x: p.x + half, y: p.y }] : [{ x: p.x, y: p.y - half }, { x: p.x, y: p.y + half }]], half: r, fill: [] }
-  }
-  const ring = polygonRing(p) ?? rectCorners(p)
-  return { edges: ring.map((q, i) => [q, ring[(i + 1) % ring.length]] as [Vec2, Vec2]), half: 0, fill: [ring] }
-}
-
 /** A pad, trace, via or drawing as lines with a half width and a filled area, for measuring against a drawing. */
 function itemCopper(it: CopperItem): ShapeCopper {
   if (it.kind === "shape") return it.copper
   let c = copperCache.get(it)
   if (c) return c
-  if (it.kind === "segment") c = { edges: [[it.a, it.b]], half: it.width / 2, fill: [] }
+  if (it.kind === "segment") c = { edges: segmentChords(it), half: it.width / 2, fill: [] }
   else if (it.kind === "via") c = { edges: [[it.at, it.at]], half: it.diameter / 2, fill: [] }
   else if (it.kind === "pad") {
     c = padCopper(it.pad)
@@ -262,17 +179,35 @@ function itemCopper(it: CopperItem): ShapeCopper {
   return c
 }
 
+/** The chords of a track item: the one segment of a straight track, an arc track's curve cut to within the drawings' own tolerance. */
+function segmentChords(it: Extract<CopperItem, { kind: "segment" }>): [Vec2, Vec2][] {
+  if (!it.arc) return [[it.a, it.b]]
+  const pts = arcPolyline([it.arc.start, it.arc.mid, it.arc.end])
+  const out: [Vec2, Vec2][] = []
+  for (let i = 0; i + 1 < pts.length; i++) out.push([pts[i], pts[i + 1]])
+  return out
+}
+
+/** The distance from a point to a track's centre line. */
+const pointTrackDistance = (p: Vec2, s: Extract<CopperItem, { kind: "segment" }>) => (s.arc ? pointArcDistance(p, s.arc) : pointSegmentDistance(p, s.a, s.b))
+
+/** The distance between two tracks' centre lines (exact for arcs). */
+function trackTrackDistance(x: Extract<CopperItem, { kind: "segment" }>, y: Extract<CopperItem, { kind: "segment" }>): number {
+  if (x.arc && y.arc) return arcArcDistance(x.arc, y.arc)
+  if (x.arc) return segmentArcDistance(y.a, y.b, x.arc)
+  if (y.arc) return segmentArcDistance(x.a, x.b, y.arc)
+  return segmentSegmentDistance(x.a, x.b, y.a, y.b)
+}
+
 /** Edge-to-edge distance between two copper items (0 when touching/overlapping). */
 export function itemDistance(x: CopperItem, y: CopperItem): number {
   if (x.kind === "shape" || y.kind === "shape") return x.kind === "zone" || y.kind === "zone" ? Infinity : shapeShapeDistance(itemCopper(x), itemCopper(y))
   if (x.kind === "pad" && y.kind === "pad") return padPadDistance(x.pad, y.pad)
-  if (x.kind === "segment" && y.kind === "segment")
-    return Math.max(0, segmentSegmentDistance(x.a, x.b, y.a, y.b) - x.width / 2 - y.width / 2)
+  if (x.kind === "segment" && y.kind === "segment") return Math.max(0, trackTrackDistance(x, y) - x.width / 2 - y.width / 2)
   if (x.kind === "via" && y.kind === "via") return Math.max(0, dist(x.at, y.at) - x.diameter / 2 - y.diameter / 2)
-  if (x.kind === "pad" && y.kind === "segment") return Math.max(0, segmentPadDistance(y.a, y.b, x.pad) - y.width / 2)
+  if (x.kind === "pad" && y.kind === "segment") return Math.max(0, Math.min(...segmentChords(y).map(([a, b]) => segmentPadDistance(a, b, x.pad))) - y.width / 2)
   if (x.kind === "segment" && y.kind === "pad") return itemDistance(y, x)
-  if (x.kind === "via" && y.kind === "segment")
-    return Math.max(0, pointSegmentDistance(x.at, y.a, y.b) - x.diameter / 2 - y.width / 2)
+  if (x.kind === "via" && y.kind === "segment") return Math.max(0, pointTrackDistance(x.at, y) - x.diameter / 2 - y.width / 2)
   if (x.kind === "segment" && y.kind === "via") return itemDistance(y, x)
   if (x.kind === "via" && y.kind === "pad") return Math.max(0, pointPadDistance(x.at, y.pad) - x.diameter / 2)
   if (x.kind === "pad" && y.kind === "via") return itemDistance(y, x)
@@ -320,14 +255,36 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
   const stored = useStored && (project.traces.some((t) => t.net) || project.vias.some((v) => v.routedNet) || project.graphics?.some((g) => g.net) || project.footprints?.some((f) => f.shapes?.some((s) => s.net)))
   const netByName = stored ? new Map(sch.nets.map((n) => [n.name, n.id])) : null
   const idOf = (name: string | undefined) => (name && netByName ? (netByName.get(name.trim()) ?? null) : null)
-  for (const c of project.components) {
-    if (!c.pcb.placed || !isPhysical(findPart(c.partId))) continue
-    pcbPads(c).forEach((pad, i) => {
+  const stack = copperLayers(project.board)
+  const count = stack.length
+  for (const c of resolvedComponents(project)) {
+    if (!c.pcb.placed || !onBoard(c)) continue
+    pcbPads(c, count).forEach((pad, i) => {
       const netId = pad.pin ? (sch.pinNet.get(pinKey(c.id, pad.pin)) ?? null) : null
-      items.push({ kind: "pad", id: `pad:${c.id}:${i}`, pad, netId, layers: pad.layers, box: padBox(pad) })
+      // A pad stack (X1): a layer with a shape of its own is an item of its own, joined to the rest of the pad by its pin.
+      const own = pad.variants ? pad.layers.filter((l) => !pad.variants![l]) : pad.layers
+      if (own.length) items.push({ kind: "pad", id: `pad:${c.id}:${i}`, pad, netId, layers: own, box: padBox(pad) })
+      for (const [layer, v] of Object.entries(pad.variants ?? {}) as [CopperLayer, WorldPad][]) items.push({ kind: "pad", id: `pad:${c.id}:${i}@${layer}`, pad: v, netId, layers: [layer], box: padBox(v) })
     })
   }
   for (const t of project.traces) {
+    if (isArcTrace(t)) {
+      const arc = arcOf(t.points)
+      items.push({
+        kind: "segment",
+        id: `seg:${t.id}:0`,
+        traceId: t.id,
+        index: 0,
+        a: t.points[0],
+        b: t.points[2],
+        width: t.width,
+        layers: [t.layer],
+        box: arcBox(arc, t.width),
+        arc,
+        ...(t.net ? { netId: idOf(t.net) } : {}),
+      })
+      continue
+    }
     for (let i = 0; i < t.points.length - 1; i++) {
       const a = t.points[i]
       const b = t.points[i + 1]
@@ -356,27 +313,40 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
       width: h.diameter,
       height: h.diameter,
       holeDiameter: h.drill,
-      layers: ["top", "bottom"],
+      layers: [...stack],
     }
     items.push({ kind: "pad", id: `pad:${BOARD_OWNER}:${h.id}`, pad, netId: null, layers: pad.layers, box: padBox(pad) })
   }
   for (const v of project.vias) {
-    const r = v.diameter / 2
-    items.push({
-      kind: "via",
-      id: `via:${v.id}`,
-      viaId: v.id,
-      at: { x: v.x, y: v.y },
-      diameter: v.diameter,
-      layers: ["top", "bottom"],
-      box: { minX: v.x - r, minY: v.y - r, maxX: v.x + r, maxY: v.y + r },
-      ...(v.routedNet ? { netId: idOf(v.routedNet) } : {}),
-    })
+    const span = viaLayers(project.board, v)
+    // A via stack (X1) has a diameter of its own on some layers: one item for each run of layers that share one, the first with the via's own id.
+    const groups = new Map<number, CopperLayer[]>()
+    for (const l of span) {
+      const d = viaDiameterOn(v, l)
+      const g = groups.get(d)
+      if (g) g.push(l)
+      else groups.set(d, [l])
+    }
+    let k = 0
+    for (const [diameter, layers] of groups) {
+      const r = diameter / 2
+      items.push({
+        kind: "via",
+        id: k === 0 ? `via:${v.id}` : `via:${v.id}#${k}`,
+        viaId: v.id,
+        at: { x: v.x, y: v.y },
+        diameter,
+        layers,
+        box: { minX: v.x - r, minY: v.y - r, maxX: v.x + r, maxY: v.y + r },
+        ...(v.routedNet ? { netId: idOf(v.routedNet) } : {}),
+      })
+      k++
+    }
   }
   // Drawings on a copper layer.
   for (const w of worldShapes(project)) {
-    if (!w.placed || (w.shape.layer !== "F.Cu" && w.shape.layer !== "B.Cu")) continue
-    const layer: CopperLayer = w.shape.layer === "F.Cu" ? "top" : "bottom"
+    const layer = w.placed ? layerOfKicadName(w.shape.layer) : null
+    if (!layer || !stack.includes(layer)) continue
     const box = shapeInkBox(w.shape)
     items.push({
       kind: "shape",
@@ -393,10 +363,10 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
   }
   // Text on a copper layer is copper (never on a net): a pour keeps clear of it, the router goes round it, and it keeps clear of every net.
   for (const wt of worldTexts(project)) {
-    if (!wt.placed || wt.hidden || (wt.layer !== "F.Cu" && wt.layer !== "B.Cu")) continue
+    const layer = wt.placed && !wt.hidden ? layerOfKicadName(wt.layer) : null
+    if (!layer || !stack.includes(layer)) continue
     const t = layerText(project, wt)
     if (!t) continue
-    const layer: CopperLayer = wt.layer === "F.Cu" ? "top" : "bottom"
     const edges: [Vec2, Vec2][] = []
     const fill: Vec2[][] = []
     for (const line of t.strokes) for (let i = 0; i + 1 < line.length; i++) edges.push([line[i], line[i + 1]])
@@ -414,7 +384,80 @@ export function buildCopperItems(project: Project, sch: SchematicConnectivity, u
     const shape: BoardShape = { type: "rect", a: { x: box.minX, y: box.minY }, b: { x: box.maxX, y: box.maxY }, layer: wt.layer, width: 0 }
     items.push({ kind: "shape", id: `text:${wt.id}`, shapeId: wt.id, owner: wt.owner, shape, copper: { edges, half, fill }, conducts: false, layers: [layer], box, what: "text" })
   }
+  pruneUnused(project, items)
   return items
+}
+
+/**
+ * X1 and X5: copper a through-hole pad or a via drops on the layers nothing connects to (KiCad's `remove_unused_layers`: `PAD::FlashLayer`, pad.cpp
+ * 9.0.0 `:341`, and `PCB_VIA::FlashLayer`, pcb_track.cpp 9.0.0 `:1225`). Its item then has no copper there, so no check, pour or plot sees any. A layer stays when the
+ * mode keeps it (every layer; the outer ones of a pad and the two ends of a via for `keepEnds`; only the two ends for `startEnd`), when a via's `zoneLayers` list
+ * it, or when a track, a via or a pad of the same net touches the item on it. A pour is not copper that connects here, as in KiCad, where the pour joins what the
+ * connectivity already connected. The layers dropped are `unflashed` on the item.
+ */
+function pruneUnused(project: Project, items: CopperItem[]) {
+  const viaOf = new Map<string, Via>()
+  const candidates: number[] = []
+  items.forEach((it, i) => {
+    if (it.kind === "pad" && it.pad.unused && it.pad.holeDiameter !== undefined && !isNpth(it.pad)) candidates.push(i)
+    else if (it.kind === "via") {
+      let v = viaOf.get(it.viaId)
+      if (!v) {
+        v = project.vias.find((x) => x.id === it.viaId)
+        if (v) viaOf.set(it.viaId, v)
+      }
+      if (v?.unused) candidates.push(i)
+    }
+  })
+  if (!candidates.length) return
+  const outer = new Set<CopperLayer>(["top", "bottom"])
+  // The items whose boxes meet a candidate's, found once by sweeping over all of them.
+  const isCandidate = new Set(candidates)
+  const near = new Map<number, number[]>()
+  forOverlappingPairs(items, 0, (i, j) => {
+    if (isCandidate.has(i) && boxesOverlap(items[i].box, items[j].box)) near.set(i, [...(near.get(i) ?? []), j])
+    if (isCandidate.has(j) && boxesOverlap(items[i].box, items[j].box)) near.set(j, [...(near.get(j) ?? []), i])
+  })
+  for (const i of candidates) {
+    const it = items[i]
+    if (it.kind !== "pad" && it.kind !== "via") continue
+    const keep = new Set<CopperLayer>()
+    const gone: CopperLayer[] = []
+    let check: CopperLayer[] = it.layers
+    if (it.kind === "pad") {
+      if (it.pad.unused === "keepEnds") for (const l of it.layers) if (outer.has(l)) keep.add(l)
+      check = it.layers.filter((l) => !keep.has(l))
+    } else {
+      const v = viaOf.get(it.viaId)!
+      const span = viaLayers(project.board, v)
+      const ends = [span[0], span[span.length - 1]]
+      for (const l of v.zoneLayers ?? []) keep.add(l)
+      if (v.unused === "keepEnds" || v.unused === "startEnd") for (const l of ends) keep.add(l)
+      // KiCad 10's own mode: only the two ends, whatever touches.
+      if (v.unused === "startEnd") {
+        for (const l of it.layers) if (!keep.has(l)) gone.push(l)
+        check = []
+      } else check = it.layers.filter((l) => !keep.has(l))
+    }
+    for (const l of check) {
+      const used = (near.get(i) ?? []).some((j) => {
+        const q = items[j]
+        if ((q.kind !== "segment" && q.kind !== "via" && q.kind !== "pad") || !q.layers.includes(l)) return false
+        if (q.kind === "pad" && isNpth(q.pad)) return false
+        // Items of one via are one piece of copper.
+        if (it.kind === "via" && q.kind === "via" && q.viaId === it.viaId) return false
+        const a = it.netId ?? null
+        const b = q.netId ?? null
+        if (a && b && a !== b) return false
+        return itemDistance(it, q) <= 1e-6
+      })
+      if (!used) gone.push(l)
+    }
+    if (gone.length) {
+      it.unflashed = gone
+      it.layers = it.layers.filter((l) => !gone.includes(l))
+    }
+  }
 }
 
 /** Visit every pair of items whose boxes, grown by `pad`, overlap in x (sweep and prune). */
@@ -496,6 +539,15 @@ function connectItems(items: CopperItem[], ties: NetTies | null = null): Islands
     const key = `${it.pad.componentId}:${it.pad.pin}`
     const first = padByPin.get(key)
     if (first === undefined) padByPin.set(key, i)
+    else union(first, i)
+  })
+
+  // The items of one via (a via stack with a diameter of its own on some layers) are one piece of copper.
+  const viaFirst = new Map<string, number>()
+  items.forEach((it, i) => {
+    if (it.kind !== "via") return
+    const first = viaFirst.get(it.viaId)
+    if (first === undefined) viaFirst.set(it.viaId, i)
     else union(first, i)
   })
 
@@ -669,7 +721,8 @@ export function analyzePcb(
     }
     if (opts.carve) {
       const { fills, known } = opts.carve
-      zoneFills = carveFills(project, fills, copper.flatMap((it, i) => (known.has(it.id) ? [] : [{ item: it, net: netOf(i) }])))
+      const nameById = new Map(sch.nets.map((n) => [n.id, n.name]))
+      zoneFills = carveFills(project, fills, copper.flatMap((it, i) => (known.has(it.id) ? [] : [{ item: it, net: netOf(i) }])), (id) => (id ? (nameById.get(id) ?? null) : null))
     } else if (opts.reuseOnly) {
       const r = fillZonesReusing(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands }, opts.reuseOnly.stale)
       zoneFills = r.fills
@@ -752,7 +805,13 @@ export function analyzePcb(
   }
 
   // Clearance between copper on different nets (or unassigned copper vs a net).
-  const clearance = project.rules.clearance
+  // Two nets are checked at the larger of their classes' clearances (a board with no classes: the rules' one), so the search looks as far as the largest.
+  const classes = classIndex(project.rules)
+  // A pad's own clearance (X7, KiCad's local override) replaces the classes' for it, so the search looks as far as the largest of those too.
+  const padOverride = items.reduce((m, it) => (it.kind === "pad" && it.pad.clearance ? Math.max(m, it.pad.clearance) : m), 0)
+  const clearance = Math.max(classes.worst, padOverride)
+  const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const nameOfNet = (id: string | null | undefined) => (id && id !== "short" ? (netNames.get(id) ?? null) : null)
   const reported = new Set<string>()
   const refOfPart = new Map(project.components.map((c) => [c.id, c.ref]))
   /** Which copper an item is, for a message: a pad as "J1.2", else a trace, a via or a mounting hole. */
@@ -790,7 +849,13 @@ export function analyzePcb(
       if (ox !== null && ox === ownerOf(y) && ox !== BOARD_OWNER) return
     }
     const d = itemDistance(x, y)
-    if (d >= clearance - 1e-6) return
+    let need = hasNetClasses(project.rules) ? classes.pair(nameOfNet(ni), nameOfNet(nj)) : classes.worst
+    // A pad's own clearance raises the classes' and never lowers it: `DRC_ENGINE::EvalRules` max's each item's local clearance with the class value
+    // (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063) and then holds the result to the board's minimum, which `classes.worst` and `pair` already do.
+    const ox = x.kind === "pad" ? x.pad.clearance : undefined
+    const oy = y.kind === "pad" ? y.pad.clearance : undefined
+    if (ox || oy) need = Math.max(need, ox ?? 0, oy ?? 0)
+    if (d >= need - 1e-6) return
     const key = `${Math.min(ri, rj)}:${Math.max(ri, rj)}`
     if (reported.has(key)) return
     reported.add(key)
@@ -803,7 +868,7 @@ export function analyzePcb(
     push({
       severity: "error",
       kind: "clearance",
-      message: `${holeX || holeY ? "Hole clearance" : "Clearance"} ${d.toFixed(3)} mm < ${clearance} mm between ${describe(x)} and ${describe(y)}`,
+      message: `${holeX || holeY ? "Hole clearance" : "Clearance"} ${d.toFixed(3)} mm < ${need} mm between ${describe(x)} and ${describe(y)}`,
       at,
     })
   })
@@ -943,16 +1008,7 @@ function itemEdgeDistance(b: BoardDef, it: CopperItem, limit = Infinity): number
   // A drawing is nearest the edge at one of its points (the outline is convex, so the distance is smallest at a vertex).
   if (it.kind === "shape") return it.copper.edges.reduce((m, [a, b]) => Math.min(m, d(a), d(b)), Infinity) - it.copper.half
   if (it.kind !== "pad") return Infinity
-  const pad = it.pad
-  if (pad.shape === "circle") return d(pad) - pad.width / 2
-  if (pad.shape === "pill") {
-    const r = Math.min(pad.width, pad.height) / 2
-    const half = Math.max(pad.width, pad.height) / 2 - r
-    const ends = pad.width >= pad.height ? [{ x: pad.x - half, y: pad.y }, { x: pad.x + half, y: pad.y }] : [{ x: pad.x, y: pad.y - half }, { x: pad.x, y: pad.y + half }]
-    return Math.min(...ends.map(d)) - r
-  }
-  if (pad.shape === "polygon" && pad.points?.length) return Math.min(...pad.points.map(d))
-  return Math.min(...rectCorners(pad).map(d))
+  return padEdgeDistance(it.pad, d)
 }
 
 interface Hole {
@@ -961,15 +1017,26 @@ interface Hole {
   a: Vec2
   b: Vec2
   diameter: number
+  /** X5: the layers of a via's hole (a blind or buried via is drilled before the stack is pressed, so it only matters to holes it shares a layer with); absent for a hole through the board. */
+  layers?: CopperLayer[]
 }
 
-function holesOf(items: CopperItem[], drillOf: Map<string, number>): Hole[] {
+function holesOf(items: CopperItem[], drillOf: Map<string, number>, project: Project): Hole[] {
   const out: Hole[] = []
+  const done = new Set<string>()
+  const viaOf = new Map(project.vias.map((v) => [v.id, v]))
   for (const it of items) {
-    if (it.kind === "via") out.push({ owner: it.id, a: it.at, b: it.at, diameter: drillOf.get(it.viaId) ?? 0 })
+    if (it.kind === "via") {
+      // One hole for a via, however many items its copper is (a via stack), and none for a micro via: it is burned by a laser, which KiCad's hole to hole check leaves out (drc_test_provider_hole_to_hole.cpp 9.0.0 `:154-177`).
+      if (done.has(it.viaId)) continue
+      done.add(it.viaId)
+      const via = viaOf.get(it.viaId)
+      if (via?.kind === "micro") continue
+      out.push({ owner: it.id, a: it.at, b: it.at, diameter: drillOf.get(it.viaId) ?? 0, ...(via?.kind ? { layers: viaLayers(project.board, via) } : {}) })
+    }
     if (it.kind === "pad" && it.pad.holeDiameter) {
       const ends = slotEnds(it.pad)
-      out.push({ owner: it.pad.componentId, a: ends?.[0] ?? it.pad, b: ends?.[1] ?? it.pad, diameter: it.pad.holeDiameter })
+      out.push({ owner: it.pad.componentId, a: ends?.[0] ?? holeCentre(it.pad), b: ends?.[1] ?? holeCentre(it.pad), diameter: it.pad.holeDiameter })
     }
   }
   return out
@@ -1015,29 +1082,41 @@ function manufacturability(
   }
 
   // Drill and annular ring, the smallest per via or per part.
-  const smallest = new Map<string, { value: number; at: Vec2; what: string }>()
-  const note = (key: string, value: number, at: Vec2, what: string) => {
+  const smallest = new Map<string, { value: number; at: Vec2; what: string; limit: number }>()
+  const note = (key: string, value: number, at: Vec2, what: string, limit: number) => {
     const prev = smallest.get(key)
-    if (!prev || value < prev.value) smallest.set(key, { value, at, what })
+    if (!prev || value < prev.value) smallest.set(key, { value, at, what, limit })
   }
+  // A via's smallest drill is its own rule when the board has one (KiCad's via minimum against its through hole minimum); else both are the minimum drill.
+  const minViaDrill = rules.minViaDrill ?? rules.minDrill
   for (const v of project.vias) {
-    // KiCad's `via_min_size`: a via narrower than the rule's minimum diameter (the rule is absent on a board drawn here)
-    if (rules.minViaDiameter !== undefined && v.diameter < rules.minViaDiameter - eps) {
-      push({ severity: "error", kind: "via-size", message: `Via diameter ${mm(v.diameter)} is below the ${mm(rules.minViaDiameter)} minimum`, at: { x: v.x, y: v.y } })
+    const micro = v.kind === "micro"
+    // KiCad's `via_min_size` (a micro via's own minimum is the board's `uvia_min_size`): a via narrower than the rule's minimum diameter (the rules are absent on a board drawn here)
+    const minDiameter = micro ? rules.minMicroVia?.diameter : rules.minViaDiameter
+    if (minDiameter !== undefined && v.diameter < minDiameter - eps) {
+      push({ severity: "error", kind: "via-size", message: `${micro ? "Micro via" : "Via"} diameter ${mm(v.diameter)} is below the ${mm(minDiameter)} minimum`, at: { x: v.x, y: v.y } })
     }
-    if (v.drill < rules.minDrill - eps) note(`drill:via:${v.id}`, v.drill, v, "Via")
-    const ring = (v.diameter - v.drill) / 2
-    if (ring < rules.minAnnularRing - eps) note(`ring:via:${v.id}`, ring, v, "Via")
+    // A micro via is burned by a laser, so the through hole minimum is not its rule: it has the board's micro via minimum, where it has one (`DRCE_MICROVIA_DRILL_OUT_OF_RANGE`).
+    const minDrillHere = micro ? rules.minMicroVia?.drill : minViaDrill
+    if (minDrillHere !== undefined && v.drill < minDrillHere - eps) note(`drill:via:${v.id}`, v.drill, v, micro ? "Micro via" : "Via", minDrillHere)
+    // The ring is the thinnest the via has on any layer of its span (a via stack has a diameter for each).
+    const ring = Math.min(...viaLayers(board, v).map((l) => (viaDiameterOn(v, l) - v.drill) / 2))
+    if (ring < rules.minAnnularRing - eps) note(`ring:via:${v.id}`, ring, v, micro ? "Micro via" : "Via", rules.minAnnularRing)
+    // The board says the kind of via is not allowed (KiCad 5's `uvias_allowed` and `blind_buried_vias_allowed`).
+    if ((micro && rules.microViasAllowed === false) || ((v.kind === "blind" || v.kind === "buried") && rules.blindBuriedViasAllowed === false)) {
+      push({ severity: "error", kind: "via-size", message: `${micro ? "Micro vias are" : "Blind and buried vias are"} not allowed by the board's rules`, at: { x: v.x, y: v.y } })
+    }
   }
   for (const it of items) {
     if (it.kind !== "pad" || !it.pad.holeDiameter) continue
     const pad = it.pad
     const hole = it.pad.holeDiameter
-    const at = { x: pad.x, y: pad.y }
-    if (hole < rules.minDrill - eps) note(`drill:${pad.componentId}`, hole, at, owner(pad.componentId))
+    const at = { ...holeCentre(pad) }
+    if (hole < rules.minDrill - eps) note(`drill:${pad.componentId}`, hole, at, owner(pad.componentId), rules.minDrill)
     if (isNpth(pad)) continue
-    const ring = (Math.min(pad.width, pad.height) - hole) / 2
-    if (ring < rules.minAnnularRing - eps) note(`ring:${pad.componentId}`, ring, at, owner(pad.componentId))
+    // A pad with a hole off its centre, rounded corners or a shape of its own has the ring its outline leaves; any other, the one it always had.
+    const ring = pad.hole || pad.corner || padRingsOf(pad) ? padRingWidth(pad) : (Math.min(pad.width, pad.height) - hole) / 2
+    if (ring < rules.minAnnularRing - eps) note(`ring:${pad.componentId}`, ring, at, owner(pad.componentId), rules.minAnnularRing)
   }
   for (const [key, s] of smallest) {
     const drill = key.startsWith("drill:")
@@ -1045,7 +1124,7 @@ function manufacturability(
       severity: "error",
       kind: drill ? "drill" : "annular-ring",
       message: drill
-        ? `${s.what} drill ${mm(s.value)} is below the ${mm(rules.minDrill)} minimum`
+        ? `${s.what} drill ${mm(s.value)} is below the ${mm(s.limit)} minimum`
         : s.value < eps
           ? `${s.what} has no copper ring around its hole`
           : `${s.what} annular ring ${mm(s.value)} is below the ${mm(rules.minAnnularRing)} minimum`,
@@ -1059,13 +1138,15 @@ function manufacturability(
   // Swept by left drill edge, so once one hole starts past h's reach every later one does too.
   const left = (h: Hole) => Math.min(h.a.x, h.b.x) - h.diameter / 2
   const reach = (h: Hole) => Math.max(h.a.x, h.b.x) + h.diameter / 2
-  const holes = holesOf(items, drillOf).sort((p, q) => left(p) - left(q))
+  const holes = holesOf(items, drillOf, project).sort((p, q) => left(p) - left(q))
   for (let i = 0; i < holes.length; i++) {
     const h = holes[i]
     for (let j = i + 1; j < holes.length; j++) {
       const k = holes[j]
       if (left(k) > reach(h) + rules.holeClearance) break
       if (h.owner === k.owner) continue
+      // Two holes drilled before the stack is pressed that share no layer cannot meet.
+      if (h.layers && k.layers && !h.layers.some((l) => k.layers!.includes(l))) continue
       const gap = segmentSegmentDistance(h.a, h.b, k.a, k.b) - h.diameter / 2 - k.diameter / 2
       if (gap >= rules.holeClearance - eps) continue
       push({
@@ -1104,6 +1185,40 @@ function manufacturability(
         kind: "via-in-pad",
         message: `Via in a pad of ${owner(pad.componentId)}; allow via-in-pad or move it`,
         at: { x: v.x, y: v.y },
+      })
+    }
+  }
+
+  // A solder mask opening that spans copper of two nets (KiCad's solder mask bridge): where the openings of two pads of different nets run together, or
+  // leave a web thinner than the board's minimum, which the plot then removes (`maskMinWidth`). Checked on a board that carries KiCad pad data (a pad with X7 features) or
+  // states a minimum web; a board drawn here has neither, so its checks are as they were.
+  const web = rules.maskMinWidth ?? 0
+  const padItems = items.filter((it): it is Extract<CopperItem, { kind: "pad" }> => it.kind === "pad" && !isNpthItem(it) && it.pad.componentId !== BOARD_OWNER)
+  if (web > 0 || padItems.some((it) => it.pad.x7)) {
+    const bySide = new Map<CopperLayer, Extract<CopperItem, { kind: "pad" }>[]>()
+    for (const it of padItems) for (const side of maskSides(it.pad)) bySide.set(side, [...(bySide.get(side) ?? []), it])
+    const flagged = new Map(project.components.map((c) => [c.id, !!c.flags?.allowMaskBridges]))
+    const seen = new Set<string>()
+    for (const [side, list] of bySide) {
+      const reach = web + 2 * Math.max(rules.maskExpansion, 0, ...list.map((it) => it.pad.maskMargin ?? 0)) + 0.01
+      forOverlappingPairs(list, reach, (i, j) => {
+        const x = list[i]
+        const y = list[j]
+        if (!boxesOverlap(inflate(x.box, reach), y.box)) return
+        if ((x.netId ?? null) === (y.netId ?? null)) return
+        if (x.pad.componentId === y.pad.componentId && (rules.maskBridgesInParts || flagged.get(x.pad.componentId))) return
+        const gap = padPadDistance(x.pad, y.pad) - maskMargin(x.pad, rules) - maskMargin(y.pad, rules)
+        if (gap >= web - 1e-6) return
+        const key = `${x.id}|${y.id}|${side}`
+        if (seen.has(key)) return
+        seen.add(key)
+        const name = (p: WorldPad) => `${owner(p.componentId)}.${p.padNumber ?? p.pin ?? "pad"}`
+        push({
+          severity: "error",
+          kind: "mask-bridge",
+          message: gap <= 0 ? `The solder mask openings of ${name(x.pad)} and ${name(y.pad)} run together over two nets` : `Only ${mm(gap)} of solder mask between ${name(x.pad)} and ${name(y.pad)}, under the ${mm(web)} minimum: the plot removes it and the openings join, over two nets`,
+          at: { x: (x.pad.x + y.pad.x) / 2, y: (x.pad.y + y.pad.y) / 2 },
+        })
       })
     }
   }

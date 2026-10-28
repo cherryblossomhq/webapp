@@ -1,4 +1,4 @@
-import { isPhysical, valueText } from "../model/instances"
+import { isSchematicPart, valueText } from "../model/instances"
 import { findPart } from "../model/library"
 import { inBom } from "../model/partFlags"
 import { withRuleAreaFlags } from "../model/ruleAreas"
@@ -23,19 +23,22 @@ export function bomCsv(source: Project): string {
   >()
   for (const c of project.components) {
     const part = findPart(c.partId)
-    if (!part || !isPhysical(part)) continue
+    // The other units of a part are symbols of it, not parts: a part is one line however many units it has.
+    if (!part || !isSchematicPart(part) || part.unitOf) continue
     // A part brought in from KiCad can be marked virtual, not in the BOM, board only or do not populate.
     if (!inBom(c)) continue
     const value = valueText(c, part)
     const mpn = c.props.mpn ?? part.mpn ?? ""
+    // An imported symbol has no land until it is linked to a board; the footprint its file names is carried as text.
+    const footprint = c.footprint || c.props.Footprint || ""
     // Every property can pick a different physical part (a 16 V and a 50 V 10uF cap), so all of
     // them are in the key, and the ones the other columns don't show are listed.
     const properties = Object.entries(c.props)
-      .filter(([k, v]) => k !== part.valueProp && k !== "mpn" && v !== "")
+      .filter(([k, v]) => k !== part.valueProp && k !== "mpn" && !(k === "Footprint" && v === footprint) && v !== "")
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join("; ")
-    const key = JSON.stringify([c.partId, value, c.footprint, mpn, properties])
+    const key = JSON.stringify([c.partId, value, footprint, mpn, properties])
     const g = groups.get(key)
     if (g) {
       g.refs.push(c.ref)
@@ -44,7 +47,7 @@ export function bomCsv(source: Project): string {
     groups.set(key, {
       refs: [c.ref],
       value,
-      footprint: c.footprint,
+      footprint,
       properties,
       mpn,
       description: part.description,

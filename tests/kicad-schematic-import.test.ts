@@ -36,8 +36,8 @@ const needsOf = (text: string) => {
 const message = (text: string) => refused(importKicadSchematic(text)).message
 
 describe("the gate", () => {
-  it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4), symbol flags (S7) and directive labels and rule areas (S8)", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S1", "S10", "S12", "S2", "S4", "S5", "S6", "S7", "S8"])
+  it("builds what every symbol needs (S5, S6, S10) and labels and net names (S2), annotations (S4), symbol flags (S7), buses (S3), directive labels and rule areas (S8), variants (S9), KiCad's joining rules (S11) and libraries (S12)", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["S1", "S10", "S11", "S12", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"])
   })
 
   it("imports a divider: KiCad's net names are the project's rule now", () => {
@@ -45,16 +45,15 @@ describe("the gate", () => {
   })
 
   it("refuses a schematic that uses what the editor cannot hold yet, naming it in plain words, and imports nothing", () => {
-    const r = refused(importKicadSchematic(schematic({ body: [`(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`] })))
+    // S8 is built: a build without it is what refuses.
+    const r = refused(importKicadSchematic(schematic({ body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`] }), { built: new Set([...BUILT_EXTENSIONS].filter((x) => x !== "S8")) }))
     expect(r.reason).toBe("unsupported")
-    expect(r.message).toBe("This schematic uses buses, which are not supported yet.")
-    expect(r.needs.map((n) => n.ext)).toEqual(["S3"])
-    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S3/.test(e.why))).toBe(true)
+    expect(r.message).toBe("This schematic uses directive labels and rule areas, which are not supported yet.")
+    expect(r.needs.map((n) => n.ext)).toEqual(["S8"])
+    expect(r.report.entries.some((e) => e.code === "unsupported" && e.severity === "refused" && /S8/.test(e.why))).toBe(true)
   })
 
   const one: [string, SchSpec, string, string][] = [
-    ["S3", { body: [`(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`] }, "buses", "buses, bus entries or bus aliases"],
-    ["S3", { body: [`(bus_alias "DATA" (members "D0" "D1"))`] }, "buses", "buses, bus entries or bus aliases"],
     ["S8", { body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`] }, "directive labels and rule areas", "directive labels or rule areas"],
     ["S9", { body: [`(symbol_variant_marker (variant (name "A")))`] }, "schematic variants", "schematic variants"],
   ]
@@ -64,7 +63,11 @@ describe("the gate", () => {
       if (ext === "S9") {
         // variants live in the instance data of a symbol: put one in the cached file as the table's own path says
         const withVariant = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001", extra: "" }] }).replace(`(unit 1)))))`, `(unit 1) (variant (name "A") (dnp yes))))))`)
-        expect(needsOf(withVariant)).toContain("S9")
+        // S9 is built: it imports, with the variant; named not built, the same file is refused naming schematic variants
+        expect(needsOf(withVariant)).toEqual([])
+        const without = importKicadSchematic(withVariant, { built: new Set([...BUILT_EXTENSIONS].filter((x) => x !== "S9")) })
+        expect(without.status).toBe("refused")
+        if (without.status === "refused") expect(without.message).toBe("This schematic uses schematic variants, which are not supported yet.")
         return
       }
       // An extension that is built is imported (S8 is); the table's sentence is what a build without it says.
@@ -80,7 +83,7 @@ describe("the gate", () => {
     const flagged = (extra: string, uuid: string) => schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid, extra }] })
     const flags = (extra: string) => imported(importKicadSchematic(flagged(extra, "aaaaaaaa-0000-4000-8000-000000000001"))).project.components[0].flags
     expect(flags("(dnp yes)")).toEqual({ dnp: true })
-    expect(flags("(exclude_from_sim yes) (in_pos_files no)")).toEqual({ excludeFromSim: true, inPosFiles: false })
+    expect(flags("(exclude_from_sim yes) (in_pos_files no)")).toEqual({ excludeFromSim: true, excludeFromPos: true })
     expect(flags("(dnp no)")).toBeUndefined()
   })
 
@@ -93,13 +96,14 @@ describe("the gate", () => {
 
   it("names every extension a schematic needs in the one sentence", () => {
     const text = schematic({
-      body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`],
+      body: [`(netclass_flag "" (length 2.54) (shape round) (at 10 10 0) (effects (font (size 1.27 1.27))) (uuid f) (property "Netclass" "Fast" (at 0 0 0)))`, `(text "t" (at 1 2 0) (effects (font (size 1.27 1.27))))`, `(bus (pts (xy 0 0) (xy 5 0)) (stroke (width 0) (type default)) (uuid b))`, `(embedded_fonts yes)`],
+      version: 20250114,
     })
     const r = refused(importKicadSchematic(text, { built: new Set([...BUILT_EXTENSIONS].filter((x) => x !== "S8")) }))
-    expect(r.needs.map((n) => n.ext)).toEqual(["S3", "S8"])
-    expect(r.message).toBe("This schematic uses buses and directive labels and rule areas, which are not supported yet.")
-    // With S8 built the buses are what is left.
-    expect(needsOf(text)).toEqual(["S3"])
+    expect(r.needs.map((n) => n.ext)).toEqual(["S8", "X19"])
+    expect(r.message).toBe("This schematic uses directive labels and rule areas and text outlines or embedded fonts, which are not supported yet.")
+    // With S8 built the text outlines are what is left.
+    expect(needsOf(text)).toEqual(["X19"])
   })
 
   it("a schematic that needs nothing the editor lacks is imported: wires, junctions, labels and no-connects", () => {
@@ -205,7 +209,7 @@ describe("what the importer finds on top of the census's rules", () => {
 
   it("S7: a symbol left out of the position files keeps it", () => {
     const text = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001", extra: "(in_pos_files no)" }] })
-    expect(imported(importKicadSchematic(text)).project.components[0].flags).toEqual({ inPosFiles: false })
+    expect(imported(importKicadSchematic(text)).project.components[0].flags).toEqual({ excludeFromPos: true })
   })
 
   it("S1: a symbol used on a sheet other than this one, or used twice", () => {
@@ -513,22 +517,22 @@ describe("the build", () => {
 describe("what each flag and field of the file needs, so that nothing imported is lost", () => {
   const node = (text: string) => schematic({ body: [text] })
 
-  it("a junction with a size or colour of its own is an item of the sheet; the default dot is the editor's own", () => {
-    const items = (text: string) => imported(importKicadSchematic(node(text))).project.items
-    expect(items(`(junction (at 10 10) (diameter 1) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ kind: "junction", diameter: expect.closeTo(1 / 12.7, 5) }])
-    expect(items(`(junction (at 10 10) (diameter 0) (color 255 0 0 1) (uuid j))`)).toMatchObject([{ kind: "junction", color: "#ff0000" }])
-    // a default dot where no wires meet is still drawn by KiCad, so it is an item too; one the editor draws itself is not
-    expect(items(`(junction (at 10 10) (diameter 0) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ kind: "junction" }])
+  it("a junction with a size or colour of its own is a drawing of the sheet; the default dot is the editor's own", () => {
+    const items = (text: string) => imported(importKicadSchematic(node(text))).project.drawings
+    expect(items(`(junction (at 10 10) (diameter 1) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ type: "junction", diameter: expect.closeTo(1 / 12.7, 5) }])
+    expect(items(`(junction (at 10 10) (diameter 0) (color 255 0 0 1) (uuid j))`)).toMatchObject([{ type: "junction", dotColor: "#ff0000" }])
+    // a default dot where no wires meet is still drawn by KiCad, so it is a drawing too; one the editor draws itself is not
+    expect(items(`(junction (at 10 10) (diameter 0) (color 0 0 0 0) (uuid j))`)).toMatchObject([{ type: "junction" }])
     const wires = schematic({ wires: ["10 10 20 10", "15 10 15 5"], junctions: ["15 10"] })
-    expect(imported(importKicadSchematic(wires)).project.items).toBeUndefined()
+    expect(imported(importKicadSchematic(wires)).project.drawings).toBeUndefined()
   })
 
-  it("a no-connect flag that is not on a pin of a placed symbol is an item, and one on a pin is that pin's mark", () => {
-    expect(imported(importKicadSchematic(schematic({ noConnects: ["10 10"] }))).project.items).toMatchObject([{ kind: "noconnect" }])
+  it("a no-connect flag that is not on a pin of a placed symbol is a drawing, and one on a pin is that pin's mark", () => {
+    expect(imported(importKicadSchematic(schematic({ noConnects: ["10 10"] }))).project.drawings).toMatchObject([{ type: "noconnect" }])
     const on = schematic({ libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: "aaaaaaaa-0000-4000-8000-000000000001" }], noConnects: ["50.8 46.99"] })
     const r = imported(importKicadSchematic(on, { built: SYMBOLS }))
     expect(r.project.components[0].nc).toEqual(["1"])
-    expect(r.project.items).toBeUndefined()
+    expect(r.project.drawings).toBeUndefined()
   })
 
   it("a symbol that jumpers pins of one number is kept with that in its drawing, even when no symbol is placed from it", () => {

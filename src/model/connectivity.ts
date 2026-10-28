@@ -2,6 +2,7 @@ import { pointOnSegment, samePoint } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { numeric, plain } from "../lib/natural"
 import { findPart } from "./library"
+import { onSideExact, pkx } from "./kicadJoin"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import { DRIVER, NO_NET, bestDriver, driverName, pinFacts, pinNetName, unitSuffix, type NameDriver, type PinFact } from "./netNames"
 import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses, symbolsOnSheet, useAt, useOfSymbol, type SheetUse } from "./sheets"
@@ -123,6 +124,8 @@ function push<T>(map: Map<number, T[]>, k: number, v: T) {
 
 const pk = (p: Vec2) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`
 
+// S11: a sheet joined by KiCad's rules (`SchematicSheet.kicadRules`) tells points apart as KiCad does, by its integer points (`kicadJoin.ts`).
+
 /** The use of a sheet the editor's own single sheet is: the root, which KiCad writes `/`. */
 const ROOT_USE: SheetUse = { path: "", sheet: ROOT_SHEET, symbol: null, parent: null, name: "", human: "/", depth: 0, page: "1" }
 
@@ -134,6 +137,9 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const scoped = project.scope !== undefined
   const uses: SheetUse[] = scoped ? [useAt(project, project.scope!)] : hier ? sheetUses(project) : [ROOT_USE]
   const useByPath = new Map(uses.map((u) => [u.path, u]))
+  // S11: the sheets joined by KiCad's rules, and whether a use of a sheet is one.
+  const kicadSheets = new Set((project.sheets ?? []).filter((x) => x.kicadRules).map((x) => x.id))
+  const exactUse = (inst: string) => kicadSheets.size > 0 && kicadSheets.has(useByPath.get(inst)?.sheet ?? (inst === "" ? ROOT_SHEET : useAt(project, inst).sheet))
   const depthOf = (path: string) => (path === "" ? 0 : (useByPath.get(path)?.depth ?? useAt(project, path).depth))
   const humanOf = (path: string) => (path === "" ? "/" : (useByPath.get(path)?.human ?? useAt(project, path).human))
   const wiresOf = new Map<string, Wire[]>()
@@ -153,7 +159,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     if (!busy) return undefined
     let b = busesOf.get(sheet)
     if (!b) {
-      b = analyzeSheet(project, sheet, wiresOf.get(sheet) ?? [], labelsOf.get(sheet) ?? [], symbolsOnSheet(project, sheet), aliases)
+      b = analyzeSheet(project, sheet, wiresOf.get(sheet) ?? [], labelsOf.get(sheet) ?? [], symbolsOnSheet(project, sheet), aliases, kicadSheets.has(sheet))
       busesOf.set(sheet, b)
     }
     return b
@@ -161,7 +167,10 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   /** Where an item of a use is a node: the root's keep the plain key, so a project with one sheet is worked out as it always was. */
   const wk = (inst: string, id: string) => (inst ? `wire:${inst}|${id}` : `wire:${id}`)
   const lk = (inst: string, id: string) => (inst ? `label:${inst}|${id}` : `label:${id}`)
-  const at = (inst: string, p: Vec2) => (inst ? `${inst}@${pk(p)}` : pk(p))
+  const at = (inst: string, p: Vec2) => {
+    const k = exactUse(inst) ? pkx(p) : pk(p)
+    return inst ? `${inst}@${k}` : k
+  }
   /**
    * The name a local label, a hierarchical label, a local power symbol or a sheet pin joins others by: on its own use of a sheet only.
    * (A sheet pin is on the sheet below its symbol: it joins the labels of its name there.) Such a name joins the global name of its text
@@ -198,6 +207,8 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const uf = new UnionFind()
   const pins: WorldPin[] = []
   const pointOwners = new Map<string, string[]>()
+  /** S11: the place of every pin of a use of a sheet joined by KiCad's rules, of any type (a label on one is the pin's alone). */
+  const pinPlaces = new Map<string, Set<string>>()
   const addPointOwner = (p: Vec2, owner: string, inst = "") => {
     const key = at(inst, p)
     const list = pointOwners.get(key)
@@ -219,7 +230,11 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     const here = new Set<string>()
     for (const pin of schematicPins(c, part)) {
       // A pin of the type "no connect" is on no net, whatever is drawn to it (KiCad does not connect it).
-      if (pin.type === "no_connect") continue
+      if (pin.type === "no_connect") {
+        if (kicadSheets.size) (pinPlaces.get(inst) ?? pinPlaces.set(inst, new Set()).get(inst)!).add(at(inst, pin.pos))
+        continue
+      }
+      if (kicadSheets.size) (pinPlaces.get(inst) ?? pinPlaces.set(inst, new Set()).get(inst)!).add(at(inst, pin.pos))
       const key = `pin:${pinKey(c.id, pin.pin)}${pin.slot && !jumpered ? `#${pin.slot}` : ""}`
       uf.find(key)
       pins.push(pin)
@@ -282,6 +297,18 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
         // KiCad 5 ranks a hierarchical label above a local one (KiCad 6 on, below it).
         const prio = isGlobal ? DRIVER.globalLabel : l.kind === "hierarchical" ? DRIVER.hierLabel : kicad === "kicad5" ? DRIVER.hierLabel - 0.5 : DRIVER.label
         addDriver(nameKey, { prio, name: driverName(text, kind, humanOf(use.path)), text, kind, from: "label", depth: use.depth, ...(l.kind === "hierarchical" ? { labelKind: "hierarchical" as const } : {}) })
+      }
+    }
+  }
+  // S11: a junction item of a sheet joined by KiCad's rules is a node at its point, and joins what is there (and, below, every wire whose side it is on).
+  if (kicadSheets.size) {
+    for (const use of uses) {
+      if (!exactUse(use.path)) continue
+      for (const d of project.drawings ?? []) {
+        if (d.type !== "junction" || sheetIdOf(d) !== use.sheet) continue
+        const owner = `junction:${use.path}|${d.id}`
+        uf.find(owner)
+        addPointOwner({ x: d.x, y: d.y }, owner, use.path)
       }
     }
   }
@@ -413,13 +440,32 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
       }
     }
     const probes: { p: Vec2; owner: string; isWireEnd: boolean }[] = []
-    for (const w of wires) {
-      if (w.points.length < 2) continue
-      probes.push({ p: w.points[0], owner: wk(inst, w.id), isWireEnd: true })
-      probes.push({ p: w.points[w.points.length - 1], owner: wk(inst, w.id), isWireEnd: true })
+    // S11: on a sheet joined by KiCad's rules a wire end on another wire's side joins nothing (only a junction does, and the importer cuts the wire there), and a
+    // label on a pin skips the wires that only pass there (it joins the pin alone). A junction item of the sheet joins every wire it is on.
+    const exact = exactUse(inst)
+    const places = exact ? (pinPlaces.get(inst) ?? new Set<string>()) : null
+    const markers = exact ? new Set((project.drawings ?? []).filter((d) => d.type === "noconnect" && sheetIdOf(d) === use.sheet).map((d) => at(inst, { x: (d as { x: number }).x, y: (d as { y: number }).y }))) : null
+    if (!exact) {
+      for (const w of wires) {
+        if (w.points.length < 2) continue
+        probes.push({ p: w.points[0], owner: wk(inst, w.id), isWireEnd: true })
+        probes.push({ p: w.points[w.points.length - 1], owner: wk(inst, w.id), isWireEnd: true })
+      }
     }
     const sb = sheetBuses(use.sheet)
-    for (const l of labelsOf.get(use.sheet) ?? []) if (!sb?.busLabels.has(l.id)) probes.push({ p: l, owner: lk(inst, l.id), isWireEnd: false })
+    for (const l of labelsOf.get(use.sheet) ?? []) {
+      // S3: a label that names a bus is not a net's name: it joins no wire.
+      if (sb?.busLabels.has(l.id)) continue
+      if (exact && (places!.has(at(inst, l)) || markers!.has(at(inst, l)))) continue
+      probes.push({ p: l, owner: lk(inst, l.id), isWireEnd: false })
+    }
+    if (exact) {
+      for (const d of project.drawings ?? []) {
+        if (d.type !== "junction" || sheetIdOf(d) !== use.sheet) continue
+        const p = { x: d.x, y: d.y }
+        probes.push({ p, owner: `junction:${inst}|${d.id}`, isWireEnd: false })
+      }
+    }
     // An end of a bus entry that is not on a bus, on a wire's side, joins it as a wire end does.
     for (const e of sb?.entries ?? []) for (let k = 0; k < 2; k++) if (!e.onBus[k]) probes.push({ p: e.ends[k], owner: `entry:${inst}|${e.id}`, isWireEnd: false })
     // A sheet pin on the side of a wire joins it, as a label does.
@@ -436,7 +482,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
         for (const i of segs) {
           const a = w.points[i]
           const b = w.points[i + 1]
-          if (!pointOnSegment(probe.p, a, b)) continue
+          if (!(exact ? onSideExact(probe.p, a, b) : pointOnSegment(probe.p, a, b))) continue
           uf.union(probe.owner, wk(inst, w.id))
           if (probe.isWireEnd && !samePoint(probe.p, a) && !samePoint(probe.p, b)) addJunction(probe.p)
           break
@@ -484,6 +530,7 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
   const conflicts: SchematicConnectivity["conflicts"] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const ncSet = new Set(project.components.flatMap((c) => (c.nc ?? []).map((pin) => pinKey(c.id, pin))))
+  // S9, S8: a symbol the active variant, a sheet symbol or a rule area takes off the board is no candidate to name a net.
   const nodeParts = new Map(resolvedComponents(project).map((c) => [c.id, c]))
   const labelCount = (members: string[]) => members.filter((m) => m.startsWith("label:")).length
   const physical = new Set(project.components.filter((c) => isSchematicPart(findPart(c.partId))).map((c) => c.id))
@@ -626,7 +673,7 @@ function kicadPinName(
     const number = bare(m.slice(i + 1))
     const c = byId.get(cid)
     const part = c && findPart(c.partId)
-    if (!c || !part || !physical.has(ownerOf(cid)) || c.flags?.onBoard === false || refOf.get(cid)?.startsWith("#")) continue
+    if (!c || !part || !physical.has(ownerOf(cid)) || c.flags?.notOnBoard || refOf.get(cid)?.startsWith("#")) continue
     const facts = factsOf(c, part)
     const fact = facts.find((f) => f.number === number)
     if (!fact) continue

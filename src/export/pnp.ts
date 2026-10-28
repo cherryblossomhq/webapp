@@ -1,5 +1,4 @@
-import { isPhysical, valueText } from "../model/instances"
-import { findPart } from "../model/library"
+import { valueText } from "../model/instances"
 import { inPositionFile } from "../model/partFlags"
 import { normalizeAngle } from "../lib/geometry"
 import type { ComponentInstance, Project } from "../model/types"
@@ -23,7 +22,7 @@ export function pnpCsv(source: Project): string {
   const project = withRuleAreaFlags(source)
   const lines = [csvRow(["Designator", "Value", "Footprint", "Mid X", "Mid Y", "Rotation", "Layer"])]
   const parts = project.components
-    .filter((c) => isPhysical(findPart(c.partId)) && inPositionFile(c))
+    .filter((c) => inPositionFile(c))
     .sort((a, b) => a.ref.localeCompare(b.ref, undefined, { numeric: true }))
   for (const c of parts) {
     lines.push(

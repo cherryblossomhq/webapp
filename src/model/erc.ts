@@ -1,9 +1,10 @@
-import { round } from "../lib/geometry"
+import { pointOnSegment, round } from "../lib/geometry"
 import { numeric } from "../lib/natural"
 import { parseValue } from "../lib/values"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
+import { ROOT_SHEET, refusedSheetSymbols, sheetSymbolName, sheetUses, useAt } from "./sheets"
 import { unitCount, unitLetters } from "./symbolDrawing"
 import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project, Vec2 } from "./types"
 
@@ -23,12 +24,18 @@ import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project,
  *   warning is one warning here. The editor's own parts have no pin types and are never checked.
  * - **stray-no-connect**: a no-connect flag of the sheet that is not on a pin of a part (KiCad's "no
  *   connect flag not connected to a pin").
+ * - **sheet-pin-no-label**, **label-no-sheet-pin**, **sheet-pin-unconnected** (S1): a pin of a sheet symbol whose
+ *   sheet has no hierarchical label of its name, a hierarchical label with no pin of its name on the symbol of
+ *   its sheet (or on a sheet with no symbol above it), and a sheet pin nothing is wired to. **sheet-loop**: a
+ *   sheet symbol whose sheet holds itself, which the tree leaves out.
+ * - **bus-entry-no-bus**, **net-not-bus-member** (S3): a bus entry with neither end on a bus, and a wire a bus entry joins to a bus whose
+ *   label names no member of it (KiCad's "bus entry needed" and "net is graphically connected to a bus but not a bus member").
  *
  * Measured on the five examples, the three v1 fixtures and the eight blog boards brought in
  * from tscircuit: every hit was a real mistake and none was a false alarm.
  */
 
-export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict" | "stray-no-connect"
+export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict" | "stray-no-connect" | "sheet-pin-no-label" | "label-no-sheet-pin" | "sheet-pin-unconnected" | "sheet-loop" | "bus-entry-no-bus" | "net-not-bus-member"
 
 export interface ErcFinding {
   kind: ErcKind
@@ -47,6 +54,8 @@ export interface ErcFinding {
   labelIds: string[]
   /** Where on the schematic to look. */
   at: Vec2
+  /** S1: the use of a sheet it is on (`ComponentInstance.inst`), when it is not the root: the editor opens that sheet to show it. */
+  sheet?: string
 }
 
 /** Ground and its usual spellings. Ground is shared by construction, so it never counts as a series link. */
@@ -368,10 +377,9 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
 
   // ---------- A pin only on a label nothing else shares ----------
   const labelsOf = new Map<string, string[]>()
-  for (const l of project.labels) {
-    const id = conn.labelNet.get(l.id)
-    if (id) labelsOf.set(id, [...(labelsOf.get(id) ?? []), l.id])
-  }
+  // A label of a sheet used twice is on a net in each use (`byUse`).
+  const labelNets: [string, string][] = conn.byUse ? [...conn.byUse.labelNet.values()].flatMap((m) => [...m]) : project.labels.flatMap((l) => (conn.labelNet.get(l.id) ? [[l.id, conn.labelNet.get(l.id)!] as [string, string]] : []))
+  for (const [lid, id] of labelNets) labelsOf.set(id, [...(labelsOf.get(id) ?? []), lid])
   const labelName = new Map(project.labels.map((l) => [l.id, l.name.trim()]))
   for (const c of project.components) {
     const part = physicalPartOf(c)
@@ -686,19 +694,128 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   }
 
   // A no-connect flag drawn where no pin is: it means nothing, and KiCad says so.
-  for (const it of project.items ?? []) {
-    if (it.kind !== "noconnect") continue
-    const pinHere = project.components.some((c) => schematicPins(c).some((p) => Math.hypot(p.pos.x - it.x, p.pos.y - it.y) < 1e-3))
+  for (const it of project.drawings ?? []) {
+    if (it.type !== "noconnect") continue
+    // A pin counts on the sheet the flag is drawn on, not on another sheet at the same place.
+    const pinHere = project.components.some((c) => (project.sheetSymbols?.length ? useAt(project, c.inst ?? "").sheet === (it.sheet ?? ROOT_SHEET) : true) && schematicPins(c).some((p) => Math.hypot(p.pos.x - it.x, p.pos.y - it.y) < 1e-3))
     if (pinHere) continue
     findings.push({ kind: "stray-no-connect", key: `stray-no-connect:${it.id}`, message: `A no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)}) is not on a pin`, subject: `no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)})`, componentIds: [], labelIds: [], at: { x: it.x, y: it.y } })
   }
 
-  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5 }
+  findings.push(...sheetFindings(project))
+  findings.push(...busFindings(project, conn))
+  // A finding on a part of a sheet below the root says which use it is on, so the editor can open it.
+  for (const f of findings) {
+    if (f.sheet) continue
+    const inst = byId.get(f.componentIds[0] ?? "")?.inst
+    if (inst) f.sheet = inst
+  }
+
+  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5, "sheet-pin-no-label": 6, "label-no-sheet-pin": 7, "sheet-pin-unconnected": 8, "sheet-loop": 9, "bus-entry-no-bus": 10, "net-not-bus-member": 11 }
   return findings.sort(
     (x, y) =>
       order[x.kind] - order[y.kind] ||
       x.subject.localeCompare(y.subject, undefined, { numeric: true }),
   )
+}
+
+/** S1: whether something of a sheet (a wire end or side, a label, a pin of a part) is at a point. */
+function touchesAt(project: Project, sheet: string, use: string[], at: Vec2, skip?: (id: string) => boolean): boolean {
+  const near = (p: Vec2) => Math.hypot(p.x - at.x, p.y - at.y) < 1e-3
+  for (const w of project.wires) {
+    if ((w.sheet ?? ROOT_SHEET) !== sheet || (skip && skip(w.id))) continue
+    for (let i = 0; i < w.points.length; i++) {
+      if (near(w.points[i])) return true
+      if (i > 0 && pointOnSegment(at, w.points[i - 1], w.points[i])) return true
+    }
+  }
+  for (const l of project.labels) if ((l.sheet ?? ROOT_SHEET) === sheet && near(l)) return true
+  // S3: a bus line ending or passing there is something wired to it.
+  for (const d of project.drawings ?? []) {
+    if (d.type !== "bus" || (d.sheet ?? ROOT_SHEET) !== sheet) continue
+    for (let i = 0; i < d.points.length; i++) if (near(d.points[i]) || (i > 0 && pointOnSegment(at, d.points[i - 1], d.points[i]))) return true
+  }
+  for (const c of project.components) if (use.includes(c.inst ?? "") && schematicPins(c).some((p) => near(p.pos))) return true
+  return false
+}
+
+/**
+ * S3: the findings of the buses. A bus entry with neither end on a bus leaves nothing to join (`bus-entry-no-bus`); and a wire that leaves a
+ * bus by an entry should be a member of it: its label names one of the nets the bus carries (`net-not-bus-member`), which is checked only where
+ * the bus has a name to hold it against.
+ */
+function busFindings(project: Project, conn: SchematicConnectivity): ErcFinding[] {
+  const out: ErcFinding[] = []
+  if (!conn.buses) return out
+  const uses = sheetUses(project)
+  const at2 = (p: Vec2) => `(${round(p.x, 2)}, ${round(p.y, 2)})`
+  for (const [sheet, sb] of conn.buses) {
+    const own = uses.find((u) => u.sheet === sheet)?.path ?? ""
+    for (const e of sb.entries) {
+      const start = e.ends[0]
+      if (!e.onBus[0] && !e.onBus[1]) {
+        out.push({ kind: "bus-entry-no-bus", key: `bus-entry-no-bus:${e.id}`, message: `The bus entry at ${at2(start)} is not on a bus`, subject: `bus entry at ${at2(start)}`, componentIds: [], labelIds: [], at: start, ...(own ? { sheet: own } : {}) })
+        continue
+      }
+      const group = sb.groups[e.group]
+      const names = group?.driver ? new Set(group.items.flatMap((i) => i.name.names)) : null
+      if (!names) continue
+      // The wire at the end that is not on the bus, and the label it carries.
+      const k = e.onBus[0] ? 1 : 0
+      if (e.onBus[k]) continue
+      const end = e.ends[k]
+      const wire = project.wires.find((w) => (w.sheet ?? ROOT_SHEET) === sheet && w.points.some((p) => Math.hypot(p.x - end.x, p.y - end.y) < 1e-3))
+      const netId = wire ? conn.wireNet.get(wire.id) : undefined
+      const net = netId ? conn.nets.find((n) => n.id === netId) : undefined
+      const text = net?.label?.text ?? (net?.named && !net.power ? net.name : undefined)
+      if (text && !names.has(text)) {
+        out.push({ kind: "net-not-bus-member", key: `net-not-bus-member:${e.id}`, message: `The net ${text} leaves the bus ${group.driver!.text} by a bus entry, but ${text} is not one of its members`, subject: `net ${text} on a bus entry`, componentIds: [], labelIds: [], at: end, ...(own ? { sheet: own } : {}) })
+      }
+    }
+  }
+  return out
+}
+
+/** S1: the findings of the sheet tree: sheet pins and hierarchical labels that do not meet, sheet pins nothing is wired to, and sheets that hold themselves. */
+function sheetFindings(project: Project): ErcFinding[] {
+  const out: ErcFinding[] = []
+  const symbols = project.sheetSymbols ?? []
+  const labels = project.labels.filter((l) => l.kind === "hierarchical")
+  if (!symbols.length && !labels.length) return out
+  const uses = sheetUses(project)
+  const usePaths = (sheet: string) => uses.filter((u) => u.sheet === sheet).map((u) => u.path)
+  const hierOf = (sheet: string) => new Set(labels.filter((l) => (l.sheet ?? ROOT_SHEET) === sheet).map((l) => l.name.trim()))
+  const pinsOf = (symbolsOn: SheetSymbolLike[]) => new Set(symbolsOn.flatMap((s) => s.pins.map((p) => p.name.trim())))
+  type SheetSymbolLike = NonNullable<Project["sheetSymbols"]>[number]
+  for (const sym of symbols) {
+    const have = hierOf(sym.child)
+    const parentUse = usePaths(sym.sheet)[0] ?? ""
+    for (const pin of sym.pins) {
+      const name = pin.name.trim()
+      const where = { x: pin.x, y: pin.y }
+      if (name && !have.has(name)) {
+        out.push({ kind: "sheet-pin-no-label", key: `sheet-pin-no-label:${sym.id}:${pin.id}`, message: `The pin ${name} of the sheet ${sheetSymbolName(sym)} has no hierarchical label called ${name} inside the sheet`, subject: `sheet pin ${name} of ${sheetSymbolName(sym)}`, componentIds: [], labelIds: [], at: where, ...(parentUse ? { sheet: parentUse } : {}) })
+      }
+      if (!touchesAt(project, sym.sheet, usePaths(sym.sheet), where)) {
+        out.push({ kind: "sheet-pin-unconnected", key: `sheet-pin-unconnected:${sym.id}:${pin.id}`, message: `The pin ${name || "(no name)"} of the sheet ${sheetSymbolName(sym)} has nothing connected to it`, subject: `unconnected sheet pin ${name} of ${sheetSymbolName(sym)}`, componentIds: [], labelIds: [], at: where, ...(parentUse ? { sheet: parentUse } : {}) })
+      }
+    }
+  }
+  for (const l of labels) {
+    const sheet = l.sheet ?? ROOT_SHEET
+    const name = l.name.trim()
+    const above = symbols.filter((s) => s.child === sheet)
+    const own = usePaths(sheet)[0] ?? ""
+    if (!above.length) {
+      out.push({ kind: "label-no-sheet-pin", key: `label-no-sheet-pin:${l.id}`, message: `The hierarchical label ${name} is on a sheet no sheet symbol stands for, so it joins nothing`, subject: `hierarchical label ${name}`, componentIds: [], labelIds: [l.id], at: { x: l.x, y: l.y }, ...(own ? { sheet: own } : {}) })
+    } else if (!pinsOf(above).has(name)) {
+      out.push({ kind: "label-no-sheet-pin", key: `label-no-sheet-pin:${l.id}`, message: `The hierarchical label ${name} has no pin called ${name} on the sheet symbol above`, subject: `hierarchical label ${name}`, componentIds: [], labelIds: [l.id], at: { x: l.x, y: l.y }, ...(own ? { sheet: own } : {}) })
+    }
+  }
+  for (const sym of refusedSheetSymbols(project)) {
+    out.push({ kind: "sheet-loop", key: `sheet-loop:${sym.id}`, message: `The sheet ${sheetSymbolName(sym)} holds itself, directly or through other sheets, so its pages are left out`, subject: `sheet ${sheetSymbolName(sym)}`, componentIds: [], labelIds: [], at: { x: sym.x, y: sym.y } })
+  }
+  return out
 }
 
 /** Findings split into the ones to show and the ones the user ignored. */

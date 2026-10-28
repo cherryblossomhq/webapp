@@ -19,11 +19,16 @@ import { drawingBounds, moveDrawing } from "./drawings"
 import { DEFAULT_RULES } from "./rules"
 import { classValues, hasNetClasses } from "./netClasses"
 import { labelBox } from "./labels"
+import { rekeyAutoNets } from "./rekeyNets"
+import { cutAtTs, kicadRulesShown, settleKicadSheet } from "./kicadJoin"
 import { findPart, getPart } from "./library"
 import { dirVector, pinStubPoint, schematicBounds, schematicPins, type WorldPin } from "./instances"
 import { SCH_GRID } from "./symbols"
+import { symbolOf } from "./symbolDrawing"
+import { repairUnits } from "./units"
 import type {
   ComponentInstance,
+  Mirror,
   NetLabel,
   PinRef,
   DesignRules,
@@ -125,7 +130,7 @@ export function updateComponent(
         ...c,
         ...patch,
         props: patch.props ? { ...patch.props } : c.props,
-        sch: { ...c.sch, ...patch.sch },
+        sch: withoutEmptyMirror({ ...c.sch, ...patch.sch }),
         pcb: { ...c.pcb, ...patch.pcb },
       }
       // A reference text that shows something other than the part's reference (a part a KiCad board names `REF**`) follows the part once the part is renamed.
@@ -139,6 +144,13 @@ export function updateComponent(
       return next
     }),
   })
+}
+
+/** A placement with a mirror that is not one has none: the key is gone, not undefined. */
+function withoutEmptyMirror(sch: ComponentInstance["sch"]): ComponentInstance["sch"] {
+  if (sch.mirror !== undefined) return sch
+  const { mirror: _mirror, ...rest } = sch
+  return "mirror" in sch ? rest : sch
 }
 
 export interface ItemIds {
@@ -162,9 +174,12 @@ export function removeItems(project: Project, ids: ItemIds): Project {
   const b = new Set(ids.blocks)
   const d = new Set(ids.drawings)
   const drawings = project.drawings?.filter((x) => !d.has(x.id))
-  return touch({
+  // A part deleted while others of its units stay: the next unit becomes the part, with its footprint and place on the board.
+  const left = project.components.filter((x) => !c.has(x.id))
+  const removed = c.size ? project.components.filter((x) => c.has(x.id)) : []
+  const result = touch({
     ...project,
-    components: project.components.filter((x) => !c.has(x.id)),
+    components: removed.length ? repairUnits(left, removed) : left,
     wires: project.wires.filter((x) => !w.has(x.id)),
     labels: project.labels.filter((x) => !l.has(x.id)),
     traces: project.traces.filter((x) => !t.has(x.id)),
@@ -172,17 +187,22 @@ export function removeItems(project: Project, ids: ItemIds): Project {
     ...(project.blocks && { blocks: blocksWithout(project.blocks.filter((x) => !b.has(x.id)), c) }),
     ...(drawings && { drawings: drawings.length ? drawings : undefined }),
   })
+  // A part that goes can rename the nets made up from its pins: the board data keyed by those names follows (and a project with none is returned as it is).
+  return removed.length ? rekeyAutoNets(project, result) : result
 }
 
 export function addWire(project: Project, points: Vec2[]): { project: Project; wire: Wire | null } {
   const pts = simplifyPolyline(points.map((p) => ({ x: round(p.x), y: round(p.y) })))
   if (pts.length < 2) return { project, wire: null }
   const wire: Wire = { id: uid("w"), points: pts }
-  return { project: touch({ ...project, wires: [...project.wires, wire] }), wire }
+  const all = [...project.wires, wire]
+  // S11: on a sheet joined by KiCad's rules a wire end on another wire's side joins nothing, so the wires are cut where they meet (KiCad's T).
+  return { project: touch({ ...project, wires: kicadRulesShown(project) ? cutAtTs(all, wire) : all }), wire }
 }
 
 export function addLabel(project: Project, name: string, at: Vec2, rot: Rotation = 0): { project: Project; label: NetLabel } {
-  const label: NetLabel = { id: uid("l"), name, x: round(at.x), y: round(at.y), rot }
+  // In a project named as KiCad names its nets a label is a local one, KiCad's own.
+  const label: NetLabel = { id: uid("l"), name, x: round(at.x), y: round(at.y), rot, ...(project.netNames ? { kind: "local" as const } : {}) }
   return { project: touch({ ...project, labels: [...project.labels, label] }), label }
 }
 
@@ -220,7 +240,9 @@ export function resolvePinSpec(project: Project, spec: string): PinRef | null {
   const m = spec.trim().match(/^([^.\s]+)\.(.+)$/)
   if (!m) return null
   const [, ref, pinName] = m
-  const c = project.components.find((x) => x.ref.toLowerCase() === ref.toLowerCase())
+  // A part with several units has a symbol for each; the one that is the part (with the footprint) comes first.
+  const same = project.components.filter((x) => x.ref.toLowerCase() === ref.toLowerCase())
+  const c = same.find((x) => !findPart(x.partId)?.unitOf) ?? same[0]
   if (!c) return null
   const part = findPart(c.partId)
   if (!part) return null
@@ -547,28 +569,69 @@ export function dragPlan(project: Project, picked: { components: string[]; label
   return { ids, bands: findRubberBands(project, ids.components, ids.labels, ids.wires) }
 }
 
-/** Turn one part to `rot`. Its stubs turn with it; wires that reach other things stay attached to its pins. */
-export function rotateComponent(project: Project, id: string, rot: Rotation, conn?: SchematicConnectivity): Project {
-  const c = project.components.find((x) => x.id === id)
-  if (!c || c.sch.rot === rot) return project
-  const turn = (((rot - c.sch.rot) % 360) + 360) % 360 as Rotation
-  const stubs = partFollowers(project, [id])
-  const oldPins = schematicPins(c)
-  let moved = updateComponent(project, id, { sch: { rot } })
-  const newPins = new Map(schematicPins(moved.components.find((x) => x.id === id)!).map((p) => [p.pin, p]))
-  const around = (p: Vec2): Vec2 => {
-    const r = rotate90({ x: p.x - c.sch.x, y: p.y - c.sch.y }, turn)
-    return { x: round(c.sch.x + r.x), y: round(c.sch.y + r.y) }
+/** A change of how a symbol lies on the sheet: a quarter turn counter-clockwise on screen, or a mirror, both about the symbol's origin. */
+export type Reorient = { kind: "turn"; by: Rotation } | { kind: "mirror"; axis: Mirror }
+
+/** Where a point lies after the symbol is turned or mirrored, about `centre`. */
+function reorientPoint(p: Vec2, centre: Vec2, w: Reorient): Vec2 {
+  const d = { x: p.x - centre.x, y: p.y - centre.y }
+  const r = w.kind === "turn" ? rotate90(d, w.by) : w.axis === "x" ? { x: d.x, y: -d.y } : { x: -d.x, y: d.y }
+  return { x: round(centre.x + r.x), y: round(centre.y + r.y) }
+}
+
+/**
+ * The turn and mirror a placement has after a change on the sheet is made to it. A turn is
+ * counter-clockwise on screen whatever the mirror (the symbol's own turn runs the other way once it is mirrored);
+ * mirroring one way and then the other is a half turn.
+ */
+export function composeOrientation(o: { rot: Rotation; mirror?: Mirror }, w: Reorient): { rot: Rotation; mirror?: Mirror } {
+  const rot = (a: number) => ((((a % 360) + 360) % 360) as Rotation)
+  // `mirror: undefined` is said, not left out, so that merging it into a placement takes the old mirror away.
+  if (w.kind === "turn") return o.mirror ? { rot: rot(o.rot - w.by), mirror: o.mirror } : { rot: rot(o.rot + w.by), mirror: undefined }
+  if (!o.mirror) return { rot: o.rot, mirror: w.axis }
+  if (o.mirror === w.axis) return { rot: o.rot, mirror: undefined }
+  return { rot: rot(o.rot + 180), mirror: undefined }
+}
+
+/**
+ * A symbol's own fields turn and mirror with it: their anchors are in the symbol's frame (`SCH_FIELD::GetPosition`),
+ * so on the sheet each goes where the change puts it. The angle and justification are the symbol's and stay.
+ */
+function reorientFields(fields: ComponentInstance["fields"], w: Reorient): ComponentInstance["fields"] {
+  if (!fields) return fields
+  const move = (p: Vec2): Vec2 => {
+    const r = w.kind === "turn" ? rotate90(p, w.by) : w.axis === "x" ? { x: p.x, y: -p.y } : { x: -p.x, y: p.y }
+    // To the six places a field's anchor is kept to, not the four a part's place is.
+    return { x: round(r.x, 6), y: round(r.y, 6) }
   }
-  // Power symbols on the part's pins turn about the part too, so each pin of theirs lands where the turn puts it.
+  return Object.fromEntries(Object.entries(fields).map(([name, f]) => [name, { ...f, ...move({ x: f.x, y: f.y }) }]))
+}
+
+/** The label's turn after the sheet is mirrored: the way its flag points is reflected. */
+const mirrorLabelRot = (rot: Rotation, axis: Mirror): Rotation => ((((axis === "x" ? -rot : 180 - rot) % 360) + 360) % 360) as Rotation
+
+/**
+ * Turn or mirror one part. Its stubs go with it, and wires that reach other things stay attached to
+ * its pins. The part's own placement is composed with the change (`composeOrientation`).
+ */
+export function reorientComponent(project: Project, id: string, w: Reorient, conn?: SchematicConnectivity): Project {
+  const c = project.components.find((x) => x.id === id)
+  if (!c) return project
+  const stubs = partFollowers(project, [id])
+  const digits = kicadRulesShown(project) ? 6 : 4
+  const oldPins = schematicPins(c)
+  let moved = updateComponent(project, id, { sch: composeOrientation(c.sch, w), ...(c.fields ? { fields: reorientFields(c.fields, w) } : {}) })
+  const newPins = new Map(schematicPins(moved.components.find((x) => x.id === id)!).map((p) => [p.pin, p]))
+  const around = (p: Vec2): Vec2 => reorientPoint(p, c.sch, w)
+  // Power symbols on the part's pins turn about the part too, so each pin of theirs lands where the change puts it.
   for (const sid of stubs.components) {
     const sym = moved.components.find((x) => x.id === sid)
     const pin = sym && schematicPins(sym)[0]
     if (!sym || !pin) continue
     const to = around(pin.pos)
-    const turned = updateComponent(moved, sid, { sch: { rot: ((sym.sch.rot + turn) % 360) as Rotation } })
+    const turned = updateComponent(moved, sid, { sch: composeOrientation(sym.sch, w), ...(sym.fields ? { fields: reorientFields(sym.fields, w) } : {}) })
     const now = schematicPins(turned.components.find((x) => x.id === sid)!)[0]
-    moved = updateComponent(turned, sid, { sch: { x: round(sym.sch.x + to.x - now.pos.x), y: round(sym.sch.y + to.y - now.pos.y) } })
+    moved = updateComponent(turned, sid, { sch: { x: round(sym.sch.x + to.x - now.pos.x, digits), y: round(sym.sch.y + to.y - now.pos.y, digits) } })
   }
   const stubWires = new Set(stubs.wires)
   const stubLabels = new Set(stubs.labels)
@@ -576,15 +639,18 @@ export function rotateComponent(project: Project, id: string, rot: Rotation, con
     const pin = oldPins.find((q) => samePoint(q.pos, p))
     return pin ? newPins.get(pin.pin) : undefined
   }
-  const wires = moved.wires.map((w) => {
-    if (stubWires.has(w.id)) return { ...w, points: w.points.map(around) }
+  const wires = moved.wires.map((wire) => {
+    if (stubWires.has(wire.id)) {
+      // On a sheet joined by KiCad's rules an end on a pin is put on the pin where it now is, not on its own rounding of the old place.
+      return { ...wire, points: wire.points.map((p) => (digits > 4 ? (newPosOf(p)?.pos ?? around(p)) : around(p))) }
+    }
     // The far end first, so the near end keeps index 0 when a bend is added.
-    let points = w.points
-    const tail = newPosOf(w.points[w.points.length - 1])
-    if (tail && !samePoint(points[points.length - 1], tail.pos)) points = stretchEnd(points, points.length - 1, tail.pos)
-    const head = newPosOf(w.points[0])
-    if (head && !samePoint(points[0], head.pos)) points = stretchEnd(points, 0, head.pos)
-    return points === w.points ? w : { ...w, points }
+    let points = wire.points
+    const tail = newPosOf(wire.points[wire.points.length - 1])
+    if (tail && !samePoint(points[points.length - 1], tail.pos)) points = stretchEnd(points, points.length - 1, tail.pos, digits > 4)
+    const head = newPosOf(wire.points[0])
+    if (head && !samePoint(points[0], head.pos)) points = stretchEnd(points, 0, head.pos, digits > 4)
+    return points === wire.points ? wire : { ...wire, points }
   })
   const labels = moved.labels.map((l) => {
     if (!stubLabels.has(l.id)) return l
@@ -594,13 +660,28 @@ export function rotateComponent(project: Project, id: string, rot: Rotation, con
       return { ...l, x: pin.pos.x, y: pin.pos.y, rot: (d.x > 0 ? 0 : d.y > 0 ? 90 : d.x < 0 ? 180 : 270) as Rotation }
     }
     const at = around(l)
-    return { ...l, x: at.x, y: at.y, rot: ((l.rot + turn) % 360) as Rotation }
+    return { ...l, x: at.x, y: at.y, rot: w.kind === "turn" ? (((l.rot + w.by) % 360) as Rotation) : mirrorLabelRot(l.rot, w.axis) }
   })
-  // A wire that was stretched to the turned pin may have left behind a label in its middle, or the
+  // A wire that was stretched to the changed pin may have left behind a label in its middle, or the
   // end of a wire that tees into it: put those back on it, as a move does.
-  const kept = reseat(project, { components: moved.components, wires: simplifyChanged(project.wires, wires), labels }, stubWires, stubLabels, { x: 0, y: 0 }, conn)
+  const kept = reseat(project, { components: moved.components, wires: simplifyChanged(project.wires, wires), labels }, stubWires, stubLabels, { x: 0, y: 0 }, conn, digits)
   const bridges = bridgePinContacts(project, moved.components, new Set([id, ...stubs.components]))
-  return { ...moved, wires: [...kept.wires, ...bridges], labels: kept.labels, updatedAt: Date.now() }
+  return settleKicadSheet(project, { ...moved, wires: [...kept.wires, ...bridges], labels: kept.labels, updatedAt: Date.now() })
+}
+
+/** Turn one part to `rot`. Its stubs turn with it; wires that reach other things stay attached to its pins. */
+export function rotateComponent(project: Project, id: string, rot: Rotation, conn?: SchematicConnectivity): Project {
+  const c = project.components.find((x) => x.id === id)
+  if (!c || c.sch.rot === rot) return project
+  // On screen the part turns the other way once it is mirrored: its own turn went from `c.sch.rot` to `rot`.
+  const own = (rot - c.sch.rot + 360) % 360
+  const by = (c.sch.mirror ? (360 - own) % 360 : own) as Rotation
+  return reorientComponent(project, id, { kind: "turn", by }, conn)
+}
+
+/** Mirror one part: `x` flips it top to bottom, `y` left to right. Its stubs go with it, and wires that reach other things stay on its pins. */
+export function mirrorComponent(project: Project, id: string, axis: Mirror, conn?: SchematicConnectivity): Project {
+  return reorientComponent(project, id, { kind: "mirror", axis }, conn)
 }
 
 /**
@@ -690,19 +771,24 @@ export function findRubberBands(project: Project, componentIds: string[], labelI
   return out
 }
 
-/** Move one end of a wire to `to`, bending the wire so it stays orthogonal. */
-export function stretchEnd(points: Vec2[], e: number, to: Vec2): Vec2[] {
+/**
+ * Move one end of a wire to `to`, bending the wire so it stays orthogonal. `exact` is for a sheet joined by KiCad's rules (S11): its wires keep KiCad's points, so a wire
+ * that is off true by what the editor's four digits put on a pin (a wire from a pin to a T that is at six digits) is still the straight wire it was drawn as, and the
+ * neighbour of the end moves by the end's own step rather than to the end's place, so a point that other wires meet is never moved by a rounding.
+ */
+export function stretchEnd(points: Vec2[], e: number, to: Vec2, exact = false): Vec2[] {
   const last = points.length - 1
   const pts = points.map((p) => ({ ...p }))
   const nIdx = e === 0 ? 1 : last - 1
   const orig = points[e]
   const neighbor = points[nIdx]
-  const wasHorizontal = Math.abs(orig.y - neighbor.y) < 1e-6
+  const eps = exact ? 1e-4 : 1e-6
+  const wasHorizontal = Math.abs(orig.y - neighbor.y) < eps
   pts[e] = to
   if (pts.length === 2) {
     const a = pts[e]
     const b = pts[nIdx]
-    if (Math.abs(a.x - b.x) > 1e-6 && Math.abs(a.y - b.y) > 1e-6) {
+    if (Math.abs(a.x - b.x) > eps && Math.abs(a.y - b.y) > eps) {
       const mid = wasHorizontal
         ? [{ x: round((a.x + b.x) / 2), y: a.y }, { x: round((a.x + b.x) / 2), y: b.y }]
         : [{ x: a.x, y: round((a.y + b.y) / 2) }, { x: b.x, y: round((a.y + b.y) / 2) }]
@@ -711,14 +797,15 @@ export function stretchEnd(points: Vec2[], e: number, to: Vec2): Vec2[] {
     }
     return pts
   }
-  if (wasHorizontal) pts[nIdx] = { x: neighbor.x, y: pts[e].y }
+  if (exact) pts[nIdx] = wasHorizontal ? { x: neighbor.x, y: round(neighbor.y + to.y - orig.y, 6) } : { x: round(neighbor.x + to.x - orig.x, 6), y: neighbor.y }
+  else if (wasHorizontal) pts[nIdx] = { x: neighbor.x, y: pts[e].y }
   else pts[nIdx] = { x: pts[e].x, y: neighbor.y }
   // The segment beyond the neighbour ran the same way as the end's (a wire with a redundant corner on
   // a straight run): moving the neighbour would leave it slanted, so it gets a bend of its own.
   const next = points[e === 0 ? nIdx + 1 : nIdx - 1]
   const moved = pts[nIdx]
-  const slanted = Math.abs(moved.x - next.x) > 1e-6 && Math.abs(moved.y - next.y) > 1e-6
-  const wasStraight = Math.abs(neighbor.x - next.x) < 1e-6 || Math.abs(neighbor.y - next.y) < 1e-6
+  const slanted = Math.abs(moved.x - next.x) > eps && Math.abs(moved.y - next.y) > eps
+  const wasStraight = Math.abs(neighbor.x - next.x) < eps || Math.abs(neighbor.y - next.y) < eps
   if (slanted && wasStraight) pts.splice(e === 0 ? nIdx + 1 : nIdx, 0, wasHorizontal ? { x: neighbor.x, y: next.y } : { x: next.x, y: neighbor.y })
   return pts
 }
@@ -737,6 +824,8 @@ export function moveSchematicItems(
   options: { reseat?: boolean } = {},
 ): Project {
   const d = { x: round(delta.x), y: round(delta.y) }
+  // S11: a sheet joined by KiCad's rules has its points at six digits (KiCad's own), and joins what is at an equal point, so a point moved is kept to six, not rounded to four.
+  const digits = kicadRulesShown(base) ? 6 : 4
   const comps = new Set(ids.components)
   const labels = new Set(ids.labels)
   const wires = new Set(ids.wires)
@@ -744,7 +833,7 @@ export function moveSchematicItems(
   const bandsByWire = new Map<string, number[]>()
   for (const b of bands) bandsByWire.set(b.wireId, [...(bandsByWire.get(b.wireId) ?? []), b.endIndex])
 
-  const shift = (p: Vec2): Vec2 => ({ x: round(p.x + d.x), y: round(p.y + d.y) })
+  const shift = (p: Vec2): Vec2 => ({ x: round(p.x + d.x, digits), y: round(p.y + d.y, digits) })
 
   const stretched = base.wires.map((w) => {
     if (wires.has(w.id)) return { ...w, points: w.points.map(shift) }
@@ -752,35 +841,35 @@ export function moveSchematicItems(
     if (!ends) return w
     const last = w.points.length - 1
     if (ends.includes(0) && ends.includes(last)) return { ...w, points: w.points.map(shift) }
-    return { ...w, points: stretchEnd(w.points, ends[0], shift(w.points[ends[0]])) }
+    return { ...w, points: stretchEnd(w.points, ends[0], shift(w.points[ends[0]]), digits > 4) }
   })
   // A wire stretched into a hook, or doubled back on itself, is simplified before what sat on it is put back.
   const newWires = simplifyChanged(base.wires, stretched)
   const newLabels = base.labels.map((l) => (labels.has(l.id) ? { ...l, ...shift(l) } : l))
   const components = base.components.map((c) => (comps.has(c.id) ? { ...c, sch: { ...c.sch, ...shift(c.sch) } } : c))
-  const kept = options.reseat === false ? { wires: newWires, labels: newLabels } : reseat(base, { components, wires: newWires, labels: newLabels }, wires, labels, d, conn)
+  const kept = options.reseat === false ? { wires: newWires, labels: newLabels } : reseat(base, { components, wires: newWires, labels: newLabels }, wires, labels, d, conn, digits)
   // Pins that were on another part's pin, with nothing to stretch between them, get a wire.
   const bridges = bridgePinContacts(base, components, comps)
 
-  return {
+  return settleKicadSheet(base, {
     ...base,
     updatedAt: Date.now(),
     components,
     labels: kept.labels,
     wires: [...kept.wires, ...bridges],
     ...(drawings.size > 0 && base.drawings && { drawings: base.drawings.map((x) => (drawings.has(x.id) ? moveDrawing(x, d) : x)) }),
-  }
+  })
 }
 
 const onPath = (points: Vec2[], p: Vec2) => points.some((q, i) => i > 0 && pointOnSegment(p, points[i - 1], q))
 
 /** The point of the segment a-b nearest to `p`. */
-function nearestOnSegment(a: Vec2, b: Vec2, p: Vec2): Vec2 {
+function nearestOnSegment(a: Vec2, b: Vec2, p: Vec2, digits = 4): Vec2 {
   const dx = b.x - a.x
   const dy = b.y - a.y
   const len2 = dx * dx + dy * dy
   const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
-  return { x: round(a.x + dx * t), y: round(a.y + dy * t) }
+  return { x: round(a.x + dx * t, digits), y: round(a.y + dy * t, digits) }
 }
 
 /** What a sheet has where, indexed once per sheet: a drag asks it again on every frame. */
@@ -836,6 +925,7 @@ function reseat(
   carriedLabels: Set<string>,
   d: Vec2,
   conn?: SchematicConnectivity,
+  digits = 4,
 ): { wires: Wire[]; labels: NetLabel[] } {
   if (!after.wires.some((w, i) => w !== base.wires[i])) return { wires: after.wires, labels: after.labels }
   const ix = sheetIndex(base)
@@ -863,7 +953,7 @@ function reseat(
   })
   const wireNow = (id: string) => out[ix.order.get(id)!]
   const netOfWire = (id: string) => net().wireNet.get(id) ?? `wire:${id}`
-  const shifted = (p: Vec2): Vec2 => ({ x: round(p.x + d.x), y: round(p.y + d.y) })
+  const shifted = (p: Vec2): Vec2 => ({ x: round(p.x + d.x, digits), y: round(p.y + d.y, digits) })
 
   const hostsOf = (p: Vec2, except?: string): string[] => {
     const ids = new Set<string>()
@@ -925,11 +1015,11 @@ function reseat(
     const out: Vec2[] = []
     if (onPath(hostNow, along)) out.push(along)
     const at = old.findIndex((q, i) => i > 0 && pointOnSegment(p, old[i - 1], q))
-    const near = (i: number) => (i >= 1 && i < hostNow.length ? [nearestOnSegment(hostNow[i - 1], hostNow[i], p)] : [])
+    const near = (i: number) => (i >= 1 && i < hostNow.length ? [nearestOnSegment(hostNow[i - 1], hostNow[i], p, digits)] : [])
     // The same run first: the segments that stand where the one it sat on stood.
     for (const i of [at, at - 1, at + 1]) out.push(...near(i))
     const all: Vec2[] = []
-    for (let i = 1; i < hostNow.length; i++) all.push(nearestOnSegment(hostNow[i - 1], hostNow[i], p))
+    for (let i = 1; i < hostNow.length; i++) all.push(nearestOnSegment(hostNow[i - 1], hostNow[i], p, digits))
     all.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))
     out.push(...all)
     const seen = new Set<string>()
@@ -968,7 +1058,7 @@ function reseat(
             return true
           }
           const w = wireNow(it.id)
-          const route = stretchEnd(w.points, eIdx, to)
+          const route = stretchEnd(w.points, eIdx, to, digits > 4)
           if (!routeClear(route, w.points, own)) continue
           out[ix.order.get(it.id)!] = { ...w, points: route }
           changed.add(it.id)
@@ -984,7 +1074,7 @@ function reseat(
       jumpered.add(key)
       const hostNow = wireNow(h).points
       const targets: Vec2[] = []
-      for (let i = 1; i < hostNow.length; i++) targets.push(nearestOnSegment(hostNow[i - 1], hostNow[i], p))
+      for (let i = 1; i < hostNow.length; i++) targets.push(nearestOnSegment(hostNow[i - 1], hostNow[i], p, digits))
       targets.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))
       for (const to of targets) {
         if (samePoint(to, p)) continue
@@ -1053,6 +1143,6 @@ export function freeSchematicSpot(project: Project, part?: PartDef, rot: Rotatio
     expandBox(box, { x: b.minX, y: b.minY })
     expandBox(box, { x: b.maxX, y: b.maxY })
   }
-  const left = part ? transformBox(part.symbol.bounds, { x: 0, y: 0 }, rot).minX : 0
+  const left = part ? transformBox(symbolOf(part).bounds, { x: 0, y: 0 }, rot).minX : 0
   return { x: round(Math.ceil((box.maxX + SPOT_GAP - left) / SCH_GRID - 1e-6) * SCH_GRID), y: 0 }
 }

@@ -1,8 +1,14 @@
 import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../model/board"
-import { isNpth, isPhysical, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
+import { isNpth, maskSides, padOnLayer, pasteSides, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
+import { arcOf } from "../model/arcTracks"
+import { copperLayers, kicadLayerName, viaDiameterOn, viaLayers } from "../model/stack"
+import { viaTentedOn } from "../model/viaRules"
+import type { CopperItem } from "../model/pcb"
+import { resolvedComponents } from "../model/ruleAreas"
+import { maskMargin, padOpeningRings, pasteMargins } from "../model/padOpening"
+import { onBoard } from "../model/partFlags"
 import { designatorStrokes, placeDesignators, SILK_WIDTH } from "../model/silk"
-import { findPart } from "../model/library"
-import type { ZoneFill } from "../model/pour"
+import { polygonKit, withMaxError, type ZoneFill } from "../model/pour"
 import type { CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
 import type { BoardShape } from "../model/types"
 import { worldShapes } from "../model/shapeItems"
@@ -10,6 +16,7 @@ import { arcCircle, dashShape, flattenSeg, isClosedShape, segStart, shapePaths, 
 import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
 import { requireClosedOutline } from "./outlineGuard"
+import { maskRegions } from "./maskMerge"
 
 const EDGE_WIDTH = 0.1
 
@@ -230,9 +237,31 @@ export function offsetConvexRing(pts: Vec2[], d: number): Vec2[] | null {
   return out
 }
 
-function flashPad(w: GerberWriter, pad: WorldPad, grow = 0) {
+/** Rings of a pad as regions: each outer ring with the holes inside it joined to it. */
+function plotRings(w: GerberWriter, rings: Vec2[][]) {
+  if (rings.length === 1) {
+    w.region(rings[0])
+    return
+  }
+  // In whole nanometres, which is the Gerber's own unit: nothing is lost to the union.
+  withMaxError(
+    undefined,
+    () => {
+      for (const poly of polygonKit.regions(polygonKit.unionEvenOdd(rings.map((r) => polygonKit.path(r))))) w.region(poly.length > 1 ? fractureRings(poly[0], poly.slice(1)) : poly[0])
+    },
+    1e6,
+  )
+}
+
+function flashPad(w: GerberWriter, pad: WorldPad, grow = 0, growY = grow) {
+  // A pad with X7 features is plotted as KiCad plots it (`padOpening.ts`): any shape but a plain circle as regions, exact to a nanometre.
+  if (pad.x7 && !(pad.x7.def.shape === "circle" && !pad.x7.def.custom)) {
+    const rings = padOpeningRings(pad, grow, growY)
+    if (rings?.length) plotRings(w, rings)
+    return
+  }
   const width = pad.width + grow * 2
-  const height = pad.height + grow * 2
+  const height = pad.height + growY * 2
   switch (pad.shape) {
     case "circle":
       w.flashCircle(pad, Math.max(width, height))
@@ -265,28 +294,34 @@ function flashPad(w: GerberWriter, pad: WorldPad, grow = 0) {
   }
 }
 
-const physicalComponents = (project: Project) => project.components.filter((c) => isPhysical(findPart(c.partId)))
+const physicalComponents = (project: Project) => resolvedComponents(project).filter((c) => onBoard(c))
 
-/** Component pads (including non-plated holes) plus the plated corner mounting holes. */
-const padsOn = (project: Project, layer: CopperLayer): WorldPad[] => [
-  ...physicalComponents(project)
-    .flatMap((c) => pcbPads(c))
-    .filter((pad) => pad.layers.includes(layer)),
-  ...mountingHoles(project.board).map(
-    (h): WorldPad => ({
-      componentId: "#board",
-      pin: null,
-      padNumber: null,
-      shape: "circle",
-      x: h.x,
-      y: h.y,
-      width: h.diameter,
-      height: h.diameter,
-      holeDiameter: h.drill,
-      layers: ["top", "bottom"],
-    }),
-  ),
-]
+/**
+ * The pads of one layer of the plot: `copper` ones have copper there (a non-plated hole only if it has copper round it), `mask` ones an opening
+ * in the solder mask on that side, `paste` ones an aperture in the stencil. A pad has the sides its kind has unless it says (`PadDef.layers`).
+ */
+const padsOn = (project: Project, layer: CopperLayer, what: "copper" | "mask" | "paste" = "copper", flashed?: Map<string, CopperItem>): WorldPad[] => {
+  const layers = copperLayers(project.board)
+  const out: WorldPad[] = []
+  for (const c of physicalComponents(project)) {
+    pcbPads(c, layers.length).forEach((pad, i) => {
+      const on = (what === "mask" ? maskSides(pad) : what === "paste" ? pasteSides(pad) : isNpth(pad) ? (pad.ring ?? []) : pad.layers).includes(layer)
+      if (!on) return
+      // A pad's own tenting of the mask closes its opening on that side (X5).
+      if (what === "mask" && pad.tented?.[layer === "top" ? "front" : "back"] === true && (layer === "top" || layer === "bottom")) return
+      // X1: copper the pad drops on a layer nothing connects to is not plotted there (`pruneUnused`).
+      if (what === "copper" && flashed && pad.unused) {
+        const item = flashed.get(`pad:${c.id}:${i}`) ?? flashed.get(`pad:${c.id}:${i}@${layer}`)
+        if (!item || !item.layers.includes(layer)) return
+      }
+      out.push(what === "copper" ? padOnLayer(pad, layer) : pad)
+    })
+  }
+  for (const h of mountingHoles(project.board)) {
+    out.push({ componentId: "#board", pin: null, padNumber: null, shape: "circle", x: h.x, y: h.y, width: h.diameter, height: h.diameter, holeDiameter: h.drill, layers: [...layers] })
+  }
+  return out
+}
 
 /**
  * One drawing as KiCad plots it (plot_brditems_plotter.cpp, PlotShape): a stroke of its width along its
@@ -341,8 +376,10 @@ const ringArea = (ring: Vec2[]) => {
  * so the pour polygons go largest first: an island inside another polygon's hole (or another
  * zone's) is always smaller, so it lands after the hole that would otherwise wipe it.
  */
-export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFill[] = []): string {
+export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFill[] = [], items?: CopperItem[]): string {
   const w = new GerberWriter()
+  const all = copperLayers(project.board)
+  const flashed = items ? new Map(items.filter((it) => it.kind === "pad" || it.kind === "via").map((it) => [it.id, it])) : undefined
   const polygons = fills
     .filter((fill) => fill.layer === layer)
     .flatMap((fill) => fill.polygons)
@@ -356,20 +393,40 @@ export function gerberCopper(project: Project, layer: CopperLayer, fills: ZoneFi
       w.polarity(true)
     }
   }
-  for (const pad of padsOn(project, layer)) if (!isNpth(pad)) flashPad(w, pad)
-  for (const t of project.traces) if (t.layer === layer) w.stroke(t.points, t.width)
-  for (const v of project.vias) w.flashCircle(v, v.diameter)
-  for (const shape of drawingsOn(project, layer === "top" ? "F.Cu" : "B.Cu")) plotShape(w, shape)
-  plotTexts(w, project, layer === "top" ? "F.Cu" : "B.Cu")
-  return w.toString(`Copper,L${layer === "top" ? 1 : 2},${sideName(layer)}`)
+  for (const pad of padsOn(project, layer, "copper", flashed)) flashPad(w, pad)
+  for (const t of project.traces) {
+    if (t.layer !== layer) continue
+    // X4: an arc track is plotted as the arc it is, G02 or G03 about its centre (KiCad's `PlotArc`), not as chords.
+    const arc = t.arc && t.points.length === 3 ? arcOf(t.points) : null
+    if (arc?.circle) w.strokeSegs([{ kind: "arc", start: arc.start, mid: arc.mid, end: arc.end }], t.width)
+    else w.stroke(arc ? [arc.start, arc.end] : t.points, t.width)
+  }
+  // Each via on the layers of its span, at its diameter there (a via stack has its own on some layers), where the copper is not dropped for being unused.
+  const viaFlashed = new Map<string, Set<CopperLayer>>()
+  if (items) for (const it of items) if (it.kind === "via") viaFlashed.set(it.viaId, new Set([...(viaFlashed.get(it.viaId) ?? []), ...it.layers]))
+  for (const v of project.vias) {
+    const on = items ? (viaFlashed.get(v.id)?.has(layer) ?? false) : viaLayers(project.board, v).includes(layer)
+    if (on) w.flashCircle(v, viaDiameterOn(v, layer))
+  }
+  const name = kicadLayerName(layer)
+  for (const shape of drawingsOn(project, name)) plotShape(w, shape)
+  plotTexts(w, project, name)
+  const index = all.indexOf(layer) + 1
+  return w.toString(`Copper,L${index},${layer === "top" ? "Top" : layer === "bottom" ? "Bot" : "Inr"}`)
 }
 
 /** Mask openings: pads and non-plated holes grown by the mask expansion, and vias unless they're tented. */
 export function gerberMask(project: Project, side: PcbSide): string {
   const w = new GerberWriter()
   const grow = project.rules.maskExpansion
-  for (const pad of padsOn(project, side)) flashPad(w, pad, grow)
-  if (!project.rules.tentVias) for (const v of project.vias) w.flashCircle(v, v.diameter + grow * 2)
+  // With a minimum mask web KiCad plots the mask as merged regions, not opening by opening (`maskMerge.ts`).
+  if (project.rules.maskMinWidth !== undefined && project.rules.maskMinWidth > 0) {
+    for (const poly of maskRegions(project, side, padsOn(project, side, "mask"), drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask"))) w.region(poly.length > 1 ? fractureRings(poly[0], poly.slice(1)) : poly[0])
+    return w.toString(`Soldermask,${sideName(side)}`, "Negative")
+  }
+  for (const pad of padsOn(project, side, "mask")) flashPad(w, pad, pad.x7 ? maskMargin(pad, project.rules) : grow)
+  // A via has an opening on a side when its copper reaches that outer layer and it is not tented there: by its own setting, else the board's (X5).
+  for (const v of project.vias) if (viaLayers(project.board, v).includes(side) && !viaTentedOn(project.rules, v, side)) w.flashCircle(v, viaDiameterOn(v, side) + grow * 2)
   for (const shape of drawingsOn(project, side === "top" ? "F.Mask" : "B.Mask")) plotShape(w, shape)
   plotTexts(w, project, side === "top" ? "F.Mask" : "B.Mask")
   return w.toString(`Soldermask,${sideName(side)}`, "Negative")
@@ -378,7 +435,19 @@ export function gerberMask(project: Project, side: PcbSide): string {
 /** Stencil apertures for SMD pads, grown or shrunk by the paste expansion. Every part has its paste, do not populate parts too, as KiCad plots it. */
 export function gerberPaste(project: Project, side: PcbSide): string {
   const w = new GerberWriter()
-  for (const pad of padsOn(project, side)) if (pad.holeDiameter === undefined) flashPad(w, pad, project.rules.pasteExpansion)
+  const { pasteExpansion, pasteRatio } = project.rules
+  for (const pad of padsOn(project, side, "paste")) {
+    if (pad.x7) {
+      // A pad with X7 features: its own margin and ratio, else the board's, as KiCad's `GetSolderPasteMargin` has them.
+      const m = pasteMargins(pad, project.rules)
+      flashPad(w, pad, m.x, m.y)
+      continue
+    }
+    if (pad.holeDiameter !== undefined) continue
+    if (pasteRatio === undefined) flashPad(w, pad, pasteExpansion)
+    // The margin is the board's absolute one plus the ratio of the pad's size, along each side, and never takes more than half of it (`PAD::GetSolderPasteMargin`).
+    else flashPad(w, pad, Math.max(pasteExpansion + pad.width * pasteRatio, -pad.width / 2), Math.max(pasteExpansion + pad.height * pasteRatio, -pad.height / 2))
+  }
   for (const shape of drawingsOn(project, side === "top" ? "F.Paste" : "B.Paste")) plotShape(w, shape)
   plotTexts(w, project, side === "top" ? "F.Paste" : "B.Paste")
   return w.toString(`Paste,${sideName(side)}`)
@@ -449,6 +518,7 @@ export function gerberEdgeCuts(project: Project): string {
 
 export type GerberLayerName =
   | "F_Cu"
+  | `In${number}_Cu`
   | "B_Cu"
   | "F_Mask"
   | "B_Mask"
@@ -458,11 +528,16 @@ export type GerberLayerName =
   | "B_Paste"
   | "Edge_Cuts"
 
-export function gerberLayers(project: Project, fills: ZoneFill[] = []): Record<GerberLayerName, string> {
+/** The name of a copper layer's Gerber file: `F_Cu`, `In1_Cu`, `B_Cu` (KiCad's own, with the dot as an underscore). */
+export const gerberNameOf = (layer: CopperLayer): GerberLayerName => kicadLayerName(layer).replace(".", "_") as GerberLayerName
+
+export function gerberLayers(project: Project, fills: ZoneFill[] = [], items?: CopperItem[]): Record<GerberLayerName, string> {
   requireClosedOutline(project, "The Gerber and drill files")
+  const copper = Object.fromEntries(copperLayers(project.board).map((l) => [gerberNameOf(l), gerberCopper(project, l, fills, items)])) as Record<string, string>
   return {
-    F_Cu: gerberCopper(project, "top", fills),
-    B_Cu: gerberCopper(project, "bottom", fills),
+    F_Cu: copper.F_Cu,
+    ...Object.fromEntries(Object.entries(copper).filter(([k]) => k !== "F_Cu" && k !== "B_Cu")),
+    B_Cu: copper.B_Cu,
     F_Mask: gerberMask(project, "top"),
     B_Mask: gerberMask(project, "bottom"),
     F_Silkscreen: gerberSilkscreen(project, "top"),

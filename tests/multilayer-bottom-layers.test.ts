@@ -18,7 +18,6 @@ import { board, footprint, pad } from "./kicad-board-fixtures"
 // A bottom-side part keeps its inner copper layers in its own frame, and the map between that frame and the board's depends on the layer count.
 
 const L4 = '(layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal) (44 "Edge.Cuts" user))'
-const L2 = '(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))'
 const inner = '(fp_line (start -1 0) (end 1 0) (stroke (width 0.2) (type solid)) (layer "In1.Cu")) (fp_text user "hi" (at 0 2) (layer "In1.Cu") (effects (font (size 1 1) (thickness 0.15))))'
 // a smd pad on the back with copper on the first inner layer, too
 const innerPad = pad({ number: "1", at: "0 0", size: "1 1", layers: '"B.Cu" "In1.Cu" "B.Mask"' })

@@ -3,6 +3,7 @@ import { boardAreaMm2, describeOutline } from "../model/outline"
 import { viasInSmdPads, type CopperItem } from "../model/pcb"
 import { activeVariant, variantNames } from "../model/variants"
 import { inBom, inPositionFile } from "../model/partFlags"
+import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity } from "../model/connectivity"
 import { classIndex, classValuesOfClass as classValuesOf, defaultClassName } from "../model/netClasses"
 import { copperCount } from "../model/stack"
@@ -258,7 +259,7 @@ function variantNotes(project: Project): string[] {
 
 /** The flags on parts, and what each does to the files: only for a board that has any, so a board drawn here reads as it did. */
 function assemblyNotes(project: Project): string[] {
-  const flagged = project.components.filter((c) => c.flags)
+  const flagged = resolvedComponents(project).filter((c) => c.flags)
   if (!flagged.length) return []
   const refs = (pick: (c: Project["components"][number]) => boolean) => {
     const list = flagged.filter(pick).map((c) => c.ref).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))

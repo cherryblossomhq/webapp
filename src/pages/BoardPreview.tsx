@@ -1,7 +1,8 @@
 import { useId, useMemo } from "react"
+import { resolvedComponents } from "../model/ruleAreas"
 import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../model/board"
-import { isNpth, isPhysical, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
-import { findPart } from "../model/library"
+import { isNpth, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
+import { onBoard } from "../model/partFlags"
 import { pathsSvgPath } from "../model/shapes"
 import type { Project } from "../model/types"
 import { getZoneFills } from "../store/analysis"
@@ -33,7 +34,7 @@ export function BoardPreview({ project }: { project: Project }) {
     const metal = { gold: "#e1bd62", tin: "#cfd2d6", copper: "#d99a6c" }[finishMetal(boardFinish(b))]
     const copperTone = mix(mask, "#e8b04a", 0.22)
     const fills = getZoneFills(project).filter((f) => f.layer === "top")
-    const parts = project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
+    const parts = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
     const topPads = parts.flatMap((c) => pcbPads(c).filter((p) => p.layers.includes("top")))
     const pourD = fills
       .flatMap((f) => f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`)))

@@ -1,34 +1,62 @@
-import { CircuitBoard, Eye, EyeOff, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
+import { CircuitBoard, Eye, EyeOff, FilePlus2, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
 import { useState } from "react"
 import { groupSelected, ungroupSelected } from "../editor/schematic/blockActions"
-import type { Box } from "../lib/geometry"
+import { moveSelectedToNewSheet } from "../editor/schematic/sheetActions"
+import { normalizeAngle, type Box } from "../lib/geometry"
 import { addToBlock, blockOf, createBlock, nextBlockName, removeFromBlocks, renameBlock } from "../model/blocks"
 import { pinKey } from "../model/connectivity"
 import { isValidFootprint } from "../model/footprints"
 import { findPart } from "../model/library"
 import { isPhysical, pcbCourtyard, pcbPads, schematicBounds, schematicPins } from "../model/instances"
+import { forgetStoredNets, sameStoredNet } from "../model/copperNets"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { cleanFlags, setFlags } from "../model/partFlags"
+import { isExact } from "../model/sheetItems"
+import { typedNetName } from "../model/busNames"
 import { removeItems, updateComponent } from "../model/ops"
 import { partSourceLine } from "../model/partSource"
+import { removeDimensions, removeImages } from "../model/boardObjects"
+import { removeGraphics } from "../model/shapeOps"
 import { addUnit, mirrorSelection, renameReference, rotateSelection, setFieldPlace, setSymbolVariant } from "../model/schematicEdit"
 import { bodyStyleCount, fieldPlaceOf, hasFieldPlaces, unitCount, unitLetters } from "../model/symbolDrawing"
 import { formatLength } from "../model/rules"
-import type { ComponentInstance, CopperLayer, PartFlags, Project, Rotation, SchematicBlock, Trace, Vec2, Via } from "../model/types"
-import { getConnectivity, getPcbAnalysis } from "../store/analysis"
+import type { ComponentInstance, CopperLayer, PartFlags, Project, SchematicBlock, Trace, Vec2, Via } from "../model/types"
+import { arcLength, arcOf, isArcTrace } from "../model/arcTracks"
+import { reverseArc, setArc, setViaKind, setViaSpan } from "../model/layerOps"
+import { copperLayers, layerLabel, viaLayers } from "../model/stack"
+import { getConnectivity, getLiveAnalysis, getPcbAnalysis, useFillTick } from "../store/analysis"
+import { flagOrigins } from "../model/ruleAreas"
 import { projectApi, useProjectStore } from "../store/projectStore"
+import { commitFor, commitHere, viewFor } from "../store/sheetScope"
+import { isHierarchical } from "../model/sheets"
 import { selectionIds, uiApi, useUi } from "../store/uiStore"
+import { parseOutlineSelectionId } from "../model/outlineOps"
+import { OutlineInspector } from "./OutlineInspector"
+import { ZoneInspector } from "./ZonePanels"
+import { removeZones } from "../model/zoneOps"
 import { Button, Field } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 import { CommitInput, LengthInput, Row, Section, Switch, useLengthUnit } from "../ui/form"
+import { PartPadsSection } from "./PadPanels"
 import { DrawingInspector } from "./DrawingInspector"
 import { ModelSection } from "./ModelSection"
 import { ProjectInspector } from "./ProjectInspector"
+import { ComponentVariantsSection } from "./VariantPanels"
+import { DrawingInspector as BoardDrawingInspector, PartDrawingsSection } from "./ShapePanels"
+import { DimensionInspector, GroupSection, ImageInspector } from "./BoardObjectPanels"
+import { PartTextsSection, TextInspector } from "./TextPanels"
+import { removeBoardTexts, removePartText } from "../model/textOps"
+import { parseTextId, worldTexts } from "../model/texts"
+import { landSelectionOwner, selectedGraphicIds } from "./shapeInspector"
+import { BlockLock, ExactDrawingInspector, ExactDrawingsInspector, LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "./SheetInspectors"
 
 export function Inspector() {
   const project = useProjectStore((s) => s.project)!
   const selection = useUi((s) => s.selection)
   const view = useUi((s) => s.view)
+  const sheet = useUi((s) => s.sheet)
+  // The net of a selected trace or via comes from the analysis, which is asked again when a refill of the pours finishes.
+  useFillTick((s) => s.tick)
   const comps = selectionIds(selection, "c")
   const wires = selectionIds(selection, "w")
   const labels = selectionIds(selection, "l")
@@ -36,14 +64,40 @@ export function Inspector() {
   const vias = selectionIds(selection, "v")
   const blocks = selectionIds(selection, "b")
   const drawn = selectionIds(selection, "d")
+  const drawings = selectedGraphicIds(project, selection)
+  const dimSel = selectionIds(selection, "m")
+  const imgSel = selectionIds(selection, "i")
+  const dimensions = dimSel.length ? (project.dimensions ?? []).filter((d) => dimSel.includes(d.id)) : []
+  const images = imgSel.length ? (project.images ?? []).filter((m) => imgSel.includes(m.id)) : []
+  const textSel = new Set(selection.filter((s) => parseTextId(s) !== null))
+  const texts = textSel.size ? worldTexts(project).filter((t) => textSel.has(t.id)) : []
+  // The drawings of one part picked from its panel's list: that part's panel stays open on them.
+  const landOwner = landSelectionOwner(selection)
 
   if (drawn.length && drawn.length === selection.length) {
     const list = drawn.flatMap((id) => project.drawings?.find((d) => d.id === id) ?? [])
+    if (list.length === 1 && isExact(list[0])) return <ExactDrawingInspector drawing={list[0]} />
+    // Several, one of them exact (a KiCad drawing): the tools' Inspector would overwrite a drawing with fields it does not read, so these change each in its own way.
+    if (list.length > 1 && list.some(isExact)) return <ExactDrawingsInspector drawings={list} />
     if (list.length) return <DrawingInspector drawings={list} />
+  }
+  const sheetIds = selectionIds(selection, "h")
+  if (selection.length === 1 && sheetIds.length === 1) {
+    const sym = project.sheetSymbols?.find((x) => x.id === sheetIds[0])
+    if (sym) return <SheetSymbolInspector sym={sym} project={project} />
+  }
+  const zoneIds = selectionIds(selection, "z")
+  if (selection.length === 1 && zoneIds.length === 1) {
+    const z = project.zones.find((x) => x.id === zoneIds[0])
+    if (z) return <ZoneInspector project={project} zone={z} />
   }
   if (selection.length === 1 && blocks.length === 1) {
     const b = project.blocks?.find((x) => x.id === blocks[0])
     if (b) return <BlockInspector block={b} project={project} />
+  }
+  if (landOwner) {
+    const c = project.components.find((x) => x.id === landOwner)
+    if (c) return <ComponentInspector c={c} project={project} />
   }
   if (selection.length === 1 && comps.length === 1) {
     const c = project.components.find((x) => x.id === comps[0])
@@ -51,6 +105,8 @@ export function Inspector() {
   }
   if (selection.length === 1 && labels.length === 1) {
     const l = project.labels.find((x) => x.id === labels[0])
+    // A label of KiCad's, or one in a project named as KiCad names its nets, keeps its case and has a kind, a shape and a style.
+    if (l && (l.kind || project.netNames)) return <LabelInspector l={l} project={project} />
     if (l)
       return (
         <Section title="Net label">
@@ -59,8 +115,8 @@ export function Inspector() {
               mono
               value={l.name}
               onCommit={(v) => {
-                const name = v.trim().toUpperCase().replace(/\s+/g, "_")
-                if (name) projectApi().commit((p) => ({ ...p, labels: p.labels.map((x) => (x.id === l.id ? { ...x, name } : x)) }))
+                const name = typedNetName(v.trim().toUpperCase())
+                if (name) commitHere((p) => ({ ...p, labels: p.labels.map((x) => (x.id === l.id ? { ...x, name } : x)) }))
               }}
             />
           </Field>
@@ -71,7 +127,7 @@ export function Inspector() {
   if (selection.length === 1 && traces.length === 1) {
     const t = project.traces.find((x) => x.id === traces[0])
     if (t) {
-      const netId = getPcbAnalysis(project).traceNet.get(t.id)
+      const netId = getLiveAnalysis(project).traceNet.get(t.id)
       const net = getConnectivity(project).nets.find((n) => n.id === netId)
       return <TraceInspector trace={t} net={netId === "short" ? "Short circuit" : (net?.name ?? "Not connected")} project={project} />
     }
@@ -79,11 +135,19 @@ export function Inspector() {
   if (selection.length === 1 && vias.length === 1) {
     const v = project.vias.find((x) => x.id === vias[0])
     if (v) {
-      const netId = getPcbAnalysis(project).viaNet.get(v.id)
+      const netId = getLiveAnalysis(project).viaNet.get(v.id)
       const net = getConnectivity(project).nets.find((n) => n.id === netId)
       return <ViaInspector via={v} net={netId === "short" ? "Short circuit" : (net?.name ?? "Not connected")} project={project} />
     }
   }
+  if (dimensions.length > 0 && dimensions.length === selection.length) return <DimensionInspector dims={dimensions} project={project} />
+  if (images.length > 0 && images.length === selection.length) return <ImageInspector images={images} project={project} />
+  if (texts.length > 0 && texts.length === selection.length) return <TextInspector texts={texts} project={project} />
+  if (drawings.length > 0 && drawings.length === selection.length) {
+    const graphics = (project.graphics ?? []).filter((g) => drawings.includes(g.id))
+    return <BoardDrawingInspector graphics={graphics} />
+  }
+  if (selection.length > 0 && selection.every((id) => parseOutlineSelectionId(id) !== null)) return <OutlineInspector project={project} selection={selection} />
   if (selection.length > 0) {
 
     const counts = [
@@ -94,6 +158,12 @@ export function Inspector() {
       [drawn.length, "drawing"],
       [traces.length, "trace"],
       [vias.length, "via"],
+      [drawings.length, "drawing"],
+      [texts.length, "text"],
+      [dimensions.length, "dimension"],
+      [images.length, "image"],
+      [zoneIds.length, "zone"],
+      [sheetIds.length, "sheet"],
     ].filter(([n]) => n) as [number, string][]
     // Blocks are drawn on the schematic, so they are only grouped there.
     const schematic = view === "schematic"
@@ -101,6 +171,7 @@ export function Inspector() {
     return (
       <Section title={`${selection.length} selected`}>
         <p className="text-[13px] text-ink-2">{counts.map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")}</p>
+        {view === "pcb" && <GroupSection project={project} />}
         <div className="flex flex-wrap gap-1.5">
           {schematic && (comps.length > 0 || blocks.length > 0) && (
             <Button onClick={groupSelected} title={blocks.length ? "The parts join the first selected block (⌘G)" : "Draw a titled frame around these parts (⌘G)"}>
@@ -112,10 +183,21 @@ export function Inspector() {
               <Ungroup size={14} /> Ungroup
             </Button>
           )}
+          {schematic && (comps.length > 0 || blocks.length > 0) && <MoveToSheetButton />}
           <Button
             variant="danger"
             onClick={() => {
-              projectApi().commit((p) => removeItems(p, { components: comps, wires, labels, traces, vias, blocks, drawings: drawn }))
+              // In the schematic the parts, wires and labels are those of the sheet shown (a sheet used twice loses the part in every use).
+              const edit = uiApi().view === "schematic" ? commitHere : projectApi().commit
+              edit((p) => {
+                let out = removeGraphics(removeItems(p, { components: comps, wires, labels, traces, vias, blocks, drawings: drawn }), drawings)
+                if (zoneIds.length) out = removeZones(out, zoneIds)
+                out = removeBoardTexts(out, texts.flatMap((t) => (t.kind === "board" ? [(t.source as { id: string }).id] : [])))
+                for (const t of texts.filter((x) => x.kind === "user").sort((a, b) => b.index - a.index)) out = removePartText(out, t.owner, t.index)
+                if (dimSel.length) out = removeDimensions(out, dimSel)
+                if (imgSel.length) out = removeImages(out, imgSel)
+                return out
+              })
               uiApi().clearSelection()
             }}
           >
@@ -125,7 +207,22 @@ export function Inspector() {
       </Section>
     )
   }
-  return <ProjectInspector project={project} />
+  return (
+    <>
+      {/* In a schematic of several sheets, the sheet shown first, as a document's properties come before its project's. */}
+      {view === "schematic" && isHierarchical(project) && <ShownSheetInspector project={project} path={sheet} />}
+      <ProjectInspector project={project} />
+    </>
+  )
+}
+
+/** Puts the selection on a sheet of its own (`moveSelectedToNewSheet`). */
+function MoveToSheetButton() {
+  return (
+    <Button onClick={moveSelectedToNewSheet} title="Put these on a new sheet of their own: a sheet symbol takes their place, and each net that leaves them gets a pin">
+      <FilePlus2 size={14} /> Move to new sheet
+    </Button>
+  )
 }
 
 function BlockInspector({ block, project }: { block: SchematicBlock; project: Project }) {
@@ -137,7 +234,7 @@ function BlockInspector({ block, project }: { block: SchematicBlock; project: Pr
   return (
     <Section title="Block">
       <Field label="Name">
-        <CommitInput value={block.name} onCommit={(v) => projectApi().commit((p) => renameBlock(p, block.id, v))} />
+        <CommitInput value={block.name} onCommit={(v) => commitHere((p) => renameBlock(p, block.id, v))} />
       </Field>
       <Row label="Parts" value={refs.length} />
       {refs.length > 0 && <p className="mono text-[12.5px] leading-relaxed text-ink">{refs.join(", ")}</p>}
@@ -148,8 +245,10 @@ function BlockInspector({ block, project }: { block: SchematicBlock; project: Pr
         <Button onClick={ungroupSelected} title="The frame goes; the parts stay where they are (⇧⌘G)">
           <Ungroup size={14} /> Ungroup
         </Button>
+        <MoveToSheetButton />
       </div>
-      <p className="text-[12px] text-ink-2">Drag the title to move the block. Its frame follows its parts.</p>
+      <BlockLock block={block} />
+      <p className="text-[12px] text-ink-2">Drag the title to move the block. Its frame follows its parts.{block.locked ? " Its parts cannot be moved, turned or deleted while it is locked." : ""}</p>
     </Section>
   )
 }
@@ -160,13 +259,32 @@ const setTrace = (id: string, patch: Partial<Trace>) =>
 function TraceInspector({ trace: t, net, project }: { trace: Trace; net: string; project: Project }) {
   const unit = useLengthUnit()
   const { minTraceWidth, preferredWidths } = project.rules
-  const length = t.points.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - t.points[i].x, p.y - t.points[i].y), 0)
+  const isArc = isArcTrace(t)
+  const length = isArc ? arcLength(arcOf(t.points)) : t.points.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - t.points[i].x, p.y - t.points[i].y), 0)
+  const stack = copperLayers(project.board)
+  const arc = isArc ? arcOf(t.points).circle : null
   return (
-    <Section title="Trace">
+    <Section title={isArc ? "Arc trace" : "Trace"}>
       <Row label="Net" value={net} mono />
       {t.net && net === "Short circuit" && <p className="text-[12px] text-danger">This trace is on {t.net}, but it touches copper of another net. Checks lists the short.</p>}
       {t.net && net !== "Short circuit" && net !== t.net && <p className="text-[12px] text-ink-2">The board it came from puts this trace on {t.net}.</p>}
       <Row label="Length" value={formatLength(length, unit, true)} />
+      {isArc && arc && <Row label="Radius" value={`${formatLength(arc.r, unit, true)}, ${Math.abs(Math.round((arc.sweep * 18000) / Math.PI) / 100)}°`} />}
+      {isArc && (
+        <div className="flex flex-wrap gap-1.5">
+          <Button onClick={() => projectApi().commit((p) => setArc(p, t.id, false))} title="Make this the straight track between its ends">
+            Straighten
+          </Button>
+          <Button onClick={() => projectApi().commit((p) => reverseArc(p, t.id))} title="Run the arc the other way round, ends swapped">
+            Reverse
+          </Button>
+        </div>
+      )}
+      {!isArc && t.points.length === 2 && (
+        <Button onClick={() => projectApi().commit((p) => setArc(p, t.id, true))} title="Bend this track into an arc: drag its middle point afterwards">
+          Bend into an arc
+        </Button>
+      )}
       <Field label="Width">
         <LengthInput min={0.05} value={t.width} onCommit={(v) => v !== null && setTrace(t.id, { width: v })} />
       </Field>
@@ -186,8 +304,11 @@ function TraceInspector({ trace: t, net, project }: { trace: Trace; net: string;
       {t.width < minTraceWidth - 1e-6 && <p className="text-[12px] text-danger">Narrower than the {formatLength(minTraceWidth, unit, true)} minimum in the design rules.</p>}
       <Field label="Layer">
         <select className="field h-8" value={t.layer} onChange={(e) => setTrace(t.id, { layer: e.target.value as CopperLayer })}>
-          <option value="top">Top copper</option>
-          <option value="bottom">Bottom copper</option>
+          {stack.map((l) => (
+            <option key={l} value={l}>
+              {layerLabel(project.board, l)} copper
+            </option>
+          ))}
         </select>
       </Field>
       <div className="flex items-center justify-between">
@@ -196,34 +317,105 @@ function TraceInspector({ trace: t, net, project }: { trace: Trace; net: string;
         </span>
         <Switch label="Lock trace" checked={!!t.locked} onChange={(locked) => setTrace(t.id, { locked: locked || undefined })} />
       </div>
-      {t.net && (
-        <Button
-          onClick={() => projectApi().commit((p) => ({ ...p, updatedAt: Date.now(), traces: p.traces.map((x) => { if (x.id !== t.id) return x; const { net: _n, ...rest } = x; return rest }) }))}
-          title="Forget the net the board it came from put this trace on: its net is then the one it touches"
-        >
-          Use the net it touches
-        </Button>
-      )}
+      {t.net && <ForgetNet project={project} from={{ trace: t.id }} />}
     </Section>
   )
 }
 
-/** A via with no net of its own: the one it touches. */
-const commitVia = (id: string) =>
-  projectApi().commit((p) => ({ ...p, updatedAt: Date.now(), vias: p.vias.map((x) => { if (x.id !== id) return x; const { routedNet: _n, ...rest } = x; return rest }) }))
+/**
+ * "Use the net it touches": forgets the net the board it came from put the item on, for every trace and via of the same
+ * connected copper that names the same net (a KiCad track is several editor traces), and says how many that is.
+ */
+function ForgetNet({ project, from }: { project: Project; from: { trace: string } | { via: string } }) {
+  const [done, setDone] = useState<number | null>(null)
+  const ids = sameStoredNet(project, getLiveAnalysis(project).island, from)
+  const count = ids.traces.length + ids.vias.length
+  const noun = (n: number) => `${n} item${n === 1 ? "" : "s"}`
+  return (
+    <div className="flex flex-col gap-1">
+      <Button
+        onClick={() => {
+          projectApi().commit((p) => forgetStoredNets(p, sameStoredNet(p, getPcbAnalysis(p).island, from)))
+          setDone(count)
+        }}
+        title="Forget the net the board it came from put this copper on: its net is then the one it touches"
+      >
+        Use the net it touches{count > 1 ? ` (${noun(count)})` : ""}
+      </Button>
+      <p className="text-[12px] text-ink-2">{done !== null ? `Changed ${noun(done)}.` : count > 1 ? `Changes ${noun(count)}: every trace and via of this connected copper that names the same net.` : "Changes this item."}</p>
+    </div>
+  )
+}
 
 const setVia = (id: string, patch: Partial<Via>) =>
   projectApi().commit((p) => ({ ...p, updatedAt: Date.now(), vias: p.vias.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
 
 function ViaInspector({ via: v, net, project }: { via: Via; net: string; project: Project }) {
   const { minAnnularRing } = project.rules
-  const minDrill = project.rules.minViaDrill ?? project.rules.minDrill
+  const micro = v.kind === "micro"
+  const minDrill = micro ? (project.rules.minMicroVia?.drill ?? 0) : (project.rules.minViaDrill ?? project.rules.minDrill)
   const ring = (v.diameter - v.drill) / 2
+  const stack = copperLayers(project.board)
+  const span = viaLayers(project.board, v)
+  const spanName = v.kind ? `${v.kind[0].toUpperCase()}${v.kind.slice(1)}, ${layerLabel(project.board, span[0])} to ${layerLabel(project.board, span[span.length - 1])}` : "Through the board"
+  const tentOf = (side: "front" | "back") => (v.tent?.[side] === undefined ? "rules" : v.tent[side] ? "tented" : "open")
+  const setTent = (side: "front" | "back", value: string) =>
+    projectApi().commit((p) => ({
+      ...p,
+      updatedAt: Date.now(),
+      vias: p.vias.map((x) => {
+        if (x.id !== v.id) return x
+        const tent = { ...x.tent }
+        if (value === "rules") delete tent[side]
+        else tent[side] = value === "tented"
+        const { tent: _t, ...rest } = x
+        return Object.keys(tent).length ? { ...rest, tent } : rest
+      }),
+    }))
   return (
     <Section title="Via">
+      <Row label="Kind" value={spanName} />
       <Row label="Net" value={v.net ? `${v.net} (stitching)` : net} mono />
       {v.routedNet && net === "Short circuit" && <p className="text-[12px] text-danger">This via is on {v.routedNet}, but it touches copper of another net. Checks lists the short.</p>}
       {v.routedNet && net !== "Short circuit" && net !== v.routedNet && <p className="text-[12px] text-ink-2">The board it came from puts this via on {v.routedNet}.</p>}
+      {stack.length > 2 && (
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Type">
+            <select
+              aria-label="Via type"
+              className="field h-8"
+              value={v.kind === "micro" ? "micro" : v.kind ? "partial" : "through"}
+              onChange={(e) => projectApi().commit((p) => setViaKind(p, v.id, e.target.value as "through" | "partial" | "micro"))}
+            >
+              <option value="through">Through</option>
+              <option value="partial">Blind or buried</option>
+              <option value="micro">Micro</option>
+            </select>
+          </Field>
+          {v.kind && (
+            <>
+              <Field label="From">
+                <select aria-label="Via from" className="field h-8" value={v.from} onChange={(e) => projectApi().commit((p) => setViaSpan(p, v.id, e.target.value as CopperLayer, v.to!))}>
+                  {stack.map((l) => (
+                    <option key={l} value={l}>
+                      {layerLabel(project.board, l)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="To">
+                <select aria-label="Via to" className="field h-8" value={v.to} onChange={(e) => projectApi().commit((p) => setViaSpan(p, v.id, v.from!, e.target.value as CopperLayer))}>
+                  {stack.map((l) => (
+                    <option key={l} value={l}>
+                      {layerLabel(project.board, l)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </>
+          )}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Diameter">
           <LengthInput min={0.1} value={v.diameter} onCommit={(d) => d !== null && setVia(v.id, { diameter: d })} />
@@ -232,7 +424,33 @@ function ViaInspector({ via: v, net, project }: { via: Via; net: string; project
           <LengthInput min={0.05} value={v.drill} onCommit={(d) => d !== null && setVia(v.id, { drill: d })} />
         </Field>
       </div>
-      {v.drill < minDrill - 1e-6 && <p className="text-[12px] text-danger">Drill is under the design rules' minimum.</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Mask, front">
+          <select aria-label="Via mask on the front" className="field h-8" value={tentOf("front")} onChange={(e) => setTent("front", e.target.value)}>
+            <option value="rules">By the rules</option>
+            <option value="tented">Tented</option>
+            <option value="open">Open</option>
+          </select>
+        </Field>
+        <Field label="Mask, back">
+          <select aria-label="Via mask on the back" className="field h-8" value={tentOf("back")} onChange={(e) => setTent("back", e.target.value)}>
+            <option value="rules">By the rules</option>
+            <option value="tented">Tented</option>
+            <option value="open">Open</option>
+          </select>
+        </Field>
+      </div>
+      {stack.length > 2 && (
+        <Field label="Copper on layers nothing joins">
+          <select aria-label="Unused layers" className="field h-8" value={v.unused ?? "keep"} onChange={(e) => setVia(v.id, { unused: e.target.value === "keep" ? undefined : (e.target.value as NonNullable<Via["unused"]>) })}>
+            <option value="keep">Keep every layer</option>
+            <option value="remove">Remove it</option>
+            <option value="keepEnds">Remove it, keep both ends</option>
+            <option value="startEnd">Both ends only</option>
+          </select>
+        </Field>
+      )}
+      {v.drill < minDrill - 1e-6 && <p className="text-[12px] text-danger">Drill is under the design rules' minimum{micro ? " for a micro via" : ""}.</p>}
       {ring < minAnnularRing - 1e-6 && <p className="text-[12px] text-danger">The copper ring is under the design rules' minimum.</p>}
       <div className="flex items-center justify-between">
         <span className="text-[12.5px] text-ink-2" title="A locked via is kept when the board is routed again">
@@ -241,11 +459,7 @@ function ViaInspector({ via: v, net, project }: { via: Via; net: string; project
         <Switch label="Lock via" checked={!!v.locked} onChange={(locked) => setVia(v.id, { locked: locked || undefined })} />
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {v.routedNet && (
-          <Button onClick={() => commitVia(v.id)} title="Forget the net the board it came from put this via on: its net is then the one it touches">
-            Use the net it touches
-          </Button>
-        )}
+        {v.routedNet && <ForgetNet project={project} from={{ via: v.id }} />}
         <Button
           variant="danger"
           onClick={() => {
@@ -260,49 +474,63 @@ function ViaInspector({ via: v, net, project }: { via: Via; net: string; project
   )
 }
 
-/** The flags a part can have in the Assembly section: the switch's label, what it does, and its key. */
-const FLAG_SWITCHES: { key: Exclude<keyof PartFlags, "mount" | "netTies" | "jumperGroups">; label: string; hint: string }[] = [
-  { key: "dnp", label: "Do not populate", hint: "Left out of the BOM and the position file (KiCad keeps it in both); its solder paste is still plotted" },
+/** The flags a part can have in the Flags section: the switch's label, what it does, its key, and whether only a part with a footprint has it. */
+const FLAG_SWITCHES: { key: Exclude<keyof PartFlags, "mount" | "netTies" | "jumperGroups" | "jumperDuplicates">; label: string; hint: string; footprint?: true }[] = [
+  { key: "dnp", label: "Do not populate", hint: "Drawn, wired and on the board (its solder paste is still plotted), but left out of the BOM and the position file" },
   { key: "excludeFromBom", label: "Not in the BOM", hint: "Left out of the bill of materials" },
   { key: "excludeFromPos", label: "Not in the position file", hint: "Left out of the pick and place file" },
-  { key: "boardOnly", label: "Board only", hint: "Has no schematic symbol in KiCad; it stays in the BOM unless it is also not in the BOM" },
-  { key: "virtual", label: "Virtual", hint: "A board feature, not a part to buy or place: left out of the BOM and the position file" },
-  { key: "allowMissingCourtyard", label: "Missing courtyard allowed", hint: "KiCad's allow missing courtyard" },
-  { key: "allowMaskBridges", label: "Mask bridges allowed", hint: "KiCad's allow solder mask bridges between this part's pads" },
+  { key: "notOnBoard", label: "Not on the board", hint: "The symbol has no footprint on the board. Taking a part off the board also removes the unlocked traces and vias that touch its pads", footprint: true },
+  { key: "excludeFromSim", label: "Left out of simulation", hint: "A simulation leaves the part out" },
+  { key: "boardOnly", label: "Board only", hint: "Has no schematic symbol in KiCad; it stays in the BOM unless it is also not in the BOM", footprint: true },
+  { key: "virtual", label: "Virtual", hint: "A board feature, not a part to buy or place: left out of the BOM and the position file", footprint: true },
+  { key: "allowMissingCourtyard", label: "Missing courtyard allowed", hint: "KiCad's allow missing courtyard", footprint: true },
+  { key: "allowMaskBridges", label: "Mask bridges allowed", hint: "KiCad's allow solder mask bridges between this part's pads", footprint: true },
 ]
 
 const groupText = (groups: string[][] | undefined) => (groups ?? []).map((g) => g.join(",")).join("; ")
 
-/** A footprint's KiCad attributes and net ties: what they do, and a way to change them. */
-function AssemblySection({ c }: { c: ComponentInstance }) {
+/**
+ * A part's flags, in either view: what KiCad keeps on its symbol (do not populate, in the BOM, on the board, in the
+ * position file, simulated) and on its footprint (mounting, board only, virtual, courtyard and mask allowances, net
+ * ties). One set, `PartFlags`; a symbol with no footprint has the first ones only.
+ */
+function FlagsSection({ c, physical, project }: { c: ComponentInstance; physical: boolean; project: Project }) {
   const flags = c.flags
+  const origin = flagOrigins(project, c)
   const set = (patch: Parameters<typeof setFlags>[2]) => projectApi().commit((p) => setFlags(p, c.id, patch))
   const pads = new Set(pcbPads(c).flatMap((p) => (p.padNumber ? [p.padNumber] : [])))
   // "1,2; 3,4": groups of pad numbers, keeping the pads the footprint has.
   const parseGroups = (text: string) => cleanFlags({ netTies: text.split(";").map((g) => g.split(",").map((x) => x.trim()).filter((x) => pads.has(x))) })?.netTies
   return (
-    <Section title="Assembly" id="assembly">
-      <Field label="Mounting">
-        <select className="field h-8" value={flags?.mount ?? ""} onChange={(e) => set({ mount: e.target.value === "smd" || e.target.value === "through_hole" ? e.target.value : false })} aria-label="Mounting">
-          <option value="">Not set</option>
-          <option value="smd">Surface mount</option>
-          <option value="through_hole">Through-hole</option>
-        </select>
-      </Field>
-      {FLAG_SWITCHES.map((f) => (
+    <Section title="Flags" id="flags">
+      {physical && (
+        <Field label="Mounting">
+          <select className="field h-8" value={flags?.mount ?? ""} onChange={(e) => set({ mount: e.target.value === "smd" || e.target.value === "through_hole" ? e.target.value : false })} aria-label="Mounting">
+            <option value="">Not set</option>
+            <option value="smd">Surface mount</option>
+            <option value="through_hole">Through-hole</option>
+          </select>
+        </Field>
+      )}
+      {FLAG_SWITCHES.filter((f) => physical || !f.footprint).map((f) => (
         <div key={f.key} className="flex items-center justify-between gap-3">
-          <span className="text-[12.5px] text-ink-2" title={f.hint}>
+          <span className="text-[12.5px] text-ink-2" title={origin[f.key as keyof typeof origin] ? `${f.hint}. Set on this part by its ${origin[f.key as keyof typeof origin]}, not by this switch` : f.hint}>
             {f.label}
+            {origin[f.key as keyof typeof origin] ? ` (from ${origin[f.key as keyof typeof origin]})` : ""}
           </span>
           <Switch label={f.label} checked={!!flags?.[f.key]} onChange={(on) => set({ [f.key]: on || false })} />
         </div>
       ))}
-      <Field label="Net tie pads">
-        <CommitInput mono placeholder="e.g. 1,2; 3,4" value={groupText(flags?.netTies)} onCommit={(v) => set({ netTies: parseGroups(v) ?? false })} ariaLabel="Net tie pads" />
-      </Field>
-      <p className="text-[12px] text-ink-2">Pads of one group may be on different nets, and copper of those nets may touch them, without Checks calling it a short.</p>
-      {flags?.jumperGroups?.length ? <Row label="Jumper pads" value={groupText(flags.jumperGroups)} mono /> : null}
-      {flags?.jumperDuplicates ? <p className="text-[12px] text-ink-2">Pads that share a number are jumpers.</p> : null}
+      {physical && (
+        <>
+          <Field label="Net tie pads">
+            <CommitInput mono placeholder="e.g. 1,2; 3,4" value={groupText(flags?.netTies)} onCommit={(v) => set({ netTies: parseGroups(v) ?? false })} ariaLabel="Net tie pads" />
+          </Field>
+          <p className="text-[12px] text-ink-2">Pads of one group may be on different nets, and copper of those nets may touch them, without Checks calling it a short.</p>
+          {flags?.jumperGroups?.length ? <Row label="Jumper pads" value={groupText(flags.jumperGroups)} mono /> : null}
+          {flags?.jumperDuplicates ? <p className="text-[12px] text-ink-2">Pads that share a number are jumpers.</p> : null}
+        </>
+      )}
     </Section>
   )
 }
@@ -331,32 +559,32 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
   const [fpError, setFpError] = useState(false)
   if (!part) return <Section title="Unknown part">This part isn't in the library.</Section>
   const physical = isPhysical(part)
-  const update = (patch: Parameters<typeof updateComponent>[2]) => projectApi().commit((p) => updateComponent(p, c.id, patch))
+  const update = (patch: Parameters<typeof updateComponent>[2]) => commitFor(c.id, (p) => updateComponent(p, c.id, patch))
   // The same turn as the R key: labels and wires follow the pins, or it is refused and says why.
   const turnSymbol = (id: string) => {
     uiApi().clearNotice()
-    const res = rotateSelection(projectApi().project!, { components: [id], labels: [] }, { conn: getConnectivity })
+    const res = rotateSelection(viewFor(c.id), { components: [id], labels: [] }, { conn: getConnectivity })
     if (res.ok) {
-      projectApi().commit(() => res.project)
+      commitFor(c.id, () => res.project)
       if (res.note) uiApi().showNotice(res.note)
     } else uiApi().showNotice(res.message)
   }
   const mirror = (axis: "x" | "y") => {
     uiApi().clearNotice()
-    const res = mirrorSelection(projectApi().project!, { components: [c.id] }, axis, { conn: getConnectivity })
-    if (res.ok) projectApi().commit(() => res.project)
+    const res = mirrorSelection(viewFor(c.id), { components: [c.id] }, axis, { conn: getConnectivity })
+    if (res.ok) commitFor(c.id, () => res.project)
     else uiApi().showNotice(res.message)
   }
   const setFunction = (pin: string, alternate: string | null) => {
     uiApi().clearNotice()
-    const res = setSymbolVariant(projectApi().project!, c.id, { pinAlt: { pin, alternate } }, { conn: getConnectivity })
-    if (res.ok) projectApi().commit(() => res.project)
+    const res = setSymbolVariant(viewFor(c.id), c.id, { pinAlt: { pin, alternate } }, { conn: getConnectivity })
+    if (res.ok) commitFor(c.id, () => res.project)
     else uiApi().showNotice(res.message)
   }
   const pins = schematicPins(c, part)
   const isPower = !!part.powerNet
   const setNc = (pin: string, on: boolean) =>
-    projectApi().commit((p) => ({
+    commitFor(c.id, (p) => ({
       ...p,
       updatedAt: Date.now(),
       components: p.components.map((x) => {
@@ -368,7 +596,7 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
       }),
     }))
   const setBlock = (value: string) =>
-    projectApi().commit((p) =>
+    commitFor(c.id, (p) =>
       value === NEW_BLOCK ? createBlock(p, nextBlockName(p), [c.id]).project : value ? addToBlock(p, value, [c.id]) : removeFromBlocks(p, [c.id]),
     )
   // Focus first: a change of view drops the selection, so select the part again after it.
@@ -387,7 +615,7 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
               className="rounded p-1 text-ink-3 hover:bg-danger-soft hover:text-danger"
               aria-label={`Delete ${c.ref}`}
               onClick={() => {
-                projectApi().commit((p) => removeItems(p, { components: [c.id] }))
+                commitFor(c.id, (p) => removeItems(p, { components: [c.id] }))
                 uiApi().clearSelection()
               }}
             >
@@ -407,7 +635,7 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
                 const ref = v.trim()
                 // The units of one part share its designator, so they are not another part that has it.
                 const mine = (x: ComponentInstance) => unitCount(part) > 1 && x.ref === c.ref && !!findPart(x.partId)?.units
-                if (ref && !project.components.some((x) => x.ref === ref && x.id !== c.id && !mine(x))) projectApi().commit((p) => renameReference(p, c.id, ref))
+                if (ref && !project.components.some((x) => x.ref === ref && x.id !== c.id && !mine(x))) commitFor(c.id, (p) => renameReference(p, c.id, ref))
               }}
             />
           </Field>
@@ -417,7 +645,7 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
             <CommitInput
               mono={key === "net" || key === "mpn"}
               value={value}
-              onCommit={(v) => update({ props: { ...c.props, [key]: key === "net" ? v.trim().toUpperCase() : v.trim() } })}
+              onCommit={(v) => update({ props: { ...c.props, [key]: key === "net" && !project.netNames ? v.trim().toUpperCase() : v.trim() } })}
             />
           </Field>
         ))}
@@ -485,7 +713,15 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
         </Section>
       )}
 
-      {physical && <AssemblySection c={c} />}
+      {(physical || (view === "schematic" && !isPower && (c.flags || project.netNames))) && <FlagsSection c={c} physical={physical} project={project} />}
+
+      {(physical || (view === "schematic" && !isPower)) && <ComponentVariantsSection c={c} project={project} />}
+
+      {physical && <PartPadsSection key={`pads:${c.id}`} c={c} project={project} />}
+
+      {physical && <PartDrawingsSection c={c} project={project} />}
+
+      {physical && <PartTextsSection c={c} project={project} />}
 
       {/* Keyed so a search, a problem or a busy button doesn't carry over to the next part selected. */}
       {physical && <ModelSection key={c.id} c={c} part={part} project={project} />}
@@ -529,13 +765,26 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
               </Field>
             </div>
             <div className="flex gap-1.5">
-              <Button disabled={!!c.pcb.locked} title={c.pcb.locked ? "Locked: turn off Locked below to rotate" : undefined} onClick={() => update({ pcb: { rot: (((c.pcb.rot + 90) % 360) as Rotation) } })}>
-                <RotateCw size={14} /> {c.pcb.rot}°
+              <Button disabled={!!c.pcb.locked} title={c.pcb.locked ? "Locked: turn off Locked below to rotate" : undefined} onClick={() => update({ pcb: { rot: normalizeAngle(c.pcb.rot + 90) } })}>
+                <RotateCw size={14} /> {Number(c.pcb.rot.toFixed(4))}°
               </Button>
               <Button disabled={!!c.pcb.locked} title={c.pcb.locked ? "Locked: turn off Locked below to flip" : undefined} onClick={() => update({ pcb: { side: c.pcb.side === "top" ? "bottom" : "top" } })}>
                 <FlipHorizontal2 size={14} /> {c.pcb.side === "top" ? "Top side" : "Bottom side"}
               </Button>
             </div>
+            <Field label="Angle (degrees)">
+              <input
+                key={String(c.pcb.rot)}
+                type="number"
+                className="field mono h-8"
+                aria-label="Part angle"
+                step={1}
+                disabled={!!c.pcb.locked}
+                defaultValue={Number(c.pcb.rot.toFixed(4))}
+                onBlur={(e) => e.target.value !== "" && Number.isFinite(Number(e.target.value)) && Number(e.target.value) !== c.pcb.rot && update({ pcb: { rot: normalizeAngle(Number(e.target.value)) } })}
+                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              />
+            </Field>
             <div className="flex items-center justify-between">
               <span className="text-[12.5px] text-ink-2" title="A locked part stays where it is when parts are placed automatically or the board is re-packed">
                 Locked
@@ -552,13 +801,14 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
           action={
             importedNoConnectCount(project, c.id) > 0 && (
               <Tooltip label="Check imported no-connect pins" hint="The pins the KiCad import marked no connect, because the file puts no net on them, go back to being checked">
-                <button className="text-[12px] text-ink-2 hover:text-ink hover:underline" onClick={() => projectApi().commit((p) => clearImportedNoConnect(p, [c.id]))}>
+                <button className="text-[12px] text-ink-2 hover:text-ink hover:underline" onClick={() => commitFor(c.id, (p) => clearImportedNoConnect(p, [c.id]))}>
                   Check imported no-connect pins
                 </button>
               </Tooltip>
             )
           }
         >
+          {pins.length === 0 && <p className="text-[12.5px] text-ink-3">No pins</p>}
           <table className="w-full text-[12.5px]">
             <tbody>
               {pins
@@ -621,8 +871,8 @@ function SymbolSection({ c, part, project }: { c: ComponentInstance; part: NonNu
   const styles = bodyStyleCount(part)
   const change = (patch: { unit?: number; bodyStyle?: number }) => {
     uiApi().clearNotice()
-    const res = setSymbolVariant(projectApi().project!, c.id, patch, { conn: getConnectivity })
-    if (res.ok) projectApi().commit(() => res.project)
+    const res = setSymbolVariant(viewFor(c.id), c.id, patch, { conn: getConnectivity })
+    if (res.ok) commitFor(c.id, () => res.project)
     else uiApi().showNotice(res.message)
   }
   const names = part.units
@@ -630,7 +880,7 @@ function SymbolSection({ c, part, project }: { c: ComponentInstance; part: NonNu
   const missing = Array.from({ length: units }, (_, i) => i + 1).filter((u) => !placed.has(u))
   const fieldNames = [...new Set([...Object.keys(part.fieldPlaces ?? {}), ...Object.keys(c.fields ?? {})])]
   const place = (name: string) => fieldPlaceOf(c, part, name)
-  const put = (name: string, patch: Parameters<typeof setFieldPlace>[3]) => projectApi().commit((p) => setFieldPlace(p, c.id, name, patch))
+  const put = (name: string, patch: Parameters<typeof setFieldPlace>[3]) => commitFor(c.id, (p) => setFieldPlace(p, c.id, name, patch))
   return (
     <Section title="Symbol">
       {units > 1 && (
@@ -650,9 +900,9 @@ function SymbolSection({ c, part, project }: { c: ComponentInstance; part: NonNu
           onClick={() => {
             uiApi().clearNotice()
             const b = schematicBounds(c, part)
-            const res = addUnit(projectApi().project!, c.id, missing[0], { x: Math.round((b.maxX + 0.6) * 10) / 10, y: c.sch.y }, { conn: getConnectivity })
+            const res = addUnit(viewFor(c.id), c.id, missing[0], { x: Math.round((b.maxX + 0.6) * 10) / 10, y: c.sch.y }, { conn: getConnectivity })
             if (res.ok) {
-              projectApi().commit(() => res.project)
+              commitFor(c.id, () => res.project)
               uiApi().select([`c:${res.component.id}`])
             } else uiApi().showNotice(res.message)
           }}

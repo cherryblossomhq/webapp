@@ -21,6 +21,7 @@ import { useUi } from "../src/store/uiStore"
 import type { Project } from "../src/model/types"
 import { Designer, largeDesign, randomDesign, rng } from "./tidy-designs"
 import { frameProblems, offGrid, overlaps, pinsOnWires, wireProblems } from "./tidy-metrics"
+import { expectSameProject } from "./history"
 
 // Tidy is held to what it promises on every drawing there is to hand: the shipped examples, the
 // files written by older versions, the eight blog boards as the tscircuit importer brings them in,
@@ -942,9 +943,9 @@ describe("after Tidy", () => {
     const after = useProjectStore.getState().project!
     expect(after).toBe(r.project)
     useProjectStore.getState().undo()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     useProjectStore.getState().redo()
-    expect(useProjectStore.getState().project).toBe(after)
+    expectSameProject(useProjectStore.getState().project, after)
   })
 
   it("tidies only the selected block from the toolbar", () => {

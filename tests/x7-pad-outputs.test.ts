@@ -102,22 +102,26 @@ describe("drill files: slots at any angle and holes off the pad's centre", () =>
 })
 
 describe("the checks", () => {
-  const two = (clear: string) =>
+  const two = (clear: string, dx = 1.1) =>
     imp(
       board({
         nets: NETS,
         body: [
           footprint({ ref: "R1", at: "10 5", pads: [pad({ number: "1", at: "0 0", size: "1 1", net: '(net 1 "A")', extra: clear })] }),
-          footprint({ ref: "R2", at: "11.1 5", pads: [pad({ number: "1", at: "0 0", size: "1 1", net: '(net 2 "B")' })] }),
+          footprint({ ref: "R2", at: `${10 + dx} 5`, pads: [pad({ number: "1", at: "0 0", size: "1 1", net: '(net 2 "B")' })] }),
         ],
       }),
     )
   const clearance = (p: Project) => analyzePcb(p, computeConnectivity(p)).violations.filter((v) => v.kind === "clearance")
-  it("a pad's own clearance replaces the rules': a gap of 0.1 passes at 0.05 and fails at 0.3", () => {
+  it("a pad's own clearance raises the rules' and never lowers them: KiCad max's a local clearance with the class's (drc_engine.cpp)", () => {
     // rules.clearance is KiCad's 0.2 here; the pads are 0.1 apart
     expect(clearance(two("")).length).toBe(1)
-    expect(clearance(two("(clearance 0.05)"))).toEqual([])
+    expect(clearance(two("(clearance 0.05)")).length).toBe(1)
     expect(clearance(two("(clearance 0.5)")).length).toBe(1)
+    // 0.3 apart: enough for the rules' 0.2, not for a pad that asks 0.5
+    expect(clearance(two("", 1.3))).toEqual([])
+    expect(clearance(two("(clearance 0.05)", 1.3))).toEqual([])
+    expect(clearance(two("(clearance 0.5)", 1.3)).length).toBe(1)
   })
   it("the openings of pads of two nets that run together are an error, and a part that allows it is not", () => {
     const joined = (extra: string) => {

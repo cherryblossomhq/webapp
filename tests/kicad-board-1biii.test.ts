@@ -41,8 +41,8 @@ const plainFp = (name: string, at: string, layer: string, texts: string, ref = "
   `(footprint "${name}" (layer "${layer}") (at ${at}) ${prop("Reference", ref, "0 -2 0", layer === "B.Cu" ? "B.SilkS" : "F.SilkS")} ${prop("Value", "val", "0 2 0", layer === "B.Cu" ? "B.Fab" : "F.Fab")} ${texts} ${pad({ number: "1", at: "-1 0" })} ${pad({ number: "2", at: "1 0" })})`
 
 describe("the gate after slice 1b-iii", () => {
-  it("builds X9 with X8, X13 and X15, and 2c-i X2 and X6", () => {
-    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X13", "X15", "X2", "X3", "X6", "X8", "X9"])
+  it("builds X9 with X8, X13 and X15, 2c-i X2 and X6, X10, the board objects slice's X11, X12 and X14, X3, the zones, and X7, the pad model", () => {
+    expect([...BUILT_EXTENSIONS].sort()).toEqual(["X1", "X10", "X11", "X12", "X13", "X14", "X15", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9"])
   })
   it("a board with a part and text imports through the real gate", () => {
     const r = importKicadBoard(board({ body: [plainFp("L:A", "10 5", "F.Cu", "")] }))
@@ -66,8 +66,10 @@ describe("the gate after slice 1b-iii", () => {
     expect(needs(['(barcode (at 1 1) (layer "F.SilkS") (text "x") (type qr))'])).toEqual(["X25"])
     expect(needs([plainFp("L:B", "10 5", "F.Cu", `(fp_text_box "hello" (start 0 0) (end 4 2) (layer "F.SilkS") ${fx()})`)])).toEqual(["X25"])
     expect(needs(['(gr_text_box "x" (pts (xy 0 0) (xy 4 0) (xy 4 2) (xy 0 2)) (layer "F.SilkS") (border yes) ' + fx() + ")"])).toEqual(["X25"])
-    // text on inner copper needs the stackup
-    expect(needs([gtext("x", "1 1", "In1.Cu", fx())])).toContain("X1")
+    // text on an inner copper layer is text on a layer of the board when the board has it, and a refusal by the importer when its layer table does not list it
+    expect(needs([gtext("x", "1 1", "In1.Cu", fx())])).toEqual([])
+    const lacks = importKicadBoard(board({ body: [gtext("x", "1 1", "In1.Cu", fx())] }))
+    expect(lacks.status === "refused" && lacks.message).toMatch(/In1\.Cu/)
     // a part's own field used as a variable
     expect(needs([`(footprint "L:C" (layer "F.Cu") (at 1 1) ${prop("Reference", "U1", "0 -2 0", "F.SilkS")} ${prop("Value", "v", "0 2 0", "F.Fab")} (property "Datasheet" "http://x" (at 0 0 0) (layer "F.Fab") (hide yes) ${fx()}) (fp_text user "\${Datasheet}" (at 0 0) (layer F.SilkS) ${fx()}) ${pad({ at: "0 0" })})`])).toEqual(["X25"])
   })
@@ -472,10 +474,9 @@ describe("the smallest via, and the annular ring of a KiCad 4 or 5 board", () =>
   it("has no minimum when the file states none", () => {
     expect(withSetup("(setup (pad_to_mask_clearance 0))").project.rules.minViaDiameter).toBeUndefined()
   })
-  it("does not turn the list of via sizes the user offers (user_via) into anything: that stays X10", () => {
-    const r = importKicadBoard(board({ setup: "(setup (user_via 0.6 0.3) (pad_to_mask_clearance 0))", body: [plainFp("L:A", "10 5", "F.Cu", "")] }))
-    expect(r.status).toBe("refused")
-    expect(r.status === "refused" && r.needs.map((n) => n.ext)).toEqual(["X10"])
+  it("turns the list of via sizes the user offers (user_via) into the rules' via sizes (X10, built)", () => {
+    const r = imp(board({ setup: "(setup (user_via 0.6 0.3) (pad_to_mask_clearance 0))", body: [plainFp("L:A", "10 5", "F.Cu", "")] }))
+    expect(r.project.rules.viaSizes).toEqual([{ diameter: 0.6, drill: 0.3 }])
   })
   it("a KiCad 5 board, which states no annular ring and was never checked for one, opens with none, and says so once", () => {
     const r = withSetup("(setup (via_min_size 0.4) (pad_to_mask_clearance 0))", 20171130)

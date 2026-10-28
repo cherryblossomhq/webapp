@@ -1,7 +1,8 @@
 import { schematicBounds, unitGroup } from "./instances"
 import { findPart } from "./library"
 import { polygonHitsBox } from "./polygonHits"
-import { ROOT_SHEET, isHierarchical, sheetIdOf, sheetUses, withSheetFlags } from "./sheets"
+import { ROOT_SHEET, applySheetFlags, isHierarchical, sheetIdOf, sheetUses, withSheetFlags } from "./sheets"
+import { activeVariant, markSettled, resolveVariant } from "./variants"
 import { componentFields, fieldBox } from "./symbolDrawing"
 import type { Box } from "../lib/geometry"
 import type { ComponentInstance, DrawingLine, PartFlags, Project, RuleAreaMark, SchematicDrawing, Vec2 } from "./types"
@@ -142,37 +143,67 @@ interface Resolved {
   drawings: Project["drawings"]
   sheetSymbols: Project["sheetSymbols"]
   sheets: Project["sheets"]
+  /** The custom parts and the symbol drawings: which parts an area touches depends on how big their drawings are. */
+  parts: Project["parts"]
+  symbols: Project["symbols"]
+  /** S9: the variants of the project and the one that is active, which the answer depends on. */
+  variants: Project["variants"]
+  active: string | undefined
   components: ComponentInstance[]
 }
 const resolved = new WeakMap<readonly ComponentInstance[], Resolved>()
 
+/** The flags the areas set put on the parts that touch them, as an OR: a flag a part has stays. */
+function orAreaFlags(project: Project, components: ComponentInstance[]): ComponentInstance[] {
+  const taken = ruleAreaFlags(project)
+  if (!taken.size) return components
+  return components.map((c) => {
+    const f = taken.get(c.id)
+    if (!f || FLAGS.every((k) => !f[k] || c.flags?.[k])) return c
+    return markSettled({ ...c, flags: { ...c.flags, ...f } })
+  })
+}
+
 /**
- * The components of a project with the flags of rule areas put on the symbols they touch, as KiCad 10 resolves them (`ResolveDNP` and the others):
- * a symbol's own flag or any area's. This is the one place the area flags are applied: everything that reads on-board, do-not-populate, in-BOM or
- * left-out-of-simulation of a part (the BOM, the position file, the Gerber and drill files, the 3D view, the PCB editor, the checks, the board and
- * Circuit JSON exports, Sakura's tools) asks for the components here, not for `project.components`. A project with no flagged rule area gets its own
- * array back; otherwise the answer is kept for as long as the components, the drawings and the sheets stay the same objects, so a commit that
- * touches none of them costs nothing and one that does costs one pass over the symbols that sit on a sheet with a flagged area.
+ * The components of a project as KiCad 10 resolves them, in KiCad's order: the symbol's own flags with the active variant's changes (`resolveVariant`: its true or
+ * false for each flag and its field overrides), then the flags of the sheet symbols above it (each use of a sheet asks its own variant, `variantSheetFlags`), then
+ * the flags of the rule areas it touches (`ResolveDNP` and the others). The sheets' and the areas' flags are only ever put on (an OR): a variant that clears a
+ * symbol's own flag does not clear one a sheet or an area sets. This is the one place the variant and the flags are applied: everything that reads on-board,
+ * do-not-populate, in-BOM or left-out-of-simulation of a part (the BOM, the position file, the Gerber and drill files, the 3D view, the PCB editor, the checks,
+ * the board and Circuit JSON exports, Sakura's tools) asks for the components here, not for `project.components`. A project with no variant active, no flagged
+ * rule area and no flagged sheet symbol gets its own array back; otherwise the answer is kept for as long as the components, the drawings, the sheets and the
+ * variants (and which one is active) stay the same objects, so a commit that touches none of them costs nothing and a switch of the active variant is never answered
+ * with the flags of the last one.
  */
 export function resolvedComponents(project: Project): ComponentInstance[] {
+  const variant = activeVariant(project)
   const areas = hasFlaggedRuleAreas(project)
   const sheets = !!project.sheetSymbols?.some((x) => x.flags && Object.keys(x.flags).length)
-  if (!areas && !sheets) return project.components
+  if (!areas && !sheets && variant === undefined) return project.components
   const hit = resolved.get(project.components)
-  if (hit && hit.drawings === project.drawings && hit.sheetSymbols === project.sheetSymbols && hit.sheets === project.sheets) return hit.components
-  // The flags of a sheet symbol first (everything on the sheets below it), then the areas'.
-  const lower = sheets ? withSheetFlags(project) : project
-  let components = lower.components
-  const taken = areas ? ruleAreaFlags(project) : new Map<string, NonNullable<PartFlags>>()
-  if (taken.size) {
-    components = components.map((c) => {
-      const f = taken.get(c.id)
-      if (!f || FLAGS.every((k) => !f[k] || c.flags?.[k])) return c
-      return { ...c, flags: { ...c.flags, ...f } }
-    })
-  }
-  resolved.set(project.components, { drawings: project.drawings, sheetSymbols: project.sheetSymbols, sheets: project.sheets, components })
+  if (hit && hit.drawings === project.drawings && hit.sheetSymbols === project.sheetSymbols && hit.sheets === project.sheets && hit.parts === project.parts && hit.symbols === project.symbols && hit.variants === project.variants && hit.active === variant) return hit.components
+  // The variant and the flags of the sheet symbols (everything on the sheets below them) first, then the areas'.
+  const bySheets = applySheetFlags(resolveVariant(project), variant).components
+  const components = areas ? orAreaFlags(project, bySheets) : bySheets
+  resolved.set(project.components, { drawings: project.drawings, sheetSymbols: project.sheetSymbols, sheets: project.sheets, parts: project.parts, symbols: project.symbols, variants: project.variants, active: variant, components })
   return components
+}
+
+/**
+ * The components as their own symbols have them under the active variant: the variant's changes and the flags of the rule areas they touch, and none a sheet
+ * symbol gives (the flag of a sheet is on the sheet symbol, which KiCad applies to everything below it; the symbols of the sheet's file say only their own).
+ * What a KiCad 9 sheet file says about its symbols.
+ */
+export function ownFlagComponents(project: Project): ComponentInstance[] {
+  const bare = resolveVariant(project).components
+  return hasFlaggedRuleAreas(project) ? orAreaFlags(project, bare) : bare
+}
+
+/** The project with only the rule areas' flags put on the symbols they touch: the variants and the sheet symbols' flags stay where they are (the KiCad 10 files, which write them). */
+export function withRuleAreaFlagsOnly(project: Project): Project {
+  if (!hasFlaggedRuleAreas(project)) return project
+  const components = orAreaFlags(project, project.components)
+  return components === project.components ? project : { ...project, components }
 }
 
 /** Where a part's resolved flags come from, for a tooltip: "rule area" or "sheet" for each of the four flags the part does not carry itself. */

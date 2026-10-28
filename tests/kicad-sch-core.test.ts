@@ -360,7 +360,7 @@ describe("the project file", () => {
       symbols: [place("Test:OPA2", "100 100", "U1", { unit: 1 }), place("Test:OPA2", "100 140", "U1", { unit: 2 }), place("Test:AND2", "60 60", "U2", { mirror: "x" }), place("Test:SHAPES", "220 100", "U4")],
     })
 
-  it("is version 3, and a project with drawings, units, mirrors and fields reads back as it was written", () => {
+  it("the project file is at version 3, and a project with drawings, units, mirrors and fields reads back as it was written", () => {
     expect(PROJECT_FILE_VERSION).toBe(3)
     const p = sheet()
     const back = parseProjectFile(serializeProject(p), { id: p.id })
@@ -379,7 +379,7 @@ describe("the project file", () => {
     expect(p.components[0]).toMatchObject({ ref: "R1", sch: { x: 1, y: 2, rot: 90 } })
     expect(p.components[0].unit).toBeUndefined()
     expect(p.symbols).toBeUndefined()
-    expect(JSON.parse(serializeProject(p)).version).toBe(3)
+    expect(JSON.parse(serializeProject(p)).version).toBe(PROJECT_FILE_VERSION)
   })
 
   it("drops a drawing the editor cannot draw with the parts that name it, and promotes a unit that has lost its part", () => {

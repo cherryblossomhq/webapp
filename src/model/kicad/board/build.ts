@@ -10,14 +10,19 @@ import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
 import { pathsBox } from "../../shapes"
-import type { BoardGraphic, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PinDef, Project, Rotation, Trace, Vec2, Via, Wire } from "../../types"
+import type { BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire } from "../../types"
 import { kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
-import { quarterTurns, rotK } from "./geometry"
+import { padRings } from "../../padGeom"
+import { landPad, type PadIds } from "./pads"
 import { defaultGraphicId } from "../../shapeCodec"
 import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
 import { convertBoardText, convertPartTexts, landTextBox, type PartPlacement, type TextConversion } from "./texts"
+import { convertDimension } from "./dimensions"
+import { groupParents, newGroupStats, resolveGroups } from "./groups"
+import { convertImage, type KeptFile } from "./images"
+import { defaultDimensionId, defaultGroupId, defaultImageId, defaultPartGroupId } from "../../dimCodec"
 import { defaultTextId } from "../../textCodec"
 import { textShown } from "../../texts"
 import { flipShapeLayer } from "../../shapeLayers"
@@ -26,7 +31,12 @@ import type { OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
 import { decodeNetName, eraOf } from "./read"
 import { importRulesX10 } from "./netClassImport"
-import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
+import { convertZones, reportZones } from "./zones"
+import { buildStack, layerMapOf, layersOfNames } from "./layers"
+import { copperLayers, viaBetween } from "../../stack"
+import type { KicadBoard, KicadFootprint } from "./types"
+import type { List } from "./sexpr"
+import { kid, kids, strAt } from "./sexpr"
 
 export { KICAD_LIBRARY_RELEASE, stockModelId } from "./models"
 
@@ -51,9 +61,17 @@ export interface BuildOptions {
 
 export interface BuildResult {
   project: Project
+  /** The files the project names that the host keeps (reference images): the bytes, by the SHA-256 the project holds them by. */
+  files: KeptFile[]
   /** What had to be approximated; always empty unless `allowLossy`. */
   lossy: string[]
   stats: { parts: number; lands: number; pins: number; nets: number; padsWithNet: number; copperNetMismatches: number }
+  /**
+   * The component each footprint of the board became, by the footprint's index in `board.footprints`: every footprint is a
+   * part (a padless one too, a logo or a mounting hole), so there is one for each. A project import links a symbol to its
+   * footprint by this, not by guessing from the reference and the place.
+   */
+  footprintComponents: Map<number, string>
 }
 
 const CATEGORY_BY_PREFIX: [RegExp, PartCategory][] = [
@@ -73,116 +91,15 @@ const slug = (text: string) =>
 
 const frameTop = (p: { x: number; y: number }): Vec2 => ({ x: p.x, y: -p.y })
 
-/** A pad's outline in the pad's own frame (y down, before its turn): the trapezoid KiCad draws for a size and a delta. */
-function trapezoidCorners(w: number, h: number, dx: number, dy: number): { x: number; y: number }[] {
-  const hx = w / 2
-  const hy = h / 2
-  const ddx = dx / 2
-  const ddy = dy / 2
-  return [
-    { x: -hx - ddy, y: hy + ddx },
-    { x: -hx + ddy, y: -hy - ddx },
-    { x: hx - ddy, y: -hy + ddx },
-    { x: hx + ddy, y: hy - ddx },
-  ]
-}
-
-interface LandPad {
-  def: PadDef
-  lossy?: string
-}
-
-/**
- * A pad as a pad of the land of its footprint, in the editor's frame, and what the model cannot
- * hold of it. The land is the library's, the footprint with no turn and on the top side, so one
- * footprint has one land on whichever side a board puts it; the instance's turn and mirror
- * (`bottom`) put it where the file has it.
- *
- * KiCad flips a footprint about its own x axis: `FOOTPRINT::Flip` (footprint.cpp, line 3504)
- * negates the y of each pad's place in the footprint's frame, and `PAD::Flip` (pad.cpp, line
- * 1813) also negates the pad's turn within the footprint and the y of a trapezoid's delta; the
- * footprint's own turn is negated; and the footprint is on the other layer. The file stores that
- * flipped state. So a bottom pad stored at (px, py) is the library's at (px, -py), which the editor
- * (y up) has at (px, py), and the editor's bottom placement (`transformPoint`: mirror x, then
- * turn by `rot`) puts it where KiCad has it when `rot` is the footprint's angle plus 180 degrees,
- * since mirroring x is flipping about x and turning by half a turn. `placement` below does that.
- */
-export function landPad(fp: KicadFootprint, pad: KicadPad, bottom: boolean): LandPad {
-  const px = pad.at.x
-  const py = pad.at.y
-  // Top: the pad's place in the editor frame. Bottom: the library's land, which is the stored place with y as the editor has it (see above).
-  const at: Vec2 = bottom ? { x: round(px), y: round(py) } : { x: round(px), y: round(-py) }
-  // The pad's own turn within the footprint, as the library has it: the stored (absolute) angle minus the footprint's, and the other way round on the bottom, where `PAD::Flip` negated it.
-  const r = bottom ? fp.angle - pad.angle : pad.angle - fp.angle
-  const q = quarterTurns(r, Math.hypot(pad.w, pad.h) / 2)
-  const swap = q === 1 || q === 3
-  let lossy: string | undefined
-  const note = (what: string) => (lossy ??= what)
-  const w = swap ? pad.h : pad.w
-  const h = swap ? pad.w : pad.h
-  if (q === null) note("a pad turned by other than a quarter turn")
-  const hole = pad.drill
-  const base = { pin: pad.number ? pad.number : null, ...at }
-  let def: PadDef
-  const slotDims = hole ? (swap ? { a: hole.h, b: hole.w } : { a: hole.w, b: hole.h }) : null
-  if (pad.type === "np_thru_hole") {
-    const d = hole ?? { oval: false, w: Math.min(pad.w, pad.h), h: Math.min(pad.w, pad.h), offset: null }
-    const dims = swap ? { a: d.h, b: d.w } : { a: d.w, b: d.h }
-    if (hole?.offset) note("a hole drilled off the pad's centre")
-    if (Math.abs(dims.a - dims.b) < 1e-6) def = { pin: null, shape: "circle", ...at, width: round(dims.a), height: round(dims.a), holeDiameter: round(dims.a), layer: "through", plated: false }
-    else def = { pin: null, shape: "pill", ...at, width: round(dims.a), height: round(dims.b), holeDiameter: round(Math.min(dims.a, dims.b)), slotLength: round(Math.max(dims.a, dims.b)), layer: "through", plated: false }
-    return { def, lossy }
-  }
-  const through = pad.type === "thru_hole"
-  const layer: PadDef["layer"] = through ? "through" : "top"
-  let holeFields: Partial<PadDef> = {}
-  if (through) {
-    if (!hole || slotDims === null) {
-      note("a through-hole pad with no drill")
-      holeFields = { holeDiameter: 0.8 }
-    } else {
-      if (hole.offset) note("a hole drilled off the pad's centre")
-      const oval = hole.oval && Math.abs(hole.w - hole.h) > 1e-6
-      holeFields = oval ? { holeDiameter: round(Math.min(slotDims.a, slotDims.b)), slotLength: round(Math.max(slotDims.a, slotDims.b)) } : { holeDiameter: round(Math.min(slotDims.a, slotDims.b)) }
-      // The editor draws a slot along the pad's longer side; one across it is not representable.
-      if (oval && slotDims.a >= slotDims.b !== w >= h) note("a slot across the pad's long side")
-    }
-  }
-  if (pad.shape === "circle") {
-    // A circle's diameter is the pad's size x whatever its turn (pad.cpp:1482), and a legacy board may give a circle two different sizes (pad.cpp:3126).
-    def = { ...base, shape: "circle", width: round(pad.w), height: round(pad.w), layer, ...holeFields }
-  } else if (pad.shape === "oval") {
-    def = Math.abs(w - h) < 1e-6 ? { ...base, shape: "circle", width: round(w), height: round(w), layer, ...holeFields } : { ...base, shape: "pill", width: round(w), height: round(h), layer, ...holeFields }
-  } else if (pad.shape === "trapezoid") {
-    // The outline in the pad's own frame, turned by its absolute angle, placed on the board, then into the footprint's frame.
-    const d = pad.rectDelta ?? { x: 0, y: 0 }
-    const corners = trapezoidCorners(pad.w, pad.h, d.x, d.y)
-    const centre = { x: pad.at.x, y: pad.at.y }
-    const points = corners.map((c) => {
-      const t = rotK(c.x, c.y, pad.angle - fp.angle)
-      // t is the offset in the footprint's own (unturned) frame, y down, in the stored (flipped, on the bottom) state: the editor's y is its negative on top, and the stored y as it is on the bottom (the land is the library's, see above).
-      const ey = bottom ? centre.y + t.y : -(centre.y + t.y)
-      return { x: round(centre.x + t.x), y: round(ey) }
-    })
-    const b = emptyBox()
-    for (const p of points) expandBox(b, p)
-    def = { pin: base.pin, shape: "polygon", x: round((b.minX + b.maxX) / 2), y: round((b.minY + b.maxY) / 2), width: round(b.maxX - b.minX), height: round(b.maxY - b.minY), points, layer, ...holeFields }
-  } else {
-    // rect, roundrect (square corners here), custom (its anchor): exact for rect only
-    if (pad.shape === "roundrect") note("a rounded rectangle pad")
-    if (pad.shape === "custom") note("a custom shaped pad")
-    if (pad.shape !== "rect" && pad.shape !== "roundrect" && pad.shape !== "custom") note(`a pad of the shape ${pad.shape}`)
-    const anchorCircle = pad.shape === "custom" && pad.node.some((c) => Array.isArray(c) && c[0] === "options") && JSON.stringify(pad.node).includes('"anchor","circle"')
-    def = { ...base, shape: anchorCircle ? "circle" : "rect", width: round(w), height: round(anchorCircle ? w : h), layer, ...holeFields }
-  }
-  return { def, lossy }
-}
+export { landPad } from "./pads"
 
 /** The bounds of a land's copper, grown by `margin`. */
 function padBounds(pads: PadDef[], margin: number): Box {
   const b = emptyBox()
   for (const p of pads) {
-    for (const q of p.points ?? [
+    // A pad turned by a turn of its own, or a custom one, reaches where its outline does; any other, as it always has.
+    const ring = p.rot || p.custom || p.chamfer ? padRings(p).flat() : null
+    for (const q of ring ?? p.points ?? [
       { x: p.x - p.width / 2, y: p.y - p.height / 2 },
       { x: p.x + p.width / 2, y: p.y + p.height / 2 },
     ]) {
@@ -191,6 +108,27 @@ function padBounds(pads: PadDef[], margin: number): Box {
   }
   return { minX: round(b.minX - margin), minY: round(b.minY - margin), maxX: round(b.maxX + margin), maxY: round(b.maxY + margin) }
 }
+
+/**
+ * X1: the board's stack, and the finish and outer copper weight where the stackup's say one of the editor's own: KiCad's `ENIG`, `HAL SnPb`, `HAL lead-free` and
+ * `OSP`, and an outer copper of 35 or 70 micrometres. What does not fit stays in the stack as the file wrote it (`BoardStack.finish`, the rows).
+ */
+function stackFields(board: KicadBoard): Pick<Project["board"], "stack" | "finish" | "copperWeight"> {
+  const stack = buildStack(board)
+  if (!stack) return {}
+  const out: Pick<Project["board"], "stack" | "finish" | "copperWeight"> = { stack }
+  const finish = stack.finish === undefined ? undefined : FINISHES[stack.finish.trim().toLowerCase()]
+  if (finish) out.finish = finish
+  const outer = stack.rows?.find((r) => r.name === "F.Cu")?.thickness
+  if (outer !== undefined) {
+    if (Math.abs(outer - 0.035) < 0.0011) out.copperWeight = 1
+    else if (Math.abs(outer - 0.07) < 0.0011) out.copperWeight = 2
+  }
+  return out
+}
+
+/** KiCad's names for the finishes the editor has (the board setup's list), as lower case. */
+const FINISHES: Record<string, NonNullable<Project["board"]["finish"]>> = { enig: "enig", "hal snpb": "hasl", "hal lead-free": "lf-hasl", osp: "osp" }
 
 /** Natural order for references: R2 before R10. */
 const natural = new Intl.Collator("en", { numeric: true, sensitivity: "base" })
@@ -270,6 +208,68 @@ interface PinFacts {
   kind: PinDef["kind"]
 }
 
+/** The pin each pad of a footprint is on, and the part's pins. */
+interface PinPlan {
+  /** Per pad, by its place in the footprint: the pin it is on (null for none) and the number the land keeps when it is not the pin's. */
+  ids: PadIds[]
+  pins: { pin: string; name: string; kind: PinDef["kind"]; fold: string | null }[]
+}
+
+/**
+ * The pins of a part made from a footprint. Pads of one number that agree on net, name and type are one pin. Pads of one number that
+ * differ in any of them each get a pin of their own, named with the number and `.2`, `.3` (the first keeps the number), so the net each
+ * pad is on is kept; the land keeps the file's number on each (`PadDef.number`) for the KiCad writer. A pad with no number that carries a net
+ * has a pin of its own (`_1`, `_2`) and an empty number; so does a non-plated hole that carries one, whose number KiCad clears (`CanHaveNumber`,
+ * parser `:6403`). A pad with no number and no net, and a hole with no net, has no pin.
+ */
+export function planPins(fp: KicadFootprint, lose: (what: string) => void): PinPlan {
+  const taken = new Set(fp.pads.map((p) => p.number).filter(Boolean))
+  const made = new Set<string>()
+  const byKey = new Map<string, string>()
+  const firstOfNumber = new Set<string>()
+  const ids: PadIds[] = []
+  const pins: PinPlan["pins"] = []
+  let synthetic = 0
+  const fresh = (base: string) => {
+    let k = 2
+    while (taken.has(`${base}.${k}`) || made.has(`${base}.${k}`)) k++
+    made.add(`${base}.${k}`)
+    return `${base}.${k}`
+  }
+  for (const p of fp.pads) {
+    const numbered = p.number !== "" && p.type !== "np_thru_hole"
+    if (!numbered && !p.netRaw) {
+      ids.push({ pin: null })
+      continue
+    }
+    const key = `${numbered ? p.number : ""}\n${p.netRaw ?? ""}\n${p.pinFunction ?? ""}\n${p.pinType ?? ""}`
+    const had = byKey.get(key)
+    if (had !== undefined) {
+      ids.push({ pin: had, ...(numbered && p.number !== had ? { number: p.number } : numbered ? {} : { number: "" }) })
+      continue
+    }
+    let pin: string
+    if (numbered) {
+      if (!firstOfNumber.has(p.number)) {
+        firstOfNumber.add(p.number)
+        pin = p.number
+      } else pin = fresh(p.number)
+    } else {
+      do pin = `_${++synthetic}`
+      while (taken.has(pin) || made.has(pin))
+      made.add(pin)
+    }
+    byKey.set(key, pin)
+    ids.push({ pin, ...(numbered ? (p.number !== pin ? { number: p.number } : {}) : { number: "" }) })
+    const name = cleanPinName(p.pinFunction ?? "", pin)
+    const found = p.pinType === undefined ? undefined : pinKindOf(p.pinType, name)
+    if (found === "unknown") lose(`a pin type that is not one of KiCad's (${p.pinType})`)
+    const fold = p.pinType === undefined || found === "unknown" ? null : pinFold(p.pinType)
+    pins.push({ pin, name, kind: found === "unknown" ? undefined : found, fold })
+  }
+  return { ids, pins }
+}
+
 /**
  * Where a footprint sits on the board: the editor's rotation for it, in degrees (a bottom part is turned half a
  * turn, see `landPad`). The angle is the file's own, any angle (X6), taken to the millionth of a degree, which
@@ -347,18 +347,16 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   /** Per component: every numbered pad with the file's raw net name (null for none), for the check at the end, which compares pads, not pins. */
   const padFacts = new Map<string, { number: string; net: string | null }[]>()
   const modelDropped = new Map<string, { path: string; why: string; refs: string[] }>()
+  /** What KiCad does to a pad that the project shows differently (a hole of a nanometre), by words, with the parts it is on. */
+  const padNotes = new Map<string, string[]>()
   const counters = new Map<string, number>()
   let withNet = 0
 
   // The project's name for every net of the file, decided before the lands are made because a drawing on copper can carry one:
-  // the nets of the numbered pads (one per number, as the pins have), of the tracks, vias and drawings.
+  // the nets of the pads (every pad that carries one has a pin), of the tracks, vias and drawings.
   const allNets = new Set<string>()
-  for (const f of board.footprints) {
-    const first = new Map<string, string>()
-    for (const p of f.pads) if (p.number && p.type !== "np_thru_hole" && p.netRaw && !first.has(p.number)) first.set(p.number, p.netRaw)
-    for (const raw of first.values()) allNets.add(raw)
-  }
-  for (const o of [...board.segments, ...board.arcTracks, ...board.vias, ...board.shapes, ...board.footprints.flatMap((f) => f.shapes)]) if (o.netRaw) allNets.add(o.netRaw)
+  for (const f of board.footprints) for (const p of f.pads) if (p.netRaw) allNets.add(p.netRaw)
+  for (const o of [...board.segments, ...board.arcTracks, ...board.vias, ...board.shapes, ...board.footprints.flatMap((f) => f.shapes), ...board.zones]) if (o.netRaw) allNets.add(o.netRaw)
   const labelText = netLabelNames(new Map(), report, allNets)
   // X10: net classes and the rules that go with them, by the labels the nets have in the project
   const { unknownMembers: _unknownMembers, ...x10 } = importRulesX10(board, labelText, report, lose)
@@ -369,47 +367,56 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   /** Text objects brought in, for the report; and the conversion context a text is built with. */
   let textCount = 0
   const textCx = (where: string): TextConversion => ({ board, lose, where })
+  /** The id a node of the file has (`uuid`, or `tstamp` before KiCad 7). */
+  const uuidOf = (c: List): string | null => strAt(kid(c, "uuid"), 1) ?? strAt(kid(c, "tstamp"), 1) ?? null
+  /** What each id of the file is in the project, for the groups to resolve their members by. */
+  const boardRefs = new Map<string, string[]>()
+  const addRef = (uuid: string | null, ...ids: string[]) => {
+    if (uuid !== null && !boardRefs.has(uuid)) boardRefs.set(uuid, ids)
+  }
+  /** The group each id belongs to, for the tracks: a track is joined with its neighbours only inside one group. */
+  const boardParents = groupParents(board.groups)
+  const groupStats = newGroupStats()
+  const compOf = new Map<KicadFootprint, ComponentInstance>()
+  const landOrigins = new Map<KicadFootprint, { shapes: number[]; texts: number[] }>()
+  const partGroups = new Map<string, PcbGroup[]>()
 
   // References the file gives itself are kept; the names made up for empty ones avoid them.
   const fileRefs = new Set(board.footprints.map((f) => f.ref.trim().replace(/\*/g, "")).filter(Boolean))
-  const ordered = [...board.footprints].sort((a, b) => natural.compare(a.ref, b.ref))
-  for (const fp of ordered) {
+  const ordered = board.footprints.map((fp, index) => ({ fp, index })).sort((a, b) => natural.compare(a.fp.ref, b.fp.ref))
+  const footprintComponents = new Map<number, string>()
+  for (const { fp, index } of ordered) {
     const bottom = fp.side === "bottom"
     const rot = placementRotation(fp.angle, bottom)
 
+    // The part's pins: one per distinct number, net, name and type of the pads (see `planPins`), and a pin of its own for a pad with no number that carries a net.
+    const plan = planPins(fp, lose)
     const pads: PadDef[] = []
-    for (const p of fp.pads) {
-      const lp = landPad(fp, p, bottom)
+    fp.pads.forEach((p, i) => {
+      const lp = landPad(fp, p, bottom, plan.ids[i], board)
       if (lp.lossy) lose(lp.lossy)
+      for (const n of lp.notes) padNotes.set(n, [...(padNotes.get(n) ?? []), fp.ref || fp.name || "a footprint"])
       pads.push(lp.def)
-    }
-    // Pad numbers with a net, one net per number (the raw name: two names that read alike are two nets).
+    })
+    // The net of each pin (the raw name: two names that read alike are two nets), and every pad that is on a pin with its pin, for the check at the end, which compares pads.
     const numberNet = new Map<string, string>()
     const facts: { number: string; net: string | null }[] = []
-    const nets = new Map<string, Set<string | null>>()
-    for (const p of fp.pads) {
-      // A non-plated hole has no copper and so no pin, whatever number the file gives it.
-      if (!p.number || p.type === "np_thru_hole") {
-        if (p.net) lose("an unnumbered pad that carries a net")
-        continue
-      }
-      facts.push({ number: p.number, net: p.netRaw })
-      const seen = nets.get(p.number)
-      if (seen) seen.add(p.netRaw)
-      else nets.set(p.number, new Set([p.netRaw]))
+    fp.pads.forEach((p, i) => {
+      const pin = plan.ids[i].pin
+      if (pin === null) return
+      facts.push({ number: pin, net: p.netRaw })
       if (p.netRaw) {
         withNet++
-        if (!numberNet.has(p.number)) numberNet.set(p.number, p.netRaw)
+        if (!numberNet.has(pin)) numberNet.set(pin, p.netRaw)
       }
-    }
-    // Pads of one number are one pin of the part, so they must agree: a net and no net is a disagreement too (X7 will give each pad its own net).
-    if ([...nets.values()].some((s) => s.size > 1)) lose("pads that share a number but carry different nets, or a net and no net")
+    })
 
     // The model the part holds, and the land it is held with: footprints with the same pads and model share a land.
     const modelPlan = planModels(fp)
     // The drawings of the footprint on its land, in the land's frame; the courtyard is the one the file draws, else the pads' box and a quarter millimetre, else (a logo) the box of what is drawn, which the checks leave out.
     const drawn = landShapes(fp, board, bottom, (raw) => labelText.get(raw), lose, degenerate, badNets)
     privateShapes += drawn.privateCount
+    const partTextOrigins: number[] = []
     const drawnCourtyard = courtyardBox(drawn.shapes)
     // A footprint of text only (a logo's name) has no pad and no drawing: its box, for selecting it, is where its texts are.
     const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x), y: round(frameTop(fp.at).y), rot, bottom, at: fp.at, angle: fp.angle })
@@ -421,21 +428,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     if (!lands.has(landName)) lands.set(landName, { name: landName, ...land })
 
     // The part: one per land and pin list. A pin is named by its pad's function (an overbar `~{RESET}` is `RESET#`, as the editor names an active-low pin) and typed by its pad's pin type.
-    const pinNames = new Map<string, PinFacts>()
-    const foldsHere: string[] = []
-    for (const p of fp.pads) {
-      if (!p.number || p.type === "np_thru_hole") continue
-      const name = cleanPinName(p.pinFunction ?? "", p.number)
-      const found = p.pinType === undefined ? undefined : pinKindOf(p.pinType, name)
-      if (found === "unknown") lose(`a pin type that is not one of KiCad's (${p.pinType})`)
-      const kind = found === "unknown" ? undefined : found
-      const had = pinNames.get(p.number)
-      if (!had) {
-        pinNames.set(p.number, { name, kind })
-        const fold = p.pinType === undefined || found === "unknown" ? null : pinFold(p.pinType)
-        if (fold) foldsHere.push(`pin ${p.number} ${fold}`)
-      } else if (had.name !== name || had.kind !== kind) lose("pads that share a number but have different pin names or pin types")
-    }
+    const pinNames = new Map<string, PinFacts>(plan.pins.map((q) => [q.pin, { name: q.name, kind: q.kind }]))
+    const foldsHere: string[] = plan.pins.filter((q) => q.fold).map((q) => `pin ${q.pin} ${q.fold}`)
     const letters = (fp.ref.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase().slice(0, 3)
     const prefix = letters || "U"
     const category = CATEGORY_BY_PREFIX.find(([re]) => re.test(prefix))?.[1] ?? "ICs"
@@ -490,8 +484,11 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       pcb: { x: round(at.x), y: round(at.y), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
       ...(flags ? { flags } : {}),
       // The part's own text, as the file has it (none is a part with no designator); with it the editor places none.
-      texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }),
+      texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }, partTextOrigins),
     }
+    compOf.set(fp, component)
+    landOrigins.set(fp, { shapes: drawn.origins, texts: partTextOrigins })
+    addRef(uuidOf(fp.node), component.id)
     textCount += component.texts!.length
     // A pad with no net is what a pin left unconnected looks like in KiCad: Checks would say "isn't connected" of each, so it is marked no connect.
     const loose = [...pinNames.keys()].filter((n) => !numberNet.has(n)).sort(natural.compare)
@@ -500,6 +497,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       looseCount += loose.length
     }
     components.push(component)
+    footprintComponents.set(index, component.id)
     pinCounts.set(component.id, pinNames.size)
     padNets.set(component.id, numberNet)
     padFacts.set(component.id, facts)
@@ -526,6 +524,15 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       object: `3D model ${d.path || "(no file name)"} of ${d.refs.length === 1 ? d.refs[0] : `${d.refs.length} parts (${d.refs.slice(0, 3).join(", ")}${d.refs.length > 3 ? ", ..." : ""})`}`,
       why: d.why,
       count: d.refs.length,
+    })
+  }
+  for (const [what, parts] of padNotes) {
+    report.entries.push({
+      code: "pad-as-kicad-reads-it",
+      severity: "changed",
+      object: `${parts.length} pad${parts.length > 1 ? "s" : ""} (${[...new Set(parts)].slice(0, 5).join(", ")}${new Set(parts).size > 5 ? ", ..." : ""})`,
+      why: `The file has ${what}.`,
+      count: parts.length,
     })
   }
   const noPins = components.filter((c) => !pinCounts.get(c.id)).map((c) => c.ref)
@@ -589,13 +596,71 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   project = placed.project
 
   // ---------- copper ----------
-  const layerOf = (name: string) => (name === board.copper.front ? "top" : name === board.copper.back ? "bottom" : null)
-  const traces = joinSegments(board, layerOf, lose, labelText)
+  const layers = layerMapOf(board)
+  const layerOf = (name: string) => layers.of(name)
+  const joined = joinSegments(board, layerOf, lose, labelText, (s) => boardParents.get(uuidOf(s.node) ?? "") ?? -1)
+  const traces = joined.traces
+  for (const s of board.segments) {
+    const t = joined.of.get(s)
+    if (t) addRef(uuidOf(s.node), t)
+  }
+  // X4: an arc track is a trace of its own, `arc` with the three points the file gives (start, a point on the arc, end).
+  for (const a of board.arcTracks) {
+    const layer = layerOf(a.layer)
+    if (!layer) {
+      lose(`an arc track on ${a.layer}`)
+      continue
+    }
+    const net = a.netRaw ? labelText.get(a.netRaw) : undefined
+    // An arc is held to the nanometre (the file's own unit), not the tenth of a micrometre of a polyline: its circle follows from the three points.
+    const pts = [a.start, a.mid, a.end].map((p) => ({ x: round(p.x, 6), y: round(-p.y, 6) }))
+    // Three points on a line are KiCad's own straight track (a degenerate arc); it is held as the arc it is, exactly.
+    const t: Trace = { id: uid("t"), layer, width: a.width, points: pts, arc: true, ...(a.locked ? { locked: true } : {}), ...(net ? { net } : {}) }
+    traces.push(t)
+    addRef(uuidOf(a.node), t.id)
+  }
   const vias: Via[] = board.vias.map((v) => {
-    if (v.kind !== "through" || v.layers.length !== 2) lose("a blind, buried or micro via")
     const net = v.netRaw ? labelText.get(v.netRaw) : undefined
-    return { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
+    const via: Via = { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
+    // X5: a via that is not a through via says which layers it joins. KiCad sorts the pair front to back and calls a `blind` between two inner layers buried.
+    if (v.kind !== "through") {
+      const a = v.layers[0] ? layerOf(v.layers[0]) : null
+      const b = v.layers[1] ? layerOf(v.layers[1]) : null
+      if (!a || !b || a === b) lose(`a ${v.kind} via on layers the board does not have (${v.layers.join(", ")})`)
+      else {
+        const span = viaBetween({ stack: { copper: layers.ids.map(() => ({})) } }, a, b, v.kind === "micro")
+        via.kind = v.kind === "buried" ? "buried" : v.kind === "micro" ? "micro" : span.kind === "buried" ? "buried" : "blind"
+        via.from = span.from ?? (layers.ids.indexOf(a) <= layers.ids.indexOf(b) ? a : b)
+        via.to = span.to ?? (layers.ids.indexOf(a) <= layers.ids.indexOf(b) ? b : a)
+      }
+    }
+    if (v.free) via.free = true
+    if (v.unused) via.unused = v.unused
+    if (v.zoneLayers) via.zoneLayers = layersOfNames(layers, v.zoneLayers)
+    if (v.tenting && (v.tenting.front !== undefined || v.tenting.back !== undefined)) via.tent = { ...(v.tenting.front !== undefined ? { front: v.tenting.front } : {}), ...(v.tenting.back !== undefined ? { back: v.tenting.back } : {}) }
+    if (v.stack) {
+      const sized = (name: string) => v.stack!.sizes.find((s) => s.name === name)?.size
+      if (v.stack.mode === "front_inner_back") {
+        via.stack = { inner: sized("Inner") ?? via.diameter, back: sized("B.Cu") ?? via.diameter }
+      } else {
+        const custom: Partial<Record<(typeof layers.ids)[number], number>> = {}
+        for (const s of v.stack.sizes) {
+          const l = layerOf(s.name)
+          if (!l) lose(`a via stack that names ${s.name}, which is not a copper layer of the board`)
+          else if (l === "top") via.diameter = s.size
+          else custom[l] = s.size
+        }
+        // A layer that is left out has the via's own diameter, so one that says it is that says nothing; the mode stays (`layers` is then empty).
+        for (const [l, d] of Object.entries(custom)) if (d === via.diameter) delete custom[l as keyof typeof custom]
+        via.stack = { layers: custom }
+      }
+    }
+    return via
   })
+  board.vias.forEach((v, i) => addRef(uuidOf(v.node), vias[i].id))
+  // Things a group cannot hold (zones: the project holds them since X3, but a group's members are parts, tracks, vias, drawings, texts, dimensions and images; tables, barcodes and the rest) are known to the file: a group that lists one says so, not that it names nothing.
+  for (const z of board.zones) addRef(uuidOf(z.node))
+  for (const list of Object.values(board.others)) for (const n of list) addRef(uuidOf(n))
   // A track or via on a net number the net table does not list is on no net, as KiCad loads it (`parseNet`, parser lines 305-315).
   const copperBadNets = [
     ...board.segments.filter((s) => s.badNet !== undefined).map((s) => `a track at (${s.start.x}, ${s.start.y}): net ${s.badNet}`),
@@ -612,12 +677,22 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       items: copperBadNets,
     })
   }
-  if (board.arcTracks.length) lose("arc tracks")
-  if (board.zones.length || board.footprints.some((f) => f.zones.length)) lose("copper zones")
+  if (board.footprints.some((f) => f.zones.length)) lose("zones inside parts")
+  const zoneResult = convertZones({ board, rules, netName: (raw) => labelText.get(raw) })
 
   // ---------- drawings on the board ----------
   const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, where: "the board" }
-  const graphics: BoardGraphic[] = [...board.shapes.flatMap((s) => convertShape(s, graphicsCx)), ...board.targets.flatMap((t) => convertTarget(t, graphicsCx))].map((g, i): BoardGraphic => ({ id: defaultGraphicId(i), ...g }))
+  const graphics: BoardGraphic[] = []
+  const drawn = (node: List, made: ReturnType<typeof convertShape>) => {
+    const ids = made.map((g) => {
+      const id = defaultGraphicId(graphics.length)
+      graphics.push({ id, ...g })
+      return id
+    })
+    addRef(uuidOf(node), ...ids)
+  }
+  for (const s of board.shapes) drawn(s.node, convertShape(s, graphicsCx))
+  for (const t of board.targets) drawn(t.node, convertTarget(t, graphicsCx))
 
   if (degenerate.length) {
     report.entries.push({ code: "polygon-too-small", severity: "not-brought", object: `${degenerate.length} polygon${degenerate.length > 1 ? "s" : ""} with fewer than three corners (${[...new Set(degenerate)].slice(0, 5).join(", ")}${new Set(degenerate).size > 5 ? ", ..." : ""})`, why: "KiCad draws and plots nothing for a polygon with fewer than three corners, so none was brought in.", count: degenerate.length })
@@ -641,8 +716,50 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   for (const t of board.texts) {
     const converted = convertBoardText(t, textCx("the board"), defaultTextId(boardTexts.length))
     if (converted) boardTexts.push(converted)
+    addRef(uuidOf(t.node), ...(converted ? [converted.id] : []))
   }
   textCount += boardTexts.length
+
+  // ---------- dimensions, reference images and groups ----------
+  const dimensions: BoardDimension[] = []
+  for (const k of board.dimensions) {
+    const made = convertDimension(k, { board, lose }, defaultDimensionId(dimensions.length))
+    if (made) dimensions.push(made)
+    addRef(k.uuid, ...(made ? [made.id] : []))
+  }
+  const keptFiles = new Map<string, KeptFile>()
+  const images: ReferenceImage[] = []
+  for (const k of board.images) {
+    const made = convertImage(k, { board, lose }, defaultImageId(images.length))
+    if (made) {
+      images.push(made.image)
+      keptFiles.set(made.file.id, made.file)
+    }
+    addRef(k.uuid, ...(made ? [made.image.id] : []))
+  }
+  const boardGroups = resolveGroups(board.groups, boardRefs, defaultGroupId, groupStats)
+  // A part's groups: what they list are the part's own pads, drawings and texts, by their place in its land and in its list of texts.
+  for (const fp of board.footprints) {
+    const comp = compOf.get(fp)
+    const origins = landOrigins.get(fp)
+    if (!comp || !origins || !fp.groups.length) continue
+    const refs = new Map<string, string[]>()
+    const bump = (uuid: string | null, ref: string) => {
+      if (uuid === null) return
+      const list = refs.get(uuid)
+      if (list) list.push(ref)
+      else refs.set(uuid, [ref])
+    }
+    fp.pads.forEach((p, i) => bump(uuidOf(p.node), `p${i}`))
+    origins.shapes.forEach((from, k) => bump(uuidOf(fp.shapes[from].node), `s${k}`))
+    fp.shapes.forEach((s) => refs.has(uuidOf(s.node) ?? "") || (uuidOf(s.node) !== null && refs.set(uuidOf(s.node)!, [])))
+    origins.texts.forEach((from, j) => bump(uuidOf(fp.texts[from].node), `t${j}`))
+    fp.texts.forEach((t) => refs.has(uuidOf(t.node) ?? "") || (uuidOf(t.node) !== null && refs.set(uuidOf(t.node)!, [])))
+    for (const z of fp.zones) refs.set(uuidOf(z.node) ?? "", [])
+    for (const d of kids(fp.node, "dimension")) refs.set(uuidOf(d) ?? "", [])
+    const groups = resolveGroups(fp.groups, refs, defaultPartGroupId, groupStats)
+    if (groups.length) partGroups.set(comp.id, groups)
+  }
 
   // ---------- the board ----------
   // A rectangle or a rounded rectangle is the board's own shape, as ever. Any other outline (X2) is held as the paths it is: loops with their cutouts, and what does not close, kept as drawn.
@@ -683,24 +800,74 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       cornerRadius: round(outline.representable ? outline.cornerRadius : 0),
       mountingHoles: null,
       ...(outlineDef ? { outline: outlineDef } : {}),
+      ...stackFields(board),
     },
     traces,
     vias,
+    zones: zoneResult.zones,
     ...(graphics.length ? { graphics } : {}),
     ...(boardTexts.length ? { texts: boardTexts } : {}),
+    ...(partGroups.size ? { components: project.components.map((c) => (partGroups.has(c.id) ? { ...c, groups: partGroups.get(c.id)! } : c)) } : {}),
+    ...(dimensions.length ? { dimensions } : {}),
+    ...(boardGroups.length ? { groups: boardGroups } : {}),
+    ...(images.length ? { images } : {}),
     properties,
   }
   reportTexts(project, textCount, report)
+  reportDimensionsGroupsImages(board, dimensions, groupStats, report)
 
   // ---------- every pad on the net the file gives it ----------
   const checked = verifyNets(project, padFacts, labelText, report)
+  zoneResult.loose = [...new Set(zoneResult.zones.filter((z) => z.net && !checked.conn.nets.some((n) => n.name === z.net)).map((z) => z.net))]
+  reportZones(zoneResult, report, board.zones.length)
   const copperNetMismatches = compareCopperNets(project, checked.conn, board, report)
   project = acceptLoneLabels(project, checked.conn, report)
   // The pins marked no connect are the importer's, recorded so they can be handed back to Checks in one action.
   const noConnect = Object.fromEntries(components.flatMap((c) => (c.nc ? [[c.id, c.nc]] : [])))
   if (Object.keys(noConnect).length) project = { ...project, importMarks: { ...project.importMarks, noConnect } }
   const pins = components.reduce((n, c) => n + (padNets.get(c.id)?.size ?? 0), 0)
-  return { project, lossy, stats: { parts: components.length, lands: lands.size, pins, nets: checked.nets, padsWithNet: withNet, copperNetMismatches } }
+  return { project, files: [...keptFiles.values()], lossy, stats: { parts: components.length, lands: lands.size, pins, nets: checked.nets, padsWithNet: withNet, copperNetMismatches }, footprintComponents }
+}
+
+// ---------- dimensions, groups and images ----------
+
+/** What the report says of the dimensions, groups and reference images that came in, and of what KiCad's own resolution did with the groups' members. */
+function reportDimensionsGroupsImages(board: KicadBoard, dimensions: BoardDimension[], stats: ReturnType<typeof newGroupStats>, report: ImportReport) {
+  const word = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+  // A dimension in automatic units shows its value in millimetres, as KiCad does for a file it has no display settings for.
+  const automatic = dimensions.filter((d) => d.units === 3 && d.kind !== "center" && d.kind !== "leader" && d.override === undefined && d.format !== 0)
+  if (automatic.length) {
+    report.entries.push({
+      code: "dimension-units-automatic",
+      severity: "note",
+      object: word(automatic.length, "dimension") + " in automatic units",
+      why: "KiCad shows a dimension in automatic units in whatever units its own screen is set to, which a board file does not say. They are drawn in millimetres, KiCad's default, and so are plotted.",
+      count: automatic.length,
+    })
+  }
+  const legacy = board.dimensions.filter((d) => d.legacy).length
+  if (legacy) {
+    report.entries.push({
+      code: "dimensions-redrawn",
+      severity: "note",
+      object: word(legacy, "KiCad 5 dimension"),
+      why: "KiCad 6 and later do not read a KiCad 5 dimension's arrows, feature lines or text position: they keep its two points, how far its crossbar is and its text's size, and draw the rest themselves, with the units its text names and four digits. So do these, which is what KiCad now shows for the file.",
+      count: legacy,
+    })
+  }
+  const moved = stats.moved + stats.refused
+  if (stats.unresolved) {
+    report.entries.push({ code: "group-member-unresolved", severity: "note", object: word(stats.unresolved, "group member"), why: "These members name nothing in the file (or, in a part, nothing of that part). KiCad skips them as well.", count: stats.unresolved })
+  }
+  if (stats.notBrought) {
+    report.entries.push({ code: "group-member-not-brought", severity: "not-brought", object: word(stats.notBrought, "group member"), why: "These members are zones (a group cannot hold a zone yet: the zone is in the board, but moving, turning and locking a group leaves it where it is), arc tracks or tables, so they are not in their group.", count: stats.notBrought })
+  }
+  if (moved) {
+    report.entries.push({ code: "group-member-moved", severity: "note", object: word(moved, "group member"), why: "An item is in one group, so a group that lists an item another group holds takes it, and a group is never put into itself or into a group it holds, as KiCad does when it loads the file.", count: moved })
+  }
+  if (stats.empty) {
+    report.entries.push({ code: "group-empty", severity: "note", object: word(stats.empty, "group"), why: "These groups have nothing left in them, so KiCad would not write them back and the project does not keep them.", count: stats.empty })
+  }
 }
 
 // ---------- text ----------
@@ -715,7 +882,7 @@ function reportTexts(project: Project, count: number, report: ImportReport) {
     for (const name of left) unresolved.set(name, (unresolved.get(name) ?? 0) + 1)
   }
   for (const t of project.texts) note(null, t.text, t.layer)
-  for (const c of project.components) for (const t of c.texts ?? []) if (t.kind === "user" || t.text !== undefined) note(c, t.text ?? "", c.pcb.side === "bottom" ? flipShapeLayer(t.layer) : t.layer)
+  for (const c of project.components) for (const t of c.texts ?? []) if (t.kind === "user" || t.text !== undefined) note(c, t.text ?? "", c.pcb.side === "bottom" ? flipShapeLayer(t.layer, copperLayers(project.board).length) : t.layer)
   if (unresolved.size) {
     const names = [...unresolved.keys()].sort()
     report.entries.push({
@@ -924,18 +1091,20 @@ function acceptLoneLabels(project: Project, conn: SchematicConnectivity, report:
 
 // ---------- tracks ----------
 
-/** Segments of one net, layer and width that meet end to end, as polylines. */
-function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bottom" | null, lose: (what: string) => void, labelText: Map<string, string>): Trace[] {
+/** Segments of one net, layer, width, lock and group that meet end to end, as polylines; `of` says which polyline each segment is in. */
+function joinSegments(board: KicadBoard, layerOf: (name: string) => CopperLayer | null, lose: (what: string) => void, labelText: Map<string, string>, groupOf: (s: KicadBoard["segments"][number]) => number): { traces: Trace[]; of: Map<KicadBoard["segments"][number], string> } {
   const traces: Trace[] = []
-  const groups = new Map<string, { layer: "top" | "bottom"; width: number; locked: boolean; netRaw: string | null; segs: typeof board.segments }>()
+  const of = new Map<KicadBoard["segments"][number], string>()
+  const groups = new Map<string, { layer: CopperLayer; width: number; locked: boolean; netRaw: string | null; segs: typeof board.segments }>()
   for (const s of board.segments) {
     const layer = layerOf(s.layer)
     if (!layer) {
       lose(`a track on ${s.layer}`)
       continue
     }
-    // Segments are joined only within one net, layer, width and lock; the raw name is the net's identity (`/A/B` and `/A{slash}B` are two nets).
-    const key = JSON.stringify([layer, s.width, s.locked, s.netRaw])
+    // Segments are joined only within one net, layer, width, lock and group; the raw name is the net's identity (`/A/B` and `/A{slash}B` are two nets).
+    const group = groupOf(s)
+    const key = JSON.stringify(group < 0 ? [layer, s.width, s.locked, s.netRaw] : [layer, s.width, s.locked, s.netRaw, group])
     const g = groups.get(key)
     if (g) g.segs.push(s)
     else groups.set(key, { layer, width: s.width, locked: s.locked, netRaw: s.netRaw, segs: [s] })
@@ -955,10 +1124,12 @@ function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bot
     const used = new Array<boolean>(segs.length).fill(false)
     const walk = (first: number, from: "start" | "end") => {
       const pts: { x: number; y: number }[] = []
+      const made: number[] = []
       let i = first
       let head = from
       for (;;) {
         used[i] = true
+        made.push(i)
         const s = segs[i]
         const a = head === "start" ? s.start : s.end
         const b = head === "start" ? s.end : s.start
@@ -970,7 +1141,12 @@ function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bot
         i = next[0]
         head = k(segs[i].start) === k(b) ? "start" : "end"
       }
-      return pts
+      return { pts, made }
+    }
+    const push = (chain: { pts: { x: number; y: number }[]; made: number[] }) => {
+      const t = trace(chain.pts)
+      traces.push(t)
+      for (const i of chain.made) of.set(segs[i], t.id)
     }
     // Chains start at an end that is not shared by exactly two segments; what is left is a loop.
     const starts: [number, "start" | "end"][] = []
@@ -978,11 +1154,10 @@ function joinSegments(board: KicadBoard, layerOf: (name: string) => "top" | "bot
       if ((at.get(k(s.start)) ?? []).length !== 2) starts.push([i, "start"])
       if ((at.get(k(s.end)) ?? []).length !== 2) starts.push([i, "end"])
     })
-    for (const [i, head] of starts) if (!used[i]) traces.push(trace(walk(i, head)))
+    for (const [i, head] of starts) if (!used[i]) push(walk(i, head))
     segs.forEach((_, i) => {
-      if (!used[i]) traces.push(trace(walk(i, "start")))
+      if (!used[i]) push(walk(i, "start"))
     })
   }
-  return traces
+  return { traces, of }
 }
-

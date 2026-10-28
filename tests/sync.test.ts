@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveDesignatorClashes } from "../src/model/designators"
+import { addDrawings, updateDrawings } from "../src/model/drawings"
 import { addComponent, addLabel, createProject } from "../src/model/ops"
 import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
-import type { Project } from "../src/model/types"
+import type { Project, SchematicDrawing } from "../src/model/types"
 import { projectChanges } from "../src/store/changes"
 import { connectProjectStorage, isCreatedHere, onRemoteChanges, settleSaves, useProjectStore } from "../src/store/projectStore"
 import { openStoredProject, projectRecord, type RemoteBatch } from "../src/store/storage"
@@ -75,6 +76,25 @@ describe("live editing", () => {
     stop()
   })
 
+  it("sends a patch made mid-drag at once, and the drag lands over it when it ends", async () => {
+    const { memory, id } = await opened()
+    api().beginTransient()
+    api().setTransient(moveFirst(3))
+    api().patch((p) => ({ ...p, components: p.components.map((c) => ({ ...c, ref: "R7" })) }))
+    await settle()
+    // The patch is stored before the drag ends, and the drag is not.
+    expect(memory.project(id).components[0].ref).toBe("R7")
+    expect(memory.project(id).components[0].sch.x).toBe(0)
+    expect(api().project!.components[0]).toMatchObject({ ref: "R7", sch: { x: 3 } })
+    api().endTransient()
+    await settle()
+    expect(memory.project(id).components[0]).toMatchObject({ ref: "R7", sch: { x: 3 } })
+    // The drag is the one step, and undoing it keeps the patch.
+    expect(api().past).toHaveLength(1)
+    api().undo()
+    expect(api().project!.components[0]).toMatchObject({ ref: "R7", sch: { x: 0 } })
+  })
+
   it("keeps the user's own pending value over theirs, since storage applies it after", async () => {
     const { memory, id } = await opened()
     const release = memory.hold()
@@ -106,6 +126,26 @@ describe("live editing", () => {
     api().redo()
     await settle()
     expect(memory.project(id).components[0].sch.x).toBe(5)
+  })
+
+  it("keeps two people's edits to different drawings, as items rather than one list", async () => {
+    const { project: drawn } = addDrawings(addComponent(createProject("Start"), "resistor").project, [
+      { type: "text", x: 0, y: 0, text: "Title", size: 0.3 },
+      { type: "rect", x: 1, y: 1, width: 2, height: 1 },
+    ])
+    const { memory, id } = await opened(drawn)
+    const [title, box] = drawn.drawings!
+    const release = memory.hold()
+    api().commit((p) => updateDrawings(p, [title.id], (d) => ({ ...d, text: "Mine" }) as typeof d))
+    await vi.advanceTimersByTimeAsync(100)
+    const start = openStoredProject((await memory.storage.load(id))!)
+    release()
+    await memory.pushAs("other", id, projectChanges(start, updateDrawings(start, [box.id], (d) => ({ ...d, color: "red" }))))
+    await settle()
+    const stored: SchematicDrawing[] = memory.project(id).drawings
+    expect(stored.find((d) => d.id === title.id)).toMatchObject({ text: "Mine" })
+    expect(stored.find((d) => d.id === box.id)).toMatchObject({ color: "red" })
+    expect(api().project!.drawings).toEqual(stored)
   })
 
   it("leaves a part someone else deleted deleted when the user undoes their move of it", async () => {

@@ -449,8 +449,8 @@ export const PATH_RULES: PathRule[] = [
  },
  {
   "source": "^((?:footprint>)?zone>(?:tstamp|uuid))$",
-  "decision": "not-needed",
-  "note": "KiCad's object identity: read to say what a group's members are (X12), and not kept"
+  "decision": "native",
+  "note": "what orders two zones of equal priority (KiCad 6 and later; KiCad 5 had no such order), and what a group's members name (X12)"
  },
  {
   "source": "^((?:gr_(?:line|arc|circle|rect|poly|curve)|footprint>fp_(?:line|arc|circle|rect|poly|curve)))$",
@@ -746,7 +746,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^(footprint>pad>zone_layer_connections)$",
   "decision": "extend",
-  "ext": "X3",
+  "ext": "X31",
   "note": "a pad that joins a pour on some copper layers and not others"
  },
  {

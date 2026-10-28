@@ -1,13 +1,18 @@
 import { emptyBox, expandBox, round, transformBox, transformPoint, type Box } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { mountingHoles } from "./board"
 import { computeConnectivity, pinKey } from "./connectivity"
 import { decouplingPairs, padGap, type DecouplingPair } from "./decoupling"
 import { getFootprint } from "./footprints"
-import { isOnBoard, pcbCourtyard, pcbPads, type WorldPad } from "./instances"
+import { outlineGeometry, outsideBoxes } from "./outline"
+import { areaTouches, isWholeBoardPour, zoneArea } from "./zones"
+import { pcbCourtyard, pcbPads, type WorldPad } from "./instances"
+import { classIndex } from "./netClasses"
 import { pointPadDistance, segmentPadDistance } from "./pcb"
 import { placeStage, powerStages, STAGE_GAP, type PowerStage } from "./powerStage"
 import { stitchVias } from "./stitch"
 import type { ComponentInstance, PcbSide, Project, Rotation, Vec2 } from "./types"
+import { onBoard } from "./partFlags"
 
 // Automatic placement: decoupling capacitors next to the supply pins they serve, then every
 // part (a chip with its capacitors as one) shelf-packed on the board.
@@ -86,13 +91,13 @@ const overlapsAt = (a: Box, x: number, y: number, b: Box) =>
 /** `round(n, 3)` without the power and the negative zero check: it runs in the capacitor search's inner loop. */
 const round3 = (n: number) => Math.round(n * 1000) / 1000 + 0
 
-const at = (c: ComponentInstance, x: number, y: number, rot: Rotation = c.pcb.rot, side: PcbSide = c.pcb.side): ComponentInstance => ({
+const at = (c: ComponentInstance, x: number, y: number, rot: number = c.pcb.rot, side: PcbSide = c.pcb.side): ComponentInstance => ({
   ...c,
   pcb: { ...c.pcb, x, y, rot, side },
 })
 
 /** A part's courtyard around its own origin, turned and flipped as it would be placed. */
-function localCourtyard(c: ComponentInstance, rot: Rotation = c.pcb.rot, side: PcbSide = c.pcb.side): Box {
+function localCourtyard(c: ComponentInstance, rot: number = c.pcb.rot, side: PcbSide = c.pcb.side): Box {
   return transformBox(getFootprint(c.footprint).courtyard, { x: 0, y: 0 }, rot, side === "bottom")
 }
 
@@ -133,7 +138,25 @@ export function boardObstacles(project: Project): Box[] {
     const r = h.diameter / 2 + HOLE_GAP
     out.push({ minX: h.x - r, minY: h.y - r, maxX: h.x + r, maxY: h.y + r })
   }
-  const clearance = project.rules.clearance
+  // A board with an outline of its own: what is off it, in a cutout or against an edge.
+  const g = outlineGeometry(project.board)
+  if (g) out.push(...outsideBoxes(g, Math.max(project.rules.edgeClearance, 0.3)))
+  // Rule areas that keep parts out: the cells of a grid that any of the area touches.
+  for (const z of project.zones) {
+    const area = z.keepout?.footprints ? zoneArea(z) : null
+    if (!area) continue
+    const w = area.box.maxX - area.box.minX
+    const h = area.box.maxY - area.box.minY
+    const cell = Math.max(0.5, Math.min(2, Math.max(w, h) / 64))
+    for (let y = area.box.minY; y < area.box.maxY; y += cell) {
+      for (let x = area.box.minX; x < area.box.maxX; x += cell) {
+        const b = { minX: x, minY: y, maxX: x + cell, maxY: y + cell }
+        if (areaTouches(area, [{ x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY }, { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY }], 0, true)) out.push(b)
+      }
+    }
+  }
+  // parts keep off copper by the largest clearance any net class asks for (a board with no classes: the rules' clearance)
+  const clearance = classIndex(project.rules).worst
   for (const t of project.traces) {
     for (let i = 1; i < t.points.length; i++) {
       const a = t.points[i - 1]
@@ -179,7 +202,7 @@ export function exitCorridors(chip: ComponentInstance, netOf: (pin: string) => s
 export interface CapSpot {
   x: number
   y: number
-  rot: Rotation
+  rot: number
   side: PcbSide
   /** Courtyard where it lands. */
   box: Box
@@ -292,7 +315,7 @@ export function bestCapSpot(
 
 /** Parts placed together, relative to the unit's origin. */
 interface Unit {
-  members: { c: ComponentInstance; x: number; y: number; rot: Rotation; side: PcbSide }[]
+  members: { c: ComponentInstance; x: number; y: number; rot: number; side: PcbSide }[]
   /** Union of the members' courtyards around the origin. */
   box: Box
 }
@@ -669,7 +692,7 @@ function improvePlacement(
  * out, which is how the measurements compare against placement without it.
  */
 export function autoPlacePcb(project: Project, all = false, options: { powerStage?: boolean } = {}): Project {
-  const physical = project.components.filter((c) => isOnBoard(c) && !!c.footprint)
+  const physical = resolvedComponents(project).filter((c) => onBoard(c) && !!c.footprint)
   const held = all ? heldByLockedCopper(project, physical) : new Set<string>()
   // A part that isn't on the board yet is placed even if it is locked: a lock keeps a part where it
   // is, and a pasted copy of a locked part is nowhere. (Pasting clears the lock too.)
@@ -691,7 +714,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   const keepouts = boardObstacles(base)
 
   const sch = computeConnectivity(base)
-  const byId = new Map(base.components.map((c) => [c.id, c]))
+  const byId = new Map(resolvedComponents(base).map((c) => [c.id, c]))
   const capsOf = new Map<string, DecouplingPair[]>()
   // A power stage places its own capacitors, whatever their value, so decoupling leaves them out.
   const stageOf = new Map<string, PowerStage>()
@@ -706,13 +729,13 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   for (const pair of pairs) {
     const chip = byId.get(pair.chipId)
     if (inStage.has(pair.capId)) continue
-    if (!moving.has(pair.capId) || !chip || !isOnBoard(chip)) continue
+    if (!moving.has(pair.capId) || !chip || !onBoard(chip)) continue
     if (!moving.has(chip.id) && !chip.pcb.placed) continue
     capsOf.set(chip.id, [...(capsOf.get(chip.id) ?? []), pair])
   }
   const byRef = (a: DecouplingPair, c: DecouplingPair) => byId.get(a.capId)!.ref.localeCompare(byId.get(c.capId)!.ref, undefined, { numeric: true })
 
-  const positions = new Map<string, { x: number; y: number; rot: Rotation; side: PcbSide }>()
+  const positions = new Map<string, { x: number; y: number; rot: number; side: PcbSide }>()
   const grouped = new Set<string>()
 
   /** Capacitors around a chip as it stands; returns where each went. */
@@ -817,7 +840,7 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   }
 
   // Then shorten the wiring. Poured nets reach their pads through the pour and don't count.
-  const poured = new Set(base.zones.map((z) => sch.nets.find((n) => n.name === z.net)?.id).filter((id): id is string => !!id))
+  const poured = new Set(base.zones.filter(isWholeBoardPour).map((z) => sch.nets.find((n) => n.name === z.net)?.id).filter((id): id is string => !!id))
   const netPins = new Map<string, NetPins>()
   const pinsOf = (c: ComponentInstance, add: (net: string, p: Vec2) => void) => {
     for (const pad of pcbPads(c)) {
@@ -860,7 +883,6 @@ export function autoPlacePcb(project: Project, all = false, options: { powerStag
   }
 }
 
-
 /**
  * Re-pack the whole board, as the Re-pack button and `layout_pcb` with `relayout_all` do:
  * `autoPlacePcb(project, true)`, then the pour stitching vias it cleared are put back on the
@@ -873,7 +895,7 @@ export function repackPcb(project: Project): Project {
   const locked = new Set(project.vias.filter((v) => v.locked && v.net).map((v) => v.net))
   const nets = new Set(project.vias.filter((v) => v.net && !locked.has(v.net)).map((v) => v.net!))
   let next = placed
-  for (const net of nets) if (next.zones.some((z) => z.net === net)) next = stitchVias(next, net).project
+  for (const net of nets) if (next.zones.some((z) => isWholeBoardPour(z) && z.net === net)) next = stitchVias(next, net).project
   return next
 }
 

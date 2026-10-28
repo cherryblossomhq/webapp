@@ -41,19 +41,19 @@ describe("get_design and drawings", () => {
     const d = JSON.parse(out.result)
     const logo = d.components.find((c: { part: string }) => c.part === "logo-part")
     expect(logo.pins).toEqual([])
-    expect(d.drawings.board_by_layer).toEqual({ "F.Fab": 1, "B.Cu": 1 })
-    expect(d.drawings.part_by_layer).toEqual({ "F.SilkS": 1, "F.Cu": 1 })
-    expect(d.drawings.parts_without_pins).toBe(1)
-    expect(d.drawings.copper).toEqual([
+    expect(d.board_drawings.board_by_layer).toEqual({ "F.Fab": 1, "B.Cu": 1 })
+    expect(d.board_drawings.part_by_layer).toEqual({ "F.SilkS": 1, "F.Cu": 1 })
+    expect(d.board_drawings.parts_without_pins).toBe(1)
+    expect(d.board_drawings.copper).toEqual([
       { type: "line", layer: "B.Cu", width: 0.3, net: "VCC", owner: "board", box_mm: [0, 0, 2, 0] },
       { type: "line", layer: "F.Cu", width: 0.2, net: "GND", owner: logo.ref, box_mm: [10, 5, 12, 5] },
     ])
-    expect(d.drawings).not.toHaveProperty("copper_more")
+    expect(d.board_drawings).not.toHaveProperty("copper_more")
   })
 
   it("caps the copper list and says how many more", () => {
     const graphics = Array.from({ length: COPPER_LIST_CAP + 3 }, (_, i) => graphic(`g${i}`, line("F.Cu")))
-    const d = design({ ...createProject("t"), graphics }).drawings
+    const d = design({ ...createProject("t"), graphics }).board_drawings
     expect(d.copper).toHaveLength(COPPER_LIST_CAP)
     expect(d.copper_more).toBe("and 3 more copper drawings")
   })

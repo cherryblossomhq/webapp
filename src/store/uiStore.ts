@@ -1,13 +1,14 @@
 import { create } from "zustand"
 import type { Box } from "../lib/geometry"
 import { DEFAULT_TEXT_SIZE } from "../model/drawings"
-import type { CopperLayer, DrawingStyle, DrawingText, Rotation } from "../model/types"
+import { composeOrientation } from "../model/ops"
+import type { CopperLayer, DimensionKind, DrawingStyle, DrawingText, Mirror, Rotation } from "../model/types"
 import { loadSettings, saveSettings, type Settings } from "./settings"
 
 export type View = "schematic" | "pcb" | "3d"
 /** The schematic's tools: editing, then the block tool, then the drawing tools. */
-export type SchTool = "select" | "wire" | "label" | "block" | "text" | "line" | "rect"
-export type PcbTool = "select" | "route" | "via"
+export type SchTool = "select" | "wire" | "label" | "block" | "text" | "line" | "rect" | "sheet" | "bus" | "busentry"
+export type PcbTool = "select" | "route" | "via" | "line" | "arc" | "circle" | "rect" | "polygon" | "text" | "slot" | "dimension" | "zone" | "keepout"
 export type SidePanel = "inspector" | "checks"
 
 /** Properties and footprint a placed part starts with, e.g. from a "10k 0603" search. */
@@ -19,6 +20,8 @@ export interface PartPreset {
 export interface Placing extends PartPreset {
   partId: string
   rot: Rotation
+  /** The mirror the part is held with (X and Y while placing). */
+  mirror?: Mirror
 }
 
 /** Drag-and-drop from the library: the part id, and its preset as JSON beside it. */
@@ -46,6 +49,12 @@ export interface DrawDefaults {
 
 export const INITIAL_DRAW_DEFAULTS: DrawDefaults = { shape: {}, text: { size: DEFAULT_TEXT_SIZE } }
 
+/** Whether a copper layer is shown: the outer two by `layers`, an inner one unless it is in `hiddenCopper`. */
+export const copperShown = (s: { layers: LayerVisibility; hiddenCopper: Record<string, boolean> }, l: CopperLayer): boolean => (l === "top" || l === "bottom" ? s.layers[l] : !s.hiddenCopper[l])
+
+/** What kind of via is placed: through, blind or buried (told by the layers), or micro. */
+export type ViaChoice = "through" | "blind" | "micro"
+
 export interface LayerVisibility {
   top: boolean
   bottom: boolean
@@ -59,14 +68,31 @@ export interface LayerVisibility {
 
 interface UiState {
   view: View
+  /** S1: the use of a sheet the schematic shows, as a path of sheet symbols (`model/sheets.ts`); the root is "". */
+  sheet: string
   schTool: SchTool
   pcbTool: PcbTool
   placing: Placing | null
-  /** Selection ids are prefixed: c: component, w: wire, l: label, b: schematic block, d: drawing, t: trace, v: via */
+  /** Selection ids are prefixed: c: component, w: wire, l: label, b: schematic block, d: schematic drawing, t: trace, v: via, g: a drawing on the board, s: a drawing of a part's land (`s:<component id>:<index>`), m: a dimension, i: a reference image, h: a sheet symbol */
   selection: string[]
   highlightNet: string | null
   activeLayer: CopperLayer
   layers: LayerVisibility
+  /** X5: what a via the route or the via tool places is: through the board, blind or buried (by the layers it joins), or micro. */
+  viaKind: ViaChoice
+  /** The layer a via that is not a through via goes to from the layer being routed on; null is the layer next to it. */
+  viaTo: CopperLayer | null
+  /** Inner copper layers the user hid (`in1`, `in2`...); every inner layer is shown unless it is here. The outer two have `layers.top` and `layers.bottom`. */
+  hiddenCopper: Record<string, boolean>
+  /** Drawing layers the user hid, by KiCad's name (`F.Fab`, `User.3`); every other layer is shown. */
+  hiddenShapeLayers: Record<string, boolean>
+  /** The layer the drawing tools draw on (KiCad name), and their stroke width in mm; null is the usual width of the layer. */
+  drawLayer: string
+  drawWidth: number | null
+  /** How wide the slot tool cuts (mm). */
+  slotWidth: number
+  /** The kind of dimension the dimension tool places. */
+  dimensionKind: DimensionKind
   sidePanel: SidePanel
   /** Parts library on the left and the inspector column on the right; closed by default in narrow windows. */
   libraryOpen: boolean
@@ -95,10 +121,13 @@ interface UiState {
   clearNotice: () => void
   drawDefaults: DrawDefaults
   setView: (v: View) => void
+  /** Show another use of a sheet. The selection and what is being placed or drawn do not go with it. */
+  setSheet: (path: string) => void
   setSchTool: (t: SchTool) => void
   setPcbTool: (t: PcbTool) => void
   startPlacing: (partId: string, preset?: PartPreset) => void
   rotatePlacing: () => void
+  mirrorPlacing: (axis: Mirror) => void
   stopPlacing: () => void
   select: (ids: string[]) => void
   toggleSelect: (id: string) => void
@@ -106,6 +135,15 @@ interface UiState {
   setHighlightNet: (id: string | null) => void
   setActiveLayer: (l: CopperLayer) => void
   toggleLayer: (l: keyof LayerVisibility) => void
+  setViaKind: (k: ViaChoice) => void
+  setViaTo: (l: CopperLayer | null) => void
+  /** Show or hide a copper layer of any place in the stack. */
+  toggleCopper: (l: CopperLayer) => void
+  toggleShapeLayer: (name: string) => void
+  setDrawLayer: (name: string) => void
+  setDrawWidth: (w: number | null) => void
+  setSlotWidth: (width: number) => void
+  setDimensionKind: (k: DimensionKind) => void
   setSidePanel: (p: SidePanel) => void
   toggleLibrary: () => void
   togglePanel: () => void
@@ -126,6 +164,7 @@ const wide = () => typeof window === "undefined" || window.innerWidth >= 1180
 
 export const useUi = create<UiState>((set, get) => ({
   view: "schematic",
+  sheet: "",
   schTool: "select",
   pcbTool: "select",
   placing: null,
@@ -133,6 +172,14 @@ export const useUi = create<UiState>((set, get) => ({
   highlightNet: null,
   activeLayer: "top",
   layers: { top: true, bottom: true, silk: true, ratsnest: true, courtyard: false, board: true, labels: true },
+  hiddenCopper: {},
+  viaKind: "through",
+  viaTo: null,
+  hiddenShapeLayers: {},
+  drawLayer: "F.SilkS",
+  drawWidth: null,
+  slotWidth: 2,
+  dimensionKind: "aligned",
   sidePanel: "inspector",
   libraryOpen: wide(),
   panelOpen: wide(),
@@ -153,12 +200,22 @@ export const useUi = create<UiState>((set, get) => ({
   // Selection doesn't carry across views; schematic wires and PCB traces are different objects.
   // Nor does a focus request, or a view opened later would go back to it instead of fitting.
   setView: (view) => set({ view, placing: null, highlightNet: null, ...(view !== get().view && { selection: [], focusRequest: null }) }),
+  setSheet: (sheet) => set(sheet === get().sheet ? {} : { sheet, selection: [], highlightNet: null, placing: null, focusRequest: null }),
   setSchTool: (schTool) => set({ schTool, placing: null }),
   setPcbTool: (pcbTool) => set({ pcbTool }),
   startPlacing: (partId, preset) => set({ placing: { partId, rot: 0, ...preset }, schTool: "select", view: "schematic", ...(get().view !== "schematic" && { selection: [] }) }),
   rotatePlacing: () => {
     const p = get().placing
-    if (p) set({ placing: { ...p, rot: (((p.rot + 90) % 360) as Rotation) } })
+    if (!p) return
+    // A mirrored part's own turn runs the other way: a quarter turn on screen is a step back in its placement.
+    set({ placing: { ...p, rot: composeOrientation({ rot: p.rot, mirror: p.mirror }, { kind: "turn", by: 90 }).rot } })
+  },
+  mirrorPlacing: (axis) => {
+    const p = get().placing
+    if (!p) return
+    // Mirroring one way and then the other is a half turn: the placement's own turn and mirror compose as the sheet's do.
+    const next = composeOrientation({ rot: p.rot, mirror: p.mirror }, { kind: "mirror", axis })
+    set({ placing: { ...p, rot: next.rot, mirror: next.mirror } })
   },
   stopPlacing: () => set({ placing: null }),
   select: (selection) => set({ selection }),
@@ -170,6 +227,14 @@ export const useUi = create<UiState>((set, get) => ({
   setHighlightNet: (highlightNet) => set({ highlightNet }),
   setActiveLayer: (activeLayer) => set({ activeLayer }),
   toggleLayer: (l) => set({ layers: { ...get().layers, [l]: !get().layers[l] } }),
+  setViaKind: (viaKind) => set({ viaKind }),
+  setViaTo: (viaTo) => set({ viaTo }),
+  toggleCopper: (l) => (l === "top" || l === "bottom" ? set({ layers: { ...get().layers, [l]: !get().layers[l] } }) : set({ hiddenCopper: { ...get().hiddenCopper, [l]: !get().hiddenCopper[l] } })),
+  toggleShapeLayer: (name) => set({ hiddenShapeLayers: { ...get().hiddenShapeLayers, [name]: !get().hiddenShapeLayers[name] } }),
+  setDrawLayer: (drawLayer) => set({ drawLayer, drawWidth: null }),
+  setDrawWidth: (drawWidth) => set({ drawWidth }),
+  setSlotWidth: (slotWidth) => set({ slotWidth }),
+  setDimensionKind: (dimensionKind) => set({ dimensionKind }),
   setSidePanel: (sidePanel) => set({ sidePanel, panelOpen: true }),
   toggleLibrary: () => set({ libraryOpen: !get().libraryOpen }),
   togglePanel: () => set({ panelOpen: !get().panelOpen }),
@@ -196,5 +261,5 @@ export const useUi = create<UiState>((set, get) => ({
 
 export const uiApi = () => useUi.getState()
 
-export const selectionIds = (selection: string[], prefix: "c" | "w" | "l" | "b" | "d" | "t" | "v") =>
+export const selectionIds = (selection: string[], prefix: "c" | "w" | "l" | "b" | "d" | "t" | "v" | "g" | "m" | "i" | "z" | "h") =>
   selection.filter((s) => s.startsWith(`${prefix}:`)).map((s) => s.slice(2))

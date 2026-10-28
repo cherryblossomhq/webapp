@@ -94,7 +94,7 @@ export function CollabNotices() {
         if (!arrived.size || projectApi().role === "viewer") return
         const { renumbered } = resolveDesignatorClashes(after, arrived, isCreatedHere)
         if (!renumbered.length) return
-        projectApi().adjust((p) => resolveDesignatorClashes(p, arrived, isCreatedHere).project)
+        projectApi().patch((p) => resolveDesignatorClashes(p, arrived, isCreatedHere).project)
         const r = renumbered[0]
         say(
           renumbered.length === 1

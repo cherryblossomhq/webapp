@@ -1,19 +1,23 @@
-import { boxesOverlap, round, type Box } from "../lib/geometry"
+import { boxesOverlap, normalizeAngle, pointSegmentDistance, round, type Box } from "../lib/geometry"
+import { isInner } from "../model/stack"
+import { resolvedComponents } from "../model/ruleAreas"
 import { boardObstacles, exitCorridors } from "../model/autoplace"
 import { boxOnBoard, outlineGeometry } from "../model/outline"
 import { mountingHoles } from "../model/board"
 import { pinKey } from "../model/connectivity"
 import { padGap } from "../model/decoupling"
-import { isOnBoard, isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
+import { isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
-import { resolvePinSpec, updateComponent } from "../model/ops"
+import { classIndex } from "../model/netClasses"
+import { netTraceWidth, resolvePinSpec, updateComponent } from "../model/ops"
 import { copperOn, removeCopper } from "../model/boardCopper"
 import { pointPadDistance, segmentPadDistance } from "../model/pcb"
 import { findNearSpot, inflateBox, type NearAnchor } from "../model/placeNear"
 import { matchCapability } from "../model/rules"
-import type { ComponentInstance, PcbSide, Project, Rotation } from "../model/types"
+import type { ComponentInstance, PcbSide, Project } from "../model/types"
 import { getConnectivity, getPcbAnalysis } from "../store/analysis"
 import type { JsonSchema, ToolOutcome } from "./tools"
+import { onBoard } from "../model/partFlags"
 
 // The copilot's PCB hands: put, turn, flip and lock parts, set a net's trace width, clear copper.
 // Kept apart from tools.ts, which wires these in with `...pcbToolSpecs`; this file imports only
@@ -58,7 +62,10 @@ const DEFAULT_MAX_GAP = 1
 function conflictingCopper(before: Project, now: Project, refs: string[]) {
   const sch = getConnectivity(now)
   const analysis = getPcbAnalysis(before)
-  const clearance = now.rules.clearance
+  // two nets keep the larger of their classes' clearances (a board with no classes: the rules' one)
+  const classes = classIndex(now.rules)
+  const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const clearanceBetween = (a: string | null, b: string | null) => classes.pair(a ? (netNames.get(a) ?? null) : null, b ? (netNames.get(b) ?? null) : null)
   const parts = now.components.filter((c) => refs.includes(c.ref) && c.pcb.placed)
   const pads = parts.flatMap((c) => pcbPads(c).map((pad) => ({ pad, net: pad.pin ? sch.pinNet.get(pinKey(c.id, pad.pin)) ?? null : null })))
   const traces = new Set<string>()
@@ -68,6 +75,7 @@ function conflictingCopper(before: Project, now: Project, refs: string[]) {
     const net = analysis.traceNet.get(t.id) ?? null
     for (const { pad, net: padNet } of pads) {
       if (!pad.layers.includes(t.layer) || (net !== null && net === padNet)) continue
+      const clearance = clearanceBetween(net, padNet)
       if (t.points.slice(1).some((p, i) => segmentPadDistance(t.points[i], p, pad) - t.width / 2 < clearance - 1e-6)) traces.add(t.id)
     }
   }
@@ -76,6 +84,7 @@ function conflictingCopper(before: Project, now: Project, refs: string[]) {
     const net = analysis.viaNet.get(v.id) ?? null
     for (const { pad, net: padNet } of pads) {
       const d = pointPadDistance(v, pad) - v.diameter / 2
+      const clearance = clearanceBetween(net, padNet)
       if (d < -1e-6 || (d < clearance - 1e-6 && (net === null || net !== padNet))) vias.add(v.id)
     }
   }
@@ -114,7 +123,7 @@ interface PlacementItem {
   pin?: string
   direction?: Direction
   max_gap_mm?: number
-  rotation?: Rotation
+  rotation?: number
   side?: PcbSide
   lock?: boolean
 }
@@ -168,7 +177,7 @@ Per part, give one of:
 - near: a pin like "U1.VIN" (or a part, "U1") to put it beside. It lands in the nearest clear spot, turned whichever way keeps its pin closest, on that part's side, clear of courtyards, holes and fine-pitch pin exits. Its other pins that share a net with pads of that part (a capacitor's ground pin and the chip's ground pin) are kept close too. pin names which of this part's pins should touch it; max_gap_mm (default 1) is the pad-to-pad gap you want, direction (left, right, above, below) which side of the pin to prefer.
 - x and y: absolute position of the part's origin. No clearance search; problems are reported.
 - dx and dy: move by that much from where it is.
-- or none of those, with rotation (0, 90, 180, 270), side (top, bottom) or lock alone.
+- or none of those, with rotation (degrees counter-clockwise, any angle), side (top, bottom) or lock alone.
 
 lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked part is refused unless the same entry says lock: false. List parts others are placed near first: each entry sees the ones before it. Existing traces are kept as they are, like dragging a part in the editor, and the result says how many ended on the old pad positions; clear_traces: true removes those unlocked ones, and route_pcb routes them again. The result gives where each part landed and the pad gap to the pin it was put beside.`,
   input_schema: {
@@ -189,7 +198,7 @@ lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked
             y: { type: "number", description: "Absolute board Y in mm, up is positive" },
             dx: { type: "number", description: "Move right by this many mm" },
             dy: { type: "number", description: "Move up by this many mm" },
-            rotation: { type: "integer", enum: [0, 90, 180, 270] },
+            rotation: { type: "number", description: "Degrees counter-clockwise, any angle" },
             side: { type: "string", enum: ["top", "bottom"] },
             lock: { type: "boolean", description: "true pins the part, false releases it (and lets it move in this entry)" },
           },
@@ -201,7 +210,7 @@ lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked
     required: ["placements"],
   },
   run: (project, input) => {
-    const items = input.placements as PlacementItem[]
+    const items = (input.placements as PlacementItem[]).map((it) => (typeof it.rotation === "number" && Number.isFinite(it.rotation) ? { ...it, rotation: normalizeAngle(it.rotation) } : it))
     const clearTraces = input.clear_traces === true
     let next = project
     const lines: string[] = []
@@ -220,11 +229,15 @@ lock: true pins a part so layout_pcb, dragging and re-packing leave it. A locked
         refused.push(`${String(item.ref)}: no such component`)
         continue
       }
+      if (item.rotation !== undefined && (typeof item.rotation !== "number" || !Number.isFinite(item.rotation))) {
+        refused.push(`${c.ref}: rotation must be a number of degrees, counter-clockwise (got ${String(item.rotation)})`)
+        continue
+      }
       if (!isPhysical(part) || !c.footprint) {
         refused.push(`${c.ref}: has no footprint, so it is not on the PCB`)
         continue
       }
-      if (!isOnBoard(c)) {
+      if (!onBoard(resolvedComponents(next).find((x) => x.id === c.id) ?? c)) {
         refused.push(`${c.ref} is not on the board (on_board false)`)
         continue
       }
@@ -343,7 +356,7 @@ function placeNear(
   c: ComponentInstance,
   item: PlacementItem,
   attached: ReturnType<typeof copperOn>,
-): { pos: { x: number; y: number; rot: Rotation; side: PcbSide }; notes: string[] } | { error: string } {
+): { pos: { x: number; y: number; rot: number; side: PcbSide }; notes: string[] } | { error: string } {
   const spec = String(item.near).trim()
   const dot = spec.indexOf(".")
   const target = findByRef(project, dot < 0 ? spec : spec.slice(0, dot))
@@ -401,8 +414,8 @@ function placeNear(
     traces: project.traces.filter((t) => !dropped.has(t.id) || t.locked),
     vias: project.vias.filter((v) => !droppedVias.has(v.id) || v.locked),
   })
-  const others = project.components
-    .filter((o) => o.id !== c.id && o.pcb.placed && isOnBoard(o) && sideIsBlocked(o, side))
+  const others = resolvedComponents(project)
+    .filter((o) => o.id !== c.id && o.pcb.placed && onBoard(o) && sideIsBlocked(o, side))
     .map((o) => pcbCourtyard(o))
     .filter((b): b is Box => !!b)
     .map((b) => inflateBox(b, SPACING))
@@ -500,7 +513,7 @@ const setNetWidthTool: PcbToolSpec = {
     const netWidths = { ...rules.netWidths }
     const lines: string[] = []
     const analysis = getPcbAnalysis(project)
-    const widthOf = (net: string) => rules.netWidths?.[net] ?? rules.traceWidth
+    const widthOf = (net: string) => netTraceWidth(rules, net)
     for (const [name, w] of Object.entries(widths)) {
       const width = round(w, 4)
       const before = widthOf(name)
@@ -523,7 +536,8 @@ const setNetWidthTool: PcbToolSpec = {
         continue
       }
       delete netWidths[name]
-      lines.push(`${name}: back to the default ${len(rules.traceWidth)} mm`)
+      const fallback = netTraceWidth({ ...rules, netWidths: undefined }, name)
+      lines.push(fallback === rules.traceWidth ? `${name}: back to the default ${len(rules.traceWidth)} mm` : `${name}: back to the width of its net class, ${len(fallback)} mm`)
     }
     const changed = Object.keys(widths).length + reset.filter((n) => !(n in widths) && rules.netWidths?.[n] !== undefined).length
     if (!changed) return ok(project, lines.join("\n"), "No net widths changed")
@@ -537,7 +551,7 @@ const setNetWidthTool: PcbToolSpec = {
 const clearRoutingTool: PcbToolSpec = {
   name: "clear_routing",
   description:
-    "Delete copper: traces and vias that are not pour stitching. With no arguments, every unlocked one. nets limits it to those nets, refs to copper touching those parts' pads. Locked copper (drawn by hand) stays unless include_locked is true. Use it before route_pcb after moving parts or changing a net's width, so the traces are made again.",
+    "Delete copper: traces and vias that are not pour stitching. With no arguments, every unlocked one. nets limits it to those nets, refs to copper touching those parts' pads. Locked copper (drawn by hand) stays unless include_locked is true. Use it before route_pcb after moving parts or changing a net's width, so the traces are made again. Inner-layer traces and blind, buried, micro or inner-joining vias stay (the router cannot remake them).",
   input_schema: {
     type: "object",
     properties: {
@@ -569,8 +583,11 @@ const clearRoutingTool: PcbToolSpec = {
       return (nets.length > 0 && ids.has(netOf.get(item.id) ?? "")) || (touching?.some((t) => t.id === item.id) ?? false)
     }
     const includeLocked = input.include_locked === true
-    const traces = project.traces.filter((t) => wanted(t, analysis.traceNet, onParts?.traces) && (includeLocked || !t.locked))
-    const vias = project.vias.filter((v) => !v.net && wanted(v, analysis.viaNet, onParts?.vias) && (includeLocked || !v.locked))
+    // Inner layers are not the router's (X1): what is on them, and what joins it, is the user's.
+    const innerSegments = analysis.items.filter((it) => it.kind === "segment" && it.layers.some(isInner))
+    const joinsInner = (v: Project["vias"][number]) => innerSegments.some((it) => it.kind === "segment" && it.box.minX <= v.x + v.diameter / 2 && it.box.maxX >= v.x - v.diameter / 2 && it.box.minY <= v.y + v.diameter / 2 && it.box.maxY >= v.y - v.diameter / 2 && pointSegmentDistance(v, it.a, it.b) <= it.width / 2 + v.diameter / 2 + 1e-6)
+    const traces = project.traces.filter((t) => !isInner(t.layer) && wanted(t, analysis.traceNet, onParts?.traces) && (includeLocked || !t.locked))
+    const vias = project.vias.filter((v) => !v.net && v.kind === undefined && !joinsInner(v) && wanted(v, analysis.viaNet, onParts?.vias) && (includeLocked || !v.locked))
     const lockedKept = includeLocked ? 0 : project.traces.filter((t) => t.locked && wanted(t, analysis.traceNet, onParts?.traces)).length
     if (!traces.length && !vias.length) {
       return ok(project, `There is no ${includeLocked ? "" : "unlocked "}copper to clear${nets.length || refs.length ? " there" : ""}.`, "No copper to clear")

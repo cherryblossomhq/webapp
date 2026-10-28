@@ -15,7 +15,6 @@ import type { BoardDimension, BoardShape, ComponentInstance, FootprintDef, PadDe
 import type { Model3D } from "../model/types"
 import { drawing, type Out } from "./kicadShapes"
 import { effects, quote } from "./kicadTexts"
-import { kicadNetName } from "./kicadNetName"
 import { trapezoidOf, writePad } from "./kicadPads"
 import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
@@ -118,8 +117,8 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const layers = new Set<string>()
   const useLayer = (name: string) => layers.add(name)
   const sch = computeConnectivity(project)
-  // A net a local power symbol names is written without the sheet's path, as the schematic export names it (KiCad 9 has no local power symbol), so the two files agree.
-  const netNameOf = new Map(sch.nets.map((n) => [n.id, kicadNetName(n)]))
+  // The net's own name, with its sheet's path (`/A/NAME`): the schematic export writes the same name (a local power symbol is local in the file, so its net has its sheet's path too).
+  const netNameOf = new Map(sch.nets.map((n) => [n.id, n.name]))
   // ---------- nets: numbered in the order they are met ----------
   const netCodes = new Map<string, number>()
   const netCode = (name: string): number => {

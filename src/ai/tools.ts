@@ -1,7 +1,11 @@
+import { copperLayers } from "../model/stack"
+import { setCopperLayerCount } from "../model/layerOps"
 import { boxesOverlap, round, samePoint, snap } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { pinKey } from "../model/connectivity"
 import { isValidFootprint } from "../model/footprints"
-import { isPhysical, powerNetName, schematicBounds, schematicPins, valueText } from "../model/instances"
+import { labelTextFor } from "../model/netNames"
+import { componentFootprint, hasUnits, isPhysical, isSchematicPart, powerNetName, schematicBounds, schematicPins, unitGroup, unitOwners, valueText } from "../model/instances"
 import { uid } from "../lib/id"
 import { removeStitching, routeAroundStitching, stitchVias } from "../model/stitch"
 import { autoroute, type AutorouteResult } from "../model/autoroute"
@@ -10,9 +14,11 @@ import { netInfo } from "../model/tidy/nets"
 import { tidySchematic } from "../model/tidy"
 import { decouplingSummary } from "../model/decoupling"
 import { pcbToolLabel, pcbToolSpecs } from "./pcbTools"
+import { dimensionsReport, drawingsReport, groupsReport, imagesReport, textsReport } from "./shapeReport"
 import { stageGaps } from "../model/powerStage"
 import { projectPartDefs } from "../model/customParts"
 import { findPart } from "../model/library"
+import { flagWords, onBoard, setFlags } from "../model/partFlags"
 import { partFindings } from "../model/partChecks"
 import { addToBlock, blockFrames, blockOf, cleanBlockName, contentsOf, createBlock, deleteBlocks, findBlock, removeFromBlocks, renameBlock } from "../model/blocks"
 import { planConnect, type ConnectPlan } from "../model/attach"
@@ -33,6 +39,11 @@ import {
   resolvePinSpec,
   updateComponent,
 } from "../model/ops"
+import { copperRemovedNote } from "../model/boardCopper"
+import { isAutoNetName } from "../model/netNames"
+import { rekeyAutoNets } from "../model/rekeyNets"
+import { addUnit, mirrorSelection, renameReference, setFieldPlace, setSymbolVariant } from "../model/schematicEdit"
+import { bodyStyleCount, fieldPlaceOf, fieldValue, symbolOf, unitCount } from "../model/symbolDrawing"
 import { SCH_GRID } from "../model/symbols"
 import { outlineGeometry, outlineState } from "../model/outline"
 import { outlineCrossingProblem } from "../model/outlineCrossing"
@@ -41,13 +52,17 @@ import { cutoutTexts, edgeText, parseOutlineText } from "../model/outlineText"
 import { flattenPath } from "../model/shapes"
 import { MOUNTING_HOLE_PRESETS, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { applyCapability, BOARD_THICKNESSES, FAB_CAPABILITIES, matchCapability, THERMAL_RELIEF_OPTIONS } from "../model/rules"
-import type { ComponentInstance, DesignRules, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
+import { addZone, makeZone, outlinePoints, removeZones, updateZone } from "../model/zoneOps"
+import { isWholeBoardPour, keepoutFlags, zoneLayers } from "../model/zones"
+import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
+import { SHEET_ARG, SHEET_PROPERTY, onSheet, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
+import { isHierarchical, sheetUses, syncEdited, useAt, type SheetUse } from "../model/sheets"
 import { splitIgnored } from "../model/erc"
 import { lookTool } from "./lookTool"
 import { readDatasheetTool } from "./datasheetTool"
 import { createPartTool, findPartTool, getPartDataTool, verifyPartsTool } from "./partTools"
-import { designDrawings, drawingToolLabel, drawingToolSpecs } from "./drawingTools"
+import { designDrawings, drawingsMore, drawingToolLabel, drawingToolSpecs } from "./drawingTools"
 import { fail, ok, pinList, stringProps, type JsonSchema, type ToolContext, type ToolInput, type ToolOutcome, type ToolSpec } from "./toolKit"
 
 export type { JsonSchema, ToolContext, ToolInput, ToolOutcome } from "./toolKit"
@@ -57,6 +72,106 @@ const snapSch = (n: number) => round(snap(n, SCH_GRID))
 
 const findByRef = (project: Project, ref: unknown) =>
   typeof ref === "string" ? project.components.find((c) => c.ref.toLowerCase() === ref.trim().toLowerCase()) : undefined
+
+// ---------- parts with several units ----------
+
+/** The symbol that is the part itself (the one on the board), else the first. */
+const partSymbol = (group: ComponentInstance[]) => group.find((x) => !findPart(x.partId)?.unitOf) ?? group[0]
+
+/** The units of a part that draw a pin, whatever the body style. */
+function unitsOfPin(part: PartDef, pin: string): number[] {
+  const symbols = part.units?.symbols
+  if (!symbols) return [1]
+  const out = new Set<number>()
+  for (const [key, symbol] of Object.entries(symbols)) if (symbol.ports.some((p) => p.pin === pin)) out.add(Number(key.split(":")[0]))
+  return [...out].sort((a, b) => a - b)
+}
+
+/**
+ * The connectivity lists a pin of a unit under the part's own symbol as well (`unitOwners`), so a
+ * pin that is joined is joined twice over: these are the groups of that second listing, which
+ * stand for the same pin and may join with it.
+ */
+function aliasGroups(project: Project, before: ReturnType<typeof getConnectivity>, refs: PinRef[]): string[] {
+  const owners = unitOwners(project.components)
+  return refs.flatMap((r) => {
+    const owner = owners.get(r.componentId)
+    return owner ? [pinGroup(before, { componentId: owner, pin: r.pin })] : []
+  })
+}
+
+const listUnits = (group: ComponentInstance[]) => group.map((x) => x.unit ?? 1).sort((a, b) => a - b).join(", ")
+
+/** The symbol a call means by `ref`: the part itself, or the placed unit `placed_unit` names. A string says why there is none. */
+function pickSymbol(project: Project, input: ToolInput): ComponentInstance | string {
+  const c = findByRef(project, input.ref)
+  if (!c) return `No component ${String(input.ref)}`
+  const group = unitGroup(project, c)
+  const wanted = input.placed_unit
+  if (wanted === undefined) return partSymbol(group)
+  const hit = group.find((x) => (x.unit ?? 1) === wanted)
+  return hit ?? `${c.ref} has no unit ${String(wanted)} on the sheet. Units placed: ${listUnits(group)}`
+}
+
+/** A field of a placed symbol: its name, what it says, where it sits on the sheet when it is shown. */
+function fieldsOf(c: ComponentInstance, part: PartDef) {
+  const names = [...new Set([...Object.keys(part.fieldPlaces ?? {}), ...Object.keys(c.fields ?? {})])]
+  const out: { name: string; text: string; hidden?: true; x?: number; y?: number }[] = []
+  for (const name of names) {
+    const place = fieldPlaceOf(c, part, name)
+    const text = fieldValue(c, part, name)
+    if (!place || !text.trim()) continue
+    out.push({ name, text, ...(place.hidden ? { hidden: true as const } : { x: round(c.sch.x + place.x), y: round(c.sch.y + place.y) }) })
+  }
+  return out
+}
+
+/** What get_design says of a part drawn from a KiCad symbol beyond what it says of every part. */
+function symbolFacts(project: Project, c: ComponentInstance, part: PartDef) {
+  const group = unitGroup(project, c)
+  const count = unitCount(part)
+  const styles = bodyStyleCount(part)
+  const placed = new Set(group.map((x) => x.unit ?? 1))
+  const missing = Array.from({ length: count }, (_, i) => i + 1).filter((u) => !placed.has(u))
+  const fields = fieldsOf(c, part)
+  return {
+    ...(count > 1 && { unit: c.unit ?? 1 }),
+    ...(styles > 1 && { body_style: c.bodyStyle ?? 1 }),
+    ...(count > 1 && {
+      units_placed: group.map((x) => ({
+        unit: x.unit ?? 1,
+        x: x.sch.x,
+        y: x.sch.y,
+        rotation: x.sch.rot,
+        ...(x.sch.mirror && { mirror: x.sch.mirror }),
+        ...(styles > 1 && { body_style: x.bodyStyle ?? 1 }),
+      })),
+      units_missing: missing,
+    }),
+    ...(fields.length && { fields }),
+  }
+}
+
+/** One pin of a part drawn from a KiCad symbol, as get_design lists it. */
+function pinFacts(project: Project, c: ComponentInstance, part: PartDef, pin: PinDef, net: string | null) {
+  const group = unitGroup(project, c)
+  const at = group.find((x) => schematicPins(x).some((w) => w.pin === pin.number))
+  const world = at ? schematicPins(at).find((w) => w.pin === pin.number) : undefined
+  const type = world?.type ?? pin.type
+  const selected = group.map((x) => x.pinAlt?.[pin.number]).find(Boolean)
+  const joins = world?.hidden && type === "power_in" && world.name.trim() ? world.name.trim() : undefined
+  return {
+    pin: pin.number,
+    name: pin.name,
+    net,
+    ...(type && { type }),
+    ...(world?.hidden && { hidden: true }),
+    ...(unitCount(part) > 1 && { unit: unitsOfPin(part, pin.number)[0], ...(!at && { unit_not_placed: true }) }),
+    ...(pin.alternates?.length && { functions: pin.alternates.map((a) => a.name), ...(selected && { function: selected }) }),
+    ...(joins && { joins_net: joins, note: `hidden power pin: joins net ${joins}, it is not unconnected` }),
+    ...(type === "no_connect" && { note: "no-connect pin: on no net, leave it open" }),
+  }
+}
 
 function describePart(c: ComponentInstance) {
   const part = findPart(c.partId)
@@ -103,12 +218,45 @@ function resolveSpec(project: Project, spec: string): PinRef | null {
   return resolvePinSpec(project, spec)
 }
 
+type PinResolved = { ref: PinRef } | { unknown: string } | { unplaced: string }
+
+/**
+ * `resolveSpec` for the tools. A part with several units is several symbols of one designator, and
+ * each draws some of the part's pins: the pin is the one on the symbol that has it, and a pin whose unit
+ * is not on the sheet says which unit to place first.
+ */
+function resolvePin(project: Project, spec: string): PinResolved {
+  const m = spec.match(/^([^.\s]+)\.(.+)$/)
+  const first = m ? findByRef(project, m[1]) : undefined
+  const part = first ? findPart(first.partId) : undefined
+  if (!m || !first || !part || unitCount(part) < 2) {
+    const ref = resolveSpec(project, spec)
+    return ref ? { ref } : { unknown: pinHelp(project, spec) }
+  }
+  const group = unitGroup(project, first)
+  const name = m[2].trim()
+  let pins = part.pins.filter((p) => p.number === name)
+  if (!pins.length) pins = part.pins.filter((p) => p.name.toLowerCase() === name.toLowerCase())
+  if (!pins.length) return { unknown: pinHelp(project, spec) }
+  const onSheet = pins.map((pin) => ({ pin, at: group.find((x) => schematicPins(x).some((w) => w.pin === pin.number)) })).filter((h) => h.at)
+  if (onSheet.length === 1) return { ref: { componentId: onSheet[0].at!.id, pin: onSheet[0].pin.number } }
+  if (onSheet.length > 1) return { unknown: `"${spec}": ${first.ref} has pins ${onSheet.map((h) => h.pin.number).join(" and ")} called ${name}; give the pin number` }
+  const pin = pins[0]
+  const units = unitsOfPin(part, pin.number)
+  const base = part.unitOf ?? part.id
+  return {
+    unplaced: `Pin ${pin.number}${pin.name !== pin.number ? ` (${pin.name})` : ""} of ${first.ref} is on unit ${units.join(" or ")}, which is not on the sheet yet. Place it first: add_component with part_id "${base}", ref "${first.ref}" and unit ${units[0]}`,
+  }
+}
+
 function pinHelp(project: Project, spec: string) {
   const ref = spec.split(".")[0]
   const c = findByRef(project, ref)
   if (!c) return `"${spec}": no component ${ref}`
   const part = findPart(c.partId)
-  return `"${spec}": ${c.ref} has pins ${part?.pins.map((p) => (p.name === p.number ? p.number : `${p.number}/${p.name}`)).join(", ")}`
+  if (!part?.pins.length) return `"${spec}": ${c.ref} has no pins`
+  const units = unitCount(part) > 1
+  return `"${spec}": ${c.ref} has pins ${part.pins.map((p) => `${p.name === p.number ? p.number : `${p.number}/${p.name}`}${units ? ` (unit ${unitsOfPin(part, p.number).join("/")})` : ""}`).join(", ")}`
 }
 
 // ---------- Tools ----------
@@ -116,9 +264,21 @@ function pinHelp(project: Project, spec: string) {
 const getDesign: ToolSpec = {
   name: "get_design",
   description:
-    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position and each pin's net, plus the net list, the schematic's blocks with their parts and frames, its drawings (texts, lines and shapes, with their ids), board size and a check summary. Call this before editing an existing design.",
-  input_schema: { type: "object", properties: {} },
-  run: (project) => {
+    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design.",
+  input_schema: { type: "object", properties: { sheet: SHEET_PROPERTY } },
+  run: (project, input) => {
+    // A project with sheets: the whole design, each part saying which sheet it is on, or one sheet's parts and the nets that touch them.
+    const hier = isHierarchical(project)
+    const asked = typeof input?.sheet === "string" ? input.sheet.trim() : ""
+    let only: SheetUse | undefined
+    if (asked) {
+      if (!hier && !("use" in resolveSheet(project, asked))) return fail(project, `This project has one sheet, so there is no sheet called ${asked}.`)
+      const r = resolveSheet(project, asked)
+      if ("error" in r) return fail(project, r.error)
+      only = hier ? r.use : undefined
+    }
+    const useOfRef = new Map(project.components.map((c) => [c.ref, c.inst ?? ""]))
+    const humanOf = (inst: string) => useAt(project, inst).human
     const netOf = pinNetNames(project)
     const conn = getConnectivity(project)
     const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
@@ -126,79 +286,113 @@ const getDesign: ToolSpec = {
     // A power or ground symbol is a drawing of a net, not a part on the board: counting it as a
     // component made one 19-part board read as 24, 45 and 47 components as symbols were drawn.
     const isSymbol = (c: ComponentInstance) => !!findPart(c.partId)?.powerNet
-    const components = project.components.filter((c) => !isSymbol(c)).map((c) => {
+    // A unit of a part with several is listed with its part (`units_placed`), not as a component of its own.
+    const unitSymbols = unitOwners(project.components)
+    const components = resolvedComponents(project).filter((c) => !isSymbol(c) && !unitSymbols.has(c.id) && (!only || (c.inst ?? "") === only.path)).map((c) => {
       const part = findPart(c.partId)
       const base = {
         ref: c.ref,
+        ...(hier ? { sheet: humanOf(c.inst ?? "") } : {}),
         part: c.partId,
         name: part?.name ?? c.partId,
         value: valueText(c, part) || undefined,
         x: c.sch.x,
         y: c.sch.y,
         rotation: c.sch.rot,
+        mirror: c.sch.mirror,
+        // Only parts that have flags (do not populate, not in the BOM, net ties and the rest) say so.
+        ...(c.flags && { flags: flagWords(c.flags), ...(c.flags.netTies && { net_ties: c.flags.netTies.map((g) => g.join("+")) }) }),
       }
-      if (!isPhysical(part)) return base
+      // A part drawn from a KiCad symbol is read in full even with no footprint: its pins are what Sakura wires.
+      const kicad = !!part?.jumpers
+      if (!isPhysical(part) && !kicad) return base
+      const padNumbers = new Map<string, string>()
+      for (const pad of componentFootprint(c)?.pads ?? []) if (pad.pin && pad.number !== undefined && !padNumbers.has(pad.pin)) padNumbers.set(pad.pin, pad.number)
       return {
         ...base,
+        ...(kicad && part ? symbolFacts(project, c, part) : {}),
         footprint: c.footprint,
         props: c.props,
         // Where it stands on the PCB (mm, y up): enough to reason about placement, small per part.
-        ...(c.pcb.placed && { pcb: { x: round(c.pcb.x, 2), y: round(c.pcb.y, 2), rot: c.pcb.rot, side: c.pcb.side, ...(c.pcb.locked && { locked: true }) } }),
-        pins: (part?.pins ?? []).map((p) => ({ pin: p.number, name: p.name, net: netOf(c.id, p.number) })),
+        ...(c.pcb.placed && onBoard(c) && { pcb: { x: round(c.pcb.x, 2), y: round(c.pcb.y, 2), rot: c.pcb.rot, side: c.pcb.side, ...(c.pcb.locked && { locked: true }) } }),
+        pins: (part?.pins ?? []).map((p) => {
+          const facts = kicad && part ? pinFacts(project, c, part, p, netOf(c.id, p.number)) : { pin: p.number, name: p.name, net: netOf(c.id, p.number) }
+          // A pin that is one of several pads sharing a number (each on its own net), or the pin of a pad with no number: the number the board file gives it.
+          const number = padNumbers.get(p.number)
+          return number === undefined ? facts : { ...facts, pad_number: number }
+        }),
       }
     })
-    const powerSymbols = project.components.filter(isSymbol).map((c) => ({
+    const powerSymbols = project.components.filter((c) => isSymbol(c) && (!only || (c.inst ?? "") === only.path)).map((c) => ({
       ref: c.ref,
       net: powerNetName(c) ?? undefined,
       x: c.sch.x,
       y: c.sch.y,
       rotation: c.sch.rot,
+      mirror: c.sch.mirror,
     }))
     const nets = conn.nets
       .filter((n) => n.named || n.pins.length > 1)
+      .filter((n) => !only || n.pins.some((p) => useOfRef.get(refOf.get(p.componentId) ?? "") === only!.path))
       .map((n) => ({ name: n.name, pins: n.pins.map((p) => `${refOf.get(p.componentId)}.${p.pin}`) }))
     const erc = splitIgnored(getErc(project), project.ignoredChecks)
     const frames = new Map(blockFrames(project).map((f) => [f.id, f.box]))
     const info = project.blocks?.length ? netInfo(project) : null
     const order = info && readingOrder(project, info)
-    const blocks = (project.blocks ?? []).map((b) => {
+    const blocks = (project.blocks ?? []).filter((b) => !only || (b.inst ?? "") === only.path).map((b) => {
       const box = frames.get(b.id)
       const ports = blockPorts(project, b.id, info!, order!)
       return {
         name: b.name,
-        parts: b.components.map((id) => refOf.get(id)),
+        parts: [...new Set(b.components.map((id) => refOf.get(id)))],
         ...(box && { frame: { min_x: box.minX, min_y: box.minY, max_x: box.maxX, max_y: box.maxY } }),
         ...(ports.length && { ports: ports.map((p) => ({ net: p.name, direction: p.direction, ...(p.group && { group: p.group }) })) }),
       }
     })
     const drawings = designDrawings(project)
+    const boardDrawings = drawingsReport(project)
+    const texts = textsReport(project)
+    const dimensions = dimensionsReport(project)
+    const groups = groupsReport(project)
+    const images = imagesReport(project)
+    const zones = zonesReport(project)
     const design = {
       project: project.name,
-      board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y, ...outlineReport(project.board) },
+      ...(hier ? { sheets: sheetUses(project).map((u) => ({ path: u.human, ...(u.symbol ? { box: { x: u.symbol.x, y: u.symbol.y, w: u.symbol.w, h: u.symbol.h }, ...(u.symbol.pins.length ? { pins: u.symbol.pins.map((p) => `${p.name} (${p.shape})`) } : {}) } : {}) })), ...(only ? { showing_sheet: only.human } : {}) } : {}),
+      board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y, ...outlineReport(project.board), ...layersReport(project) },
       design_rules_mm: ruleSummary(project.rules),
       components,
       power_symbols: powerSymbols,
       nets,
       ...(blocks.length ? { blocks } : {}),
       ...(drawings.length ? { drawings } : {}),
+      ...(drawingsMore(project) ? { drawings_more: drawingsMore(project) } : {}),
+      ...(boardDrawings ? { board_drawings: boardDrawings } : {}),
+      ...(texts ? { texts } : {}),
+      ...(dimensions ? { dimensions } : {}),
+      ...(groups ? { groups } : {}),
+      ...(images ? { images } : {}),
+      ...(zones ? { zones } : {}),
       checks: {
         unconnected_pins: conn.unconnectedPins.length,
         electrical_warnings: erc.active.length,
         electrical_ignored_by_user: erc.ignored.length,
         pcb_errors: pcb.violations.filter((v) => v.severity === "error").length,
         pcb_warnings: pcb.violations.filter((v) => v.severity === "warning").length,
-        unplaced_on_pcb: project.components.filter((c) => isPhysical(findPart(c.partId)) && !c.pcb.placed).length,
+        unplaced_on_pcb: resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed).length,
       },
     }
     return ok(project, JSON.stringify(design), `Read the design (${components.length} components, ${nets.length} nets)`)
   },
 }
 
-/** Components by designator, or an error naming the ones the design doesn't have. */
+/** Components by designator, or an error naming the ones the design doesn't have. All units of a part go with it. */
 function componentsByRef(project: Project, refs: string[]): ComponentInstance[] | string {
   const found = refs.map((r) => findByRef(project, r))
   const missing = refs.filter((_, i) => !found[i])
-  return missing.length ? `No component ${missing.join(", ")}` : (found as ComponentInstance[])
+  if (missing.length) return `No component ${missing.join(", ")}`
+  const all = (found as ComponentInstance[]).flatMap((c) => unitGroup(project, c))
+  return all.filter((c, i) => !hasUnits(findPart(c.partId)) || all.indexOf(c) === i)
 }
 
 const blockNames = (project: Project) => (project.blocks ?? []).map((b) => b.name).join(", ") || "none yet"
@@ -212,6 +406,7 @@ const groupPartsTool: ToolSpec = {
     properties: {
       block: { type: "string", description: "Block name by function, short and in capitals, e.g. \"3.3V POWER\"" },
       refs: { type: "array", items: { type: "string" }, minItems: 1, description: "Designators, e.g. [\"U2\", \"C3\", \"C4\"]" },
+      sheet: SHEET_ARG,
     },
     required: ["block", "refs"],
   },
@@ -230,11 +425,12 @@ const groupPartsTool: ToolSpec = {
     const next = target ? addToBlock(project, target.id, ids) : createBlock(project, name, ids).project
     const block = findBlock(next, name)!
     const refOf = new Map(next.components.map((c) => [c.id, c.ref]))
-    const from = moved.length ? ` Moved out of their old blocks: ${moved.map((c) => `${c.ref} (${blockOf(project, c.id)!.name})`).join(", ")}.` : ""
+    const refsIn = (ids: string[]) => [...new Set(ids.map((id) => refOf.get(id)))].join(", ")
+    const from = moved.length ? ` Moved out of their old blocks: ${[...new Set(moved.map((c) => `${c.ref} (${blockOf(project, c.id)!.name})`))].join(", ")}.` : ""
     return ok(
       next,
-      `Block ${block.name} holds ${block.components.map((id) => refOf.get(id)).join(", ")}.${from}`,
-      `Grouped ${found.map((c) => c.ref).join(", ")} into ${block.name}`,
+      `Block ${block.name} holds ${refsIn(block.components)}.${from}`,
+      `Grouped ${[...new Set(found.map((c) => c.ref))].join(", ")} into ${block.name}`,
     )
   },
 }
@@ -247,6 +443,7 @@ const editBlockTool: ToolSpec = {
     type: "object",
     properties: {
       block: { type: "string", description: "The block's name now" },
+      sheet: SHEET_ARG,
       new_name: { type: "string" },
       move_by: {
         type: "object",
@@ -292,7 +489,7 @@ const editBlockTool: ToolSpec = {
       if (outside.length) return fail(project, `${outside.map((c) => c.ref).join(", ")} ${outside.length > 1 ? "aren't" : "isn't"} in ${block.name}`)
       next = removeFromBlocks(next, found.map((c) => c.id))
       const gone = !next.blocks?.some((b) => b.id === block.id)
-      changes.push(`took out ${found.map((c) => c.ref).join(", ")}${gone ? ", which left it empty, so it is gone" : ""}`)
+      changes.push(`took out ${[...new Set(found.map((c) => c.ref))].join(", ")}${gone ? ", which left it empty, so it is gone" : ""}`)
     }
     if (!changes.length) return fail(project, "Give new_name, move_by, remove_refs or ungroup")
     const text = `Block ${block.name}: ${changes.join("; ")}`
@@ -343,15 +540,36 @@ const searchPartsTool: ToolSpec = {
   },
 }
 
+const MIRRORS = ["x", "y", "none"]
+
+/** `mirror` as the model it is: "x", "y", or none. */
+const mirrorOf = (v: unknown): Mirror | undefined => (v === "x" || v === "y" ? v : undefined)
+
+/** The component with these changes to how it lies on the sheet, no key left behind for what is not set. */
+function withSymbol(project: Project, id: string, patch: { unit?: number; bodyStyle?: number; mirror?: Mirror }): Project {
+  if (!patch.mirror && !(patch.unit && patch.unit > 1) && !(patch.bodyStyle && patch.bodyStyle > 1)) return project
+  return {
+    ...project,
+    components: project.components.map((c) => {
+      if (c.id !== id) return c
+      const next: ComponentInstance = { ...c, sch: { ...c.sch, ...(patch.mirror ? { mirror: patch.mirror } : {}) } }
+      if (patch.unit && patch.unit > 1) next.unit = patch.unit
+      if (patch.bodyStyle && patch.bodyStyle > 1) next.bodyStyle = patch.bodyStyle
+      return next
+    }),
+  }
+}
+
 const addComponentTool: ToolSpec = {
   name: "add_component",
   description:
-    "Add a part to the schematic. Position is in schematic units on a 0.1 grid (y up); omit x/y to place it in free space right of the existing parts and their labels (a part dropped onto another part's pins is refused). Returns the new reference designator.",
+    "Add a part to the schematic. Position is in schematic units on a 0.1 grid (y up); omit x/y to place it in free space right of the existing parts and their labels (a part dropped onto another part's pins is refused). Returns the new reference designator. To add another unit of a part already on the sheet, pass its ref, the same part_id and the unit.",
   input_schema: {
     type: "object",
     properties: {
       part_id: { type: "string", description: "Part id from search_parts, e.g. \"resistor\"" },
       ref: { type: "string", description: "Optional designator, e.g. \"R5\"" },
+      sheet: SHEET_ARG,
       props: {
         type: "object",
         description: "Properties such as {\"resistance\": \"4.7k\"} or {\"net\": \"3V3\"} for power ports",
@@ -361,6 +579,9 @@ const addComponentTool: ToolSpec = {
       x: { type: "number" },
       y: { type: "number" },
       rotation: { type: "integer", enum: ROTATIONS },
+      unit: { type: "integer" },
+      body_style: { type: "integer" },
+      mirror: { type: "string", enum: MIRRORS },
     },
     required: ["part_id"],
   },
@@ -371,22 +592,54 @@ const addComponentTool: ToolSpec = {
     const props = stringProps(input.props)
     if (!props) return fail(project, "props must be an object of string values")
     const ref = typeof input.ref === "string" && input.ref.trim() ? input.ref.trim() : undefined
-    if (ref && findByRef(project, ref)) return fail(project, `Designator ${ref} is already used`)
+    const existing = ref ? findByRef(project, ref) : undefined
+    const existingPart = existing && findPart(existing.partId)
+    // A designator in use is another unit's, when the part is the same and several units are meant.
+    const anotherUnit = !!existing && !!existingPart && unitCount(existingPart) > 1 && (existingPart.unitOf ?? existingPart.id) === (part.unitOf ?? part.id) && input.unit !== undefined
+    if (ref && existing && !anotherUnit) {
+      return fail(project, `Designator ${ref} is already used${input.unit !== undefined && existingPart && unitCount(existingPart) > 1 ? `, by ${existingPart.name}; to add a unit of it give its part_id "${existingPart.unitOf ?? existingPart.id}"` : ""}`)
+    }
     const footprint = typeof input.footprint === "string" && input.footprint.trim() ? input.footprint.trim() : undefined
     if (footprint && !part.footprints.includes(footprint) && !isValidFootprint(footprint)) {
       return fail(project, `Unknown footprint "${footprint}". ${part.name} supports: ${part.footprints.join(", ") || "none"}`)
     }
+    const units = unitCount(part)
+    const unit = typeof input.unit === "number" ? input.unit : 1
+    if (unit < 1 || unit > units) return fail(project, `${part.name} has ${units} unit${units === 1 ? "" : "s"}, so there is no unit ${unit}`)
+    const style = typeof input.body_style === "number" ? input.body_style : 1
+    if (style < 1 || style > bodyStyleCount(part)) return fail(project, `${part.name} has ${bodyStyleCount(part)} body style${bodyStyleCount(part) === 1 ? "" : "s"}, so there is no style ${style}`)
+    const mirror = mirrorOf(input.mirror)
     const rot = (typeof input.rotation === "number" ? input.rotation : 0) as Rotation
-    const spot = freeSchematicSpot(project, part, rot)
+    // The room to look for is the one this unit's symbol takes, not the first unit's.
+    const looked = part.units ? { ...part, units: undefined, symbol: symbolOf(part, { unit, bodyStyle: style }) } : part
+    const spot = freeSchematicSpot(project, looked, rot)
     const x = typeof input.x === "number" ? snapSch(input.x) : spot.x
     const y = typeof input.y === "number" ? snapSch(input.y) : spot.y
-    const { project: next, component } = addComponent(project, partId, { ref, props, footprint, sch: { x, y, rot } })
+
+    let next: Project
+    let component: ComponentInstance
+    if (anotherUnit) {
+      const added = addUnit(project, existing!.id, unit, { x, y })
+      if (!added.ok) return fail(project, added.message)
+      next = added.project
+      // addUnit places the symbol upright; turn and mirror it where it stands, so the check below sees what will be drawn.
+      next = {
+        ...next,
+        components: next.components.map((c) => (c.id === added.component.id ? { ...c, sch: { ...c.sch, rot, ...(mirror ? { mirror } : {}) }, ...(style > 1 ? { bodyStyle: style } : {}) } : c)),
+      }
+      component = next.components.find((c) => c.id === added.component.id)!
+    } else {
+      const made = addComponent(project, partId, { ref, props, footprint, sch: { x, y, rot } })
+      next = withSymbol(made.project, made.component.id, { unit, bodyStyle: style, mirror })
+      component = next.components.find((c) => c.id === made.component.id)!
+    }
 
     // A part dropped onto drawn pins, wires or labels would join their nets without anyone asking.
     const before = getConnectivity(project)
-    const own = new Set(schematicPins(component).map((p) => pinGroup(before, { componentId: component.id, pin: p.pin })))
+    const pinRefs = schematicPins(component).map((p) => ({ componentId: component.id, pin: p.pin }))
+    const own = new Set(pinRefs.map((r) => pinGroup(before, r)))
     const rail = part.powerNet ? [`net:${component.props.net?.trim() || part.powerNet}`] : []
-    const joined = schematicEditProblems(project, next, before, getConnectivity(next), new Set([...own, ...rail]))
+    const joined = schematicEditProblems(project, next, before, getConnectivity(next), new Set([...own, ...rail, ...(anotherUnit ? aliasGroups(next, before, pinRefs) : [])]))
     if (joined.length) {
       return fail(
         project,
@@ -396,18 +649,44 @@ const addComponentTool: ToolSpec = {
     const box = schematicBounds(component)
     const over = project.components.filter((c) => boxesOverlap(box, schematicBounds(c))).map((c) => c.ref)
     const note = over.length ? ` Note: it overlaps ${over.join(", ")}; update_component can move it (a move that would join nets is refused, and says where it fits).` : ""
+    if (units < 2 && style < 2 && !mirror) {
+      return ok(
+        next,
+        `Added ${component.ref} (${part.name}) at (${x}, ${y}). Pins: ${pinList(part.pins)}${note}`,
+        `Added ${component.ref} (${describePart(component)})`,
+      )
+    }
+    // A part with several units: the pins of this symbol, and the units still to place.
+    const group = unitGroup(next, component)
+    const placed = new Set(group.map((c) => c.unit ?? 1))
+    const missing = Array.from({ length: units }, (_, i) => i + 1).filter((u) => !placed.has(u))
+    const drawn = symbolOf(part, component).ports.map((p) => p.pin)
+    const shown = part.pins.filter((p) => drawn.includes(p.number))
+    const left = missing.length ? ` Units not on the sheet yet: ${missing.join(", ")}; add each with add_component part_id "${part.unitOf ?? part.id}", ref "${component.ref}" and unit.` : ""
+    const what = units > 1 ? `unit ${unit} of ${component.ref}` : component.ref
     return ok(
       next,
-      `Added ${component.ref} (${part.name}) at (${x}, ${y}). Pins: ${pinList(part.pins)}${note}`,
-      `Added ${component.ref} (${describePart(component)})`,
+      `Added ${what} (${part.name}) at (${x}, ${y}). Pins on this symbol: ${pinList(shown)}.${left}${note}`,
+      `Added ${what} (${describePart(component)})`,
     )
   },
 }
 
+/** update_component's flag inputs: the input name, the flag it sets, and whether the input says the opposite of the flag (`in_bom` true clears `excludeFromBom`). */
+const FLAG_INPUTS: [string, "dnp" | "excludeFromBom" | "notOnBoard" | "excludeFromPos" | "boardOnly" | "virtual", boolean][] = [
+  ["dnp", "dnp", false],
+  ["in_bom", "excludeFromBom", true],
+  ["on_board", "notOnBoard", true],
+  ["in_pos_files", "excludeFromPos", true],
+  ["board_only", "boardOnly", false],
+  ["virtual", "virtual", false],
+]
+const FLAG_NAMES: Record<string, string> = { dnp: "do not populate", in_bom: "in the BOM", on_board: "on the board", in_pos_files: "in the position file", board_only: "board only", virtual: "virtual" }
+
 const updateComponentTool: ToolSpec = {
   name: "update_component",
   description:
-    "Change a component's properties, footprint, designator, rotation or schematic position. Moving or rotating keeps the part's connections: wires stretch, and the net labels, power symbols and branch wires that hang off its pins alone go with it. A move, rotation or net change that would join nets nobody asked to join, park a pin under another net's wire, or cut any pin off its net is refused and changes nothing; the reply names the pins and says where the part does fit.",
+    "Change a component's properties, footprint, designator, rotation or schematic position. Moving or rotating keeps the part's connections: wires stretch, and the net labels, power symbols and branch wires that hang off its pins alone go with it. A move, rotation or net change that would join nets nobody asked to join, park a pin under another net's wire, or cut any pin off its net is refused and changes nothing; the reply names the pins and says where the part does fit. It also takes mirror (any part) and a part's flags: dnp, in_bom, on_board (false also removes its unlocked traces), in_pos_files, board_only, virtual; on a KiCad symbol it takes unit, body_style, pin_function and fields too, and placed_unit picks the symbol of a part with several units.",
   input_schema: {
     type: "object",
     properties: {
@@ -418,17 +697,68 @@ const updateComponentTool: ToolSpec = {
       rotation: { type: "integer", enum: ROTATIONS },
       x: { type: "number" },
       y: { type: "number" },
+      placed_unit: { type: "integer" },
+      unit: { type: "integer" },
+      body_style: { type: "integer" },
+      mirror: { type: "string", enum: MIRRORS },
+      dnp: { type: "boolean" },
+      in_bom: { type: "boolean" },
+      on_board: { type: "boolean" },
+      in_pos_files: { type: "boolean" },
+      board_only: { type: "boolean" },
+      virtual: { type: "boolean" },
+      pin_function: { type: "object", properties: { pin: { type: "string" }, function: { type: "string" } }, required: ["pin", "function"] },
+      fields: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { name: { type: "string" }, hidden: { type: "boolean" }, x: { type: "number" }, y: { type: "number" }, angle: { type: "integer", enum: [0, 90] }, size: { type: "number" } },
+          required: ["name"],
+        },
+      },
     },
     required: ["ref"],
   },
   run: (project, input) => {
-    const c = findByRef(project, input.ref)
-    if (!c) return fail(project, `No component ${String(input.ref)}`)
+    const picked = pickSymbol(project, input)
+    if (typeof picked === "string") return fail(project, picked)
+    const c = picked
     const part = findPart(c.partId)
     const props = stringProps(input.props)
     if (!props) return fail(project, "props must be an object of string values")
     const changes: string[] = []
     let next = project
+    const group = unitGroup(project, c)
+
+    // How this symbol is drawn: its unit, body style and the function of a pin.
+    const variant: Parameters<typeof setSymbolVariant>[2] = {}
+    if (typeof input.unit === "number" && input.unit !== (c.unit ?? 1)) {
+      const taken = group.find((x) => x.id !== c.id && (x.unit ?? 1) === input.unit)
+      if (taken) return fail(project, `Unit ${input.unit} of ${c.ref} is already on the sheet; units placed: ${listUnits(group)}`)
+      variant.unit = input.unit
+      changes.push(`now unit ${input.unit}`)
+    }
+    if (typeof input.body_style === "number" && input.body_style !== (c.bodyStyle ?? 1)) {
+      variant.bodyStyle = input.body_style
+      changes.push(`body style ${input.body_style}`)
+    }
+    const fn = input.pin_function as { pin: string; function: string } | undefined
+    if (fn) {
+      const pin = part?.pins.find((p) => p.number === fn.pin) ?? part?.pins.find((p) => p.name.toLowerCase() === String(fn.pin).toLowerCase())
+      if (!pin) return fail(project, `${c.ref} has no pin ${fn.pin}`)
+      if (!pin.alternates?.length) return fail(project, `Pin ${pin.number} of ${c.ref} has one function only`)
+      const wanted = fn.function.trim()
+      const reset = wanted === "" || wanted.toLowerCase() === "default"
+      const alternate = reset ? null : pin.alternates.find((a) => a.name.toLowerCase() === wanted.toLowerCase())?.name
+      if (alternate === undefined) return fail(project, `Pin ${pin.number} of ${c.ref} has no function ${wanted}. Its functions: ${pin.alternates.map((a) => a.name).join(", ")}, or default`)
+      variant.pinAlt = { pin: pin.number, alternate }
+      changes.push(`pin ${pin.number} ${alternate ? `is ${alternate}` : "back to its own function"}`)
+    }
+    if (Object.keys(variant).length) {
+      const r = setSymbolVariant(next, c.id, variant)
+      if (!r.ok) return fail(project, r.message)
+      next = r.project
+    }
 
     const rotation = typeof input.rotation === "number" && input.rotation !== c.sch.rot ? (input.rotation as Rotation) : null
     let moveTo: { x: number; y: number } | null = null
@@ -455,16 +785,80 @@ const updateComponentTool: ToolSpec = {
       patch.footprint = fp
       changes.push(`footprint ${fp}`)
     }
+    // Every unit of a part has its designator.
+    const severalUnits = !!part && unitCount(part) > 1
+    let newRef: string | null = null
     if (typeof input.new_ref === "string" && input.new_ref.trim() && input.new_ref.trim() !== c.ref) {
-      const newRef = input.new_ref.trim()
+      newRef = input.new_ref.trim()
       if (findByRef(project, newRef)) return fail(project, `Designator ${newRef} is already used`)
-      patch.ref = newRef
       changes.push(`renamed to ${newRef}`)
     }
     if (Object.keys(patch).length) next = updateComponent(next, c.id, patch)
+    // The units of a part share its properties and its designator.
+    if (severalUnits) {
+      if (patch.props) for (const x of group) if (x.id !== c.id) next = updateComponent(next, x.id, { props: { ...x.props, ...props } })
+    }
+    // Every part is renamed the same way, so the board data keyed by a net name made up from its pins follows the new name.
+    if (newRef) next = renameReference(next, c.id, newRef)
     if (rotation !== null) {
       next = rotateComponent(next, c.id, rotation)
       changes.push(`rotated to ${rotation}°`)
+    }
+
+    // Mirror is set as the symbol has it: take the old one off, then put the new one on.
+    let mirrored = false
+    if (input.mirror !== undefined) {
+      const target = mirrorOf(input.mirror)
+      const now = next.components.find((x) => x.id === c.id)?.sch.mirror
+      if (target !== now) {
+        for (const axis of [now, target]) {
+          if (!axis) continue
+          const r = mirrorSelection(next, { components: [c.id] }, axis)
+          if (!r.ok) return fail(project, r.message)
+          next = r.project
+        }
+        mirrored = true
+        changes.push(target ? `mirrored ${target === "x" ? "top to bottom" : "left to right"}` : "mirror taken off")
+      }
+    }
+
+    // Fields: show or hide one, move it.
+    const fields = Array.isArray(input.fields) ? (input.fields as { name: string; hidden?: boolean; x?: number; y?: number; angle?: 0 | 90; size?: number }[]) : []
+    if (fields.length) {
+      const known = [...new Set([...Object.keys(part?.fieldPlaces ?? {}), ...Object.keys(c.fields ?? {})])]
+      if (!known.length) return fail(project, `${c.ref}'s reference and value are part of its symbol: they cannot be hidden or moved`)
+      for (const f of fields) {
+        const name = known.find((k) => k.toLowerCase() === f.name.trim().toLowerCase())
+        if (!name) return fail(project, `${c.ref} has no field ${f.name}. Its fields: ${known.join(", ")}`)
+        const was = fieldPlaceOf(c, part!, name)
+        const place: Partial<FieldPlace> = {}
+        if (f.hidden !== undefined) place.hidden = f.hidden ? true : undefined
+        if (f.x !== undefined || f.y !== undefined) {
+          place.x = round((f.x ?? c.sch.x + (was?.x ?? 0)) - c.sch.x)
+          place.y = round((f.y ?? c.sch.y + (was?.y ?? 0)) - c.sch.y)
+        }
+        if (f.angle !== undefined) place.angle = f.angle
+        if (f.size !== undefined) place.size = f.size
+        if (!Object.keys(place).length) continue
+        next = setFieldPlace(next, c.id, name, place)
+        changes.push(`${name} ${[f.hidden === undefined ? "" : f.hidden ? "hidden" : "shown", f.x !== undefined || f.y !== undefined ? "moved" : "", f.angle !== undefined ? `turned to ${f.angle}°` : "", f.size !== undefined ? `size ${f.size}` : ""].filter(Boolean).join(", ")}`)
+      }
+    }
+    // The part's flags, KiCad's: do not populate, in the BOM, on the board, in the position file, board only, virtual. Each unit of a part carries them.
+    const wanted: Record<string, boolean | false> = {}
+    for (const [key, flag, inverted] of FLAG_INPUTS) {
+      const v = input[key]
+      if (typeof v === "boolean") wanted[flag] = inverted ? !v : v
+    }
+    if (Object.keys(wanted).length) {
+      if ((wanted.boardOnly !== undefined || wanted.virtual !== undefined) && !isPhysical(part)) return fail(project, `${c.ref} is not a part on the board, so it is not board only or virtual`)
+      const beforeFlags = next
+      for (const g of group) next = setFlags(next, g.id, wanted)
+      for (const [key, flag, inverted] of FLAG_INPUTS) {
+        if (wanted[flag] !== undefined) changes.push(`${FLAG_NAMES[key]} ${(inverted ? !wanted[flag] : wanted[flag]) ? "on" : "off"}`)
+      }
+      const copper = copperRemovedNote(beforeFlags, next)
+      if (copper) changes.push(`left the board: ${copper}`)
     }
     if (!changes.length) return ok(project, `No changes for ${c.ref}`, `No changes for ${c.ref}`)
 
@@ -472,7 +866,8 @@ const updateComponentTool: ToolSpec = {
     // what sits where is checked before and after, like connect, and refused if it joins nets.
     const newRail = part?.powerNet && patch.props ? patch.props.net?.trim() || part.powerNet : null
     const railChanged = !!part?.powerNet && newRail !== (c.props.net?.trim() || part.powerNet)
-    if (moveTo || rotation !== null || railChanged) {
+    const redrawn = mirrored || Object.keys(variant).length > 0
+    if (moveTo || rotation !== null || railChanged || redrawn) {
       const before = getConnectivity(project)
       const after = getConnectivity(next)
       const allowed = new Set<string>()
@@ -483,10 +878,11 @@ const updateComponentTool: ToolSpec = {
       }
       const problems = moveProblems(project, next, before, after, allowed, { netsChange: railChanged })
       if (problems.length) {
-        const what = [moveTo && `moving ${c.ref} to (${moveTo.x}, ${moveTo.y})`, rotation !== null && `rotating ${c.ref} to ${rotation}°`, railChanged && `putting ${c.ref} on net ${newRail}`]
+        const what = [moveTo && `moving ${c.ref} to (${moveTo.x}, ${moveTo.y})`, rotation !== null && `rotating ${c.ref} to ${rotation}°`, redrawn && `changing how ${c.ref} is drawn`, railChanged && `putting ${c.ref} on net ${newRail}`]
           .filter(Boolean)
           .join(" and ")
-        return fail(project, `Not changed: ${what}: ${problems.join("; ")}. Nothing was changed. ${suggestFit(project, c, moveTo, rotation, allowed, railChanged)}`)
+        const advice = redrawn && !moveTo && rotation === null ? "Move the wires off the pins that change first, or leave the symbol as it is." : suggestFit(project, c, moveTo, rotation, allowed, railChanged)
+        return fail(project, `Not changed: ${what}: ${problems.join("; ")}. Nothing was changed. ${advice}`)
       }
       const lost = connectionsLost(project, next, before, after)
       if (lost.length) {
@@ -522,12 +918,27 @@ function suggestFit(project: Project, c: ComponentInstance, moveTo: { x: number;
 const removeComponentTool: ToolSpec = {
   name: "remove_component",
   description:
-    "Delete a component together with the wires and net labels attached only to its pins. Pins of other parts that hung from those wires are reported when they come loose.",
-  input_schema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
+    "Delete a component together with the wires and net labels attached only to its pins. Pins of other parts that hung from those wires are reported when they come loose. A part with several units goes with all of them unless placed_unit names one.",
+  input_schema: {
+    type: "object",
+    properties: {
+      ref: { type: "string" },
+      placed_unit: { type: "integer" },
+    },
+    required: ["ref"],
+  },
   run: (project, input) => {
-    const c = findByRef(project, input.ref)
-    if (!c) return fail(project, `No component ${String(input.ref)}`)
-    const pins = schematicPins(c).map((p) => p.pos)
+    const first = findByRef(project, input.ref)
+    if (!first) return fail(project, `No component ${String(input.ref)}`)
+    const group = unitGroup(project, first)
+    let targets = group
+    if (input.placed_unit !== undefined) {
+      const one = pickSymbol(project, input)
+      if (typeof one === "string") return fail(project, one)
+      targets = [one]
+    }
+    const c = partSymbol(targets)
+    const pins = targets.flatMap((t) => schematicPins(t).map((p) => p.pos))
     const attached = project.wires.filter((w) => {
       const ends = [w.points[0], w.points[w.points.length - 1]]
       return ends.some((e) => pins.some((p) => samePoint(p, e)))
@@ -540,13 +951,18 @@ const removeComponentTool: ToolSpec = {
       return onRemoved && !onRemaining
     })
     const next = removeItems(project, {
-      components: [c.id],
+      components: targets.map((t) => t.id),
       wires: [...attachedIds],
       labels: orphanLabels.map((l) => l.id),
     })
     // Taking a part out of a wire others hang from cuts them loose; say so rather than leave it to Checks.
     const lost = connectionsLost(project, next, getConnectivity(project), getConnectivity(next))
     const note = lost.length ? ` Note: ${lost.slice(0, 3).join("; ")}. Reconnect them with connect.` : ""
+    if (group.length > 1) {
+      const what = targets.length > 1 ? `${c.ref} (all ${targets.length} units)` : `unit ${targets[0].unit ?? 1} of ${c.ref}`
+      const stays = targets.length < group.length ? ` Units still on the sheet: ${listUnits(group.filter((x) => !targets.includes(x)))}.` : ""
+      return ok(next, `Removed ${what} and ${attached.length} attached wire(s).${stays}${note}`, `Removed ${what} (${describePart(c)})`)
+    }
     return ok(next, `Removed ${c.ref} and ${attached.length} attached wire(s).${note}`, `Removed ${c.ref} (${describePart(c)})`)
   },
 }
@@ -556,20 +972,28 @@ const removeComponentTool: ToolSpec = {
  * change; anything else a wire or label lands on is a short nobody asked for, so that way of
  * drawing it is dropped (`plan.allowed` is what may join).
  */
-function connectPlanFor(project: Project, refs: PinRef[], netName: string) {
+function connectPlanFor(project: Project, refs: PinRef[], netName: string, through?: PinRef) {
   const before = getConnectivity(project)
   const netOf = pinNetNames(project)
   const nameFor = () => {
     // A name someone chose beats one connect made up; a made-up one beats starting another.
     const names = refs.map((r) => netOf(r.componentId, r.pin)).filter((n): n is string => !!n && !n.startsWith("Net-("))
     const existing = names.find((n) => !AUTO_NET_NAME.test(n)) ?? names[0]
-    if (existing) return existing
+    // A project named as KiCad names its nets shows `/SDA` for a net a local label `SDA` names: a label joins it by that text.
+    if (existing) return project.netNames ? labelTextFor(before.nets, existing) : existing
     const taken = new Set(before.nets.map((n) => n.name))
     let i = 1
     while (taken.has(`NET${i}`)) i++
     return `NET${i}`
   }
-  const plan = planConnect(project, before, refs, { netName, nameFor, netOf: (r) => netOf(r.componentId, r.pin) })
+  // `through` is a pin of a net a made-up name belongs to: it is labelled too (its net already carries that name, by no label), with a
+  // global label in a project named as KiCad names its nets, so the net keeps the exact name and a later call by that name finds it.
+  const plan = planConnect(project, before, refs, {
+    netName: project.netNames && netName ? labelTextFor(before.nets, netName) : netName,
+    nameFor,
+    netOf: (r) => netOf(r.componentId, r.pin),
+    ...(through ? { through, labelGlobal: !!project.netNames } : {}),
+  })
   return { before, plan }
 }
 
@@ -582,23 +1006,44 @@ const connectTool: ToolSpec = {
     properties: {
       pins: { type: "array", items: { type: "string" }, minItems: 1 },
       net_name: { type: "string" },
+      sheet: SHEET_PROPERTY,
     },
     required: ["pins"],
   },
   run: (project, input) => {
     const specs = (input.pins as string[]).map((s) => s.trim()).filter(Boolean)
-    const netName = typeof input.net_name === "string" ? input.net_name.trim() : ""
-    if (specs.length < (netName ? 1 : 2)) return fail(project, "Give at least two pins, or one pin with net_name")
+    const givenName = typeof input.net_name === "string" ? input.net_name.trim() : ""
+    if (specs.length < (givenName ? 1 : 2)) return fail(project, "Give at least two pins, or one pin with net_name")
     const refs: PinRef[] = []
     const bad: string[] = []
+    const unplaced: string[] = []
     for (const spec of specs) {
-      const r = resolveSpec(project, spec)
-      if (r) refs.push(r)
-      else bad.push(pinHelp(project, spec))
+      const r = resolvePin(project, spec)
+      if ("ref" in r) refs.push(r.ref)
+      else if ("unplaced" in r) unplaced.push(r.unplaced)
+      else bad.push(r.unknown)
     }
-    if (bad.length) return fail(project, `Unknown pin ${bad.join("; ")}`)
+    if (bad.length || unplaced.length) return fail(project, [bad.length ? `Unknown pin ${bad.join("; ")}` : "", ...unplaced].filter(Boolean).join(". "))
     const unique = refs.filter((r, i) => refs.findIndex((x) => x.componentId === r.componentId && x.pin === r.pin) === i)
     const netOf = pinNetNames(project)
+    // A name no label gives (`Net-(R3-Pad2)`, the editor `Net-(R1-2)`) changes as the sheet changes. On a net that has it now, join that
+    // net through one of its own pins and label the net with that exact name, so it keeps it; with no net that has it, refuse: a label of it
+    // would start another net.
+    const netName = givenName
+    let through: PinRef | undefined
+    if (givenName) {
+      const nets = getConnectivity(project).nets
+      const existing = nets.find((n) => n.name === givenName && !n.named && !n.label && !n.power)
+      if (existing) {
+        const asked = unique.map((r) => pinLabel(project, r)).join(", ")
+        if (unique.every((r) => existing.pins.some((p) => p.componentId === r.componentId && p.pin === r.pin))) return ok(project, `${asked} already on ${givenName}`, `${asked} already on ${givenName}`)
+        through = existing.pins.find((p) => !unique.some((r) => r.componentId === p.componentId && r.pin === p.pin))
+        if (!through) return ok(project, `${asked} already on ${givenName}`, `${asked} already on ${givenName}`)
+        unique.push(through)
+      } else if (isAutoNetName(givenName) && !nets.some((n) => n.name === givenName)) {
+        return fail(project, `No net is called ${givenName} now: names nothing gives change as the sheet changes. Read get_design, or connect to a pin of that net.`)
+      }
+    }
     const labels = unique.map((r) => pinLabel(project, r))
 
     if (!netName && unique.length === 2) {
@@ -609,7 +1054,7 @@ const connectTool: ToolSpec = {
       }
     }
 
-    const { before, plan } = connectPlanFor(project, unique, netName)
+    const { before, plan } = connectPlanFor(project, unique, netName, through)
     const wireNote = plan.wireNote ? ` A drawn wire was not used: ${plan.wireNote}.` : ""
     const reasons = (p: ConnectPlan) => p.failed.map((f) => `${pinLabel(project, f.ref)}: ${f.why}`).join("; ")
     const advice = (p: ConnectPlan) => (p.failed.length ? ` ${nextStep(project, unique, netName, p.failed[0].ref)}` : "")
@@ -622,14 +1067,20 @@ const connectTool: ToolSpec = {
     }
 
     // Belt and braces: the plan was judged against an index of the drawing; judge the result itself.
-    const next = plan.project
-    const after = getConnectivity(next)
-    const joined = unrequestedMerges(next, before, after, plan.allowed)
+    const planned = plan.project
+    const next = rekeyAutoNets(project, planned)
+    const after = getConnectivity(planned)
+    const joined = unrequestedMerges(planned, before, after, new Set([...plan.allowed, ...aliasGroups(project, before, unique)]))
     if (joined.length) {
       return fail(project, `Did not connect ${labels.join(", ")}: it would join ${joined.join("; ")}. Nothing was changed.`)
     }
 
     const finalNet = pinNetNames(next)(plan.onNet[0].componentId, plan.onNet[0].pin)
+    // What happened, said as it happened: only when the pin of that net was labelled (a pin left out is named below).
+    const joinedNote =
+      through && plan.onNet.some((r) => r.componentId === through!.componentId && r.pin === through!.pin)
+        ? ` "${givenName}" was a name made up for a net no label names, so the pins were joined to that net through ${pinLabel(project, through)}, which is now labelled ${givenName}${project.netNames ? " (a global label)" : ""} and keeps that name.`
+        : ""
     const there = plan.onNet.map((r) => pinLabel(project, r)).join(", ")
     if (plan.failed.length) {
       const text = `Partly connected: ${there} are${finalNet ? ` on ${finalNet}` : " together"}. NOT connected: ${reasons(plan)}.${advice(plan)}${wireNote}`
@@ -637,7 +1088,7 @@ const connectTool: ToolSpec = {
     }
     return ok(
       next,
-      `Connected ${labels.join(", ")}${finalNet ? ` on ${finalNet}` : ""}.${wireNote}`,
+      `Connected ${labels.join(", ")}${finalNet ? ` on ${finalNet}` : ""}.${wireNote}${joinedNote}`,
       `Connected ${labels.join(", ")}${finalNet ? ` on ${finalNet}` : ""}`,
     )
   },
@@ -677,7 +1128,7 @@ const runChecksTool: ToolSpec = {
     const pcb = getPcbAnalysis(project)
     const erc = splitIgnored(getErc(project), project.ignoredChecks)
     const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
-    const unplaced = project.components.filter((c) => isPhysical(findPart(c.partId)) && !c.pcb.placed)
+    const unplaced = resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed)
     const lines: string[] = []
     if (conn.unconnectedPins.length) {
       lines.push(
@@ -718,6 +1169,30 @@ const runChecksTool: ToolSpec = {
   },
 }
 
+/**
+ * What layout and routing say when the only parts the sheet has are symbols with no footprint (a schematic
+ * imported without its board): they cannot be placed, so neither tool has anything to do, and both say
+ * why and what to do. Null for every other design.
+ */
+export function noFootprintAdvice(project: Project): string | null {
+  const bare = project.components.filter((c) => {
+    const part = findPart(c.partId)
+    return !!part && isSchematicPart(part) && !isPhysical(part) && !part.unitOf
+  })
+  if (!bare.length || resolvedComponents(project).some((c) => onBoard(c))) return null
+  return `No part has a footprint yet (${bare.length} part${bare.length > 1 ? "s" : ""} came from a KiCad schematic imported without its board), so there is nothing to place or route. Import the .kicad_pcb together with the schematic, or ask the user which footprints the parts take.`
+}
+
+/**
+ * What layout and routing say when every part that has a footprint is marked not on the board (`on_board` false):
+ * there is nothing to place. Null when some footprinted part is on the board, or none has a footprint.
+ */
+export function noneOnBoardAdvice(project: Project): string | null {
+  const footprinted = resolvedComponents(project).filter((c) => !!c.footprint && isPhysical(findPart(c.partId)))
+  if (!footprinted.length || footprinted.some((c) => onBoard(c))) return null
+  return `No part is on the board: all ${footprinted.length} part${footprinted.length > 1 ? "s" : ""} with a footprint are marked not on the board (on_board false). Set on_board true with update_component for the parts that belong on it.`
+}
+
 const layoutPcbTool: ToolSpec = {
   name: "layout_pcb",
   description:
@@ -728,6 +1203,10 @@ const layoutPcbTool: ToolSpec = {
     const next = all ? repackPcb(project) : autoPlacePcb(project)
     const old = new Map(project.components.map((c) => [c.id, c.pcb]))
     const moved = new Set(next.components.filter((c) => JSON.stringify(c.pcb) !== JSON.stringify(old.get(c.id))).map((c) => c.id))
+    if (!moved.size) {
+      const advice = noFootprintAdvice(project) ?? noneOnBoardAdvice(project)
+      if (advice) return fail(project, advice)
+    }
     if (!moved.size) return ok(project, all ? "No part can move: every part is locked or held by locked traces." : "Every part is already placed on the PCB.", "PCB already laid out")
     const b = next.board
     const outside = getPcbAnalysis(next).violations.filter((v) => v.kind === "outside-board").length
@@ -811,6 +1290,18 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
   return { project: next, changed }
 }
 
+/** Copper layers beyond the two, and the via kinds in use: nothing for a plain two-layer board. */
+function layersReport(project: Project) {
+  const stack = copperLayers(project.board)
+  const named = project.board.stack?.copper.some((c) => c.label)
+  const kinds: Record<string, number> = {}
+  for (const v of project.vias) if (v.kind) kinds[v.kind] = (kinds[v.kind] ?? 0) + 1
+  return {
+    ...(stack.length > 2 || named ? { copper_layers: stack.map((l) => (project.board.stack?.copper[stack.indexOf(l)]?.label ? `${l}=${project.board.stack.copper[stack.indexOf(l)].label}` : l)) } : {}),
+    ...(Object.keys(kinds).length ? { via_kinds: kinds } : {}),
+  }
+}
+
 const setBoardTool: ToolSpec = {
   name: "set_board",
   description:
@@ -823,6 +1314,7 @@ const setBoardTool: ToolSpec = {
       thickness: { type: "number", enum: BOARD_THICKNESSES, description: "Finished thickness in mm" },
       corner_radius: { type: "number" },
       copper_oz: { type: "integer", enum: [1, 2], description: "Outer copper weight; 2 oz for high current" },
+      copper_layers: { type: "integer", description: "Even, 2 to 32; fewer deletes what is on the layers that go" },
       finish: { type: "string", enum: SURFACE_FINISHES.map((f) => f.value) },
       mask_color: { type: "string", description: "Solder mask colour as #rrggbb; green is #1f6b3a" },
       silk_color: { type: "string", description: "Silkscreen colour as #rrggbb" },
@@ -862,6 +1354,16 @@ const setBoardTool: ToolSpec = {
       b.cornerRadius = round(r, 2)
       changed.push(`${b.cornerRadius} mm corners`)
     }
+    let layered: Project | null = null
+    if (input.copper_layers !== undefined) {
+      const n = Number(input.copper_layers)
+      if (!Number.isInteger(n) || n < 2 || n > 32 || n % 2) return fail(project, "copper_layers must be an even whole number from 2 to 32")
+      if (n !== copperLayers(project.board).length) {
+        const res = setCopperLayerCount(project, n)
+        layered = res.project
+        changed.push(`${n} copper layers`)
+      }
+    }
     if (input.copper_oz !== undefined) {
       b.copperWeight = input.copper_oz === 2 ? 2 : 1
       changed.push(`${b.copperWeight} oz copper`)
@@ -883,6 +1385,7 @@ const setBoardTool: ToolSpec = {
       changed.push(preset ? `${preset.label} mounting holes` : "no mounting holes")
     }
     let next: Project = { ...project, updatedAt: Date.now(), board: b }
+    if (layered) next = { ...layered, board: { ...layered.board, ...b, stack: layered.board.stack }, updatedAt: Date.now() }
     if (shaped) {
       const shapedTo = shapeBoard(next, input)
       if (typeof shapedTo === "string") return fail(project, shapedTo)
@@ -910,6 +1413,7 @@ function ruleSummary(r: DesignRules) {
     via_drill: r.viaDrill,
     min_drill: r.minDrill,
     min_annular_ring: r.minAnnularRing,
+    ...(r.minViaDiameter !== undefined ? { min_via_diameter: r.minViaDiameter } : {}),
     via_in_pad: r.viaInPad,
     tent_vias: r.tentVias,
     pour_clearance: r.pourClearance,
@@ -1069,11 +1573,11 @@ export function unroutedAdvice(res: AutorouteResult): string {
 const routePcbTool: ToolSpec = {
   name: "route_pcb",
   description:
-    "Autoroute every open ratsnest connection on two layers with vias, keeping existing traces. Lay out the PCB first. Pads of poured nets drop a via into the pour. Stitching vias are stitched again after routing.",
+    "Autoroute every open ratsnest connection on the two outer layers with vias, keeping existing traces. Lay out the PCB first. Pads of poured nets drop a via into the pour. Stitching vias are stitched again after routing.",
   input_schema: { type: "object", properties: {} },
   run: (project) => {
-    if (!project.components.some((c) => c.pcb.placed && isPhysical(findPart(c.partId)))) {
-      return fail(project, "No parts are on the PCB yet; run layout_pcb first")
+    if (!resolvedComponents(project).some((c) => c.pcb.placed && onBoard(c))) {
+      return fail(project, noFootprintAdvice(project) ?? noneOnBoardAdvice(project) ?? "No parts are on the PCB yet; run layout_pcb first")
     }
     const res = routeAroundStitching(project, (p) => autoroute(p))
     if (!res.routed && !res.remaining) return ok(project, "Every connection is already routed.", "Nothing to route")
@@ -1089,30 +1593,41 @@ const routePcbTool: ToolSpec = {
 const pourTool: ToolSpec = {
   name: "set_pour",
   description:
-    "Add or remove a copper pour (filled zone) for a net on a copper layer, usually GND on both layers. Pours connect same-net pads and keep clearance from other nets. With stitch, also tie the top and bottom pours of the net together with a grid of vias; do that after routing so the vias do not block traces.",
+    "Add or remove a copper pour (filled zone) for a net on a copper layer, usually GND on both layers. Pours connect same-net pads and keep clearance from other nets. With stitch, also tie the top and bottom pours of the net together with a grid of vias; do that after routing so the vias do not block traces. With polygon, the pour covers only that shape; with keepout, the shape keeps those things out and has no net. get_design lists zones by id.",
   input_schema: {
     type: "object",
     properties: {
       net: { type: "string", description: "Net name, e.g. GND" },
-      layer: { type: "string", enum: ["top", "bottom", "both"] },
+      layer: { type: "string", description: "top, bottom, both, or in1, in2, ..." },
       remove: { type: "boolean", description: "Remove the pour instead of adding it" },
       stitch: { type: "boolean", description: "Add stitching vias between the top and bottom pours of this net" },
+      polygon: { type: "array", items: { type: "number" }, description: "Corners x1, y1, x2, y2, ... in mm, three or more" },
+      keepout: { type: "array", items: { type: "string", enum: ["tracks", "vias", "pads", "pour", "parts"] } },
+      priority: { type: "integer", description: "Higher wins where polygons overlap" },
+      id: { type: "string", description: "Change or remove the zone with this id" },
     },
-    required: ["net", "layer"],
+    required: ["layer"],
   },
   run: (project, input) => {
+    if (input.polygon !== undefined || input.id !== undefined || input.keepout !== undefined) return polygonZone(project, input)
+    if (typeof input.net !== "string" || !input.net.trim()) return fail(project, "Say which net to pour")
     const net = String(input.net).trim()
-    const layers = input.layer === "both" ? (["top", "bottom"] as const) : ([input.layer as "top" | "bottom"] as const)
+    const stackIds = copperLayers(project.board) as string[]
+    if (input.layer !== "both" && !stackIds.includes(String(input.layer))) return fail(project, `layer must be both or one of ${stackIds.join(", ")}`)
+    const layers = (input.layer === "both" ? ["top", "bottom"] : [input.layer]) as CopperLayer[]
     if (input.remove === true) {
-      const zones = project.zones.filter((z) => !(z.net === net && (layers as readonly string[]).includes(z.layer)))
-      if (zones.length === project.zones.length) return fail(project, `There is no ${net} pour on ${input.layer}`)
+      const zones = project.zones.filter((z) => !(isWholeBoardPour(z) && z.net === net && (layers as readonly string[]).includes(z.layer)))
+      // Removing by net takes only the whole-board pours; a polygon zone on the net is taken out by its id.
+      const polygons = project.zones.filter((z) => !isWholeBoardPour(z) && !z.keepout && z.net === net && zoneLayers(z).some((l) => (layers as readonly string[]).includes(l)))
+      const named = polygons.length ? ` ${polygons.length === 1 ? "A polygon zone is" : `${polygons.length} polygon zones are`} on ${net} (id ${polygons.map((z) => z.id).join(", ")}) and stay${polygons.length === 1 ? "s" : ""}: remove ${polygons.length === 1 ? "it" : "each"} with set_pour and its id and remove true.` : ""
+      if (zones.length === project.zones.length) return fail(project, polygons.length ? `There is no whole-board ${net} pour on ${input.layer}.${named}` : `There is no ${net} pour on ${input.layer}`)
       // Stitching only makes sense while the net is poured on both layers.
-      return ok(removeStitching({ ...project, zones }, net), `Removed the ${net} pour on ${input.layer}.`, `Removed ${net} pour`)
+      return ok(removeStitching({ ...project, zones }, net), `Removed the ${net} pour on ${input.layer}.${named}`, `Removed ${net} pour`)
     }
     if (!getConnectivity(project).nets.some((n) => n.name === net && n.pins.length > 0)) {
       return fail(project, `No pins are on a net named ${net}`)
     }
-    const add = layers.filter((l) => !project.zones.some((z) => z.net === net && z.layer === l))
+    const add = layers.filter((l) => !project.zones.some((z) => isWholeBoardPour(z) && z.net === net && z.layer === l))
     const next = add.length ? { ...project, updatedAt: Date.now(), zones: [...project.zones, ...add.map((layer) => ({ id: uid("z"), net, layer }))] } : project
     const poured = add.length ? `Poured ${net} on ${add.join(" and ")}` : `${net} is already poured on ${input.layer}`
     if (input.stitch === true) {
@@ -1122,6 +1637,54 @@ const pourTool: ToolSpec = {
     }
     return ok(next, `${poured}.`, poured)
   },
+}
+
+/** set_pour with a polygon, a keepout or an id: a zone of its own shape, added, changed or removed. */
+function polygonZone(project: Project, input: Record<string, unknown>): ToolOutcome {
+  const stackIds = copperLayers(project.board) as string[]
+  if (input.layer !== "both" && !stackIds.includes(String(input.layer))) return fail(project, `layer must be both or one of ${stackIds.join(", ")}`)
+  const layers = input.layer === "both" ? (["top", "bottom"] as CopperLayer[]) : ([input.layer as CopperLayer] as CopperLayer[])
+  const nums = Array.isArray(input.polygon) ? (input.polygon as unknown[]) : null
+  if (nums && (nums.length < 6 || nums.length % 2 || !nums.every((n) => typeof n === "number" && Number.isFinite(n)))) return fail(project, "polygon needs x, y pairs: at least three corners")
+  const points = nums ? Array.from({ length: nums.length / 2 }, (_, i) => ({ x: nums[2 * i] as number, y: nums[2 * i + 1] as number })) : null
+  const flags = Array.isArray(input.keepout) ? (input.keepout as string[]) : null
+  const keepout = flags ? Object.fromEntries(flags.map((f) => [f === "parts" ? "footprints" : f, true])) : undefined
+  const priority = typeof input.priority === "number" ? Math.max(0, Math.round(input.priority)) : undefined
+  const net = typeof input.net === "string" ? input.net.trim() : ""
+  if (typeof input.id === "string") {
+    const z = project.zones.find((x) => x.id === input.id)
+    if (!z) return fail(project, `There is no zone with id ${input.id}`)
+    if (z.locked) return fail(project, "That zone is locked")
+    if (input.remove === true) return ok(removeZones(project, [z.id]), "Removed the zone.", "Removed zone")
+    let next = project
+    if (points) {
+      if (!z.outline) return fail(project, "That pour covers the whole board; remove it and add a polygon instead")
+      const made = makeZone(points)
+      if (!made) return fail(project, "That polygon has no area")
+      next = { ...next, zones: next.zones.map((x) => (x.id === z.id ? { ...x, outline: made.outline } : x)) }
+    }
+    if (net && !z.keepout && !getConnectivity(next).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
+    next = updateZone(next, z.id, { ...(net && !z.keepout ? { net } : {}), layers, ...(priority !== undefined ? { priority: priority || undefined } : {}) })
+    return ok(next, "Changed the zone.", "Changed zone")
+  }
+  if (!points) return fail(project, "Give the polygon's corners")
+  if (!keepout && !getConnectivity(project).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
+  const zone = makeZone(points, { layers, net, priority, keepout })
+  if (!zone) return fail(project, "That polygon has no area")
+  return ok(addZone(project, zone), `${keepout ? "Added a keepout" : `Poured ${net}`} in a polygon of ${points.length} corners (id ${zone.id}).`, keepout ? "Added keepout" : `Poured ${net} in a polygon`)
+}
+
+/** What get_design says of the zones, only for a project that has a polygon or a keepout: nothing for the editor's own pours alone. */
+function zonesReport(project: Project) {
+  if (!project.zones.some((z) => z.outline)) return undefined
+  return project.zones.map((z) => ({
+    id: z.id,
+    ...(z.net ? { net: z.net } : {}),
+    layers: zoneLayers(z).join("+"),
+    ...(z.keepout ? { keepout: keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join("+") || "rules only" } : {}),
+    ...(z.priority ? { priority: z.priority } : {}),
+    ...(z.outline ? { polygon: outlinePoints(z).slice(0, 40).flatMap((p) => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]) } : { whole_board: true }),
+  }))
 }
 
 /**
@@ -1156,6 +1719,7 @@ const tidyTool: ToolSpec = {
     properties: {
       blocks: { type: "array", items: { type: "string" }, description: "Names of the blocks to tidy, each where it is" },
       whole_sheet: { type: "boolean", description: "Tidy the whole sheet: only when the user asks for it, or the sheet was empty before this request" },
+      sheet: SHEET_PROPERTY,
     },
   },
   run: (project, input, _prepared, context = {}) => {
@@ -1166,7 +1730,7 @@ const tidyTool: ToolSpec = {
       const missing = names.filter((n) => !findBlock(project, n))
       if (missing.length) return fail(project, `No block ${missing.join(", ")}. Blocks: ${blockNames(project)}`)
       targets = [...new Map(names.map((n) => findBlock(project, n)!).map((b) => [b.id, b])).values()]
-    } else if (input.whole_sheet !== true && context.start && context.start.components.some((c) => isPhysical(findPart(c.partId)))) {
+    } else if (input.whole_sheet !== true && context.start && context.start.components.some((c) => isSchematicPart(findPart(c.partId)))) {
       targets = changedBlocks(context.start, project)
       if (!targets.length) {
         return fail(
@@ -1209,6 +1773,8 @@ const tidyTool: ToolSpec = {
   },
 }
 
+const [addHierLabelTool, wireSheetPinTool] = sheetWiringTools(connectTool)
+
 export const TOOL_SPECS: ToolSpec[] = [
   getDesign,
   searchPartsTool,
@@ -1221,6 +1787,9 @@ export const TOOL_SPECS: ToolSpec[] = [
   updateComponentTool,
   removeComponentTool,
   connectTool,
+  ...sheetEditTools,
+  addHierLabelTool,
+  wireSheetPinTool,
   groupPartsTool,
   editBlockTool,
   tidyTool,
@@ -1302,13 +1871,39 @@ export function validateInput(schema: JsonSchema, value: unknown, path = "input"
  * refusing). Never throws; failures come back as error results. The copilot uses `executeTool`,
  * and Clean up with AI this, with the request's `start` in `context`.
  */
+/** The sheet a connection is on, from the parts its pins name: the one they all share. */
+function sheetOfPins(project: Project, input: ToolInput): string | { error: string } | undefined {
+  const refs = Array.isArray(input.pins) ? input.pins.map((s) => String(s).trim().split(".")[0]).filter(Boolean) : []
+  const insts = new Set<string>()
+  for (const r of refs) {
+    const c = findByRef(project, r)
+    if (c) insts.add(c.inst ?? "")
+  }
+  if (insts.size === 1) return [...insts][0]
+  if (insts.size > 1) return { error: `Those pins are on different sheets (${[...insts].map((i) => useAt(project, i).human).join(", ")}). A net crosses sheets through a sheet pin and a hierarchical label, or a global label on each sheet: connect on one sheet, or give sheet.` }
+  return undefined
+}
+
+const SHEET_BUILDERS = new Set(["add_component", "group_parts", "edit_block", "draw"])
+
+/** A tool with a sheet runs on that sheet alone; the others on the project. */
+function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: unknown, ctx: ToolContext): ToolOutcome {
+  if (spec.name === "connect") return onSheet(spec, project, input, prepared, ctx, (p) => sheetOfPins(p, input))
+  if (spec.name === "tidy_schematic") return onSheet(spec, project, input, prepared, ctx)
+  // What is built on a sheet goes on the one named, or the one the editor shows.
+  if (SHEET_BUILDERS.has(spec.name)) return onSheet(spec, project, input, prepared, ctx, (p) => { const r = shownUse(p, ctx); return "error" in r ? r : r.use.path })
+  const out = spec.run(project, input, prepared, ctx)
+  // A part edited or removed on a sheet used more than once is edited in every use.
+  return out.project === project || !isHierarchical(project) ? out : { ...out, project: syncEdited(project, out.project) }
+}
+
 export function runTool(project: Project, name: string, input: unknown, context: ToolContext = {}): ToolOutcome {
   const spec = specByName.get(name)
   if (!spec) return fail(project, `Unknown tool ${name}`)
   const err = validateInput(spec.input_schema, input ?? {})
   if (err) return fail(project, `Invalid input: ${err}`)
   try {
-    return spec.run(project, (input ?? {}) as ToolInput, undefined, context)
+    return runSpec(spec, project, (input ?? {}) as ToolInput, undefined, context)
   } catch (e) {
     return fail(project, e instanceof Error ? e.message : String(e))
   }
@@ -1340,7 +1935,7 @@ export async function executeTool(
     if (ctx.signal?.aborted) return stopped()
     const base = latest()
     if (!base || base.id !== start.id) return { ...fail(start, "The project was closed, so this change was not applied."), base: null }
-    return { ...spec.run(base, args, prepared, ctx), base }
+    return { ...runSpec(spec, base, args, prepared, ctx), base }
   } catch (e) {
     if (ctx.signal?.aborted) return stopped()
     return { ...fail(start, e instanceof Error ? e.message : String(e)), base: start }
@@ -1383,6 +1978,16 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return `Editing block ${String(i.block ?? "")}`
     case "tidy_schematic":
       return Array.isArray(i.blocks) && i.blocks.length ? `Tidying ${i.blocks.map(String).join(", ")}` : "Tidying the schematic"
+    case "add_sheet":
+      return `Adding the sheet ${String(i.name ?? i.reuse ?? "")}`.trim()
+    case "edit_sheet":
+      return `${i.delete === true ? "Deleting" : "Editing"} the sheet ${String(i.sheet ?? "")}`
+    case "add_hier_label":
+      return `Taking ${String(i.name ?? "a net")} out of ${String(i.sheet ?? "a sheet")}`
+    case "wire_sheet_pin":
+      return `Wiring the pin ${String(i.pin ?? "")} of ${String(i.sheet ?? "a sheet")}`
+    case "show_sheet":
+      return `Showing the sheet ${String(i.sheet ?? "")}`
     case "propose_blocks":
       return "Planning the blocks"
     case "run_checks":

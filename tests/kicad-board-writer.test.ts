@@ -7,7 +7,6 @@ import { pcbPads } from "../src/model/instances"
 import { addComponent, addTrace, labelPin, updateComponent } from "../src/model/ops"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
-import { kicadNetName } from "../src/export/kicadNetName"
 import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
 import { rectangle, twoResistors, withZone } from "./zones-fixtures"
@@ -352,11 +351,6 @@ describe("the fix round: what KiCad 9 refuses, parts added to an imported board,
     const sheet = { ...twoResistors(), traces: [], vias: [], zones: [], properties: [{ key: "Imported from", value: "KiCad 9.0" }, { key: "KiCad file version", value: "KiCad 9.0, file version 20250114" }] }
     expect(isKicadBoardProject(sheet)).toBe(false)
     expect(isKicadBoardProject({ ...sheet, traces: [] , vias: [], zones: [], texts: [], graphics: undefined, board: { ...sheet.board, outline: { paths: [] } } })).toBe(true)
-  })
-  it("a net a local power symbol names has one name in both files", () => {
-    expect(kicadNetName({ name: "/GND", power: { text: "GND", local: true } })).toBe("GND")
-    expect(kicadNetName({ name: "GND", power: { text: "GND", local: false } })).toBe("GND")
-    expect(kicadNetName({ name: "/CLK" })).toBe("/CLK")
   })
   it("says a pour from an old board will be refilled by KiCad 9's own distances", async () => {
     const old = imported(board({ version: 20171130, nets: ['(net 0 "")', '(net 1 "A")'], body: [footprint({ token: "module", ref: "R1", at: "5 5", pads: [pad({ at: "0 0", net: '(net 1 A)' })] }), `(zone (net 1) (net_name A) (layer F.Cu) (tstamp 5) (hatch edge 0.5) (connect_pads (clearance 0.5)) (min_thickness 0.25) (fill yes (arc_segments 16) (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 0 0) (xy 20 0) (xy 20 10) (xy 0 10))))`] }))

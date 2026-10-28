@@ -3,6 +3,7 @@ import { uid } from "../lib/id"
 import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject, summarizeProject, type ProjectSummary } from "../model/projectFile"
 import type { Project } from "../model/types"
 import type { HistorySource } from "./history"
+import type { LockSource } from "./boardLease"
 import type { PresenceSource } from "./presence"
 import type { SharingSource } from "./sharing"
 
@@ -55,6 +56,8 @@ export interface ProjectStorage {
   presence?: PresenceSource
   /** Version history: copies kept as the project is edited, named, previewed and restored. Absent where projects are one browser's. */
   history?: HistorySource
+  /** The board lease: one tab at a time runs a whole-board action (route, re-place, tidy). Absent where projects are one person's: every action goes ahead. */
+  locks?: LockSource
 }
 
 /** What someone may do to a project: the owner and editors edit it, viewers look. */

@@ -1,13 +1,13 @@
 import { Box, Braces, CircuitBoard, Download, FileJson, FileSpreadsheet, Package } from "lucide-react"
+import { resolvedComponents } from "../model/ruleAreas"
 import { useEffect, useRef, useState } from "react"
 import { buildFabricationZip, downloadBlob, downloadText, projectFileName } from "../export/bundle"
 import { circuitJsonFile } from "../export/circuitJson"
 import { serializeProject } from "../model/projectFile"
 import { bomCsv } from "../export/bom"
 import { pnpCsv } from "../export/pnp"
-import { findPart } from "../model/library"
 import { ensureTextFont } from "../model/textFont"
-import { isPhysical } from "../model/instances"
+import { onBoard } from "../model/partFlags"
 import { autoPlacePcb } from "../model/ops"
 import { getPcbAnalysis } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
@@ -20,7 +20,7 @@ import { Tooltip } from "../ui/Tooltip"
  */
 function placedProject() {
   const p = projectApi().project!
-  if (p.components.some((c) => !c.pcb.placed && isPhysical(findPart(c.partId)))) {
+  if (resolvedComponents(p).some((c) => !c.pcb.placed && onBoard(c))) {
     if (projectApi().role === "viewer") return autoPlacePcb(p)
     projectApi().commit((x) => autoPlacePcb(x))
   }

@@ -1,9 +1,12 @@
 import { boxesOverlap, type Box } from "../lib/geometry"
+import { resolvedComponents } from "../model/ruleAreas"
 import { strokeText, strokeTextWidth } from "../lib/strokeFont"
 import { boardTextStrokes, mountingHoles, ownTexts } from "./board"
 import { boxOnBoard, outlineGeometry } from "./outline"
 import { findPart } from "./library"
-import { isPhysical, pcbCourtyard, pcbPads, pcbSilk } from "./instances"
+import { pcbCourtyard, pcbPads, pcbSilk } from "./instances"
+import { padBox } from "./padDistance"
+import { onBoard } from "./partFlags"
 import { shapeKind, worldShapes } from "./shapeItems"
 import { shapeLayerInfo } from "./shapeLayers"
 import { shapeBox, shapePolylines } from "./shapes"
@@ -149,7 +152,7 @@ function candidates(c: ComponentInstance, cy: Box, w: number, h: number): Candid
  * the Gerber silkscreen and the 3D board all draw them from here.
  */
 export function placeDesignators(project: Project): Map<string, Designator> {
-  const placed = project.components.filter((c) => c.pcb.placed && !c.ref.startsWith("#") && isPhysical(findPart(c.partId)))
+  const placed = resolvedComponents(project).filter((c) => c.pcb.placed && !c.ref.startsWith("#") && onBoard(c))
   const b = project.board
   const shape = outlineGeometry(b)
   const board = inflate({ minX: b.x - b.width / 2, maxX: b.x + b.width / 2, minY: b.y - b.height / 2, maxY: b.y + b.height / 2 }, -EDGE_CLEAR)
@@ -157,7 +160,7 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   const pads = placed.flatMap((c) =>
     pcbPads(c).map((p) => ({
       side: p.layers,
-      box: inflate({ minX: p.x - p.width / 2, maxX: p.x + p.width / 2, minY: p.y - p.height / 2, maxY: p.y + p.height / 2 }, PAD_CLEAR),
+      box: inflate(padBox(p), PAD_CLEAR),
     })),
   )
   const holes = mountingHoles(b).map((h) => inflate({ minX: h.x - h.diameter / 2, maxX: h.x + h.diameter / 2, minY: h.y - h.diameter / 2, maxY: h.y + h.diameter / 2 }, PAD_CLEAR))
@@ -236,13 +239,13 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   return out
 }
 
-let cache: { components: unknown; texts: unknown; board: unknown; graphics: unknown; footprints: unknown; value: Map<string, Designator> } | null = null
+let cache: { components: unknown; variants: unknown; texts: unknown; board: unknown; graphics: unknown; footprints: unknown; value: Map<string, Designator> } | null = null
 
 /** placeDesignators, reused while parts, board text and the board are unchanged. */
 export function getDesignators(project: Project): Map<string, Designator> {
-  if (cache && cache.components === project.components && cache.texts === project.texts && cache.board === project.board && cache.graphics === project.graphics && cache.footprints === project.footprints) return cache.value
+  if (cache && cache.components === project.components && cache.variants === project.variants && cache.texts === project.texts && cache.board === project.board && cache.graphics === project.graphics && cache.footprints === project.footprints) return cache.value
   const value = placeDesignators(project)
-  cache = { components: project.components, texts: project.texts, board: project.board, graphics: project.graphics, footprints: project.footprints, value }
+  cache = { components: project.components, variants: project.variants, texts: project.texts, board: project.board, graphics: project.graphics, footprints: project.footprints, value }
   return value
 }
 

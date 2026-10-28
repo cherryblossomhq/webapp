@@ -8,15 +8,16 @@ import { cleanupSheet } from "../src/model/cleanup"
 import { computeConnectivity } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { runErc } from "../src/model/erc"
-import { isInBom, isOnBoard } from "../src/model/instances"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { lockedBlockOf } from "../src/model/blocks"
 import { labelGeometry } from "../src/model/labelShapes"
 import { moveSchematicItems, removeItems } from "../src/model/ops"
 import { partFindings } from "../src/model/partChecks"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { pasteItems, setBlockLocked, setFlags, setLabelStyle, updateItem } from "../src/model/schematicEdit"
-import { imageSize, itemBox, itemHit, moveItem } from "../src/model/sheetItems"
+import { drawingBounds, hitDrawing, moveDrawing, updateDrawings } from "../src/model/drawings"
+import { inBom, onBoard, setFlags } from "../src/model/partFlags"
+import { pasteItems, setBlockLocked, setLabelStyle } from "../src/model/schematicEdit"
+import { imageSize } from "../src/model/sheetItems"
 import { tidySchematic } from "../src/model/tidy"
 import type { Project } from "../src/model/types"
 import { parseSexpr } from "./kicad-census/sexpr.mjs"
@@ -112,18 +113,19 @@ describe("S2: labels as KiCad has them", () => {
   })
 })
 
-describe("S4: the sheet's items, held at the file's numbers", () => {
+describe("S4: the sheet's drawings, held at the file's numbers", () => {
   const { project, report } = imp(rich())
-  const items = project.items ?? []
+  const items = project.drawings ?? []
   const raw = parseSexpr(rich()).find((n: unknown) => Array.isArray(n) && n[0] === "kicad_sch") as unknown[]
   const rawOf = (token: string) => raw.filter((n) => Array.isArray(n) && n[0] === token) as unknown[][]
   const num = (n: unknown) => Number(n)
   const mm = (units: number) => units * 12.7
   const kid = (node: unknown[], name: string) => node.find((c) => Array.isArray(c) && c[0] === name) as unknown[] | undefined
-  const kind = (k: string) => items.filter((i) => i.kind === k)
+  const kind = (k: string) => items.filter((i) => i.type === k)
+  type D<T extends string> = Extract<(typeof items)[number], { type: T }>
 
   it("has every kind the file has", () => {
-    expect(items.map((i) => i.kind).sort()).toEqual(["arc", "bezier", "circle", "image", "junction", "noconnect", "polyline", "rectangle", "table", "text", "textbox"].sort())
+    expect(items.map((i) => i.type).sort()).toEqual(["arc", "bezier", "circle", "image", "junction", "noconnect", "line", "rect", "table", "text", "textbox"].sort())
   })
 
   it("puts every point where the raw file has it, to a thousandth of a millimetre, with y up", () => {
@@ -131,47 +133,52 @@ describe("S4: the sheet's items, held at the file's numbers", () => {
       expect(Math.abs(mm(units.x) - num(rawAt[1]))).toBeLessThan(0.001)
       expect(Math.abs(-mm(units.y) - num(rawAt[2]))).toBeLessThan(0.001)
     }
-    const text = kind("text")[0] as Extract<(typeof items)[number], { kind: "text" }>
+    const text = kind("text")[0] as D<"text">
     check(text, kid(rawOf("text")[0], "at")!)
-    expect(text).toMatchObject({ text: "Hello\nworld", rot: 90, excludeFromSim: true, look: { bold: true, h: "left", v: "bottom", href: "https://example.com" } })
-    const box = kind("textbox")[0] as Extract<(typeof items)[number], { kind: "textbox" }>
+    // KiCad's own justification is named (the middle where the file names none), its look is the drawing's own fields
+    expect(text).toMatchObject({ text: "Hello\nworld", rot: 90, excludeFromSim: true, bold: true, align: "left", valign: "bottom", href: "https://example.com" })
+    const box = kind("textbox")[0] as D<"textbox">
     check(box, kid(rawOf("text_box")[0], "at")!)
     expect(mm(box.w)).toBeCloseTo(20.32, 3)
     expect(mm(box.h)).toBeCloseTo(10.16, 3)
     expect(box.margins?.map(mm).map((v) => Math.round(v * 1e4) / 1e4)).toEqual([0.9525, 0.9525, 0.9525, 0.9525])
-    expect(box.fill).toEqual({ kind: "color", color: "#ffff00" })
+    expect(box.paint).toEqual({ kind: "color", color: "#ffff00" })
     expect(box.stroke).toMatchObject({ dash: "dash", color: "#0000ff" })
-    const poly = kind("polyline")[0] as Extract<(typeof items)[number], { kind: "polyline" }>
+    const poly = kind("line")[0] as D<"line">
     const rawPts = (kid(rawOf("polyline")[0], "pts") as unknown[]).slice(1) as unknown[][]
     poly.points.forEach((p, i) => check(p, rawPts[i]))
-    const rect = kind("rectangle")[0] as Extract<(typeof items)[number], { kind: "rectangle" }>
-    check(rect.a, kid(rawOf("rectangle")[0], "start")!)
-    check(rect.b, kid(rawOf("rectangle")[0], "end")!)
-    expect(rect.fill).toEqual({ kind: "background" })
-    const circle = kind("circle")[0] as Extract<(typeof items)[number], { kind: "circle" }>
-    check(circle.c, kid(rawOf("circle")[0], "center")!)
-    expect(mm(circle.r)).toBeCloseTo(3.81, 4)
-    const arc = kind("arc")[0] as Extract<(typeof items)[number], { kind: "arc" }>
+    // a rectangle is kept by its lower-left corner and size: the file's start and end are the same box
+    const rect = kind("rect")[0] as D<"rect">
+    const [start, end] = [kid(rawOf("rectangle")[0], "start")!, kid(rawOf("rectangle")[0], "end")!]
+    expect(Math.abs(mm(rect.x) - Math.min(num(start[1]), num(end[1])))).toBeLessThan(0.001)
+    expect(Math.abs(mm(rect.x + rect.width) - Math.max(num(start[1]), num(end[1])))).toBeLessThan(0.001)
+    expect(Math.abs(-mm(rect.y + rect.height) - Math.min(num(start[2]), num(end[2])))).toBeLessThan(0.001)
+    expect(Math.abs(-mm(rect.y) - Math.max(num(start[2]), num(end[2])))).toBeLessThan(0.001)
+    expect(rect.paint).toEqual({ kind: "background" })
+    const circle = kind("circle")[0] as D<"circle">
+    check(circle, kid(rawOf("circle")[0], "center")!)
+    expect(mm(circle.radius)).toBeCloseTo(3.81, 4)
+    const arc = kind("arc")[0] as D<"arc">
     check(arc.mid, kid(rawOf("arc")[0], "mid")!)
-    const bez = kind("bezier")[0] as Extract<(typeof items)[number], { kind: "bezier" }>
+    const bez = kind("bezier")[0] as D<"bezier">
     ;((kid(rawOf("bezier")[0], "pts") as unknown[]).slice(1) as unknown[][]).forEach((p, i) => check(bez.points[i], p))
-    const image = kind("image")[0] as Extract<(typeof items)[number], { kind: "image" }>
+    const image = kind("image")[0] as D<"image">
     check(image, kid(rawOf("image")[0], "at")!)
     expect(image.scale).toBe(2)
     expect(image.data).toBe(PNG)
     // a 1 pixel picture at the default 300 per inch, drawn at scale 2: 2 * 25.4 / 300 mm
     expect(mm(imageSize(image).w)).toBeCloseTo((2 * 25.4) / 300, 4)
-    const table = kind("table")[0] as Extract<(typeof items)[number], { kind: "table" }>
+    const table = kind("table")[0] as D<"table">
     expect(table.cells.map((c) => c.text)).toEqual(["A", "B"])
     check(table.cells[1], kid(kid(rawOf("table")[0], "cells")!.find((c) => Array.isArray(c) && c[1] === "B") as unknown[], "at")!)
     expect(table.columnWidths.map(mm).map((v) => Math.round(v * 1e3) / 1e3)).toEqual([10.16, 10.16])
     expect(table.border).toMatchObject({ external: true, header: true })
     expect(table.separators).toMatchObject({ rows: true, cols: true })
-    const junction = kind("junction")[0] as Extract<(typeof items)[number], { kind: "junction" }>
+    const junction = kind("junction")[0] as D<"junction">
     check(junction, kid(rawOf("junction").find((j) => num(kid(j, "diameter")![1]) > 0)!, "at")!)
     expect(mm(junction.diameter ?? 0)).toBeCloseTo(1.5, 4)
-    expect(junction.color).toBe("#00ff00")
-    const nc = kind("noconnect")[0] as Extract<(typeof items)[number], { kind: "noconnect" }>
+    expect(junction.dotColor).toBe("#00ff00")
+    const nc = kind("noconnect")[0] as D<"noconnect">
     check(nc, kid(rawOf("no_connect")[0], "at")!)
   })
 
@@ -186,7 +193,7 @@ describe("S4: the sheet's items, held at the file's numbers", () => {
   it("counts no S4 node as imported without holding it", () => {
     const paths = [...(report.account?.importedPaths.keys() ?? [])]
     const held = (re: RegExp) => paths.filter((p) => re.test(p))
-    // every extension node of the file is imported (none pending, none unknown), and each kind has its item
+    // every extension node of the file is imported (none pending, none unknown), and each kind has its drawing
     expect(report.account?.pending.size).toBe(0)
     expect(report.account?.unknownPaths.size).toBe(0)
     for (const token of ["text", "text_box", "polyline", "rectangle", "circle", "arc", "bezier", "image", "table", "group>locked", "wire>stroke>color", "junction>diameter", "junction>color", "no_connect", "label>effects>font>color", "global_label>shape", "global_label>property", "symbol>dnp", "symbol>fields_autoplaced"]) {
@@ -195,68 +202,70 @@ describe("S4: the sheet's items, held at the file's numbers", () => {
   })
 
   it("is selected, moved and deleted like anything else on the sheet", () => {
-    const text = kind("text")[0]
-    expect(itemHit(text, { x: text.kind === "text" ? text.x : 0, y: text.kind === "text" ? text.y : 0 }, 0.05)).toBe(true)
-    const moved = moveSchematicItems(project, { components: [], labels: [], wires: [], items: [text.id] }, { x: 1, y: -0.5 }, [])
-    const after = moved.items!.find((i) => i.id === text.id)!
-    expect(after.kind === "text" && text.kind === "text" && Math.abs(after.x - text.x - 1) < 1e-9 && Math.abs(after.y - text.y + 0.5) < 1e-9).toBe(true)
+    const text = kind("text")[0] as D<"text">
+    expect(hitDrawing(text, { x: text.x, y: text.y }, 0.05)).toBe(true)
+    const moved = moveSchematicItems(project, { components: [], labels: [], wires: [], drawings: [text.id] }, { x: 1, y: -0.5 }, [])
+    const after = moved.drawings!.find((i) => i.id === text.id)! as D<"text">
+    expect(Math.abs(after.x - text.x - 1) < 1e-9 && Math.abs(after.y - text.y + 0.5) < 1e-9).toBe(true)
     // the rest is where it was
-    expect(moved.items!.filter((i) => i.id !== text.id)).toEqual(project.items!.filter((i) => i.id !== text.id))
-    expect(moveItem(text, { x: 0, y: 0 })).toEqual(text)
-    const gone = removeItems(project, { items: [text.id] })
-    expect(gone.items!.some((i) => i.id === text.id)).toBe(false)
-    expect(gone.items!.length).toBe(project.items!.length - 1)
+    expect(moved.drawings!.filter((i) => i.id !== text.id)).toEqual(project.drawings!.filter((i) => i.id !== text.id))
+    expect(moveDrawing(text, { x: 0, y: 0 })).toEqual(text)
+    const gone = removeItems(project, { drawings: [text.id] })
+    expect(gone.drawings!.some((i) => i.id === text.id)).toBe(false)
+    expect(gone.drawings!.length).toBe(project.drawings!.length - 1)
     // paste copies it, offset, under a new id
-    const pasted = pasteItems(project, { project, components: [], wires: [], labels: [], items: [text.id], blocks: [] }, { x: 2, y: 2 })
+    const pasted = pasteItems(project, { project, components: [], wires: [], labels: [], drawings: [text.id], blocks: [] }, { x: 2, y: 2 })
     expect(pasted.ok).toBe(true)
-    if (pasted.ok) expect(pasted.project.items!.length).toBe(project.items!.length + 1)
+    if (pasted.ok) expect(pasted.project.drawings!.length).toBe(project.drawings!.length + 1)
     // edited
-    const edited = updateItem(project, text.id, { text: "changed" } as never)
-    expect(edited.items!.find((i) => i.id === text.id)).toMatchObject({ text: "changed" })
-    expect(itemBox(text).maxX).toBeGreaterThan(itemBox(text).minX)
+    const edited = updateDrawings(project, [text.id], (d) => ({ ...d, text: "changed" }) as never)
+    expect(edited.drawings!.find((i) => i.id === text.id)).toMatchObject({ text: "changed" })
+    expect(drawingBounds(text).maxX).toBeGreaterThan(drawingBounds(text).minX)
   })
 
-  it("reads a damaged file without crashing: an item with no geometry is dropped", () => {
-    const project2 = parseProjectFile(JSON.stringify({ format: "cherryblossom.project", version: 3, project: { ...project, items: [...project.items!, { id: "bad", kind: "polyline", points: [{ x: "a" }] }, { id: "bad2", kind: "text" }, 7] } }), { id: "x" })
-    expect(project2.items!.length).toBe(project.items!.length)
+  it("reads a damaged file without crashing: a drawing with no geometry is dropped", () => {
+    const project2 = parseProjectFile(JSON.stringify({ format: "cherryblossom.project", version: 3, project: { ...project, drawings: [...project.drawings!, { id: "bad", type: "line", points: [{ x: "a" }] }, { id: "bad2", type: "text" }, { id: "bad3", type: "arc", start: { x: 1 } }, 7] } }), { id: "x" })
+    expect(project2.drawings!.length).toBe(project.drawings!.length)
   })
 
   it("survives a save and a load, and a document with none of it is still a project", () => {
     const again = parseProjectFile(serializeProject(project), { id: "x" })
-    expect(again.items).toEqual(project.items)
+    expect(again.drawings).toEqual(project.drawings)
     expect(again.labels).toEqual(project.labels)
     expect(again.netNames).toBe("kicad")
     expect(again.blocks?.[0].locked).toBe(true)
     expect(again.wires.find((w) => w.look)?.look).toEqual(project.wires.find((w) => w.look)?.look)
     expect(again.components[0].flags).toEqual(project.components[0].flags)
+    expect(again.components[0].fieldsAutoplaced).toBe(true)
   })
 })
 
 describe("S7: the flags of a symbol", () => {
   const base = imp(rich()).project
 
-  it("keeps them", () => {
-    expect(base.components[0].flags).toEqual({ dnp: true, fieldsAutoplaced: true })
+  it("keeps them, as the one set of part flags, with the fields' autoplacing on the part", () => {
+    expect(base.components[0].flags).toEqual({ dnp: true })
+    expect(base.components[0].fieldsAutoplaced).toBe(true)
   })
 
   it("a part not to be populated is left out of the BOM and the position file, a part off the board is not on it", () => {
     const part = base.components[0]
-    expect(isInBom(part)).toBe(false)
-    expect(isInBom({ flags: undefined })).toBe(true)
-    expect(isInBom({ flags: { inBom: false } })).toBe(false)
-    expect(isOnBoard({ partId: part.partId, flags: { onBoard: false } })).toBe(false)
+    expect(inBom(part)).toBe(false)
+    expect(inBom({ flags: undefined })).toBe(true)
+    expect(inBom({ flags: { excludeFromBom: true } })).toBe(false)
+    expect(onBoard({ partId: part.partId, flags: { notOnBoard: true } })).toBe(false)
     const ex = EXAMPLES.find((e) => e.id === "blinker")!.project
     const ref = ex.components.find((c) => c.ref === "R1")!
     const dnp = setFlags(ex, ref.id, { dnp: true })
     expect(bomCsv(dnp)).not.toContain("R1")
     expect(bomCsv(ex)).toContain("R1")
     expect(pnpCsv(dnp)).not.toContain("R1")
-    expect(pnpCsv(setFlags(ex, ref.id, { inPosFiles: false }))).not.toContain("R1,")
+    expect(pnpCsv(setFlags(ex, ref.id, { excludeFromPos: true }))).not.toContain("R1,")
     // "board only" (not in the BOM) leaves the position file alone, a part off the board leaves both only where it has no place
-    const noBom = setFlags(ex, ref.id, { inBom: false })
+    const noBom = setFlags(ex, ref.id, { excludeFromBom: true })
     expect(bomCsv(noBom)).not.toContain("R1")
     expect(pnpCsv(noBom)).toContain("R1")
-    const off = setFlags(ex, ref.id, { onBoard: false })
+    const off = setFlags(ex, ref.id, { notOnBoard: true })
     expect(pnpCsv(off)).not.toContain("R1,")
     expect(bomCsv(off)).toContain("R1")
     // and a part that is not on the board has no footprint in Circuit JSON
@@ -270,11 +279,10 @@ describe("S7: the flags of a symbol", () => {
     const ex = EXAMPLES.find((e) => e.id === "blinker")!.project
     const out = runTool(ex, "update_component", { ref: "R1", dnp: true, in_bom: false })
     expect(out.isError).toBeFalsy()
-    const design = JSON.parse(runTool(out.project, "get_design", {}).result) as { components: { ref: string; dnp?: boolean; in_bom?: boolean; on_board?: boolean }[] }
+    const design = JSON.parse(runTool(out.project, "get_design", {}).result) as { components: { ref: string; flags?: string[] }[] }
     const r1 = design.components.find((c) => c.ref === "R1")!
-    expect(r1).toMatchObject({ dnp: true, in_bom: false })
-    expect(r1.on_board).toBeUndefined()
-    expect(design.components.find((c) => c.ref !== "R1")?.dnp).toBeUndefined()
+    expect(r1.flags).toEqual(["do not populate", "not in the BOM"])
+    expect(design.components.find((c) => c.ref !== "R1")?.flags).toBeUndefined()
   })
 
   it("is shown as KiCad shows it, and a part on the sheet with a flag exports it", async () => {
@@ -292,7 +300,7 @@ describe("S7: the flags of a symbol", () => {
 })
 
 describe("the KiCad export of an imported sheet", () => {
-  it("writes labels as they were (local, global with their shapes), the items, and wire strokes", async () => {
+  it("writes labels as they were (local, global with their shapes), the drawings, and wire strokes", async () => {
     const { project } = imp(rich())
     const { files, notes } = await kicadFiles(project)
     const sch = Object.entries(files).find(([k]) => k.endsWith(".kicad_sch"))![1]
@@ -301,11 +309,11 @@ describe("the KiCad export of an imported sheet", () => {
     expect(sch).toContain("(text \"Hello\\nworld\"")
     for (const node of ["(text_box ", "(polyline", "(rectangle", "(circle", "(arc", "(bezier", "(image", "(table", "(junction", "(no_connect"]) expect(sch).toContain(node)
     expect(sch).toMatch(/\(stroke\s+\(width 0\.5\)\s+\(type dash\)\s+\(color 255 0 0 1\)\)/)
-    // the file reads back as the same items
+    // the file reads back as the same drawings
     const again = importKicadSchematic(sch)
     expect(again.status).toBe("imported")
     if (again.status === "imported") {
-      expect(again.project.items?.map((i) => i.kind).sort()).toEqual((project.items ?? []).map((i) => i.kind).sort())
+      expect(again.project.drawings?.map((i) => i.type).sort()).toEqual((project.drawings ?? []).map((i) => i.type).sort())
       expect(again.project.labels.map((l) => [l.name, l.kind, l.shape])).toEqual(project.labels.map((l) => [l.name, l.kind, l.shape]))
     }
     expect(notes.join(" ")).toMatch(/Pictures are written/)
@@ -329,7 +337,7 @@ describe("Tidy and Clean up on an imported sheet", () => {
     if (t.ok) {
       expect(names(t.project)).toEqual(names(project))
       expect(t.project.labels.find((l) => l.name === "VBUS")).toMatchObject({ kind: "global", shape: "input" })
-      expect(t.project.items?.filter((i) => i.kind !== "junction").length).toBe(project.items!.filter((i) => i.kind !== "junction").length)
+      expect(t.project.drawings?.filter((i) => i.type !== "junction").length).toBe(project.drawings!.filter((i) => i.type !== "junction").length)
       expect(tidySchematic(t.project).changed).toBe(false)
     }
     const c = cleanupSheet(project)

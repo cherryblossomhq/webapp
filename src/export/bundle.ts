@@ -2,7 +2,7 @@ import JSZip from "jszip"
 import { computeConnectivity } from "../model/connectivity"
 import { analyzePcb } from "../model/pcb"
 import { ensureTextFont } from "../model/textFont"
-import { resolveVariant } from "../model/variants"
+import { withRuleAreaFlags } from "../model/ruleAreas"
 import type { Project } from "../model/types"
 import { bomCsv } from "./bom"
 import { drillSets, excellonDrill, npthHoles } from "./excellon"
@@ -45,8 +45,8 @@ export const projectFileName = (project: Project, ext: string) => `${slugify(pro
 
 /** Every fabrication output keyed by file name. */
 export function buildFabricationFiles(source: Project): Record<string, string> {
-  // S9: the board side, the BOM and the position file follow the active variant (a part the variant takes off the board has no footprint, no drill and no paste).
-  const project = resolveVariant(source)
+  // S9, S8: the board side, the BOM and the position file follow the active variant, the sheet symbols' flags and the rule areas (a part taken off the board has no footprint, no drill and no paste).
+  const project = withRuleAreaFlags(source)
   const base = slugify(project.name)
   const files: Record<string, string> = {}
   const pcb = analyzePcb(project, computeConnectivity(project))

@@ -2,9 +2,11 @@ import { copperLayers, layerOfKicadName, viaLayers } from "../../model/stack"
 import { traceD } from "../../editor/pcb/traceGraphics"
 import { copperColor, pourColor } from "../../editor/theme"
 import type { Box } from "../../lib/geometry"
+import { resolvedComponents } from "../../model/ruleAreas"
 import { PCB } from "../../editor/theme"
 import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
-import { isPhysical, pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
+import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
+import { holeCentre } from "../../model/padDistance"
 import { findPart } from "../../model/library"
 import { BOARD_OWNER } from "../../model/pcb"
 import { worldShapes } from "../../model/shapeItems"
@@ -19,6 +21,7 @@ import { imageDataUri } from "../../store/imageFiles"
 import type { PixelSize } from "./limits"
 import type { PcbMeasure } from "./measure"
 import { n, pts, svgDocument, text } from "./svg"
+import { onBoard } from "../../model/partFlags"
 
 // The PCB as the editor draws it (EDA colours: red top, blue bottom, both opaque over a black
 // board, the front layer on top), as an SVG string, so it can be drawn off screen. The pad, hole
@@ -41,16 +44,18 @@ const CHAR_W = 0.62
 function pad(p: WorldPad, color: string, px: number): string {
   let shape: string
   if (p.shape === "circle") shape = `<circle cx="${n(p.x)}" cy="${n(p.y)}" r="${n(p.width / 2)}" fill="${color}"/>`
+  else if (p.rings && p.rings.length > 1) shape = `<path d="${p.rings.map((ring) => `M${ring.map((q) => `${n(q.x)},${n(q.y)}`).join("L")}Z`).join("")}" fill-rule="evenodd" fill="${color}"/>`
   else if (p.shape === "polygon" && p.points) shape = `<polygon points="${pts(p.points)}" fill="${color}"/>`
   else {
-    const rr = p.shape === "pill" ? Math.min(p.width, p.height) / 2 : Math.min(p.width, p.height) * 0.12
+    const rr = p.shape === "pill" ? Math.min(p.width, p.height) / 2 : p.x7 ? (p.corner ?? 0) : Math.min(p.width, p.height) * 0.12
     shape = `<rect x="${n(p.x - p.width / 2)}" y="${n(p.y - p.height / 2)}" width="${n(p.width)}" height="${n(p.height)}" rx="${n(rr)}" fill="${color}"/>`
   }
   if (!p.holeDiameter) return shape
   const d = p.holeDiameter
   const sw = Math.min(d * 0.12, Math.max(0.05, 1.2 * px))
   const ends = slotEnds(p)
-  if (!ends) return shape + `<circle cx="${n(p.x)}" cy="${n(p.y)}" r="${n(d / 2)}" fill="${PCB.hole}" stroke="${PCB.plating}" stroke-width="${n(sw)}"/>`
+  const at = holeCentre(p)
+  if (!ends) return shape + `<circle cx="${n(at.x)}" cy="${n(at.y)}" r="${n(d / 2)}" fill="${PCB.hole}" stroke="${PCB.plating}" stroke-width="${n(sw)}"/>`
   const [a, b] = ends
   return (
     shape +
@@ -136,7 +141,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const shown: CopperLayer[] = opts.side === "both" ? [...copperLayers(project.board)].reverse() : [opts.side]
   const shownSet = new Set(shown)
   const front: CopperLayer = opts.side === "bottom" ? "bottom" : "top"
-  const placed = project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
+  const placed = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
   const has = (x: PcbExtra) => opts.extras.has(x)
   // The drawings on the board and in its placed parts, by what their layer is for; none on a board that has none.
   const drawings = worldShapes(project).filter((d) => d.placed)

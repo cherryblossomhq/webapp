@@ -4,7 +4,7 @@ import { findPart } from "../model/library"
 import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes } from "../model/partFlags"
 import { zoneClearance } from "../model/rules"
-import type { ComponentInstance, Project } from "../model/types"
+import type { ComponentInstance, PinType, Project } from "../model/types"
 
 // What `circuit-json-to-kicad` leaves out, put into the files it wrote: no-connect flags, the bill
 // of materials fields on each symbol, the board's design rules and the pours' settings. The
@@ -159,6 +159,208 @@ export function applyFootprintFlags(pcb: string, project: Project): string {
     // No attribute line from the converter: after the position.
     return block.replace(/(\n {4}\(at [^\n]*\))/, (m) => `${m}${lines.join("")}`)
   })
+}
+
+// ---------- Symbols that came from KiCad: units and their texts ----------
+
+/** A symbol's reference or value where its file had it, in the page's millimetres (y down, as KiCad has it). */
+export interface PlacedField {
+  text: string
+  x: number
+  y: number
+  angle: 0 | 90
+  /** Text height in millimetres. */
+  size: number
+  h?: "left" | "right"
+  v?: "top" | "bottom"
+}
+
+export interface SymbolLink {
+  /** The schematic component the converter wrote this symbol for. */
+  id: string
+  /** The schematic component of the part's own symbol: symbols with one owner are units of one KiCad symbol. */
+  owner: string
+  unit: number
+  /** A unit drawn only so the library symbol has it: its placed symbol is left out of the file. */
+  virtual?: true
+  /** The part this is a unit of, by its reference: the units of one part on different sheets are given one library symbol (`shareUnitSymbols`). */
+  part?: string
+  reference?: PlacedField
+  value?: PlacedField
+  /** The name and electrical type of each pin this symbol draws, by number. */
+  pins?: { number: string; wrote?: string; name: string; type?: PinType }[]
+}
+
+const PIN_BLOCK = /\n {8}\(pin (\S+) (\S+)\n[\s\S]*?\n {8}\)(?=\n|$)/g
+const QUOTED = String.raw`"((?:[^"\\]|\\.)*)"`
+
+/**
+ * The pins of a library symbol with the names and electrical types the symbol had. The converter
+ * writes every pin as passive and names it by its number; the sheet draws the names itself, so the
+ * library's pin names stay hidden and these only say what the pin is, to KiCad's ERC and netlist.
+ * A pin the symbol leaves unnamed is written `~`, which is how KiCad writes an empty name (and reads it,
+ * before stamp 20250318, which the converter's 20250114 is).
+ */
+function patchPins(body: string, pins: NonNullable<SymbolLink["pins"]>): string {
+  // `wrote` is the number the converter wrote for a pin whose own it cannot say (`writtenPinNumbers`): the pin is found by that and written with its real number.
+  const by = new Map(pins.map((p) => [p.wrote ?? p.number, p]))
+  return body.replace(PIN_BLOCK, (block, type: string) => {
+    const number = block.match(new RegExp(String.raw`\(number ${QUOTED}`))?.[1]
+    const pin = number === undefined ? undefined : by.get(number.replace(/\\(.)/g, "$1"))
+    if (!pin) return block
+    const named = block.replace(`(pin ${type} `, `(pin ${pin.type ?? type} `).replace(new RegExp(String.raw`\(name ${QUOTED}`), () => `(name ${quote(pin.name)}`)
+    return pin.wrote === undefined ? named : named.replace(new RegExp(String.raw`\(number ${QUOTED}`), () => `(number ${quote(pin.number)}`)
+  })
+}
+
+const LIB_SYMBOL = /\n {4}\(symbol "([^"]+)"\n[\s\S]*?\n {4}\)(?=\n)/g
+const SUB_SYMBOL = /\n {6}\(symbol "([^"]+)_(\d+)_(\d+)"\n([\s\S]*?)\n {6}\)(?=\n)/g
+const idOf = (libId: string) => libId.match(/_(schematic_component_\d+)$/)?.[1]
+
+const propertyBlock = (key: string, text: string, f: PlacedField) =>
+  [
+    `    (property ${quote(key)} ${quote(text)}`,
+    "      (id " + (key === "Reference" ? 0 : 1) + ")",
+    `      (at ${mm6(f.x)} ${mm6(f.y)} ${f.angle})`,
+    "      (effects",
+    "        (font",
+    `          (size ${mm6(f.size)} ${mm6(f.size)})`,
+    "        )",
+    ...(f.h || f.v ? [`        (justify ${[f.h, f.v].filter(Boolean).join(" ")})`] : []),
+    "      )",
+    "    )",
+  ].join("\n")
+
+/**
+ * The symbols that came from KiCad, as KiCad has them. The converter writes one library symbol for
+ * each schematic component, so the units of one part would be separate symbols that share a
+ * reference, which KiCad reports as duplicates; here the units of a part become the units of one
+ * library symbol (`NAME_<unit>_1`) and each placed symbol says which it is. A reference or value
+ * the symbol had on show is written where it was (the converter hides both).
+ */
+export function writeSymbolLinks(sch: string, links: SymbolLink[], libOf?: Map<string, string>): string {
+  if (!links.length) return sch
+  const byId = new Map(links.map((l) => [l.id, l]))
+  let text = sch
+
+  // Units of a part: all the symbols with one owner, when there are several.
+  const groups = new Map<string, SymbolLink[]>()
+  for (const l of links) groups.set(l.owner, [...(groups.get(l.owner) ?? []), l])
+  const libs = new Map<string, { name: string; block: string }>()
+  for (const m of text.matchAll(LIB_SYMBOL)) {
+    const id = idOf(m[1])
+    if (id) libs.set(id, { name: m[1], block: m[0] })
+  }
+  const baseName = new Map<string, string>()
+  for (const [owner, members] of groups) {
+    const units = new Set(members.map((m) => m.unit))
+    const base = libs.get(owner)
+    // A unit alone in its file (its other units are on another sheet) still becomes its own unit of the symbol.
+    if ((members.length < 2 && members[0].unit === 1) || units.size < members.length || !base || members.some((m) => !libs.has(m.id))) continue
+    const subs = new Map<string, string[]>()
+    const taken = (id: string) => [...libs.get(id)!.block.matchAll(SUB_SYMBOL)]
+    for (const m of members) subs.set(m.id, taken(m.id).sort((a, b) => Number(a[2]) - Number(b[2]) || Number(a[3]) - Number(b[3])).map((x) => x[4]))
+    const found = [...base.block.matchAll(SUB_SYMBOL)]
+    const head = base.block.slice(0, found.length ? found[0].index : base.block.lastIndexOf("\n      (embedded_fonts"))
+    const last = found[found.length - 1]
+    const tail = last ? base.block.slice(last.index + last[0].length) : base.block.slice(head.length)
+    const merged = [...members]
+      .sort((a, b) => a.unit - b.unit)
+      .map((m) => `\n      (symbol "${base.name.slice(base.name.indexOf(":") + 1)}_${m.unit}_1"\n${subs.get(m.id)!.join("\n")}\n      )`)
+      .join("")
+    text = text.replace(base.block, () => head + merged + tail)
+    for (const m of members) if (m.id !== owner) text = text.replace(libs.get(m.id)!.block, "")
+    for (const m of members) baseName.set(m.id, base.name)
+  }
+
+  // The pins of each library symbol: the names and types of the unit each sub-symbol draws.
+  text = text.replace(LIB_SYMBOL, (block, name: string) => {
+    const id = idOf(name)
+    const mine = links.filter((l) => l.pins && (l.id === id || (baseName.get(l.id) === name && l.owner === id)))
+    if (!id || !mine.length) return block
+    return block.replace(SUB_SYMBOL, (sub, _n: string, unit: string, _style: string, body: string) => {
+      const link = mine.length === 1 ? mine[0] : mine.find((l) => l.unit === Number(unit))
+      return link?.pins ? sub.replace(body, () => patchPins("\n" + body, link.pins!).slice(1)) : sub
+    })
+  })
+
+  // Each placed symbol: its library symbol and unit, and the texts it shows.
+  return text.replace(SYMBOL_BLOCK, (block) => {
+    const libId = block.match(/\(lib_id "([^"]+)"/)?.[1]
+    const link = libId ? byId.get(idOf(libId) ?? "") : undefined
+    if (!link) return block
+    if (link.virtual) return ""
+    let out = block
+    const lib = baseName.get(link.id)
+    if (link.part && libOf && libId) libOf.set(lib ?? libId, link.part)
+    if (lib) out = out.replace(/\(lib_id "[^"]+"\)/, () => `(lib_id ${quote(lib)})`)
+    if (lib || link.unit !== 1) {
+      out = out.replace(/\n {4}\(unit \d+\)/, `\n    (unit ${link.unit})`).replace(/\n {10}\(unit \d+\)/, `\n          (unit ${link.unit})`)
+    }
+    // The pins whose numbers the converter could not say are listed under the number it wrote: they are put back as the pins' own.
+    const renumbered = new Map((link.pins ?? []).filter((p) => p.wrote !== undefined).map((p) => [p.wrote!, p.number]))
+    if (renumbered.size) out = out.replace(/\n {4}\(pin "((?:[^"\\]|\\.)*)"/g, (m, n: string) => (renumbered.has(n) ? `\n    (pin ${quote(renumbered.get(n)!)}` : m))
+    const ref = out.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    if (link.reference && ref !== undefined) out = out.replace(/\n {4}\(property "Reference"[\s\S]*?\n {4}\)(?=\n)/, () => `\n${propertyBlock("Reference", ref, link.reference!)}`)
+    if (link.value) out = out.replace(/\n {4}\(property "Value"[\s\S]*?\n {4}\)(?=\n)/, () => `\n${propertyBlock("Value", link.value!.text, link.value!)}`)
+    return out
+  })
+}
+
+/**
+ * The units of one part that are drawn on different sheets, as one library symbol with every unit in each file that has any of them. The converter writes a library
+ * symbol for each symbol it draws, so the unit of a part on one sheet and the units of it on another are different symbols with the same reference; KiCad's file has
+ * the part's one library symbol, with all its units, in the cache of every sheet that uses it, and reads the symbols that share a reference and a library symbol as the
+ * units of one part. `libOfs` has, for each sheet's text, the library symbols that hold a part's units, by the part.
+ */
+export function shareUnitSymbols(texts: string[], libOfs: Map<string, string>[]): string[] {
+  const unitsOf = new Map<string, Map<number, string>>()
+  const own = new Map<string, Set<number>>()
+  const where = new Map<string, { sheet: number; lib: string }[]>()
+  const blocks = (text: string) => new Map([...text.matchAll(LIB_SYMBOL)].map((m) => [m[1], m[0]] as const))
+  texts.forEach((text, i) => {
+    const here = blocks(text)
+    for (const [lib, part] of libOfs[i]) {
+      const block = here.get(lib)
+      if (!block) continue
+      const subs = [...block.matchAll(SUB_SYMBOL)]
+      const common = subs.find((m) => Number(m[2]) === 0)?.[4]
+      const mine = new Set<number>()
+      const all = unitsOf.get(part) ?? unitsOf.set(part, new Map()).get(part)!
+      for (const m of subs) {
+        const unit = Number(m[2])
+        if (unit === 0) continue
+        mine.add(unit)
+        // A unit of a symbol that was not merged keeps its shared drawing (unit 0) beside it.
+        if (!all.has(unit)) all.set(unit, common ? [common, m[4]].join("\n") : m[4])
+      }
+      own.set(`${i}|${lib}`, mine)
+      ;(where.get(part) ?? where.set(part, []).get(part)!).push({ sheet: i, lib })
+    }
+  })
+  const out = [...texts]
+  let shared = 0
+  for (const [part, list] of where) {
+    const all = unitsOf.get(part)!
+    if (list.length < 2 || list.every((w) => own.get(`${w.sheet}|${w.lib}`)!.size === all.size)) continue
+    const canonical = `${list[0].lib.replace(/_schematic_component_\d+$/, "")}_part${++shared}`
+    const short = canonical.slice(canonical.indexOf(":") + 1)
+    for (const sheet of new Set(list.map((w) => w.sheet))) {
+      const mine = list.filter((w) => w.sheet === sheet).map((w) => w.lib)
+      let text = out[sheet]
+      const first = blocks(text).get(mine[0])!
+      const subs = [...first.matchAll(SUB_SYMBOL)]
+      const head = first.slice(0, subs[0].index).replace(`(symbol "${mine[0]}"`, `(symbol "${canonical}"`)
+      const last = subs[subs.length - 1]
+      const tail = first.slice(last.index + last[0].length)
+      const middle = [...all].sort((a, b) => a[0] - b[0]).map(([unit, body]) => ["", `      (symbol "${short}_${unit}_1"`, body, "      )"].join("\n")).join("")
+      text = text.replace(first, () => head + middle + tail)
+      for (const lib of mine.slice(1)) text = text.replace(blocks(text).get(lib)!, "")
+      for (const lib of mine) text = text.split(`(lib_id "${lib}")`).join(`(lib_id "${canonical}")`)
+      out[sheet] = text
+    }
+  }
+  return out
 }
 
 // ---------- Board file: pours and mask ----------

@@ -6,7 +6,8 @@ import { useProjectStore } from "../src/store/projectStore"
 const api = () => useProjectStore.getState()
 
 // The panel records a background check's verdict with `patch`: it is not an undo step, but it must
-// survive Undo and Redo, or the part comes back without it.
+// survive Undo and Redo, or the part comes back without it. A step holds the changes that undo and
+// redo it, so the verdict is written into the part a step puts back whole.
 
 /** A verdict on the part named "P": the edit leaves a project without that part as it was. */
 const verdict = (v: string) => (p: Project): Project => {
@@ -30,19 +31,27 @@ describe("patch and undo", () => {
     expect(verdictOf(api().project)).toBe("agrees")
     api().undo()
     expect(api().project!.parts ?? []).toHaveLength(0)
-    expect(api().future.map(verdictOf)).toEqual(["agrees"])
     api().redo()
     expect(verdictOf(api().project)).toBe("agrees")
   })
 
-  it("is not an undo step, and leaves snapshots without the part as they were", () => {
+  it("is not an undo step", () => {
     const before = api().project!
     api().commit(withPart)
     api().patch(verdict("agrees"))
-    expect(api().past).toEqual([before])
-    expect(api().past[0]).toBe(before)
+    expect(api().past).toHaveLength(1)
     api().undo()
-    expect(api().project).toBe(before)
+    expect(api().project!.parts ?? []).toHaveLength(0)
+    expect(api().project!.components).toEqual(before.components)
+  })
+
+  it("reaches a part undone before its verdict arrived, so Redo brings it back checked", () => {
+    api().commit(withPart)
+    api().undo()
+    api().patch(verdict("agrees"))
+    expect(api().project!.parts ?? []).toHaveLength(0)
+    api().redo()
+    expect(verdictOf(api().project)).toBe("agrees")
   })
 
   it("gives a part placed again after an undo no verdict, since it is a new placement to check", () => {
@@ -55,32 +64,33 @@ describe("patch and undo", () => {
     expect(verdictOf(api().project)).toBeUndefined()
   })
 
-  it("applies the edit once to a press that never moved, leaving no empty undo step and the redo stack alone", () => {
+  it("leaves no empty undo step for a press that never moved, and the redo stack alone", () => {
     api().commit(withPart)
     api().commit((p) => ({ ...p, name: "B" }))
     api().undo()
     const redo = api().future.length
     const past = api().past.length
     api().beginTransient()
-    let calls = 0
-    api().patch((p) => {
-      calls++
-      return verdict("agrees")(p)
-    })
-    // One call for the project, one per snapshot in the history (past and future), none extra for the press.
-    expect(calls).toBe(1 + api().past.length + api().future.length)
+    api().patch(verdict("agrees"))
     api().endTransient()
     expect(api().past).toHaveLength(past)
     expect(api().future).toHaveLength(redo)
     expect(verdictOf(api().project)).toBe("agrees")
   })
 
-  it("keeps the verdict in the drag's starting snapshot, so Esc does not lose it", () => {
+  it("keeps the verdict in the drag's starting point, so Esc does not lose it", () => {
     api().commit(withPart)
     api().beginTransient()
     api().setTransient((p) => ({ ...p, name: "moved" }))
     api().patch(verdict("agrees"))
     api().cancelTransient()
     expect(verdictOf(api().project)).toBe("agrees")
+  })
+
+  it("is not a viewer's to make", () => {
+    api().commit(withPart)
+    useProjectStore.setState({ role: "viewer" })
+    api().patch(verdict("agrees"))
+    expect(verdictOf(api().project)).toBeUndefined()
   })
 })

@@ -1,3 +1,4 @@
+import { imp } from "./kicad-sheets-fixtures"
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -69,9 +70,9 @@ describe("the project file", () => {
     expect(again.project.futureField).toEqual({ a: 1 })
   })
 
-  it("refuses a file from a newer editor rather than dropping what it can't read", () => {
+  it.each([4, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
     const file = JSON.parse(serializeProject(createProject()))
-    file.version = PROJECT_FILE_VERSION + 1
+    file.version = version
     expect(problem(() => parseProjectFile(file, origin))).toBe("too_new")
   })
 
@@ -250,11 +251,11 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
   })
   it("migrates to the current version unchanged, and is saved as the current version", () => {
     const migrated = migrateProjectFile(v2)
-    expect(migrated).toEqual(v2.project)
+    expect(migrated).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(9)
+    expect(PROJECT_FILE_VERSION).toBe(3)
   })
-  it("a reader of version 2 would refuse a version 4 file: the bump is what keeps a flag from being lost", () => {
+  it("a reader of version 2 would refuse a newer file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
     expect(written.version).toBeGreaterThan(2)
   })
@@ -272,7 +273,7 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
   })
 })
 
-/** A project as version 3 wrote it: flags and nets on tracks, no drawings. */
+/** A version 3 project with flags and nets on tracks and no drawings. */
 const v3 = {
   format: PROJECT_FILE_FORMAT,
   version: 3,
@@ -284,9 +285,10 @@ const v3 = {
   },
 }
 
-describe("version 3, before board and footprint drawings", () => {
+describe("a version 3 file from the board track, with no drawings", () => {
   it("opens as it was written, with no drawings, and is saved as the current version", () => {
     const read = parseProjectFile(v3, origin)
+    // a version 3 file is read as is: it has no `sheets`, which is the same project as a root sheet alone
     expect(migrateProjectFile(v3)).toEqual(v3.project)
     expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
     expect(read.traces).toEqual(v3.project.traces)
@@ -320,12 +322,12 @@ const everyShape = () => [
 
 const pad1 = { pin: "1", shape: "rect", layer: "top", x: 0, y: 0, width: 1, height: 1 }
 const land = (name: string, pads: unknown[], shapes?: unknown[]) => ({ name, pads, silk: [], courtyard: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, ...(shapes ? { shapes } : {}) })
-const v4 = (project: Record<string, unknown>) => ({ format: PROJECT_FILE_FORMAT, version: 4, project: { name: "v4", description: "", components: [], wires: [], labels: [], ...project } as Record<string, unknown> })
+const drawn = (project: Record<string, unknown>) => ({ format: PROJECT_FILE_FORMAT, version: 3, project: { name: "drawn", description: "", components: [], wires: [], labels: [], ...project } as Record<string, unknown> })
 
-describe("version 4, board and footprint drawings", () => {
+describe("version 3, board and footprint drawings", () => {
   it("round-trips one of every shape on the board and in a land with every field kept", () => {
     const shapes = everyShape()
-    const doc = v4({
+    const doc = drawn({
       graphics: shapes.map((s, i) => ({ ...s, id: `g${i}` })),
       footprints: [land("PADLESS", [], shapes), land("MIXED", [pad1], shapes)],
     })
@@ -341,7 +343,7 @@ describe("version 4, board and footprint drawings", () => {
 
   it("drops a damaged drawing and nothing else", () => {
     const good = { type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1 }
-    const doc = v4({
+    const doc = drawn({
       graphics: [
         { ...good, id: "ok" },
         { ...good, id: "layer", layer: "Nope.Layer" },
@@ -361,13 +363,13 @@ describe("version 4, board and footprint drawings", () => {
   })
 
   it("drops a flag that does not fit: a fill on an open shape, a dash that is not one", () => {
-    const read = parseProjectFile(v4({ graphics: [{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, fill: true, dash: "wavy", net: " " }].map((s) => ({ ...s, id: "g" })) }), origin)
+    const read = parseProjectFile(drawn({ graphics: [{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, fill: true, dash: "wavy", net: " " }].map((s) => ({ ...s, id: "g" })) }), origin)
     expect(read.graphics).toEqual([{ type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1, id: "g" }])
   })
 
   it("keeps every valid land with no pads, with drawings, with none, or with drawings that were all damaged: its parts have text, and it has a courtyard", () => {
     const line = { type: "line", a: P(0, 0), b: P(1, 0), layer: "F.SilkS", width: 0.1 }
-    const read = parseProjectFile(v4({ footprints: [land("LOGO", [], [line]), land("EMPTY", []), land("ALLBAD", [], [{ ...line, layer: "x" }])] }), origin)
+    const read = parseProjectFile(drawn({ footprints: [land("LOGO", [], [line]), land("EMPTY", []), land("ALLBAD", [], [{ ...line, layer: "x" }])] }), origin)
     expect(read.footprints!.map((f) => f.name)).toEqual(["LOGO", "EMPTY", "ALLBAD"])
     expect(read.footprints![0].shapes).toEqual([line])
     // what is damaged is not drawn wrong, and what is left of a land is still the land
@@ -378,16 +380,173 @@ describe("version 4, board and footprint drawings", () => {
   })
 
   it("a project with no drawings writes none", () => {
-    const written = JSON.parse(serializeProject(parseProjectFile(v4({ footprints: [land("L", [pad1])] }), origin)))
+    const written = JSON.parse(serializeProject(parseProjectFile(drawn({ footprints: [land("L", [pad1])] }), origin)))
     expect(written.project).not.toHaveProperty("graphics")
     expect(written.project.footprints[0]).not.toHaveProperty("shapes")
   })
 })
 
-/** A project as version 8 wrote it: the editor's own whole-board pours, no polygon zones. */
+describe("version 2, before symbols had units, mirrors, fields of their own and drawings kept in the project", () => {
+  // Every shipped example, written as a version 2 file: what an account or a disk holds from before.
+  const asV2 = (p: Project) => {
+    const { id: _id, createdAt: _c, updatedAt: _u, ...doc } = p
+    return JSON.parse(JSON.stringify({ format: PROJECT_FILE_FORMAT, version: 2, project: doc }))
+  }
+
+  it("reads as the same project, with none of what version 3 adds, and is written as the current version", () => {
+    for (const ex of EXAMPLES) {
+      const file = asV2(ex.project)
+      const read = parseProjectFile(file, origin)
+      expect(read.components.map((c) => [c.id, c.partId, c.ref, c.sch, c.unit, c.bodyStyle, c.fields, c.pinAlt])).toEqual(ex.project.components.map((c) => [c.id, c.partId, c.ref, c.sch, undefined, undefined, undefined, undefined]))
+      expect(read.symbols).toBeUndefined()
+      expect(read.wires).toEqual(ex.project.wires)
+      expect(read.labels).toEqual(ex.project.labels)
+      // nor what slice 3b-ii adds to the same step: the nets are named by the editor's rule, nothing else is on the sheet, no part has flags
+      expect(read.netNames).toBeUndefined()
+      expect(read.drawings).toBeUndefined()
+      expect(read.components.some((c) => c.flags)).toBe(false)
+      expect(read.blocks?.some((b) => b.locked) ?? false).toBe(false)
+      expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
+      // and reading what was written changes nothing
+      expect(computeConnectivity(parseProjectFile(serializeProject(read), origin)).nets.map((n) => [n.name, n.pins.length])).toEqual(computeConnectivity(read).nets.map((n) => [n.name, n.pins.length]))
+    }
+  })
+
+  it("is not refused, and a newer file is: a reader of this version does not guess at a newer one", () => {
+    expect(() => migrateProjectFile({ format: PROJECT_FILE_FORMAT, version: 2, project: { name: "x", components: [] } })).not.toThrow()
+    expect(problem(() => parseProjectFile({ format: PROJECT_FILE_FORMAT, version: 4, project: {} }, origin))).toBe("too_new")
+  })
+})
+
+describe("version 3 with what slice 3b-ii adds: label kinds and shapes, KiCad's net names, drawings of the sheet, flags, wire looks, locked groups", () => {
+  it("reads back what it writes, and drops what is malformed rather than failing", () => {
+    const ex = EXAMPLES[0].project
+    const c0 = ex.components[0]
+    const project: Project = {
+      ...ex,
+      netNames: "kicad",
+      components: [{ ...c0, fieldsAutoplaced: true, flags: { dnp: true, excludeFromBom: true } }, ...ex.components.slice(1)],
+      wires: [{ ...ex.wires[0], look: { width: 0.04, dash: "dash", color: "#ff0000" } }, ...ex.wires.slice(1)],
+      labels: [{ id: "l1", name: "A", x: 1, y: 1, rot: 0, kind: "global", shape: "input", look: { size: 0.12, bold: true } }],
+      drawings: [
+        { id: "n1", type: "text", text: "hi", x: 0, y: 0, size: 0.1, align: "center", valign: "middle", rot: 90, italic: true },
+        { id: "n2", type: "line", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], stroke: {} },
+        { id: "n3", type: "rect", x: 0, y: 0, width: 2, height: 1, stroke: { width: 0.02, dash: "dash", color: "#112233" }, paint: { kind: "background" } },
+        { id: "n4", type: "junction", x: 3, y: 3, dotColor: "#00ff00" },
+      ],
+      blocks: [{ id: "b1", name: "G", components: [c0.id], locked: true }],
+    }
+    const read = parseProjectFile(serializeProject(project), origin)
+    expect(read.netNames).toBe("kicad")
+    expect(read.components[0].flags).toEqual({ dnp: true, excludeFromBom: true })
+    expect(read.components[0].fieldsAutoplaced).toBe(true)
+    expect(read.wires[0].look).toEqual({ width: 0.04, dash: "dash", color: "#ff0000" })
+    expect(read.labels[0]).toMatchObject({ kind: "global", shape: "input", look: { size: 0.12, bold: true } })
+    expect(read.drawings).toEqual(project.drawings)
+    expect(read.blocks?.[0].locked).toBe(true)
+    const damaged = parseProjectFile(
+      {
+        format: PROJECT_FILE_FORMAT,
+        version: 3,
+        project: { ...JSON.parse(serializeProject(project)).project, netNames: "other", drawings: [{ id: "x", type: "text" }, { id: "y", type: "rect", x: 1, y: 2 }, { id: "z", type: "circle", x: 1 }], labels: [{ id: "l", name: "A", x: 1, y: 1, rot: 45, kind: "weird", shape: "bad" }] },
+      },
+      origin,
+    )
+    expect(damaged.netNames).toBeUndefined()
+    expect(damaged.drawings).toBeUndefined()
+    expect(damaged.labels[0]).toMatchObject({ rot: 0 })
+    expect(damaged.labels[0].kind).toBeUndefined()
+  })
+})
+
+// What the schematic track's development build wrote: the flags as `inBom: false` and the rest, and `items` with a `kind`.
+const devFile = (version: number) => ({
+  format: PROJECT_FILE_FORMAT,
+  version,
+  project: {
+    name: "dev",
+    description: "",
+    components: [
+      { id: "r", partId: "resistor", ref: "R1", props: { resistance: "10k" }, footprint: "0603", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 5, y: -5, rot: 0, side: "top", placed: true }, flags: { dnp: true, inBom: false, onBoard: false, inPosFiles: false, excludeFromSim: true, fieldsAutoplaced: true } },
+      { id: "c", partId: "capacitor", ref: "C1", props: { capacitance: "100nF" }, footprint: "0603", sch: { x: 2, y: 0, rot: 0 }, pcb: { x: 8, y: -5, rot: 0, side: "top", placed: true } },
+    ],
+    wires: [],
+    labels: [],
+    items: [
+      { id: "n1", kind: "text", text: "Note", x: 1, y: 2, rot: 90, look: { size: 0.12, bold: true, h: "left", color: "#ff0000", thickness: 0.01 }, excludeFromSim: true },
+      { id: "n2", kind: "polyline", points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], stroke: { width: 0.03 }, fill: { kind: "outline" } },
+      { id: "n3", kind: "rectangle", a: { x: 3, y: 4 }, b: { x: 1, y: 1 }, radius: 0.1 },
+      { id: "n4", kind: "circle", c: { x: 5, y: 5 }, r: 0.5 },
+      { id: "n5", kind: "junction", x: 2, y: 2, diameter: 0.1, color: "#00ff00" },
+    ],
+    drawings: [{ id: "d1", type: "text", x: 0, y: 0, text: "Mine", size: 0.14 }],
+  },
+})
+
+describe("the schematic track's own saved shape, read at version 2", () => {
+  it("is migrated from 2: flags in the one set, fields autoplaced on the part, items as drawings after the drawings already there", () => {
+    const read = parseProjectFile(devFile(2), origin)
+    const r1 = read.components.find((c) => c.ref === "R1")!
+    expect(r1.flags).toEqual({ dnp: true, excludeFromBom: true, notOnBoard: true, excludeFromPos: true, excludeFromSim: true })
+    expect(r1.fieldsAutoplaced).toBe(true)
+    expect(read.components.find((c) => c.ref === "C1")).not.toHaveProperty("flags")
+    expect(read).not.toHaveProperty("items")
+    expect(read.drawings?.map((d) => [d.id, d.type])).toEqual([["d1", "text"], ["n1", "text"], ["n2", "line"], ["n3", "rect"], ["n4", "circle"], ["n5", "junction"]])
+    // the drawing the tools made is as it was
+    expect(read.drawings![0]).toEqual({ id: "d1", type: "text", x: 0, y: 0, text: "Mine", size: 0.14 })
+    // a text says its justification and look as the drawing's own fields
+    expect(read.drawings![1]).toMatchObject({ x: 1, y: 2, text: "Note", size: 0.12, bold: true, align: "left", valign: "middle", rot: 90, excludeFromSim: true, stroke: { color: "#ff0000", width: 0.01 } })
+    // a polyline is a line with its stroke and fill, a rectangle a box by its lower-left corner, a circle has its centre as x and y, a dot's colour is dotColor
+    expect(read.drawings![2]).toMatchObject({ points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], stroke: { width: 0.03 }, paint: { kind: "outline" } })
+    expect(read.drawings![3]).toMatchObject({ x: 1, y: 1, width: 2, height: 3, radius: 0.1, stroke: {} })
+    expect(read.drawings![4]).toMatchObject({ x: 5, y: 5, radius: 0.5 })
+    expect(read.drawings![5]).toMatchObject({ x: 2, y: 2, diameter: 0.1, dotColor: "#00ff00" })
+    // saved, it is the current version in the current shape, and reading that back changes nothing
+    const written = JSON.parse(serializeProject(read))
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
+    expect(written.project).not.toHaveProperty("items")
+    expect(parseProjectFile(written, origin).drawings).toEqual(read.drawings)
+  })
+
+  it("a rectangle with no width or no height that KiCad drew survives the step and a save and a load; a tool's does not exist", () => {
+    const doc = devFile(2)
+    doc.project.items.push({ id: "z1", kind: "rectangle", a: { x: 6, y: 1 }, b: { x: 6, y: 3 } } as never, { id: "z2", kind: "rectangle", a: { x: 7, y: 1 }, b: { x: 9, y: 1 }, stroke: { width: 0.01 } } as never, { id: "z3", kind: "rectangle", a: { x: 8, y: 8 }, b: { x: 8, y: 8 }, fill: { kind: "outline" } } as never)
+    doc.project.drawings.push({ id: "t0", type: "rect", x: 0, y: 0, width: 0, height: 2 } as never, { id: "t1", type: "rect", x: 0, y: 0, width: 2, height: 2 } as never)
+    const read = parseProjectFile(doc, origin)
+    const ids = read.drawings?.map((d) => d.id)
+    expect(ids).toEqual(expect.arrayContaining(["z1", "z2", "z3", "t1"]))
+    expect(ids).not.toContain("t0")
+    expect(read.drawings?.find((d) => d.id === "z1")).toMatchObject({ type: "rect", width: 0, height: 2, stroke: {} })
+    expect(read.drawings?.find((d) => d.id === "z2")).toMatchObject({ width: 2, height: 0 })
+    expect(read.drawings?.find((d) => d.id === "z3")).toMatchObject({ width: 0, height: 0 })
+    expect(parseProjectFile(JSON.parse(JSON.stringify(JSON.parse(serializeProject(read)))), origin).drawings).toEqual(read.drawings)
+  })
+
+  it("a file of the board track opens untouched by that step, with the drawings of the tools it may carry", () => {
+    for (const version of [2]) {
+      const doc = JSON.parse(JSON.stringify(v2))
+      doc.version = version
+      doc.project.components[0].flags = { mount: "smd", dnp: true, netTies: [["1", "2"]] }
+      doc.project.drawings = [{ id: "d1", type: "line", points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], color: "red", arrows: "end" }]
+      const read = parseProjectFile(doc, origin)
+      expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
+      expect(read.drawings).toEqual(doc.project.drawings)
+      expect(migrateProjectFile(doc).drawings).toEqual(doc.project.drawings)
+    }
+  })
+
+  it("the step reads a symbol's flags and its footprint's together, and the symbol's keep what the footprint's say", () => {
+    const doc = devFile(2)
+    doc.project.components[0].flags = { inBom: false, mount: "smd", netTies: [["1", "2"]], virtual: true } as never
+    const read = parseProjectFile(doc, origin)
+    expect(read.components[0].flags).toEqual({ mount: "smd", virtual: true, excludeFromBom: true, netTies: [["1", "2"]] })
+  })
+})
+
+/** A version 2 project with the editor's own whole-board pours, no polygon zones. */
 const v8 = {
   format: PROJECT_FILE_FORMAT,
-  version: 8,
+  version: 2,
   project: {
     ...v2.project,
     name: "v8",
@@ -395,9 +554,9 @@ const v8 = {
   },
 }
 
-describe("version 8, before polygon zones, rule areas and zone settings", () => {
+describe("whole-board pours, before polygon zones, rule areas and zone settings", () => {
   it("opens as it was written and is saved as the current version, the pours untouched", () => {
-    expect(migrateProjectFile(v8)).toEqual(v8.project)
+    expect(migrateProjectFile(v8)).toEqual({ ...v8.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v8, origin)
     expect(read.zones).toEqual(v8.project.zones)
     const written = JSON.parse(serializeProject(read))
@@ -405,12 +564,12 @@ describe("version 8, before polygon zones, rule areas and zone settings", () => 
     expect(written.project.zones).toEqual(v8.project.zones)
   })
 
-  it("a version 6 or 7 document with pours reads the same way", () => {
-    for (const version of [6, 7]) expect(parseProjectFile({ ...v8, version }, origin).zones).toEqual(v8.project.zones)
+  it("a version 3 document with pours reads the same way", () => {
+    for (const version of [3]) expect(parseProjectFile({ ...v8, version }, origin).zones).toEqual(v8.project.zones)
   })
 })
 
-describe("version 9 zones", () => {
+describe("polygon zones", () => {
   const ring = (pts: number[][]) => ({ closed: true, segs: pts.map((a, i) => ({ kind: "line", a: P(a[0], a[1]), b: P(pts[(i + 1) % pts.length][0], pts[(i + 1) % pts.length][1]) })) })
   const arcRing = {
     closed: true,
@@ -427,7 +586,7 @@ describe("version 9 zones", () => {
     { id: "c", net: "VCC", layer: "top", outline: [ring([[0, 0], [1, 0], [1, 1]])], teardrop: "padvia", islands: "never", connect: "solid" },
   ]
   it("round-trips every field exactly, a straight ring as bare numbers and an arc ring in the outline form", () => {
-    const doc = { ...v8, version: 9, project: { ...v8.project, zones } }
+    const doc = { ...v8, version: 3, project: { ...v8.project, zones } }
     const read = parseProjectFile(doc, origin)
     expect(read.zones).toEqual(zones)
     const written = JSON.parse(serializeProject(read))
@@ -439,7 +598,7 @@ describe("version 9 zones", () => {
   it("a polygon of 2,000 corners with millimetre coordinates to a micron is about 16 bytes a corner", () => {
     const pts = Array.from({ length: 2000 }, (_, i) => [Math.round(Math.cos(i / 318) * 40000) / 1000, Math.round(Math.sin(i / 318) * 40000) / 1000])
     const big = { id: "big", net: "GND", layer: "top", outline: [ring(pts)] }
-    const text = serializeProject(parseProjectFile({ ...v8, version: 9, project: { ...v8.project, zones: [big] } }, origin))
+    const text = serializeProject(parseProjectFile({ ...v8, version: 3, project: { ...v8.project, zones: [big] } }, origin))
     expect(text.length).toBeLessThan(2000 * 18 + 4000)
   })
   it("drops a zone with a damaged layer or a rule area with no polygon, and repairs what can be", () => {
@@ -448,8 +607,229 @@ describe("version 9 zones", () => {
       { id: "y", net: "", layer: "top", keepout: { vias: true } },
       { id: "w", net: "GND", layer: "top", priority: -3, minWidth: -1, connect: "sideways", smoothing: { kind: "round", radius: 1 }, outline: [ring([[0, 0], [1, 0], [1, 1]])] },
     ]
-    const read = parseProjectFile({ ...v8, version: 9, project: { ...v8.project, zones: bad.map((z) => (z.outline ? { ...z, ol: [["p", 0, 0, 1, 0, 1, 1]], outline: undefined } : z)) } }, origin)
+    const read = parseProjectFile({ ...v8, version: 3, project: { ...v8.project, zones: bad.map((z) => (z.outline ? { ...z, ol: [["p", 0, 0, 1, 0, 1, 1]], outline: undefined } : z)) } }, origin)
     expect(read.zones.map((z) => z.id)).toEqual(["w"])
     expect(read.zones[0]).toEqual({ id: "w", net: "GND", layer: "top", outline: [ring([[0, 0], [1, 0], [1, 1]])] })
+  })
+})
+
+/** A version 2 project with polygon zones (X3) and a land whose pads have none of the pad model's fields (X7). */
+const v9 = {
+  format: PROJECT_FILE_FORMAT,
+  version: 2,
+  project: {
+    ...v2.project,
+    name: "v9",
+    zones: [{ id: "z", net: "GND", layer: "top", ol: [["p", 0, 0, 10, 0, 10, 8, 0, 8]], priority: 1, connect: "thermal", thermalGap: 0.4 }],
+    footprints: [{ name: "v9-land", silk: [], courtyard: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, pads: [{ pin: "1", shape: "rect", x: -0.5, y: 0, width: 0.6, height: 0.6, layer: "top" }, { pin: "2", shape: "rect", x: 0.5, y: 0, width: 0.6, height: 0.6, layer: "top" }] }],
+  },
+}
+
+describe("pads before the pad model (X7)", () => {
+  it("opens as it was written, zones and pads untouched, and is saved as the current version", () => {
+    expect(migrateProjectFile(v9)).toEqual({ ...v9.project, sheets: [{ id: "root" }] })
+    const read = parseProjectFile(v9, origin)
+    expect(read.zones).toHaveLength(1)
+    expect(read.zones[0]).toMatchObject({ id: "z", net: "GND", priority: 1, connect: "thermal", thermalGap: 0.4 })
+    expect(read.footprints?.[0].pads).toEqual(v9.project.footprints[0].pads)
+    const written = JSON.parse(serializeProject(read))
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
+    expect(written.project.footprints[0].pads).toEqual(v9.project.footprints[0].pads)
+    expect(parseProjectFile(serializeProject(read), origin).zones).toEqual(read.zones)
+  })
+
+  it("a pad's X7 fields and a zone's polygon survive a save and a load together", () => {
+    const read = parseProjectFile(v9, origin)
+    const withPads = { ...read, footprints: [{ ...read.footprints![0], pads: read.footprints![0].pads.map((p, i) => (i === 0 ? { ...p, zoneConnect: "none" as const, thermalGap: 0.5, thermalWidth: 0.3, clearance: 0.4 } : p)) }] }
+    const back = parseProjectFile(serializeProject(withPads), origin)
+    expect(back.footprints?.[0].pads[0]).toMatchObject({ zoneConnect: "none", thermalGap: 0.5, thermalWidth: 0.3, clearance: 0.4 })
+    expect(back.zones).toEqual(read.zones)
+  })
+})
+
+// A version 2 document: a schematic of one sheet, as the editor wrote it before sheets (S1).
+const v10 = {
+  format: "cherryblossom.project",
+  version: 2,
+  project: {
+    name: "v10",
+    description: "",
+    components: [{ id: "c1", partId: "resistor", ref: "R1", props: { value: "10k" }, footprint: "r_0603", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 1, y: 2, rot: 0, side: "top", placed: true } }],
+    wires: [{ id: "w1", points: [{ x: 0, y: 0.3 }, { x: 1, y: 0.3 }] }],
+    labels: [{ id: "l1", name: "SIG", x: 1, y: 0.3, rot: 0 }],
+    traces: [],
+    vias: [],
+    zones: [],
+    texts: [],
+  },
+}
+
+describe("a one-sheet project, before sheets (S1)", () => {
+  it("is a project of one sheet: the migration lists the root and changes nothing else, and it is saved as the current version", () => {
+    expect(migrateProjectFile(v10)).toEqual({ ...v10.project, sheets: [{ id: "root" }] })
+    const read = parseProjectFile(v10, origin)
+    expect(read.sheetSymbols).toBeUndefined()
+    expect(read.wires).toEqual(v10.project.wires)
+    expect(read.labels).toEqual(v10.project.labels)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
+    expect(computeConnectivity(read).nets.map((n) => n.name)).toEqual(computeConnectivity(parseProjectFile({ ...v10, version: 3, project: v10.project }, origin)).nets.map((n) => n.name))
+  })
+
+  it("a project with sheets survives a save and a load, and a file that is newer than this reader is refused", () => {
+    const { project } = imp()
+    const back = parseProjectFile(serializeProject(project), origin)
+    expect(back.sheets).toEqual(project.sheets)
+    expect(back.sheetSymbols).toEqual(project.sheetSymbols)
+    expect(back.components.map((c) => [c.ref, c.inst])).toEqual(project.components.map((c) => [c.ref, c.inst]))
+    expect(back.scope).toBeUndefined()
+    expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(project)), version: 4 }, origin))).toBe("too_new")
+  })
+})
+
+
+// A version 3 document: a schematic as the editor wrote it before variants and KiCad's joining rules (S9, S11).
+const v13 = {
+  format: PROJECT_FILE_FORMAT,
+  version: 3,
+  project: {
+    name: "v13",
+    description: "",
+    components: [
+      { id: "c1", partId: "resistor", ref: "R1", props: { value: "10k" }, footprint: "0603", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false }, flags: { dnp: true } },
+      { id: "c2", partId: "resistor", ref: "R2", props: { value: "1k" }, footprint: "0603", sch: { x: 2, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false } },
+    ],
+    wires: [{ id: "w1", points: [{ x: 0, y: 0.3 }, { x: 2, y: 0.3 }] }],
+    labels: [],
+    sheets: [{ id: "root", page: "2" }],
+    traces: [],
+    vias: [],
+    zones: [],
+    texts: [],
+    board: { width: 40, height: 30 },
+    rules: {},
+  },
+}
+
+describe("before variants (S9) and KiCad's joining rules (S11)", () => {
+  it("is carried across with nothing added, and saved as the current version", () => {
+    const migrated = migrateProjectFile(v13)
+    expect(migrated).toEqual(v13.project)
+    const read = parseProjectFile(v13, origin)
+    expect(read.variants).toBeUndefined()
+    expect(read.components.every((c) => c.variants === undefined)).toBe(true)
+    // a page number stored then is read past
+    expect(read.sheets).toEqual([{ id: "root" }])
+    const written = JSON.parse(serializeProject(read))
+    expect(written.version).toBe(PROJECT_FILE_VERSION)
+    expect(written.project).not.toHaveProperty("variants")
+    expect(written.project.sheets).toEqual([{ id: "root" }])
+  })
+
+  it("variants, a symbol's changes and a sheet's flag survive a save and a load exactly, and what is malformed is dropped", () => {
+    const read = parseProjectFile(v13, origin)
+    const project: Project = {
+      ...read,
+      sheets: [{ id: "root", kicadRules: true }],
+      variants: { list: [{ name: "Lite", description: "no sensor" }, { name: "Full" }], active: "Lite" },
+      components: read.components.map((c) => (c.ref === "R1" ? { ...c, variants: { Lite: { dnp: false, excludeFromBom: true, fields: { Value: "0R" } }, Full: { notOnBoard: true } } } : c)),
+    }
+    const back = parseProjectFile(serializeProject(project), origin)
+    expect(back.variants).toEqual(project.variants)
+    expect(back.components.find((c) => c.ref === "R1")!.variants).toEqual(project.components.find((c) => c.ref === "R1")!.variants)
+    expect(back.sheets).toEqual(project.sheets)
+    // a stored document with a damaged variant list and overrides: names are kept only when they are text, an active name only when listed, a variant only a symbol names is listed
+    const damaged = JSON.parse(serializeProject(project))
+    damaged.project.variants = { list: [{ name: "A" }, { name: 3 }, { name: "A" }, null], active: "Nope" }
+    damaged.project.components[0].variants = { B: { dnp: "yes", excludeFromBom: true, fields: { X: 1, Y: "y" } }, "": { dnp: true } }
+    const fixed = parseProjectFile(damaged, origin)
+    expect(fixed.variants).toEqual({ list: [{ name: "A" }, { name: "B" }] })
+    expect(fixed.components[0].variants).toEqual({ B: { excludeFromBom: true, fields: { Y: "y" } } })
+  })
+
+  it("a file newer than this reader is refused, so it cannot save over one with variants", () => {
+    expect(problem(() => parseProjectFile({ ...v13, version: 4 }, origin))).toBe("too_new")
+  })
+})
+
+// A version 3 document: a schematic with a closed polygon and a net class, as the editor wrote it before directive labels and rule areas (S8).
+const v11 = {
+  format: "cherryblossom.project",
+  version: 3,
+  project: {
+    name: "v11",
+    description: "",
+    components: [{ id: "c1", partId: "resistor", ref: "R1", props: { value: "10k" }, footprint: "r_0603", sch: { x: 0, y: 0, rot: 0 }, pcb: { x: 1, y: 2, rot: 0, side: "top", placed: true } }],
+    wires: [{ id: "w1", points: [{ x: 0, y: 0.3 }, { x: 1, y: 0.3 }] }],
+    labels: [{ id: "l1", name: "SIG", x: 1, y: 0.3, rot: 0 }],
+    drawings: [{ id: "d1", type: "line", points: [{ x: -1, y: -1 }, { x: 2, y: -1 }, { x: 2, y: 1 }], closed: true, stroke: { dash: "dash" } }],
+    rules: { netClasses: [{ name: "Power", nets: ["SIG"], traceWidth: 0.5 }] },
+    traces: [],
+    vias: [],
+    zones: [],
+    texts: [],
+  },
+}
+
+describe("before directive labels and rule areas (S8)", () => {
+  it("is read as it is: nothing is filled in, a closed line is not a rule area, and it is saved as the current version", () => {
+    expect(migrateProjectFile(v11)).toEqual(v11.project)
+    const read = parseProjectFile(v11, origin)
+    expect(read.drawings).toEqual(v11.project.drawings)
+    expect(read.rules.netClasses).toEqual([{ name: "Power", nets: ["SIG"], traceWidth: 0.5 }])
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
+  })
+
+  it("keeps a directive label, a rule area and the classes a label gives through a save and a load, and refuses a newer file", () => {
+    const doc = {
+      ...v11,
+      project: {
+        ...v11.project,
+        drawings: [
+          ...v11.project.drawings.map((d) => ({ ...d, ruleArea: { dnp: true } })),
+          { id: "d2", type: "directive", text: "", x: 0.5, y: 0.3, rot: 90, shape: "diamond", length: 0.2, fields: [{ name: "Netclass", value: "Fast", place: { x: 0.05, y: 0.1, angle: 0, h: "left" } }], fieldsAutoplaced: true },
+        ],
+        rules: { netClasses: [{ name: "Fast", nets: [], labelNets: ["SIG"], implicit: true }] },
+      },
+    }
+    const read = parseProjectFile(doc, origin)
+    expect(read.drawings).toEqual(doc.project.drawings)
+    expect(read.rules.netClasses).toEqual(doc.project.rules.netClasses)
+    expect(parseProjectFile(serializeProject(read), origin).drawings).toEqual(read.drawings)
+    expect(problem(() => parseProjectFile({ ...doc, version: 4 }, origin))).toBe("too_new")
+  })
+})
+
+describe("version 3 is the whole KiCad import", () => {
+  // A project with content in every part the step from 2 touched, with its root sheet listed so every version reads to the same document.
+  const rich = (): Project => {
+    const p = parseProjectFile(serializeProject(EXAMPLES[0].project), origin)
+    return { ...p, sheets: [{ id: "root" }] }
+  }
+  const body = (p: Project) => JSON.parse(serializeProject(p)).project
+
+  it("a newly saved file says 3", () => {
+    expect(PROJECT_FILE_VERSION).toBe(3)
+    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(3)
+    expect(JSON.parse(serializeProject(rich())).version).toBe(3)
+  })
+
+  it("reading a version 3 file changes nothing", () => {
+    const file = JSON.parse(serializeProject(rich()))
+    expect(migrateProjectFile(file)).toEqual(file.project)
+    expect(body(parseProjectFile(file, origin))).toEqual(file.project)
+    const plain = JSON.parse(serializeProject(createProject("plain")))
+    expect(plain.project).not.toHaveProperty("sheets")
+    expect(migrateProjectFile(plain)).toEqual(plain.project)
+  })
+
+  it("a version 2 file goes to 3 unchanged, with the root sheet listed", () => {
+    expect(migrateProjectFile(v2)).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
+    const read = parseProjectFile(v2, origin)
+    expect(JSON.parse(serializeProject(read)).version).toBe(3)
+    expect(read.sheets).toEqual([{ id: "root" }])
+  })
+
+  it("a file at 4, 14 or 15 is newer than this editor", () => {
+    for (const version of [4, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
   })
 })

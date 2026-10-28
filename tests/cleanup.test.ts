@@ -15,6 +15,7 @@ import { normalizeProject, parseProjectFile } from "../src/model/projectFile"
 import { useProjectStore } from "../src/store/projectStore"
 import type { Project } from "../src/model/types"
 import { randomDesign } from "./tidy-designs"
+import { expectSameProject } from "./history"
 
 // Clean up, the free version: the parts in no block grouped by how they are wired, then Tidy. The
 // groups are written down below for the shipped examples with their blocks taken off, and what has
@@ -367,7 +368,7 @@ describe("after Tidy", () => {
     expect(state.past).toHaveLength(1)
     expect(state.project!.blocks!.map((b) => b.name).sort()).toEqual(["LED D1", "REGULATOR U1 AMS1117-3.3"])
     state.undo()
-    expect(useProjectStore.getState().project).toBe(after)
+    expectSameProject(useProjectStore.getState().project, after)
   })
 
   it("renaming the OTHER block makes it the user's: its parts stay in it", () => {
@@ -524,7 +525,7 @@ describe("the toolbar's Clean up", () => {
     expect(state.past).toHaveLength(1)
     expect(state.project!.blocks).toHaveLength(6)
     state.undo()
-    expect(useProjectStore.getState().project).toBe(before)
+    expectSameProject(useProjectStore.getState().project, before)
     useProjectStore.getState().redo()
     expect(useProjectStore.getState().project!.blocks).toHaveLength(6)
   })

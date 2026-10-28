@@ -18,12 +18,14 @@ import { accountRules, readKicadRules } from "../src/model/kicad/project/dru"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
 import { drawingFromLib, resolveLibSymbol } from "../src/model/kicad/schematic/symbols"
 import { rawSymbols, type RawSymbol } from "./kicad-census/drawing-sch.mjs"
-import { boxCorners, boxTextAt } from "../src/model/sheetItems"
+import { boxCorners, boxTextAt, directiveShape, kicadOnlyBox } from "../src/model/sheetItems"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { isDeepStrictEqual } from "node:util"
-import { rawItems } from "./kicad-census/items-sch.mjs"
+import { labelNetClasses } from "../src/model/directives"
+import { rawBuses, rawItems } from "./kicad-census/items-sch.mjs"
 import { kid, kids, numAt, parseSexpr, type Sexpr } from "./kicad-census/sexpr.mjs"
-import { boardPadNets, deriveNets } from "./kicad-census/netlist-sch.mjs"
+import { boardPadNets, busMembers, deriveNets } from "./kicad-census/netlist-sch.mjs"
+import { parseBusName } from "../src/model/busNames"
 import { needsSch } from "./kicad-census/needs-sch.mjs"
 
 // The per-file pass or fail table of slice 3a over a local corpus (not in the repo):
@@ -54,6 +56,85 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * S3: the buses of one imported sheet against its raw file. Each raw bus is covered, to a thousandth of a millimetre, by segments of the model that
+ * lie on it (the importer cuts a bus at a junction on its body, so one raw bus may be several segments), and no segment of the model lies off the
+ * raw buses; each entry is where the file has it with the size the file gives; each alias has the members the file lists. Only a project of one sheet
+ * is compared here (a sheet with a sheet symbol is read with its folder and has others' buses too), the rest is compared in `tests/kicad-sch-s3.test.ts`.
+ */
+function compareBuses(file: string, raw: ReturnType<typeof rawBuses>, project: { drawings?: { type: string; sheet?: string; points?: { x: number; y: number }[]; x?: number; y?: number; dx?: number; dy?: number; toBus?: boolean }[]; busAliases?: { name: string; members: string[] }[]; sheetSymbols?: unknown[] }): string[] {
+  const out: string[] = []
+  if (project.sheetSymbols?.length) return out
+  const MMU = 12.7
+  const segs = (project.drawings ?? []).filter((d) => d.type === "bus").flatMap((d) => d.points!.slice(1).map((p, i) => [d.points![i].x * MMU, -d.points![i].y * MMU, p.x * MMU, -p.y * MMU]))
+  const onSeg = (s: number[], a: number[]) => {
+    // `a` is a raw bus [x1, y1, x2, y2]; `s` lies on it when both its ends do
+    const len = Math.hypot(a[2] - a[0], a[3] - a[1])
+    if (len === 0) return null
+    const ux = (a[2] - a[0]) / len
+    const uy = (a[3] - a[1]) / len
+    const t = (x: number, y: number) => {
+      const along = (x - a[0]) * ux + (y - a[1]) * uy
+      const off = Math.abs(-(x - a[0]) * uy + (y - a[1]) * ux)
+      return off < 0.002 && along > -0.002 && along < len + 0.002 ? along : null
+    }
+    const t1 = t(s[0], s[1])
+    const t2 = t(s[2], s[3])
+    return t1 === null || t2 === null ? null : Math.abs(t2 - t1)
+  }
+  for (const a of raw.buses) {
+    const len = Math.hypot(a[2] - a[0], a[3] - a[1])
+    let covered = 0
+    for (const s of segs) covered += onSeg(s, a) ?? 0
+    // a point (zero length) bus is no segment
+    if (len > 0.002 && Math.abs(covered - len) > 0.004) out.push(`${file}: a bus of ${len.toFixed(3)} mm is covered by ${covered.toFixed(3)} mm`)
+  }
+  for (const s of segs) if (!raw.buses.some((a) => onSeg(s, a) !== null)) out.push(`${file}: a bus segment lies on no bus of the file`)
+  const entries = (project.drawings ?? []).filter((d) => d.type === "busentry")
+  if (entries.length !== raw.entries.length) out.push(`${file}: ${entries.length} bus entries against ${raw.entries.length}`)
+  raw.entries.forEach((r, i) => {
+    const e = entries[i]
+    if (!e) return
+    const got = [e.x! * MMU, -e.y! * MMU, e.dx! * MMU, -e.dy! * MMU]
+    const want = [r.at[0], r.at[1], r.size[0], r.size[1]]
+    got.forEach((v, k) => {
+      if (Math.abs(v - want[k]) > 0.002) out.push(`${file}: bus entry ${i} number ${k}: ${v} against ${want[k]}`)
+    })
+    if (!!e.toBus !== r.toBus) out.push(`${file}: bus entry ${i} bus-to-bus`)
+  })
+  const aliases = project.busAliases ?? []
+  if (aliases.length !== raw.aliases.length) out.push(`${file}: ${aliases.length} bus aliases against ${raw.aliases.length}`)
+  raw.aliases.forEach((r, i) => {
+    const a = aliases[i]
+    if (a && (a.name !== r.name.replace(/\{slash\}/g, "/") || a.members.join("\u0001") !== r.members.map((m) => m.replace(/\{slash\}/g, "/")).join("\u0001"))) out.push(`${file}: bus alias ${i} differs`)
+  })
+  return out
+}
+
+/**
+ * S3: every name of a label, hierarchical label, global label or sheet pin of a file that has a bracket or a brace, read by `src/model/busNames.ts` and by
+ * the oracle's own small reader (`busMembers` in `netlist-sch.mjs`): the same kind, the same members and the same member names without their prefix.
+ */
+function compareBusNames(file: string, text: string): string[] {
+  const out: string[] = []
+  const aliases = new Map<string, string[]>()
+  for (const a of rawBuses(text).aliases) aliases.set(a.name, a.members)
+  const lookup = (n: string) => aliases.get(n)
+  const seen = new Set<string>()
+  for (const m of text.matchAll(/\((?:label|global_label|hierarchical_label|pin) "((?:[^"\\]|\\.)*)"/g)) {
+    const t = m[1].replace(/\{slash\}/g, "/")
+    if ((!t.includes("[") && !t.includes("{")) || seen.has(t)) continue
+    seen.add(t)
+    // a pin of a symbol (`[1-5]`, `[6,7,9-11]`) is a number, not a name: only the names that parse as a bus in either reader count
+    const mine = parseBusName(t, lookup, "kicad9")
+    const theirs = busMembers(t, aliases)
+    if (!mine && !theirs) continue
+    if (!mine || !theirs) out.push(`${file}: "${t}" is ${mine ? "a bus" : "no bus"} to the importer and ${theirs ? "a bus" : "no bus"} to the oracle`)
+    else if (mine.kind !== theirs.kind || mine.names.join("\u0001") !== theirs.names.join("\u0001") || mine.locals.join("\u0001") !== theirs.locals.join("\u0001")) out.push(`${file}: "${t}" has other members`)
+  }
+  return out
+}
+
 const rel = (path: string) => relative(CORPUS!, path).split(sep).join("/")
 const targeted = new Set(existsSync(join(CORPUS ?? "", "projects", "_targeted.txt")) ? readFileSync(join(CORPUS!, "projects", "_targeted.txt"), "utf8").split("\n").map((l) => l.trim()).filter(Boolean) : [])
 /** The census's grouping: projects found by searching for a feature are kept apart. */
@@ -64,7 +145,7 @@ const REAL = ["pcbench", "github", "kicad-demos"]
 /** Projects whose sheets carry the references of another KiCad project too: link.mjs takes those for a match by reference, the importer does not. */
 const FOREIGN_REFERENCES = ["ESP32_S3_PCB_TEMPLATE", "USB Module/USB Switch"]
 
-const MEASURE = new Set(["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "X19"])
+const MEASURE = new Set(["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "X19"])
 
 interface FileRow {
   file: string
@@ -210,6 +291,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       let itemsCompared = 0
       let itemWorst = 0
       const itemProblems: string[] = []
+      const busProblems: string[] = []
       let savedAndLoaded = 0
       const saveProblems: string[] = []
       const sidecars = JSON.parse(readFileSync(join(CENSUS, "sidecars.json"), "utf8")) as Record<string, any>[]
@@ -250,6 +332,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           row.needsDiff = extra.length || missing.length ? [...extra.map((x) => `+${x}`), ...missing.map((x) => `-${x}`)].join(" ") : ""
           const imp = importKicadSchematic(new Uint8Array(bytes))
           row.import = imp.status === "imported" ? "imported" : `refused, ${imp.reason}`
+          busProblems.push(...compareBusNames(file, text))
           if (imp.status === "imported") {
             // saved and loaded back: the project file keeps what the import built, every list of it, exactly (a drawing a KiCad sheet gave that the reader would drop is a loss)
             const back = parseProjectFile(serializeProject(imp.project), { id: imp.project.id })
@@ -259,37 +342,69 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             }
             // S4: every item of the sheet against the raw file, number by number, by a reader that shares no code with `src`
             const raw = rawItems(text)
-            const mine = (imp.project.items ?? []).filter((i) => i.kind !== "junction" && i.kind !== "noconnect")
+            const mine = (imp.project.drawings ?? []).filter((i) => i.type !== "junction" && i.type !== "noconnect" && i.type !== "bus" && i.type !== "busentry")
             itemsCompared += raw.length
+            // S3: the buses, entries and aliases against the raw file, by a reader that shares no code with `src` (only for a sheet that is the whole project: a sheet used twice or a child is read on its own here too, so it is the same).
+            busProblems.push(...compareBuses(file, rawBuses(text), imp.project))
             if (raw.length !== mine.length) itemProblems.push(`${file}: ${mine.length} items against ${raw.length}`)
             raw.forEach((r, i) => {
               const it = mine[i]
-              if (!it || it.kind !== r.kind) {
-                itemProblems.push(`${file} item ${i}: ${it?.kind} against ${r.kind}`)
+              // A polyline is a line and a rectangle a box in the one model of the sheet's drawings.
+              const kind = it?.type === "line" ? (it.ruleArea ? "rule_area" : "polyline") : it?.type === "rect" ? "rectangle" : it?.type
+              if (!it || kind !== r.kind) {
+                itemProblems.push(`${file} item ${i}: ${kind} against ${r.kind}`)
                 return
               }
+              // A rectangle is kept by its lower-left corner and size, so the file's start and end are compared as the box they make.
+              const rawNums = it.type === "rect" ? [Math.min(r.nums[0], r.nums[2]), Math.min(r.nums[1], r.nums[3]), Math.max(r.nums[0], r.nums[2]), Math.max(r.nums[1], r.nums[3])] : r.nums
               const nums =
-                it.kind === "text" ? [it.x, -it.y]
-                : it.kind === "textbox" ? [it.x, -it.y, it.w, it.h]
-                : it.kind === "polyline" || it.kind === "bezier" ? it.points.flatMap((p) => [p.x, -p.y])
-                : it.kind === "rectangle" ? [it.a.x, -it.a.y, it.b.x, -it.b.y]
-                : it.kind === "circle" ? [it.c.x, -it.c.y, it.r]
-                : it.kind === "arc" ? [it.start.x, -it.start.y, it.mid.x, -it.mid.y, it.end.x, -it.end.y]
-                : it.kind === "image" ? [it.x, -it.y]
-                : it.kind === "table" ? it.cells.flatMap((c) => [c.x, -c.y, c.w, c.h])
+                it.type === "text" ? [it.x, -it.y]
+                : it.type === "textbox" ? [it.x, -it.y, it.w, it.h]
+                : it.type === "line" || it.type === "bezier" ? it.points.flatMap((p) => [p.x, -p.y])
+                : it.type === "rect" ? [it.x, -(it.y + it.height), it.x + it.width, -it.y]
+                : it.type === "circle" ? [it.x, -it.y, it.radius]
+                : it.type === "arc" ? [it.start.x, -it.start.y, it.mid.x, -it.mid.y, it.end.x, -it.end.y]
+                : it.type === "image" ? [it.x, -it.y]
+                : it.type === "table" ? it.cells.flatMap((c) => [c.x, -c.y, c.w, c.h])
+                : it.type === "directive" ? [it.x, -it.y, it.rot / MM, it.length]
                 : []
-              if (nums.length !== r.nums.length) itemProblems.push(`${file} item ${i}: ${nums.length} numbers against ${r.nums.length}`)
+              if (nums.length !== rawNums.length) itemProblems.push(`${file} item ${i}: ${nums.length} numbers against ${rawNums.length}`)
               nums.forEach((v, k) => {
-                const e = Math.abs(v * MM - r.nums[k])
+                const e = Math.abs(v * MM - rawNums[k])
                 itemWorst = Math.max(itemWorst, e)
-                if (e > 0.001) itemProblems.push(`${file} item ${i} number ${k}: ${v * MM} against ${r.nums[k]}`)
+                if (e > 0.001) itemProblems.push(`${file} item ${i} number ${k}: ${v * MM} against ${rawNums[k]}`)
               })
-              if ((it.kind === "text" || it.kind === "textbox") && it.text !== r.text) itemProblems.push(`${file} item ${i}: text`)
+              if ((it.type === "text" || it.type === "textbox") && it.text !== r.text) itemProblems.push(`${file} item ${i}: text`)
+              // S8: a directive label's shape word, its properties (name and value, in file order and at their places) and the end of its pin and the box of its flag as the raw file's turn gives them;
+              // a rule area's flags, each as the raw file says it.
+              if (it.type === "directive" && r.kind === "directive") {
+                if (it.shape !== r.shape) itemProblems.push(`${file} item ${i}: shape ${it.shape} against ${r.shape}`)
+                if (JSON.stringify(it.fields.map((f) => [f.name, f.value])) !== JSON.stringify(r.fields)) itemProblems.push(`${file} item ${i}: fields`)
+                it.fields.forEach((f, k) => {
+                  const e = Math.max(Math.abs((it.x + f.place.x) * MM - r.fieldAt![k][0]), Math.abs(-(it.y + f.place.y) * MM - r.fieldAt![k][1]))
+                  itemWorst = Math.max(itemWorst, e)
+                  if (e > 0.001) itemProblems.push(`${file} item ${i} field ${k} place: ${e} mm off`)
+                })
+                const g = directiveShape(it)
+                const gotEnd = [g.pin[1].x * MM, -g.pin[1].y * MM]
+                const box = kicadOnlyBox(it)
+                const gotBox = [box.minX * MM, -box.maxY * MM, box.maxX * MM, -box.minY * MM]
+                const wantBox = r.rects![0]
+                ;[...gotEnd.map((v, q) => [v, r.anchors![0][q]]), ...gotBox.map((v, q) => [v, wantBox[q]])].forEach(([v, w], q) => {
+                  const e = Math.abs(v - w)
+                  itemWorst = Math.max(itemWorst, e)
+                  if (e > 0.001) itemProblems.push(`${file} item ${i} flag geometry ${q}: ${v} against ${w}`)
+                })
+              }
+              if (it.type === "line" && it.ruleArea && r.flags) {
+                const f = it.ruleArea
+                if (!!f.dnp !== r.flags.dnp || !!f.excludeFromBom !== r.flags.noBom || !!f.notOnBoard !== r.flags.noBoard || !!f.excludeFromSim !== r.flags.noSim) itemProblems.push(`${file} item ${i}: rule area flags`)
+              }
               // the drawn box, not only the stored numbers: the rectangle from `at` to `at + size`, never turned
-              if (r.rects && (it.kind === "textbox" || it.kind === "table")) {
-                const drawn = it.kind === "textbox" ? [boxOfCorners(it, it.w, it.h, it.rot)] : it.cells.map((c) => boxOfCorners(c, c.w, c.h, c.rot))
+              if (r.rects && (it.type === "textbox" || it.type === "table")) {
+                const drawn = it.type === "textbox" ? [boxOfCorners(it, it.w, it.h, it.rot)] : it.cells.map((c) => boxOfCorners(c, c.w, c.h, c.rot))
                 if (drawn.length !== r.rects.length) itemProblems.push(`${file} item ${i}: ${drawn.length} drawn boxes against ${r.rects.length}`)
-                const boxes = it.kind === "textbox" ? [it] : it.cells
+                const boxes = it.type === "textbox" ? [it] : it.cells
                 boxes.forEach((b, k) => {
                   const want = r.anchors?.[k]
                   if (!want) return
@@ -345,6 +460,10 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       /** The files with sheet symbols whose nets are compared with the oracle's, whole hierarchy at once. */
       const hierNets: FileRow[] = []
       const netNameProblems: string[] = []
+      /** S8: the net classes of the labels against the raw file's, by the derivation that shares no code with `src`. */
+      const classProblems: string[] = []
+      let classNetsCompared = 0
+      let classNetsInClass = 0
       /** S11: per file, the sheets built with KiCad's joining rules, what the oracle finds, and whether the nets agree. */
       const joinRows: { file: string; flagged: number; oracle: string[]; partitionEqual: boolean }[] = []
       const sheetProblems: string[] = []
@@ -359,7 +478,6 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         try {
           const bytes = new Uint8Array(readFileSync(path))
           const { schematic } = readKicadSchematic(bytes)
-          if (schematic.buses.length || schematic.busEntries.length) continue
           // A file with sheet symbols is read with every file of its folder, as a project is.
           const folder = path.slice(0, path.lastIndexOf(sep))
           const input = schematic.sheets.length ? { files: new Map([...walk(folder)].filter((f) => f.endsWith(".kicad_sch") || f.endsWith(".sch")).map((f) => [relative(folder, f).split(sep).join("/"), new Uint8Array(readFileSync(f))] as const)), root: path.slice(folder.length + 1) } : bytes
@@ -450,6 +568,22 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
             if (rawName !== net.name) {
               namesEqual = false
               if (netNameProblems.length < 40) netNameProblems.push(`${row.file}: ${net.name} (importer) against ${rawName} (raw file)`)
+            }
+          }
+          // S8: the classes each net is in. The oracle's are the Netclass fields of the labels on the net (and of a rule area's directive labels, for what the area holds); the importer's, by net name.
+          {
+            const mineClasses = labelNetClasses(built.project)
+            for (const net of nets) {
+              const keys = members.get(net.id)
+              if (!keys?.length) continue
+              const g = ([] as number[]).concat(derived.pins.get(keys[0]) ?? [])[0]
+              const rawName = g === undefined ? null : derived.netName(g)
+              if (rawName === null || /\?[A-Z]?-/.test(rawName) || /^Net-\(-Pad/.test(net.name)) continue
+              const want = [...(derived.netClasses.get(rawName) ?? [])].sort()
+              const got = [...(mineClasses.get(net.name) ?? [])].sort()
+              classNetsCompared++
+              if (want.length) classNetsInClass++
+              if (want.join("|") !== got.join("|")) classProblems.push(`${row.file}: ${net.name}: ${got.join(",") || "no class"} (importer) against ${want.join(",") || "no class"} (raw file)`)
             }
           }
           const other = [...exts].filter((x) => x !== "S2")
@@ -563,7 +697,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
           for (const ext of [".kicad_pro", ".kicad_dru"]) if (existsSync(base + ext)) projectFiles.push({ path: `${base.slice(folder.length + 1)}${ext}`, data: new Uint8Array(readFileSync(base + ext)) })
           const tImport = Date.now()
           const plainRun = importKicadProject(projectFiles)
-          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true })
+          const raised = importKicadProject(projectFiles, { built: new Set([...Object.keys(BOARD_EXTENSION_NAMES), "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]), allowLossyBoard: true, limitBytes: Number.MAX_SAFE_INTEGER })
           row.importMs = Date.now() - tImport
           const word = (r: typeof plainRun) => (r.status === "imported" ? "imported" : `refused, ${r.reason}${r.needs.length ? ` (${r.needs.map((n) => n.ext).join(" ")})` : r.reason === "inexact" ? ` (${r.message.replace(/^This (board|schematic) cannot be imported exactly: /, "").split(";")[0].slice(0, 60)})` : ""}`)
           row.status = `${word(plainRun)} / ${word(raised)}`
@@ -668,6 +802,9 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
         joinFlagDisagreements: joinRows.filter((r) => (r.flagged > 0) !== r.oracle.some((k) => k !== "pin-rounding")).map((r) => `${r.file}: flagged ${r.flagged}, oracle ${r.oracle.join(", ") || "none"}`),
         joinNetsDiffer: joinRows.filter((r) => (r.flagged > 0 || r.oracle.length > 0) && !r.partitionEqual).map((r) => r.file),
         netNameProblems,
+        classNetsCompared,
+        classNetsInClass,
+        classProblems: classProblems.slice(0, 20),
         sheetsCompared,
         sheetProblems: sheetProblems.slice(0, 20),
         hierarchicalNetsCompared: hierNets.length,
@@ -715,6 +852,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       expect(drawingProblems.slice(0, 5)).toEqual([])
       expect(summary.drawingWorstMm).toBeLessThanOrEqual(0.001)
       expect(itemProblems.slice(0, 5)).toEqual([])
+      expect(busProblems.slice(0, 5)).toEqual([])
       expect(saveProblems.slice(0, 5)).toEqual([])
       expect(savedAndLoaded).toBe(summary.imported3a)
       expect(itemWorst).toBeLessThanOrEqual(0.001)
@@ -722,6 +860,7 @@ describe.skipIf(!CORPUS)("the KiCad schematic corpus", () => {
       // the real gate: with S2, S4 and S7 built, the files slices-sch.mjs puts in slice 3b import (71 of the 184 real files, 38.6%)
       expect(summary.imported3a).toBe(summary.importedWithNames)
       expect(summary.importedReal3a).toBeGreaterThanOrEqual(71)
+      expect(classProblems.slice(0, 5)).toEqual([])
       expect(summary.netsDiffer).toBe(0)
       expect(summary.netsDifferInNames).toBe(0)
       // S11: the importer flags a sheet exactly where the independent oracle finds the editor's rules and KiCad's apart, and those nets are KiCad's

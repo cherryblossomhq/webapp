@@ -1,5 +1,5 @@
 import { ListChecks, Package, PanelRightClose, SlidersHorizontal, Sparkles } from "lucide-react"
-import { lazy, Suspense, useEffect, type ReactNode } from "react"
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react"
 import { PcbEditor } from "../editor/pcb/PcbEditor"
 import { SchematicEditor } from "../editor/schematic/SchematicEditor"
 import { stopCleanup } from "../editor/schematic/cleanupAction"
@@ -9,14 +9,26 @@ import { isTyping } from "../editor/viewport"
 import { CanvasNotice } from "../panels/CanvasNotice"
 import { PcbToolbar, SchematicToolbar } from "../panels/CanvasToolbar"
 import { ChecksPanel } from "../panels/ChecksPanel"
+import { CollabNotices } from "../panels/CollabNotices"
+import { FollowFrame } from "../panels/Collaborators"
 import { Inspector } from "../panels/Inspector"
+import { HistoryPanel } from "../panels/HistoryPanel"
 import { LibraryPanel } from "../panels/LibraryPanel"
+import { PreviewBanner } from "../panels/PreviewBanner"
 import { SaveNotice } from "../panels/SaveNotice"
 import { SettingsDialog } from "../panels/SettingsDialog"
+import { SheetTabs } from "../panels/SheetTabs"
 import { TopBar } from "../panels/TopBar"
-import { projectApi, useProjectStore } from "../store/projectStore"
+import { useEditorAccount } from "../store/account"
+import { startBoardLease } from "../store/boardLease"
+import { useCopilot } from "../store/copilotStore"
+import { followLeader, guestName, guestUserId, startPresence, stopFollowing, usePresence } from "../store/presence"
+import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
+import { sheetUses } from "../model/sheets"
+import { clampLayer } from "../model/stack"
 import { uiApi, useUi, type SidePanel } from "../store/uiStore"
 import { IconButton, Segmented } from "../ui/controls"
+import { ReadOnly } from "../ui/form"
 import { Tooltip } from "../ui/Tooltip"
 
 // three.js is large, and the copilot is only needed once its panel opens; load each when it does.
@@ -78,10 +90,47 @@ function EdgeTab({
   )
 }
 
+/**
+ * Be on the open project with everyone else who has it open: say what this tab is doing, draw
+ * them (`store/presence.ts`), and mirror whoever the user follows.
+ */
+function useCollaboration() {
+  const account = useEditorAccount()
+  const accountRef = useRef(account)
+  accountRef.current = account
+  const projectId = useProjectStore((s) => s.project?.id)
+  const sessionId = useProjectStore((s) => s.sessionId)
+  const userId = account ? (account.user?.id ?? null) : guestUserId()
+  useEffect(() => {
+    const source = projectStorage()?.presence
+    if (!projectId || !sessionId || !source) return
+    const me = () => {
+      const user = accountRef.current?.user
+      return user ? { name: user.name || user.email, pictureUrl: user.pictureUrl ?? undefined } : { name: guestName() }
+    }
+    return startPresence(projectId, sessionId, source, me, userId)
+  }, [projectId, sessionId, userId])
+  // Who holds the board lease (a whole-board action running in some tab), and this tab's way to take it.
+  useEffect(() => {
+    const source = projectStorage()?.locks
+    if (!projectId || !sessionId || !source) return
+    return startBoardLease(projectId, sessionId, source, () => ({ name: accountRef.current?.user?.name || accountRef.current?.user?.email || guestName() }), userId)
+  }, [projectId, sessionId, userId])
+  useEffect(followLeader, [])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && usePresence.getState().following) stopFollowing()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+}
+
 /** Below the canvas toolbars and the 3D view cube, in the upper half of the edge. */
 const EDGE_TABS_TOP = "top-[max(128px,22%)]"
 
 export function Editor() {
+  useCollaboration()
   const view = useUi((s) => s.view)
   const sidePanel = useUi((s) => s.sidePanel)
   const setSidePanel = useUi((s) => s.setSidePanel)
@@ -89,6 +138,7 @@ export function Editor() {
   const panelOpen = useUi((s) => s.panelOpen)
   const copilotOpen = useUi((s) => s.copilotOpen)
   const viewer = useProjectStore((s) => s.role === "viewer")
+  const historyOpen = useUi((s) => s.historyOpen) && !!projectStorage()?.history
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -97,6 +147,17 @@ export function Editor() {
       if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") {
         e.preventDefault()
         useUi.getState().toggleCopilot()
+        return
+      }
+      // ⌘B opens and closes the menu of sheets, when the project has sheets, going to the schematic for it.
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        const p = projectApi().project
+        if (p && sheetUses(p).length > 1) {
+          e.preventDefault()
+          const ui = useUi.getState()
+          ui.setView("schematic")
+          ui.setSheetMenu(!ui.sheetMenuOpen)
+        }
         return
       }
       if (isTyping(e)) return
@@ -117,10 +178,33 @@ export function Editor() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
+  // The active copper layer is one the board has: a project switch, a smaller layer count or an undo of a layer add would leave it on a layer that is gone.
+  useEffect(() => {
+    const fit = () => {
+      const p = projectApi().project
+      const ui = useUi.getState()
+      if (p && clampLayer(p.board, ui.activeLayer) !== ui.activeLayer) ui.setActiveLayer(clampLayer(p.board, ui.activeLayer))
+    }
+    fit()
+    return useProjectStore.subscribe(fit)
+  }, [])
+
   // A tidy still running in its worker stops with the editor, and the worker with it.
   useEffect(() => stopTidy, [])
   useEffect(() => stopZoneFills, [])
   useEffect(() => stopCleanup, [])
+  // Made a viewer while working: put down the drawing tools and stop what would only be refused.
+  useEffect(() => {
+    if (!viewer) return
+    const ui = useUi.getState()
+    ui.setSchTool("select")
+    ui.setPcbTool("select")
+    ui.stopPlacing()
+    useCopilot.getState().stop()
+    stopTidy()
+    stopCleanup()
+  }, [viewer])
+
   // A project opens on its root sheet.
   const projectId = useProjectStore((s) => s.project?.id)
   useEffect(() => uiApi().setSheet(""), [projectId])
@@ -130,6 +214,7 @@ export function Editor() {
       <TopBar />
       <SaveNotice />
       <div className="flex min-h-0 flex-1">
+        {historyOpen && <HistoryPanel />}
         {libraryOpen && <LibraryPanel />}
         {copilotOpen && (
           <aside aria-label="Sakura" className="flex w-[340px] shrink-0 flex-col border-r border-line bg-surface">
@@ -138,64 +223,71 @@ export function Editor() {
             </Suspense>
           </aside>
         )}
-        <main className="relative min-w-0 flex-1 overflow-hidden">
-          {view === "schematic" && (
-            <>
-              <SchematicEditor />
-              <SchematicToolbar />
-            </>
-          )}
-          {view === "pcb" && (
-            <>
-              <PcbEditor />
-              <PcbToolbar />
-            </>
-          )}
-          {view === "3d" && (
-            <div className="absolute inset-0">
-              <Suspense fallback={<Loading dark />}>
-                <Board3D />
-              </Suspense>
-            </div>
-          )}
-          <StatusBar />
-          <CanvasNotice />
-          {(!libraryOpen || !copilotOpen) && (
-            <div className={`pointer-events-none absolute left-0 z-10 flex flex-col gap-2 ${EDGE_TABS_TOP}`}>
-              {!libraryOpen && (
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            {view === "schematic" && (
+              <>
+                <SchematicEditor />
+                <SchematicToolbar />
+              </>
+            )}
+            {view === "pcb" && (
+              <>
+                <PcbEditor />
+                <PcbToolbar />
+              </>
+            )}
+            {view === "3d" && (
+              <div className="absolute inset-0">
+                <Suspense fallback={<Loading dark />}>
+                  <Board3D />
+                </Suspense>
+              </div>
+            )}
+            <StatusBar />
+            <FollowFrame />
+            <CollabNotices />
+            <CanvasNotice />
+            <PreviewBanner />
+            {(!libraryOpen || !copilotOpen) && (
+              <div className={`pointer-events-none absolute left-0 z-10 flex flex-col gap-2 ${EDGE_TABS_TOP}`}>
+                {!libraryOpen && (
+                  <EdgeTab
+                    side="left"
+                    label="Parts"
+                    icon={<Package size={16} />}
+                    title="Show parts library"
+                    shortcut="["
+                    onClick={() => useUi.getState().toggleLibrary()}
+                  />
+                )}
+                {!copilotOpen && (
+                  <EdgeTab
+                    side="left"
+                    label="Ask AI"
+                    icon={<Sparkles size={16} className="text-brand" />}
+                    title="Ask Sakura"
+                    shortcut="⌘L"
+                    onClick={() => useUi.getState().toggleCopilot()}
+                  />
+                )}
+              </div>
+            )}
+            {!panelOpen && (
+              <div className={`pointer-events-none absolute right-0 z-10 ${EDGE_TABS_TOP}`}>
                 <EdgeTab
-                  side="left"
-                  label="Parts"
-                  icon={<Package size={16} />}
-                  title="Show parts library"
-                  shortcut="["
-                  onClick={() => useUi.getState().toggleLibrary()}
+                  side="right"
+                  label={sidePanel === "checks" ? "Checks" : "Inspect"}
+                  icon={sidePanel === "checks" ? <ListChecks size={16} /> : <SlidersHorizontal size={16} />}
+                  title="Show side panel"
+                  shortcut="]"
+                  onClick={() => useUi.getState().togglePanel()}
                 />
-              )}
-              {!copilotOpen && (
-                <EdgeTab
-                  side="left"
-                  label="Ask AI"
-                  icon={<Sparkles size={16} className="text-brand" />}
-                  title="Ask Sakura"
-                  shortcut="⌘L"
-                  onClick={() => useUi.getState().toggleCopilot()}
-                />
-              )}
-            </div>
-          )}
-          {!panelOpen && (
-            <div className={`pointer-events-none absolute right-0 z-10 ${EDGE_TABS_TOP}`}>
-              <EdgeTab
-                side="right"
-                label={sidePanel === "checks" ? "Checks" : "Inspect"}
-                icon={sidePanel === "checks" ? <ListChecks size={16} /> : <SlidersHorizontal size={16} />}
-                title="Show side panel"
-                shortcut="]"
-                onClick={() => useUi.getState().togglePanel()}
-              />
-            </div>
-          )}
+              </div>
+            )}
+          </div>
+          {/* A project with sheets below Main: the sheets as tabs under the schematic, which open and close the tree (⌘B) too. */}
+          {view === "schematic" && <SheetTabs />}
         </main>
         <aside className={`w-[340px] shrink-0 flex-col border-l border-line bg-surface ${panelOpen ? "flex" : "hidden"}`}>
           <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-1.5">
@@ -213,10 +305,8 @@ export function Editor() {
             />
           </div>
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-            {/* A viewer reads every value and changes none: the fieldset disables every control in it. */}
-            <fieldset disabled={viewer} className="contents">
-              {sidePanel === "inspector" && <Inspector />}
-            </fieldset>
+            {/* A viewer reads every value and changes none: each section disables its controls. */}
+            <ReadOnly.Provider value={viewer}>{sidePanel === "inspector" && <Inspector />}</ReadOnly.Provider>
             {sidePanel === "checks" && <ChecksPanel />}
           </div>
         </aside>

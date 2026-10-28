@@ -14,7 +14,7 @@ import {
   snapPoint,
   type Box,
 } from "../../lib/geometry"
-import { BLOCK_TITLE, blockFrames, createBlock, framesDuringDrag, nextBlockName, renameBlock, type BlockFrame } from "../../model/blocks"
+import { BLOCK_TITLE, blockFrames, createBlock, framesDuringDrag, lockedBlockOf, nextBlockName, renameBlock, type BlockFrame } from "../../model/blocks"
 import {
   addDrawings,
   BOX_HANDLE_SIDES,
@@ -31,6 +31,7 @@ import {
 } from "../../model/drawings"
 import { pinKey } from "../../model/connectivity"
 import { labelBox } from "../../model/labels"
+import { isKicadLabel } from "../../model/labelShapes"
 import { findPart } from "../../model/library"
 import { schematicBounds, schematicPins, type WorldPin } from "../../model/instances"
 import {
@@ -42,19 +43,29 @@ import {
   removeItems,
   type RubberBand,
 } from "../../model/ops"
-import { guardDrop, pasteItems, placeComponent, rotateSelection, type Clipboard } from "../../model/schematicEdit"
+import { guardDrop, mirrorSelection, pasteItems, placeComponent, rotateSelection, setFieldPlace, type Clipboard } from "../../model/schematicEdit"
 import { SCH_GRID, SCH_TEXT } from "../../model/symbols"
-import type { DrawingText, NetLabel, Project, Rotation, SchematicDrawing, Vec2 } from "../../model/types"
+import { typedNetName } from "../../model/busNames"
+import { componentFields, fieldBox, fieldPlaceOf, hasFieldPlaces, symbolOf } from "../../model/symbolDrawing"
+import type { DrawingText, FieldPlace, NetLabel, Project, Rotation, SchematicDrawing, Vec2 } from "../../model/types"
 import { getConnectivity } from "../../store/analysis"
+import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
+import { commitHere, dragHere, dropHere, removalNote, shownPath, shownProject } from "../../store/sheetScope"
 import { projectApi, useProjectStore } from "../../store/projectStore"
 import { PART_MIME, readPreset, selectionIds, uiApi, useUi, type SchTool } from "../../store/uiStore"
+import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { useSch } from "../theme"
 import { hasTextSelection, isTyping, toScreen, Viewport, WorldText, type ViewTransform, type ViewportHandle, type ViewportPointerEvent } from "../viewport"
 import { groupSelected, ungroupSelected } from "./blockActions"
 import { selectedItems } from "./clipboard"
 import { DrawingSelection, DrawingView } from "./DrawingView"
 import { onTidy, startTidy, viewForBlock } from "./tidyAction"
-import { ComponentSymbol, SymbolBody } from "./SymbolView"
+import { ComponentSymbol, SymbolBody, dashArray } from "./SymbolView"
+import { FlagMarks, KicadLabelView } from "./SheetItemsView"
+import { resolvedComponents } from "../../model/ruleAreas"
+import { SheetSymbolView } from "./SheetSymbolView"
+import { addSheet, moveSheetSymbols, removeSheetSymbols } from "../../model/sheetOps"
+import { hasUse, symbolsOnSheet, useAt } from "../../model/sheets"
 
 type Hit =
   | { type: "pin"; pin: WorldPin }
@@ -63,27 +74,31 @@ type Hit =
   | { type: "wire"; id: string; point: Vec2 }
   | { type: "drawing"; id: string }
   | { type: "block"; id: string }
+  | { type: "sheet"; id: string }
+  | { type: "field"; id: string; name: string }
 
-type BoxTool = Extract<SchTool, "rect" | "block">
+type BoxTool = Extract<SchTool, "rect" | "block" | "sheet">
 
 type Mode =
   | { kind: "idle" }
   | { kind: "marquee"; start: Vec2; current: Vec2; additive: boolean }
-  | { kind: "drag"; start: Vec2; ids: { components: string[]; labels: string[]; wires: string[]; drawings: string[] }; picked: string[]; bands: RubberBand[]; moved: boolean }
+  | { kind: "drag"; start: Vec2; ids: { components: string[]; labels: string[]; wires: string[]; drawings: string[]; sheets: string[] }; picked: string[]; bands: RubberBand[]; moved: boolean }
   | { kind: "wire"; points: Vec2[]; horizontalFirst: boolean; fromDrag: boolean; startScreen: Vec2 }
   /** A line being drawn corner by corner, or dragged out in one go. */
-  | { kind: "line"; points: Vec2[]; fromDrag: boolean; startScreen: Vec2 }
+  | { kind: "line"; points: Vec2[]; fromDrag: boolean; startScreen: Vec2; bus?: true }
   /** A rectangle or a block's area being dragged out; `pressed` is false between the two clicks of click-click. */
   | { kind: "box"; shape: BoxTool; start: Vec2; current: Vec2; pressed: boolean }
+  /** A field of an imported symbol (its reference, value or another) being dragged away from the symbol. */
+  | { kind: "field"; start: Vec2; id: string; name: string; from: FieldPlace; moved: boolean }
   /** A grab handle of the selected drawing being dragged. */
   | { kind: "handle"; id: string; index: number; base: SchematicDrawing; moved: boolean }
 
 /** Text being typed in place: a new text, one being edited, or a block's name. */
 type Editing = { kind: "text"; id: string | null; at: Vec2; value: string } | { kind: "block"; id: string; value: string }
 
-const DRAW_TOOLS = new Set<SchTool>(["block", "text", "line", "rect"])
+const DRAW_TOOLS = new Set<SchTool>(["block", "text", "line", "rect", "sheet", "bus", "busentry"])
 
-const TOOL_KEYS: Record<string, SchTool> = { v: "select", w: "wire", l: "label", b: "block", p: "line" }
+const TOOL_KEYS: Record<string, SchTool> = { v: "select", w: "wire", l: "label", b: "block", p: "line", u: "bus", "/": "busentry" }
 
 function contentBounds(p: Project): Box | null {
   const b = emptyBox()
@@ -98,6 +113,10 @@ function contentBounds(p: Project): Box | null {
     expandBox(b, { x: lb.minX, y: lb.minY })
     expandBox(b, { x: lb.maxX, y: lb.maxY })
   }
+  for (const s of sheetSymbolsOf(p)) {
+    expandBox(b, { x: s.x, y: s.y })
+    expandBox(b, { x: s.x + s.w, y: s.y + s.h })
+  }
   for (const box of [...blockFrames(p).map((f) => f.box), ...(p.drawings ?? []).map(drawingBounds)]) {
     expandBox(b, { x: box.minX, y: box.minY })
     expandBox(b, { x: box.maxX, y: box.maxY })
@@ -109,6 +128,14 @@ function contentBounds(p: Project): Box | null {
 const onFrame = (p: Vec2, b: Box, tol: number) =>
   pointInBox(p, b, tol) && !pointInBox(p, { minX: b.minX + tol, minY: b.minY + tol, maxX: b.maxX - tol, maxY: b.maxY - tol })
 
+/** Whether a drawing is picked before the parts it lies over: the small shapes of a KiCad sheet, not a note, a line or a box. */
+const isDot = (d: SchematicDrawing) => d.type === "junction" || d.type === "noconnect" || d.type === "directive"
+
+const aboveParts = (d: SchematicDrawing) => d.type === "junction" || d.type === "noconnect" || d.type === "directive" || d.type === "arc" || d.type === "bezier" || d.type === "circle"
+
+/** The sheet symbols drawn on the sheet a view shows. */
+const sheetSymbolsOf = (p: Project) => (p.sheetSymbols?.length ? symbolsOnSheet(p, useAt(p, p.scope ?? "").sheet) : [])
+
 function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null {
   for (const c of p.components) {
     for (const pin of schematicPins(c)) {
@@ -118,31 +145,51 @@ function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null 
   for (let i = p.labels.length - 1; i >= 0; i--) {
     if (pointInBox(at, labelBox(p.labels[i]), tol * 0.5)) return { type: "label", id: p.labels[i].id }
   }
+  // A directive label (S8) sits on a wire, a pin or a rule area's edge: its flag is picked before the wire under its anchor.
+  for (let i = (p.drawings?.length ?? 0) - 1; i >= 0; i--) {
+    const d = p.drawings![i]
+    if (d.type === "directive" && hitDrawing(d, at, tol)) return { type: "drawing", id: d.id }
+  }
   for (let i = p.wires.length - 1; i >= 0; i--) {
     const w = p.wires[i]
     for (let s = 0; s < w.points.length - 1; s++) {
       if (pointSegmentDistance(at, w.points[s], w.points[s + 1]) <= tol) return { type: "wire", id: w.id, point: at }
     }
   }
+  // A field an imported part writes is picked up by its text, so it can be moved away from the symbol.
+  for (let i = p.components.length - 1; i >= 0; i--) {
+    const c = p.components[i]
+    const part = findPart(c.partId)
+    if (!part || !hasFieldPlaces(part)) continue
+    for (const f of componentFields(c, part)) if (pointInBox(at, fieldBox(c, f), tol * 0.3)) return { type: "field", id: c.id, name: f.name }
+  }
+  // Small things KiCad draws on a sheet (a junction dot, a no-connect flag, an arc, a curve, a circle) are picked before the parts under them.
+  const drawings = p.drawings ?? []
+  for (let i = drawings.length - 1; i >= 0; i--) if (aboveParts(drawings[i]) && hitDrawing(drawings[i], at, tol)) return { type: "drawing", id: drawings[i].id }
   // A block is picked up by its title or its frame line, never by the empty space inside it. Its
   // title is looked at before the parts, so a part drawn under the title does not take the drag.
   const frames = blockFrames(p)
   for (let i = frames.length - 1; i >= 0; i--) {
     if (pointInBox(at, frames[i].titleBox)) return { type: "block", id: frames[i].id }
   }
+  // A sheet symbol is picked anywhere on its rectangle, under the parts drawn on top of it.
+  const sheets = sheetSymbolsOf(p)
+  for (let i = sheets.length - 1; i >= 0; i--) {
+    const s = sheets[i]
+    if (pointInBox(at, { minX: s.x, minY: s.y, maxX: s.x + s.w, maxY: s.y + s.h }, tol * 0.3)) return { type: "sheet", id: s.id }
+  }
   for (let i = p.components.length - 1; i >= 0; i--) {
     if (pointInBox(at, schematicBounds(p.components[i]), tol * 0.3)) return { type: "component", id: p.components[i].id }
   }
-  // Drawings under the circuit, the topmost first; a frame drawn empty is clicked through.
-  const drawings = p.drawings ?? []
-  for (let i = drawings.length - 1; i >= 0; i--) if (hitDrawing(drawings[i], at, tol)) return { type: "drawing", id: drawings[i].id }
+  // The other drawings are under the circuit, the topmost first; a frame drawn empty is clicked through.
+  for (let i = drawings.length - 1; i >= 0; i--) if (!aboveParts(drawings[i]) && hitDrawing(drawings[i], at, tol)) return { type: "drawing", id: drawings[i].id }
   for (let i = frames.length - 1; i >= 0; i--) {
     if (onFrame(at, frames[i].box, tol)) return { type: "block", id: frames[i].id }
   }
   return null
 }
 
-const HIT_PREFIX = { component: "c", label: "l", wire: "w", drawing: "d", block: "b" } as const
+const HIT_PREFIX = { component: "c", label: "l", wire: "w", drawing: "d", block: "b", sheet: "h", field: "c" } as const
 
 const hitId = (h: Hit | null) => (!h ? null : h.type === "pin" ? `c:${h.pin.componentId}` : `${HIT_PREFIX[h.type]}:${h.id}`)
 
@@ -151,18 +198,23 @@ let clipboard: Clipboard | null = null
 /** Paste or duplicate, with a note on the canvas instead when it would have changed what the sheet's pins connect to. */
 function pasteOnSheet(clip: Clipboard, offset: Vec2, what: string) {
   uiApi().clearNotice() // what was said about the last edit is not about this one
-  const res = pasteItems(projectApi().project!, clip, offset, what, { conn: getConnectivity })
+  const res = pasteItems(shownProject(), clip, offset, what, { conn: getConnectivity })
   if (!res.ok) {
     uiApi().showNotice(res.message)
     return
   }
-  projectApi().commit(() => res.project)
+  commitHere(() => res.project)
   uiApi().select(res.selection)
 }
 
+const reportSchematicPointer = (p: Vec2 | null) => reportPointer("schematic", p)
+const reportSchematicViewport = (b: Box) => reportViewport("schematic", b)
+
 export function SchematicEditor() {
   const sch = useSch()
-  const project = useProjectStore((s) => s.project)!
+  const whole = useProjectStore((s) => s.project)!
+  const sheet = useUi((s) => s.sheet)
+  const project = useMemo(() => shownProject(whole, sheet), [whole, sheet])
   const selection = useUi((s) => s.selection)
   const tool = useUi((s) => s.schTool)
   const placing = useUi((s) => s.placing)
@@ -192,7 +244,10 @@ export function SchematicEditor() {
   const finishedAt = useRef(0)
 
   const conn = useMemo(() => getConnectivity(project), [project])
-  const dragBase = useProjectStore((s) => s.transientBase)
+  // The flags a symbol has with the active variant's, the sheet symbols' above it and the rule areas' put on it (the project keeps them where they are set): the cross and the frame are drawn for those too. Worked out on the whole project, so the sheet symbols above a sheet count.
+  const resolvedById = useMemo(() => new Map(resolvedComponents(whole).map((x) => [x.id, x] as const)), [whole])
+  const dragWhole = useProjectStore((s) => s.transientBase)
+  const dragBase = useMemo(() => (dragWhole ? shownProject(dragWhole, sheet) : null), [dragWhole, sheet])
   // During a drag the frames come from where things were when it began, so they aren't worked
   // out again for every step of the pointer.
   const frames = useMemo(() => {
@@ -220,7 +275,8 @@ export function SchematicEditor() {
   useEffect(() => {
     const vp = vpRef.current
     if (focusRequest?.view !== "schematic" || !vp) return
-    if (focusRequest.box) vp.frame(focusRequest.box, 140)
+    if (focusRequest.box && focusRequest.fit) vp.fit(focusRequest.box, 0)
+    else if (focusRequest.box) vp.frame(focusRequest.box, 140)
     else vp.centerOn(focusRequest, Math.max(vp.transform().scale, 140))
   }, [focusRequest])
 
@@ -268,7 +324,7 @@ export function SchematicEditor() {
 
   // ---------- wire drawing ----------
   const finishWire = useCallback((points: Vec2[]) => {
-    if (points.length >= 2) projectApi().commit((p) => addWire(p, points).project)
+    if (points.length >= 2) commitHere((p) => addWire(p, points).project)
     setMode({ kind: "idle" })
   }, [])
 
@@ -309,7 +365,7 @@ export function SchematicEditor() {
   /** What a box tool has dragged out: a square with Shift held, on the side the drag went. */
   const boxOf = (m: Extract<Mode, { kind: "box" }>): Box => {
     let { x, y } = m.current
-    if (shiftRef.current && m.shape !== "block") {
+    if (shiftRef.current && m.shape === "rect") {
       const side = Math.max(Math.abs(x - m.start.x), Math.abs(y - m.start.y))
       x = round(m.start.x + Math.sign(x - m.start.x || 1) * side)
       y = round(m.start.y + Math.sign(y - m.start.y || 1) * side)
@@ -326,7 +382,7 @@ export function SchematicEditor() {
 
   const draw = (item: Parameters<typeof addDrawings>[1][number]) => {
     let made: SchematicDrawing[] = []
-    projectApi().commit((p) => {
+    commitHere((p) => {
       const res = addDrawings(p, [item])
       made = res.added
       return res.project
@@ -334,17 +390,22 @@ export function SchematicEditor() {
     afterDrawing(made)
   }
 
-  const finishLine = useCallback((points: Vec2[], closed = false) => {
+  const finishLine = useCallback((points: Vec2[], closed = false, bus = false) => {
     setMode({ kind: "idle" })
     const pts = points.filter((pt, i) => i === 0 || !samePoint(pt, points[i - 1]))
     if (pts.length < 2) return
+    // A bus has no style of the drawing tools: it is KiCad's own bus (the Inspector sets its line).
+    if (bus) {
+      draw({ type: "bus", points: pts })
+      return
+    }
     draw({ type: "line", points: pts, ...(closed && pts.length > 2 && { closed: true }), ...uiApi().drawDefaults.shape })
   }, [])
 
   const finishBox = (m: Extract<Mode, { kind: "box" }>) => {
     setMode({ kind: "idle" })
     const box = boxOf(m)
-    const p = projectApi().project!
+    const p = shownProject()
     if (m.shape === "block") {
       // The parts whose middle is inside the box, as a block of their own named for the user to change.
       const inside = p.components.filter((c) => {
@@ -358,10 +419,23 @@ export function SchematicEditor() {
       const { project: next, block } = createBlock(p, nextBlockName(p), inside.map((c) => c.id))
       if (!block) return
       finishedAt.current = performance.now()
-      projectApi().commit(() => next)
+      commitHere(() => next)
       uiApi().select([`b:${block.id}`])
       uiApi().setSchTool("select")
       setEditing({ kind: "block", id: block.id, value: block.name })
+      return
+    }
+    if (m.shape === "sheet") {
+      if (box.maxX - box.minX < SCH_GRID * 2 || box.maxY - box.minY < SCH_GRID) return
+      let made: string | null = null
+      commitHere((v) => {
+        const res = addSheet(v, v.scope ?? "", box)
+        made = res.symbol.id
+        return res.project
+      })
+      finishedAt.current = performance.now()
+      if (made) uiApi().select([`h:${made}`])
+      uiApi().setSchTool("select")
       return
     }
     const width = round(box.maxX - box.minX)
@@ -376,13 +450,13 @@ export function SchematicEditor() {
     setEditing(null)
     if (!ed) return
     if (ed.kind === "block") {
-      projectApi().commit((p) => renameBlock(p, ed.id, ed.value))
+      commitHere((p) => renameBlock(p, ed.id, ed.value))
       return
     }
     const text = ed.value.replace(/\s+$/, "")
     if (ed.id) {
       const id = ed.id
-      projectApi().commit((p) => (text.trim() ? updateDrawings(p, [id], (d) => (d.type === "text" && d.text !== text ? { ...d, text } : d)) : removeDrawings(p, [id])))
+      commitHere((p) => (text.trim() ? updateDrawings(p, [id], (d) => (d.type === "text" && d.text !== text ? { ...d, text } : d)) : removeDrawings(p, [id])))
       if (!text.trim()) uiApi().clearSelection()
       return
     }
@@ -417,7 +491,7 @@ export function SchematicEditor() {
     }
     const world = e.world
     const snapped = snapTarget(world)
-    const p = projectApi().project!
+    const p = shownProject()
     const m = modeRef.current
 
     if (placing) {
@@ -425,7 +499,7 @@ export function SchematicEditor() {
       const res = placeComponent(
         p,
         placing.partId,
-        { sch: { ...snapPoint(world, SCH_GRID), rot: placing.rot }, props: placing.props, footprint: placing.footprint },
+        { sch: { ...snapPoint(world, SCH_GRID), rot: placing.rot, ...(placing.mirror ? { mirror: placing.mirror } : {}) }, props: placing.props, footprint: placing.footprint },
         { conn: getConnectivity },
       )
       // Dropped across two nets, the part would join them: say so and keep the part in hand.
@@ -433,7 +507,7 @@ export function SchematicEditor() {
         uiApi().showNotice(res.message)
         return
       }
-      projectApi().commit(() => res.project)
+      commitHere(() => res.project)
       uiApi().select([`c:${res.component.id}`])
       if (!native.shiftKey) uiApi().stopPlacing()
       return
@@ -454,8 +528,8 @@ export function SchematicEditor() {
       const at = lineEnd(m, drawPoint(e))
       const first = m.points[0]
       // Back on the first corner closes the line into a polygon; the same corner twice ends it.
-      if (m.points.length >= 3 && Math.hypot(at.x - first.x, at.y - first.y) <= tolerances().tol) finishLine(m.points, true)
-      else if (samePoint(at, m.points[m.points.length - 1])) finishLine(m.points)
+      if (m.points.length >= 3 && !m.bus && Math.hypot(at.x - first.x, at.y - first.y) <= tolerances().tol) finishLine(m.points, true)
+      else if (samePoint(at, m.points[m.points.length - 1])) finishLine(m.points, false, m.bus)
       else setMode({ ...m, points: [...m.points, at], fromDrag: false })
       return
     }
@@ -496,12 +570,19 @@ export function SchematicEditor() {
       return
     }
 
-    if (tool === "line") {
-      setMode({ kind: "line", points: [drawPoint(e)], fromDrag: true, startScreen: e.screen })
+    if (tool === "line" || tool === "bus") {
+      setMode({ kind: "line", points: [drawPoint(e)], fromDrag: true, startScreen: e.screen, ...(tool === "bus" ? { bus: true as const } : {}) })
       return
     }
 
-    if (tool === "rect" || tool === "block") {
+    if (tool === "busentry") {
+      // A short diagonal from the point: up and to the right, or up and to the left with Shift (the Rotate key turns it after).
+      const at = drawPoint(e)
+      draw({ type: "busentry", x: at.x, y: at.y, dx: shiftRef.current ? -SCH_GRID * 2 : SCH_GRID * 2, dy: SCH_GRID * 2 })
+      return
+    }
+
+    if (tool === "rect" || tool === "block" || tool === "sheet") {
       const at = drawPoint(e)
       setMode({ kind: "box", shape: tool, start: at, current: at, pressed: true })
       return
@@ -519,6 +600,18 @@ export function SchematicEditor() {
     if (h?.type === "pin") {
       startWire(h.pin.pos, e.screen, h.pin, true)
       return
+    }
+    // The text of a field is moved on its own, and keeps the symbol where it is.
+    if (h?.type === "field" && !native.shiftKey) {
+      const c = p.components.find((x) => x.id === h.id)
+      const part = c && findPart(c.partId)
+      const from = c && part && fieldPlaceOf(c, part, h.name)
+      if (c && from) {
+        uiApi().select([`c:${c.id}`])
+        projectApi().beginTransient()
+        setMode({ kind: "field", start: snapPoint(world, SCH_GRID / 2), id: c.id, name: h.name, from, moved: false })
+        return
+      }
     }
     const id = hitId(h)
     if (!id) {
@@ -538,9 +631,14 @@ export function SchematicEditor() {
     // A selected block holds its parts, wires, labels and the drawings inside its frame. Dragging takes
     // along what hangs off a part's pins alone (power symbols, net label stubs), as a move by tool does.
     const picked = selectedItems(p, sel)
+    const locked = lockedBlockOf(p, picked.components)
+    if (locked) {
+      uiApi().showNotice(`${locked} is locked: unlock the group to move its parts.`)
+      return
+    }
     const { ids, bands } = dragPlan(p, picked)
     projectApi().beginTransient()
-    setMode({ kind: "drag", start: snapPoint(world, SCH_GRID), ids: { ...ids, drawings: picked.drawings }, picked: picked.components, bands, moved: false })
+    setMode({ kind: "drag", start: snapPoint(world, SCH_GRID), ids: { ...ids, drawings: picked.drawings, sheets: selectionIds(sel, "h") }, picked: picked.components, bands, moved: false })
   }
 
   const onPointerMove = (e: ViewportPointerEvent) => {
@@ -554,11 +652,20 @@ export function SchematicEditor() {
       setMode({ ...m, current: world })
       return
     }
+    if (m.kind === "field") {
+      const to = snapPoint(world, SCH_GRID / 2)
+      const dx = round(to.x - m.start.x)
+      const dy = round(to.y - m.start.y)
+      if (!m.moved && dx === 0 && dy === 0) return
+      dragHere((base) => setFieldPlace(base, m.id, m.name, { x: round(m.from.x + dx), y: round(m.from.y + dy) }))
+      if (!m.moved) setMode({ ...m, moved: true })
+      return
+    }
     if (m.kind === "drag") {
       const to = snapPoint(world, SCH_GRID)
       const delta = { x: to.x - m.start.x, y: to.y - m.start.y }
       if (!m.moved && delta.x === 0 && delta.y === 0) return
-      projectApi().setTransient((base) => moveSchematicItems(base, m.ids, delta, m.bands, getConnectivity(base)))
+      dragHere((base) => moveSheetSymbols(moveSchematicItems(base, m.ids, delta, m.bands, getConnectivity(base)), m.ids.sheets, delta))
       if (!m.moved) setMode({ ...m, moved: true })
       return
     }
@@ -568,7 +675,7 @@ export function SchematicEditor() {
     }
     if (m.kind === "handle") {
       const next = dragHandle(m.base, m.index, at)
-      projectApi().setTransient((base) => updateDrawings(base, [m.id], () => next))
+      dragHere((base) => updateDrawings(base, [m.id], () => next))
       if (!m.moved) setMode({ ...m, moved: true })
       return
     }
@@ -586,7 +693,7 @@ export function SchematicEditor() {
     if (press) {
       labelPress.current = null
       if (e.native.type === "pointercancel") return
-      const last = projectApi().project!.labels.at(-1)?.name ?? ""
+      const last = shownProject().labels.at(-1)?.name ?? ""
       setLabelDraft({ ...press, name: bumpName(last) })
       return
     }
@@ -595,6 +702,7 @@ export function SchematicEditor() {
       const box = normBox(m.start, m.current)
       const ids: string[] = []
       for (const c of project.components) if (boxesOverlap(box, schematicBounds(c))) ids.push(`c:${c.id}`)
+      for (const sym of sheetSymbolsOf(project)) if (boxesOverlap(box, { minX: sym.x, minY: sym.y, maxX: sym.x + sym.w, maxY: sym.y + sym.h })) ids.push(`h:${sym.id}`)
       for (const w of project.wires) if (w.points.some((pt) => pointInBox(pt, box))) ids.push(`w:${w.id}`)
       for (const l of project.labels) if (pointInBox(l, box)) ids.push(`l:${l.id}`)
       // Drawings only when the box takes them in whole, so a big frame behind everything isn't swept up.
@@ -605,14 +713,22 @@ export function SchematicEditor() {
       setMode({ kind: "idle" })
       return
     }
+    if (m.kind === "field") {
+      if (m.moved) projectApi().endTransient()
+      else projectApi().cancelTransient()
+      setMode({ kind: "idle" })
+      return
+    }
     if (m.kind === "drag") {
-      const { transientBase: start, project: dropped } = projectApi()
+      const { transientBase: wholeStart, project: wholeDropped } = projectApi()
+      const start = wholeStart && shownProject(wholeStart)
+      const dropped = wholeDropped && shownProject(wholeDropped)
       if (m.moved && start && dropped) {
         // A drag changes where things are, not what is connected. Dropped where it would join or
         // cut nets, it goes back to where it started and the canvas says why.
         uiApi().clearNotice()
         const res = guardDrop(start, dropped, { components: m.picked }, { conn: getConnectivity })
-        if (res.ok) projectApi().endTransient(() => res.project)
+        if (res.ok) dropHere(() => res.project)
         else {
           projectApi().cancelTransient()
           uiApi().showNotice(res.message)
@@ -637,7 +753,7 @@ export function SchematicEditor() {
     if (m.kind === "line" && m.fromDrag) {
       const moved = Math.hypot(e.screen.x - m.startScreen.x, e.screen.y - m.startScreen.y) > 6
       if (!moved) setMode({ ...m, fromDrag: false })
-      else finishLine([m.points[0], lineEnd(m, drawPoint(e))])
+      else finishLine([m.points[0], lineEnd(m, drawPoint(e))], false, m.bus)
       return
     }
     if (m.kind === "wire" && m.fromDrag) {
@@ -658,7 +774,7 @@ export function SchematicEditor() {
       return
     }
     if (m.kind === "line") {
-      finishLine(m.points)
+      finishLine(m.points, false, m.bus)
       return
     }
     if (performance.now() - finishedAt.current < 500) return
@@ -668,7 +784,7 @@ export function SchematicEditor() {
       const l = project.labels.find((x) => x.id === h.id)
       if (l) {
         const name = window.prompt("Net label name", l.name)?.trim()
-        if (name) projectApi().commit((p) => ({ ...p, labels: p.labels.map((x) => (x.id === l.id ? { ...x, name } : x)) }))
+        if (name) commitHere((p) => ({ ...p, labels: p.labels.map((x) => (x.id === l.id ? { ...x, name } : x)) }))
       }
     } else if (h?.type === "drawing") {
       const d = drawings.find((x) => x.id === h.id)
@@ -677,6 +793,10 @@ export function SchematicEditor() {
         uiApi().select([`d:${h.id}`])
         uiApi().setSidePanel("inspector")
       }
+    } else if (h?.type === "sheet") {
+      // A sheet symbol opens the sheet it stands for.
+      const path = `${project.scope ?? ""}/${h.id}`
+      if (hasUse(whole, path)) uiApi().setSheet(path)
     } else if (h?.type === "block" && frames.some((f) => f.id === h.id && pointInBox(e.world, f.titleBox))) {
       // A block's title is renamed where it is.
       const f = frames.find((x) => x.id === h.id)!
@@ -693,12 +813,12 @@ export function SchematicEditor() {
     if (!partId || !findPart(partId)) return
     const preset = readPreset(data)
     uiApi().clearNotice()
-    const res = placeComponent(projectApi().project!, partId, { sch: { ...snapPoint(world, SCH_GRID), rot: 0 }, ...preset }, { conn: getConnectivity })
+    const res = placeComponent(shownProject(), partId, { sch: { ...snapPoint(world, SCH_GRID), rot: 0 }, ...preset }, { conn: getConnectivity })
     if (!res.ok) {
       uiApi().showNotice(res.message)
       return
     }
-    projectApi().commit(() => res.project)
+    commitHere(() => res.project)
     uiApi().select([`c:${res.component.id}`])
   }
 
@@ -712,12 +832,22 @@ export function SchematicEditor() {
       const sel = uiApi().selection
       const key = e.key.toLowerCase()
 
+      // Alt+Up goes up to the sheet above.
+      if (e.altKey && key === "arrowup") {
+        const open = projectApi().project!
+        const here = useAt(open, shownPath(open, uiApi().sheet))
+        if (here.parent !== null) {
+          e.preventDefault()
+          uiApi().setSheet(here.parent)
+        }
+        return
+      }
       if (key === "escape") {
         if (m.kind === "wire") finishWire(m.points)
-        else if (m.kind === "line") finishLine(m.points)
+        else if (m.kind === "line") finishLine(m.points, false, m.bus)
         else if (m.kind === "box") setMode({ kind: "idle" })
         else if (uiApi().placing) uiApi().stopPlacing()
-        else if (m.kind === "drag" || m.kind === "handle") {
+        else if (m.kind === "drag" || m.kind === "handle" || m.kind === "field") {
           projectApi().cancelTransient()
           setMode({ kind: "idle" })
         } else {
@@ -745,7 +875,7 @@ export function SchematicEditor() {
           else setMode({ kind: "idle" })
         } else if (key === "enter") {
           e.preventDefault()
-          finishLine(m.points)
+          finishLine(m.points, false, m.bus)
         }
         return
       }
@@ -753,13 +883,14 @@ export function SchematicEditor() {
       if (mod && (key === "a" || key === "c") && hasTextSelection()) return
       if (mod && key === "a") {
         e.preventDefault()
-        const p = projectApi().project!
+        const p = shownProject()
         uiApi().select([
           ...p.components.map((c) => `c:${c.id}`),
           ...p.wires.map((w) => `w:${w.id}`),
           ...p.labels.map((l) => `l:${l.id}`),
           ...(p.drawings ?? []).map((d) => `d:${d.id}`),
           ...(p.blocks ?? []).map((b) => `b:${b.id}`),
+          ...sheetSymbolsOf(p).map((sym) => `h:${sym.id}`),
         ])
         return
       }
@@ -770,7 +901,7 @@ export function SchematicEditor() {
         return
       }
       if (mod && (key === "c" || key === "d")) {
-        const p = projectApi().project!
+        const p = shownProject()
         const clip: Clipboard = { project: p, ...selectedItems(p, sel), blocks: selectionIds(sel, "b") }
         if (!clip.components.length && !clip.wires.length && !clip.labels.length && !clip.drawings?.length) return
         e.preventDefault()
@@ -786,7 +917,7 @@ export function SchematicEditor() {
         const anchor =
           src.project.components.find((x) => x.id === src.components[0])?.sch ??
           src.project.wires.find((w) => w.id === src.wires[0])?.points[0] ??
-          (firstDrawing && (firstDrawing.type === "line" ? firstDrawing.points[0] : firstDrawing))
+          (firstDrawing && (firstDrawing.type === "line" ? firstDrawing.points[0] : "x" in firstDrawing ? firstDrawing : { x: drawingBounds(firstDrawing).minX, y: drawingBounds(firstDrawing).minY }))
         const offset = c && anchor ? { x: round(c.x - anchor.x), y: round(c.y - anchor.y) } : { x: 0.5, y: -0.5 }
         pasteOnSheet(src, offset, "paste")
         return
@@ -795,7 +926,7 @@ export function SchematicEditor() {
 
       // While placing, Shift is "place several" and R still turns the part.
       if (key === "r" && e.shiftKey && !uiApi().placing) {
-        uiApi().setSchTool("rect")
+        if (projectApi().role !== "viewer") uiApi().setSchTool("rect")
         return
       }
       if (key === "r") {
@@ -807,38 +938,78 @@ export function SchematicEditor() {
         const labels = selectionIds(sel, "l")
         const drawn = selectionIds(sel, "d")
         if (!comps.length && !labels.length && !drawn.length) return
+        const lockedTurn = lockedBlockOf(shownProject(), comps)
+        if (lockedTurn) {
+          uiApi().showNotice(`${lockedTurn} is locked: unlock the group to turn its parts.`)
+          return
+        }
         // Turning moves pins, not connections: labels and wires follow them, or the turn is
         // refused with the reason on the canvas and nothing changes. Drawings just turn.
         uiApi().clearNotice()
-        const base = projectApi().project!
+        const base = shownProject()
         const res = comps.length || labels.length ? rotateSelection(base, { components: comps, labels }, { conn: getConnectivity }) : { ok: true as const, project: base }
         if (res.ok) {
-          projectApi().commit(() => updateDrawings(res.project, drawn, rotateDrawing))
+          commitHere(() => updateDrawings(res.project, drawn, rotateDrawing))
           if ("note" in res && res.note) uiApi().showNotice(res.note)
         } else uiApi().showNotice(res.message)
+        return
+      }
+      if (key === "x" || key === "y") {
+        const axis = key
+        if (uiApi().placing) {
+          uiApi().mirrorPlacing(axis)
+          return
+        }
+        const comps = selectionIds(sel, "c")
+        if (!comps.length) return
+        const lockedMirror = lockedBlockOf(shownProject(), comps)
+        if (lockedMirror) {
+          uiApi().showNotice(`${lockedMirror} is locked: unlock the group to mirror its parts.`)
+          return
+        }
+        // As turning does: wires and labels on the pins follow, or it is refused with the reason on the canvas.
+        uiApi().clearNotice()
+        const res = mirrorSelection(shownProject(), { components: comps }, axis, { conn: getConnectivity })
+        if (res.ok) commitHere(() => res.project)
+        else uiApi().showNotice(res.message)
         return
       }
       if (key === "delete" || key === "backspace") {
         if (!sel.length) return
         e.preventDefault()
-        projectApi().commit((p) =>
-          removeItems(p, {
-            components: selectionIds(sel, "c"),
-            wires: selectionIds(sel, "w"),
-            labels: selectionIds(sel, "l"),
-            blocks: selectionIds(sel, "b"),
-            drawings: selectionIds(sel, "d"),
-          }),
+        const locked = lockedBlockOf(shownProject(), selectedItems(shownProject(), sel).components)
+        if (locked) {
+          uiApi().showNotice(`${locked} is locked: unlock the group to delete its parts.`)
+          return
+        }
+        commitHere((p) =>
+          removeSheetSymbols(
+            removeItems(p, {
+              components: selectionIds(sel, "c"),
+              wires: selectionIds(sel, "w"),
+              labels: selectionIds(sel, "l"),
+              blocks: selectionIds(sel, "b"),
+              drawings: selectionIds(sel, "d"),
+            }),
+            selectionIds(sel, "h"),
+          ),
         )
+        const gone = selectionIds(sel, "h")
+        const note = gone.length ? removalNote(projectApi().project!, gone) : null
+        if (note) uiApi().showNotice(note)
         uiApi().clearSelection()
         return
       }
-      // T tidies; the Text tool is Shift+T, as the Rectangle is Shift+R.
-      if (key === "t" && e.shiftKey) uiApi().setSchTool("text")
-      else if (key === "t") startTidy()
-      else if (TOOL_KEYS[key]) uiApi().setSchTool(TOOL_KEYS[key])
+      // T tidies; the Text tool is Shift+T, as the Rectangle is Shift+R. A viewer's
+      // drawing tools are off, as their buttons are.
+      const viewer = projectApi().role === "viewer"
+      const toolKey = TOOL_KEYS[key]
+      if (key === "t" && e.shiftKey) {
+        if (!viewer) uiApi().setSchTool("text")
+      } else if (key === "t") startTidy()
+      else if (toolKey && (toolKey === "select" || !viewer)) uiApi().setSchTool(toolKey)
       else if (key === "f") {
-        const b = contentBounds(projectApi().project!)
+        const b = contentBounds(shownProject())
         if (b) vpRef.current?.fit(b)
       }
     }
@@ -886,14 +1057,16 @@ export function SchematicEditor() {
   // What the line or box being drawn will be, in the style it will have.
   const draft: SchematicDrawing | null =
     mode.kind === "line" && cursor
-      ? { id: "draft", type: "line", points: [...mode.points, lineEnd(mode, cursor)], ...drawDefaults.shape }
+      ? mode.bus
+        ? { id: "draft", type: "bus", points: [...mode.points, lineEnd(mode, cursor)] }
+        : { id: "draft", type: "line", points: [...mode.points, lineEnd(mode, cursor)], ...drawDefaults.shape }
       : mode.kind === "box" && mode.shape !== "block"
         ? (() => {
             const b = boxOf(mode)
-            return { id: "draft", type: mode.shape, x: b.minX, y: b.minY, width: b.maxX - b.minX, height: b.maxY - b.minY, ...drawDefaults.shape }
+            return { id: "draft", type: mode.shape === "sheet" ? "rect" : mode.shape, x: b.minX, y: b.minY, width: b.maxX - b.minX, height: b.maxY - b.minY, ...drawDefaults.shape }
           })()
         : null
-  const closing = mode.kind === "line" && cursor && mode.points.length >= 3 && samePoint(lineEnd(mode, cursor), mode.points[0])
+  const closing = mode.kind === "line" && !mode.bus && cursor && mode.points.length >= 3 && samePoint(lineEnd(mode, cursor), mode.points[0])
 
   return (
     <div className="absolute inset-0">
@@ -917,6 +1090,9 @@ export function SchematicEditor() {
           uiApi().setCursor(null)
         }}
         onDrop={onDrop}
+        onWorldPointer={reportSchematicPointer}
+        onVisible={reportSchematicViewport}
+        onUserMove={stopFollowing}
         overlay={(t) => (
           <>
             {mode.kind === "marquee" && (
@@ -942,6 +1118,7 @@ export function SchematicEditor() {
                 onCancel={() => setEditing(null)}
               />
             )}
+            <PeerCursors view="schematic" project={project} t={t} />
           </>
         )}
       >
@@ -961,10 +1138,17 @@ export function SchematicEditor() {
                 />
               ))}
 
-              {/* Drawings, under the circuit and in their own order */}
-              {drawings.map((d) => (
-                <DrawingView key={d.id} drawing={d} px={px} hidden={editing?.kind === "text" && editing.id === d.id} />
+              {/* Sheet symbols: the rectangles of the sheets below this one */}
+              {sheetSymbolsOf(project).map((sym) => (
+                <SheetSymbolView key={sym.id} sym={sym} selected={selected.has(`h:${sym.id}`)} hovered={hover?.type === "sheet" && hover.id === sym.id} px={px} openable={hasUse(whole, `${project.scope ?? ""}/${sym.id}`)} />
               ))}
+
+              {/* Drawings, under the circuit and in their own order (a junction dot and a no-connect flag are drawn over the wires, below) */}
+              {drawings
+                .filter((d) => !isDot(d))
+                .map((d) => (
+                  <DrawingView key={d.id} drawing={d} px={px} hidden={editing?.kind === "text" && editing.id === d.id} />
+                ))}
 
               {/* Net highlight halo */}
               {activeNet &&
@@ -991,20 +1175,25 @@ export function SchematicEditor() {
                   key={w.id}
                   points={w.points.map((p) => `${p.x},${p.y}`).join(" ")}
                   fill="none"
-                  stroke={selected.has(`w:${w.id}`) ? sch.select : sch.wire}
-                  strokeWidth={Math.max(sch.wireWidth, 1.4 * px)}
+                  stroke={selected.has(`w:${w.id}`) ? sch.select : (w.look?.color ?? sch.wire)}
+                  strokeWidth={Math.max(w.look?.width ?? sch.wireWidth, 1.4 * px)}
                   strokeLinecap="round"
                   strokeLinejoin="round"
+                  strokeDasharray={w.look ? dashArray(w.look.dash, Math.max(w.look.width ?? sch.wireWidth, 1.4 * px)) : undefined}
                 />
               ))}
-              {conn.junctions.map((j, i) => (
-                <circle key={`j${i}`} cx={j.x} cy={j.y} r={0.04} fill={sch.junction} />
+              {/* The dots the wires make, except where the sheet has a dot of its own; and those dots and flags */}
+              {conn.junctions
+                .filter((j) => !drawings.some((d) => d.type === "junction" && Math.abs(d.x - j.x) < 1e-3 && Math.abs(d.y - j.y) < 1e-3))
+                .map((j, i) => (
+                  <circle key={`j${i}`} cx={j.x} cy={j.y} r={0.04} fill={sch.junction} />
+                ))}
+              {drawings.filter(isDot).map((d) => (
+                <DrawingView key={d.id} drawing={d} px={px} />
               ))}
 
               {/* Labels */}
-              {project.labels.map((l) => (
-                <LabelView key={l.id} label={l} selected={selected.has(`l:${l.id}`)} px={px} />
-              ))}
+              {project.labels.map((l) => (isKicadLabel(l) ? <KicadLabelView key={l.id} label={l} selected={selected.has(`l:${l.id}`)} px={px} /> : <LabelView key={l.id} label={l} selected={selected.has(`l:${l.id}`)} px={px} />))}
 
               {/* Components */}
               {project.components.map((c) => {
@@ -1038,6 +1227,7 @@ export function SchematicEditor() {
                       />
                     )}
                     <ComponentSymbol c={c} />
+                    <FlagMarks c={resolvedById.get(c.id) ?? c} />
                   </g>
                 )
               })}
@@ -1105,15 +1295,16 @@ export function SchematicEditor() {
               {/* Placement ghost */}
               {placingPart && cursor && (
                 <SymbolBody
-                  symbol={placingPart.symbol}
+                  symbol={symbolOf(placingPart)}
                   x={snapPoint(cursor, SCH_GRID).x}
                   y={snapPoint(cursor, SCH_GRID).y}
                   rot={placing!.rot}
+                  mirror={placing!.mirror}
                   color={sch.select}
                   refText={placingPart.powerNet ? (placingPart.defaultProps.net ?? placingPart.powerNet) : nextRef(project, placingPart.refPrefix)}
                   valueText={placingPart.valueProp ? (placing!.props?.[placingPart.valueProp] ?? placingPart.defaultProps[placingPart.valueProp]) : ""}
                   opacity={0.7}
-                  isBox={placingPart.category === "ICs" || placingPart.refPrefix === "U" || placingPart.category === "Connectors"}
+                  isBox={!hasFieldPlaces(placingPart) && (placingPart.category === "ICs" || placingPart.refPrefix === "U" || placingPart.category === "Connectors")}
                 />
               )}
 
@@ -1124,6 +1315,8 @@ export function SchematicEditor() {
                   <line x1={cursor.x} y1={cursor.y - 8 * px} x2={cursor.x} y2={cursor.y + 8 * px} />
                 </g>
               )}
+
+              <PeerSelections view="schematic" project={project} px={px} />
             </>
           )
         }}
@@ -1136,7 +1329,7 @@ export function SchematicEditor() {
           onSubmit={(e) => {
             e.preventDefault()
             const name = labelDraft.name.trim()
-            if (name) projectApi().commit((p) => addLabel(p, name, labelDraft.at, labelDraft.rot).project)
+            if (name) commitHere((p) => addLabel(p, name, labelDraft.at, labelDraft.rot).project)
             setLabelDraft(null)
           }}
         >
@@ -1147,7 +1340,7 @@ export function SchematicEditor() {
             placeholder="Net name"
             // The suggested name is selected, so typing replaces it.
             onFocus={(e) => e.currentTarget.select()}
-            onChange={(e) => setLabelDraft({ ...labelDraft, name: e.target.value.toUpperCase().replace(/\s+/g, "_") })}
+            onChange={(e) => setLabelDraft({ ...labelDraft, name: typedNetName(project.netNames ? e.target.value : e.target.value.toUpperCase(), true) })}
             onKeyDown={(e) => {
               if (e.key === "Escape") setLabelDraft(null)
             }}
@@ -1349,7 +1542,7 @@ function SchematicHint({ mode, tool, placing, editing }: { mode: Mode; tool: Sch
   let items: [string, string][] | null = null
   if (editing?.kind === "text") items = [["Enter", "done"], ["Shift+Enter", "new line"], ["Esc", "cancel"]]
   else if (editing) items = [["Enter", "rename"], ["Esc", "cancel"]]
-  else if (placing) items = [["Click", "place"], ["R", "rotate"], ["Shift", "place several"], ["Esc", "cancel"]]
+  else if (placing) items = [["Click", "place"], ["R", "rotate"], ["X / Y", "mirror"], ["Shift", "place several"], ["Esc", "cancel"]]
   else if (mode.kind === "wire") items = [["Click", "add a corner"], ["Pin", "finish"], ["/", "flip bend"], ["Backspace", "undo corner"], ["Esc", "done"]]
   else if (mode.kind === "line") items = [["Click", "add a corner"], ["Shift", "45°"], ["First corner", "close"], ["Double-click", "finish"], ["Backspace", "undo corner"]]
   else if (mode.kind === "box") items = mode.shape === "block" ? [["Release", "frame the parts inside"], ["Esc", "cancel"]] : [["Release", "finish"], ["Shift", "square"], ["Alt", "off the grid"]]
@@ -1358,7 +1551,10 @@ function SchematicHint({ mode, tool, placing, editing }: { mode: Mode; tool: Sch
   else if (tool === "block") items = [["Drag", "around parts to frame them as a block"]]
   else if (tool === "text") items = [["Click", "place a text"], ["Click a text", "edit it"]]
   else if (tool === "line") items = [["Click", "start a line"], ["Drag", "draw one segment"], ["Shift", "45°"]]
+  else if (tool === "bus") items = [["Click", "start a bus"], ["Drag", "draw one segment"], ["Shift", "45°"], ["Then", "put a label like D[0..7] on it"]]
+  else if (tool === "busentry") items = [["Click", "put a bus entry where a wire meets the bus"], ["Shift", "slant it the other way"]]
   else if (tool === "rect") items = [["Drag", "draw a rectangle"], ["Shift", "square"], ["Shift on release", "draw another"]]
+  else if (tool === "sheet") items = [["Drag", "draw a sheet"], ["Double-click it", "open the sheet"]]
   if (!items) return null
   return <CanvasHint items={items} />
 }

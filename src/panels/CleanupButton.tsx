@@ -5,6 +5,7 @@ import { managedAiHost } from "../ai/managedAi"
 import { applyCleanup, cancelCleanup, openCleanup, useCleanup } from "../editor/schematic/cleanupAction"
 import { cleanupSummary, hasParts, type CleanupPlan } from "../model/cleanup"
 import { useAccount } from "../store/accountStore"
+import { heldNote, useBoardLease } from "../store/boardLease"
 import { useCopilot } from "../store/copilotStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
@@ -25,8 +26,10 @@ export function CleanupButton() {
   const phase = useCleanup((s) => s.phase)
   const aiStep = useCopilot((s) => s.cleanup)
   const sakuraBusy = useCopilot((s) => s.runningProject !== null)
+  const held = useBoardLease(heldNote)
   const projectId = useProjectStore((s) => s.project?.id ?? null)
   const anyParts = useProjectStore((s) => !!s.project && hasParts(s.project))
+  const viewer = useProjectStore((s) => s.role === "viewer")
   const wrapper = useRef<HTMLDivElement>(null)
 
   // What the plan is: asked once, shared with the Sakura panel.
@@ -54,7 +57,7 @@ export function CleanupButton() {
   }, [busy, running])
 
   const label = aiStep === "planning" ? "Planning..." : aiStep === "applying" ? "Applying..." : running ? "Cleaning up..." : ai ? "Clean up with AI" : "Clean up"
-  const blocked = !anyParts ? TIP_EMPTY : !running && !aiStep && ai && sakuraBusy ? "Sakura is busy: wait for it to finish or stop it first." : null
+  const blocked = viewer ? "You can view this project, not change it." : !anyParts ? TIP_EMPTY : !busy && held ? held : !running && !aiStep && ai && sakuraBusy ? "Sakura is busy: wait for it to finish or stop it first." : null
   const disabled = busy || !!blocked
   const tip = busy ? "Working. Esc stops it and leaves the sheet as it was." : (blocked ?? (ai ? TIP_AI : TIP_FREE))
 

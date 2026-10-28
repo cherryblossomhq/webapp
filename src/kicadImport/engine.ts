@@ -50,7 +50,7 @@ async function loadKicadFontFor(bytes: Uint8Array) {
 
 /** The project importer's result as the report screen reads it: a board with its schematic is a project; a board with no schematic among the files is the board's. */
 export function fromProjectResult(r: KicadProjectResult): ImportResult {
-  if (r.status === "imported") return { status: "imported", project: r.project, report: r.report, bytes: r.bytes, board: r.board, kind: r.tree ? "project" : "board" }
+  if (r.status === "imported") return { status: "imported", project: r.project, report: r.report, bytes: r.bytes, board: r.board, kind: r.tree ? "project" : "board", ...(r.files?.length ? { files: r.files } : {}) }
   return { status: "refused", reason: r.reason, message: r.message, report: r.report, needs: r.needs, board: null, kind: "project" }
 }
 

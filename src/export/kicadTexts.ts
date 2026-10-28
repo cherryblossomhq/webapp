@@ -15,6 +15,7 @@ import type { WorldText } from "../model/texts"
 import { isDimensionText, shownOf, textBoxCorners, worldTexts } from "../model/texts"
 import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
+import { quoteTabs as quote } from "../lib/kicadQuote"
 
 // The texts of a board brought in from KiCad, written into the board file the converter made: board text as
 // `gr_text` and `gr_text_box`, and each part's reference, value and own text as the footprint's `property`
@@ -33,7 +34,6 @@ import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
-export const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n").replace(/\t/g, "\\t")}"`
 
 /** KiCad's numbers for the user layers it has to be told about (`kicadShapes.ts`). */
 const userLayerNumber = (name: string): number | null => {

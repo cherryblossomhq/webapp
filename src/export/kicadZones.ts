@@ -5,6 +5,7 @@ import { zoneLayers } from "../model/zones"
 import { kicadLayerName } from "../model/stack"
 import type { CopperLayer, Project, Vec2, Zone } from "../model/types"
 import { fractureRings } from "./fracture"
+import { quoteFlat as quote } from "../lib/kicadQuote"
 
 // The KiCad export's zones (X3), written as KiCad 9 writes them (`PCB_IO_KICAD_SEXPR::format( const ZONE* )`, pcbnew/pcb_io/kicad_sexpr/
 // pcb_io_kicad_sexpr.cpp): the polygon with its holes and arcs, the layers, net, priority, clearance, minimum width, pad connection, thermal
@@ -21,7 +22,6 @@ const xyOf = (to: ToFile) => (p: Vec2) => {
   const q = to(p)
   return `(xy ${mm6(q.x)} ${mm6(q.y)})`
 }
-const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 const LAYER = (l: CopperLayer): string => kicadLayerName(l)
 
 /** A uuid made from the zone's id, so the same project exports the same file. */

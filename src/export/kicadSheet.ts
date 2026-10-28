@@ -4,6 +4,7 @@ import { SCH_LIGHT } from "../editor/theme"
 import { textFrame, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
 import { isExact, lookOfText } from "../model/sheetItems"
 import type { ComponentInstance, DrawingColor, LabelField, NetLabel, SchematicDrawing, SheetFill, SheetStroke, TextLook, Vec2 } from "../model/types"
+import { escapeNetName, quote } from "../lib/kicadQuote"
 
 // S2 and S4 in the KiCad schematic: labels with their kind, shape and style, the drawings of the sheet (texts, text
 // boxes, lines, shapes, pictures, tables, junction dots and flags), and the flags of a symbol. The converter
@@ -15,9 +16,6 @@ const MM = 12.7
 const mm6 = (n: number) => String(round(n, 6) || 0)
 /** A length in editor units as millimetres, to a tenth of a micrometre. */
 const L = (units: number) => String(round(units * MM, 4) || 0)
-
-/** A string as KiCad reads it: quoted, with the backslash and the quote escaped. A new line stays one (KiCad writes `\n`). */
-const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n")}"`
 
 /** KiCad's `(color r g b a)` of `#rrggbb` or `rgba(r,g,b,a)`. */
 export function colorNode(color: string): string {
@@ -300,16 +298,13 @@ export function addSheetItems(sch: string, drawings: SchematicDrawing[], toPage:
   return end < 0 ? sch : `${sch.slice(0, end + 1)}${text}${sch.slice(end + 1)}`
 }
 
-/** A bus alias's name or member as the file keeps it: a `/` is `{slash}`, the label's own escape (which the reader undoes). */
-const escapeName = (text: string) => text.replace(/\//g, "{slash}")
-
 /**
  * S3: the labels that name a bus, which the converter does not write (it writes a label for each net a label names, and a bus is no net), and
  * the bus aliases of the sheet (`(bus_alias "NAME" (members "A" "B"))`, what KiCad 9's `saveBusAlias` writes), before the closing bracket.
  */
 export function addBusItems(sch: string, labels: NetLabel[], aliases: { name: string; members: string[] }[], toPage: ToPage): string {
   if (!labels.length && !aliases.length) return sch
-  const lines = [...aliases.map((a) => `  (bus_alias ${quote(escapeName(a.name))} (members ${a.members.map((m) => quote(escapeName(m))).join(" ")}))`), ...labels.map((l, i) => labelNode(l, toPage, busLabelUuidOf(i)))]
+  const lines = [...aliases.map((a) => `  (bus_alias ${quote(escapeNetName(a.name))} (members ${a.members.map((m) => quote(escapeNetName(m))).join(" ")}))`), ...labels.map((l, i) => labelNode(l, toPage, busLabelUuidOf(i)))]
   const end = sch.lastIndexOf("\n)")
   return end < 0 ? sch : `${sch.slice(0, end + 1)}${lines.join("\n")}\n${sch.slice(end + 1)}`
 }

@@ -14,7 +14,9 @@ import { componentTexts, shownOf, textBoxCorners, worldTexts, isDimensionText, t
 import type { BoardDimension, BoardShape, ComponentInstance, FootprintDef, PadDef, PartText, PcbGroup, PinDef, Project, Vec2 } from "../model/types"
 import type { Model3D } from "../model/types"
 import { drawing, type Out } from "./kicadShapes"
-import { effects, quote } from "./kicadTexts"
+import { effects } from "./kicadTexts"
+import { stableUuid } from "./kicadUuid"
+import { quoteTabs as quote } from "../lib/kicadQuote"
 import { trapezoidOf, writePad } from "./kicadPads"
 import { dimensionBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
@@ -106,7 +108,7 @@ export interface KicadBoardOptions {
 const PIN_TYPE: Record<NonNullable<PinDef["kind"]>, string> = { input: "input", output: "output", io: "bidirectional", passive: "passive", power: "power_in", ground: "power_in", nc: "no_connect" }
 
 /** A uuid in KiCad's shape, numbered so the same project writes the same file. */
-const uuidAt = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`
+const uuidAt = (n: number) => stableUuid("8000", n)
 
 export function writeKicadBoard(project: Project, options: KicadBoardOptions = {}): KicadBoardFile {
   const notes = new Set<string>()

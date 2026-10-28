@@ -4,6 +4,7 @@ import { activeVariant, variantSheetFlags } from "../model/variants"
 import { colorNode } from "./kicadSheet"
 import type { ExtraUnit } from "./circuitJson"
 import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, TextLook, Vec2 } from "../model/types"
+import { escapeNetName, quote } from "../lib/kicadQuote"
 
 // S1 in the KiCad files: a project with sheets is written as a root schematic, a file for each other sheet (drawn once, whatever the
 // number of its uses), a `(sheet ...)` on the sheet each symbol is drawn on, the pages, and for every symbol the reference it has in
@@ -13,9 +14,6 @@ import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, Tex
 
 const MM = 12.7
 const mm6 = (n: number) => String(round(n, 6) || 0)
-const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n")}"`
-/** KiCad escapes the characters a net name cannot hold: a `/` is `{slash}`. */
-export const escapeNetName = (text: string) => text.replace(/\//g, "{slash}")
 
 /** A uuid made from a text, the same every time: the ids of a project's sheets are short, KiCad's are uuids. */
 export function uuidFrom(text: string): string {

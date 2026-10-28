@@ -32,6 +32,7 @@ import { LegacyParseError, milToIu, milToMm } from "./text"
 import type { LegacyComp, LegacyEntry, LegacyField, LegacySchematic, LegacyText, LegacyWire } from "./sch"
 import { defaultFieldName } from "./sch"
 import { convertOverbar } from "../../board/read"
+import { quoteLegacy as q } from "../../../../lib/kicadQuote"
 
 /** The uuid KiCad 6 gives an item whose legacy file has a timestamp: `00000000-0000-0000-0000-0000` and the 8 digits. */
 export const timestampUuid = (ts: string) => `00000000-0000-0000-0000-${ts.toLowerCase().padStart(12, "0")}`
@@ -39,7 +40,6 @@ export const timestampUuid = (ts: string) => `00000000-0000-0000-0000-${ts.toLow
 /** The root sheet of a legacy project has no id of its own in the file. */
 export const LEGACY_ROOT_UUID = "00000000-0000-0000-0000-000000000000"
 
-const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`
 const n = (mil: number) => String(milToMm(mil) + 0)
 const nn = (v: number) => String(Math.round(v * 1e6) / 1e6 + 0)
 const xy = (xMil: number, yMil: number) => `${n(xMil)} ${n(yMil)}`

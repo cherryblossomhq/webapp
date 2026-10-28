@@ -32,6 +32,7 @@
 
 import { convertOverbar } from "../../board/read"
 import { Cursor, LegacyParseError, linesOf, milToMm, tokensOf } from "./text"
+import { quoteLegacy as q } from "../../../../lib/kicadQuote"
 
 export type LegacyFill = "none" | "outline" | "background"
 
@@ -528,7 +529,6 @@ export function readLegacyLibraryText(text: string): LegacyLibrary {
 
 // ---------- the symbol as KiCad 6 has it ----------
 
-const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`
 const num = (mil: number) => String(milToMm(mil) + 0)
 const numMm = (mm: number) => String(Math.round(mm * 1e6) / 1e6 + 0)
 const ANGLE_ORIENT: Record<string, number> = { R: 0, U: 90, L: 180, D: 270 }

@@ -6,6 +6,8 @@ import { dashShape, flattenPath, mapShape, segStart, shapePaths, shapeRings, typ
 import { worldShapes, BOARD_SHAPE_OWNER } from "../model/shapeItems"
 import type { BoardShape, ComponentInstance, Project, ShapePoint, Vec2 } from "../model/types"
 import { fractureRings } from "./fracture"
+import { stableUuid } from "./kicadUuid"
+import { quoteFlat as quote } from "../lib/kicadQuote"
 
 // The board's drawings and each footprint's drawings, written into the board file the converter
 // made (`gr_line`, `gr_arc`, `gr_circle`, `gr_rect`, `gr_poly`, `gr_curve` on the board; `fp_*` inside
@@ -25,7 +27,6 @@ const FLATTEN = 0.0005
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
-const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
 const STROKE_TYPE = { dash: "dash", dot: "dot", dash_dot: "dash_dot", dash_dot_dot: "dash_dot_dot" } as const
 
@@ -163,7 +164,7 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
   const uuids = new Map<string, string[]>()
   if (!shapes.length) return { text: pcb, notes: [], uuids }
   let serial = 0
-  const uuidAt = (n: number) => `00000000-0000-4000-9000-${n.toString(16).padStart(12, "0")}`
+  const uuidAt = (n: number) => stableUuid("9000", n)
   const uuid = () => uuidAt(++serial)
   const nets = new Map<string, number>()
   for (const m of pcb.matchAll(/\n {2}\(net (\d+) "((?:[^"\\]|\\.)*)"\)/g)) nets.set(m[2].replace(/\\(.)/g, "$1"), Number(m[1]))

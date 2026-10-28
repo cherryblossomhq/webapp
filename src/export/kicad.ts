@@ -100,14 +100,20 @@ interface BoardText {
   native: boolean
 }
 
-/** The board of a project that came from KiCad: the native writer, with the editor's fill of each zone and the pictures of the reference images. */
-async function nativeBoard(project: Project): Promise<BoardText> {
+/** The bytes of a project's reference images by file, loaded if they are not already. */
+async function loadPictures(project: Project): Promise<Map<string, Uint8Array>> {
   if (project.images?.length) await preloadImages(project)
   const pictures = new Map<string, Uint8Array>()
   for (const m of project.images ?? []) {
     const bytes = imageBytes(m.file)
     if (bytes) pictures.set(m.file, new Uint8Array(bytes))
   }
+  return pictures
+}
+
+/** The board of a project that came from KiCad: the native writer, with the editor's fill of each zone and the pictures of the reference images. */
+async function nativeBoard(project: Project): Promise<BoardText> {
+  const pictures = await loadPictures(project)
   const fills = project.zones.length ? analyzePcb(project, computeConnectivity(project)).zoneFills : []
   const board = writeKicadBoard(project, { fills, pictures })
   const zoneNotes = project.zones.length ? ["Zones are written with their outlines, layers, nets, priorities and settings, filled as the editor filled them; press B in KiCad to refill them by its own rules. KiCad's thermal reliefs have four spokes; the pour's own spoke count and angle rules do not exist there."] : []
@@ -126,12 +132,7 @@ async function converterBoard(project: Project, converted: string): Promise<Boar
   const outline = applyOutline(drawings.text, project)
   const texts = applyTexts(outline.text, project)
   // Dimensions, reference images and groups come last, naming the items the writers above made (a board with none is written as it was).
-  if (project.images?.length) await preloadImages(project)
-  const pictures = new Map<string, Uint8Array>()
-  for (const m of project.images ?? []) {
-    const bytes = imageBytes(m.file)
-    if (bytes) pictures.set(m.file, new Uint8Array(bytes))
-  }
+  const pictures = await loadPictures(project)
   const objects = applyBoardObjects(texts.text, project, drawings.uuids, texts.uuids, pictures)
   return { text: objects.text, notes: [...zones.notes, ...padded.notes, ...drawings.notes, ...outline.notes, ...texts.notes], afterNotes: objects.notes, native: false }
 }

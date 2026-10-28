@@ -10,6 +10,7 @@ import { shapePaths } from "../model/shapes"
 import { onBoard } from "../model/partFlags"
 import type { BoardShape, ComponentInstance, CopperLayer, PadDef, PadSides, Project, Vec2 } from "../model/types"
 import { localFrame, polygonItems, ringItems } from "./kicadShapes"
+import { quoteFlat as quote } from "../lib/kicadQuote"
 
 // The pads of a part that has X7 features, written into the board file the converter made, exactly as KiCad has them: the shape (rectangle,
 // rounded or chamfered rectangle, oval, circle, custom pad), its size and turn, the hole (round or oval, with its offset), the layers, the
@@ -28,7 +29,6 @@ import { localFrame, polygonItems, ringItems } from "./kicadShapes"
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
-const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
 /** KiCad's rotation of a vector (counter-clockwise on screen, y down). */
 function turnVec(v: Vec2, deg: number): Vec2 {

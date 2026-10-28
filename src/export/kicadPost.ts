@@ -5,6 +5,8 @@ import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes } from "../model/partFlags"
 import { zoneClearance } from "../model/rules"
 import type { ComponentInstance, PinType, Project } from "../model/types"
+import { quoteFlat as quote } from "../lib/kicadQuote"
+import { stableUuid } from "./kicadUuid"
 
 // What `circuit-json-to-kicad` leaves out, put into the files it wrote: no-connect flags, the bill
 // of materials fields on each symbol, the board's design rules and the pours' settings. The
@@ -12,9 +14,6 @@ import type { ComponentInstance, PinType, Project } from "../model/types"
 // changes by the layout the converter prints (two spaces a level) and leaves the rest alone.
 
 const mm6 = (n: number) => String(round(n, 6) || 0)
-
-/** A string as KiCad reads it: quoted, with the backslash and the quote escaped. */
-const quote = (text: string) => `"${text.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
 // ---------- No-connect flags ----------
 
@@ -42,10 +41,7 @@ export function addNoConnects(sch: string, points: SchematicPoint[]): string {
 }
 
 /** A uuid for the nth flag; stable, so two exports of one project differ only in the converter's own random ids. */
-function flagUuid(n: number): string {
-  const hex = (n + 1).toString(16).padStart(12, "0")
-  return `00000000-0000-4000-8000-${hex}`
-}
+const flagUuid = (n: number): string => stableUuid("8000", n + 1)
 
 // ---------- Symbol fields ----------
 

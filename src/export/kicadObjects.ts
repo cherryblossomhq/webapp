@@ -11,7 +11,9 @@ import { encodeBase64, imageFacts } from "../lib/imageFacts"
 import { dimensionDrawing } from "../model/dimensions"
 import { dimensionWorldText } from "../model/texts"
 import type { BoardDimension, PcbGroup, Project, ReferenceImage, Vec2 } from "../model/types"
-import { effects, quote } from "./kicadTexts"
+import { effects } from "./kicadTexts"
+import { stableUuid as uuidAt } from "./kicadUuid"
+import { quoteTabs as quote } from "../lib/kicadQuote"
 import { KICAD_PAGE_ORIGIN, userLayerNumber } from "./kicadShapes"
 
 // The dimensions, reference images and groups of a board brought in from KiCad, written into the board file the converter made, as KiCad 9 writes them (stamp 20241229):
@@ -26,7 +28,6 @@ const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 const pageToBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
 const toBoard = pageToBoard
 const key = (n: number) => n.toFixed(4)
-const uuidAt = (kind: string, n: number) => `00000000-0000-4000-${kind}-${n.toString(16).padStart(12, "0")}`
 
 export interface KicadObjects {
   text: string

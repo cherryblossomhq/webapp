@@ -1030,7 +1030,7 @@ export function PcbEditor() {
   })()
   // Texts on screen, by what their layer is for; none on a board that has none.
   const shownTexts = visibleTexts(project, vis)
-  const markers = pcb.violations.filter((v) => v.severity === "error" && v.kind !== "net-conflict")
+  const markers = pcb.violations.filter((v) => v.severity === "error")
 
   return (
     <div className="absolute inset-0">

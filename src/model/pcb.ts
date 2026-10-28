@@ -112,7 +112,6 @@ export interface DrcViolation {
     | "outside-board"
     | "overlap"
     | "unconnected-pin"
-    | "net-conflict"
     | "trace-width"
     | "drill"
     | "annular-ring"
@@ -946,15 +945,6 @@ export function analyzePcb(
   }
 
   manufacturability(project, items, find, push)
-
-  for (const conflict of sch.conflicts) {
-    push({
-      severity: "warning",
-      kind: "net-conflict",
-      message: `Net names merged: ${conflict.names.join(", ")}`,
-      at: { x: 0, y: 0 },
-    })
-  }
 
   return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}) }
 }

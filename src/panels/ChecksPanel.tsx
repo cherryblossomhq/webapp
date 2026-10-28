@@ -95,7 +95,7 @@ export function useChecks(): CheckItem[] {
       })
     }
     for (const v of pcb.violations.filter((x: DrcViolation) => x.kind !== "unrouted")) {
-      add({ id: v.id, severity: v.severity, message: v.message, where: v.kind === "net-conflict" ? "schematic" : "pcb", at: v.kind === "net-conflict" ? null : v.at })
+      add({ id: v.id, severity: v.severity, message: v.message, where: "pcb", at: v.at })
     }
     // Project parts: where their pinout and land came from, and whether a supplier contradicts
     // them. First among their severity: one unverified part outweighs its unconnected pins.

@@ -278,7 +278,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
 
   // Check errors, as the editor marks them, and what the numbers name: overlaps and parts off the board.
   for (const v of pcb.violations) {
-    if (v.severity !== "error" || v.kind === "net-conflict") continue
+    if (v.severity !== "error") continue
     body += `<circle cx="${n(v.at.x)}" cy="${n(v.at.y)}" r="${n(Math.max(0.35, 7 * px))}" fill="none" stroke="${PCB.danger}" stroke-width="${n(1.6 * px)}"/><circle cx="${n(v.at.x)}" cy="${n(v.at.y)}" r="${n(Math.max(0.08, 1.6 * px))}" fill="${PCB.danger}"/>`
   }
   for (const o of m.overlaps) body += outline(o.box, PCB.warn, px)

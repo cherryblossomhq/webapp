@@ -3,6 +3,7 @@ import { numeric } from "../lib/natural"
 import { parseValue } from "../lib/values"
 import { pinKey, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
+import { AUTO_NET_NAME } from "./merges"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import { ROOT_SHEET, refusedSheetSymbols, sheetSymbolName, sheetUses, useAt } from "./sheets"
 import { unitCount, unitLetters } from "./symbolDrawing"
@@ -30,12 +31,15 @@ import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project,
  *   sheet symbol whose sheet holds itself, which the tree leaves out.
  * - **bus-entry-no-bus**, **net-not-bus-member** (S3): a bus entry with neither end on a bus, and a wire a bus entry joins to a bus whose
  *   label names no member of it (KiCad's "bus entry needed" and "net is graphically connected to a bus but not a bus member").
+ * - **net-names**: one net with several names (labels or power ports of two names wired together, or a label `connect` named
+ *   `NET3` left on a net that has a name now; KiCad's "both A and B are attached to the same items"). It points at the labels
+ *   and ports of the names the net is not known by, and is keyed by the names, so it stays ignored while those same names meet.
  *
  * Measured on the five examples, the three v1 fixtures and the eight blog boards brought in
  * from tscircuit: every hit was a real mistake and none was a false alarm.
  */
 
-export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict" | "stray-no-connect" | "sheet-pin-no-label" | "label-no-sheet-pin" | "sheet-pin-unconnected" | "sheet-loop" | "bus-entry-no-bus" | "net-not-bus-member"
+export type ErcKind = "lone-label" | "bare-led" | "shorted" | "missing-unit" | "pin-conflict" | "stray-no-connect" | "sheet-pin-no-label" | "label-no-sheet-pin" | "sheet-pin-unconnected" | "sheet-loop" | "bus-entry-no-bus" | "net-not-bus-member" | "net-names"
 
 export interface ErcFinding {
   kind: ErcKind
@@ -50,7 +54,7 @@ export interface ErcFinding {
   subject: string
   /** Components it is about, the offending one first. */
   componentIds: string[]
-  /** Labels it is about (lone-label). */
+  /** Labels it is about (lone-label, net-names). */
   labelIds: string[]
   /** Where on the schematic to look. */
   at: Vec2
@@ -704,6 +708,7 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
 
   findings.push(...sheetFindings(project))
   findings.push(...busFindings(project, conn))
+  findings.push(...nameFindings(project, conn))
   // A finding on a part of a sheet below the root says which use it is on, so the editor can open it.
   for (const f of findings) {
     if (f.sheet) continue
@@ -711,12 +716,71 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
     if (inst) f.sheet = inst
   }
 
-  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5, "sheet-pin-no-label": 6, "label-no-sheet-pin": 7, "sheet-pin-unconnected": 8, "sheet-loop": 9, "bus-entry-no-bus": 10, "net-not-bus-member": 11 }
+  const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5, "sheet-pin-no-label": 6, "label-no-sheet-pin": 7, "sheet-pin-unconnected": 8, "sheet-loop": 9, "bus-entry-no-bus": 10, "net-not-bus-member": 11, "net-names": 12 }
   return findings.sort(
     (x, y) =>
       order[x.kind] - order[y.kind] ||
       x.subject.localeCompare(y.subject, undefined, { numeric: true }),
   )
+}
+
+/**
+ * Nets with more than one name. Most of a net's labels and ports carry the name it goes by (a name someone chose before one `connect`
+ * made up); the finding points at the others, the odd ones out, and at all of them when the odd name has nothing to select (a hidden
+ * power pin). A sheet used twice can have the same names meet in each use: that is one finding.
+ */
+function nameFindings(project: Project, conn: SchematicConnectivity): ErcFinding[] {
+  if (!conn.conflicts.length) return []
+  const labelById = new Map(project.labels.map((l) => [l.id, l]))
+  const labelsOn = new Map<string, { id: string; use: string; name: string; at: Vec2 }[]>()
+  for (const [use, nets] of conn.byUse ? [...conn.byUse.labelNet] : [["", conn.labelNet] as const]) {
+    for (const [id, net] of nets) {
+      const l = labelById.get(id)
+      if (l) (labelsOn.get(net) ?? labelsOn.set(net, []).get(net)!).push({ id, use, name: l.name.trim(), at: { x: l.x, y: l.y } })
+    }
+  }
+  const portsOn = new Map<string, { id: string; name: string; at: Vec2 }[]>()
+  for (const c of project.components) {
+    const part = findPart(c.partId)
+    const name = powerNetName(c, part)
+    const net = name && part!.pins.map((p) => conn.pinNet.get(pinKey(c.id, p.number))).find(Boolean)
+    if (net) (portsOn.get(net) ?? portsOn.set(net, []).get(net)!).push({ id: c.id, name, at: { x: c.sch.x, y: c.sch.y } })
+  }
+  const byKey = new Map<string, ErcFinding>()
+  for (const { names, netId } of conn.conflicts) {
+    const labels = labelsOn.get(netId) ?? []
+    const ports = portsOn.get(netId) ?? []
+    const count = (n: string) => labels.filter((l) => l.name === n).length + ports.filter((p) => p.name === n).length
+    const chosen = names.filter((n) => !AUTO_NET_NAME.test(n))
+    const kept = (chosen.length ? chosen : names).reduce((a, b) => (count(b) > count(a) ? b : a))
+    const oddLabels = labels.filter((l) => l.name !== kept)
+    const oddPorts = ports.filter((p) => p.name !== kept)
+    const odd = oddLabels.length || oddPorts.length
+    const shownLabels = odd ? oddLabels : labels
+    const shownPorts = odd ? oddPorts : ports
+    const key = `net-names:${names.join(",")}`
+    const same = byKey.get(key)
+    if (same) {
+      same.labelIds.push(...shownLabels.map((l) => l.id).filter((id) => !same.labelIds.includes(id)))
+      same.componentIds.push(...shownPorts.map((p) => p.id).filter((id) => !same.componentIds.includes(id)))
+      continue
+    }
+    // With nothing drawn to point at, a pin of the net.
+    const pin = conn.nets.find((n) => n.id === netId)?.pins[0]
+    const pinAt = pin && project.components.find((c) => c.id === pin.componentId)
+    const first = shownLabels[0] ?? shownPorts[0] ?? (pinAt && { at: schematicPins(pinAt).find((p) => p.pin === pin.pin)?.pos })
+    byKey.set(key, {
+      kind: "net-names",
+      key,
+      message: `Net names merged: ${names.join(", ")}`,
+      subject: `the names ${names.join(", ")} on one net`,
+      componentIds: shownPorts.map((p) => p.id),
+      labelIds: [...new Set(shownLabels.map((l) => l.id))],
+      at: first?.at ?? { x: 0, y: 0 },
+      ...(shownLabels[0]?.use ? { sheet: shownLabels[0].use } : {}),
+    })
+  }
+  return [...byKey.values()]
 }
 
 /** S1: whether something of a sheet (a wire end or side, a label, a pin of a part) is at a point. */

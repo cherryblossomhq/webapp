@@ -31,17 +31,27 @@ export interface LookRenderer {
 }
 
 let installed: LookRenderer | null | undefined
+let browser: (() => Promise<LookRenderer>) | null = null
 
 /** Use this renderer instead of the browser's, or none (`null`). Tests install a fake. */
 export function setLookRenderer(renderer: LookRenderer | null | undefined) {
   installed = renderer
 }
 
+/**
+ * Where the browser's renderer is loaded from, said by the editor's entry (`src/index.ts`) rather
+ * than imported here: it draws the 3D board with three.js, and the tools that use this module also
+ * run on a server (the hosted app's MCP server), whose bundle must not take the whole 3D scene, nor its React hooks.
+ */
+export function registerBrowserRenderer(load: () => Promise<LookRenderer>) {
+  browser = load
+}
+
 /** The installed renderer, else the browser's when there is a page to draw on, else null. */
 export async function lookRenderer(): Promise<LookRenderer | null> {
   if (installed !== undefined) return installed
-  if (typeof document === "undefined") return null
-  return (await import("./browserRenderer")).browserRenderer
+  if (typeof document === "undefined" || !browser) return null
+  return browser()
 }
 
 /** Bytes behind a base64 string. */

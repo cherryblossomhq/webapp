@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react"
 import { encodeBase64 } from "../lib/imageFacts"
 import type { Project, ReferenceImage } from "../model/types"
 import { modelFiles } from "./modelFiles"
@@ -8,6 +7,8 @@ import { projectApi } from "./projectStore"
 // in the same file store as the 3D model files (`store/modelFiles.ts`), once per account however many projects use them. This reads each
 // one once and keeps it for the page, so the PCB view, Sakura's picture and the export all draw from the same copy. A file the store does
 // not have (a project opened on another account, a store that is down) is drawn as an empty frame that says so, and said in the Inspector.
+// No React here: Sakura's tools read these (`look`, the KiCad export), and they also run on a server, where a module that imports React's
+// hooks cannot be loaded (the hosted app's MCP server). The canvas's hook is `useImages.ts`.
 
 type Entry = { state: "loading" } | { state: "ready"; bytes: ArrayBuffer; url?: string } | { state: "missing"; why: string }
 
@@ -91,15 +92,8 @@ export function imageDataUri(m: Pick<ReferenceImage, "file" | "format">): string
   return bytes ? `data:${MIME[m.format]};base64,${encodeBase64(new Uint8Array(bytes))}` : null
 }
 
-/** Starts loading a project's images and redraws the component as each arrives. */
-export function useImages(images: ReferenceImage[] | undefined) {
-  const [, bump] = useState(0)
-  useEffect(() => {
-    const l = () => bump((n) => n + 1)
-    listeners.add(l)
-    return () => void listeners.delete(l)
-  }, [])
-  useEffect(() => {
-    for (const m of images ?? []) void loadImage(m.file)
-  }, [images])
+/** Hear each time an image arrives or is found missing; returns how to stop. The canvas's hook is `useImages`. */
+export function onImagesChange(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => void listeners.delete(listener)
 }

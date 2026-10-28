@@ -17,6 +17,12 @@ export interface ManagedAiHost {
   /** Where plans are bought and usage is managed. */
   upgradeUrl?: string
   accountUrl?: string
+  /**
+   * Where the user connects an AI assistant of their own (Claude, ChatGPT, Cursor) to their
+   * projects through MCP, which every plan has: what a plan without Sakura is offered beside the
+   * upgrade.
+   */
+  assistantsUrl?: string
 }
 
 let host: ManagedAiHost | null = null

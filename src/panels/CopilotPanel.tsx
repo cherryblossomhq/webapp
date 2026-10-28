@@ -254,7 +254,18 @@ function GateNotice({ gate }: { gate: Exclude<Gate, null> }) {
   if (gate === "upgrade") {
     return (
       <Notice title="Sakura is included from the Pro plan up" action={<LinkButton href={host?.upgradeUrl}>Upgrade to Pro</LinkButton>}>
-        The Free plan is the whole editor, by hand. Upgrade to design with Sakura.
+        The Free plan is the whole editor, by hand. Upgrade to design with Sakura
+        {host?.assistantsUrl ? (
+          <>
+            , or{" "}
+            <a href={host.assistantsUrl} target="_blank" rel="noreferrer" className="text-ink underline underline-offset-2">
+              connect your own AI
+            </a>{" "}
+            (Claude, ChatGPT, Cursor) on any plan.
+          </>
+        ) : (
+          "."
+        )}
       </Notice>
     )
   }

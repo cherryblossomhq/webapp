@@ -6,9 +6,12 @@
  * loads `./styles.css` once, and runs `themeScript` in its `<head>`. The host
  * implements `ProjectStorage` against a type-only import, which starts nothing.
  */
+import { registerBrowserRenderer } from "./ai/vision/encode"
 import { watchTheme } from "./store/themeStore"
 
 watchTheme()
+// Sakura's pictures (`look`), drawn on this page's canvas and WebGL; loaded the first time one is taken.
+registerBrowserRenderer(async () => (await import("./ai/vision/browserRenderer")).browserRenderer)
 
 if (process.env.NODE_ENV === "development") {
   // Test hook for driving the editor from browser automation during development.

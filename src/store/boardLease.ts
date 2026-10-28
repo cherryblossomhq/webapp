@@ -62,12 +62,17 @@ const firstName = (name: string) => {
   return name.trim().split(/\s+/)[0] || "Someone"
 }
 
-/** "Ada's Sakura is routing the board", "Ada is tidying the schematic", "Your other tab is routing the board": who holds the lease and what for. */
+/** How an AI assistant's lease names its session (`mcp/session.ts`): one call through MCP, rather than a tab. */
+export const ASSISTANT_SESSION_PREFIX = "mcp-"
+
+const byAssistant = (holder: LeaseHolder) => holder.sessionId.startsWith(ASSISTANT_SESSION_PREFIX)
+
+/** "Ada's Sakura is routing the board", "Ada is tidying the schematic", "Your other tab is routing the board", "Ada's AI assistant is routing the board": who holds the lease and what for. */
 export function holderSentence(holder: LeaseHolder): string {
   const what = ACTION_PHRASES[holder.action] ?? "changing the board"
-  if (holder.mine) return `Your other tab is ${what}`
+  if (holder.mine) return byAssistant(holder) ? `Your AI assistant is ${what}` : `Your other tab is ${what}`
   const who = firstName(holder.name)
-  return holder.viaSakura ? `${who}'s Sakura is ${what}` : `${who} is ${what}`
+  return holder.viaSakura ? `${who}'s Sakura is ${what}` : byAssistant(holder) ? `${who}'s AI assistant is ${what}` : `${who} is ${what}`
 }
 
 interface LeaseStore {

@@ -53,8 +53,9 @@ function frameRequest(input: ToolInput): FrameRequest {
 }
 
 /** Make the picture, or say why not: a failed picture still leaves the model the numbers. */
-async function makeImage(make: (r: LookRenderer) => Promise<LookImage>, signal?: AbortSignal): Promise<{ image: LookImage | null; note: string }> {
-  const renderer = await lookRenderer()
+async function makeImage(make: (r: LookRenderer) => Promise<LookImage>, ctx: ToolContext): Promise<{ image: LookImage | null; note: string }> {
+  const { signal } = ctx
+  const renderer = ctx.renderer ?? (await lookRenderer())
   if (!renderer) return { image: null, note: "No picture could be made here (this editor has nowhere to draw one). The numbers are all there is." }
   if (signal?.aborted) throw new Error("Stopped before the picture was made.")
   try {
@@ -65,9 +66,10 @@ async function makeImage(make: (r: LookRenderer) => Promise<LookImage>, signal?:
   }
 }
 
-const header = (what: string, noun: string, image: LookImage | null) =>
+/** Over MCP the picture is in the tool result itself; in Sakura's conversation, in a message after it (`vision/messages.ts`). */
+const header = (what: string, noun: string, image: LookImage | null, ctx: ToolContext) =>
   image
-    ? `${noun} showing ${what}. The picture (${image.width} x ${image.height}, about ${imageTokens(image).toLocaleString("en-US")} tokens) is in the next message; if that message has no picture, go by the numbers.`
+    ? `${noun} showing ${what}. The picture (${image.width} x ${image.height}, about ${imageTokens(image).toLocaleString("en-US")} tokens) is ${ctx.standalone ? "after this text; if there is none" : "in the next message; if that message has no picture"}, go by the numbers.`
     : `${noun} showing ${what}.`
 
 const SCHEMATIC_KEY =
@@ -89,9 +91,9 @@ async function look3d(project: Project, input: ToolInput, ctx: ToolContext): Pro
   const view: Board3dView = side === "top" ? "top" : side === "bottom" ? "bottom" : "home"
   const m = measurePcb(project)
   const size = fitSize(4 / 3, input.detail === "high" ? "high" : "normal")
-  const { image, note } = await makeImage((r) => r.board3d(project, view, size, MAX_IMAGE_BYTES), ctx.signal)
+  const { image, note } = await makeImage((r) => r.board3d(project, view, size, MAX_IMAGE_BYTES), ctx)
   const from = { home: "from the front right, three-quarter", top: "from above", bottom: "from below" }[view]
-  const lines = [header(`the whole board ${from}`, "A 3D render", image), ...describePcb(m)]
+  const lines = [header(`the whole board ${from}`, "A 3D render", image, ctx), ...describePcb(m)]
   if (input.refs || input.selection || input.region) lines.push("The 3D view always shows the whole board; refs, selection and region apply to the schematic and PCB.")
   if (note) lines.push(note)
   return { text: lines.join("\n"), image, problems: pcbProblems(m), target: "3d", what: "the whole board" }
@@ -125,8 +127,8 @@ async function lookFlat(whole: Project, target: "schematic" | "pcb", input: Tool
     key = pcbKey(side, extras)
     problems = pcbProblems(m)
   }
-  const { image, note } = await makeImage((r) => r.svg(svg, size, MAX_IMAGE_BYTES), ctx.signal)
-  const lines = [header(framed.what, target === "schematic" ? "The schematic" : "The PCB", image), ...(target === "schematic" && project !== whole ? [`This is the sheet ${useAt(whole, project.scope ?? "").human} of ${sheetUses(whole).length}; the editor shows it, and get_design lists the others.`] : []), ...numbers, key]
+  const { image, note } = await makeImage((r) => r.svg(svg, size, MAX_IMAGE_BYTES), ctx)
+  const lines = [header(framed.what, target === "schematic" ? "The schematic" : "The PCB", image, ctx), ...(target === "schematic" && project !== whole ? [`This is the sheet ${useAt(whole, project.scope ?? "").human} of ${sheetUses(whole).length}; the editor shows it, and get_design lists the others.`] : []), ...numbers, key]
   if (framed.problem) lines.push(framed.problem)
   if (note) lines.push(note)
   return { text: lines.join("\n"), image, problems, target, what: framed.what }

@@ -1,6 +1,6 @@
 import type { Project } from "../model/types"
 import type { SupplierPartsSource } from "./supplierParts"
-import type { LookImage } from "./vision/encode"
+import type { LookImage, LookRenderer } from "./vision/encode"
 import type { LookBudget } from "./vision/limits"
 
 // What every copilot tool is made of. In a module of its own so tools can live in more than one
@@ -48,6 +48,14 @@ export interface ToolContext {
   selection?: () => string[]
   /** The project as it was when the user sent the request, before any tool ran. */
   start?: Project
+  /**
+   * An AI assistant of the user's own, over MCP: each call is a request of its own and what came
+   * before it is unknown (`start` is the call's), so a tool asks to be told what the request made
+   * rather than guess; and a picture comes back in the call's own result.
+   */
+  standalone?: boolean
+  /** What draws `look`'s pictures where there is no page to draw on (the MCP server's); without one, the page's. */
+  renderer?: LookRenderer
   /** The schematic's view of the sheet tree: the use shown (a path of sheet symbols, "" for the root), and a way to show another. Absent where no editor shows one. */
   sheet?: { shown(): string; show(path: string): void }
 }

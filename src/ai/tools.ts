@@ -57,8 +57,9 @@ import { isWholeBoardPour, keepoutFlags, zoneLayers } from "../model/zones"
 import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
 import { SHEET_ARG, SHEET_PROPERTY, onSheet, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
-import { isHierarchical, sheetUses, syncEdited, useAt, type SheetUse } from "../model/sheets"
+import { isHierarchical, sheetUses, sheetView, syncEdited, useAt, type SheetUse } from "../model/sheets"
 import { splitIgnored } from "../model/erc"
+import { looseIslands, takenCount, withoutTaken, wiringAt, type Taken } from "../model/unwire"
 import { lookTool } from "./lookTool"
 import { readDatasheetTool } from "./datasheetTool"
 import { createPartTool, findPartTool, getPartDataTool, verifyPartsTool } from "./partTools"
@@ -356,6 +357,10 @@ const getDesign: ToolSpec = {
     const groups = groupsReport(project)
     const images = imagesReport(project)
     const zones = zonesReport(project)
+    // Drawing that reaches no part makes a sheet with no parts look empty in this list when it isn't.
+    const sheetsOnce = hier ? [...new Map(sheetUses(project).map((u) => [u.sheet, u.path])).values()].map((path) => sheetView(project, path)) : [project]
+    const loose = sheetsOnce.flatMap(looseIslands)
+    const looseText = wiringList({ wires: loose.reduce((a, i) => a + i.wires.length, 0), labels: loose.reduce((a, i) => a + i.labels.length, 0), ports: loose.reduce((a, i) => a + i.ports.length, 0) })
     const design = {
       project: project.name,
       ...(hier ? { sheets: sheetUses(project).map((u) => ({ path: u.human, ...(u.symbol ? { box: { x: u.symbol.x, y: u.symbol.y, w: u.symbol.w, h: u.symbol.h }, ...(u.symbol.pins.length ? { pins: u.symbol.pins.map((p) => `${p.name} (${p.shape})`) } : {}) } : {}) })), ...(only ? { showing_sheet: only.human } : {}) } : {}),
@@ -365,6 +370,7 @@ const getDesign: ToolSpec = {
       power_symbols: powerSymbols,
       nets,
       ...(blocks.length ? { blocks } : {}),
+      ...(looseText ? { loose_wiring: `${looseText} reach no part (remove_wiring loose deletes them)` } : {}),
       ...(drawings.length ? { drawings } : {}),
       ...(drawingsMore(project) ? { drawings_more: drawingsMore(project) } : {}),
       ...(boardDrawings ? { board_drawings: boardDrawings } : {}),
@@ -1094,6 +1100,132 @@ const connectTool: ToolSpec = {
   },
 }
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`
+
+/** "2 wires, 1 label and 1 port", or "" for none. */
+function wiringList(c: { wires: number; labels: number; ports: number }): string {
+  const kinds = [c.wires && plural(c.wires, "wire"), c.labels && plural(c.labels, "label"), c.ports && plural(c.ports, "port")].filter((k): k is string => !!k)
+  return kinds.length > 1 ? `${kinds.slice(0, -1).join(", ")} and ${kinds[kinds.length - 1]}` : (kinds[0] ?? "")
+}
+
+/** "Deleted 2 wires and 1 label, and cut 1 wire short", or "" for nothing. */
+function takenText(all: Taken[]): string {
+  const c = all.map(takenCount).reduce((a, b) => ({ wires: a.wires + b.wires, shortened: a.shortened + b.shortened, labels: a.labels + b.labels, ports: a.ports + b.ports }), { wires: 0, shortened: 0, labels: 0, ports: 0 })
+  const list = wiringList(c)
+  if (!c.shortened) return list && `Deleted ${list}`
+  return list ? `Deleted ${list}, and cut ${plural(c.shortened, "wire")} short` : `Cut ${plural(c.shortened, "wire")} short`
+}
+
+/**
+ * Pins other than `asked` that an edit took off the nets they were on: what was left of each net
+ * split in two, or one pin left on no net, as connectionsLost says it. A port the edit deleted is
+ * not a pin cut off.
+ */
+function alsoCut(project: Project, next: Project, asked: Set<string>): string[] {
+  const before = getConnectivity(project)
+  const after = getConnectivity(next)
+  const nowOn = pinNetNames(next)
+  const alive = new Set(next.components.map((c) => c.id))
+  const byNet = new Map<string, string[]>()
+  for (const [key, netId] of before.pinNet) {
+    if (asked.has(key) || !alive.has(key.slice(0, key.lastIndexOf(":")))) continue
+    byNet.set(netId, [...(byNet.get(netId) ?? []), key])
+  }
+  const out: string[] = []
+  for (const [netId, pins] of byNet) {
+    const net = before.nets.find((n) => n.id === netId)
+    if (!net || (!net.named && net.pins.length < 2)) continue
+    const groups = new Map<string, string[]>()
+    for (const key of pins) {
+      const g = after.pinNet.get(key) ?? `solo:${key}`
+      groups.set(g, [...(groups.get(g) ?? []), key])
+    }
+    const [main, ...rest] = [...groups.values()].sort((a, b) => b.length - a.length)
+    const ref = (key: string) => ({ componentId: key.slice(0, key.lastIndexOf(":")), pin: key.slice(key.lastIndexOf(":") + 1) })
+    const lost = rest.length ? rest.flat() : main.filter((key) => !nowOn(ref(key).componentId, ref(key).pin))
+    if (lost.length) out.push(`${[...new Set(lost.map((key) => pinLabel(project, ref(key))))].join(", ")} no longer on ${net.name}`)
+  }
+  return out
+}
+
+/** Every island of drawing that reaches no part, gone, except any whose going would cut a pin off (labels of two names on one wire join their nets). */
+function removeLoose(project: Project): { project: Project; taken: Taken[]; kept: number } {
+  const islands = looseIslands(project)
+  const cuts = (a: Project, b: Project) => connectionsLost(a, b, getConnectivity(a), getConnectivity(b)).length > 0
+  const all = { wires: islands.flatMap((i) => i.wires), labels: islands.flatMap((i) => i.labels), ports: islands.flatMap((i) => i.ports), pieces: [] }
+  const whole = withoutTaken(project, all)
+  if (!cuts(project, whole)) return { project: whole, taken: islands, kept: 0 }
+  let at = project
+  const taken: Taken[] = []
+  for (const island of islands) {
+    const next = withoutTaken(at, island)
+    if (cuts(at, next)) continue
+    at = next
+    taken.push(island)
+  }
+  return { project: at, taken, kept: islands.length - taken.length }
+}
+
+const removeWiringTool: ToolSpec = {
+  name: "remove_wiring",
+  description:
+    "Delete wiring on the schematic; it never joins nets. pins takes each pin off its net: the wire from the pin to its first junction, label or other pin goes, with labels and power or ground ports on the pin and a label or port that wire leaves on nothing. A wire straight to another pin cuts that pin off too, and the reply says so. loose deletes every wire, label and port that reaches no part's pin (what tidy_schematic says it kept), except drawing that joins two nets by name.",
+  input_schema: {
+    type: "object",
+    properties: {
+      pins: { type: "array", items: { type: "string" }, description: '"REF.PIN", as for connect' },
+      loose: { type: "boolean" },
+      sheet: SHEET_PROPERTY,
+    },
+  },
+  run: (project, input) => {
+    const specs = Array.isArray(input.pins) ? input.pins.map((s) => String(s).trim()).filter(Boolean) : []
+    const loose = input.loose === true
+    if (!specs.length && !loose) return fail(project, "Say what to delete: pins, to take those pins off their nets, or loose true, for the wiring that reaches no part.")
+    const refs: PinRef[] = []
+    const bad: string[] = []
+    const unplaced: string[] = []
+    for (const spec of specs) {
+      const r = resolvePin(project, spec)
+      if ("ref" in r) refs.push(r.ref)
+      else if ("unplaced" in r) unplaced.push(r.unplaced)
+      else bad.push(r.unknown)
+    }
+    if (bad.length || unplaced.length) return fail(project, [bad.length ? `Unknown pin ${bad.join("; ")}` : "", ...unplaced].filter(Boolean).join(". "))
+
+    let next = project
+    const said: string[] = []
+    if (refs.length) {
+      const taken = wiringAt(project, refs)
+      next = withoutTaken(project, taken)
+      const was = pinNetNames(project)
+      const now = pinNetNames(next)
+      const where = refs.map((r) => pinLabel(project, r)).join(", ")
+      const done = takenText([taken])
+      said.push(done ? `${done} at ${where}.` : `Nothing is drawn at ${where}.`)
+      for (const r of refs) {
+        const pin = pinLabel(project, r)
+        const before = was(r.componentId, r.pin)
+        const after = now(r.componentId, r.pin)
+        if (!before) said.push(`${pin} was on no net.`)
+        else if (!after) said.push(`${pin} is off ${before}.`)
+        else said.push(`${pin} is still on ${after}: it touches another pin directly, or joins it by its name (a hidden power pin).`)
+      }
+      const cut = alsoCut(project, next, new Set(refs.map((r) => pinKey(r.componentId, r.pin))))
+      if (cut.length) said.push(`Also cut off: ${cut.slice(0, 4).join("; ")}${cut.length > 4 ? `; and ${cut.length - 4} more` : ""}. Reconnect what should stay with connect.`)
+    }
+    if (loose) {
+      const r = removeLoose(next)
+      next = r.project
+      const done = takenText(r.taken)
+      said.push(done ? `${done} that reached no part.` : "No wiring on the sheet reaches no part.")
+      if (r.kept) said.push(`Kept ${plural(r.kept, "piece")} that ${r.kept === 1 ? "joins" : "join"} two nets by name: deleting ${r.kept === 1 ? "it" : "them"} would split those nets.`)
+    }
+    const summary = refs.length ? `Removed wiring at ${refs.map((r) => pinLabel(project, r)).join(", ")}` : "Removed loose wiring"
+    return ok(next, said.join(" "), next === project ? "Nothing to remove" : summary)
+  },
+}
+
 /**
  * What to do about a pin that could not be connected: a spot for its part, found by trying the
  * move and the connection again, or else the honest way out.
@@ -1730,6 +1862,12 @@ const tidyTool: ToolSpec = {
       const missing = names.filter((n) => !findBlock(project, n))
       if (missing.length) return fail(project, `No block ${missing.join(", ")}. Blocks: ${blockNames(project)}`)
       targets = [...new Map(names.map((n) => findBlock(project, n)!).map((b) => [b.id, b])).values()]
+    } else if (input.whole_sheet !== true && context.standalone && project.components.some((c) => isSchematicPart(findPart(c.partId)))) {
+      // An assistant over MCP: each call is a request of its own, so what it made is for it to say.
+      return fail(
+        project,
+        "Nothing was tidied: say what to tidy. Give blocks, the blocks you made or changed, or whole_sheet true if the sheet was empty when the user asked or they asked for the whole sheet. Each call here is a request of its own, so tidy_schematic can't tell what you made.",
+      )
     } else if (input.whole_sheet !== true && context.start && context.start.components.some((c) => isSchematicPart(findPart(c.partId)))) {
       targets = changedBlocks(context.start, project)
       if (!targets.length) {
@@ -1746,6 +1884,7 @@ const tidyTool: ToolSpec = {
     // A block that can't be tidied is left as it was drawn, and the others are tidied all the same;
     // the whole sheet keeps such a block itself and says so.
     const left: string[] = []
+    let loose = 0
     const all = targets ?? [undefined]
     for (const target of all) {
       const blockId = target?.id
@@ -1758,6 +1897,7 @@ const tidyTool: ToolSpec = {
       }
       next = r.project
       said.push(r.message)
+      loose += r.loose.wires + r.loose.labels + r.loose.ports
       // The first sentence: what was tidied.
       const end = r.message.indexOf(". ")
       heads.push(end < 0 ? r.message : r.message.slice(0, end + 1))
@@ -1769,7 +1909,8 @@ const tidyTool: ToolSpec = {
     const pairs = Object.entries(renamed)
     const named = pairs.length ? ` Unnamed nets that needed labels were named: ${pairs.map(([a, b]) => `${a} is now ${b}`).join(", ")}.` : ""
     for (const l of left) heads.push(l.slice(0, l.indexOf(":")) + ".")
-    return ok(next, [said.join(" ") + named, ...left].join(" "), heads.join(" "))
+    const unwanted = loose ? ["If what reaches no part isn't wanted, remove_wiring loose deletes it."] : []
+    return ok(next, [said.join(" ") + named, ...left, ...unwanted].join(" "), heads.join(" "))
   },
 }
 
@@ -1787,6 +1928,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   updateComponentTool,
   removeComponentTool,
   connectTool,
+  removeWiringTool,
   ...sheetEditTools,
   addHierLabelTool,
   wireSheetPinTool,
@@ -1890,6 +2032,11 @@ const SHEET_BUILDERS = new Set(["add_component", "group_parts", "edit_block", "d
 function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: unknown, ctx: ToolContext): ToolOutcome {
   if (spec.name === "connect") return onSheet(spec, project, input, prepared, ctx, (p) => sheetOfPins(p, input))
   if (spec.name === "tidy_schematic") return onSheet(spec, project, input, prepared, ctx)
+  if (spec.name === "remove_wiring") return onSheet(spec, project, input, prepared, ctx, (p) => {
+    if (Array.isArray(input.pins) && input.pins.length) return sheetOfPins(p, input)
+    const r = shownUse(p, ctx)
+    return "error" in r ? r : r.use.path
+  })
   // What is built on a sheet goes on the one named, or the one the editor shows.
   if (SHEET_BUILDERS.has(spec.name)) return onSheet(spec, project, input, prepared, ctx, (p) => { const r = shownUse(p, ctx); return "error" in r ? r : r.use.path })
   const out = spec.run(project, input, prepared, ctx)
@@ -1970,6 +2117,8 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return `Removing ${String(i.ref ?? "a part")}`
     case "connect":
       return `Connecting ${Array.isArray(i.pins) ? i.pins.join(", ") : "pins"}`
+    case "remove_wiring":
+      return Array.isArray(i.pins) && i.pins.length ? `Removing the wiring at ${i.pins.join(", ")}` : "Removing loose wiring"
     case "look":
       return `Looking at the ${i.target === "pcb" ? "PCB" : i.target === "3d" ? "3D board" : "schematic"}`
     case "group_parts":
@@ -2028,6 +2177,7 @@ export function toolPhase(name: string): string {
     case "remove_component":
       return "Editing parts"
     case "connect":
+    case "remove_wiring":
       return "Wiring"
     case "group_parts":
     case "edit_block":

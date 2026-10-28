@@ -102,7 +102,8 @@ const BEFORE: Record<string, { circuit: string; notes: string; svg: string; desi
   "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "4b107b7ad8115ed8", design: "42abfae5421666e4" },
   "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "c87ee948dc652b73", design: "ee03b0c27a4e4c41" },
   "frozen-regulator": { circuit: "fcb711afa8d98b8e", notes: "ecde5db8bdf09607", svg: "38d9477f5e779253", design: "1cdb315050a8f11f" },
-  "frozen-mcu": { circuit: "847672861b48a2b6", notes: "ecde5db8bdf09607", svg: "26075a811bfaf2f1", design: "aceab33c4e4aa631" },
+  // get_design now says its one stray supply port (#PWR1, touching nothing) reaches no part: `loose_wiring`.
+  "frozen-mcu": { circuit: "847672861b48a2b6", notes: "ecde5db8bdf09607", svg: "26075a811bfaf2f1", design: "673701354994462c" },
 }
 
 describe("the editor's own projects", () => {

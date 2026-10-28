@@ -35,10 +35,11 @@ export interface Cut {
   taps: { at: Vec2; net: string; free: Dir[]; end: boolean; piece: number }[]
 }
 
-const key = (p: Vec2) => `${round(p.x)},${round(p.y)}`
+/** A point as the wire graph keys it. */
+export const key = (p: Vec2) => `${round(p.x)},${round(p.y)}`
 const byKey = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
-interface Edge {
+export interface Edge {
   id: number
   wire: string
   a: string
@@ -48,7 +49,7 @@ interface Edge {
 }
 
 /** Wires as a graph: split at every point where a wire, pin or label stands, so each meeting is a node. */
-interface Graph {
+export interface Graph {
   edges: Edge[]
   at: Map<string, number[]>
   points: Map<string, Vec2>
@@ -56,7 +57,7 @@ interface Graph {
   dead: Set<number>
 }
 
-function wireGraph(wires: Wire[], points: Map<string, Vec2>, terminal: (k: string) => boolean): Graph {
+export function wireGraph(wires: Wire[], points: Map<string, Vec2>, terminal: (k: string) => boolean): Graph {
   const edges: Edge[] = []
   const at = new Map<string, number[]>()
   for (const w of wires) for (const p of w.points) points.set(key(p), p)
@@ -154,7 +155,7 @@ export function deadRuns(project: Project, wireIds: string[], labelIds: string[]
 }
 
 /** Runs of a wire's edges, in order, that `keep` keeps, as points. */
-function runs(mine: Edge[], keep: (e: Edge) => boolean): { first: number; points: Vec2[] }[] {
+export function runs(mine: Edge[], keep: (e: Edge) => boolean): { first: number; points: Vec2[] }[] {
   const out: { first: number; points: Vec2[] }[] = []
   let run: Vec2[] = []
   let first = -1

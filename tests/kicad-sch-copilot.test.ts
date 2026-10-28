@@ -9,9 +9,12 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "87cee6e4a83e3b0c79e80d068e78c333a8fc042f"
-/** The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made. */
-const BASE_CHARS = 10370
+const BASE_SHA = "3ebb71e15fefb15cd078af1bd169618223f45d2f"
+/**
+ * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
+ * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
+ */
+const BASE_CHARS = 10360
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */

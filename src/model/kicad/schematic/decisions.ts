@@ -27,961 +27,128 @@ export interface TokenRule {
 }
 
 export const PATH_RULES: PathRule[] = [
- {
-  "source": "^(netclass_flag>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid)$",
-  "decision": "not-needed",
-  "note": "KiCad's object identity of a directive label, a sheet symbol and its pins, and a rule area"
- },
- {
-  "source": "^(sheet>instances>project>path>page|sheet_instances>path>page)$",
-  "decision": "not-needed",
-  "note": "page numbers: the export numbers the pages in the order of the tree"
- },
- {
-  "source": "^(version|generator|generator_version)$",
-  "decision": "native",
-  "note": "the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)"
- },
- {
-  "source": "^(uuid)$",
-  "decision": "native",
-  "note": "the sheet's id, the first part of every instance path"
- },
- {
-  "source": "^(paper)$",
-  "decision": "not-needed",
-  "note": "sheet size of KiCad's drawing frame"
- },
- {
-  "source": "^(title_block(?:>.*)?)$",
-  "decision": "native"
- },
- {
-  "source": "^(embedded_fonts)$",
-  "decision": "extend",
-  "ext": "X19",
-  "note": "the fonts the schematic embeds"
- },
- {
-  "source": "^(embedded_files(?:>.*)?)$",
-  "decision": "report",
-  "note": "founder decision: no files packed inside the KiCad file for now; each embedded datasheet or model is a report entry named per file"
- },
- {
-  "source": "^(lib_symbols)$",
-  "decision": "native",
-  "note": "each cached symbol becomes a project part (S10: today a project part cannot hold an arbitrary drawing)"
- },
- {
-  "source": "^(lib_symbols>symbol)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "units, body styles, power flag, inheritance (extends) resolved on read"
- },
- {
-  "source": "^(lib_symbols>symbol>(?:power|extends|embedded_fonts))$",
-  "decision": "native"
- },
- {
-  "source": "^(lib_symbols>symbol>duplicate_pin_numbers_are_jumpers)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "pins that share a number are one pin when this is yes; KiCad's default (no) says nothing"
- },
- {
-  "source": "^(lib_symbols>symbol>jumper_pin_groups(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "groups of pin numbers the symbol joins inside itself (KiCad 10)"
- },
- {
-  "source": "^(lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files))$",
-  "decision": "extend",
-  "ext": "S7"
- },
- {
-  "source": "^(lib_symbols>symbol>body_styles)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "De Morgan and named body styles"
- },
- {
-  "source": "^(lib_symbols>symbol>(?:pin_names|pin_numbers)(?:>(?:hide|offset))?)$",
-  "decision": "extend",
-  "ext": "S6",
-  "note": "whether pin names and numbers are drawn, and their offset"
- },
- {
-  "source": "^(lib_symbols>symbol>property(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "field names are properties (native); each field's place, size, visibility and justification are per symbol and per instance"
- },
- {
-  "source": "^(lib_symbols>symbol>symbol(?:>unit_name)?)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "a unit of a multi-unit symbol and its body style"
- },
- {
-  "source": "^(lib_symbols>symbol>symbol>pin)$",
-  "decision": "extend",
-  "ext": "S5"
- },
- {
-  "source": "^(lib_symbols>symbol>symbol>pin>(?:at|length|hide|name|number|name>.*|number>.*|alternate|alternate>.*))$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "alternates, per-pin visibility, name and number text, any length and any of four directions"
- },
- {
-  "source": "^(lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|text|bezier|ellipse)(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S6",
-  "note": "arcs, beziers, ellipses, fills and stroke styles; the editor's drawing has paths, circles and text only"
- },
- {
-  "source": "^(symbol)$",
-  "decision": "native"
- },
- {
-  "source": "^(symbol>(?:at|lib_id|lib_name|uuid))$",
-  "decision": "native",
-  "note": "a turn that is not a quarter turn does not occur in KiCad schematics"
- },
- {
-  "source": "^(symbol>(?:mirror|unit|body_style))$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "mirrored symbols, the unit of a multi-unit symbol, the body style"
- },
- {
-  "source": "^(symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files))$",
-  "decision": "extend",
-  "ext": "S7"
- },
- {
-  "source": "^(symbol>fields_autoplaced)$",
-  "decision": "native",
-  "note": "KiCad's flag that it placed the fields itself: kept, so an export writes it back"
- },
- {
-  "source": "^(symbol>property(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "value is a property (native); place, size and visibility of each field are S5"
- },
- {
-  "source": "^(symbol>pin(?:>alternate)?)$",
-  "decision": "extend",
-  "ext": "S5",
-  "note": "the alternate function chosen on this instance"
- },
- {
-  "source": "^(symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?)$",
-  "decision": "extend",
-  "ext": "S1",
-  "note": "one reference per use of a sheet; the path names the sheet instance"
- },
- {
-  "source": "^(symbol>instances>project>path>variant(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S9",
-  "note": "per-variant DNP and BOM flags and field overrides (KiCad 10)"
- },
- {
-  "source": "^(sheet>instances>project>path>variant(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S9",
-  "note": "per-variant DNP and BOM flags and field overrides of a sheet (KiCad 10)"
- },
- {
-  "source": "^(symbol_instances(?:>path(?:>(?:reference|unit|value|footprint))?)?)$",
-  "decision": "extend",
-  "ext": "S1",
-  "note": "KiCad 6 keeps all instance data in one root list"
- },
- {
-  "source": "^(wire|wire>pts|wire>pts>xy)$",
-  "decision": "native"
- },
- {
-  "source": "^(wire>(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type)))$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "wire width, dash style and colour"
- },
- {
-  "source": "^(symbol>pin>uuid|(?:wire|bus|junction|no_connect|bus_entry)>uuid)$",
-  "decision": "not-needed",
-  "note": "KiCad's object identity"
- },
- {
-  "source": "^(junction|junction>at)$",
-  "decision": "native",
-  "note": "an explicit junction says two crossing wires are joined; the builder cuts the wires there"
- },
- {
-  "source": "^(junction>(?:diameter|color))$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "a junction dot of its own size or colour; KiCad's default (diameter 0, no colour) is what the editor draws"
- },
- {
-  "source": "^(no_connect|no_connect>at)$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "a no-connect flag on a pin is the pin's nc mark (carried); one that is not on a pin is a drawing of its own"
- },
- {
-  "source": "^(bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|bus_to_bus|stroke(?:>.*)?)|bus_alias|bus_alias>members)$",
-  "decision": "extend",
-  "ext": "S3",
-  "note": "buses, bus entries and bus aliases, with vector names like D[0..7]"
- },
- {
-  "source": "^(label|label>(?:at|fields_autoplaced|uuid))$",
-  "decision": "native",
-  "note": "a local label belongs to its sheet"
- },
- {
-  "source": "^(label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$",
-  "decision": "extend",
-  "ext": "S2",
-  "note": "label size, justification, italic and bold"
- },
- {
-  "source": "^(label>property(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S2",
-  "note": "label fields such as the intersheet references"
- },
- {
-  "source": "^(global_label|global_label>(?:at|shape|fields_autoplaced|uuid))$",
-  "decision": "extend",
-  "ext": "S2",
-  "note": "a global label joins nets across every sheet; its shape is input, output, bidirectional, tri_state or passive"
- },
- {
-  "source": "^(global_label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|global_label>property(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S2"
- },
- {
-  "source": "^(hierarchical_label|hierarchical_label>(?:at|shape|fields_autoplaced|uuid))$",
-  "decision": "extend",
-  "ext": "S1",
-  "note": "joins a sheet's net to the pin of the same name on the sheet symbol that holds it"
- },
- {
-  "source": "^(hierarchical_label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$",
-  "decision": "extend",
-  "ext": "S2"
- },
- {
-  "source": "^(netclass_flag|netclass_flag>(?:at|length|shape|fields_autoplaced)|netclass_flag>property(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S8",
-  "note": "a directive label that assigns a net class to the net it touches"
- },
- {
-  "source": "^(netclass_flag>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$",
-  "decision": "extend",
-  "ext": "S8"
- },
- {
-  "source": "^(sheet)$",
-  "decision": "extend",
-  "ext": "S1",
-  "note": "a sheet symbol, the file it holds, its pins; one file used by several sheets is several instances"
- },
- {
-  "source": "^(sheet>(?:at|size|in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced|pin|pin>at|property|instances|instances>project|instances>project>path))$",
-  "decision": "extend",
-  "ext": "S1"
- },
- {
-  "source": "^(sheet>(?:(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type))|pin>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|property>.*))$",
-  "decision": "extend",
-  "ext": "S1"
- },
- {
-  "source": "^(sheet_instances(?:>path)?)$",
-  "decision": "extend",
-  "ext": "S1",
-  "note": "the sheet instances"
- },
- {
-  "source": "^(text|text>(?:at|uuid|exclude_from_sim)|text_box|text_box>(?:at|size|uuid|exclude_from_sim|margins))$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "free text and text boxes"
- },
- {
-  "source": "^(text>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|text_box>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|text_box>(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type)))$",
-  "decision": "extend",
-  "ext": "S4"
- },
- {
-  "source": "^((?:polyline|rectangle|circle|arc|bezier|ellipse)(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "lines, rectangles, circles, arcs and beziers on the sheet, with stroke and fill"
- },
- {
-  "source": "^(image(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "a bitmap on the sheet; large, so it goes with the model-file store (X14) and counts toward the size limit"
- },
- {
-  "source": "^(table(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "tables (KiCad 8)"
- },
- {
-  "source": "^(rule_area(?:>.*)?)$",
-  "decision": "extend",
-  "ext": "S8",
-  "note": "a drawn area whose symbols are DNP, off the BOM or off the board together (KiCad 9)"
- },
- {
-  "source": "^(group>locked)$",
-  "decision": "extend",
-  "ext": "S4",
-  "note": "a locked group: the editor's blocks cannot be locked"
- },
- {
-  "source": "^(group(?:>.*)?)$",
-  "decision": "native",
-  "note": "a KiCad schematic group is a named set of items; symbols become a block, other members need S4"
- },
- {
-  "source": "^(net_chain(?:>.*)?)$",
-  "decision": "report",
-  "note": "net chains are KiCad 11 development"
- }
+  {"source":"^(netclass_flag>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid)$","decision":"not-needed","note":"KiCad's object identity of a directive label, a sheet symbol and its pins, and a rule area"},
+  {"source":"^(sheet>instances>project>path>page|sheet_instances>path>page)$","decision":"not-needed","note":"page numbers: the export numbers the pages in the order of the tree"},
+  {"source":"^(version|generator|generator_version)$","decision":"native","note":"the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)"},
+  {"source":"^(uuid)$","decision":"native","note":"the sheet's id, the first part of every instance path"},
+  {"source":"^(paper)$","decision":"not-needed","note":"sheet size of KiCad's drawing frame"},
+  {"source":"^(title_block(?:>.*)?)$","decision":"native"},
+  {"source":"^(embedded_fonts)$","decision":"extend","ext":"X19","note":"the fonts the schematic embeds"},
+  {"source":"^(embedded_files(?:>.*)?)$","decision":"report","note":"founder decision: no files packed inside the KiCad file for now; each embedded datasheet or model is a report entry named per file"},
+  {"source":"^(lib_symbols)$","decision":"native","note":"each cached symbol becomes a project part (S10: today a project part cannot hold an arbitrary drawing)"},
+  {"source":"^(lib_symbols>symbol)$","decision":"extend","ext":"S5","note":"units, body styles, power flag, inheritance (extends) resolved on read"},
+  {"source":"^(lib_symbols>symbol>(?:power|extends|embedded_fonts))$","decision":"native"},
+  {"source":"^(lib_symbols>symbol>duplicate_pin_numbers_are_jumpers)$","decision":"extend","ext":"S5","note":"pins that share a number are one pin when this is yes; KiCad's default (no) says nothing"},
+  {"source":"^(lib_symbols>symbol>jumper_pin_groups(?:>.*)?)$","decision":"extend","ext":"S5","note":"groups of pin numbers the symbol joins inside itself (KiCad 10)"},
+  {"source":"^(lib_symbols>symbol>(?:in_bom|on_board|exclude_from_sim|in_pos_files))$","decision":"extend","ext":"S7"},
+  {"source":"^(lib_symbols>symbol>body_styles)$","decision":"extend","ext":"S5","note":"De Morgan and named body styles"},
+  {"source":"^(lib_symbols>symbol>(?:pin_names|pin_numbers)(?:>(?:hide|offset))?)$","decision":"extend","ext":"S6","note":"whether pin names and numbers are drawn, and their offset"},
+  {"source":"^(lib_symbols>symbol>property(?:>.*)?)$","decision":"extend","ext":"S5","note":"field names are properties (native); each field's place, size, visibility and justification are per symbol and per instance"},
+  {"source":"^(lib_symbols>symbol>symbol(?:>unit_name)?)$","decision":"extend","ext":"S5","note":"a unit of a multi-unit symbol and its body style"},
+  {"source":"^(lib_symbols>symbol>symbol>pin)$","decision":"extend","ext":"S5"},
+  {"source":"^(lib_symbols>symbol>symbol>pin>(?:at|length|hide|name|number|name>.*|number>.*|alternate|alternate>.*))$","decision":"extend","ext":"S5","note":"alternates, per-pin visibility, name and number text, any length and any of four directions"},
+  {"source":"^(lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|text|bezier|ellipse)(?:>.*)?)$","decision":"extend","ext":"S6","note":"arcs, beziers, ellipses, fills and stroke styles; the editor's drawing has paths, circles and text only"},
+  {"source":"^(symbol)$","decision":"native"},
+  {"source":"^(symbol>(?:at|lib_id|lib_name|uuid))$","decision":"native","note":"a turn that is not a quarter turn does not occur in KiCad schematics"},
+  {"source":"^(symbol>(?:mirror|unit|body_style))$","decision":"extend","ext":"S5","note":"mirrored symbols, the unit of a multi-unit symbol, the body style"},
+  {"source":"^(symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files))$","decision":"extend","ext":"S7"},
+  {"source":"^(symbol>fields_autoplaced)$","decision":"native","note":"KiCad's flag that it placed the fields itself: kept, so an export writes it back"},
+  {"source":"^(symbol>property(?:>.*)?)$","decision":"extend","ext":"S5","note":"value is a property (native); place, size and visibility of each field are S5"},
+  {"source":"^(symbol>pin(?:>alternate)?)$","decision":"extend","ext":"S5","note":"the alternate function chosen on this instance"},
+  {"source":"^(symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?)$","decision":"extend","ext":"S1","note":"one reference per use of a sheet; the path names the sheet instance"},
+  {"source":"^(symbol>instances>project>path>variant(?:>.*)?)$","decision":"extend","ext":"S9","note":"per-variant DNP and BOM flags and field overrides (KiCad 10)"},
+  {"source":"^(sheet>instances>project>path>variant(?:>.*)?)$","decision":"extend","ext":"S9","note":"per-variant DNP and BOM flags and field overrides of a sheet (KiCad 10)"},
+  {"source":"^(symbol_instances(?:>path(?:>(?:reference|unit|value|footprint))?)?)$","decision":"extend","ext":"S1","note":"KiCad 6 keeps all instance data in one root list"},
+  {"source":"^(wire|wire>pts|wire>pts>xy)$","decision":"native"},
+  {"source":"^(wire>(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type)))$","decision":"extend","ext":"S4","note":"wire width, dash style and colour"},
+  {"source":"^(symbol>pin>uuid|(?:wire|bus|junction|no_connect|bus_entry)>uuid)$","decision":"not-needed","note":"KiCad's object identity"},
+  {"source":"^(junction|junction>at)$","decision":"native","note":"an explicit junction says two crossing wires are joined; the builder cuts the wires there"},
+  {"source":"^(junction>(?:diameter|color))$","decision":"extend","ext":"S4","note":"a junction dot of its own size or colour; KiCad's default (diameter 0, no colour) is what the editor draws"},
+  {"source":"^(no_connect|no_connect>at)$","decision":"extend","ext":"S4","note":"a no-connect flag on a pin is the pin's nc mark (carried); one that is not on a pin is a drawing of its own"},
+  {"source":"^(bus|bus>pts|bus>pts>xy|bus>stroke(?:>.*)?|bus_entry|bus_entry>(?:at|size|bus_to_bus|stroke(?:>.*)?)|bus_alias|bus_alias>members)$","decision":"extend","ext":"S3","note":"buses, bus entries and bus aliases, with vector names like D[0..7]"},
+  {"source":"^(label|label>(?:at|fields_autoplaced|uuid))$","decision":"native","note":"a local label belongs to its sheet"},
+  {"source":"^(label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$","decision":"extend","ext":"S2","note":"label size, justification, italic and bold"},
+  {"source":"^(label>property(?:>.*)?)$","decision":"extend","ext":"S2","note":"label fields such as the intersheet references"},
+  {"source":"^(global_label|global_label>(?:at|shape|fields_autoplaced|uuid))$","decision":"extend","ext":"S2","note":"a global label joins nets across every sheet; its shape is input, output, bidirectional, tri_state or passive"},
+  {"source":"^(global_label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|global_label>property(?:>.*)?)$","decision":"extend","ext":"S2"},
+  {"source":"^(hierarchical_label|hierarchical_label>(?:at|shape|fields_autoplaced|uuid))$","decision":"extend","ext":"S1","note":"joins a sheet's net to the pin of the same name on the sheet symbol that holds it"},
+  {"source":"^(hierarchical_label>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$","decision":"extend","ext":"S2"},
+  {"source":"^(netclass_flag|netclass_flag>(?:at|length|shape|fields_autoplaced)|netclass_flag>property(?:>.*)?)$","decision":"extend","ext":"S8","note":"a directive label that assigns a net class to the net it touches"},
+  {"source":"^(netclass_flag>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color)))$","decision":"extend","ext":"S8"},
+  {"source":"^(sheet)$","decision":"extend","ext":"S1","note":"a sheet symbol, the file it holds, its pins; one file used by several sheets is several instances"},
+  {"source":"^(sheet>(?:at|size|in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced|pin|pin>at|property|instances|instances>project|instances>project>path))$","decision":"extend","ext":"S1"},
+  {"source":"^(sheet>(?:(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type))|pin>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|property>.*))$","decision":"extend","ext":"S1"},
+  {"source":"^(sheet_instances(?:>path)?)$","decision":"extend","ext":"S1","note":"the sheet instances"},
+  {"source":"^(text|text>(?:at|uuid|exclude_from_sim)|text_box|text_box>(?:at|size|uuid|exclude_from_sim|margins))$","decision":"extend","ext":"S4","note":"free text and text boxes"},
+  {"source":"^(text>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|text_box>(?:effects|effects>(?:justify|href|hide)|effects>font|effects>font>(?:size|thickness|bold|italic|face|color))|text_box>(?:stroke|stroke>(?:color|type|width)|fill|fill>(?:color|type)))$","decision":"extend","ext":"S4"},
+  {"source":"^((?:polyline|rectangle|circle|arc|bezier|ellipse)(?:>.*)?)$","decision":"extend","ext":"S4","note":"lines, rectangles, circles, arcs and beziers on the sheet, with stroke and fill"},
+  {"source":"^(image(?:>.*)?)$","decision":"extend","ext":"S4","note":"a bitmap on the sheet; large, so it goes with the model-file store (X14) and counts toward the size limit"},
+  {"source":"^(table(?:>.*)?)$","decision":"extend","ext":"S4","note":"tables (KiCad 8)"},
+  {"source":"^(rule_area(?:>.*)?)$","decision":"extend","ext":"S8","note":"a drawn area whose symbols are DNP, off the BOM or off the board together (KiCad 9)"},
+  {"source":"^(group>locked)$","decision":"extend","ext":"S4","note":"a locked group: the editor's blocks cannot be locked"},
+  {"source":"^(group(?:>.*)?)$","decision":"native","note":"a KiCad schematic group is a named set of items; symbols become a block, other members need S4"},
+  {"source":"^(net_chain(?:>.*)?)$","decision":"report","note":"net chains are KiCad 11 development"},
 ]
 
 export const ATOM_RULES: AtomRule[] = [
- {
-  "source": "^(lib_symbols>symbol>symbol>pin)$",
-  "values": [
-   "input",
-   "output",
-   "bidirectional",
-   "tri_state",
-   "passive",
-   "free",
-   "unspecified",
-   "power_in",
-   "power_out",
-   "open_collector",
-   "open_emitter",
-   "no_connect",
-   "line",
-   "inverted",
-   "clock",
-   "inverted_clock",
-   "input_low",
-   "clock_low",
-   "output_low",
-   "edge_clock_high",
-   "non_logic",
-   "hide"
-  ],
-  "skip": []
- },
- {
-  "source": "^(lib_symbols>symbol>symbol>pin>alternate)$",
-  "values": [
-   "input",
-   "output",
-   "bidirectional",
-   "tri_state",
-   "passive",
-   "free",
-   "unspecified",
-   "power_in",
-   "power_out",
-   "open_collector",
-   "open_emitter",
-   "no_connect",
-   "line",
-   "inverted",
-   "clock",
-   "inverted_clock",
-   "input_low",
-   "clock_low",
-   "output_low",
-   "edge_clock_high",
-   "non_logic"
-  ],
-  "skip": [
-   1
-  ]
- },
- {
-  "source": "^(lib_symbols>symbol>power)$",
-  "values": [
-   "global",
-   "local"
-  ],
-  "skip": []
- },
- {
-  "source": "^(lib_symbols>symbol>(?:in_bom|on_board|in_pos_files|exclude_from_sim|duplicate_pin_numbers_are_jumpers))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(lib_symbols>symbol>pin_(?:names|numbers))$",
-  "values": [
-   "hide"
-  ],
-  "skip": []
- },
- {
-  "source": "^(lib_symbols>symbol>pin_(?:names|numbers)>hide)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|bezier)|rectangle|circle|polyline|arc|text_box|table>cells>table_cell|sheet|rule_area>polyline)>fill>type)$",
-  "values": [
-   "none",
-   "outline",
-   "background",
-   "color"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?stroke>type)$",
-  "values": [
-   "default",
-   "dash",
-   "dot",
-   "dash_dot",
-   "dash_dot_dot",
-   "solid"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:global_label|hierarchical_label)>shape)$",
-  "values": [
-   "input",
-   "output",
-   "bidirectional",
-   "tri_state",
-   "passive"
-  ],
-  "skip": []
- },
- {
-  "source": "^(netclass_flag>shape)$",
-  "values": [
-   "dot",
-   "round",
-   "diamond",
-   "rectangle"
-  ],
-  "skip": []
- },
- {
-  "source": "^(sheet>pin)$",
-  "values": [
-   "input",
-   "output",
-   "bidirectional",
-   "tri_state",
-   "passive"
-  ],
-  "skip": [
-   1
-  ]
- },
- {
-  "source": "^(symbol>mirror)$",
-  "values": [
-   "x",
-   "y"
-  ],
-  "skip": []
- },
- {
-  "source": "^(symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files|fields_autoplaced))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(sheet>(?:in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?effects>justify)$",
-  "values": [
-   "left",
-   "right",
-   "top",
-   "bottom",
-   "mirror"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?effects>font)$",
-  "values": [
-   "bold",
-   "italic"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?effects>hide)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?effects)$",
-  "values": [
-   "hide"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:.*>)?property>(?:hide|do_not_autoplace|show_name))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:label|global_label|hierarchical_label|netclass_flag)>fields_autoplaced)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^((?:symbol|sheet)>instances>project>path>variant>(?:dnp|exclude_from_sim|in_bom|on_board|in_pos_files))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(rule_area>(?:dnp|exclude_from_sim|in_bom|on_board))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(text>exclude_from_sim|text_box>exclude_from_sim)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(table>border>(?:external|header))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(table>separators>(?:cols|rows))$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(table>cells>table_cell>exclude_from_sim)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- },
- {
-  "source": "^(lib_symbols>symbol>symbol>text>effects>hide)$",
-  "values": [
-   "yes",
-   "no",
-   "true",
-   "false"
-  ],
-  "skip": []
- }
+  {"source":"^(lib_symbols>symbol>symbol>pin)$","values":["input","output","bidirectional","tri_state","passive","free","unspecified","power_in","power_out","open_collector","open_emitter","no_connect","line","inverted","clock","inverted_clock","input_low","clock_low","output_low","edge_clock_high","non_logic","hide"],"skip":[]},
+  {"source":"^(lib_symbols>symbol>symbol>pin>alternate)$","values":["input","output","bidirectional","tri_state","passive","free","unspecified","power_in","power_out","open_collector","open_emitter","no_connect","line","inverted","clock","inverted_clock","input_low","clock_low","output_low","edge_clock_high","non_logic"],"skip":[1]},
+  {"source":"^(lib_symbols>symbol>power)$","values":["global","local"],"skip":[]},
+  {"source":"^(lib_symbols>symbol>(?:in_bom|on_board|in_pos_files|exclude_from_sim|duplicate_pin_numbers_are_jumpers))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(lib_symbols>symbol>pin_(?:names|numbers))$","values":["hide"],"skip":[]},
+  {"source":"^(lib_symbols>symbol>pin_(?:names|numbers)>hide)$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^((?:lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|bezier)|rectangle|circle|polyline|arc|text_box|table>cells>table_cell|sheet|rule_area>polyline)>fill>type)$","values":["none","outline","background","color"],"skip":[]},
+  {"source":"^((?:.*>)?stroke>type)$","values":["default","dash","dot","dash_dot","dash_dot_dot","solid"],"skip":[]},
+  {"source":"^((?:global_label|hierarchical_label)>shape)$","values":["input","output","bidirectional","tri_state","passive"],"skip":[]},
+  {"source":"^(netclass_flag>shape)$","values":["dot","round","diamond","rectangle"],"skip":[]},
+  {"source":"^(sheet>pin)$","values":["input","output","bidirectional","tri_state","passive"],"skip":[1]},
+  {"source":"^(symbol>mirror)$","values":["x","y"],"skip":[]},
+  {"source":"^(symbol>(?:in_bom|on_board|dnp|exclude_from_sim|in_pos_files|fields_autoplaced))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(sheet>(?:in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^((?:.*>)?effects>justify)$","values":["left","right","top","bottom","mirror"],"skip":[]},
+  {"source":"^((?:.*>)?effects>font)$","values":["bold","italic"],"skip":[]},
+  {"source":"^((?:.*>)?effects>hide)$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^((?:.*>)?effects)$","values":["hide"],"skip":[]},
+  {"source":"^((?:.*>)?property>(?:hide|do_not_autoplace|show_name))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^((?:label|global_label|hierarchical_label|netclass_flag)>fields_autoplaced)$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^((?:symbol|sheet)>instances>project>path>variant>(?:dnp|exclude_from_sim|in_bom|on_board|in_pos_files))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(rule_area>(?:dnp|exclude_from_sim|in_bom|on_board))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(text>exclude_from_sim|text_box>exclude_from_sim)$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(table>border>(?:external|header))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(table>separators>(?:cols|rows))$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(table>cells>table_cell>exclude_from_sim)$","values":["yes","no","true","false"],"skip":[]},
+  {"source":"^(lib_symbols>symbol>symbol>text>effects>hide)$","values":["yes","no","true","false"],"skip":[]},
 ]
 
 export const TOKEN_RULES: TokenRule[] = [
- {
-  "names": [
-   "kicad_sch",
-   "kicad_symbol_lib"
-  ],
-  "decision": "native",
-  "note": "root lists of a schematic and of a symbol library"
- },
- {
-  "names": [
-   "ellipse",
-   "ellipse_arc",
-   "major_radius",
-   "minor_radius",
-   "rotation_angle",
-   "start_angle",
-   "end_angle"
-  ],
-  "decision": "extend",
-  "ext": "S6",
-  "note": "ellipses (KiCad 11 development)"
- },
- {
-  "names": [
-   "pin_map",
-   "pin_map_override",
-   "pin_maps",
-   "pin_merge",
-   "pin_rename",
-   "pin_del",
-   "hint_alt_swap",
-   "hint_pin_swap",
-   "jumper_pin_groups",
-   "named_map",
-   "map",
-   "property_del"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "pin-to-pad maps, merged and renamed pins and jumper pin groups (KiCad 10 and 11 development)"
- },
- {
-  "names": [
-   "variant"
-  ],
-  "decision": "extend",
-  "ext": "S9",
-  "note": "schematic variants (KiCad 10)"
- },
- {
-  "names": [
-   "delegate",
-   "symbol_override",
-   "custom_property",
-   "default_instance"
-  ],
-  "decision": "extend",
-  "ext": "S9X",
-  "note": "symbol overrides and custom properties (KiCad 11 development)"
- },
- {
-  "names": [
-   "net_chain",
-   "nets",
-   "from",
-   "to",
-   "net_class"
-  ],
-  "decision": "report",
-  "note": "net chains (KiCad 11 development)"
- },
- {
-  "names": [
-   "body_style",
-   "body_styles",
-   "demorgan",
-   "convert"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "De Morgan and body styles"
- },
- {
-  "names": [
-   "alternate"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "pin alternate functions"
- },
- {
-  "names": [
-   "clock",
-   "clock_low",
-   "edge_clock_high",
-   "inverted",
-   "inverted_clock",
-   "input_low",
-   "output_low",
-   "non_logic",
-   "line"
-  ],
-  "decision": "extend",
-  "ext": "S6",
-  "note": "pin graphic styles"
- },
- {
-  "names": [
-   "bidirectional",
-   "tri_state",
-   "passive",
-   "input",
-   "output",
-   "free",
-   "unspecified",
-   "power_in",
-   "power_out",
-   "open_collector",
-   "open_emitter",
-   "no_connect"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "pin electrical types and label shapes; the editor's PinDef.kind has fewer kinds, ERC needs all"
- },
- {
-  "names": [
-   "directive_label",
-   "netclass_flag"
-  ],
-  "decision": "extend",
-  "ext": "S8",
-  "note": "directive labels"
- },
- {
-  "names": [
-   "do_not_autoplace",
-   "show_name",
-   "fields_autoplaced",
-   "field",
-   "fields",
-   "private"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "field flags and private fields"
- },
- {
-  "names": [
-   "associated_footprints"
-  ],
-  "decision": "native",
-  "note": "a symbol library's footprint filters, kept as a property"
- },
- {
-  "names": [
-   "in_pos_files",
-   "exclude_from_sim",
-   "in_bom",
-   "on_board",
-   "dnp"
-  ],
-  "decision": "extend",
-  "ext": "S7",
-  "note": "symbol flags"
- },
- {
-  "names": [
-   "hatch",
-   "cross_hatch",
-   "reverse_hatch"
-  ],
-  "decision": "extend",
-  "ext": "S6",
-  "note": "hatched fills of shapes (KiCad 9)"
- },
- {
-  "names": [
-   "arrow",
-   "arrow_open",
-   "diamond",
-   "dot",
-   "round",
-   "square",
-   "cross",
-   "start_shape",
-   "end_shape",
-   "tri"
-  ],
-  "decision": "extend",
-  "ext": "S4",
-  "note": "line end shapes and flag shapes (KiCad 11 development)"
- },
- {
-  "names": [
-   "bitmap",
-   "data",
-   "checksum"
-  ],
-  "decision": "extend",
-  "ext": "S4",
-  "note": "images and embedded data"
- },
- {
-  "names": [
-   "sheet_instances",
-   "symbol_instances",
-   "instances"
-  ],
-  "decision": "extend",
-  "ext": "S1",
-  "note": "instance data"
- },
- {
-  "names": [
-   "rule_area"
-  ],
-  "decision": "extend",
-  "ext": "S8",
-  "note": "rule areas"
- },
- {
-  "names": [
-   "anchor",
-   "line_spacing",
-   "locked",
-   "bezier"
-  ],
-  "decision": "extend",
-  "ext": "S4",
-  "note": "text anchors and line spacing, locked drawings, bezier curves"
- },
- {
-  "names": [
-   "angles"
-  ],
-  "decision": "extend",
-  "ext": "S6",
-  "note": "arc angles of a symbol or sheet shape"
- },
- {
-  "names": [
-   "edit"
-  ],
-  "decision": "not-needed",
-  "note": "an editing timestamp"
- },
- {
-  "names": [
-   "entry"
-  ],
-  "decision": "extend",
-  "ext": "S3",
-  "note": "bus entry"
- },
- {
-  "names": [
-   "extends",
-   "group"
-  ],
-  "decision": "native",
-  "note": "symbol inheritance, resolved when the symbol is read, and schematic groups (symbols become a block)"
- },
- {
-  "names": [
-   "host"
-  ],
-  "decision": "not-needed",
-  "note": "the program that wrote the file, removed from the format at stamp 20200827"
- },
- {
-  "names": [
-   "identity",
-   "library_default",
-   "mode",
-   "pin_map",
-   "passthrough",
-   "required",
-   "atomic"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "pin-to-pad map overrides and pin groups (KiCad 10 and 11 development)"
- },
- {
-  "names": [
-   "iref"
-  ],
-  "decision": "extend",
-  "ext": "S2",
-  "note": "the old intersheet reference field of a global label (KiCad 5 formats)"
- },
- {
-  "names": [
-   "local"
-  ],
-  "decision": "extend",
-  "ext": "S5",
-  "note": "local power symbols (KiCad 9: a power symbol that stays on its sheet)"
- },
- {
-  "names": [
-   "unconnected"
-  ],
-  "decision": "native",
-  "note": "the old name of the no_connect pin type (renamed at stamp 20210123): read as no_connect"
- },
- {
-  "names": [
-   "portrait"
-  ],
-  "decision": "not-needed",
-  "note": "page orientation"
- }
+  {"names":["kicad_sch","kicad_symbol_lib"],"decision":"native","note":"root lists of a schematic and of a symbol library"},
+  {"names":["ellipse","ellipse_arc","major_radius","minor_radius","rotation_angle","start_angle","end_angle"],"decision":"extend","ext":"S6","note":"ellipses (KiCad 11 development)"},
+  {"names":["pin_map","pin_map_override","pin_maps","pin_merge","pin_rename","pin_del","hint_alt_swap","hint_pin_swap","jumper_pin_groups","named_map","map","property_del"],"decision":"extend","ext":"S5","note":"pin-to-pad maps, merged and renamed pins and jumper pin groups (KiCad 10 and 11 development)"},
+  {"names":["variant"],"decision":"extend","ext":"S9","note":"schematic variants (KiCad 10)"},
+  {"names":["delegate","symbol_override","custom_property","default_instance"],"decision":"extend","ext":"S9X","note":"symbol overrides and custom properties (KiCad 11 development)"},
+  {"names":["net_chain","nets","from","to","net_class"],"decision":"report","note":"net chains (KiCad 11 development)"},
+  {"names":["body_style","body_styles","demorgan","convert"],"decision":"extend","ext":"S5","note":"De Morgan and body styles"},
+  {"names":["alternate"],"decision":"extend","ext":"S5","note":"pin alternate functions"},
+  {"names":["clock","clock_low","edge_clock_high","inverted","inverted_clock","input_low","output_low","non_logic","line"],"decision":"extend","ext":"S6","note":"pin graphic styles"},
+  {"names":["bidirectional","tri_state","passive","input","output","free","unspecified","power_in","power_out","open_collector","open_emitter","no_connect"],"decision":"extend","ext":"S5","note":"pin electrical types and label shapes; the editor's PinDef.kind has fewer kinds, ERC needs all"},
+  {"names":["directive_label","netclass_flag"],"decision":"extend","ext":"S8","note":"directive labels"},
+  {"names":["do_not_autoplace","show_name","fields_autoplaced","field","fields","private"],"decision":"extend","ext":"S5","note":"field flags and private fields"},
+  {"names":["associated_footprints"],"decision":"native","note":"a symbol library's footprint filters, kept as a property"},
+  {"names":["in_pos_files","exclude_from_sim","in_bom","on_board","dnp"],"decision":"extend","ext":"S7","note":"symbol flags"},
+  {"names":["hatch","cross_hatch","reverse_hatch"],"decision":"extend","ext":"S6","note":"hatched fills of shapes (KiCad 9)"},
+  {"names":["arrow","arrow_open","diamond","dot","round","square","cross","start_shape","end_shape","tri"],"decision":"extend","ext":"S4","note":"line end shapes and flag shapes (KiCad 11 development)"},
+  {"names":["bitmap","data","checksum"],"decision":"extend","ext":"S4","note":"images and embedded data"},
+  {"names":["sheet_instances","symbol_instances","instances"],"decision":"extend","ext":"S1","note":"instance data"},
+  {"names":["rule_area"],"decision":"extend","ext":"S8","note":"rule areas"},
+  {"names":["anchor","line_spacing","locked","bezier"],"decision":"extend","ext":"S4","note":"text anchors and line spacing, locked drawings, bezier curves"},
+  {"names":["angles"],"decision":"extend","ext":"S6","note":"arc angles of a symbol or sheet shape"},
+  {"names":["edit"],"decision":"not-needed","note":"an editing timestamp"},
+  {"names":["entry"],"decision":"extend","ext":"S3","note":"bus entry"},
+  {"names":["extends","group"],"decision":"native","note":"symbol inheritance, resolved when the symbol is read, and schematic groups (symbols become a block)"},
+  {"names":["host"],"decision":"not-needed","note":"the program that wrote the file, removed from the format at stamp 20200827"},
+  {"names":["identity","library_default","mode","pin_map","passthrough","required","atomic"],"decision":"extend","ext":"S5","note":"pin-to-pad map overrides and pin groups (KiCad 10 and 11 development)"},
+  {"names":["iref"],"decision":"extend","ext":"S2","note":"the old intersheet reference field of a global label (KiCad 5 formats)"},
+  {"names":["local"],"decision":"extend","ext":"S5","note":"local power symbols (KiCad 9: a power symbol that stays on its sheet)"},
+  {"names":["unconnected"],"decision":"native","note":"the old name of the no_connect pin type (renamed at stamp 20210123): read as no_connect"},
+  {"names":["portrait"],"decision":"not-needed","note":"page orientation"},
 ]

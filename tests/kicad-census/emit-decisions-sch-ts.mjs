@@ -7,6 +7,7 @@
 import { writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { rows } from "./emit-table.mjs"
 import { ATOMS_SCH, RULES_SCH, TOKENS_SCH } from "./decisions-sch.mjs"
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -44,11 +45,11 @@ export interface TokenRule {
   note: string
 }
 
-export const PATH_RULES: PathRule[] = ${JSON.stringify(rules, null, 1)}
+export const PATH_RULES: PathRule[] = ${rows(rules)}
 
-export const ATOM_RULES: AtomRule[] = ${JSON.stringify(atoms, null, 1)}
+export const ATOM_RULES: AtomRule[] = ${rows(atoms)}
 
-export const TOKEN_RULES: TokenRule[] = ${JSON.stringify(tokens, null, 1)}
+export const TOKEN_RULES: TokenRule[] = ${rows(tokens)}
 `
 }
 

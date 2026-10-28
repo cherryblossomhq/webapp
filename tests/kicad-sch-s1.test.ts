@@ -119,8 +119,9 @@ describe("S1: the KiCad export", () => {
     const out = await kicadFiles(project)
     const names = Object.keys(out.files).filter((n) => n.endsWith(".kicad_sch"))
     expect(names).toHaveLength(2)
-    const root = Object.entries(out.files).find(([n]) => n.endsWith(".kicad_sch") && n !== "A.kicad_sch")!
-    expect((out.files["A.kicad_sch"].match(/\(symbol\n/g) ?? []).length).toBe(1)
+    // the sheet comes from KiCad's `child.kicad_sch`, so it is written to the same name
+    const root = Object.entries(out.files).find(([n]) => n.endsWith(".kicad_sch") && n !== "child.kicad_sch")!
+    expect((out.files["child.kicad_sch"].match(/\(symbol\n/g) ?? []).length).toBe(1)
     expect(root[1].match(/\(sheet\n/g)).toHaveLength(2)
     expect(out.notes.join(" ")).toMatch(/2 files/)
     const files = new Map(Object.entries(out.files).filter(([n]) => n.endsWith(".kicad_sch")))

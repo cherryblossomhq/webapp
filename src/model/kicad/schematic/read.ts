@@ -486,9 +486,15 @@ function readPlacedSymbol(node: List, stamp: number | null): PlacedSymbol {
  * stamp 20200310 the ids and names are wrong, so the first property is the name and the second the file.
  */
 export function sheetFields(props: SchProperty[], stamp: number | null): { name: string | null; file: string | null } {
-  const by = (...names: string[]) => props.find((p) => names.includes(p.name))?.value
-  if (stamp !== null && stamp <= SHEET_FIELDS_BY_POSITION_UNTIL) return { name: props[0]?.value ?? null, file: props[1]?.value ?? null }
-  return { name: by("Sheetname", "Sheet name", "Name") ?? null, file: by("Sheetfile", "Sheet file", "File") ?? props[1]?.value ?? null }
+  const p = sheetFieldProps(props, stamp)
+  return { name: p.name?.value ?? null, file: p.file?.value ?? null }
+}
+
+/** The properties that hold a sheet's name and file, by `sheetFields`'s rules. */
+export function sheetFieldProps(props: SchProperty[], stamp: number | null): { name?: SchProperty; file?: SchProperty } {
+  const by = (...names: string[]) => props.find((p) => names.includes(p.name))
+  if (stamp !== null && stamp <= SHEET_FIELDS_BY_POSITION_UNTIL) return { name: props[0], file: props[1] }
+  return { name: by("Sheetname", "Sheet name", "Name"), file: by("Sheetfile", "Sheet file", "File") ?? props[1] }
 }
 
 function readSheet(node: List, stamp: number | null): SchSheet {

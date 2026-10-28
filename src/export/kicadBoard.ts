@@ -145,6 +145,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   for (const c of wanted) push(indent(footprintBlock(c), "  "))
   const unplaced = resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed && componentFootprint(c)).length
   if (unplaced) notes.add(`${unplaced} ${unplaced === 1 ? "part is" : "parts are"} not placed on the board yet, so ${unplaced === 1 ? "it is" : "they are"} not in the board file.`)
+  if (project.texts.some((t) => t.href) || project.components.some((c) => c.texts?.some((t) => t.href))) notes.add("A text's hyperlink is KiCad 10's: a KiCad 9 file cannot hold it, so it stays in the project and is not written.")
   if (project.zones.some((z) => z.unordered || z.edgeGap !== undefined || z.holeGap !== undefined)) notes.add("A pour from a board of KiCad 5 or of KiCad 6's first files is written with its fill, but KiCad 9 refills it by its own rules: its distance to the board edge and to a hole is the project's design rule and KiCad 9's own (0.5 and 0.25 mm unless set), not the original board's, and zones of equal priority are ordered by their uuid, which this file gives them.")
   if (project.board.mountingHoles) notes.add("The board's corner mounting holes are not written to the KiCad board.")
 
@@ -245,6 +246,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       // A polygon pad of four corners that is KiCad's trapezoid is written as one.
       const trapezoid = def.shape === "polygon" && !def.custom && def.points ? (trapezoidPad(def, bottom) ?? undefined) : undefined
       lines.push(...dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid, copperCount: copperLayers(project.board).length })).split(String.fromCharCode(10)))
+      for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o, copperLayers(project.board).length) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
 
@@ -519,6 +521,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const ids = g.members.flatMap((m) => members.get(m) ?? [])
     if (ids.length) groupItems.push(indent(groupBlock(g, groupUuid.get(g.id)!, ids), "  ").join("\n"))
   }
+  if ((project.groups ?? []).some((g) => g.lib !== undefined)) notes.add("A group made from a design block keeps no link to it: KiCad 9's file has no node for one.")
 
   // ---------- the header ----------
   const rules = project.rules

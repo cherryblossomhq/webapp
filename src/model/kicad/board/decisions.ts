@@ -30,9 +30,9 @@ export interface TokenRule {
 
 export const PATH_RULES: PathRule[] = [
  {
-  "source": "^(setup>stackup>castellated_pads|(?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>effects>href|(?:footprint>)?group>lib_id)$",
+  "source": "^(setup>stackup>castellated_pads)$",
   "decision": "not-needed",
-  "note": "KiCad 6 and 7's board-wide castellated flag (a pad says it itself), a text's hyperlink, and the design block a group came from"
+  "note": "KiCad 6 and 7's board-wide castellated flag, which KiCad 8 and later read and drop (a pad says it itself)"
  },
  {
   "source": "^(setup>stackup>(?:edge_connector|edge_plating|copper_finish|dielectric_constraints))$",
@@ -76,7 +76,7 @@ export const PATH_RULES: PathRule[] = [
   "note": "a footprint's text box (KiCad 7): its corners are stored in the footprint's own frame in some releases and the board's in others, which no corpus board shows (X9 builds the board's text boxes)"
  },
  {
-  "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>line_spacing))$",
+  "source": "^((?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>(?:line_spacing|href)))$",
   "decision": "extend",
   "ext": "X9"
  },
@@ -112,6 +112,12 @@ export const PATH_RULES: PathRule[] = [
   "source": "^(footprint>units>unit>pins(?:>num)?)$",
   "decision": "extend",
   "ext": "X23"
+ },
+ {
+  "source": "^((?:footprint>)?group>lib_id)$",
+  "decision": "extend",
+  "ext": "X12",
+  "note": "the design block a group was made from (KiCad 10)"
  },
  {
   "source": "^((?:footprint>)?zone>(?:link|connected_routing|group_items|locked_items|other_items|start_end_only|driving|all|addsublayer))$",
@@ -271,7 +277,7 @@ export const PATH_RULES: PathRule[] = [
  {
   "source": "^(setup>(?:aux_axis_origin|grid_origin))$",
   "decision": "not-needed",
-  "note": "origin of KiCad's output coordinates; the geometry does not change with it"
+  "note": "origin of KiCad's output coordinates; the geometry does not change with it; kept as a project property so the KiCad export writes it back"
  },
  {
   "source": "^(setup>(?:pcbplotparams|pcbplotparams>.*|defaults|defaults>.*|drill_symbol_profile|drill_symbol_profile>.*|zone_defaults|pcb_text_size|pcb_text_width|mod_edge_width|mod_text_size|mod_text_width|edge_width|segment_width|pad_size|pad_drill|visible_elements|extension_.*|fab_layers_.*))$",
@@ -1552,12 +1558,10 @@ export const TOKEN_RULES: TokenRule[] = [
  },
  {
   "names": [
-   "castellated_pads",
-   "href",
-   "lib_id"
+   "castellated_pads"
   ],
   "decision": "not-needed",
-  "note": "KiCad 6 and 7's board-wide castellated flag, a text's hyperlink, and the design block a group came from (KiCad 10)"
+  "note": "KiCad 6 and 7's board-wide castellated flag, which KiCad 8 and later drop"
  },
  {
   "names": [
@@ -1641,11 +1645,12 @@ export const TOKEN_RULES: TokenRule[] = [
   "names": [
    "line_spacing",
    "keep_upright",
+   "href",
    "background"
   ],
   "decision": "extend",
   "ext": "X9",
-  "note": "line spacing, text kept upright and text backgrounds"
+  "note": "line spacing, text kept upright, hyperlinks and text backgrounds"
  },
  {
   "names": [
@@ -1690,6 +1695,14 @@ export const TOKEN_RULES: TokenRule[] = [
   "decision": "extend",
   "ext": "X23",
   "note": "custom properties, variant descriptions, simulation flag and unit pin numbers"
+ },
+ {
+  "names": [
+   "lib_id"
+  ],
+  "decision": "extend",
+  "ext": "X12",
+  "note": "the design block a group was made from (KiCad 10)"
  },
  {
   "names": [

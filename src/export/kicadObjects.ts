@@ -195,6 +195,7 @@ export function applyBoardObjects(pcb: string, project: Project, drawings: Map<s
     return uuids.length ? [indent(groupBlock(g, groupUuid.get(g.id)!, uuids), "  ")] : []
   })
   if (lost) notes.push(`${lost} group ${lost === 1 ? "member" : "members"} could not be found in the file the converter wrote, so ${lost === 1 ? "it is" : "they are"} not in ${lost === 1 ? "its" : "their"} group there.`)
+  if (groups.some((g) => g.lib !== undefined)) notes.push("A group made from a design block keeps no link to it: KiCad 9's file has no node for one.")
 
   let text = pcb
   // A part's own groups, inside its footprint, naming its pads, drawings and texts.

@@ -194,7 +194,7 @@ export const defaultGroupId = (place: number) => `gp${place + 1}`
 export const defaultPartGroupId = (place: number) => `g${place}`
 
 export function packGroups(groups: PcbGroup[], defaultId: (place: number) => string = defaultGroupId): Entry[] {
-  return groups.map((g, place): Entry => [g.id === defaultId(place) ? 0 : g.id, g.name, g.locked ? 1 : 0, ...g.members])
+  return groups.map((g, place): Entry => [g.id === defaultId(place) ? 0 : g.id, g.name, (g.locked ? 1 : 0) | (g.lib !== undefined ? 2 : 0), ...(g.lib !== undefined ? [g.lib] : []), ...g.members])
 }
 
 /** Groups from stored entries; one that does not read, or whose id is taken, is dropped. */
@@ -205,13 +205,14 @@ export function unpackGroups(raw: unknown, defaultId: (place: number) => string 
   raw.forEach((e, place) => {
     if (!Array.isArray(e) || typeof e[1] !== "string" || !num(e[2]) || e.length < 3) return
     const flags = e[2]
-    // Flag 2 was a design block's name before the members, which nothing reads now.
+    const lib = flags & 2 ? e[3] : undefined
+    if (flags & 2 && typeof lib !== "string") return
     const members = e.slice(flags & 2 ? 4 : 3)
     if (!members.every((m): m is string => typeof m === "string" && m !== "")) return
     const id = typeof e[0] === "string" && e[0] ? e[0] : defaultId(place)
     if (seen.has(id)) return
     seen.add(id)
-    out.push({ id, name: e[1], members: members as string[], ...(flags & 1 ? { locked: true as const } : {}) })
+    out.push({ id, name: e[1], members: members as string[], ...(flags & 1 ? { locked: true as const } : {}), ...(lib !== undefined ? { lib: lib as string } : {}) })
   })
   return out
 }

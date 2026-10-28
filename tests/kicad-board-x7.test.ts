@@ -286,7 +286,7 @@ describe("a pad's layers", () => {
     expect(maskSides(one_sided.world)).toEqual(["top"])
   })
 
-  it("no copper layer, paste on a through-hole pad, mask only, and the other layers a pad lists are not kept", () => {
+  it("no copper layer, paste on a through-hole pad, mask only, and the other layers a pad lists are kept", () => {
     const none = one("", { layers: '"F.Mask" "F.Paste"' })
     expect(none.world.layers).toEqual([])
     expect(maskSides(none.world)).toEqual(["top"])
@@ -294,9 +294,9 @@ describe("a pad's layers", () => {
     const paste = one("(drill 0.8)", { type: "thru_hole", shape: "circle", size: "1.6 1.6", layers: '"*.Cu" "*.Mask" "F.Paste"' })
     expect(pasteSides(paste.world)).toEqual(["top"])
     const user = one("", { layers: '"F.Cu" "F.Mask" "F.Paste" "Dwgs.User" "F.Fab"' })
-    expect(user.land.pads[0].layers).toBeUndefined()
+    expect(user.land.pads[0].layers).toEqual({ other: ["Dwgs.User", "F.Fab"] })
     const userBottom = one("", { layers: '"B.Cu" "B.Mask" "B.Paste" "B.Fab"' }, { layer: "B.Cu" })
-    expect(userBottom.land.pads[0].layers).toBeUndefined()
+    expect(userBottom.land.pads[0].layers).toEqual({ other: ["F.Fab"] })
   })
 
   it("silkscreen on a pad is kept and does nothing, as in KiCad 9 and 10", () => {

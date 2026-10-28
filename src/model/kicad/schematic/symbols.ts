@@ -172,7 +172,7 @@ const unitBody = (g: { unit: number; bodyStyle: number }) => ({ ...(g.unit ? { u
 
 /** One graphic of a cached symbol as a drawing item, or a note saying why it is not one. */
 function itemOf(g: LibGraphic, notes: Set<string>): DrawingItem | string {
-  const base = { ...unitBody(g), ...lookOf(g) }
+  const base = { ...unitBody(g), ...lookOf(g), ...(flagOf(g.node, "private") ? { private: true as const } : {}) }
   switch (g.kind) {
     case "polyline":
       return { kind: "polyline", points: g.pts.map(pt), ...base }
@@ -265,6 +265,7 @@ export function placeOf(prop: SchProperty, origin?: Pt, notes?: Set<string>): Fi
     ...(e.color ? { color: e.color } : {}),
     ...(e.thickness ? { thickness: e.thickness } : {}),
   }
+  if (yes(kid(prop.node, "do_not_autoplace"))) place.noAutoplace = true
   const show = kid(prop.node, "show_name")
   if (show && (show[1] === undefined || show[1] === "yes" || show[1] === "true")) place.showName = true
   return place
@@ -285,8 +286,6 @@ export function drawingFromLib(lib: ResolvedLibSymbol): DrawingResult {
   const source = lib.source
   const items: DrawingItem[] = []
   for (const g of lib.graphics) {
-    // A private item is KiCad's symbol editor's alone, never drawn on a sheet: it is not brought.
-    if (flagOf(g.node, "private")) continue
     const item = itemOf(g, notes)
     if (typeof item === "string") problems.push(item)
     else items.push(item)

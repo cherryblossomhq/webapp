@@ -76,6 +76,7 @@ const CHECKS: [RegExp, Check][] = [
   [/^lib_symbols>symbol>property>effects>font>color$/, (b) => b.drawing.fields[0].place.color === "#0a141e"],
   [/^lib_symbols>symbol>property>effects>justify$/, (b) => b.drawing.fields[0].place.h === "left" && b.drawing.fields[0].place.v === "top"],
   [/^lib_symbols>symbol>property>show_name$/, (b) => b.drawing.fields[0].place.showName === true],
+  [/^lib_symbols>symbol>property>do_not_autoplace$/, (b) => b.drawing.fields[0].place.noAutoplace === true],
   [/^lib_symbols>symbol>symbol$/, (b) => b.drawing.units === 2],
   [/^lib_symbols>symbol>symbol>unit_name$/, (b) => b.drawing.unitNames?.[1] === "First"],
   // shapes
@@ -123,6 +124,7 @@ const CHECKS: [RegExp, Check][] = [
   [/^symbol>property>effects>hide$/, (b) => b.project.components[0].fields?.Footprint.hidden === true],
   [/^symbol>property>hide$/, (b) => b.project.components[0].fields?.Footprint.hidden === true],
   [/^symbol>property>show_name$/, (b) => b.project.components[0].fields?.Reference.showName === true],
+  [/^symbol>property>do_not_autoplace$/, (b) => b.project.components[0].fields?.Reference.noAutoplace === true],
   [/^symbol>pin$/, (b) => b.project.components[0].pinAlt?.["1"] === "B"],
   [/^symbol>pin>alternate$/, (b) => b.project.components[0].pinAlt?.["1"] === "B"],
 ]

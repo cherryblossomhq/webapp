@@ -292,6 +292,7 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
       pads: f.pads.map((p) => {
         let out = p
         if (p.layers?.inner) out = { ...out, layers: { ...out.layers, inner: p.layers.inner.map(id) } }
+        if (p.layers?.other) out = { ...out, layers: { ...out.layers, other: p.layers.other.map(mapShapeLayer) } }
         if (p.stack) {
           const layers = Object.fromEntries(Object.entries(p.stack.layers).map(([k, v]) => [k === "inner" || k === "top" || k === "bottom" ? k : id(k as CopperLayer), v]))
           out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }

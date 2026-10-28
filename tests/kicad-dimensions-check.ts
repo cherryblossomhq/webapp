@@ -190,7 +190,7 @@ export function checkDimensions(text: string, project: Project, font: unknown, l
       wantGroups.forEach((want: any, k) => {
         const have = groups[k]
         let bad = ""
-        if (have.name !== want.name || (have.locked === true) !== want.locked) bad = `name or lock: "${have.name}", ${have.locked === true}`
+        if (have.name !== want.name || (have.locked === true) !== want.locked || (have.lib ?? null) !== want.lib) bad = `name, lock or design block: "${have.name}", ${have.locked === true}, ${have.lib ?? null}`
         const childGroups = have.members.filter((m) => gi.has(m)).map((m) => gi.get(m)!).sort()
         if (!bad && !isDeepStrictEqual(childGroups, [...want.groups].sort())) bad = `nested groups ${childGroups} against ${want.groups}`
         if (!bad) {

@@ -51,19 +51,49 @@ export function instancePath(project: Project, use: SheetUse): string {
   return `/${[sheetUuid(project, ROOT_SHEET), ...chain].join("/")}`
 }
 
-/** The file name of each sheet: the root's is the project's, the others are named after the sheet (its first symbol's name); each is its own. */
+/** A sub-sheet's own title block, from the entries it was read with (the root's is the project's, `titleBlock` in `kicadPost.ts`). */
+export function sheetTitleBlock(project: Project, sheet: string): { title: string; date?: string; revision?: string; company?: string; comments: { index: number; text: string }[] } | null {
+  const entries = sheetsOf(project).find((s) => s.id === sheet)?.titleBlock
+  if (!entries?.length) return null
+  const get = (key: string) => entries.find((e) => e.key === key)?.value
+  const comments = entries.flatMap((e) => {
+    const m = /^Comment(\d+)$/.exec(e.key)
+    return m ? [{ index: Number(m[1]), text: e.value }] : []
+  })
+  return { title: get("Title") ?? "", ...(get("Date") ? { date: get("Date") } : {}), ...(get("Rev") ? { revision: get("Rev") } : {}), ...(get("Company") ? { company: get("Company") } : {}), comments }
+}
+
+/** Names Windows keeps for devices, which no file may have, with or without an extension (`CON`, `aux.txt`). */
+const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\.|$)/i
+
+/** A file name stem that every system accepts: no path or reserved characters, no trailing dots or spaces, and not a name Windows keeps for a device. Empty when nothing is left. */
+export function safeFileStem(stem: string): string {
+  const clean = stem.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/[. ]+$/, "").replace(/^ +/, "")
+  return clean.replace(RESERVED_NAME, (word) => `${word}_`)
+}
+
+/**
+ * The file name of each sheet: the root's is the project's. A sheet that came from a KiCad project keeps the file it was read from (`SchematicSheet.file`), so the
+ * history of a KiCad project's files in git stays whole; any other is named after its sheet (its first symbol's name). Each name is its own, whatever the case.
+ */
 export function sheetFileNames(project: Project, base: string): Map<string, string> {
   const out = new Map<string, string>()
   const taken = new Set<string>([`${base}.kicad_sch`.toLowerCase()])
   out.set(ROOT_SHEET, `${base}.kicad_sch`)
-  for (const s of sheetsOf(project)) {
-    if (s.id === ROOT_SHEET) continue
-    const sym = (project.sheetSymbols ?? []).find((x) => x.child === s.id)
-    const stem = (sym?.name.trim() || s.id).replace(/[\\/:*?"<>|]/g, "_")
+  const give = (id: string, wanted: string) => {
+    const stem = safeFileStem(wanted) || safeFileStem(id) || "sheet"
     let name = `${stem}.kicad_sch`
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${stem}_${i}.kicad_sch`
     taken.add(name.toLowerCase())
-    out.set(s.id, name)
+    out.set(id, name)
+  }
+  const sheets = sheetsOf(project).filter((s) => s.id !== ROOT_SHEET)
+  // The files that were KiCad's come first, so a name made here never takes one of theirs.
+  for (const s of sheets) if (s.file) give(s.id, s.file.replace(/\.(kicad_sch|sch)$/i, ""))
+  for (const s of sheets) {
+    if (s.file) continue
+    const sym = (project.sheetSymbols ?? []).find((x) => x.child === s.id)
+    give(s.id, sym?.name.trim() || s.id)
   }
   return out
 }
@@ -80,6 +110,7 @@ function effects(look: TextLook | undefined, place?: FieldPlace): string {
   const parts = [`(font ${font.join(" ")})`]
   const words = [look?.h ?? place?.h, look?.v ?? place?.v, look?.mirror ? "mirror" : undefined].filter(Boolean)
   if (words.length) parts.push(`(justify ${words.join(" ")})`)
+  if (look?.href) parts.push(`(href ${quote(look.href)})`)
   if (look?.hidden || place?.hidden) parts.push("(hide yes)")
   return `(effects ${parts.join(" ")})`
 }
@@ -145,22 +176,22 @@ export function sharedSheetNotes(project: Project, symbolFlags: ReadonlyMap<stri
 /** A sheet symbol as KiCad 9 writes it, with a pin for each of its pins and the page of each use of its parent. */
 export function sheetSymbolNode(project: Project, sym: SheetSymbol, toPage: (p: Vec2) => Vec2, files: Map<string, string>, variants: "keep" | "apply" = "apply"): string {
   const top = toPage({ x: sym.x, y: sym.y + sym.h })
+  const origin = toPage({ x: sym.x, y: sym.y })
   // S9: KiCad 9 has no variants, so a sheet symbol's flags are the active variant's on its first use; a project written as KiCad 10 files keeps the variants in each use.
   const flags = sheetFlagsWritten(project, sym, variants) ?? {}
   const stroke = sym.stroke
   const out: string[] = ["  (sheet", `    (at ${mm6(top.x)} ${mm6(top.y)})`, `    (size ${mm6(sym.w * MM)} ${mm6(sym.h * MM)})`]
   out.push(`    (exclude_from_sim ${yn(!!flags.excludeFromSim)})`, `    (in_bom ${yn(!flags.excludeFromBom)})`, `    (on_board ${yn(!flags.notOnBoard)})`, `    (dnp ${yn(!!flags.dnp)})`)
+  if (sym.fieldsAutoplaced) out.push("    (fields_autoplaced yes)")
   out.push(`    (stroke (width ${mm6((stroke?.width ?? 0.012) * MM)}) (type ${stroke?.dash ?? "solid"})${stroke?.color ? ` ${colorNode(stroke.color)}` : ""})`)
   out.push(`    ${sym.fill ? (sym.fill.kind === "color" ? `(fill ${colorNode(sym.fill.color ?? "#000000")})` : `(fill (type ${sym.fill.kind}))`) : "(fill (color 0 0 0 0.0000))"}`)
   out.push(`    (uuid ${symbolUuid(sym)})`)
-  // The name above the box and the file below it, where KiCad puts them on a sheet it draws.
-  const fields: { name: string; value: string; place: FieldPlace }[] = [
-    { name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0, h: "left", v: "bottom" } },
-    { name: "Sheetfile", value: files.get(sym.child) ?? "", place: { x: 0, y: -0.05, angle: 0, h: "left", v: "top" } },
-  ]
+  const fields = sym.fields?.length ? sym.fields : [{ name: "Sheetname", value: sym.name, place: { x: 0, y: sym.h + 0.05, angle: 0 as const, h: "left" as const, v: "bottom" as const } }, { name: "Sheetfile", value: "", place: { x: 0, y: -0.05, angle: 0 as const, h: "left" as const, v: "top" as const } }]
   for (const f of fields) {
+    const value = f.name === "Sheetname" ? sym.name : f.name === "Sheetfile" ? (files.get(sym.child) ?? "") : f.value
     const at = toPage({ x: sym.x + f.place.x, y: sym.y + f.place.y })
-    out.push(`    (property ${quote(f.name)} ${quote(f.value)}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${f.place.angle})`, `      ${effects(undefined, f.place)}`, "    )")
+    void origin
+    out.push(`    (property ${quote(f.name)} ${quote(value)}`, `      (at ${mm6(at.x)} ${mm6(at.y)} ${f.place.angle})`, ...(f.place.showName ? ["      (show_name yes)"] : []), ...(f.place.noAutoplace ? ["      (do_not_autoplace yes)"] : []), `      ${effects(undefined, f.place)}`, "    )")
   }
   for (const p of sym.pins) out.push(pinNode(sym, p, toPage))
   const parents = usesOfSheet(project, sym.sheet)

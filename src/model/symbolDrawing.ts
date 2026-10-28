@@ -99,6 +99,8 @@ function roundedRect(a: Vec2, b: Vec2, radius: number): Vec2[] {
 }
 
 function itemPrimitives(item: DrawingItem): SymbolPrimitive[] {
+  // A private item is part of the symbol and is not drawn on a sheet (KiCad shows it in the symbol editor only).
+  if (item.private) return []
   const look = lookOf(item)
   const fill = item.fill === "outline"
   switch (item.kind) {

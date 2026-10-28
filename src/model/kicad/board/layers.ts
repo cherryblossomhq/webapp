@@ -103,6 +103,7 @@ export function buildStack(board: KicadBoard): BoardStack | undefined {
     if (sk.edgePlating !== undefined) stack.edgePlating = sk.edgePlating
     if (sk.dielectricConstraints !== undefined) stack.dielectricConstraints = sk.dielectricConstraints
     if (sk.edgeConnector === "yes" || sk.edgeConnector === "bevelled") stack.edgeConnector = sk.edgeConnector
+    // KiCad 6 and 7's board-wide `castellated_pads` is not kept: KiCad 8 and later drop it (each pad says it itself), and an old project's `castellated` is ignored.
   }
   return stack
 }

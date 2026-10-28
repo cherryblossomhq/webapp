@@ -5,6 +5,7 @@ import { componentFootprint, padLayerDef, pcbPads, type WorldPad } from "../mode
 import { flipLayer, kicadLayerName } from "../model/stack"
 import { hasPadFeatures } from "../model/padGeom"
 import { padFaces } from "../model/padFaces"
+import { flipShapeLayer } from "../model/shapeLayers"
 import { shapePaths } from "../model/shapes"
 import { onBoard } from "../model/partFlags"
 import type { BoardShape, ComponentInstance, CopperLayer, PadDef, PadSides, Project, Vec2 } from "../model/types"
@@ -250,7 +251,7 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
     return given.map((l) => kicadLayerName(bottom ? flipLayer(l, count) : l)).sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")))
   }
   const copperNames = def.layers?.inner && faces.copper === "both" ? [kicadLayerName("top"), ...innerNames(), kicadLayerName("bottom")] : [...layerNames(faces.copper, "Cu", bottom), ...innerNames()]
-  const names = [...copperNames, ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom)]
+  const names = [...copperNames, ...layerNames(faces.mask, "Mask", bottom), ...layerNames(faces.paste, "Paste", bottom), ...layerNames(faces.silk, "SilkS", bottom), ...(def.layers?.other ?? []).map((n) => (bottom ? flipShapeLayer(n, count) : n))]
   lines.push(`  (layers ${names.map(quote).join(" ")})`)
   for (const e of extras) lines.push(`  ${e}`)
   if (def.maskMargin !== undefined) lines.push(`  (solder_mask_margin ${mm6(def.maskMargin)})`)

@@ -259,6 +259,7 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
     let name = patch.name
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${patch.name}${i}`
     next.name = name
+    if (next.fields) next.fields = next.fields.map((f) => (f.name === "Sheetname" ? { ...f, value: name } : f))
   }
   if (patch.flags === null) delete next.flags
   else if (patch.flags) {

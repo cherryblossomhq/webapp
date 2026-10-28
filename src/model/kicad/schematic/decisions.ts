@@ -28,24 +28,14 @@ export interface TokenRule {
 
 export const PATH_RULES: PathRule[] = [
  {
-  "source": "^((?:symbol|label|global_label|hierarchical_label|netclass_flag|sheet)>fields_autoplaced|(?:.*>)?property>do_not_autoplace|(?:.*>)?effects>href)$",
+  "source": "^(netclass_flag>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid)$",
   "decision": "not-needed",
-  "note": "KiCad's autoplacing flags and a text's hyperlink"
+  "note": "KiCad's object identity of a directive label, a sheet symbol and its pins, and a rule area"
  },
  {
-  "source": "^((?:label|global_label|hierarchical_label|netclass_flag)>uuid|sheet>(?:uuid|pin>uuid)|rule_area>polyline>uuid)$",
+  "source": "^(sheet>instances>project>path>page|sheet_instances>path>page)$",
   "decision": "not-needed",
-  "note": "KiCad's object identity"
- },
- {
-  "source": "^(sheet>property>.+|sheet>instances>project>path>page|sheet_instances>path>page)$",
-  "decision": "not-needed",
-  "note": "where a sheet's name and file are written on its box, and page numbers: the export lays them out and numbers the pages in the order of the tree"
- },
- {
-  "source": "^(text>exclude_from_sim|text_box>exclude_from_sim|table>cells>table_cell>exclude_from_sim)$",
-  "decision": "not-needed",
-  "note": "a text left out of a simulation"
+  "note": "page numbers: the export numbers the pages in the order of the tree"
  },
  {
   "source": "^(version|generator|generator_version)$",
@@ -171,6 +161,11 @@ export const PATH_RULES: PathRule[] = [
   "ext": "S7"
  },
  {
+  "source": "^(symbol>fields_autoplaced)$",
+  "decision": "native",
+  "note": "KiCad's flag that it placed the fields itself: kept, so an export writes it back"
+ },
+ {
   "source": "^(symbol>property(?:>.*)?)$",
   "decision": "extend",
   "ext": "S5",
@@ -284,7 +279,7 @@ export const PATH_RULES: PathRule[] = [
   "ext": "S2"
  },
  {
-  "source": "^(netclass_flag|netclass_flag>(?:at|length|shape|fields_autoplaced|uuid)|netclass_flag>property(?:>.*)?)$",
+  "source": "^(netclass_flag|netclass_flag>(?:at|length|shape|fields_autoplaced)|netclass_flag>property(?:>.*)?)$",
   "decision": "extend",
   "ext": "S8",
   "note": "a directive label that assigns a net class to the net it touches"
@@ -301,7 +296,7 @@ export const PATH_RULES: PathRule[] = [
   "note": "a sheet symbol, the file it holds, its pins; one file used by several sheets is several instances"
  },
  {
-  "source": "^(sheet>(?:at|size|uuid|in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced|pin|pin>(?:at|uuid)|property|instances|instances>project|instances>project>path|instances>project>path>page))$",
+  "source": "^(sheet>(?:at|size|in_bom|on_board|dnp|exclude_from_sim|fields_autoplaced|pin|pin>at|property|instances|instances>project|instances>project>path))$",
   "decision": "extend",
   "ext": "S1"
  },
@@ -311,10 +306,10 @@ export const PATH_RULES: PathRule[] = [
   "ext": "S1"
  },
  {
-  "source": "^(sheet_instances(?:>path(?:>page)?)?)$",
+  "source": "^(sheet_instances(?:>path)?)$",
   "decision": "extend",
   "ext": "S1",
-  "note": "the page number of each sheet instance"
+  "note": "the sheet instances"
  },
  {
   "source": "^(text|text>(?:at|uuid|exclude_from_sim)|text_box|text_box>(?:at|size|uuid|exclude_from_sim|margins))$",
@@ -811,22 +806,16 @@ export const TOKEN_RULES: TokenRule[] = [
  },
  {
   "names": [
+   "do_not_autoplace",
    "show_name",
+   "fields_autoplaced",
    "field",
-   "fields"
+   "fields",
+   "private"
   ],
   "decision": "extend",
   "ext": "S5",
-  "note": "field flags"
- },
- {
-  "names": [
-   "do_not_autoplace",
-   "fields_autoplaced",
-   "private"
-  ],
-  "decision": "not-needed",
-  "note": "KiCad's autoplacing flags, and the private items of a symbol, which KiCad draws in its symbol editor only"
+  "note": "field flags and private fields"
  },
  {
   "names": [

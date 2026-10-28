@@ -51,11 +51,11 @@ function load(files: Map<string, string>, root = "root.kicad_sch"): Project {
   return r.project
 }
 
-/** What the editor makes of a hierarchy: no `netNames`, which only a KiCad import sets. */
+/** What the editor makes of a hierarchy: no `netNames` and no file a sheet was read from, which only a KiCad import sets. */
 function drawnInEditor(files: Map<string, string>): Project {
   const { netNames: _gone, ...rest } = load(files)
   void _gone
-  return rest as Project
+  return { ...rest, sheets: rest.sheets?.map(({ file: _file, ...sheet }) => sheet) } as Project
 }
 
 const netNamesOf = (p: Project) => computeConnectivity(p).nets.map((n) => n.name).filter((n) => /GNDL/.test(n)).sort()

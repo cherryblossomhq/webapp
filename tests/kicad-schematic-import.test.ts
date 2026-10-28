@@ -544,7 +544,7 @@ describe("what each flag and field of the file needs, so that nothing imported i
     expect(group("")?.[0].locked).toBeUndefined()
   })
 
-  it("a page number is read past: the editor has none, and the export numbers the pages itself", () => {
+  it("a page number is read past: the editor has none, and the export numbers the pages in the order of the tree", () => {
     expect(imported(importKicadSchematic(schematic().replace(`(page "1")`, `(page "7")`))).project.sheets).toBeUndefined()
   })
 })

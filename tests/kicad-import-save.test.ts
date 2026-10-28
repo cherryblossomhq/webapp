@@ -6,17 +6,17 @@ import { stoppedSummary, summarize } from "../src/kicadImport/summary"
 import { connectAnalytics } from "../src/kicadImport/analytics"
 import { forgetReport } from "../src/kicadImport/reportStore"
 import { createProject } from "../src/model/ops"
-import { PROJECT_SIZE_LIMIT_BYTES, formatSize, importKicadBoard, EXTENSION_NAMES } from "../src/model/kicad/board"
+import { PROJECT_SIZE_LIMIT_BYTES, formatSize, importKicadBoard } from "../src/model/kicad/board"
 import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeStorage, fakeWorkers, stubLocalStorage } from "./kicad-import-helpers"
 import type { ImportOutcome } from "../src/kicadImport/protocol"
+import { ALL } from "./kicad-test-helpers"
 
 // Saving: the size is checked before anything is stored, a refusal leaves nothing behind, and the
 // flow from files to a saved project and its report goes through the same storage call as a
 // project file's import.
 
 const empty = board({})
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 
 const outcomeOf = (text: string, options = {}): ImportOutcome => {
   const result = importKicadBoard(text, options)

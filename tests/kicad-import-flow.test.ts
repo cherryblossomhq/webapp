@@ -7,16 +7,16 @@ import type { WorkerEvent } from "../src/kicadImport/protocol"
 import { forgetReport, loadReport, MAX_REPORT_CHARS, MAX_REPORTS, saveReport } from "../src/kicadImport/reportStore"
 import { summarize, type ImportSummary } from "../src/kicadImport/summary"
 import { connectAnalytics } from "../src/kicadImport/analytics"
-import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
+import { importKicadBoard } from "../src/model/kicad/board"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { entry, fakeStorage, fakeWorkers, stubLocalStorage } from "./kicad-import-helpers"
+import { ALL } from "./kicad-test-helpers"
 
 // The paths around the import: a board that is not KiCad's, an outcome crossing the worker, a
 // worker that goes silent, drops (folders, empty, unreadable), retry after a failed save, and the
 // bounds on what is kept in the browser.
 
 const empty = board({})
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 const ctx = { used: ["b.kicad_pcb"], notRead: [], ignored: [], boardBytes: 1 }
 
 beforeEach(() => {

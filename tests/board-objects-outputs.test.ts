@@ -12,11 +12,11 @@ import { projectApi } from "../src/store/projectStore"
 import { decodeBase64 } from "../src/lib/imageFacts"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import type { Project } from "../src/model/types"
+import { uuidD as U } from "./kicad-test-helpers"
 
 // What dimensions, groups and images do to the outputs: the Gerber files (a dimension is plotted on the layer it sits on when KiCad plots that layer; an image never),
 // the KiCad export (dimensions, images, and groups naming real items), what Sakura reads and sees, and what a deletion does to a group.
 
-const U = (n: number) => `d0000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`
 const png = (() => {
   const b: number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
   const u32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]

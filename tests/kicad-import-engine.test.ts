@@ -6,17 +6,16 @@ import { runImport, type BoardImporter, type ProjectBytes, type ProjectImporter 
 import type { Phase, WorkerEvent } from "../src/kicadImport/protocol"
 import { PLAIN_NAMES } from "../src/kicadImport/summary"
 import { EXTENSION_NAMES as SCHEMATIC_NAMES } from "../src/model/kicad/schematic"
-import { EXTENSION_NAMES } from "../src/model/kicad/board"
 import { board, footprint, pad, REFUSED_BOARD } from "./kicad-board-fixtures"
 import { entry, fakeWorkers, zipEntry } from "./kicad-import-helpers"
 import { divider, LIB_R, schematic } from "./kicad-schematic-fixtures"
+import { ALL } from "./kicad-test-helpers"
 
 // The job and its worker protocol, with the real importer behind it: every outcome the report
 // screen has to draw (imported, imported with report entries, refused for missing extensions,
 // refused for size, unreadable with a named error, no board, a bad zip, a failure), the order of
 // the messages, cancel, and the importer's code staying out of the page's modules.
 
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 const empty = board({})
 const withPart = board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] })] })
 

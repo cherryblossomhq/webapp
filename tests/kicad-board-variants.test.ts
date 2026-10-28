@@ -13,6 +13,7 @@ import { joinOverrides, removeVariant, renameVariant, setActiveVariant } from ".
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { BY_DESIGN, diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
+import { importedBoard as imported } from "./kicad-test-helpers"
 
 // X23: board variants (KiCad 10), a footprint's units and PCB points. The importer reads them, the project holds them (a part's variants on the part, as a schematic symbol's, so the one
 // resolver, the BOM, the position file and the exports follow the variant shown), the project file stores them, and a KiCad 9 file, which cannot say them, is written as the variant shown makes it.
@@ -31,11 +32,6 @@ const VARIANT_PARTS = parts({
   R3: '(attr smd) (variant (name "Lite") (exclude_from_bom yes) (exclude_from_sim yes))',
 })
 
-const imported = (text: string): Project => {
-  const r = importKicadBoard(text)
-  if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
-  return r.project
-}
 const variantBoard = () => imported(board({ version: 20260206, body: [VARIANTS, ...VARIANT_PARTS] }))
 const column = (csv: string) => csv.trimEnd().split("\n").slice(1).map((l) => l.split(",")[0].replace(/"/g, ""))
 const part = (p: Project, ref: string) => p.components.find((c) => c.ref === ref)!

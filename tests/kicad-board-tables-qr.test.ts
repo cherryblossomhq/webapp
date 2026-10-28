@@ -12,6 +12,7 @@ import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
+import { importBody as imp } from "./kicad-test-helpers"
 
 // X25: tables, drill charts, barcodes, text boxes inside parts and boxes that are outlines of points, and text KiCad works out, brought in as the plain drawings and text they are drawn as. The QR code is the
 // standard's own (`lib/qrCode.ts`), checked here against the standard: capacities, function patterns, format information, and for a version 1 symbol its codewords' error correction.
@@ -209,11 +210,6 @@ const tableFor = (cells: string[], opts: { layer?: string; columns?: number; wid
   `(table (column_count ${opts.columns ?? 2}) (uuid "00000000-0000-4000-8000-000000000d01") (layer "${opts.layer ?? "F.SilkS"}") (border ${opts.border ?? "(external yes) (header yes) (stroke (width 0.2) (type solid))"}) (separators ${opts.separators ?? "(rows yes) (cols yes) (stroke (width 0.1) (type dash))"}) (column_widths ${opts.widths ?? "6 4"}) (row_heights ${opts.heights ?? "2 2"}) (cells ${cells.join(" ")}))`
 const grid = [cell("a", "10 3", "16 5"), cell("b", "16 3", "20 5"), cell("c", "10 5", "16 7"), cell("d", "16 5", "20 7")]
 
-const imp = (body: string[], extra: Parameters<typeof board>[0] = {}) => {
-  const r = importKicadBoard(board({ body, ...extra }))
-  if (r.status !== "imported") throw new Error(`${r.status}: ${r.message}`)
-  return r
-}
 const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
 const lines = (p: Project) => (p.graphics ?? []).filter((g) => g.type === "line")
 

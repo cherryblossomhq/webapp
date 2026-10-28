@@ -5,18 +5,18 @@ import { placementMatrix } from "../src/editor/three/files/placement"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
 import { componentTexts } from "../src/model/texts"
-import { buildKicadProject, EXTENSION_NAMES, importKicadBoard, outlineOf, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
+import { buildKicadProject, importKicadBoard, outlineOf, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
 import { accountNodes, countPaths, scanAtoms } from "../src/model/kicad/board/account"
 import { settleFor } from "../src/model/kicad/board/carried"
 import { rotK } from "../src/model/kicad/board/geometry"
 import { needsOf, unbuilt } from "../src/model/kicad/board/needs"
 import { stockModelId } from "../src/model/kicad/board/models"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { ALL } from "./kicad-test-helpers"
 
 // The round-1 fixes of slice 1a, each with the board that needed it: pad layer sets, nets by their
 // raw names, the accounting of every word, concave corners, the bottom side's land and models.
 
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 const WITHOUT = (...x: string[]) => new Set([...ALL].filter((e) => !x.includes(e)))
 const needsOf1 = (text: string, built: ReadonlySet<string> = new Set()) => {
   const r = importKicadBoard(text, { built })

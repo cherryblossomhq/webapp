@@ -49,7 +49,7 @@ const ONLY = process.env.KICAD_ONLY?.split(",").filter(Boolean) ?? []
  * S3: the buses of one imported sheet against its raw file. Each raw bus is covered, to a thousandth of a millimetre, by segments of the model that
  * lie on it (the importer cuts a bus at a junction on its body, so one raw bus may be several segments), and no segment of the model lies off the
  * raw buses; each entry is where the file has it with the size the file gives; each alias has the members the file lists. Only a project of one sheet
- * is compared here (a sheet with a sheet symbol is read with its folder and has others' buses too), the rest is compared in `tests/kicad-sch-s3.test.ts`.
+ * is compared here (a sheet with a sheet symbol is read with its folder and has others' buses too), the rest is compared in `tests/kicad-sch-buses.test.ts`.
  */
 function compareBuses(file: string, raw: ReturnType<typeof rawBuses>, project: { drawings?: { type: string; sheet?: string; points?: { x: number; y: number }[]; x?: number; y?: number; dx?: number; dy?: number; toBus?: boolean }[]; busAliases?: { name: string; members: string[] }[]; sheetSymbols?: unknown[] }): string[] {
   const out: string[] = []

@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { SchematicConnectivity } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { schematicPins } from "../src/model/instances"
-import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
+import { importKicadBoard } from "../src/model/kicad/board"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { ALL } from "./kicad-test-helpers"
 
 // Slice 1b-ii carry-overs from the slice 1b-i review: the store's two commit hooks cost nothing
 // for an edit that leaves the schematic alone and one connectivity for one that does not (M1),
@@ -22,7 +23,6 @@ const { getConnectivity } = await import("../src/model/connectivityCache")
 const { analyzePcb } = await import("../src/model/pcb")
 const { useProjectStore } = await import("../src/store/projectStore")
 
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 const net = (n: number, name: string) => `(net ${n} "${name}")`
 const seg = (a: string, b: string, n: string) => `(segment (start ${a}) (end ${b}) (width 0.25) (layer "F.Cu") ${n})`
 

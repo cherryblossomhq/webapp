@@ -13,7 +13,7 @@ import type { Project } from "../src/model/types"
 import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../src/model/kicad/board"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { importKicadBoard } from "../src/model/kicad/board"
-import { importKicadProject, type KicadProjectResult, type ProjectFile } from "../src/model/kicad/project"
+import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
 import { BUILT_EXTENSIONS as SCHEMATIC_BUILT } from "../src/model/kicad/schematic/needs"
 import { gerberLayers } from "../src/export/gerber"
 import { drillHoles } from "../src/export/excellon"
@@ -21,6 +21,7 @@ import { writeKicadBoard } from "../src/export/kicadBoard"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { ROOT_UUID, divider, schematic } from "./kicad-schematic-fixtures"
 import { S1, files as sheetFiles } from "./kicad-sheets-fixtures"
+import { importedProject as imported } from "./kicad-test-helpers"
 
 // Final review of the join, blockers B1 to B4 (the fixes are tested in this file, in the order of the review).
 
@@ -59,10 +60,6 @@ describe("B1: an editor-drawn board of 4 or more layers keeps its silkscreen tex
 const BUILT = new Set([...Object.keys(BOARD_EXTENSION_NAMES), ...SCHEMATIC_BUILT])
 const U1 = "11111111-0000-4000-8000-000000000001"
 const U2 = "11111111-0000-4000-8000-000000000002"
-const imported = (r: KicadProjectResult) => {
-  if (r.status !== "imported") throw new Error(`refused (${r.reason}): ${r.message}`)
-  return r
-}
 const R1_FOOTPRINT = () => footprint({ ref: "R1", at: "10 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "VCC")' }), pad({ number: "2", at: "1 0", net: '(net 2 "/MID")' })], extra: `(path "/${U1}") (attr smd)` })
 const R2_FOOTPRINT = () => footprint({ ref: "R2", at: "15 5", pads: [pad({ number: "1", at: "-1 0", net: '(net 2 "/MID")' }), pad({ number: "2", at: "1 0", net: '(net 3 "GND")' })], extra: `(path "/${U2}") (attr smd)` })
 const DIVIDER_BOARD = () => board({ nets: ['(net 0 "")', '(net 1 "VCC")', '(net 2 "/MID")', '(net 3 "GND")'], body: [R1_FOOTPRINT(), R2_FOOTPRINT()] })

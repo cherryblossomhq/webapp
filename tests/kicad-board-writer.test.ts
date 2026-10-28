@@ -11,16 +11,11 @@ import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
 import { rectangle, twoResistors, withZone } from "./zones-fixtures"
 import { rememberImage } from "../src/store/imageFiles"
+import { uuidD as U, importedBoard as imported } from "./kicad-test-helpers"
 
 // X16: the board writer for the round trip. A board is imported, written by the native writer, imported again, and the two projects are compared
 // item for item (`kicad-roundtrip-check.ts`); the corpus version of the same check is `corpus/roundtrip.test.ts`.
 
-const U = (n: number) => `d0000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`
-const imported = (text: string): Project => {
-  const r = importKicadBoard(text)
-  if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
-  return r.project
-}
 const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
 /** The differences between a project and the one its written board imports as. */
 const roundTrip = async (p: Project) => {

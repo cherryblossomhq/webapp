@@ -9,6 +9,7 @@ import { padOpeningRings, pasteMargins, maskMargin } from "../src/model/padOpeni
 import { padRings } from "../src/model/padGeom"
 import type { PadDef } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { expectNearE6 as near } from "./kicad-test-helpers"
 
 // X7, the pad model, from the importer to the editor's own pads: every shape, a pad's own turn, its layers, margins and holes, the nets of pads that share
 // a number, and what the project says about each.
@@ -23,7 +24,6 @@ const one = (extra: string, over: Partial<Parameters<typeof pad>[0]> = {}, fp: P
   const c = r.project.components[0]
   return { r, c, land: componentFootprint(c)!, world: pcbPads(c)[0] }
 }
-const near = (a: number, b: number, eps = 1e-6) => expect(Math.abs(a - b)).toBeLessThanOrEqual(eps)
 
 describe("X7 is built, and the gate says so", () => {
   it("BUILT_EXTENSIONS holds X7, and a board with every pad feature is imported", () => {
@@ -53,7 +53,7 @@ describe("X7 is built, and the gate says so", () => {
     expect(ext("(remove_unused_layers yes) (keep_end_layers no)", "thru_hole")).toContain("X1")
     expect(ext("(remove_unused_layers yes) (keep_end_layers yes)", "thru_hole")).not.toContain("X1")
     expect(ext("(remove_unused_layers no)", "thru_hole")).not.toContain("X1")
-    // X31 is built: the need is still named, and the gate lets it in (`kicad-board-x31.test.ts`).
+    // X31 is built: the need is still named, and the gate lets it in (`kicad-board-zone-family.test.ts`).
     expect(ext('(zone_layer_connections "F.Cu")', "thru_hole")).toContain("X31")
     expect(ext("(tenting (front yes) (back none))")).toContain("X5")
     expect(ext("(tenting (front none) (back none))")).not.toContain("X5")

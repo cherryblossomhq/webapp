@@ -15,6 +15,7 @@ import type { BoardText, Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
+import { importedBoard as imported } from "./kicad-test-helpers"
 
 // X19: text drawn in a TrueType font. KiCad writes the outlines it drew such a text with (`render_cache`); the editor keeps them, draws and plots them, and
 // writes them back. A text edited in content, size, weight, slant, justification, spacing or font loses them (KiCad throws its cache away on the same edits).
@@ -27,11 +28,6 @@ const text = (o: { at?: string; content?: string; face?: string | null; cache?: 
   `(gr_text "${o.content ?? "Hi"}" (at ${o.at ?? "10 5 0"}) (layer "${o.layer ?? "F.SilkS"}") (uuid "d0000000-0000-4000-8000-000000000001") (effects (font ${o.face === null ? "" : `(face "${o.face ?? "Ubuntu Sans"}")`} (size 1 1) (thickness 0.15) ${o.extra ?? ""}))${o.cache === null ? "" : ` (render_cache "${o.cacheText ?? o.content ?? "Hi"}" ${o.angle ?? 0} ${o.cache ?? SQUARE})`})`
 
 const withText = (t: string, extra: string[] = []) => board({ body: [footprint({ pads: [pad({ number: "1", at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), t, ...extra] })
-const imported = (text: string): Project => {
-  const r = importKicadBoard(text)
-  if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
-  return r.project
-}
 const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
 
 const area = (poly: { x: number; y: number }[][]) => {

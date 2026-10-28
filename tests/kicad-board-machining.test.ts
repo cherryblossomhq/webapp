@@ -17,6 +17,7 @@ import { diffCanonical, diffProjects, BY_DESIGN } from "./kicad-roundtrip-check"
 import { fillTester } from "../src/model/pour"
 import { registerProjectFootprints } from "../src/model/footprints"
 import { unknownNodes } from "./kicad9-nodes"
+import { importedBoard as imported } from "./kicad-test-helpers"
 
 // X22: via protection (IPC-4761), backdrills and post-machining of vias and pads, read from a KiCad 10 board exactly, kept through a save, drawn into the drill files, the Gerber protection files and the
 // fabrication notes the way KiCad's writers do, and cut out of the pour. The writer does not write them (KiCad 9's parser refuses their words), so they stay in the project.
@@ -25,11 +26,6 @@ const L4 = '(layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) (2
 const NETS = ['(net 0 "")', '(net 1 "A")']
 const V10 = 20260206
 const via = (at: string, extra: string, layers = '"F.Cu" "B.Cu"', kind = "") => `(via ${kind ? `${kind} ` : ""}(at ${at}) (size 0.8) (drill 0.4) ${extra} (layers ${layers}) (net 1))`
-const imported = (text: string): Project => {
-  const r = importKicadBoard(text)
-  if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
-  return r.project
-}
 const four = (body: string[], setup = "(setup (pad_to_mask_clearance 0))") => board({ version: V10, layers: L4, nets: NETS, setup, body })
 const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
 

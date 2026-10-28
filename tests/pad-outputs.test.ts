@@ -15,6 +15,7 @@ import { fillZones } from "../src/model/pour"
 import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import type { PadDef, Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { expectNearE6 as near } from "./kicad-test-helpers"
 
 const imp = (text: string): Project => {
   const r = importKicadBoard(text)
@@ -22,7 +23,6 @@ const imp = (text: string): Project => {
   return r.project
 }
 const NETS = ['(net 0 "")', '(net 1 "A")', '(net 2 "B")']
-const near = (a: number, b: number, eps = 1e-6) => expect(Math.abs(a - b)).toBeLessThanOrEqual(eps)
 
 describe("Gerber: copper, mask and paste of pads with X7 features", () => {
   const project = imp(

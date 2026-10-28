@@ -9,12 +9,12 @@ import { packDimensions, packGroups, packImages, unpackDimensions, unpackGroups,
 import { imageFacts, sha256Hex } from "../src/lib/imageFacts"
 import type { BoardDimension, ComponentInstance, DimensionKind, PcbGroup, Project, ReferenceImage } from "../src/model/types"
 import { createHash } from "node:crypto"
+import { nearE5 as near } from "./kicad-test-helpers"
 
 // Dimensions as KiCad draws them (pcbnew/pcb_dimension.cpp), their value text, the compact stored form, groups of board items (what a group is, what
 // moving, turning, locking, ungrouping and deleting do to it) and reference images' facts. Numbers are millimetres in the editor's frame (y up); KiCad's
 // frame is y down, so a crossbar KiCad draws below its points (y larger) is above them in a negative y here.
 
-const near = (a: number, b: number, eps = 1e-5) => Math.abs(a - b) <= eps
 const EXT = DEFAULT_EXTENSION_HEIGHT_IU / 1e6
 
 const dim = (kind: DimensionKind, a: { x: number; y: number }, b: { x: number; y: number }, extra: Partial<BoardDimension> = {}): BoardDimension => ({

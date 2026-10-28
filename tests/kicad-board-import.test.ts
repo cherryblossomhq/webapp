@@ -5,13 +5,13 @@ import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { EXTENSION_NAMES, formatSize, importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, type KicadImportResult } from "../src/model/kicad/board"
 import { rotK } from "../src/model/kicad/board/geometry"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { ALL } from "./kicad-test-helpers"
 
 // The importer end to end: the gate (what it refuses and how it says so), and the project it
 // builds, with every extension treated as built so the build path can be exercised on boards that
 // the real gate still refuses for their text and graphics. The project is checked against the
 // file: every pad where the file has it, every pad on the net the file gives it.
 
-const ALL = new Set(Object.keys(EXTENSION_NAMES))
 const imported = (text: string, extra: object = {}) => {
   const r = importKicadBoard(text, { built: ALL, ...extra })
   if (r.status !== "imported") throw new Error(`refused: ${r.message}\n${r.report.entries.map((e) => e.why).join("\n")}`)

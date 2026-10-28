@@ -6,6 +6,7 @@ import { joinFlags } from "../src/model/partFlags"
 import { importKicadProject, pickProjectFiles, projectNeeds, readKicadPro, readKicadRules, accountPro, accountRules, stripComments, KicadProjectFileError, KicadRulesFileError, type KicadProjectResult, type ProjectFile } from "../src/model/kicad/project"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { LIB_R, divider, schematic } from "./kicad-schematic-fixtures"
+import { importedProject as imported } from "./kicad-test-helpers"
 
 // The project import: a board and its schematic as one project, linked, with every pad's net on the
 // board checked against its pin's net in the schematic. The board and schematic importers each have
@@ -37,10 +38,6 @@ function dividerBoard(opts: { nets?: [string, string, string, string]; path1?: s
 
 const files = (b: string, s: string, more: ProjectFile[] = []): ProjectFile[] => [{ path: "demo.kicad_pcb", data: text(b) }, { path: "demo.kicad_sch", data: text(s) }, ...more]
 
-const imported = (r: KicadProjectResult) => {
-  if (r.status !== "imported") throw new Error(`refused (${r.reason}): ${r.message}`)
-  return r
-}
 const refused = (r: KicadProjectResult) => {
   if (r.status !== "refused") throw new Error("imported")
   return r
@@ -477,7 +474,7 @@ describe("the flags of a symbol and of its footprint", () => {
 
   it("the symbol wins for do not populate and the BOM, the footprint for mounting, board only, virtual and net ties, and a note says where they disagreed", () => {
     // the footprint says do not populate and not in the BOM; the symbol says neither (a board not updated from its schematic)
-    // (KiCad 8's file: its "Update PCB from Schematic" copies do not populate, which a KiCad 7 file's does not; see tests/kicad-join-fix2.test.ts)
+    // (KiCad 8's file: its "Update PCB from Schematic" copies do not populate, which a KiCad 7 file's does not; see tests/kicad-join-sch.test.ts)
     const r = imported(importKicadProject(files(boardOf('(attr smd board_only dnp exclude_from_bom) (net_tie_pad_groups "1, 2")'), divider(20231120).replace(/\(in_bom yes\)/g, "(in_bom yes) (dnp no)")), { built: new Set([...BOARD_ALL, "S7"]) }))
     expect(flagsOf(r, "R1")).toEqual({ mount: "smd", boardOnly: true, netTies: [["1", "2"]] })
     const note = r.report.entries.find((e) => e.code === "symbol-footprint-flags-differ")!

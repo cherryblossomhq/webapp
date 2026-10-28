@@ -15,17 +15,13 @@ import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { diffProjects } from "./kicad-roundtrip-check"
 import { unknownNodes } from "./kicad9-nodes"
+import { importedBoard as imported } from "./kicad-test-helpers"
 
 // X21: tuning patterns (and the other generated items) as groups that remember what made them, the length inside a package, net chains, and what each does to a net's length.
 
 const NETS = ['(net 0 "")', '(net 1 "A")', '(net 2 "B")']
 const seg = (a: string, b: string, id: string, net = "(net 1)") => `(segment (start ${a}) (end ${b}) (width 0.2) (layer "F.Cu") ${net} (uuid "${id}"))`
 const ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
-const imported = (text: string): Project => {
-  const r = importKicadBoard(text)
-  if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
-  return r.project
-}
 const pcbOf = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([k]) => k.endsWith(".kicad_pcb"))![1]
 
 const tuning = (members: string[], extra = "") => `(generated (uuid "${ID(900)}") (type tuning_pattern) (name "Tuning Pattern") (layer "F.Cu") ${extra}

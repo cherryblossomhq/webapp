@@ -44,16 +44,27 @@ const entries = (p: Project) => (p.drawings ?? []).filter((d): d is DrawingBusEn
 const netNames = (p: Project) => computeConnectivity(p).nets.map((n) => n.name).sort()
 
 describe("the toolbar", () => {
-  it("has a Bus tool and a Bus entry tool that pick the tool", () => {
+  it("has a Bus tool and a Bus entry tool, in one menu, and the button shows the one last used", () => {
     projectApi().open(createProject("one"))
     act(() => root.render(<SchematicToolbar />))
-    const find = (label: string) => [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label || b.title === label || b.textContent?.trim() === label)
+    const find = (label: string) => [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label)
+    const click = (label: string) => act(() => void find(label)!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
     expect(find("Bus")).toBeTruthy()
-    act(() => void find("Bus")!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+    expect(find("Bus entry")).toBeUndefined()
+    click("Bus")
     expect(uiApi().schTool).toBe("bus")
-    act(() => void find("Bus entry")!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+    click("Bus tools")
+    click("Bus entry")
     expect(uiApi().schTool).toBe("busentry")
-    uiApi().setSchTool("select")
+    // Back to Select, the button stays on Bus entry and picks it again; picked by its key, Bus is shown again.
+    act(() => uiApi().setSchTool("select"))
+    expect(find("Bus")).toBeUndefined()
+    expect(find("Bus entry")!.getAttribute("aria-pressed")).toBe("false")
+    click("Bus entry")
+    expect(uiApi().schTool).toBe("busentry")
+    act(() => uiApi().setSchTool("bus"))
+    expect(find("Bus")!.getAttribute("aria-pressed")).toBe("true")
+    act(() => uiApi().setSchTool("select"))
   })
 })
 

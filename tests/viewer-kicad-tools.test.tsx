@@ -32,12 +32,26 @@ afterEach(() => {
 })
 
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label) as HTMLButtonElement | undefined
+const click = (label: string) => act(() => void button(label)!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
 
 describe("a viewer's toolbars", () => {
-  const SCHEMATIC = ["Wire", "Net label", "Bus", "Bus entry", "Sheet", "Block", "Text", "Line", "Rectangle"]
-  const PCB = ["Route trace", "Place via", "Cut a slot", "Draw a copper zone", "Draw a keepout", "Add text", "Add dimension", "Add reference image", "Re-pack parts", "Autoroute"]
+  // The tools on the bar, and the menus the rest are in (each group's chevron), with what each menu lists.
+  const SCHEMATIC = ["Wire", "Net label", "Text"]
+  const SCHEMATIC_GROUPS: Record<string, string[]> = { "Bus tools": ["Bus", "Bus entry"], "Block and sheet tools": ["Block", "Sheet"], "Drawing tools": ["Line", "Rectangle"] }
+  const PCB = ["Route trace", "Place via", "Re-pack parts", "Autoroute"]
+  const PCB_GROUPS: Record<string, string[]> = {
+    "Zone tools": ["Draw a copper zone", "Draw a keepout"],
+    "Drawing tools": ["Draw line", "Draw arc", "Draw circle", "Draw rectangle", "Draw polygon", "Cut a slot"],
+    "Text and dimension tools": ["Add text", "Add dimension", "Add reference image"],
+  }
 
-  it("has every schematic tool off, and picking one does nothing", () => {
+  /** A group's chevron and the tool button beside it, which the group shows. */
+  const group = (label: string) => {
+    const chevron = button(label)!
+    return [chevron, chevron.previousElementSibling as HTMLButtonElement]
+  }
+
+  it("has every schematic tool off, its menus shut, and picking one does nothing", () => {
     projectApi().open(createProject("one"))
     useProjectStore.setState({ role: "viewer" })
     act(() => root.render(<SchematicToolbar />))
@@ -45,7 +59,13 @@ describe("a viewer's toolbars", () => {
     for (const label of SCHEMATIC) {
       expect(button(label), label).toBeTruthy()
       expect(button(label)!.disabled, label).toBe(true)
-      act(() => void button(label)!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+      click(label)
+      expect(uiApi().schTool, label).toBe("select")
+    }
+    for (const label of Object.keys(SCHEMATIC_GROUPS)) {
+      for (const b of group(label)) expect(b.disabled, label).toBe(true)
+      for (const b of group(label)) act(() => void b.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+      expect(host.querySelector("[role=menu]"), label).toBeNull()
       expect(uiApi().schTool, label).toBe("select")
     }
   })
@@ -58,19 +78,36 @@ describe("a viewer's toolbars", () => {
       expect(button(label), label).toBeTruthy()
       expect(button(label)!.disabled, label).toBe(true)
     }
-    for (const b of host.querySelectorAll("button")) {
-      if (b.getAttribute("aria-label")?.startsWith("Draw ") || b.getAttribute("aria-label") === "Line" || b.getAttribute("aria-label") === "Rectangle") expect(b.disabled).toBe(true)
+    for (const label of Object.keys(PCB_GROUPS)) {
+      for (const b of group(label)) expect(b.disabled, label).toBe(true)
+      for (const b of group(label)) act(() => void b.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+      expect(host.querySelector("[role=menu]"), label).toBeNull()
     }
-    act(() => void button("Draw a copper zone")!.dispatchEvent(new MouseEvent("click", { bubbles: true })))
     expect(uiApi().pcbTool).toBe("select")
   })
 
-  it("has the tools on for an editor", () => {
+  it("has the tools on for an editor, every one in its menu, and a menu pick is the tool", () => {
     projectApi().open(createProject("one"))
     act(() => root.render(<SchematicToolbar />))
     for (const label of SCHEMATIC) expect(button(label)!.disabled, label).toBe(false)
+    for (const [label, tools] of Object.entries(SCHEMATIC_GROUPS)) {
+      click(label)
+      expect([...host.querySelectorAll("[role=menu] button")].map((b) => b.getAttribute("aria-label")), label).toEqual(tools)
+      click(tools[1])
+      expect(host.querySelector("[role=menu]"), label).toBeNull()
+      expect(button(tools[1])!.getAttribute("aria-pressed"), label).toBe("true")
+    }
+    expect(uiApi().schTool).toBe("rect")
     act(() => root.render(<PcbToolbar />))
-    for (const label of ["Route trace", "Draw a copper zone", "Draw a keepout", "Add dimension", "Add reference image"]) expect(button(label)!.disabled, label).toBe(false)
+    for (const label of PCB) expect(button(label)!.disabled, label).toBe(false)
+    for (const [label, tools] of Object.entries(PCB_GROUPS)) {
+      click(label)
+      expect([...host.querySelectorAll("[role=menu] button")].map((b) => b.getAttribute("aria-label")), label).toEqual(tools)
+      click(label)
+    }
+    click("Zone tools")
+    click("Draw a keepout")
+    expect(uiApi().pcbTool).toBe("keepout")
   })
 
   it("offers no change of the variants", () => {

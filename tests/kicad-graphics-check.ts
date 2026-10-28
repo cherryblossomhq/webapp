@@ -56,14 +56,21 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
     for (const seg of segs) file.push({ type: "line", layer: t.layer, width: w, filled: false, dash: null, multi: false, quarter: true, lines: [seg] })
   }
   // (the lines of a dimension are checked with the dimensions, `kicad-dimensions-check.ts`)
-  const world = worldShapes(project).filter((w) => !w.dim)
+  // A line, arc or curve with ends (X24) is compared by its own stroke: the oracle's outline is the stroke the file gives, while the project's box and outline of such a drawing reach out to its ends'
+  // arrows, and its stroke is stopped short under them. The ends are kept and checked by the X24 corpus test (the ends of KiCad's own line_ending_zone_flood board), so they are left off here.
+  const world = worldShapes(project)
+    .filter((w) => !w.dim)
+    .map((w) => (w.shape.ends ? { ...w, shape: { ...w.shape, ends: undefined } } : w))
   const layers: Record<string, number> = {}
   for (const s of file) layers[s.layer] = (layers[s.layer] ?? 0) + 1
   const projCounts: Record<string, number> = {}
   for (const w of world) projCounts[w.shape.layer] = (projCounts[w.shape.layer] ?? 0) + 1
   // A layer that is none of KiCad's, or a number that makes no shape, is a refusal the gate raises: nothing to compare.
   const skip = lossy.some((l) => /not one of KiCad's/.test(l) || /numbers do not make a shape/.test(l))
-  const counts = skip || Object.keys({ ...layers, ...projCounts }).every((k) => (layers[k] ?? 0) === (projCounts[k] ?? 0))
+  // X25 imports a table, a barcode or a drill chart as plain drawings (its borders, separators and the modules of the code), which the oracle's reading of the file has no drawing for. A file that has
+  // one may therefore have more drawings in the project than the oracle's on a layer; every drawing of the file must still be matched (below), and a file with none of them has the exact counts.
+  const hasX25 = /^\s*\((table|barcode|drill_chart)\b/m.test(text)
+  const counts = skip || Object.keys({ ...layers, ...projCounts }).every((k) => (hasX25 ? (layers[k] ?? 0) <= (projCounts[k] ?? 0) : (layers[k] ?? 0) === (projCounts[k] ?? 0)))
 
   // The project's drawings by type, layer and the left top corner of their box on a 0.01 mm grid (rounded, so two values within 0.005 are in the same cell or the next), so a drawing of the file is looked for in the nine cells around its own corner.
   const CELL = 0.01

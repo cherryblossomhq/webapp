@@ -68,7 +68,8 @@ export function checkZoneSettings(text: string, project: Project): { compared: n
     if (z.uuid !== wantUuid) bad(`uuid ${z.uuid} against ${wantUuid}`)
     // KiCad 5 and earlier have no order between zones of equal priority (their filler cuts only out of strictly higher priority).
     if ((z.unordered === true) !== (stamp < 20211014)) bad(`unordered ${z.unordered} against a file of version ${stamp}`)
-    const rule = f.kind === "keepout" || f.kind === "rule-area"
+    // (a placement area, X20, is a rule area of the project too: the file writes it with a `keepout` that allows everything)
+    const rule = f.kind === "keepout" || f.kind === "rule-area" || f.kind === "placement"
     if (rule !== !!z.keepout) bad("rule area")
     if (rule) {
       for (const [k, key] of [["tracks", "tracks"], ["vias", "vias"], ["pads", "pads"], ["copperpour", "pour"], ["footprints", "footprints"]] as const) {

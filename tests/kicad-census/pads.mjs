@@ -243,10 +243,12 @@ export function copperOracle(text) {
       padNumbers: kids(fp, "pad").map((p) => String(p[1] ?? "")),
     })
   }
+  // A track's copper layer: `(layer "F.Cu")`, or, for a track left open through the mask (KiCad 10 development), `(layers "F.Cu" "F.Mask")`, whose first name is the copper layer and the rest are mask layers.
+  const trackLayer = (s) => kid(s, "layer")?.[1] ?? kid(s, "layers")?.[1] ?? ""
   const segments = kids(board, "segment").map((s) => {
     const a = kid(s, "start")
     const b = kid(s, "end")
-    return { net: netOf(s), length: Math.hypot(numAt(a, 1) - numAt(b, 1), numAt(a, 2) - numAt(b, 2)), locked: locked(s), layer: kid(s, "layer")?.[1] ?? "" }
+    return { net: netOf(s), length: Math.hypot(numAt(a, 1) - numAt(b, 1), numAt(a, 2) - numAt(b, 2)), locked: locked(s), layer: trackLayer(s) }
   })
   // an arc track (X4) is a segment of its arc's length
   for (const s of kids(board, "arc")) {
@@ -255,7 +257,7 @@ export function copperOracle(text) {
     const b = kid(s, "end")
     if (!a || !m || !b) continue
     const at = (k) => [numAt(k, 1), numAt(k, 2)]
-    segments.push({ net: netOf(s), length: arcLength(at(a), at(m), at(b)), locked: locked(s), layer: kid(s, "layer")?.[1] ?? "", arc: true })
+    segments.push({ net: netOf(s), length: arcLength(at(a), at(m), at(b)), locked: locked(s), layer: trackLayer(s), arc: true })
   }
   const vias = kids(board, "via").map((v) => ({ net: netOf(v), locked: locked(v) }))
   return { stamp, footprints, segments, vias }

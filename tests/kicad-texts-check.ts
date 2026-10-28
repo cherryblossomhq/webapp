@@ -173,7 +173,11 @@ export function checkTexts(text: string, project: Project, opts: { font?: Oracle
   }
   // every text of the project that is on the board stands for one of the file's; counts per layer, for the board text and the compared parts
   for (const { w } of boardWorld) projectLayers[w.layer] = (projectLayers[w.layer] ?? 0) + 1
-  result.counts = result.file === result.project && isDeepStrictEqual(Object.fromEntries(Object.entries(layers).sort()), Object.fromEntries(Object.entries(projectLayers).sort()))
+  // X25 imports each cell of a table, a barcode's or a drill chart's text as a text box, which the oracle's reading has no text for: a file with one may have more texts in the project than the oracle's
+  // on a layer. Every text of the file must still be matched (above), and a file with none of them has the exact counts.
+  const hasX25 = /^\s*\((table|barcode|drill_chart)\b/m.test(text)
+  const layerOk = (k: string) => (hasX25 ? (layers[k] ?? 0) <= (projectLayers[k] ?? 0) : (layers[k] ?? 0) === (projectLayers[k] ?? 0))
+  result.counts = (hasX25 ? result.file <= result.project : result.file === result.project) && Object.keys({ ...layers, ...projectLayers }).every(layerOk)
   if (!result.counts && !result.note) result.note = `texts: ${result.file} in the file, ${result.project} compared in the project; ${JSON.stringify(layers)} vs ${JSON.stringify(projectLayers)}`
   return result
 }

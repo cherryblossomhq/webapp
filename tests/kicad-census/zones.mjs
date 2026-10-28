@@ -139,9 +139,12 @@ export function zoneOracle(text) {
  * copper and are KiCad's (a filled zone of that layer), or a rule area on either or both. A pour on both kinds at once is not (the import is refused as inexact).
  */
 export const importedZone = (z) => {
-  if (z.inFootprint || z.kind === "placement" || z.rings.length === 0 || z.rings[0].length < 3) return false
+  // (X20 builds a placement area as a zone with a `placement`, so it is one of the project's zones, in the file's order; and a pour filled in KiCad 11 development's thieving mode is a refusal the
+  // importer notes and leaves out, `zones.ts`: a copper thieving pattern is no pour the editor has)
+  if (z.inFootprint || z.rings.length === 0 || z.rings[0].length < 3) return false
   if (!z.other.every(knownOther)) return false
-  const rule = z.kind === "keepout" || z.kind === "rule-area"
+  const rule = z.kind === "keepout" || z.kind === "rule-area" || z.kind === "placement"
+  if (!rule && z.mode === "thieving") return false
   if (z.other.length) return rule || z.surface.length === 0
   return z.onlyCopper && z.surface.length > 0
 }

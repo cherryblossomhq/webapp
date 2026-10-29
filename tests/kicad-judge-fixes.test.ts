@@ -35,7 +35,7 @@ describe("what the audit found in a board's export", () => {
     // the track and the via touch the GND pad, and the file says they are on no net
     expect(pcb).toMatch(/\(segment[\s\S]*?\(net 0\)/)
     expect(pcb).toMatch(/\(via[\s\S]*?\(net 0\)/)
-    expect(pcb).toContain('(property "ki_fp_filters" "Conn*")')
+    expect(pcb).toContain('(property "ki_fp_filters" "Conn*"')
   })
 
   it("keeps an old board's translated layer names as the layers' own names", async () => {
@@ -140,6 +140,6 @@ describe("what the full audit found next", () => {
   it("writes a footprint's property that has no place back", async () => {
     const FPP = footprint({ ref: "J1", name: "Local:Edge", pads: [pad({ number: "1", at: "0 0" })], extra: '(property "LCSC" "C15850")' })
     const { pcb } = await run(board({ version: 20241229, body: [FPP] }))
-    expect(pcb).toContain('(property "LCSC" "C15850")')
+    expect(pcb).toMatch(/\(property "LCSC" "C15850"[^)]*?\(at 0 0 0\)[^]*?\(hide yes\)/)
   })
 })

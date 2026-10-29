@@ -44,7 +44,12 @@ describe("a zone keeps KiCad's own fill", () => {
     expect(b.kept!.layers[0].islands).toEqual([0])
     const fa = fillOfZone(p, 0)
     expect(fa.fromFile).toBe(true)
-    expect(fa.polygons).toEqual([[a.kept!.layers[0].rings[0]]])
+    // the copper is the file's polygon (its regions, to a micrometre), not the editor's
+    expect(fa.polygons).toHaveLength(1)
+    const outer = fa.polygons[0][0]
+    expect(Math.min(...outer.map((q) => q.x))).toBeCloseTo(1.123456, 3)
+    expect(Math.max(...outer.map((q) => q.y))).toBeCloseTo(-1.5, 3)
+    expect(outer).toHaveLength(5)
     expect(fa.netName).toBe("GND")
   })
 

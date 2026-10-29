@@ -8,6 +8,7 @@ import { worldPartZones } from "../src/model/partZones"
 import { zoneLayers, zoneRings } from "../src/model/zones"
 import { flattenPath } from "../src/model/shapes"
 import type { Project, Zone } from "../src/model/types"
+import { withoutKept } from "../src/model/zoneKeep"
 import { nearestWithin, sample } from "./kicad-census/edge.mjs"
 import { importedZone, knownOther, zoneOracle } from "./kicad-census/zones.mjs"
 
@@ -31,12 +32,12 @@ const toPath = (ring: number[][]): Path64 => ring.map(([x, y]) => ({ x: Math.rou
 const areaMm2 = (paths: Paths64) => Math.abs(Clipper.areaPaths(paths)) / (U * U)
 
 /** The copper KiCad stored for a zone on a layer, in the editor's frame (y up), as a region. */
-export function storedCopper(z: Oracle, layer: string): Paths64 {
+export function storedCopper(z: Oracle, layer: string, stroked = z.strokedFill): Paths64 {
   const rings = z.fills.get(layer) ?? []
   if (!rings.length) return []
   let paths = Clipper.union(rings.map(toPath), [], FillRule.EvenOdd)
   // Fills drawn with a pen (no `filled_areas_thickness`): the copper is the stored polygon grown by half the minimum width.
-  if (z.strokedFill && z.minThickness && z.minThickness > 0 && paths.length) paths = Clipper.inflatePaths(paths, (z.minThickness / 2) * U, JoinType.Round, EndType.Polygon, 2, ARC)
+  if (stroked && z.minThickness && z.minThickness > 0 && paths.length) paths = Clipper.inflatePaths(paths, (z.minThickness / 2) * U, JoinType.Round, EndType.Polygon, 2, ARC)
   return paths
 }
 
@@ -128,11 +129,14 @@ export interface FillRow {
 
 const ringsOf = (paths: Paths64): number[][][] => paths.map((p) => [...p.map((q) => [q.x / U, q.y / U]), [p[0].x / U, p[0].y / U]])
 
-/** The editor's copper of every zone and layer against KiCad's stored fill. */
-export function compareFills(text: string, project: Project, reach = 3, which: "copper" | "other" = "copper"): FillRow[] {
+/**
+ * The editor's copper of every zone and layer against KiCad's stored fill. By default the zones are filled by the editor's own engine (a zone's kept fill, `Zone.kept`, is let go of first), which
+ * is what measures the engine; with `kept` the project is analysed as it is, and only the zones that keep KiCad's fill are compared: what the editor shows of the kept copper against the file's.
+ */
+export function compareFills(text: string, project: Project, reach = 3, which: "copper" | "other" = "copper", kept = false): FillRow[] {
   const onlyOther = which === "other"
   const expected = zoneOracleOf(text).zones.filter(importedZone)
-  const analysis = onlyOther ? null! : analyzePcb(project, computeConnectivity(project))
+  const analysis = onlyOther ? null! : analyzePcb(kept ? project : withoutKept(project), computeConnectivity(project))
   const rows: FillRow[] = []
   const others = nonCopperFills(project)
   const row = (i: number, layer: string, net: string, stroked: boolean, ours: Paths64, theirs: Paths64, hadStored = theirs.length > 0): FillRow => {
@@ -155,6 +159,7 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
   project.zones.forEach((z: Zone, i) => {
     const f = expected[i]
     if (!f || z.keepout) return
+    if (kept && !z.kept) return
     // X29: a zone on layers that is not copper, against the fill KiCad stored for each of its layers.
     for (const name of onlyOther ? (z.other ?? []) : []) {
       const fill = others.find((x) => x.zoneId === z.id && x.layer === name)
@@ -176,7 +181,9 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
       // KiCad does not cut a fill to the board (a pour drawn past the edge leaves copper outside it, which no fabrication file has), so the stored
       // copper is cut to the board before it is compared: the editor's is inside it by construction.
       const onBoard = boardLoops(project.board)
-      const theirs = withPads(Clipper.intersect(storedCopper(f, name), onBoard, FillRule.NonZero))
+      // A kept fill is the file's as it is, past the edge too (KiCad plots it so), so the file's copper is not cut to the board when the kept fills are what is compared.
+      // (and by the importer's reading of the pen flag, which knows that a file of 2025 or later with no flag is not drawn with one)
+      const theirs = withPads(kept ? storedCopper(f, name, !!z.kept?.stroked) : Clipper.intersect(storedCopper(f, name), onBoard, FillRule.NonZero))
       const fill = analysis.zoneFills.find((x) => x.zoneId === z.id && x.layer === layer)
       const ours: Paths64 = withPads(
         Clipper.union(

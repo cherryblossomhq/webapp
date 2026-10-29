@@ -187,20 +187,25 @@ export function keptContext(project: Project, copper: CopperItem[], netOf: (i: n
   }
 }
 
-const strokedCache = new WeakMap<object, Map<string, FillPolygon[]>>()
+const regionCache = new WeakMap<object, Map<string, FillPolygon[]>>()
 
-/** A kept fill's copper on one layer as the editor's polygons: KiCad's rings as they are, or grown by half the minimum width for a fill KiCad drew with a pen that wide. */
+/**
+ * A kept fill's copper on one layer as the editor's polygons: the regions the file's rings make by the even-odd rule (a ring inside another is a hole in it, however the file wrote
+ * it: KiCad 6 and later join a hole to its outline by a bridge in one ring, KiCad 5 and earlier wrote the hole as a ring of its own), grown by half the minimum width for a fill KiCad
+ * drew with a pen that wide. Made once per kept fill; the export writes the rings, not these.
+ */
 function polygonsOf(zone: Zone, minWidth: number, layer: CopperLayer): FillPolygon[] {
   const kept = zone.kept!
   const on = kept.layers.find((l) => l.layer === layer)
   if (!on) return []
-  if (!kept.stroked || !(minWidth > 0)) return on.rings.map((ring) => [ring])
-  let cache = strokedCache.get(kept)
-  if (!cache) strokedCache.set(kept, (cache = new Map()))
-  const key = `${layer}|${minWidth}`
+  const grow = kept.stroked && minWidth > 0 ? minWidth / 2 : 0
+  let cache = regionCache.get(kept)
+  if (!cache) regionCache.set(kept, (cache = new Map()))
+  const key = `${layer}|${grow}`
   let hit = cache.get(key)
   if (!hit) {
-    hit = polygonKit.regions(polygonKit.inflate(polygonKit.union(on.rings.map((r) => polygonKit.path(r))), minWidth / 2))
+    const joined = polygonKit.unionEvenOdd(on.rings.map((r) => polygonKit.path(r)))
+    hit = polygonKit.regions(grow ? polygonKit.inflate(joined, grow) : joined)
     cache.set(key, hit)
   }
   return hit

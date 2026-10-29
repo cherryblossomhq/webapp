@@ -25,6 +25,12 @@ const BOARD_LANES_GROWTH = 1373
  * on, not only read. The budget below was raised by exactly this and no more.
  */
 const SHEET_TOOLS_GROWTH = 5373
+/**
+ * What `create_part`'s `land` added, in bytes: a land pad by pad (number, place, shape, size, drill, slot, paste and mask) or a KiCad
+ * footprint's text, for a package no footprint string draws, which an assistant over MCP had no way to describe (a Phoenix 1777558's
+ * offset middle pin). The schema's descriptions are cut to a few words each; the budget below was raised by exactly this.
+ */
+const DRAWN_LAND_GROWTH = 2178
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -58,6 +64,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH).toBeLessThan(2100)
   })
 })

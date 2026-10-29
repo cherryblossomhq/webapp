@@ -107,6 +107,9 @@ function toPad(e: CjElement): PadDef | null {
 /** Projects' own land patterns (`Project.footprints`), by name. */
 const projectFootprints = new Map<string, FootprintDef>()
 
+/** Whether a name is a project's own land pattern (registered), rather than a library or footprinter one. */
+export const isProjectFootprint = (name: string) => projectFootprints.has(name)
+
 /** Make a project's own land patterns resolve by name, as `registerProjectParts` does its parts. */
 export function registerProjectFootprints(project: Pick<Project, "footprints">) {
   for (const def of project.footprints ?? []) {
@@ -188,6 +191,82 @@ export function getFootprint(name: string): FootprintDef {
   const def: FootprintDef = { name, pads, silk, courtyard }
   cache.set(name, def)
   return def
+}
+
+// ---------- options the footprinter reads past ----------
+//
+// The footprinter takes any `_option` and drops the ones its family has no use for, without a word:
+// `pinrow3_p6.35mm_zigzag9mm_id1.3mm_od2.8mm` draws three pads in a row, which an assistant that
+// asked for a staggered connector found only by looking at the board. These find such options.
+
+/** What every family reads, beside its own parameters. */
+const COMMON_OPTIONS = new Set(["fn", "string", "num_pins", "norefdes", "invert", "faceup", "nosilkscreen", "rounded", "pin1location", "cathodepin", "anodepin", "origin"])
+/** Families whose parameters come back as given rather than as read, with what they do read (`passive_def`). */
+const PASSIVE_FAMILIES = new Set(["res", "cap", "led", "diode"])
+const PASSIVE_OPTIONS = new Set(["tht", "p", "pw", "ph", "metric", "imperial", "w", "h", "cyw", "cyh", "nonpolarized", "textbottom", "array", "x"])
+
+/** The parameter a token of a footprinter string sets, as the footprinter splits it; null for a token it drops. */
+function optionKey(token: string): string | null {
+  if (/^pin1location\(.*\)$/i.test(token)) return "pin1location"
+  const m = token.match(/((?:(?:p\d+|pin1)[a-zA-Z]+(?=[(\d.+\-?]))|[a-zA-Z]+)([(\d.+\-?].*)?/)
+  if (!m?.[1] || m[2]?.includes("?")) return null
+  return m[1].toLowerCase()
+}
+
+/** A string's copper, to tell whether a token changed it; null when it draws nothing. */
+function copperOf(name: string): string | null {
+  try {
+    const cj = fp.string(name).circuitJson() as unknown as CjElement[]
+    const copper = cj.filter((e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole" || e.type === "pcb_hole")
+    return copper.length ? JSON.stringify(copper) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The options of a footprinter string that the footprinter ignores (a parameter its family doesn't
+ * take, or a token it can't read, that leaves the copper as it would be without it), and the sizes
+ * the family does take. A pin count after the family that the family has anyway (`to220_3`) is not
+ * ignored. Nothing for a library or project land, nor for a name that draws nothing (that is
+ * `isValidFootprint`'s to refuse).
+ */
+export function footprintOptions(name: string): { ignored: string[]; takes: string[] } {
+  const none = { ignored: [], takes: [] }
+  const s = name.trim()
+  if (!s || libraryFootprint(s) || projectFootprints.has(s)) return none
+  let params: Record<string, unknown>
+  let read: Record<string, unknown>
+  try {
+    const built = fp.string(s)
+    params = built.params()
+    read = built.json() as unknown as Record<string, unknown>
+  } catch {
+    return none
+  }
+  const copper = copperOf(s)
+  if (!copper) return none
+  const family = String(params.fn)
+  const passive = PASSIVE_FAMILIES.has(family)
+  const known = (key: string) => COMMON_OPTIONS.has(key) || key === family || (passive ? PASSIVE_OPTIONS.has(key) : key in read)
+  const tokens = s.split(/_(?!metric)/)
+  const ignored: string[] = []
+  tokens.forEach((token, i) => {
+    if (i === 0) return
+    const key = optionKey(token)
+    if (key && known(key)) return
+    // A parameter spelled other than it is read (`smtpad_circle_d1`), or a pin count the family reads from the string (`sot23_5`), changes the copper.
+    if (copperOf([...tokens.slice(0, i), ...tokens.slice(i + 1)].join("_")) !== copper) return
+    if (i === 1 && /^\d+$/.test(token) && Number(token) === (JSON.parse(copper) as unknown[]).length) return
+    ignored.push(token)
+  })
+  // The sizes it takes, which is what a misspelt option usually meant: its parameters that are numbers or lengths.
+  const takes = passive
+    ? ["p", "pw", "ph", "w", "h"]
+    : Object.entries(read)
+        .filter(([k, v]) => !COMMON_OPTIONS.has(k) && k !== family && !/silkscreen|offset/.test(k) && (typeof v === "number" || (typeof v === "string" && /^-?[\d.]+(mm|mil|in)?$/.test(v))))
+        .map(([k]) => k)
+  return { ignored, takes }
 }
 
 export function isValidFootprint(name: string): boolean {

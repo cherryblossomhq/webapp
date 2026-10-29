@@ -8,7 +8,7 @@ import { parseSymbols, resolveExtends, type KicadPin, type RawSymbol } from "./k
 import { defaultModelScale, kicadModel, modelFormatOf } from "./models3d"
 import { supplierFootprint, supplierPins } from "./supplier/build"
 import { KICAD_MODEL_ID } from "./supplier/kicadModel"
-import type { CustomPartSpec, Model3D, PartCategory } from "./types"
+import type { CustomPartSpec, FootprintDef, Model3D, PartCategory } from "./types"
 
 // A user's own KiCad files as project parts: a symbol library (`.kicad_sym`), the footprints its
 // symbols sit on (`.kicad_mod`) and the 3D model files those name. It is the converter the parts
@@ -254,6 +254,18 @@ function buildPart(symbol: RawSymbol, library: string, fp: Footprint & { result:
   if (!modelFile && onlyPart && models.length === 1) modelFile = { name: models[0], placement: null }
   const model = modelFile ? null : (fp.models.map(libraryModel).find(Boolean) ?? null)
   return { draft, land, model, modelFile }
+}
+
+/**
+ * One footprint file's land alone, as a project land pattern named like an imported one: for a part
+ * whose pins come from elsewhere (create_part's `land.kicad_mod`).
+ */
+export function kicadFootprintLand(text: string): { land: FootprintDef; name: string } | { problem: string } {
+  const fp = readFootprint({ name: "kicad_mod", text })
+  if ("problem" in fp) return fp
+  if (!fp.result.ok) return { problem: `${fp.name}: ${fp.result.reason}.` }
+  const land = supplierFootprint({ land: fp.result.land, package: fp.name, lcsc: fileLandKey(fp.name) })
+  return land ? { land, name: fp.name } : { problem: `${fp.name} has no pads.` }
 }
 
 /**

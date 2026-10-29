@@ -7,14 +7,16 @@ import {
   customPartProblems,
   DEFAULT_REF_PREFIX,
 } from "../model/customParts"
+import { drawnLand, type DrawnLandInput } from "../model/drawnLand"
 import { registerProjectFootprints } from "../model/footprints"
 import { draftFromIndexPart } from "../model/indexPart"
+import { kicadFootprintLand } from "../model/kicadImport"
 import { registerPart } from "../model/library"
 import { schematicEditProblems } from "../model/merges"
 import { setModel, modelAssignment } from "../model/models3d"
-import { landForSupplierPart, supplierLandPads, supplierPins } from "../model/supplier/build"
+import { landForSupplierPart, landPads, supplierLandPads, supplierPins } from "../model/supplier/build"
 import { supplierModelOn } from "../model/supplier/model"
-import { footprintNameProblem } from "../model/supplier/footprintGuard"
+import { DRAWN_LAND_ADVICE, footprintNameProblem, footprintOptionProblem } from "../model/supplier/footprintGuard"
 import { describeLand, summarizeLand } from "../model/supplier/land"
 import { comparePins, pinMapText } from "../model/supplier/pinmap"
 import { needsCheck } from "../model/partChecks"
@@ -25,7 +27,7 @@ import { getConnectivity } from "../store/analysis"
 import { resolvePartName } from "./partLookup"
 import { supplierVerdict, type PartCheckResult } from "./supplierVerdict"
 import { lookupFailure, type SupplierPartsSource } from "./supplierParts"
-import { fail, ok, pinList, stringProps, type ToolContext, type ToolInput, type ToolSpec } from "./toolKit"
+import { fail, ok, pinList, stringProps, type JsonSchema, type ToolContext, type ToolInput, type ToolSpec } from "./toolKit"
 
 // The copilot's part tools: find a part at a supplier, read its data, build a project part from
 // it, and check the parts a project already has. Production measured why (October 2026): every
@@ -260,6 +262,75 @@ const PIN_SIDES: PinSide[] = ["left", "right", "top", "bottom"]
 
 type DrawnPinInput = { number: string; name: string; kind?: string; side?: PinSide }
 
+const mmField = (description?: string): JsonSchema => ({ type: "number", ...(description && { description }) })
+
+/** create_part's `land`: a land pattern pad by pad, or a KiCad footprint file's text. Unknown fields are refused, not dropped. */
+const LAND_SCHEMA: JsonSchema = {
+  type: "object",
+  description:
+    "Instead of footprint: the land pad by pad, or kicad_mod alone. Millimetres seen from the top, x right, y up (KiCad's y points down; a bottom view is mirrored); any origin.",
+  additionalProperties: false,
+  properties: {
+    pads: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["x", "y"],
+        properties: {
+          number: { type: "string", description: "Its pin; none for a pad that is no pin" },
+          x: mmField(),
+          y: mmField(),
+          shape: { type: "string", enum: ["rect", "roundrect", "circle", "oval"] },
+          w: mmField(),
+          h: mmField(),
+          d: mmField("A circle's diameter"),
+          drill: mmField("Hole diameter (a slot's width): through-hole"),
+          slot_length: mmField("Slot length, along the pad's longer side"),
+          plated: { type: "boolean", description: "false: a bare mounting hole, no number" },
+          rotation: mmField("Degrees counter-clockwise"),
+          corner_ratio: mmField("roundrect, to 0.5; default 0.25"),
+          paste: { type: "boolean", description: "false: no paste" },
+          paste_margin: mmField(),
+          paste_ratio: mmField("Negative shrinks, e.g. -0.3 on a thermal pad"),
+          mask_margin: mmField(),
+        },
+      },
+    },
+    body: {
+      type: "object",
+      description: "Body outline, two opposite corners",
+      additionalProperties: false,
+      required: ["x1", "y1", "x2", "y2"],
+      properties: { x1: mmField(), y1: mmField(), x2: mmField(), y2: mmField() },
+    },
+    courtyard_margin: mmField("Default 0.25"),
+    package: { type: "string", description: "e.g. TO-220-3, for the 3D body" },
+    kicad_mod: { type: "string", description: "A .kicad_mod file's text, e.g. a vendor's download the user gave you" },
+  },
+}
+
+/** A land the call gave whole (`land`), registered so its name resolves; null when it gave none. */
+function landOf(input: ToolInput, partName: string): { land: FootprintDef; from: string } | { problem: string } | null {
+  if (input.land === undefined) return null
+  const raw = input.land as DrawnLandInput & { kicad_mod?: string }
+  if (typeof input.footprint === "string" && input.footprint.trim()) return { problem: "Pass footprint or land, not both." }
+  let got: { land: FootprintDef; from: string }
+  if (raw.kicad_mod !== undefined) {
+    if (raw.pads || raw.body || raw.courtyard_margin !== undefined || raw.package) return { problem: "land.kicad_mod is a whole land: pass it alone, or pads without it." }
+    const read = kicadFootprintLand(raw.kicad_mod)
+    if ("problem" in read) return { problem: `Can't read land.kicad_mod: ${read.problem}` }
+    got = { land: read.land, from: `the KiCad footprint ${read.name}` }
+  } else {
+    const drawn = drawnLand(raw, partName)
+    if ("problem" in drawn) return { problem: `Can't draw the land: ${drawn.problem}.` }
+    got = { land: drawn.land, from: "the pads you gave" }
+  }
+  registerProjectFootprints({ footprints: [got.land] })
+  return got
+}
+
 type CreatePrepared =
   | {
       kind: "supplier"
@@ -371,7 +442,8 @@ Build it from supplier data:
 
 From memory (no supplier record):
 - pins: every pin, numbered as on the datasheet, which is also the footprint's pad numbering. Unused pins are listed too (name NC, kind nc). An exposed pad is a pin numbered one past the last lead (17 on a 16-lead QFN), usually GND. Supplies kind power and grounds kind ground sit on top and bottom of the symbol; inputs go left and outputs right, or set side.
-- footprint, with the package's real pitch and size: soic8, soic16 (1.27 mm); tssop8_p0.65mm, tssop20_p0.65mm, ssop24_p0.65mm (0.65 mm); vssop8 (0.65 mm), vssop10 (0.5 mm) for MSOP; sot23, sot23_5, sot23_6, sot563 (1.6 x 1.2 mm, 0.5 mm pitch), sot363, sot223, sot89; qfn16_w4_h4_p0.65mm_thermalpad and dfn8_w2.5_h2.5_p0.5mm_pl0.5mm_pw0.25mm (only approximations: prefer the supplier's land); lqfp48, tqfp32_p0.8mm, to220_3, to92, sod123, sod323, sma, dip8, pinrow4 (2.54 mm header), pinrow2_p5.08mm (terminal block), jst_ph_4, hc49; chips 0201, 0402, 0603, 0805, 1206. Refused because they draw another land: dfn8 (a SOIC land), ssopN (1.27 mm), tssopN (0.5 mm), msop8 and msop10 (second row numbered backwards), qfnN and sonN with no size. Pads that share a pin, like a SOT-223 tab, are mapped with pad_alias.
+- footprint, with the package's real pitch and size: soic8, soic16 (1.27 mm); tssop8_p0.65mm, tssop20_p0.65mm, ssop24_p0.65mm (0.65 mm); vssop8 (0.65 mm), vssop10 (0.5 mm) for MSOP; sot23, sot23_5, sot23_6, sot563 (1.6 x 1.2 mm, 0.5 mm pitch), sot363, sot223, sot89; qfn16_w4_h4_p0.65mm_thermalpad and dfn8_w2.5_p0.5mm_pl0.5mm_pw0.25mm (only approximations: prefer the supplier's land); lqfp48, tqfp32_p0.8mm, to220_3, to92, sod123, sod323, sma, dip8, pinrow4 (2.54 mm header), pinrow2_p5.08mm (terminal block), jst_ph_4, hc49; chips 0201, 0402, 0603, 0805, 1206. Refused because they draw another land: dfn8 (a SOIC land), ssopN (1.27 mm), tssopN (0.5 mm), msop8 and msop10 (second row numbered backwards), qfnN and sonN with no size. Pads that share a pin, like a SOT-223 tab, are mapped with pad_alias.
+- land, instead of footprint, when no footprint string draws it (a staggered or offset pin, an odd connector, a module): each pad's number, place, shape and size, and drill for through-hole, off the datasheet's drawing; pads with one number are one pin. Or land.kicad_mod with a KiCad footprint file's text. The result describes the land: compare it with the datasheet.
 - symbol: leave it out for ICs and modules (a box). For discretes pick a symbol; polarized ones need pins named A/K, +/-, B/C/E or G/D/S.`,
   input_schema: {
     type: "object",
@@ -382,6 +454,7 @@ From memory (no supplier record):
       description: { type: "string", description: "One line: what it is and its key specs" },
       category: { type: "string", enum: CUSTOM_CATEGORIES },
       footprint: { type: "string", description: "Only from memory, or to check yours against the supplier's land" },
+      land: LAND_SCHEMA,
       pins: {
         type: "array",
         minItems: 1,
@@ -473,11 +546,11 @@ From memory (no supplier record):
       return { kind: "database", part: stored.part, note: `${why}${stored.note}`, asName: stored.wildcard ? name : undefined, ...(pending && { check: pending }) }
     }
     if (stored.kind === "contradicted") return { kind: "refused", text: `Can't make ${name} as given. ${stored.text} Leave your pins out to build it from the parts database.` }
-    const complete = !!pins && typeof input.footprint === "string" && !!input.footprint.trim()
+    const complete = !!pins && ((typeof input.footprint === "string" && !!input.footprint.trim()) || input.land !== undefined)
     // Stored parts that may be another package of it are a choice to make, not memory to fall back on.
     if (stored.kind === "offered" && !(input.from_memory === true && complete)) {
       const lead = found.kind === "failed" ? `The supplier lookup failed (${found.text.replace(/\.$/, "")}). ` : found.kind === "different" ? `${found.text} ` : ""
-      return { kind: "refused", text: `${lead}${stored.text} If none of them is the part, pass from_memory true with pins and footprint.` }
+      return { kind: "refused", text: `${lead}${stored.text} If none of them is the part, pass from_memory true with pins and footprint (or land).` }
     }
     // A lookup that failed is not an answer: the part is made, plainly unverified, with a re-check pending.
     if (found.kind === "failed") return { kind: "memory", note: `the supplier lookup failed (${found.text.replace(/\.$/, "")})`, pending: found.text }
@@ -503,7 +576,14 @@ From memory (no supplier record):
       DEFAULT_REF_PREFIX[category]
     const keywords = Array.isArray(input.keywords) ? (input.keywords as string[]).map((k) => k.trim()).filter(Boolean) : []
     const drawn = drawnPinsOf(input)
-    const footprintIn = typeof input.footprint === "string" && input.footprint.trim() ? input.footprint.trim() : null
+    const footprintString = typeof input.footprint === "string" && input.footprint.trim() ? input.footprint.trim() : null
+    const options = footprintString && footprintOptionProblem(footprintString)
+    if (options) return fail(project, `Can't make ${String(input.name ?? "").trim() || "the part"}: ${options} ${DRAWN_LAND_ADVICE}`)
+    const given = landOf(input, String(input.name || props.mpn || input.lcsc || "").trim())
+    if (given && "problem" in given) return fail(project, given.problem)
+    // A land given whole is checked and used as a footprint string is, by the name it was registered under.
+    const footprintIn = given ? given.land.name : footprintString
+    const footprintLabel = given ? `the land from ${given.from}` : footprintIn
 
     let name = String(input.name ?? "").trim()
     let description = String(input.description ?? "").trim()
@@ -522,7 +602,7 @@ From memory (no supplier record):
       if ("error" in built) return fail(project, `Can't make ${part.mpn} from the parts database: ${built.error}.`)
       const d = built.draft
       // The stored land is the part's: a footprint passed with it is not used.
-      if (footprintIn && footprintIn !== d.footprint) notes.push(`The stored land was used, not ${footprintIn}.`)
+      if (footprintIn && footprintIn !== d.footprint) notes.push(`The stored land was used, not ${footprintLabel}.`)
       if (prepared.note) notes.push(prepared.note)
       if (prepared.asName && !props.mpn) props.mpn = prepared.asName
       name ||= prepared.asName ?? d.name
@@ -537,9 +617,9 @@ From memory (no supplier record):
       storedModel = built.model
     } else if (prepared?.kind === "supplier") {
       const part = prepared.part
-      check = checkAgainstSupplier({ pins: drawn, footprint: footprintIn }, part)
+      check = checkAgainstSupplier({ pins: drawn, footprint: footprintIn, ...(given && { landLabel: `The land from ${given.from}` }) }, part)
       if (check.refusals.length) {
-        return fail(project, `Can't make ${name || part.mpn} as given. ${check.refusals.join(" ")} Call create_part again with lcsc "${part.lcsc}" and without the pins or footprint that disagree, and wire it by the supplier's pin names.`)
+        return fail(project, `Can't make ${name || part.mpn} as given. ${check.refusals.join(" ")} Call create_part again with lcsc "${part.lcsc}" and without the pins, footprint or land that disagree, and wire it by the supplier's pin names.`)
       }
       notes = check.notes
       if (prepared.chosen) notes = [prepared.chosen, ...notes]
@@ -565,6 +645,7 @@ From memory (no supplier record):
       let landFrom: PartSource["land"]
       if (footprintIn) {
         footprint = footprintIn
+        land = given?.land ?? null
         landFrom = part.land ? "checked" : "memory"
         if (!part.land) {
           const named = footprintNameProblem(footprintIn)
@@ -572,7 +653,7 @@ From memory (no supplier record):
         }
       } else {
         const chosen = landForSupplierPart(part)
-        if (!chosen) return fail(project, `LCSC ${part.lcsc} has no land pattern. Pass footprint: a footprinter string for ${part.package ?? "its package"}.`)
+        if (!chosen) return fail(project, `LCSC ${part.lcsc} has no land pattern. Pass footprint, a footprinter string for ${part.package ?? "its package"}, or land with its pads from the datasheet.`)
         footprint = chosen.footprint
         land = chosen.def
         landFrom = chosen.matched ? "checked" : "supplier"
@@ -603,12 +684,13 @@ From memory (no supplier record):
       const note = prepared?.kind === "memory" ? prepared.note : "no supplier lookup was made"
       if (!name) return fail(project, "name is required when lcsc isn't given")
       if (!drawn || !footprintIn) {
-        return fail(project, `No supplier record to build ${name} from (${note}). Pass pins and footprint from the datasheet; the part will be marked unverified, so tell the user.`)
+        return fail(project, `No supplier record to build ${name} from (${note}). Pass pins and footprint (or land, pad by pad) from the datasheet; the part will be marked unverified, so tell the user.`)
       }
       const named = footprintNameProblem(footprintIn)
       if (named) return fail(project, `Can't make ${name}: ${named}`)
       pins = drawn.map((p) => ({ number: p.number, name: p.name, ...(p.kind && { kind: p.kind as CustomPartSpec["pins"][number]["kind"] }), ...(p.side && { side: p.side }) }))
       footprint = footprintIn
+      land = given?.land ?? null
       const pending = prepared?.kind === "memory" ? prepared.pending : undefined
       source = {
         pins: "memory",
@@ -618,6 +700,7 @@ From memory (no supplier record):
       }
     }
     if (!description) return fail(project, "description is required when lcsc isn't given")
+    if (given && land === given.land) notes.push(`Land from ${given.from}: ${describeLand(summarizeLand(landPads(land.pads)))}.`)
     if (!props.mpn && ["ICs", "Power", "Modules", "Transistors", "Diodes"].includes(category)) props.mpn = name
 
     const draft: Omit<CustomPartSpec, "id"> = {

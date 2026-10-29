@@ -19,7 +19,11 @@ export interface SupplierCheck {
   notes: string[]
 }
 
-export function checkAgainstSupplier(drawn: { pins: DrawnPin[] | null; footprint: string | null }, part: SupplierPart): SupplierCheck {
+/**
+ * `landLabel` names a land given whole (create_part's `land`) in the sentences, where its registered
+ * name would mean nothing to whoever gave it.
+ */
+export function checkAgainstSupplier(drawn: { pins: DrawnPin[] | null; footprint: string | null; landLabel?: string }, part: SupplierPart): SupplierCheck {
   const refusals: string[] = []
   const briefs: string[] = []
   const notes: string[] = []
@@ -65,11 +69,12 @@ export function checkAgainstSupplier(drawn: { pins: DrawnPin[] | null; footprint
     if (vendor.length && isValidFootprint(drawn.footprint)) {
       land = compareLands(landPads(getFootprint(drawn.footprint).pads), vendor)
       if (!land.ok) {
+        const what = drawn.landLabel ?? `Footprint ${drawn.footprint}`
         refusals.push(
-          `Footprint ${drawn.footprint} doesn't fit LCSC ${part.lcsc}'s ${part.package ?? "package"}: ${land.problems.join(" ")} ` +
-            `Leave footprint out to use the supplier's land (${describeLand(land.vendor)}).`,
+          `${what} doesn't fit LCSC ${part.lcsc}'s ${part.package ?? "package"}: ${land.problems.join(" ")} ` +
+            `Leave ${drawn.landLabel ? "land" : "footprint"} out to use the supplier's land (${describeLand(land.vendor)}).`,
         )
-        briefs.push(`Footprint ${drawn.footprint} doesn't fit its land: ${land.brief}.`)
+        briefs.push(`${what} doesn't fit its land: ${land.brief}.`)
       }
     } else if (!vendor.length) {
       const named = footprintNameProblem(drawn.footprint)

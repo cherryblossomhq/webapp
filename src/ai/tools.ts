@@ -4,6 +4,7 @@ import { boxesOverlap, round, samePoint, snap } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { pinKey } from "../model/connectivity"
 import { isValidFootprint } from "../model/footprints"
+import { footprintOptionProblem } from "../model/supplier/footprintGuard"
 import { labelTextFor } from "../model/netNames"
 import { componentFootprint, hasUnits, isPhysical, isSchematicPart, powerNetName, schematicBounds, schematicPins, unitGroup, unitOwners, valueText } from "../model/instances"
 import { uid } from "../lib/id"
@@ -546,6 +547,9 @@ const searchPartsTool: ToolSpec = {
   },
 }
 
+/** What to do about a footprint string whose options the footprinter ignores, where the part is already made. */
+const OWN_LAND_ADVICE = "Use only the options it takes; for a land no footprint string draws, make the part with create_part and land, pad by pad."
+
 const MIRRORS = ["x", "y", "none"]
 
 /** `mirror` as the model it is: "x", "y", or none. */
@@ -609,6 +613,8 @@ const addComponentTool: ToolSpec = {
     if (footprint && !part.footprints.includes(footprint) && !isValidFootprint(footprint)) {
       return fail(project, `Unknown footprint "${footprint}". ${part.name} supports: ${part.footprints.join(", ") || "none"}`)
     }
+    const ignored = footprint && !part.footprints.includes(footprint) && footprintOptionProblem(footprint)
+    if (ignored) return fail(project, `${ignored} ${OWN_LAND_ADVICE}`)
     const units = unitCount(part)
     const unit = typeof input.unit === "number" ? input.unit : 1
     if (unit < 1 || unit > units) return fail(project, `${part.name} has ${units} unit${units === 1 ? "" : "s"}, so there is no unit ${unit}`)
@@ -788,6 +794,8 @@ const updateComponentTool: ToolSpec = {
       if (!part?.footprints.includes(fp) && !isValidFootprint(fp)) {
         return fail(project, `Unknown footprint "${fp}". ${part?.name} supports: ${part?.footprints.join(", ")}`)
       }
+      const ignored = !part?.footprints.includes(fp) && footprintOptionProblem(fp)
+      if (ignored) return fail(project, `${ignored} ${OWN_LAND_ADVICE}`)
       patch.footprint = fp
       changes.push(`footprint ${fp}`)
     }
@@ -2007,6 +2015,9 @@ export function validateInput(schema: JsonSchema, value: unknown, path = "input"
         } else if (typeof schema.additionalProperties === "object") {
           const err = validateInput(schema.additionalProperties, v, `${path}.${key}`)
           if (err) return err
+        } else if (schema.additionalProperties === false) {
+          // Refused rather than dropped: a misspelt field (`hole` for `drill`) would otherwise draw something else without a word.
+          return `${path}.${key} is not a field here; use ${Object.keys(schema.properties ?? {}).join(", ")}`
         }
       }
       return null

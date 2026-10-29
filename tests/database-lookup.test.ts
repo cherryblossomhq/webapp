@@ -219,7 +219,7 @@ describe("create_part with the parts database", () => {
     expect(out.isError).toBe(true)
     expect(out.project.parts).toBeUndefined()
     expect(out.result).toContain("database_id 11: ATtiny85-20P")
-    expect(out.result).toContain("If none of them is the part, pass from_memory true with pins and footprint.")
+    expect(out.result).toContain("If none of them is the part, pass from_memory true with pins and footprint (or land).")
   })
 
   it("builds the exact stored part over a shorter number in the drawn package, and says the package", async () => {

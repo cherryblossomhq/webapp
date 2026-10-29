@@ -123,7 +123,7 @@ describe("the 13 production parts, against the supplier", () => {
     const source = { search: async () => Promise.reject(new Error("unused")), part: async () => noLand }
     const p = createProject("y")
     const ask = await executeTool(p, () => p, "create_part", { lcsc: "C1", category: "Power" }, { parts: source })
-    expect(ask.result).toBe("Error: LCSC C1 has no land pattern. Pass footprint: a footprinter string for SOT-563_L1.6-W1.2-P0.50-LS1.6-BR.")
+    expect(ask.result).toBe("Error: LCSC C1 has no land pattern. Pass footprint, a footprinter string for SOT-563_L1.6-W1.2-P0.50-LS1.6-BR, or land with its pads from the datasheet.")
     const made = await executeTool(p, () => p, "create_part", { lcsc: "C1", category: "Power", footprint: "sot563" }, { parts: source })
     expect(made.isError, made.result).toBe(false)
     expect(made.project.parts![0].source).toMatchObject({ pins: "supplier", land: "memory" })

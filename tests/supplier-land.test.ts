@@ -61,7 +61,7 @@ describe("comparing a footprint with the supplier's land", () => {
 describe("footprint names that draw another package", () => {
   it("refuses them with what they draw and the spelling that draws the real one", () => {
     expect(footprintNameProblem("dfn8")).toBe(
-      "dfn8 draws 8 pads, 1.27 mm pitch, rows 4.3 mm apart, 5.3 x 4.41 mm of copper. A DFN needs its body size, pitch and pad size, e.g. dfn8_w2.5_h2.5_p0.5mm_pl0.5mm_pw0.25mm; better, take the supplier's land (pass lcsc).",
+      "dfn8 draws 8 pads, 1.27 mm pitch, rows 4.3 mm apart, 5.3 x 4.41 mm of copper. A DFN needs its body size, pitch and pad size, e.g. dfn8_w2.5_p0.5mm_pl0.5mm_pw0.25mm; better, take the supplier's land (pass lcsc).",
     )
     expect(footprintNameProblem("ssop24")).toContain("draws 24 pads, 1.27 mm pitch")
     expect(footprintNameProblem("ssop24")).toContain("write ssop24_p0.65mm")
@@ -69,7 +69,7 @@ describe("footprint names that draw another package", () => {
     expect(footprintNameProblem("tssop20")).toContain("write tssop20_p0.65mm")
     expect(footprintNameProblem("msop10")).toContain("pin 6 sits opposite pin 1, where pin 10 belongs: write vssop10")
     expect(footprintNameProblem("qfn16")).toContain("give the body and pitch")
-    for (const ok of ["soic8", "tssop8_p0.65mm", "ssop24_p0.65mm", "vssop10", "sot563", "qfn16_w4_h4_p0.65mm", "0201", "dfn8_w2.5_h2.5_p0.5mm_pl0.5mm_pw0.25mm"]) {
+    for (const ok of ["soic8", "tssop8_p0.65mm", "ssop24_p0.65mm", "vssop10", "sot563", "qfn16_w4_h4_p0.65mm", "0201", "dfn8_w2.5_p0.5mm_pl0.5mm_pw0.25mm"]) {
       expect(footprintNameProblem(ok), ok).toBeNull()
     }
   })

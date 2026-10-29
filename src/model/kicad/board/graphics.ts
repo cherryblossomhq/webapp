@@ -256,7 +256,11 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
 /** A `target` mark as shapes: a circle, and a cross or an X through it, as KiCad plots one (`PlotPcbTarget`). */
 export function convertTarget(t: KicadBoard["targets"][number], cx: GraphicsContext): BoardShape[] {
   const r = resolveLayer(cx.board, t.layer)
-  if (r.kind === "edge") return []
+  // The board's outline is made of the shapes on Edge.Cuts, and a mark is no part of it: a target there has nowhere to be kept.
+  if (r.kind === "edge") {
+    cx.lose(`a target mark on ${t.layer} at (${t.at.x}, ${t.at.y}) (an alignment mark drawn on the board outline's layer, which the editor reads as the outline)`)
+    return []
+  }
   if (r.kind === "unknown" || r.kind === "inner") {
     cx.lose(r.kind === "inner" ? `a target on ${t.layer}, a copper layer the board's layer table does not list` : `a target on the layer "${t.layer}", which is not one of KiCad's`)
     return []

@@ -1070,6 +1070,7 @@ function buildPass(
     })
     const out: SheetSymbol = {
       id,
+      ...(s.uuid ? { uuid: s.uuid } : {}),
       sheet: parent,
       child,
       x: X(s.at.x),

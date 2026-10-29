@@ -44,8 +44,15 @@ const STANDARD_USER_NAMES: Record<string, string> = {
   Margin: "Margin",
 }
 
+/** KiCad's fixed layers that the board's layer table does not list (an old board lists only the layers it uses): the export lists them all, so they are on. */
+export function unlistedStandardLayers(board: KicadBoard): string[] {
+  if (!board.layers.length) return []
+  const listed = new Set(board.layers.map((l) => TRANSLATED_LAYER_NAMES[l.name] ?? l.name))
+  return Object.keys(STANDARD_USER_NAMES).filter((n) => !listed.has(n))
+}
+
 /** The first file version that numbers the layers as the files the export writes (KiCad 9's). */
-const WRITTEN_LAYER_NUMBERING = 20241229
+export const WRITTEN_LAYER_NUMBERING = 20241229
 
 const point = (node: List | undefined) => (node && node.length >= 3 ? { x: numAt(node, 1), y: numAt(node, 2) } : undefined)
 
@@ -65,6 +72,12 @@ export function boardCarry(board: KicadBoard): KicadCarry | undefined {
     const same = board.version !== null && board.version >= WRITTEN_LAYER_NUMBERING
     carry.plot = nodeText(same ? plot : plot.filter((n) => !(Array.isArray(n) && (n[0] === "layerselection" || n[0] === "plot_on_all_layers_selection"))))
   }
+  // The nets whose names have a slash: what is a sheet's path and what is the label's own text cannot be told from the name the editor holds, so the file's own spelling is kept.
+  const names: Record<string, string> = {}
+  const seen = new Map<string, number>()
+  for (const n of board.nets) seen.set(n.name, (seen.get(n.name) ?? 0) + 1)
+  for (const n of board.nets) if (n.name.includes("/") && seen.get(n.name) === 1) names[n.name] = n.raw
+  if (Object.keys(names).length) carry.netNames = names
   // The width the outline was drawn with: the one most of the Edge.Cuts lines have.
   const widths = new Map<number, number>()
   for (const s of board.shapes) {
@@ -75,7 +88,9 @@ export function boardCarry(board: KicadBoard): KicadCarry | undefined {
   if (common !== undefined && Math.abs(common - 0.05) > 1e-9) carry.edgeWidth = common
   // The layer table is kept when it says more than the writer's own: a name a person gave, or a layer the writer has no row for (`User.1`...).
   const copperName = (name: string) => /^(F|B|In\d+)\.Cu$/.test(name)
-  const unusual = board.layers.some((l) => (!copperName(l.name) && l.userName !== undefined && STANDARD_USER_NAMES[l.name] !== l.userName) || !(l.name in STANDARD_USER_NAMES || copperName(l.name)))
-  if (unusual) carry.layers = board.layers.map((l) => ({ n: l.ordinal, name: l.name, type: l.type, ...(l.userName !== undefined ? { user: l.userName } : {}) }))
+  // (An old board's layers in Italian or Polish (`Kleju_Gorna`) are KiCad's own layers read under their name: KiCad keeps the name as the layer's own.)
+  const canonical = (l: { name: string; userName?: string }) => ({ name: TRANSLATED_LAYER_NAMES[l.name] ?? l.name, userName: l.userName ?? (TRANSLATED_LAYER_NAMES[l.name] ? l.name : undefined) })
+  const unusual = board.layers.map((l) => ({ ...l, ...canonical(l) })).some((l) => (!copperName(l.name) && l.userName !== undefined && STANDARD_USER_NAMES[l.name] !== l.userName) || !(l.name in STANDARD_USER_NAMES || copperName(l.name)))
+  if (unusual) carry.layers = board.layers.map((l) => ({ ordinal: l.ordinal, type: l.type, ...canonical(l) })).map((l) => ({ n: l.ordinal, name: l.name, type: l.type, ...(l.userName !== undefined ? { user: l.userName } : {}) }))
   return Object.keys(carry).length ? carry : undefined
 }

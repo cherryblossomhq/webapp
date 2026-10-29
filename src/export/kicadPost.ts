@@ -73,23 +73,26 @@ export function symbolFields(c: ComponentInstance, footprintIds: Map<string, str
   const part = findPart(c.partId)
   const props = c.props
   // A field a KiCad symbol had is named as it was (`Datasheet`, `Description`); the editor's own parts name theirs in lower case.
+  const keyOf = (name: string) => Object.keys(props).find((k) => k.toLowerCase() === name)
   const named = (name: string) => {
-    const key = Object.keys(props).find((k) => k.toLowerCase() === name)
+    const key = keyOf(name)
     return key === undefined ? undefined : props[key]
   }
   const extra: [string, string][] = []
   const mpn = named("mpn") ?? part?.mpn
-  if (mpn) extra.push(["MPN", mpn])
-  if (named("manufacturer")) extra.push(["Manufacturer", named("manufacturer")!])
-  if (named("lcsc")) extra.push(["LCSC", named("lcsc")!])
+  // (A field a KiCad symbol had keeps its own spelling: `MANUFACTURER`, `Mpn`.)
+  if (mpn) extra.push([fromKicad ? (keyOf("mpn") ?? "MPN") : "MPN", mpn])
+  if (named("manufacturer")) extra.push([fromKicad ? keyOf("manufacturer")! : "Manufacturer", named("manufacturer")!])
+  if (named("lcsc")) extra.push([fromKicad ? keyOf("lcsc")! : "LCSC", named("lcsc")!])
   for (const [key, value] of Object.entries(props)) {
-    if (!value || HANDLED_PROPS.has(key.toLowerCase()) || key === part?.valueProp || RESERVED.has(key.toLowerCase())) continue
+    // (A field a KiCad symbol had empty stays: the file said it was there.)
+    if ((!value && !fromKicad) || HANDLED_PROPS.has(key.toLowerCase()) || key === part?.valueProp || RESERVED.has(key.toLowerCase())) continue
     // A field of a KiCad symbol keeps the name it had; the editor's own properties are capitalised.
     extra.push([fromKicad ? key : capitalise(key), value])
   }
   // A project that came from KiCad says what the symbol's own footprint field said, not the board's footprint (an empty field stays empty).
   const footprint = fromKicad ? named("footprint") : footprintIds.get(c.ref)
-  if (fromKicad) return { footprint: footprint ?? "", value: named("value") ?? "", datasheet: named("datasheet") ?? "", description: named("description") ?? "", extra, exact: true }
+  if (fromKicad) return { footprint: footprint ?? "", value: named("value") ?? "", datasheet: named("datasheet") ?? "", description: named("description"), extra, exact: true }
   return { footprint, datasheet: named("datasheet"), description: named("description") ?? part?.description, extra }
 }
 
@@ -135,6 +138,8 @@ export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>):
     set("Value", f.value)
     set("Datasheet", f.datasheet)
     set("Description", f.description)
+    // A symbol that had no Description field has none: KiCad then takes the library symbol's (a field written empty would make the footprint's description empty too).
+    if (f.exact && f.description === undefined) out = out.replace(/\n {4}\(property "Description" [\s\S]*?\n {4}\)(?=\n)/, "")
     const at = out.match(/\(property "Datasheet"[\s\S]*?\(at (\S+) (\S+) /)
     const ids = [...out.matchAll(/^ {6}\(id (\d+)\)/gm)].map((m) => Number(m[1]))
     let next = ids.length ? Math.max(...ids) + 1 : 5

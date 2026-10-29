@@ -15,7 +15,7 @@ const FP = footprint({
 })
 
 const PCB = board({
-  version: 20240108,
+  version: 20241229,
   layers: `(layers (0 "F.Cu" signal "Top") (31 "B.Cu" signal) (44 "Edge.Cuts" user) (39 "User.1" user "Notes"))`,
   setup: `(setup (pad_to_mask_clearance 0) (aux_axis_origin 5 6) (grid_origin 1 2) (pcbplotparams (layerselection 0x00010fc_ffffffff) (outputdirectory "plots/")))`,
   nets: ['(net 0 "")', '(net 1 "VPP{slash}MCLR")', '(net 2 "unconnected-(R1-Pad2)")'],

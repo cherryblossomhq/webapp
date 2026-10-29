@@ -35,7 +35,7 @@ export function uuidFrom(text: string): string {
 
 /** The uuid of the file a sheet is, and of a sheet symbol: made from their ids, so a project exported twice says the same. */
 export const sheetUuid = (project: Project, sheet: string) => uuidFrom(`sheet:${project.id}:${sheet}`)
-export const symbolUuid = (sym: SheetSymbol) => uuidFrom(`sheet-symbol:${sym.id}`)
+export const symbolUuid = (sym: SheetSymbol) => sym.uuid ?? uuidFrom(`sheet-symbol:${sym.id}`)
 
 /** KiCad's instance path of a use: the root's uuid, then the uuid of each sheet symbol down to it. */
 export function instancePath(project: Project, use: SheetUse): string {

@@ -1,3 +1,4 @@
+import { expandPinNumber } from "../model/pinNumbers"
 import type { SymbolDrawing } from "../model/types"
 
 // A symbol that came from a KiCad schematic keeps the library name it had (`Device:C`) and what its library entry said of itself (the reference prefix, the value,
@@ -20,6 +21,16 @@ function setProperty(block: string, name: string, value: string): string {
   const firstSub = block.search(/\n {6}\(symbol "/)
   const at = firstSub === -1 ? block.lastIndexOf("\n    )") : firstSub
   return `${block.slice(0, at)}\n${added}${block.slice(at)}`
+}
+
+/** Each pin named as the library entry named it (`~{RESET}`, not the editor's `RESET#`): KiCad names the net of a lone pin after it, so the name is part of the net's. */
+function restorePinNames(block: string, drawing: SymbolDrawing): string {
+  const byNumber = new Map<string, string>()
+  for (const p of drawing.pins) for (const n of expandPinNumber(p.number)) if (!byNumber.has(n)) byNumber.set(n, p.name)
+  return block.replace(/(\(name )"(?:[^"\\]|\\.)*"([\s\S]*?\(number ")((?:[^"\\]|\\.)*)"/g, (all, head: string, mid: string, num: string) => {
+    const raw = byNumber.get(num.replace(/\\(.)/g, "$1"))
+    return raw === undefined ? all : `${head}${quote(raw)}${mid}${num}"`
+  })
 }
 
 /** A property of a library symbol taken out. */
@@ -50,6 +61,7 @@ export function applyLibraryIdentity(sch: string, drawingOf: (reference: string)
     let text = block
     for (const f of drawing.fields) text = setProperty(text, f.name, f.value)
     for (const k of drawing.ki ?? []) text = setProperty(text, k.name, k.value)
+    text = restorePinNames(text, drawing)
     // the converter's own words for what the library entry did not say
     for (const n of ["ki_keywords", "ki_fp_filters"]) if (!drawing.ki?.some((k) => k.name === n)) text = removeProperty(text, n)
     // the name, here and in each unit's own symbol

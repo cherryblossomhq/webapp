@@ -380,6 +380,7 @@ function landPadPlain(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: 
   if (pad.local.thermalAngle !== undefined) out.thermalAngle = r6(pad.local.thermalAngle)
   const prop = pad.properties.map((p) => PROPERTY[p]).find(Boolean)
   if (prop) out.property = prop
+  if (pad.type === "connect") out.connector = true
   // X1 and X5: what becomes of the copper on layers nothing connects to, and the pad's own tenting of the mask (sides as the part has them: the file's front is the far side of a part on the bottom).
   const unused = padUnusedOf(pad.node)
   if (unused) out.unused = unused

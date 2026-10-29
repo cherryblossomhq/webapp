@@ -2,7 +2,7 @@ import { round, snap } from "../../../lib/geometry"
 import { uid } from "../../../lib/id"
 import { bareName, computeConnectivity, pinKey } from "../../connectivity"
 import { registerProjectParts } from "../../customParts"
-import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
+import { isSchematicPart, pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { joinFlags } from "../../partFlags"
 import { labelBox } from "../../labels"
 import { findPart, isRegistered, projectPartIds, unregisterPart } from "../../library"
@@ -460,6 +460,14 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- one project: the board's copper and lands, the schematic's parts, wires and labels ----------
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
+  // A symbol that is no power symbol but has a hidden power-input pin names its net by that pin; the export writes it as the power symbol it acts as.
+  const hiddenPowers = merged.project.components.filter((c) => {
+    const part = findPart(c.partId)
+    return !!part && !part.powerNet && !isSchematicPart(part) && schematicPins(c, part).some((p) => p.hidden && p.type === "power_in" && p.name.trim())
+  })
+  if (hiddenPowers.length) {
+    report.entries.push({ code: "hidden-power-symbol", severity: "changed", object: `${hiddenPowers.length} symbol${hiddenPowers.length > 1 ? "s" : ""} with a hidden power pin and no power flag (${[...new Set(hiddenPowers.map((c) => c.ref))].slice(0, 4).join(", ")}${hiddenPowers.length > 4 ? ", ..." : ""})`, why: "Each names its net by its hidden pin. The export writes it as a power symbol of that net, so the net and the wires keep their meaning; KiCad's own Electrical Rules Check may report the power input as not driven.", count: hiddenPowers.length })
+  }
   // The corner mounting holes the editor wrote (four marked footprints) are the board's own setting again.
   const holes = restoreMountingHoles(merged.project, merged.loose.filter((l) => isMarkedHole(l.fp)))
   if (holes.restored.size) {
@@ -630,7 +638,7 @@ function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, 
   })
   const loose = link.links.filter((l) => !l.record && !/\*/.test(l.ref) && !restored.has(board.footprints[l.footprint]))
   if (loose.length) {
-    report.entries.push({ code: "footprint-without-symbol", severity: "note", object: `${loose.length} footprint${loose.length > 1 ? "s" : ""} (${loose.slice(0, 5).map((l) => l.ref || "(no reference)").join(", ")}${loose.length > 5 ? ", ..." : ""})`, why: "No symbol in the schematic claims them. They stay parts with a footprint and no symbol: mounting holes, logos, or parts the schematic no longer has.", count: loose.length })
+    report.entries.push({ code: "footprint-without-symbol", severity: "note", object: `${loose.length} footprint${loose.length > 1 ? "s" : ""} (${loose.slice(0, 5).map((l) => l.ref || "(no reference)").join(", ")}${loose.length > 5 ? ", ..." : ""})`, why: "No symbol in the schematic claims them. They stay parts with a footprint and no symbol: mounting holes, logos, or parts the schematic no longer has. The export writes the schematic with a generated symbol for each one that is not a mounting hole, so KiCad's netlist and BOM list them and its \"Update PCB from Schematic\" finds them.", count: loose.length })
   }
   const unplaced = [...sch.byRecord].filter(([r, comp]) => !symbolFootprint.has(r) && comp.footprint === "" && r.symbol.props.some((p) => p.name === "Footprint" && p.value !== ""))
   if (unplaced.length) {
@@ -828,7 +836,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     void _symbolFlags
     // X23: the footprint's units and points come over, and what the footprint's variants say that the symbol's do not (the symbol's own word stands, as its flags do, flag by flag and field by field).
     const variants = joinOverrides(b?.variants, c.variants)
-    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath && c.inst === undefined && !hierarchical ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}), ...(b?.loneNets ? { loneNets: b.loneNets } : {}), ...(b?.modelRefs ? { modelRefs: b.modelRefs } : {}) }
+    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts.map((t) => (t.kind === "value" && t.text === undefined && b.props.value !== undefined && b.props.value !== c.props.value ? { ...t, text: b.props.value } : t)) } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath && c.inst === undefined && !hierarchical ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}), ...(b?.loneNets ? { loneNets: b.loneNets } : {}), ...(b?.modelRefs ? { modelRefs: b.modelRefs } : {}) }
   })
   if (differing.length) {
     report.entries.push({

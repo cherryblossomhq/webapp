@@ -739,6 +739,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   }
 
   // ---------- Parts: source, schematic and board ----------
+  const isVirtualSymbol = (part: PartDef, c: ComponentInstance) => !part.powerNet && part.category === "Symbols" && part.pins.length > 0 && c.ref.startsWith("#")
   const portIds = new Map<string, string>()
   const parts: { c: ComponentInstance; part: PartDef; sourceId: string; pcbId: string; schId: string; onBoard: boolean }[] = []
   const unknown: string[] = []
@@ -754,7 +755,8 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
       continue
     }
     // A part with a footprint is on the board; a KiCad symbol with none is a part of the schematic alone. The other units of a part are symbols of the part.
-    if (!isSchematicPart(part) || (part.unitOf && unitParts.has(c.id))) continue
+    // A virtual symbol of KiCad's (`PWR_FLAG`) is a symbol of the sheet with no part behind it: it is written, so the checks that count on it (a power input driven by a flag) still hold.
+    if (!(isSchematicPart(part) || isVirtualSymbol(part, c)) || (part.unitOf && unitParts.has(c.id))) continue
     const sourceId = ids.next("source_component")
     const pcbId = ids.next("pcb_component")
     const schId = ids.next("schematic_component")
@@ -1121,6 +1123,9 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   for (const c of [...project.components, ...(options.extraUnits ?? []).map((e) => e.unit)]) {
     const part = findPart(c.partId)
     if (!part) continue
+    // A part that is on the board alone (KiCad's `board_only`: a logo, a mark) has no symbol in the schematic.
+    // (A reference text with a star, `G***`, is KiCad's for a logo or a mark that no symbol stands for.)
+    if (c.flags?.boardOnly || c.texts?.some((t) => t.kind === "reference" && t.text?.includes("*"))) continue
     let own = extraBase.has(c.id) ? (partOf.get(extraBase.get(c.id)!) ?? partOf.get(owners.get(extraBase.get(c.id)!) ?? "")) : partOf.get(c.id)
     let schId = extraBase.has(c.id) ? own && ids.next("schematic_component") : own?.schId
     if (!own && part.unitOf) {
@@ -1219,9 +1224,11 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   const powerTexts: CircuitJsonExport["powerTexts"] = []
   for (const c of project.components) {
     const part = findPart(c.partId)
-    const net = powerNetName(c, part)
+    // A symbol that is not a power symbol but has a hidden power-input pin (KiCad's `VPP` with no `(power)`) is on the net of that pin's name: it is written as the power port it acts as.
+    const hiddenPower = part && !part.powerNet && !isSchematicPart(part) ? schematicPins(c, part).find((p) => p.hidden && p.type === "power_in" && p.name.trim()) : undefined
+    const net = powerNetName(c, part) ?? hiddenPower?.name.trim()
     if (!part || !net) continue
-    const pin = schematicPins(c, part)[0]
+    const pin = hiddenPower ?? schematicPins(c, part)[0]
     const netId = (project.netNames || project.scope !== undefined) && pin ? sch.pinNet.get(pinKey(c.id, pin.pin)) : sch.nets.find((n) => n.name === net)?.id
     const sourceNetId = netId ? netIds.get(netId) : undefined
     if (!pin || !sourceNetId) continue

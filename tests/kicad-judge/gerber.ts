@@ -222,9 +222,13 @@ export function parseDrill(text: string): Drill {
   return { fn, holes }
 }
 
-/** Lines of one aperture on the same infinite line that overlap or touch are one line (a trace or an outline written in pieces is the same copper). */
+/**
+ * Lines of one aperture on the same infinite line that overlap or touch are one line (a trace or an outline written in pieces is the same copper). "The same line" is within a micrometre:
+ * a file writes its numbers to a tenth of a micrometre, so the pieces of one straight track do not lie on one line to the last digit.
+ */
 export function mergeLines(prims: Prim[]): Prim[] {
-  const lines = new Map<string, { ux: number; uy: number; from: number; to: number; off: number }[]>()
+  const TOL = 0.001
+  const groups = new Map<string, { x: number; y: number; ux: number; uy: number; spans: { from: number; to: number }[] }[]>()
   const out: Prim[] = []
   for (const p of prims) {
     if (!p.sig.startsWith("L|")) {
@@ -233,43 +237,44 @@ export function mergeLines(prims: Prim[]): Prim[] {
     }
     const [x1, y1, x2, y2] = p.nums
     const len = Math.hypot(x2 - x1, y2 - y1)
-    if (len < 1e-9) {
-      out.push(p)
-      continue
-    }
-    let ux = (x2 - x1) / len
-    let uy = (y2 - y1) / len
-    if (ux < -1e-9 || (Math.abs(ux) <= 1e-9 && uy < 0)) {
-      ux = -ux
-      uy = -uy
-    }
-    // the line's offset from the origin along its normal, and the span of the piece along its direction
-    const off = -uy * x1 + ux * y1
-    const key = `${p.sig}|${Math.round(Math.atan2(uy, ux) * 1e5)}|${Math.round(off * 500)}`
-    const a = ux * x1 + uy * y1
-    const b = ux * x2 + uy * y2
-    const list = lines.get(key) ?? lines.set(key, []).get(key)!
-    list.push({ ux, uy, from: Math.min(a, b), to: Math.max(a, b), off })
-  }
-  for (const [key, spans] of lines) {
-    const sig = key.split("|").slice(0, 3).join("|")
-    spans.sort((x, y) => x.from - y.from)
-    let cur = { ...spans[0] }
-    const emit = (s: typeof cur) => {
-      // back to end points: the point on the line at `s.from` and `s.to`; the offset is in the key
-      const off = s.off
-      const px = -s.uy * off
-      const py = s.ux * off
-      out.push({ sig, nums: [px + s.ux * s.from, py + s.uy * s.from, px + s.ux * s.to, py + s.uy * s.to] })
-    }
-    for (const s of spans.slice(1)) {
-      if (s.from <= cur.to + 0.002) cur.to = Math.max(cur.to, s.to)
-      else {
-        emit(cur)
-        cur = { ...s }
+    // a piece of two micrometres or less is a dot of the track's width inside the track it ends: a file that rounds to a tenth of a micrometre keeps it as a dot or loses it, and the copper is the same
+    if (len < 0.002) continue
+    const list = groups.get(p.sig) ?? groups.set(p.sig, []).get(p.sig)!
+    // the group whose line both ends of this piece lie on
+    let g = list.find((q) => Math.abs(-q.uy * (x1 - q.x) + q.ux * (y1 - q.y)) <= TOL && Math.abs(-q.uy * (x2 - q.x) + q.ux * (y2 - q.y)) <= TOL)
+    if (!g) {
+      let ux = (x2 - x1) / len
+      let uy = (y2 - y1) / len
+      if (ux < -1e-9 || (Math.abs(ux) <= 1e-9 && uy < 0)) {
+        ux = -ux
+        uy = -uy
       }
+      g = { x: x1, y: y1, ux, uy, spans: [] }
+      list.push(g)
     }
-    emit(cur)
+    const a = g.ux * (x1 - g.x) + g.uy * (y1 - g.y)
+    const b = g.ux * (x2 - g.x) + g.uy * (y2 - g.y)
+    g.spans.push({ from: Math.min(a, b), to: Math.max(a, b) })
+  }
+  for (const [sig, list] of groups) {
+    for (const g of list) {
+      const spans = g.spans.sort((x, y) => x.from - y.from)
+      let cur = { ...spans[0] }
+      const emit = (s: { from: number; to: number }) => {
+        const n = [g.x + g.ux * s.from, g.y + g.uy * s.from, g.x + g.ux * s.to, g.y + g.uy * s.to]
+        // a piece is the same from either end: the end with the lower x (the lower y when they are a micrometre apart in x) comes first
+        const swap = n[0] > n[2] + 0.001 || (Math.abs(n[0] - n[2]) <= 0.001 && n[1] > n[3])
+        out.push({ sig, nums: swap ? [n[2], n[3], n[0], n[1]] : n })
+      }
+      for (const s of spans.slice(1)) {
+        if (s.from <= cur.to + 0.002) cur.to = Math.max(cur.to, s.to)
+        else {
+          emit(cur)
+          cur = { ...s }
+        }
+      }
+      emit(cur)
+    }
   }
   return out
 }

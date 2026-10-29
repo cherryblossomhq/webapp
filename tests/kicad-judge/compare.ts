@@ -142,7 +142,9 @@ export function compareIpc(a: string, b: string): Diff[] {
   const LA = lone(RA)
   const LB = lone(RB)
   let loneLost = 0
-  for (const [pad, name] of LA) if (LB.get(pad) !== name && NB.has(pad)) loneLost++
+  // (IPC-D-356 writes a name of 14 characters at most: one that would be another's is cut shorter and given `#1`, so the same name reads differently when the set of lone nets differs)
+  const abbreviated = (name: string | undefined) => (name ?? "").replace(/#\d+$/, "").slice(-8)
+  for (const [pad, name] of LA) if (abbreviated(LB.get(pad)) !== abbreviated(name) && NB.has(pad)) loneLost++
   if (loneLost) out.push({ kind: "board nets: a lone pad's net name", detail: `${loneLost} of ${LA.size} pads alone on a net lost the name KiCad gave it` })
   let lost = 0
   let gained = 0
@@ -172,15 +174,20 @@ export function compareIpc(a: string, b: string): Diff[] {
   const va = vias(RA)
   const vb = vias(RB)
   if (va.join() !== vb.join()) {
-    const bag = new Map<string, number>()
-    for (const k of vb) bag.set(k, (bag.get(k) ?? 0) + 1)
+    // a place is a number of tenths of a mil: one more or less is the same place (a rounding of the millimetre)
+    const split = (k: string) => {
+      const m = /^(.*?)X([+-]\d+)Y([+-]\d+)(.*)$/.exec(k)
+      return m ? { head: m[1], x: Number(m[2]), y: Number(m[3]), tail: m[4] } : { head: k, x: 0, y: 0, tail: "" }
+    }
+    const left = vb.map(split)
     let off = 0
     for (const k of va) {
-      const n = bag.get(k) ?? 0
-      if (n) bag.set(k, n - 1)
+      const a = split(k)
+      const i = left.findIndex((b) => b.head === a.head && b.tail === a.tail && Math.abs(b.x - a.x) <= 1 && Math.abs(b.y - a.y) <= 1)
+      if (i >= 0) left.splice(i, 1)
       else off++
     }
-    out.push({ kind: "board nets: via count or place", detail: `${va.length} / ${vb.length} vias, ${off} of the original's without a twin` })
+    if (off || va.length !== vb.length) out.push({ kind: "board nets: via count or place", detail: `${va.length} / ${vb.length} vias, ${off} of the original's without a twin` })
   }
   const netOfVia = (recs: IpcRec[], names: Map<string, string>) => recs.filter((r) => r.ref === "VIA" && names.has(r.net)).map((r) => `${names.get(r.net)}|${r.spec.replace(/R\d+S\d/, "")}`).sort()
   const byName = (s: Map<string, string>) => new Map([...s].map(([pins, name]) => [name, pins] as const))

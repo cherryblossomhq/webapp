@@ -161,7 +161,7 @@ export function writePad(def: PadDef, world: WorldPad | null, c: ComponentInstan
   // A trapezoid's turn is the file's own: the footprint's angle (the editor's less half a turn on the bottom) and the pad's turn within it.
   const angle = trap ? normalizeAngle((bottom ? footprintAngle - 180 : footprintAngle) + trap.turn) : normalizeAngle((bottom ? footprintAngle - own + 180 : footprintAngle + own) + extra)
   const at = trap ? trap.at : (opts?.at ?? frame(world!.hole ?? world!))
-  const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : "smd"
+  const type = def.plated === false ? "np_thru_hole" : def.holeDiameter !== undefined ? "thru_hole" : def.connector ? "connect" : "smd"
   const lines: string[] = []
   // The pad as one layer has it (X1): its shape and size, and what goes with them. The pad's frame is the file's, shared by every layer, so a drawing that is in the land's frame (a polygon pad's corners) is turned into it.
   const toPadFrame = (v: Vec2, d: PadDef): Vec2 => (d.shape === "polygon" && !d.custom && own !== 0 ? turnVec({ x: v.x, y: bottom ? v.y : -v.y }, -((bottom ? -own : own) + extra)) : store(v))

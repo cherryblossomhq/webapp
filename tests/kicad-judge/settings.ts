@@ -8,7 +8,8 @@ import type { Diff } from "./compare"
 // KiCad's own form, so what KiCad understands of the original and of the export is compared in one shape (every KiCad release's spelling of a thing is the same
 // afterwards). The two trees are diffed node by node; a difference is the path of the node, with the names of the footprints and pads left out, as the kind.
 
-const IGNORED = new Set(["uuid", "tstamp", "version", "generator", "generator_version", "id"])
+// (`path`, `sheetname` and `sheetfile` are a footprint's link to its symbol: the judge checks the link with KiCad's own "Update PCB from Schematic", which finds the footprint by it, so the words themselves are not compared.)
+const IGNORED = new Set(["uuid", "tstamp", "version", "generator", "generator_version", "id", "path", "sheetname", "sheetfile"])
 
 /** Heads whose items are drawn copper or lines: matched by their place, never by their order. */
 const GEOMETRY = new Set(["segment", "arc", "via", "gr_line", "gr_arc", "gr_circle", "gr_rect", "gr_curve", "fp_line", "fp_arc", "fp_circle", "fp_rect", "fp_curve"])
@@ -45,10 +46,12 @@ function canonical(n: SNode): SNode {
     const at = child(out, "at")
     const size = child(out, "size")
     if (at && size && (shape === "rect" || shape === "oval" || shape === "roundrect" || shape === "circle")) {
-      const a = (((num(at[3]) || 0) % 180) + 180) % 180
-      const turned = a === 90
+      const full = (((num(at[3]) || 0) % 180) + 180) % 180
+      // a quarter turn more with the sides swapped is the same pad: the turn is kept below a quarter
+      const turned = full >= 90
+      const a = turned ? full - 90 : full
       out = out.map((c) => {
-        if (c === at) return a === 0 || a === 90 ? ["at", at[1], at[2]] : ["at", at[1], at[2], String(a)]
+        if (c === at) return a === 0 ? ["at", at[1], at[2]] : ["at", at[1], at[2], String(a)]
         if (c === size && turned) return ["size", size[2], size[1]]
         if (turned && isList(c) && c[0] === "drill" && c[1] === "oval") return ["drill", "oval", c[3], c[2], ...c.slice(4)]
         return c
@@ -79,13 +82,27 @@ function canonical(n: SNode): SNode {
     }
   }
   // a 3D model is the same file whichever release's variable names the library folder and whichever of its formats is named
-  if (head(out) === "model" && typeof out[1] === "string") out = out.map((x, i) => (i === 1 ? String(x).replace(/^\$\{KICAD\d*_3DMODEL_DIR\}\//, "").replace(/\.(wrl|step|stp)$/i, "") : x))
+  if (head(out) === "model" && typeof out[1] === "string") out = out.map((x, i) => (i === 1 ? String(x).replace(/^\$\{(?:KICAD\d*_3DMODEL_DIR|KISYS3DMOD)\}\//, "").replace(/\.(wrl|step|stp)$/i, "") : x))
   // the user's name of a layer that is KiCad's own name for it says nothing
   if (head(out) === "layers") {
     out = out.map((row) => {
       if (!isList(row) || row.length !== 4) return row
       const std: Record<string, string> = { "F.SilkS": "F.Silkscreen", "B.SilkS": "B.Silkscreen", "F.Adhes": "F.Adhesive", "B.Adhes": "B.Adhesive", "Dwgs.User": "User.Drawings", "Cmts.User": "User.Comments", "Eco1.User": "User.Eco1", "Eco2.User": "User.Eco2", "F.CrtYd": "F.Courtyard", "B.CrtYd": "B.Courtyard", "F.Mask": "F.Mask", "B.Mask": "B.Mask", "F.Paste": "F.Paste", "B.Paste": "B.Paste", "F.Fab": "F.Fab", "B.Fab": "B.Fab", "Edge.Cuts": "Edge.Cuts", Margin: "Margin" }
       return std[row[1] as string] === row[3] ? row.slice(0, 3) : row
+    })
+  }
+  // a net tie's groups are the same with or without a space after the comma
+  if (head(out) === "net_tie_pad_groups") out = out.map((c, i) => (i === 0 || isList(c) ? c : String(c).replace(/,\s+/g, ",")))
+  // a polygon is the same drawn from any of its corners, either way round, and with any corner on a straight side left out: it is told by its area and its box
+  if (["fp_poly", "gr_poly"].includes(head(out))) {
+    out = out.map((c) => {
+      if (!isList(c) || head(c) !== "pts") return c
+      const xy = c.slice(1).filter(isList).map((p) => [num(p[1]), num(p[2])])
+      let area = 0
+      for (let i = 0; i < xy.length; i++) area += xy[i][0] * xy[(i + 1) % xy.length][1] - xy[(i + 1) % xy.length][0] * xy[i][1]
+      const xs = xy.map((p) => p[0])
+      const ys = xy.map((p) => p[1])
+      return ["pts", ["area", r2(Math.abs(area) / 2)], ["box", r2(Math.min(...xs)), r2(Math.min(...ys)), r2(Math.max(...xs)), r2(Math.max(...ys))]]
     })
   }
   // what a footprint says for all its pads is what each pad says where it does not say its own (KiCad's inheritance), so it is written on each pad
@@ -171,10 +188,28 @@ function near(h: string, x: SNode[], y: SNode[]): boolean {
   return false
 }
 
+/** A line is the same drawn from its other end: the second one is turned to run the way the first does before the two are compared. */
+function aligned(h: string, x: SNode[], y: SNode[]): SNode[] {
+  if (!["segment", "gr_line", "fp_line"].includes(h)) return y
+  const xs = child(x, "start")
+  const xe = child(x, "end")
+  const ys = child(y, "start")
+  const ye = child(y, "end")
+  if (!xs || !xe || !ys || !ye) return y
+  const d = (a: SNode[], b: SNode[]) => Math.hypot(num(a[1]) - num(b[1]), num(a[2]) - num(b[2]))
+  if (d(xs, ys) + d(xe, ye) <= d(xs, ye) + d(xe, ys)) return y
+  return y.map((c) => (c === ys ? ["start", ye[1], ye[2]] : c === ye ? ["end", ys[1], ys[2]] : c))
+}
+
 function keyOf(h: string, n: SNode[]): string | null {
   if (h === "footprint") {
     const r = n.find((c) => isList(c) && c[0] === "property" && c[1] === "Reference")
     return r && isList(r) ? String(r[2]) : null
+  }
+  if (h === "dimension") {
+    const pts = child(n, "pts")
+    const xy = pts ? pts.slice(1).filter(isList).map((c) => `${r2(num(c[1]))},${r2(num(c[2]))}`).sort() : []
+    return `${child(n, "layer")?.slice(1).join(",") ?? ""}|${xy.join("|")}`
   }
   if (h === "pad" || h === "property" || h === "model") return typeof n[1] === "string" ? n[1] : null
   if (h === "zone") {
@@ -229,11 +264,15 @@ function diffNodes(a: SNode[], b: SNode[], path: string, out: Out) {
       const lost: SNode[][] = []
       for (const x of rest) {
         const i = left.findIndex((y) => near(h, x, y))
-        if (i >= 0) diffNodes(x, left.splice(i, 1)[0], at, out)
+        if (i >= 0) diffNodes(x, aligned(h, x, left.splice(i, 1)[0]), at, out)
         else lost.push(x)
       }
-      if (lost.length) add(`${at} only in the original`, canon(lost[0]))
-      if (left.length) add(`${at} only in the export`, canon(left[0]))
+      // The outline is the editor's one outline (pieces joined, a footprint's edge lines among them, a circle as two arcs): the judge compares it as KiCad plots it, in the gerber of Edge.Cuts
+      const notEdge = (x: SNode[]) => child(x, "layer")?.[1] !== "Edge.Cuts"
+      const lostNow = lost.filter(notEdge)
+      const leftNow = left.filter(notEdge)
+      if (lostNow.length) add(`${at} only in the original`, canon(lostNow[0]))
+      if (leftNow.length) add(`${at} only in the export`, canon(leftNow[0]))
       continue
     }
     const byKey = new Map<string, SNode[][]>()
@@ -271,6 +310,8 @@ export async function compareBoardFiles(origPcb: string, outPcb: string, work: s
   if (!a || !b) return [{ kind: "board file: KiCad could not read and rewrite one of the files", detail: a ? "the export" : "the original" }]
   const out: Out = new Map()
   diffNodes(a, b, "board", out)
+  // A board saved before KiCad 9 numbers the layers of its plot choice the old way: the export does not carry that choice (the import report says so).
+  if (Number(/\(version (\d+)\)/.exec(origPcb)?.[1] ?? 0) < 20241229) for (const k of [...out.keys()]) if (/pcbplotparams\/(layerselection|plot_on_all_layers_selection)$/.test(k)) out.delete(k)
   return [...out].map(([kind, v]) => ({ kind: `board file: ${kind}`, detail: `${v.count}x; e.g. ${v.example}` }))
 }
 

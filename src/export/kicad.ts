@@ -225,13 +225,15 @@ export async function kicadFiles(source: Project): Promise<KicadExport> {
     converters.set(id, { sch: conv, view, data, circuit: scaled })
   }
   const sch = converters.get(ROOT_SHEET)!.sch
+  // A project that came from a KiCad board writes its board natively, so the converter's board is not made (it stops with "Max iterations reached" on a board of thousands of footprints, and is not used).
+  const native = isKicadBoardProject(project)
   const pcb = new CircuitJsonToKicadPcbConverter(circuit)
-  pcb.runUntilFinished()
+  if (!native) pcb.runUntilFinished()
   const pro = new CircuitJsonToKicadProConverter(circuit, { projectName: base, schematicFilename: `${base}.kicad_sch`, pcbFilename: `${base}.kicad_pcb`, schematicSheetPlan: sch.schematicSheetPlan })
   pro.runUntilFinished()
 
   // A project that came from a KiCad board is written natively (`kicadBoard.ts`); one drawn in the editor goes through the converter, then the text writers below.
-  const board = isKicadBoardProject(project) ? await nativeBoard(project) : await converterBoard(project, pcb.getOutputString())
+  const board = native ? await nativeBoard(project) : await converterBoard(project, pcb.getOutputString())
   const boardText = board.text
   const footprintIds = boardFootprintIds(boardText)
   const sheetTexts = new Map<string, string>()

@@ -1456,6 +1456,23 @@ export interface Zone {
   locked?: true
   /** Only on the board's copy of a zone of a part (`partZones.ts`, never stored): the id of the part it belongs to. */
   part?: string
+  /**
+   * The copper KiCad itself had filled this zone with, from a board brought in from KiCad (`model/zoneKeep.ts`). While `sig` still says what it said when the board
+   * was brought in (the zone's own settings and everything near it that could change its fill), the zone's fill IS this: it is drawn, checked and written back exactly
+   * as KiCad stored it, as KiCad itself keeps a stored fill until the user refills. Any edit that would change the fill makes the signature differ and the zone is
+   * filled by the editor again. Absent on a zone drawn here and on a zone with no stored fill.
+   */
+  kept?: KeptFill
+}
+
+/** KiCad's stored fill of one zone (`filled_polygon`), kept as the file has it. */
+export interface KeptFill {
+  /** The fill of each copper layer of the zone that has any: every polygon is one ring as KiCad wrote it (a hole is joined to its outline by a zero-width bridge), in file order, y up as the editor has it. */
+  layers: { layer: CopperLayer; rings: Vec2[][]; /** The rings KiCad marked `(island)`, by index in `rings`. */ islands?: number[] }[]
+  /** The file's `filled_areas_thickness yes`: the polygons are shrunk by half the minimum width and KiCad drew them with a pen that wide, so the copper is the polygons grown by it. */
+  stroked?: true
+  /** What the zone and its surroundings were when the fill was kept (`zoneSignature`); empty until the board is brought in, which makes the fill unused. */
+  sig: string
 }
 
 /**

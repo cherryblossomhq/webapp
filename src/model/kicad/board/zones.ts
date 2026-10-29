@@ -17,8 +17,8 @@ import type { KicadBoard, KicadFootprint, KicadZone, KicadZoneSeg, Pt } from "./
 
 // A KiCad zone as the editor's `Zone` (X3). The file's frame is y down and the editor's is y up, so every point is flipped. A zone keeps
 // what the file says (its outline with holes and arcs, layers, net, priority, clearance, minimum width, how its pads join, the thermal
-// gap and spoke width, corner smoothing, island rule, keepout flags, teardrop), and the copper is the editor's own fill of it: KiCad's
-// stored `filled_polygon` is not kept (docs/kicad-import.md section 10).
+// gap and spoke width, corner smoothing, island rule, keepout flags, teardrop), and KiCad's stored fill (`filled_polygon`), which the zone keeps
+// (`Zone.kept`, `model/zoneKeep.ts`) until an edit would change it and the editor fills the zone itself (docs/kicad-import.md section 10).
 
 /**
  * The first file stamp (KiCad 10 development, 2025-03-02, "Zone Hatching Offsets", the commit that gave a zone's layers a hatch position) whose fills lay the hatch grid out from the board's origin; a
@@ -108,6 +108,30 @@ function ringPath(segs: KicadZoneSeg[], map: (p: Pt) => Vec2 = flip): ShapePath 
   }
   if (at.first && at.cur && (at.cur.x !== at.first.x || at.cur.y !== at.first.y)) out.push({ kind: "line", a: at.cur, b: at.first })
   return out.length >= 2 ? { closed: true, segs: out } : null
+}
+
+/**
+ * KiCad's stored fill of a copper pour as the zone keeps it (`Zone.kept`, unsealed: `model/zoneKeep.ts` signs it once the project is whole). Nothing when the file has no fill for the zone,
+ * or when a fill names a layer the zone is not on (then the editor fills the zone, as it does one with no fill).
+ */
+function keptFrom(z: KicadZone, layers: CopperLayer[], map: ReturnType<typeof layerMapOf>): Zone["kept"] {
+  if (!z.fills.length) return undefined
+  const byLayer = new Map<CopperLayer, { rings: Vec2[][]; islands: number[] }>()
+  for (const f of z.fills) {
+    const named = layersOfNames(map, f.layer === null ? z.layers : [f.layer])
+    if (named.length !== 1 || !layers.includes(named[0])) return undefined
+    if (f.pts.length < 3) continue
+    const on = byLayer.get(named[0]) ?? { rings: [], islands: [] }
+    byLayer.set(named[0], on)
+    if (f.island) on.islands.push(on.rings.length)
+    on.rings.push(f.pts.map(flip))
+  }
+  if (!byLayer.size) return undefined
+  return {
+    layers: layers.filter((l) => byLayer.has(l)).map((l) => ({ layer: l, rings: byLayer.get(l)!.rings, ...(byLayer.get(l)!.islands.length ? { islands: byLayer.get(l)!.islands } : {}) })),
+    ...(z.strokedFill ? { stroked: true as const } : {}),
+    sig: "",
+  }
 }
 
 export interface ZoneContext {
@@ -266,6 +290,11 @@ function convertOne(z: KicadZone, cx: OneContext): One {
       zone.holeGap = 0.25
     }
   }
+  // KiCad's stored fill stays with the zone while nothing near it changes (`zoneKeep.ts`); a pour inside a part has none (its fill is the land's, one for every part that has it).
+  if (copperZone && !cx.inPart) {
+    const kept = keptFrom(z, layers, map)
+    if (kept) zone.kept = kept
+  }
   return { zone, ...(!z.filled ? { unfilled: true as const } : {}), ...(ignoredNet ? { ignoredNet } : {}) }
 }
 
@@ -359,7 +388,7 @@ export function reportZones(r: ZoneResult, report: ImportReport, all: number) {
       code: "zones-refilled",
       severity: "changed",
       object: `${pours.length} copper zone${pours.length === 1 ? "" : "s"}`,
-      why: "The zones are brought in with their outlines, layers, nets, priorities and settings, and the editor fills them itself by KiCad's rules (clearances, thermal reliefs, minimum width, islands, priority). KiCad's own filled copper is not kept: it recomputes it on every refill, and so does the editor on every edit, so the copper can differ from the file's by a few hundredths of a millimetre at corners and thermal reliefs.",
+      why: "The zones are brought in with their outlines, layers, nets, priorities and settings, and with the copper KiCad filled them with: that fill is kept as the file has it, drawn, checked and written back unchanged, as KiCad itself keeps a stored fill until the user refills. A zone goes back to the editor's own fill (KiCad's rules: clearances, thermal reliefs, minimum width, islands, priority) when an edit would change it: the zone itself, or copper, pads, holes, keepouts or the board edge near it. A zone with no fill in the file is filled by the editor from the start.",
       count: pours.length,
     })
   }

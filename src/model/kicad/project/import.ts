@@ -11,7 +11,9 @@ import { isHierarchical, sheetView, useAt, usesOfSheet } from "../../sheets"
 import { serializeProject } from "../../projectFile"
 import type { ComponentInstance, NetLabel, PartFlags, Project, Rotation, SchematicBlock, Wire } from "../../types"
 import type { KeptFile } from "../board/images"
-import { importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, formatSize, type KicadImportResult } from "../board/import"
+import { dropKeptFills, importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, formatSize, type KicadImportResult } from "../board/import"
+import { hasKeptFills } from "../../zoneKeep"
+import { signKeptFills } from "../../zoneKeepSign"
 import { buildKicadProject } from "../board/build"
 import { outlineOf } from "../board/outline"
 import { readKicadBoard } from "../board/read"
@@ -367,7 +369,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- the board ----------
   const partsBefore = new Set(projectPartIds())
-  const boardResult = options.allowLossyBoard ? importBoardLossy(picked.board.data, options) : importKicadBoard(picked.board.data, { name: options.name, source: options.source, built, limitBytes: options.limitBytes })
+  const boardResult = options.allowLossyBoard ? importBoardLossy(picked.board.data, options) : importKicadBoard(picked.board.data, { name: options.name, source: options.source, built, limitBytes: options.limitBytes, signFills: false })
   // The board importer notes that KiCad 6's rules live in a project file it did not read; the project file was read here, and says its own.
   report.entries.push(...boardResult.report.entries.filter((e) => !((pro || rules) && e.code === "rules-in-project-file")))
   boardParts = projectPartIds().filter((id) => !partsBefore.has(id))
@@ -388,7 +390,8 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
       if (withRules.problems.length) return refuse("inexact", `The project file's net classes cannot be brought in exactly: ${withRules.problems.slice(0, 3).join("; ")}${withRules.problems.length > 3 ? "; ..." : ""}. Nothing is guessed, so the project is not imported.`)
       boardProject = withRules.project
     }
-    boardProject = carryProjectFiles(boardProject, picked, pro, report)
+    boardProject = signKeptFills(carryProjectFiles(boardProject, picked, pro, report))
+    if (hasKeptFills(boardProject) && byteLength(serializeProject(boardProject)) > (options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES)) boardProject = dropKeptFills(boardProject, report)
     return { status: "imported", project: boardProject, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
   }
   const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
@@ -524,9 +527,13 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (libraryWarnings.length) report.warnings = libraryWarnings
   reportLinks(report, link, kicadBoard, sch, symbolFootprint, holes.restored)
 
-  merged.project = carryProjectFiles(merged.project, picked, pro, report)
-  const bytes = byteLength(serializeProject(merged.project))
+  merged.project = signKeptFills(carryProjectFiles(merged.project, picked, pro, report))
+  let bytes = byteLength(serializeProject(merged.project))
   const limit = options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES
+  if (bytes > limit && hasKeptFills(merged.project)) {
+    merged.project = dropKeptFills(merged.project, report)
+    bytes = byteLength(serializeProject(merged.project))
+  }
   if (bytes > limit) {
     const message = `This project needs ${formatSize(bytes)} and projects hold up to ${formatSize(limit)}.`
     report.entries.push({ code: "too-large", severity: "refused", object: "the project", why: message })

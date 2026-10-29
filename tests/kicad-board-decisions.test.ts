@@ -83,6 +83,6 @@ describe("the decision table", () => {
     expect(ruleFor("footprint>pad>frobnicate")).toBeNull()
     expect(ruleFor("zone>polygon>pts")?.decision).toBe("native")
     expect(ruleFor("zone>fill>hatch_gap")?.ext).toBe("X24")
-    expect(ruleFor("zone>filled_polygon")?.decision).toBe("not-needed")
+    expect(ruleFor("zone>filled_polygon")?.decision).toBe("native")
   })
 })

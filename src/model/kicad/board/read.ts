@@ -796,6 +796,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       rings,
       hasArcs: rings.some((r) => r.some((s) => s.kind === "arc")),
       filled: kids(z, "filled_polygon").length > 0,
+      fills: kids(z, "filled_polygon").map((f) => ({ layer: strAt(kid(f, "layer"), 1) ?? null, island: !!kid(f, "island"), pts: points(kid(f, "pts"), "a filled polygon") })),
       connect: connectWord as KicadZone["connect"],
       clearance: connectNode && kid(connectNode, "clearance") ? numAt(kid(connectNode, "clearance"), 1, 0) : null,
       minThickness: kid(z, "min_thickness") ? numAt(kid(z, "min_thickness"), 1, 0) : null,

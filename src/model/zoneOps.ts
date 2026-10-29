@@ -4,6 +4,7 @@ import { polygonPath, zoneLayers } from "./zones"
 import type { PathSeg, ShapePath } from "./shapes"
 import { segEnd, segStart } from "./shapes"
 import { signedArea } from "./outline"
+import { withoutKept } from "./zoneKeep"
 import type { CopperLayer, Project, Vec2, Zone, ZoneKeepout } from "./types"
 
 // Editing zones (X3): every change to a zone is a pure function returning a new project (or zone), so the PCB view's tools, the Inspector and
@@ -52,6 +53,15 @@ export function removeZones(project: Project, ids: Iterable<string>): Project {
   const gone = new Set(ids)
   if (!project.zones.some((z) => gone.has(z.id))) return project
   return stamp({ ...project, zones: project.zones.filter((z) => !gone.has(z.id)) })
+}
+
+/**
+ * Refill: let go of KiCad's stored fill of the zones given (every zone when none are given), so the editor fills them from now on by its own rules. A zone kept its stored fill
+ * only until an edit near it would change it (`model/zoneKeep.ts`); this is the way to ask for the editor's fill without such an edit. The project is the same object when no zone had one.
+ */
+export function refillZones(project: Project, ids?: Iterable<string>): Project {
+  const next = withoutKept(project, ids)
+  return next === project ? project : stamp(next)
 }
 
 /** Fields a patch may set: `undefined` clears one. A locked zone refuses every change but the lock's own. */

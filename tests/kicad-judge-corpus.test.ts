@@ -19,6 +19,8 @@ import { compareSettings } from "./kicad-judge/settings"
 //     npx vitest run --maxWorkers=1 --no-file-parallelism tests/kicad-judge-corpus.test.ts
 //
 // KICAD_CORPUS_SAMPLE=N, KICAD_ONLY (comma separated path fragments) and KICAD_LIMIT narrow the run; KICAD_JUDGE_KEEP=<dir> keeps the files of every board there;
+// KICAD_SHARD=i/n runs the i-th of n slices of the chosen boards (0-based, every n-th board), so n processes with their own KICAD_JUDGE_OUT can split a run;
+// each board's row is also appended to `<KICAD_JUDGE_OUT>.rows.jsonl` as it finishes, so a run that stops keeps what it did.
 // KICAD_CLI points at another kicad-cli. Skipped without KICAD_JUDGE, a corpus and kicad-cli.
 
 const CORPUS = process.env.KICAD_CORPUS
@@ -70,6 +72,8 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? "") || !kicadCliAvailabl
     let files = walk(CORPUS!).sort()
     if (ONLY.length) files = files.filter((f) => ONLY.some((o) => fwd(f).includes(o)))
     files = sampleOf(files)
+    const shard = /^(\d+)\/(\d+)$/.exec(process.env.KICAD_SHARD ?? "")
+    if (shard) files = files.filter((_, i) => i % Number(shard[2]) === Number(shard[1]))
     if (LIMIT) files = files.slice(0, LIMIT)
     await loadKicadFont({ cjk: true })
     const scratch = mkdtempSync(join(KEEP ?? tmpdir(), "judge-"))
@@ -85,6 +89,7 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? "") || !kicadCliAvailabl
         const r = importKicadProject(input, { limitBytes: Number.MAX_SAFE_INTEGER })
         if (r.status !== "imported") {
           rows.push({ file: rel, status: `not imported (${r.reason})`, diffs: [], ms: Date.now() - t0 })
+          if (OUT) appendFileSync(`${OUT}.rows.jsonl`, `${JSON.stringify(rows[rows.length - 1])}\n`)
           continue
         }
         for (const f of r.files ?? []) rememberImage(f.id, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
@@ -112,7 +117,10 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? "") || !kicadCliAvailabl
       } catch (e) {
         rows.push({ file: rel, status: "error", diffs: [], ms: Date.now() - t0, error: e instanceof Error ? e.stack?.slice(0, 500) : String(e) })
       }
-      if (OUT) appendFileSync(`${OUT}.progress`, `${rows.length}/${files.length} ${rows[rows.length - 1].status} ${rel}\n`)
+      if (OUT) {
+        appendFileSync(`${OUT}.progress`, `${rows.length}/${files.length} ${rows[rows.length - 1].status} ${rel}\n`)
+        appendFileSync(`${OUT}.rows.jsonl`, `${JSON.stringify(rows[rows.length - 1])}\n`)
+      }
     }
     dog.stop()
     const summary = {

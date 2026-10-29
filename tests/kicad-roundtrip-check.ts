@@ -423,6 +423,19 @@ export function diffProjects(first: Project, second: Project, limit = 200): Diff
   const a = withoutProjectFileRules(canonicalProject(first))
   const b = withoutProjectFileRules(canonicalProject(second))
   const extra: Difference[] = []
+  // KiCad's stored fill of a zone (`Zone.kept`): the second import keeps a fill the first had not when the file had none for the zone (the export wrote the editor's fill of it, which a KiCad file
+  // stores); where both have one it is the same rings, layers, island marks and pen flag, and the signature is not compared (it is of a zone whose uuid and gaps differ by design).
+  const zonesA = (a as any).zones as any[] | undefined
+  const zonesB = (b as any).zones as any[] | undefined
+  zonesA?.forEach((z, i) => {
+    const o = zonesB?.[i]
+    if (!o) return
+    if (z.kept === undefined && o.kept !== undefined) delete o.kept
+    if (z.kept && o.kept) {
+      delete z.kept.sig
+      delete o.kept.sig
+    }
+  })
   const oa = a.board?.outlineDrawn
   const ob = b.board?.outlineDrawn
   if (oa && ob && JSON.stringify(oa) !== JSON.stringify(ob) && oa.length === ob.length) {

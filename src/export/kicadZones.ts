@@ -100,7 +100,9 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   const join = set.connect === "solid" ? " yes" : set.connect === "none" ? " no" : set.connect === "tht" ? " thru_hole_only" : ""
   o.push(`    (connect_pads${join} (clearance ${mm6(set.clearance)}))`)
   o.push(`    (min_thickness ${mm6(set.minWidth)})`)
-  o.push(`    (filled_areas_thickness no)`)
+  // KiCad's own fill of the zone (`Zone.kept`, valid: the analysis handed it over as the zone's fill) is written as the file had it, with its pen-width flag.
+  const fromFile = !rule && !!z.kept && fills.some((f) => f.zoneId === z.id && f.fromFile)
+  o.push(`    (filled_areas_thickness ${fromFile && z.kept!.stroked ? "yes" : "no"})`)
   if (rule) {
     const k = z.keepout!
     const f = (b: boolean | undefined) => (b ? "not_allowed" : "allowed")
@@ -135,6 +137,11 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
     }
     for (const layer of layers) {
       const f = fills.find((x) => x.zoneId === z.id && x.layer === layer)
+      if (fromFile && f?.fromFile) {
+        const on = z.kept!.layers.find((l) => l.layer === layer)
+        on?.rings.forEach((ring, i) => o.push(`    (filled_polygon (layer ${quote(LAYER(layer))}) ${on.islands?.includes(i) ? "(island) " : ""}(pts ${ring.map(xy).join(" ")}))`))
+        continue
+      }
       for (const polygon of f?.polygons ?? []) {
         const ring = polygon.length > 1 ? fractureRings(polygon[0], polygon.slice(1)) : polygon[0]
         o.push(`    (filled_polygon (layer ${quote(LAYER(layer))}) (pts ${ring.map(xy).join(" ")}))`)

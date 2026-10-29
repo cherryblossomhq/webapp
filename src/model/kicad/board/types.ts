@@ -341,6 +341,8 @@ export interface KicadZone {
   rings: KicadZoneSeg[][]
   hasArcs: boolean
   filled: boolean
+  /** Every `filled_polygon`: the layer it names (null in a file that has none: the zone's own), whether KiCad marked it `(island)`, and its corner points as the file has them. */
+  fills: { layer: string | null; island: boolean; pts: Pt[] }[]
   /** `connect_pads`: absent is a thermal relief on every pad, `yes` solid, `no` none, `thru_hole_only` thermal on through-hole pads. */
   connect: "thermal" | "yes" | "no" | "thru_hole_only"
   /** `connect_pads (clearance ...)`, null when the file gives none. */

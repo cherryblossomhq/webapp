@@ -1,6 +1,8 @@
 import { serializeProject } from "../../projectFile"
 import { crossingSentence, outlineCrossings } from "../../outlineCrossing"
 import type { Project } from "../../types"
+import { hasKeptFills, withoutKept } from "../../zoneKeep"
+import { signKeptFills } from "../../zoneKeepSign"
 import type { KeptFile } from "./images"
 import { acceptEmbeddedFonts, accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
 import { buildKicadProject } from "./build"
@@ -31,6 +33,25 @@ export interface ImportOptions {
   built?: ReadonlySet<string>
   /** Largest project file, in bytes; defaults to the storage limit. */
   limitBytes?: number
+  /** Whether to sign the zones' kept fills (`zoneKeep.ts`) as the board is built; the project import, which changes the board's nets after, signs them itself. Default: yes. */
+  signFills?: boolean
+}
+
+/**
+ * The project without KiCad's stored fills of its zones, said in the report: the stored fill is the largest part of a board's file, and a project over the storage limit only because of it
+ * is kept without them (the editor fills the zones itself, as it does a zone the file has no fill for), not refused.
+ */
+export function dropKeptFills(project: Project, report: ImportReport): Project {
+  const zones = project.zones.filter((z) => z.kept).length
+  if (!zones) return project
+  report.entries.push({
+    code: "zones-fill-dropped",
+    severity: "changed",
+    object: `${zones} copper zone${zones === 1 ? "" : "s"}`,
+    why: "KiCad's stored fill of these zones would make the project larger than the storage limit, so it is not kept: the editor fills them itself by KiCad's rules (clearances, thermal reliefs, minimum width, islands, priority), and the copper can differ from the file's by a few hundredths of a millimetre at corners and thermal reliefs.",
+    count: zones,
+  })
+  return withoutKept(project)
 }
 
 export type KicadImportResult =
@@ -105,7 +126,7 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
     const message = result.lossy.length ? `This board cannot be imported exactly: ${result.lossy.join("; ")}.` : refusals(report)[0].why
     return { status: "refused", reason: "inexact", message, report, needs: missing, board }
   }
-  let project = result.project
+  let project = options.signFills === false ? result.project : signKeptFills(result.project)
   let bytes = byteLength(serializeProject(project))
   const limit = options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES
   // A board that is over the limit only because of the outlines KiCad cached for its TrueType text keeps its text without them (drawn in the stroke font, said in the report), not none of the board.
@@ -126,6 +147,10 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
       if (at >= 0) report.entries[at] = entry
       else report.entries.push(entry)
     }
+  }
+  if (bytes > limit && hasKeptFills(project)) {
+    project = dropKeptFills(project, report)
+    bytes = byteLength(serializeProject(project))
   }
   if (bytes > limit) {
     const message = `This board needs ${formatSize(bytes)} and projects hold up to ${formatSize(limit)}.`

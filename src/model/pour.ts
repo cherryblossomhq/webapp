@@ -33,6 +33,8 @@ export interface ZoneFill {
   netName: string
   layer: CopperLayer
   polygons: FillPolygon[]
+  /** KiCad's own stored fill of the zone (`Zone.kept`), not the editor's: the export writes the file's polygons as they were. */
+  fromFile?: true
 }
 
 // Clipper works in integers; one unit is a micron, or a nanometre inside `withMaxError(..., 1e6)`, where a polygon's offset is exact to KiCad's own unit.

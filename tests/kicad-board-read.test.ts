@@ -567,18 +567,18 @@ describe("switches 19 and 20: nets and net classes", () => {
   })
 })
 
-describe("switch 21: a zone's fill is counted, not imported", () => {
-  it("filled_polygon marks the zone filled and is 'not needed' in the accounting", () => {
+describe("switch 21: a zone's fill is kept", () => {
+  it("filled_polygon marks the zone filled and is carried by the zone, as its kept fill", () => {
     const text = board({ body: ['(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (connect_pads (clearance 0.5)) (min_thickness 0.25) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 0 0) (xy 20 0) (xy 20 10) (xy 0 10))) (filled_polygon (layer "F.Cu") (pts (xy 0 0) (xy 20 0) (xy 20 10))))'] })
     const b = read(text).board
     expect(b.zones[0].filled).toBe(true)
     expect(b.zones[0].polygon).toHaveLength(4)
-    // Zones are built (X3): the board imports, the zone is the editor's, and the stored fill is the one thing not kept.
+    // Zones are built (X3): the board imports, and the zone keeps the fill the file stored until an edit near it changes it.
     const r = importKicadBoard(text)
     expect(r.status).toBe("imported")
     if (r.status === "imported") {
       expect(r.project.zones).toHaveLength(1)
-      expect([...r.report.account!.notNeeded.keys()].some((k) => /KiCad's own result of its fill/.test(k))).toBe(true)
+      expect(r.project.zones[0].kept?.layers).toHaveLength(1)
       expect(r.report.entries.some((e) => e.code === "zones-refilled")).toBe(true)
     }
   })

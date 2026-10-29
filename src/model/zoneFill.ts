@@ -446,7 +446,7 @@ export function clearZoneFillCache(): void {
 }
 
 /** A 64-bit hash of a string as 16 hex digits (two 32-bit hashes of different kinds), which is what keys are made of. */
-function hashText(text: string): string {
+export function hashText(text: string): string {
   let a = 0x811c9dc5
   let b = 0x9e3779b9
   for (let i = 0; i < text.length; i++) {

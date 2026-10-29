@@ -13,8 +13,6 @@ const IGNORED = new Set(["uuid", "tstamp", "version", "generator", "generator_ve
 
 /** Heads whose items are drawn copper or lines: matched by their place, never by their order. */
 const GEOMETRY = new Set(["segment", "arc", "via", "gr_line", "gr_arc", "gr_circle", "gr_rect", "gr_curve", "fp_line", "fp_arc", "fp_circle", "fp_rect", "fp_curve"])
-/** A fill is KiCad's own result of a fill, which the editor makes again (the gerbers say how the copper differs). */
-const SKIP = /\/filled_polygon$/
 
 const isList = (n: SNode): n is SNode[] => Array.isArray(n)
 const head = (n: SNode[]) => (typeof n[0] === "string" ? n[0] : "")
@@ -123,12 +121,12 @@ function canonical(n: SNode): SNode {
   }
   if (head(out) === "zone") {
     const rule = !!child(out, "keepout")
-    // a rule area has no pour: what a pour says is nothing there; a smoothing with no radius smooths nothing; `fill yes` says the zone has a stored fill, which the editor makes again
+    // a rule area has no pour: what a pour says is nothing there; a smoothing with no radius smooths nothing; a zone's stored fill (`filled_polygon`, `fill yes`) is KiCad's own and is kept, so it is compared like the rest
     out = out.filter((c) => !(rule && isList(c) && ["connect_pads", "min_thickness", "fill", "hatch", "priority"].includes(head(c))))
     out = out.map((c) => {
       if (!isList(c) || head(c) !== "fill") return c
       const hasRadius = (num(child(c, "radius")?.[1]) || 0) > 0
-      return c.filter((x) => x !== "yes" && !(isList(x) && (head(x) === "radius" || head(x) === "smoothing") && !hasRadius))
+      return c.filter((x) => !(isList(x) && (head(x) === "radius" || head(x) === "smoothing") && !hasRadius))
     })
   }
   if (head(out) === "at" && out.length === 4 && !Number.isNaN(num(out[3]))) out = ["at", out[1], out[2], String((((num(out[3]) % 360) + 360) % 360) % 360)]
@@ -246,7 +244,6 @@ function diffNodes(a: SNode[], b: SNode[], path: string, out: Out) {
     const la = GA.get(h) ?? []
     const lb = GB.get(h) ?? []
     const at = `${path}/${h}`
-    if (SKIP.test(at)) continue
     if (la.length === 1 && lb.length === 1 && !GEOMETRY.has(h)) {
       diffNodes(la[0], lb[0], at, out)
       continue

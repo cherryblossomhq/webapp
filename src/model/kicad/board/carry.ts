@@ -71,9 +71,6 @@ export const PLOT_WORDS_9: ReadonlySet<string> = new Set([
   "scaleselection", "outputdirectory", "hidednponfab", "sketchdnponfab", "crossoutdnponfab", "plot_black_and_white", "svguseinch",
 ])
 
-/** A via a KiCad 5 (or earlier) file puts on no net is put on the net of the pour it lies in when KiCad 10 loads the file (proved with `kicad-cli pcb upgrade`); from KiCad 6's format a via with no net stays so. */
-export const LEGACY_VIA_NETS_BEFORE = 20210000
-
 /** The first file version that numbers the layers as the files the export writes (KiCad 9's). */
 export const WRITTEN_LAYER_NUMBERING = 20241229
 

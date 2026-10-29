@@ -87,12 +87,13 @@ describe("KiCad export of zones", () => {
     expect(k).toMatchObject({ kind: "keepout", keepout: { tracks: true, vias: true, pads: false, copperpour: true, footprints: false } })
   })
 
-  it("a project of whole-board pours alone is exported by the converter as before", async () => {
+  it("a project of whole-board pours alone has each pour as one zone, written by the editor with the copper it filled, and not as a polygon for each island", async () => {
     const p: Project = { ...twoResistors(), zones: [{ id: "a", net: "GND", layer: "top" }] }
     const { files, notes } = await kicadFiles(p)
     const text = Object.entries(files).find(([name]) => name.endsWith(".kicad_pcb"))![1]
-    expect(text).toContain("(zone")
-    expect(notes.join(" ")).toContain("Pours arrive filled")
+    expect(text.split("\n  (zone\n").length - 1).toBe(1)
+    expect(notes.join(" ")).toContain("Zones are written")
+    expect(notes.join(" ")).not.toContain("Pours arrive filled")
   })
 })
 

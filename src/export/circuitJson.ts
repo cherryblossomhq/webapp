@@ -42,14 +42,15 @@ import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcb } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
 import { withPartZones } from "../model/partZones"
-import { isOtherZone, needsZoneEngine, zoneLayers } from "../model/zones"
+import { isOtherZone, kicadWritesZones, zoneLayers } from "../model/zones"
 import { worldShapes } from "../model/shapeItems"
 import { drawingElements } from "./circuitJsonShapes"
 import { textElements } from "./circuitJsonTexts"
 import { mm } from "./circuitJsonUnits"
 import { worldTexts } from "../model/texts"
 import { arcOf, samplePrimitive } from "../model/primitiveGeometry"
-import { componentFields, FIELD_SIZE, pinDisplayName, pinTexts, symbolOf } from "../model/symbolDrawing"
+import { componentFields, FIELD_SIZE, pinDisplayName, pinTexts, symbolOf, symbolTextOnSheet, unitCount, unitLetters } from "../model/symbolDrawing"
+import { pinTypeOfKind } from "../model/pinKinds"
 import { getDesignators, SILK_WIDTH } from "../model/silk"
 import { withRuleAreaFlags, withRuleAreaFlagsOnly } from "../model/ruleAreas"
 import { BUS_WIDTH, boxCorners, boxTextAt, directiveShape, isExact, lookOfText } from "../model/sheetItems"
@@ -92,6 +93,10 @@ export interface KicadSymbolLink {
   part?: string
   reference?: PlacedText
   value?: PlacedText
+  /** The editor's own symbols: the texts they draw besides the designator and value (their pins' names and numbers), where the editor draws them. */
+  texts?: PlacedText[]
+  /** The designator prefix of the editor's own part (`J`, `RV`), which the file's library symbol names as its reference, so a part made from it is numbered so. */
+  refPrefix?: string
   /**
    * The pins this symbol draws, with the name and electrical type they have on the sheet (an alternate applied), which the converter has no place for.
    * `wrote` is the number the converter wrote for a pin whose number it cannot say (`writtenPinNumbers`), which the writer puts back as `number`.
@@ -109,8 +114,10 @@ export interface CircuitJsonExport {
   elements: AnyCircuitElement[]
   /** What didn't come across, in words for whoever exported it. */
   notes: string[]
-  /** The symbols that came from KiCad, and the others that have pins whose numbers the converter cannot say; empty for a project with neither. */
+  /** The symbols the KiCad writer has more to say of than the converter does: those that came from KiCad, and, for the editor's own parts, what they show on the sheet (designator, value, pins' names and numbers) and the pins' names and numbers. Only for the KiCad export. */
   symbols: KicadSymbolLink[]
+  /** The name of each power port's net where the editor draws it, by the id of the net label the port is written as: the file's power symbol shows it as its value. */
+  powerTexts: { id: string; text: PlacedText }[]
 }
 
 const pt = (p: Vec2): Vec2 => ({ x: mm(p.x), y: mm(p.y) })
@@ -542,6 +549,35 @@ function shapeElements(p: SymbolPrimitive, here: (q: Vec2) => Vec2, schId: strin
     default:
       return []
   }
+}
+
+/** The justification of a text that extends from its anchor the way `extent` says: which end of the text the anchor is (KiCad's `left` anchors the left end), whether the text reads up the page. */
+function placedAt(text: string, at: Vec2, size: number, extent: { x: number; y: number }, vertical: boolean): PlacedText {
+  const along = vertical ? extent.y : extent.x
+  const across = vertical ? -extent.x : extent.y
+  return { text, x: at.x, y: at.y, angle: vertical ? 90 : 0, size, ...(along > 0 ? { h: "left" as const } : along < 0 ? { h: "right" as const } : {}), ...(across > 0 ? { v: "bottom" as const } : across < 0 ? { v: "top" as const } : {}) }
+}
+
+/**
+ * What a part of the editor's own library writes on the sheet, for the file to carry as KiCad has it: its designator and its value where the editor draws them (visible fields; the
+ * converter hides both), and the other texts of its symbol (the names and numbers of its pins), which the file's library symbol draws as texts of its own.
+ */
+function ownSymbolTexts(c: ComponentInstance, part: PartDef, symbol: ReturnType<typeof symbolOf>, here: (q: Vec2) => Vec2): Pick<KicadSymbolLink, "reference" | "value" | "texts"> {
+  const out: Pick<KicadSymbolLink, "reference" | "value" | "texts"> = {}
+  if (part.powerNet) return out
+  const texts: PlacedText[] = []
+  for (const p of symbol.primitives) {
+    if (p.type !== "text") continue
+    const place = symbolTextOnSheet(p, c.sch)
+    const text = p.role === "ref" ? (unitCount(part) > 1 ? c.ref + unitLetters(c.unit ?? 1) : c.ref) : p.role === "value" ? valueText(c, part) : p.text
+    if (!text) continue
+    const placed = placedAt(text, here(p), p.size ?? FIELD_SIZE, place.extent, place.vertical)
+    if (p.role === "ref") out.reference ??= placed
+    else if (p.role === "value") out.value ??= placed
+    else texts.push(placed)
+  }
+  if (texts.length) out.texts = texts
+  return out
 }
 
 /** A symbol's own text: the editor's own parts keep the placement they have always had. */
@@ -981,7 +1017,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   }
   const emptyZones: string[] = []
   // The KiCad export writes the zones of a project that has polygon zones itself, so they are not in the circuit it converts.
-  const zonesWrittenByKicadExport = options.forKicad === true && needsZoneEngine(project)
+  const zonesWrittenByKicadExport = options.forKicad === true && kicadWritesZones(project)
   for (const fill of zonesWrittenByKicadExport ? [] : pcb.zoneFills) {
     const netId = fill.netId ?? sch.nets.find((n) => n.name === fill.netName)?.id
     const sourceNetId = netId ? netIds.get(netId) : undefined
@@ -1142,8 +1178,14 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
     const wroteOf = (n: string) => (written?.get(n)?.wrote !== n ? written?.get(n)?.wrote : undefined)
     if (!kicad) {
       // A part drawn here keeps the converter's drawing, but its pins' numbers are put back (its own pins' names are the numbers, as the converter writes them).
-      const renumbered = worldPins.filter((w) => !w.slot && wroteOf(w.pin) !== undefined).map((w) => ({ number: w.pin, wrote: wroteOf(w.pin)!, name: w.pin }))
-      if (renumbered.length || extraBase.has(c.id)) symbols.push({ id: schId, owner: partOf.get(ownerId)!.schId, unit: c.unit ?? 1, ...(extraBase.has(c.id) ? { virtual: true as const } : {}), part: c.ref, pins: renumbered })
+      // The pins the file's symbol names as the part does (the converter names each by its number), the numbers it cannot say put back, and what the part shows on the sheet
+      // beyond its drawing, which the converter hides: the designator, the value, the pins' names and numbers.
+      const named = new Map(part.pins.map((q) => [q.number, q.name]))
+      const typed = new Map(part.pins.flatMap((q) => (q.type ?? pinTypeOfKind(q.kind) ? [[q.number, (q.type ?? pinTypeOfKind(q.kind))!] as const] : [])))
+      const pins = worldPins.filter((w) => !w.slot).map((w) => ({ number: w.pin, ...(wroteOf(w.pin) !== undefined ? { wrote: wroteOf(w.pin)! } : {}), name: named.get(w.pin)?.trim() || w.pin, ...(typed.has(w.pin) ? { type: typed.get(w.pin)! } : {}) }))
+      const own = options.forKicad ? { ...ownSymbolTexts(c, part, symbol, here), ...(part.powerNet || !part.refPrefix ? {} : { refPrefix: part.refPrefix }) } : {}
+      const renamed = pins.some((q) => q.name !== q.number || q.wrote !== undefined || (q.type !== undefined && q.type !== "passive"))
+      if (options.forKicad && (renamed || extraBase.has(c.id) || own.reference || own.value || own.texts || own.refPrefix)) symbols.push({ id: schId, owner: partOf.get(ownerId)!.schId, unit: c.unit ?? 1, ...(extraBase.has(c.id) ? { virtual: true as const } : {}), part: c.ref, pins, ...own })
       continue
     }
     // An imported part writes its fields and its pins' names and numbers on the sheet itself.
@@ -1174,6 +1216,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   }
 
   // Power ports are net labels with their symbol.
+  const powerTexts: CircuitJsonExport["powerTexts"] = []
   for (const c of project.components) {
     const part = findPart(c.partId)
     const net = powerNetName(c, part)
@@ -1194,6 +1237,13 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
       symbol_name: `${ground ? "ground" : "vcc"}_${OPPOSITE[pin.dir]}`,
     }
     elements.push(label)
+    // The net's name where the editor draws it, for the file's power symbol to carry as its value.
+    const name = symbolOf(part, c).primitives.find((p): p is Extract<SymbolPrimitive, { type: "text" }> => p.type === "text" && p.role === "ref")
+    if (name && options.forKicad) {
+      const place = symbolTextOnSheet(name, c.sch)
+      const o = orientPoint(name, c.sch.rot, c.sch.mirror)
+      powerTexts.push({ id: label.schematic_net_label_id, text: placedAt(net, pt({ x: c.sch.x + o.x, y: c.sch.y + o.y }), name.size ?? FIELD_SIZE, place.extent, place.vertical) })
+    }
   }
 
   const labelAnchor = { 0: "left", 90: "bottom", 180: "right", 270: "top" } as const
@@ -1265,7 +1315,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   }
   void projectFootprints
   notes.push(...drawingNotes, ...new Set(keepoutNotes))
-  return { elements, notes, symbols }
+  return { elements, notes, symbols, powerTexts }
 }
 
 /** The text of the .json file and the notes to show with it. */

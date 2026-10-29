@@ -1,5 +1,8 @@
 import type { AnyCircuitElement } from "circuit-json"
 import { round } from "../lib/geometry"
+import { mountingHoles } from "../model/board"
+import { FOOTPRINT_LIBRARY } from "../model/footprints"
+import { MOUNTING_HOLE_MARK } from "../model/kicad/mountingHoles"
 import { findPart } from "../model/library"
 import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes } from "../model/partFlags"
@@ -129,7 +132,41 @@ export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>):
   })
 }
 
-// ---------- Board file: footprint attributes, net ties ----------
+// ---------- Board file: footprint names, attributes, net ties ----------
+
+/**
+ * The converter names a footprint after its own library and the part (`tscircuit:resistor_0603`, `tscircuit:NE555`). The board's are named as the project names them, under one library of
+ * their own (`CherryBlossom:0603`, `CherryBlossom:soic8`), which is how a board read back finds the land patterns the editor knows. Found by reference; a footprint with no part (a
+ * mounting hole) keeps the converter's name.
+ */
+export function applyFootprintNames(pcb: string, project: Project): string {
+  const names = new Map(project.components.filter((c) => c.footprint).map((c) => [c.ref, c.footprint]))
+  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
+    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const name = ref === undefined ? undefined : names.get(ref)
+    return name ? block.replace(/^(\n {2}\(footprint\s+)"[^"]*"/, (_m, head: string) => `${head}${quote(`${FOOTPRINT_LIBRARY}:${name}`)}`) : block
+  })
+}
+
+/**
+ * The corner mounting holes of the board, which the converter writes as footprints with no reference (`tscircuit:platedhole_circle_...`), are written as KiCad writes a mounting hole:
+ * a footprint named for its drill (`CherryBlossom:MountingHole_3.2mm`), referenced H1 to H4, kept out of the BOM and the position files and on the board only. Each carries a property of
+ * its own (`MOUNTING_HOLE_MARK`), by which the import knows them for the board's setting again.
+ */
+export function applyMountingHoleMarks(pcb: string, project: Project): string {
+  if (!mountingHoles(project.board).length) return pcb
+  let n = 0
+  return pcb.replace(/\n {2}\(footprint\s+"tscircuit:platedhole[^"]*"[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
+    if (block.includes('(property "Reference"')) return block
+    n++
+    const drill = block.match(/\(drill ([0-9.]+)\)/)?.[1] ?? "0"
+    const uuid = (k: number) => `00000000-0000-4000-8001-${(0x1000 + n * 8 + k).toString(16).padStart(12, "0")}`
+    const field = (key: string, value: string, k: number) =>
+      [`    (property ${quote(key)} ${quote(value)}`, "      (at 0 0 0)", "      (layer F.Fab)", "      (hide yes)", `      (uuid ${uuid(k)})`, "      (effects", "        (font", "          (size 1.27 1.27)", "          (thickness 0.15)", "        )", "      )", "    )"].join("\n")
+    const attr = "\n    (attr through_hole exclude_from_pos_files exclude_from_bom board_only)\n" + [field("Reference", `H${n}`, 1), field("Value", `MountingHole_${drill}mm`, 2), field(MOUNTING_HOLE_MARK, "yes", 3)].join("\n")
+    return block.replace(/^(\n {2}\(footprint\s+)"[^"]*"/, (_m, head: string) => `${head}${quote(`${FOOTPRINT_LIBRARY}:MountingHole_${drill}mm`)}`).replace(/\n {4}\(attr[^\n]*\)/, () => attr)
+  })
+}
 
 /**
  * The board file with each footprint's attributes (`(attr smd exclude_from_bom)`) and its net tie and
@@ -206,6 +243,10 @@ export interface SymbolLink {
   part?: string
   reference?: PlacedField
   value?: PlacedField
+  /** The editor's own symbols: the texts the symbol draws besides its designator and value (its pins' names and numbers), where the editor draws them, on the page. They are written inside the library symbol, as KiCad's own symbol texts. */
+  texts?: PlacedField[]
+  /** The designator prefix the library symbol names as its reference. */
+  refPrefix?: string
   /** The name and electrical type of each pin this symbol draws, by number. */
   pins?: { number: string; wrote?: string; name: string; type?: PinType }[]
 }
@@ -230,6 +271,33 @@ function patchPins(body: string, pins: NonNullable<SymbolLink["pins"]>): string 
     const named = block.replace(`(pin ${type} `, `(pin ${pin.type ?? type} `).replace(new RegExp(String.raw`\(name ${QUOTED}`), () => `(name ${quote(pin.name)}`)
     return pin.wrote === undefined ? named : named.replace(new RegExp(String.raw`\(number ${QUOTED}`), () => `(number ${quote(pin.number)}`)
   })
+}
+
+/** The value of each power symbol placed for a net label (the converter names its reference after the label's id) shown where the editor draws the net's name. */
+export function applyPowerTexts(sch: string, texts: { id: string; field: PlacedField }[]): string {
+  if (!texts.length) return sch
+  const by = new Map(texts.map((t) => [`#PWR${t.id}`, t.field]))
+  return sch.replace(SYMBOL_BLOCK, (block) => {
+    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const f = ref === undefined ? undefined : by.get(ref)
+    return f ? block.replace(/\n {4}\(property "Value"[\s\S]*?\n {4}\)(?=\n)/, () => `\n${propertyBlock("Value", f.text, f)}`) : block
+  })
+}
+
+/** A text of a library symbol, written from the symbol's origin, its angle in tenths of a degree as KiCad reads a symbol's text (which is where the symbol is placed on the page; the library's y is up, the page's down). */
+function symbolTextNode(t: PlacedField, origin: { x: number; y: number } | undefined): string {
+  const at = origin ?? { x: 0, y: 0 }
+  return [
+    `        (text ${quote(t.text)}`,
+    `          (at ${mm6(t.x - at.x)} ${mm6(-(t.y - at.y))} ${t.angle * 10})`,
+    "          (effects",
+    "            (font",
+    `              (size ${mm6(t.size)} ${mm6(t.size)})`,
+    "            )",
+    ...(t.h || t.v ? [`            (justify ${[t.h, t.v].filter(Boolean).join(" ")})`] : []),
+    "          )",
+    "        )",
+  ].join("\n")
 }
 
 const LIB_SYMBOL = /\n {4}\(symbol "([^"]+)"\n[\s\S]*?\n {4}\)(?=\n)/g
@@ -292,14 +360,35 @@ export function writeSymbolLinks(sch: string, links: SymbolLink[], libOf?: Map<s
     for (const m of members) baseName.set(m.id, base.name)
   }
 
+  // Where each symbol is placed on the page, for texts the library symbol draws (they are written from the symbol's own origin).
+  const origins = new Map<string, { x: number; y: number }>()
+  for (const m of text.matchAll(SYMBOL_BLOCK)) {
+    const libId = m[0].match(/\(lib_id "([^"]+)"/)?.[1]
+    const at = m[0].match(/\n {4}\(at (-?[0-9.e-]+) (-?[0-9.e-]+)/)
+    const id = libId ? idOf(libId) : undefined
+    if (id && at) origins.set(id, { x: Number(at[1]), y: Number(at[2]) })
+  }
+
   // The pins of each library symbol: the names and types of the unit each sub-symbol draws.
   text = text.replace(LIB_SYMBOL, (block, name: string) => {
     const id = idOf(name)
     const mine = links.filter((l) => l.pins && (l.id === id || (baseName.get(l.id) === name && l.owner === id)))
     if (!id || !mine.length) return block
-    return block.replace(SUB_SYMBOL, (sub, _n: string, unit: string, _style: string, body: string) => {
+    // The texts the editor's symbol draws (its pins' names and numbers) are texts of the library symbol, in the common drawing (unit 0), where the editor draws them.
+    const drawn = mine.flatMap((l) => (l.texts ?? []).map((t) => symbolTextNode(t, origins.get(l.id))))
+    const hasCommon = [...block.matchAll(SUB_SYMBOL)].some((m) => m[2] === "0")
+    let wrote = false
+    // The designator the symbol is numbered with (`J` for a connector, where the converter writes `U`).
+    const prefix = mine.find((l) => l.refPrefix)?.refPrefix
+    const named = prefix ? block.replace(/(\n {6}\(property "Reference" )"[^"\n]*"/, (_m, head: string) => `${head}${quote(prefix)}`) : block
+    return named.replace(SUB_SYMBOL, (sub, _n: string, unit: string, _style: string, body: string) => {
       const link = mine.length === 1 ? mine[0] : mine.find((l) => l.unit === Number(unit))
-      return link?.pins ? sub.replace(body, () => patchPins("\n" + body, link.pins!).slice(1)) : sub
+      let out = link?.pins ? sub.replace(body, () => patchPins("\n" + body, link.pins!).slice(1)) : sub
+      if (drawn.length && !wrote && (unit === "0" || !hasCommon)) {
+        wrote = true
+        out = out.replace(/\n {6}\)$/, () => `\n${drawn.join("\n")}\n      )`)
+      }
+      return out
     })
   })
 

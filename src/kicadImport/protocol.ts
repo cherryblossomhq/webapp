@@ -32,8 +32,10 @@ export type WorkerEvent =
   | { type: "choose"; id: number; boards: BoardChoice[] }
   | { type: "done"; id: number; outcome: ImportOutcome }
 
-export const PHASE_LABELS: Record<Phase | "saving", string> = {
+/** The page's own steps after the importer's: looking up the parts' LCSC numbers (when the board has any), and saving. */
+export const PHASE_LABELS: Record<Phase | "matching" | "saving", string> = {
   reading: "Reading the files",
   building: "Building the project and checking its size",
+  matching: "Looking up the parts' LCSC numbers",
   saving: "Saving the project",
 }

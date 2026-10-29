@@ -57,6 +57,9 @@ export const hasPartZones = (project: Partial<Pick<Project, "footprints">>): boo
 /** Whether any zone of the project needs the polygon engine; when none does, every pour is filled as the editor always filled it. A zone of a part always does. */
 export const needsZoneEngine = (project: Pick<Project, "zones"> & Partial<Pick<Project, "footprints">>): boolean => project.zones.some((z) => !isWholeBoardPour(z)) || hasPartZones(project)
 
+/** Whether the KiCad export writes the project's zones itself (`kicadZones.ts`) and not through the converter: any zone of the board, a pour of the whole board too, so a pour is one zone in the file and KiCad refills it. */
+export const kicadWritesZones = (project: Pick<Project, "zones"> & Partial<Pick<Project, "footprints">>): boolean => project.zones.length > 0 || hasPartZones(project)
+
 /** Whether the zone has a polygon of its own (every rule area does), as opposed to being the whole board. */
 export const hasPolygon = (z: Zone): boolean => !!z.outline && z.outline.length > 0
 

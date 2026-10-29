@@ -1,8 +1,11 @@
+import { supplierParts } from "../ai/supplierParts"
+import { lookupFromSource, type LcscLookup } from "../model/lcscMatch"
 import type { ProjectStorage } from "../store/storage"
 import { trackImport } from "./analytics"
 import { startImport, type ImportJob, type StartOptions } from "./client"
 import type { BoardChoice } from "./pick"
 import type { InputEntry, Phase } from "./protocol"
+import { attachLcsc, hasLcscNumbers } from "./lcsc"
 import { saveImported, SaveRefused, type SaveKind } from "./save"
 import { reportName, stoppedSummary, type ImportSummary } from "./summary"
 
@@ -14,7 +17,7 @@ export type ImportState =
   | { step: "idle" }
   | { step: "choose"; boards: BoardChoice[] }
   /** `slow`: the save has taken a while (a connection that is down holds it), and the dialog may be closed. */
-  | { step: "working"; phase: Phase | "saving"; slow?: boolean }
+  | { step: "working"; phase: Phase | "matching" | "saving"; slow?: boolean }
   | {
       step: "report"
       summary: ImportSummary
@@ -41,10 +44,17 @@ export class KicadImportController {
   /** The save in flight whose dialog is still open, by number; 0 once the dialog was closed on it, or none. */
   private saving = 0
   private saves = 0
+  /** The LCSC lookup in flight, so a cancel can end it. */
+  private lookup: AbortController | null = null
 
   constructor(
     private storage: ProjectStorage,
-    private deps: { worker?: StartOptions["createWorker"]; slowSaveMs?: number } = {},
+    private deps: {
+      worker?: StartOptions["createWorker"]
+      slowSaveMs?: number
+      /** Looks an LCSC number up: the host's parts source by default, `null` for none. Tests give their own. */
+      lcsc?: LcscLookup | null
+    } = {},
   ) {}
 
   subscribe = (listener: () => void) => {
@@ -123,6 +133,8 @@ export class KicadImportController {
     const was = this.job
     this.job = null
     was?.cancel()
+    this.lookup?.abort()
+    this.lookup = null
     if (this.state.step === "working") trackImport(stoppedSummary("cancelled", "Cancelled."), 0)
     this.set({ step: "idle" })
   }
@@ -145,14 +157,25 @@ export class KicadImportController {
     if (result.kind === "cancelled") return
     if (result.kind === "choose") return this.set({ step: "choose", boards: result.boards })
 
-    const { outcome, durationMs } = result
-    const { summary } = outcome
-    if (summary.status !== "imported" || !outcome.project) {
-      trackImport(summary, durationMs)
-      return this.set({ step: "report", summary, projectId: null, name: reportName(summary), saveError: null })
+    const { durationMs } = result
+    let outcome = result.outcome
+    if (outcome.summary.status !== "imported" || !outcome.project) {
+      trackImport(outcome.summary, durationMs)
+      return this.set({ step: "report", summary: outcome.summary, projectId: null, name: reportName(outcome.summary), saveError: null })
     }
+    // The parts that carry an LCSC number are looked up before the project is saved, so what is found is in it (a network step, so it is the page's and not the importer's).
+    if (hasLcscNumbers(outcome.project)) {
+      this.set({ step: "working", phase: "matching" })
+      const abort = (this.lookup = new AbortController())
+      const lookup = this.deps.lcsc !== undefined ? this.deps.lcsc : (() => { const s = supplierParts(); return s ? lookupFromSource(s) : null })()
+      const matched = await attachLcsc(outcome, lookup, { signal: abort.signal })
+      if (this.lookup !== abort || abort.signal.aborted) return
+      this.lookup = null
+      outcome = matched.outcome
+    }
+    const { summary } = outcome
     this.set({ step: "working", phase: "saving" })
-    const name = outcome.project.name
+    const name = outcome.project!.name
     const mine = (this.saving = ++this.saves)
     // A connection that is down holds a save and sends it when it is back, so the promise may wait a long time.
     const slow = setTimeout(() => {

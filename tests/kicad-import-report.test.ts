@@ -292,7 +292,7 @@ describe("the copy", () => {
   })
 
   it("every phase has a label", () => {
-    expect(Object.keys(PHASE_LABELS).sort()).toEqual(["building", "reading", "saving"])
+    expect(Object.keys(PHASE_LABELS).sort()).toEqual(["building", "matching", "reading", "saving"])
   })
 
   it("no summary built here carries a stack or a file path of this machine", () => {

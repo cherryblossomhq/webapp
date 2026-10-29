@@ -529,6 +529,11 @@ export interface FootprintDef {
    * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`), kept as it was given.
    */
   package?: string
+  /**
+   * The footprint the editor ships (its library's, or a footprinter string) that this land has the same pads as, pad for pad (`likeFootprint`): a board the editor wrote names its footprints
+   * that way, and the land read back is then known to be that one. The 3D view draws the body that footprint has. Absent: the land is its own.
+   */
+  like?: string
 }
 
 // ---------- Symbol drawings (S10) ----------

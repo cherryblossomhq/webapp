@@ -30,15 +30,18 @@ export function Shell({ onDismiss, label, children }: { onDismiss?: () => void; 
   )
 }
 
-const STEPS: (Phase | "saving")[] = ["reading", "building", "saving"]
+const STEPS: (Phase | "matching" | "saving")[] = ["reading", "building", "saving"]
+/** The steps while the LCSC numbers are being looked up, which only a board that has any does. */
+const STEPS_WITH_LOOKUP: (Phase | "matching" | "saving")[] = ["reading", "building", "matching", "saving"]
 
-function Progress({ phase, slow, onCancel }: { phase: Phase | "saving"; slow: boolean; onCancel: () => void }) {
-  const at = STEPS.indexOf(phase)
+function Progress({ phase, slow, onCancel }: { phase: Phase | "matching" | "saving"; slow: boolean; onCancel: () => void }) {
+  const steps = phase === "matching" ? STEPS_WITH_LOOKUP : STEPS
+  const at = steps.indexOf(phase)
   return (
     <>
       <h2 className="text-[15px] font-[650] text-ink">Importing from KiCad</h2>
       <ol className="mt-3 space-y-2" aria-live="polite">
-        {STEPS.map((step, i) => (
+        {steps.map((step, i) => (
           <li key={step} className={`flex items-center gap-2 text-[13px] ${i > at ? "text-ink-3" : "text-ink"}`}>
             {i < at ? <CheckCircle2 size={15} className="text-ok" /> : i === at ? <Loader2 size={15} className="animate-spin" /> : <span className="size-[15px]" />}
             {PHASE_LABELS[step]}

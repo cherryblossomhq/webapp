@@ -33,3 +33,28 @@ export function pinKindOfType(type: string, name: string): PinDef["kind"] | "unk
 }
 
 export const PIN_TYPES: readonly PinType[] = ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect"]
+
+/**
+ * The KiCad electrical type an editor role is written as, the inverse of `pinKindOfType` where the role says everything: an input is an input, an output an output, a
+ * pin that drives and takes is bidirectional, power and ground are power inputs (the import tells the two by the pin's name), no connect is no connect. A role the
+ * pin has none of is no type, which the file's own default (passive) stands for.
+ */
+export function pinTypeOfKind(kind: PinDef["kind"]): PinType | undefined {
+  switch (kind) {
+    case "input":
+      return "input"
+    case "output":
+      return "output"
+    case "io":
+      return "bidirectional"
+    case "passive":
+      return "passive"
+    case "power":
+    case "ground":
+      return "power_in"
+    case "nc":
+      return "no_connect"
+    default:
+      return undefined
+  }
+}

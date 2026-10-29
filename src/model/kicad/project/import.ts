@@ -36,6 +36,7 @@ import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegac
 import { applyClassRules } from "./classRules"
 import { applyProRules, lostRuleSettings } from "./rules"
 import { KicadProjectFileError, accountPro, designSettingsNeeds, proBusAliases, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
+import { isMarkedHole, restoreMountingHoles } from "../mountingHoles"
 
 // The KiCad project import: a `.kicad_pro`, the `.kicad_sch` sheets and the `.kicad_pcb`, as one
 // project. The board is imported by the board importer, which draws a generated schematic (a label
@@ -458,6 +459,13 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- one project: the board's copper and lands, the schematic's parts, wires and labels ----------
   const merged = mergeProjects(boardResult.project, sch, link, componentOf, symbolFootprint, kicadBoard, report)
+  // The corner mounting holes the editor wrote (four marked footprints) are the board's own setting again.
+  const holes = restoreMountingHoles(merged.project, merged.loose.filter((l) => isMarkedHole(l.fp)))
+  if (holes.restored.size) {
+    merged.project = holes.project
+    merged.loose = merged.loose.filter((l) => !holes.restored.has(l.fp))
+    report.entries.push({ code: "mounting-holes", severity: "note", object: "the board's 4 corner mounting holes", why: "They are the board's own mounting holes again, as the editor writes them, and not four parts." })
+  }
   // X10: the project file's net classes and design rules, before the classes the schematic's labels give.
   if (pro && !picked.proIsLegacy) {
     const withRules = applyProRules(merged.project, pro, kicadBoard, boardNetLabels(kicadBoard), report)
@@ -503,7 +511,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   }
   const libraryWarnings = legacyWarnings(gate.tree, covered)
   if (libraryWarnings.length) report.warnings = libraryWarnings
-  reportLinks(report, link, kicadBoard, sch, symbolFootprint)
+  reportLinks(report, link, kicadBoard, sch, symbolFootprint, holes.restored)
 
   const bytes = byteLength(serializeProject(merged.project))
   const limit = options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES
@@ -560,7 +568,7 @@ export function projectNeeds(pro: KicadPro | null, rules: KicadRules | null): Ne
   return [...merged.values()]
 }
 
-function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, sch: SchematicBuild, symbolFootprint: Map<object, unknown>) {
+function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, sch: SchematicBuild, symbolFootprint: Map<object, unknown>, restored: ReadonlySet<KicadFootprint> = new Set()) {
   const c = link.counts
   report.entries.push({
     code: "footprint-links",
@@ -569,7 +577,7 @@ function reportLinks(report: ImportReport, link: LinkResult, board: KicadBoard, 
     why: `${c.path + c.timestamp} of ${c.footprints} footprints were linked to their symbol by path, ${c.reference} by reference designator, and ${c.none} have no symbol${c.none ? ` (${c.noneNoPath} placed by hand with no link, ${c.noneWithPath} with a link to a symbol that is not in the schematic)` : ""}.`,
     count: c.footprints,
   })
-  const loose = link.links.filter((l) => !l.record && !/\*/.test(l.ref))
+  const loose = link.links.filter((l) => !l.record && !/\*/.test(l.ref) && !restored.has(board.footprints[l.footprint]))
   if (loose.length) {
     report.entries.push({ code: "footprint-without-symbol", severity: "note", object: `${loose.length} footprint${loose.length > 1 ? "s" : ""} (${loose.slice(0, 5).map((l) => l.ref || "(no reference)").join(", ")}${loose.length > 5 ? ", ..." : ""})`, why: "No symbol in the schematic claims them. They stay parts with a footprint and no symbol: mounting holes, logos, or parts the schematic no longer has.", count: loose.length })
   }

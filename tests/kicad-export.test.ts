@@ -253,7 +253,7 @@ describe("KiCad project settings", () => {
     let ownGap = 0
     for (const zone of zones) {
       const net = zone.match(/\(net_name (?:"([^"]*)"|(\S+?))\)/)!
-      const layer = zone.match(/\(layer (\S+?)\)/)![1]
+      const layer = zone.match(/\(layer "?([^"\s)]+)"?\)/)![1]
       const own = zoned.zones.find((z) => z.net === (net[1] ?? net[2]) && (z.layer === "top" ? "F.Cu" : "B.Cu") === layer)
       const gap = own === first ? 0.5 : 0.35
       if (own === first) ownGap++

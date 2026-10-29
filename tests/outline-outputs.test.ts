@@ -292,9 +292,20 @@ describe("a board drawn from scratch with an outline, a cutout and a slot", () =
       expect(notes.join(" ")).toMatch(/Edge\.Cuts lines, arcs and curves, exactly/)
     })
 
-    it("an outline-less board is written as it always was", () => {
-      const p = populated({ ...createProject("plain") })
+    it("an outline-less board with square corners is written as it always was", () => {
+      const p = populated({ ...createProject("plain"), board: { ...createProject("plain").board, cornerRadius: 0 } })
       expect(applyOutline("(kicad_pcb\n)", p).text).toBe("(kicad_pcb\n)")
+    })
+
+    it("an outline-less board with rounded corners has four lines and a true arc at each corner, not the converter's run of short lines", () => {
+      const p = createProject("plain")
+      expect(p.board.cornerRadius).toBe(1)
+      const { text } = applyOutline("(kicad_pcb\n)", p)
+      expect(text.split("(gr_line").length - 1).toBe(4)
+      expect(text.split("(gr_arc").length - 1).toBe(4)
+      // the bottom left corner's arc in KiCad's frame (x + 100, 100 - y): from (x0, y0 + r) round to (x0 + r, y0)
+      expect(text).toContain("(start 75 119)")
+      expect(text).toContain("(end 76 120)")
     })
 
     it("Circuit JSON has the biggest piece as the outline, each cutout as a cutout, and says what it cannot hold", () => {

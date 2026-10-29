@@ -1,8 +1,8 @@
-import { orientPoint, round } from "../lib/geometry"
+import { orientPoint, round, transformPoint } from "../lib/geometry"
 import { pinKindOfType } from "./pinKinds"
 import { expandPinNumber } from "./pinNumbers"
 import { samplePrimitive } from "./primitiveGeometry"
-import { SCH_TEXT, computeBounds } from "./symbols"
+import { SCH_TEXT, anchorToExtent, computeBounds, rotateExtent } from "./symbols"
 import type {
   ComponentInstance,
   DrawingItem,
@@ -460,6 +460,30 @@ export function textOnSheet(angle: number, h: "left" | "right" | undefined, v: "
   const dir = orientPoint(d, sch.rot, sch.mirror)
   const sgn = (n: number) => (Math.abs(n) < 1e-9 ? 0 : n > 0 ? 1 : -1) as -1 | 0 | 1
   return { extent: { x: sgn(ew.x), y: sgn(ew.y) }, vertical: Math.abs(dir.y) > Math.abs(dir.x) + 1e-9 }
+}
+
+/**
+ * Where a text of the editor's own symbol (its designator, its value, a pin's name) lies on the sheet once the symbol is turned and mirrored, as `SymbolBody` draws it:
+ * the anchor's offset from the symbol's origin, which way the text extends from it, and whether it reads up the page.
+ */
+export function symbolTextOnSheet(
+  p: Extract<SymbolPrimitive, { type: "text" }>,
+  sch: { rot: Rotation; mirror?: ComponentInstance["sch"]["mirror"] },
+): { at: Vec2; extent: { x: -1 | 0 | 1; y: -1 | 0 | 1 }; vertical: boolean } {
+  const sgn = (v: number) => (Math.abs(v) < 1e-9 ? 0 : v > 0 ? 1 : -1) as -1 | 0 | 1
+  const pinText = p.role === "pin" || p.role === "pinNumber"
+  const vertical = sch.rot === 90 || sch.rot === 270
+  if (p.angle !== undefined || sch.mirror) {
+    const angle = p.angle ?? 0
+    const up = Math.abs(angle % 180) === 90
+    const e = anchorToExtent(p.anchor)
+    const base = up ? { x: -e.y, y: e.x } : { x: e.x, y: e.y }
+    const dir = orientPoint({ x: Math.cos((angle * Math.PI) / 180), y: Math.sin((angle * Math.PI) / 180) }, sch.rot, sch.mirror)
+    const w = orientPoint(base, sch.rot, sch.mirror)
+    return { at: orientPoint(p, sch.rot, sch.mirror), extent: { x: sgn(w.x), y: sgn(w.y) }, vertical: Math.abs(dir.y) > Math.abs(dir.x) + 1e-9 }
+  }
+  const ext = rotateExtent(anchorToExtent(p.anchor), sch.rot)
+  return { at: transformPoint(p, { x: 0, y: 0 }, sch.rot), extent: { x: ext.x, y: ext.y }, vertical: pinText && (p.alongPin ? !vertical : vertical) }
 }
 
 /** The text of one field: the reference (with its unit letter when the part has several units), the value (a power port's net), or a property. */

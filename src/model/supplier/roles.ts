@@ -59,7 +59,7 @@ const SYNONYMS = new Map(
   }),
 )
 
-const GROUND = /^(GND|VSSA|VSSD|VSSIO|CMIP|CMOP|0V)\d*$/
+const GROUND = /^(GND|AGND|DGND|PGND|SGND|VSSA|VSSD|VSSIO|CMIP|CMOP|0V)\d*$/
 const EXPOSED = /^EP\d*$/
 const NO_CONNECT = /^NC\d*$/
 const POWER_OUT = /^(VOUT|VO|VREGOUT|VDDOUT|VCCOUT|VOUTA|VOUTB)\d*$/

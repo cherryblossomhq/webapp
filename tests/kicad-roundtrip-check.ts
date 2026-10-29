@@ -368,7 +368,10 @@ export function withoutProjectFileRules(canonical: any): any {
   const keep = new Set(RULES_IN_BOARD_FILE)
   const rules: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(canonical.rules ?? {})) if (keep.has(k)) rules[k] = v
-  return { ...canonical, rules }
+  // What the import keeps for the export (`Project.kicad`: the page, the origins, the plot settings, the layer table, the project file) is not the project the editor edits, and the file the writer
+  // makes adds rows to the layer table for the layers it uses: the KiCad-judged corpus test (`kicad-judge-corpus.test.ts`) checks that it is written back.
+  const { kicad: _kicad, ...rest } = canonical
+  return { ...rest, rules }
 }
 
 // ---------- the whole comparison ----------

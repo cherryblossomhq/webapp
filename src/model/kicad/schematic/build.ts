@@ -522,6 +522,8 @@ function buildPass(
       partId,
       ref,
       props: {},
+      // The first use of a sheet has the symbol's own uuid (what a footprint's path ends with); a later use shares it, so it is not repeated.
+      ...(use.first && sym.uuid ? { uuid: sym.uuid } : {}),
       ...flagsProp(sym),
       ...(variantsHere ? { variants: variantsHere } : {}),
       footprint: onBoard?.land ?? "",

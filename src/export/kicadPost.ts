@@ -53,6 +53,10 @@ const flagUuid = (n: number): string => stableUuid("8000", n + 1)
 export interface SymbolFields {
   /** Library id of the footprint the board uses. */
   footprint?: string
+  /** The value, which the converter leaves empty for a symbol that does not show it. */
+  value?: string
+  /** A symbol that came from KiCad: each of its fields is written as it had it, an empty one too (the converter's own text for a field the symbol did not have is not). */
+  exact?: true
   datasheet?: string
   description?: string
   /** Further fields in the order they are shown, such as MPN, LCSC and Voltage. */
@@ -65,19 +69,28 @@ const HANDLED_PROPS = new Set(["mpn", "lcsc", "manufacturer", "datasheet", "desc
 const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 /** The fields a part's symbol carries: part numbers, and every property the symbol doesn't already show. */
-export function symbolFields(c: ComponentInstance, footprintIds: Map<string, string>): SymbolFields {
+export function symbolFields(c: ComponentInstance, footprintIds: Map<string, string>, fromKicad = false): SymbolFields {
   const part = findPart(c.partId)
   const props = c.props
-  const extra: [string, string][] = []
-  const mpn = props.mpn ?? part?.mpn
-  if (mpn) extra.push(["MPN", mpn])
-  if (props.manufacturer) extra.push(["Manufacturer", props.manufacturer])
-  if (props.lcsc) extra.push(["LCSC", props.lcsc])
-  for (const [key, value] of Object.entries(props)) {
-    if (!value || HANDLED_PROPS.has(key) || key === part?.valueProp || RESERVED.has(key.toLowerCase())) continue
-    extra.push([capitalise(key), value])
+  // A field a KiCad symbol had is named as it was (`Datasheet`, `Description`); the editor's own parts name theirs in lower case.
+  const named = (name: string) => {
+    const key = Object.keys(props).find((k) => k.toLowerCase() === name)
+    return key === undefined ? undefined : props[key]
   }
-  return { footprint: footprintIds.get(c.ref), datasheet: props.datasheet, description: part?.description, extra }
+  const extra: [string, string][] = []
+  const mpn = named("mpn") ?? part?.mpn
+  if (mpn) extra.push(["MPN", mpn])
+  if (named("manufacturer")) extra.push(["Manufacturer", named("manufacturer")!])
+  if (named("lcsc")) extra.push(["LCSC", named("lcsc")!])
+  for (const [key, value] of Object.entries(props)) {
+    if (!value || HANDLED_PROPS.has(key.toLowerCase()) || key === part?.valueProp || RESERVED.has(key.toLowerCase())) continue
+    // A field of a KiCad symbol keeps the name it had; the editor's own properties are capitalised.
+    extra.push([fromKicad ? key : capitalise(key), value])
+  }
+  // A project that came from KiCad says what the symbol's own footprint field said, not the board's footprint (an empty field stays empty).
+  const footprint = fromKicad ? named("footprint") : footprintIds.get(c.ref)
+  if (fromKicad) return { footprint: footprint ?? "", value: named("value") ?? "", datasheet: named("datasheet") ?? "", description: named("description") ?? "", extra, exact: true }
+  return { footprint, datasheet: named("datasheet"), description: named("description") ?? part?.description, extra }
 }
 
 /** Reference to footprint library id (as written in the board file), read from the board. */
@@ -116,9 +129,10 @@ export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>):
     if (!f) return block
     let out = block
     const set = (key: string, value: string | undefined) => {
-      if (value) out = out.replace(new RegExp(`\\(property "${key}" "[^"]*"`), () => `(property "${key}" ${quote(value)}`)
+      if (value || (f.exact && value !== undefined)) out = out.replace(new RegExp(`\\(property "${key}" "[^"]*"`), () => `(property "${key}" ${quote(value)}`)
     }
     set("Footprint", f.footprint)
+    set("Value", f.value)
     set("Datasheet", f.datasheet)
     set("Description", f.description)
     const at = out.match(/\(property "Datasheet"[\s\S]*?\(at (\S+) (\S+) /)
@@ -531,10 +545,43 @@ export interface KicadProject {
 /** A net class pattern that matches exactly one net: KiCad reads it as a wildcard and as a regular expression, and a backslash before each character either reads specially makes the second match the name itself and the first match nothing a board would have. */
 const exactPattern = (net: string) => net.replace(/[\\.+*?^$()[\]{}|]/g, "\\$&")
 
+/** Whether a JSON value is an object that is not a list. */
+const isObject = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v)
+
+/** What the project file says of where its files are and of its sheets, which are the export's own (new files, new ids), not the original's. */
+const NOT_CARRIED = ["meta", "sheets", "boards", "libraries", "cvpcb"]
+
+/** The converter's project file with the settings of the file the project was imported from laid over it (`KicadCarry.pro`): the keys the original has win, key by key. */
+function mergeCarried(into: Json, carried: Json): void {
+  for (const [k, v] of Object.entries(carried)) {
+    if (isObject(v) && isObject(into[k])) mergeCarried(into[k] as Json, v)
+    else into[k] = v
+  }
+}
+
 /** The .kicad_pro with the project's design rules, default sizes, per-net trace widths and properties. */
 export function applyProjectSettings(pro: string, project: Project): KicadProject {
   const rules = project.rules
   const json = JSON.parse(pro) as Json
+  // What the original project file had that the editor does not edit comes first; what the project models is written over it below.
+  let carriedClasses: Json[] = []
+  if (project.kicad?.pro) {
+    try {
+      const original = JSON.parse(project.kicad.pro) as Json
+      for (const k of NOT_CARRIED) delete original[k]
+      if (isObject(original.schematic)) {
+        delete original.schematic.top_level_sheets
+        delete original.schematic.legacy_lib_dir
+        delete original.schematic.legacy_lib_list
+        delete original.schematic.last_opened_files
+      }
+      if (isObject(original.pcbnew)) delete original.pcbnew.last_paths
+      if (isObject(original.net_settings) && Array.isArray(original.net_settings.classes)) carriedClasses = original.net_settings.classes.filter(isObject)
+      mergeCarried(json, original)
+    } catch {
+      // a project file that does not read is not carried
+    }
+  }
   const unmatched: string[] = []
   const notes: string[] = []
   const classed = hasNetClasses(rules)
@@ -542,16 +589,29 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
   const minClearance = rules.minClearance ?? (classed ? Math.min(rules.clearance, ...(rules.netClasses ?? []).map((c) => c.clearance ?? rules.clearance)) : rules.clearance)
 
   const design = object(object(json, "board"), "design_settings")
+  // A rule the editor took from the original project file and that has not been edited since is written as the file had it.
+  let original: Json = {}
+  try {
+    const o = project.kicad?.pro ? (JSON.parse(project.kicad.pro) as Json) : {}
+    const d = isObject(o.board) && isObject(o.board.design_settings) ? o.board.design_settings : {}
+    original = isObject(d.rules) ? d.rules : {}
+  } catch {
+    original = {}
+  }
+  const snapshot = project.kicad?.proRules
+  const field = (name: string, current: number | undefined) => snapshot !== undefined && name in snapshot && (snapshot[name] ?? undefined) === current
+  const own = (key: string, name: string, current: number | undefined, value: number): number => (typeof original[key] === "number" && field(name, current) ? (original[key] as number) : value)
   Object.assign(object(design, "rules"), {
-    min_clearance: minClearance,
-    min_track_width: rules.minTraceWidth,
+    min_clearance: own("min_clearance", "minClearance", rules.minClearance, minClearance),
+    min_track_width: own("min_track_width", "minTraceWidth", rules.minTraceWidth, rules.minTraceWidth),
     // KiCad 9 has one smallest drill, for vias and through holes alike: the smaller of the two keeps it from flagging what the project allows
-    min_through_hole_diameter: rules.minViaDrill !== undefined ? Math.min(rules.minDrill, rules.minViaDrill) : rules.minDrill,
-    min_via_annular_width: rules.minAnnularRing,
-    min_via_diameter: rules.minViaDiameter ?? round(rules.minDrill + 2 * rules.minAnnularRing, 6),
-    min_hole_to_hole: rules.holeClearance,
-    min_hole_clearance: rules.clearance,
-    min_copper_edge_clearance: rules.edgeClearance,
+    min_through_hole_diameter: own("min_through_hole_diameter", "minDrill", rules.minDrill, rules.minViaDrill !== undefined ? Math.min(rules.minDrill, rules.minViaDrill) : rules.minDrill),
+    min_via_annular_width: own("min_via_annular_width", "minAnnularRing", rules.minAnnularRing, rules.minAnnularRing),
+    min_via_diameter: own("min_via_diameter", "minViaDiameter", rules.minViaDiameter, rules.minViaDiameter ?? round(rules.minDrill + 2 * rules.minAnnularRing, 6)),
+    min_hole_to_hole: own("min_hole_to_hole", "holeClearance", rules.holeClearance, rules.holeClearance),
+    // The editor has no hole clearance of its own: the file's is written back, and a board that never had one has the clearance.
+    min_hole_clearance: typeof original.min_hole_clearance === "number" ? original.min_hole_clearance : rules.clearance,
+    min_copper_edge_clearance: own("min_copper_edge_clearance", "edgeClearance", rules.edgeClearance, rules.edgeClearance),
     ...(rules.maxError !== undefined ? { max_error: rules.maxError } : {}),
     ...(rules.minMicroVia ? { min_microvia_diameter: rules.minMicroVia.diameter, min_microvia_drill: rules.minMicroVia.drill } : {}),
   })
@@ -620,6 +680,13 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
     if (rules.defaultClass?.name || rules.defaultClass?.description) notes.push(`KiCad 9 names the Default net class "Default" and gives it no description, so the project's own ("${rules.defaultClass.name ?? ""}"${rules.defaultClass.description ? `, "${rules.defaultClass.description}"` : ""}) stays in the project.`)
   }
   if (!classed && rules.defaultClass?.description) notes.push(`KiCad 9 gives the Default net class no description, so "${rules.defaultClass.description}" stays in the project.`)
+  // What the original's net classes said that the project does not model (wire width, colours, line style, bus width, tuning profile) is written back on the class of the same name.
+  const rebuilt = settings.classes as Json[]
+  for (const c of rebuilt) {
+    const was = carriedClasses.find((o) => o.name === c.name)
+    if (!was) continue
+    for (const [k, v] of Object.entries(was)) if (!(k in c) && k !== "priority") c[k] = v
+  }
 
   // Project properties as text variables, `${REVISION}` in KiCad's text fields.
   const variables = object(json, "text_variables")

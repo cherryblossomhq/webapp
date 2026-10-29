@@ -416,6 +416,8 @@ function landPadPlain(fp: KicadFootprint, pad: KicadPad, bottom: boolean, ids?: 
     if (far) post.back = postMachining(far)
     out.post = post
   }
+  if (pad.pinFunction) out.pinFunction = pad.pinFunction
+  if (pad.pinType) out.pinType = pad.pinType
   if (pad.dieLength !== undefined) out.dieLength = r6(pad.dieLength)
   if (pad.dieDelay !== undefined) out.dieDelay = round(pad.dieDelay, 6)
   return { def: out, ...(lossy ? { lossy } : {}), notes }

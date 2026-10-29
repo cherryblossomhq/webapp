@@ -392,7 +392,10 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       issues.note("a layer row that is not (number name type)")
       continue
     }
-    layers.push({ ordinal, name: row[1], type: typeof row[2] === "string" ? row[2] : "", ...(typeof row[3] === "string" ? { userName: row[3] } : {}) })
+    // The words after the type: the name a person gave the layer, and `hide` (a word of KiCad's parser, not a name).
+    const after = row.slice(3).filter((w): w is string => typeof w === "string")
+    const named = after.find((w) => w !== "hide")
+    layers.push({ ordinal, name: row[1], type: typeof row[2] === "string" ? row[2] : "", ...(named !== undefined ? { userName: named } : {}), ...(after.includes("hide") ? { hide: true as const } : {}) })
   }
   const copperNames = layers.filter((l) => COPPER_TYPES.has(l.type)).map((l) => l.name)
   // KiCad has a front, a back and 30 inner copper layers (`BOARD_STACKUP`'s limit, `MAX_CU_LAYERS` is 32): a file with more is not one KiCad wrote.
@@ -800,6 +803,11 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       thermalBridge: kid(fillNode, "thermal_bridge_width") ? numAt(kid(fillNode, "thermal_bridge_width"), 1, 0) : null,
       smoothing: smoothWord === "chamfer" || smoothWord === "fillet" ? smoothWord : "none",
       radius: numAt(kid(fillNode, "radius"), 1, 0),
+      outlineHatch: (() => {
+        const h = kid(z, "hatch")
+        const style = strAt(h, 1)
+        return h && (style === "none" || style === "edge" || style === "full") ? { style, pitch: numAt(h, 2, 0.5) } : null
+      })(),
       islandMode: numAt(kid(fillNode, "island_removal_mode"), 1, 0),
       islandArea: kid(fillNode, "island_area_min") ? numAt(kid(fillNode, "island_area_min"), 1, 0) : null,
       fillMode: modeWord === "hatch" ? "hatch" : modeWord === "thieving" ? "thieving" : "polygon",

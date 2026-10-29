@@ -224,6 +224,7 @@ export function convertPartTexts(texts: KicadText[], ref: string, place: PartPla
     const text = kind === "user" ? t.text : kind === "reference" && t.text !== shown.ref ? t.text : undefined
     const made: PartText = {
       ...rest,
+      ...(kind === "user" && t.field ? { name: t.field } : {}),
       ...(boxed ? { box: boxed.box } : {}),
       layer,
       ...(mirror ? { mirror: true as const } : {}),

@@ -94,6 +94,8 @@ export function normalizeZones(raw: unknown): Zone[] {
     if (typeof item.name === "string" && item.name) z.name = item.name
     if (typeof item.uuid === "string" && /^[0-9a-f]{32}$/.test(item.uuid)) z.uuid = item.uuid
     if (item.unordered === true) z.unordered = true
+    const oh = item.outlineHatch
+    if (isObject(oh) && (oh.style === "none" || oh.style === "edge" || oh.style === "full") && finite(oh.pitch) && oh.pitch > 0) z.outlineHatch = { style: oh.style, pitch: oh.pitch }
     // The stored form is `ol`; a hand-written file may give plain paths, `outline: [{ closed, segs }]`.
     const rings = item.ol !== undefined ? unpackRings(item.ol) : Array.isArray(item.outline) ? (normalizeOutline({ paths: item.outline })?.paths.map((p) => ({ ...p, closed: true })) ?? null) : null
     // A polygon that was stored and does not read is a zone lost, not a zone over the whole board.

@@ -203,6 +203,8 @@ function convertOne(z: KicadZone, cx: OneContext): One {
     }
   }
   if (z.locked) zone.locked = true
+  // How KiCad draws the outline (its display style and pitch), where it is not KiCad's own default for a new zone.
+  if (z.outlineHatch && !(z.outlineHatch.style === "edge" && Math.abs(z.outlineHatch.pitch - 0.5) < 1e-9)) zone.outlineHatch = z.outlineHatch
   // X24: where the hatch pattern starts on a layer (a zone keeps it whether or not it is hatched).
   const hatchAt: NonNullable<Zone["hatchAt"]> = {}
   for (const p of z.properties) {

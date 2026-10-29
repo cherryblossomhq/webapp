@@ -72,7 +72,7 @@ function pts(path: ShapePath, to: ToFile): string {
 }
 
 /** The zone as one `(zone ...)` list of KiCad 9. */
-export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber: (name: string) => number, boardRings: ShapePath[] | null, fallbackUuid?: () => string, to: ToFile = toPage): string {
+export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber: (name: string) => number, boardRings: ShapePath[] | null, fallbackUuid?: () => string, to: ToFile = toPage, netName: (name: string) => string = (n) => n): string {
   const xy = xyOf(to)
   const rule = z.keepout !== undefined
   const layers = zoneLayers(z)
@@ -89,12 +89,12 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
   const o: string[] = []
   o.push(`  (zone`)
   o.push(`    (net ${rule || !z.net ? 0 : netNumber(z.net)})`)
-  o.push(`    (net_name ${quote(rule ? "" : z.net)})`)
+  o.push(`    (net_name ${quote(rule ? "" : netName(z.net))})`)
   if (z.locked) o.push(`    (locked yes)`)
   o.push(names.length > 1 ? `    (layers ${names.map(quote).join(" ")})` : `    (layer ${quote(names[0])})`)
   o.push(`    (uuid ${z.uuid ? `${z.uuid.slice(0, 8)}-${z.uuid.slice(8, 12)}-${z.uuid.slice(12, 16)}-${z.uuid.slice(16, 20)}-${z.uuid.slice(20)}` : fallbackUuid ? fallbackUuid() : uuidOf(z.id)})`)
   if (z.name) o.push(`    (name ${quote(z.name)})`)
-  o.push(`    (hatch edge 0.5)`)
+  o.push(`    (hatch ${z.outlineHatch?.style ?? "edge"} ${mm6(z.outlineHatch?.pitch ?? 0.5)})`)
   if ((z.priority ?? 0) > 0) o.push(`    (priority ${z.priority})`)
   if (z.teardrop) o.push(`    (attr (teardrop (type ${z.teardrop})))`)
   const join = set.connect === "solid" ? " yes" : set.connect === "none" ? " no" : set.connect === "tht" ? " thru_hole_only" : ""

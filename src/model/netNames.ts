@@ -71,6 +71,18 @@ const barePad = (name: string) => name.includes("-Pad")
 /** The name KiCad gives a net from a driver: a local one has the sheet's path in front. The root sheet's path is `/`. */
 export const driverName = (text: string, kind: "local" | "global", sheetPath = "/") => (kind === "local" ? `${sheetPath}${text}` : text)
 
+/**
+ * A net's name as KiCad writes it into a file: the label's own text has its `/` escaped as `{slash}` (the editor holds names as the user reads them), while the sheet path in front of a local
+ * label's name keeps its slashes. A net that no label or power symbol names is written as it is called.
+ */
+export function kicadNetName(net: Pick<Net, "name" | "named" | "label" | "power">, plain = false): string {
+  // A project named by the editor's rule (no driver rules) holds a label's text as the net's name; a slash in it is the text's own, except a leading one, which is the root sheet's path (a KiCad board's `/VBATT`).
+  if (plain && net.named && !net.label && !net.power) return net.name.slice(0, 1) + net.name.slice(1).replace(/\//g, "{slash}")
+  const text = net.label?.text ?? net.power?.text
+  if (!text || !text.includes("/") || !net.name.endsWith(text)) return net.name
+  return net.name.slice(0, net.name.length - text.length) + text.replace(/\//g, "{slash}")
+}
+
 /** The names the editor and KiCad make up for a net nothing names: `Net-(R1-2)`, `Net-(R1-Pad2)`, `unconnected-(R1-Pad2)`. */
 export const isAutoNetName = (name: string) => /^(?:Net|unconnected)-\(.+\)$/.test(name) || /^N\$\d+$/.test(name)
 

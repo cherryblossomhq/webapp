@@ -617,6 +617,7 @@ export function readDrawing(raw: unknown): SymbolDrawing | null {
     if (v !== undefined && !(typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 256)) return null
   }
   if (d.power !== undefined && d.power !== "global" && d.power !== "local") return null
+  if (d.ki !== undefined && !(Array.isArray(d.ki) && d.ki.every((k) => !!k && typeof k === "object" && typeof (k as { name: unknown }).name === "string" && typeof (k as { value: unknown }).value === "string"))) delete d.ki
   return d as unknown as SymbolDrawing
 }
 

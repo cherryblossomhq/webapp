@@ -78,7 +78,7 @@ export function labelNode(l: NetLabel, toPage: ToPage, uuid: string): string {
   const global = l.kind === "global"
   const hierarchical = l.kind === "hierarchical"
   const j = labelJustify(l)
-  const out: string[] = [`  (${global ? "global_label" : hierarchical ? "hierarchical_label" : "label"} ${quote(hierarchical ? l.name.replace(/\//g, "{slash}") : l.name)}`]
+  const out: string[] = [`  (${global ? "global_label" : hierarchical ? "hierarchical_label" : "label"} ${quote(l.name.replace(/\//g, "{slash}"))}`]
   if (global || hierarchical) out.push(`    (shape ${l.shape ?? "bidirectional"})`)
   out.push(`    (at ${mm6(p.x)} ${mm6(p.y)} ${l.rot})`)
   if (l.fieldsAutoplaced) out.push("    (fields_autoplaced yes)")

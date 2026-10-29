@@ -420,6 +420,21 @@ export function fillZonesReusing(project: Project, sch: SchematicConnectivity, i
   return fillPolygonZonesEx(project, sch, input, { stale })
 }
 
+/**
+ * Whether the copper of a plated through-hole pad and a filled region share copper. A pad's thermal relief reaches it through spokes that cross its ring,
+ * and the drill is cut out of the fill, so the middle of the pad (which `fillTester` is asked about for any other copper) is in the hole and not in the fill.
+ */
+export function padJoinsFill(pad: WorldPad, polygon: FillPolygon): boolean {
+  const copper = padPaths(pad)
+  const hole = pad.holeDiameter ? [circlePath(pad.hole?.x ?? pad.x, pad.hole?.y ?? pad.y, pad.holeDiameter / 2)] : []
+  const ring = hole.length ? Clipper.difference(copper, hole, FillRule.NonZero) : copper
+  if (!ring.length) return false
+  const fill = polygon.map((r) => r.map((q) => pt(q.x, q.y)))
+  const shared = Clipper.intersect(ring, fill, FillRule.EvenOdd)
+  const least = (0.01 * S) ** 2
+  return shared.some((p) => Math.abs(Clipper.area(p)) > least)
+}
+
 /** Point-in-fill tester in millimetres, honouring holes. */
 export function fillTester(polygon: FillPolygon): (p: Vec2) => boolean {
   const rings = polygon.map((ring) => ring.map((q) => pt(q.x, q.y))).map(ringTester)

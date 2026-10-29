@@ -323,6 +323,7 @@ export function drawingFromLib(lib: ResolvedLibSymbol): DrawingResult {
     ...(lib.power ? { power: lib.power } : {}),
     ...(duplicates || groups.length ? { jumpers: { ...(duplicates ? { duplicates: true as const } : {}), ...(groups.length ? { groups } : {}) } } : {}),
     fields: lib.props.filter((p) => !/^ki_/.test(p.name)).map((p) => ({ name: p.name, value: p.value, place: placeOf(p, undefined, notes) })),
+    ...(lib.props.some((p) => /^ki_/.test(p.name)) ? { ki: lib.props.filter((p) => /^ki_/.test(p.name)).map((p) => ({ name: p.name, value: p.value })) } : {}),
   }
   return { drawing, problems, notes: [...notes] }
 }

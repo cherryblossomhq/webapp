@@ -388,6 +388,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
       if (withRules.problems.length) return refuse("inexact", `The project file's net classes cannot be brought in exactly: ${withRules.problems.slice(0, 3).join("; ")}${withRules.problems.length > 3 ? "; ..." : ""}. Nothing is guessed, so the project is not imported.`)
       boardProject = withRules.project
     }
+    boardProject = carryProjectFiles(boardProject, picked, pro, report)
     return { status: "imported", project: boardProject, report, differences: [], link: null, board: kicadBoard, tree: null, pro, rules, accounts: { board: boardResult.report.account, schematic: null, pro: proAccount, rules: rulesAccount }, bytes: boardResult.bytes, files: boardResult.files }
   }
   const gated = gateSchematic({ files: picked.sheets, root: picked.root.path }, { built, name: options.name, source: options.source, limitBytes: options.limitBytes, databaseSymbols: options.databaseSymbols })
@@ -494,6 +495,8 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   // Every other footprint is a part of the board with its own nets, labelled as the board's generated schematic labels them: its pads are compared too.
   for (const { fp, component } of merged.loose) pairs.push({ fp, components: [component] })
   const differences = compareNets(merged.project, pairs)
+  // A pad alone on a net of the board (`unconnected-(R1-Pad2)`) is on no net of the project: it keeps its net's name, for the export to write back.
+  merged.project = withLoneNets(merged.project, pairs)
   // A symbol taken from a library of a KiCad 5 project, not from the schematic's cache, may have other pin numbers than the drawing the wires were made for: a renumbered part shows as a pad whose net is not its pin's, and the difference says where the symbol came from.
   const fromLibrary = new Map(librarySymbols(gate.tree).map((s) => [symbolRef(s), s] as const))
   for (const d of differences) {
@@ -513,6 +516,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (libraryWarnings.length) report.warnings = libraryWarnings
   reportLinks(report, link, kicadBoard, sch, symbolFootprint, holes.restored)
 
+  merged.project = carryProjectFiles(merged.project, picked, pro, report)
   const bytes = byteLength(serializeProject(merged.project))
   const limit = options.limitBytes ?? PROJECT_SIZE_LIMIT_BYTES
   if (bytes > limit) {
@@ -523,6 +527,53 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (refusals(report).length) return refuseBuilt("inexact", refusals(report)[0].why)
   report.account = gate.report.account
   return { status: "imported", project: merged.project, report, differences, link, board: kicadBoard, tree: gate.tree, pro, rules, accounts: { board: boardResult.report.account, schematic: gate.report.account, pro: proAccount, rules: rulesAccount }, bytes, files: boardResult.files }
+}
+
+/** The nets a board gave pads that no net of the project holds, by part and pin (`ComponentInstance.loneNets`). */
+function withLoneNets(project: Project, pairs: { fp: KicadFootprint; components: ComponentInstance[] }[]): Project {
+  const { nets, pinNet } = computeConnectivity(project)
+  const count = new Map<string, number>()
+  for (const id of pinNet.values()) count.set(id, (count.get(id) ?? 0) + 1)
+  const named = new Map(nets.map((n) => [n.id, n.named]))
+  const lone = new Map<string, Record<string, string>>()
+  for (const { fp, components } of pairs) {
+    for (const p of fp.pads) {
+      if (!p.number || p.type === "np_thru_hole" || !p.netRaw) continue
+      const owner = components.find((c) => findPart(c.partId)?.pins.some((q) => q.number === p.number)) ?? components[0]
+      const id = pinNet.get(pinKey(owner.id, p.number))
+      // on a net of the project that has other pins, or a name of its own: it is on that net
+      if (id && ((count.get(id) ?? 0) > 1 || named.get(id))) continue
+      ;(lone.get(owner.id) ?? lone.set(owner.id, {}).get(owner.id)!)[p.number] = p.netRaw
+    }
+  }
+  return lone.size ? { ...project, components: project.components.map((c) => (lone.has(c.id) ? { ...c, loneNets: { ...c.loneNets, ...lone.get(c.id) } } : c)) } : project
+}
+
+/** The most of a project file or rules file the project keeps for the export (the project holds up to 900 KB in all). */
+const CARRIED_FILE_LIMIT = 200 * 1024
+
+/**
+ * The project file's settings and the custom rules file, kept as the files had them for the export (`KicadCarry`): the editor holds the net classes and the design rules it models and the export
+ * writes those from the project, over the rest, which it writes back unchanged (the severities of each check, the default sizes the router offers, the text sizes of a new item, the BOM and ERC settings...).
+ */
+function carryProjectFiles(project: Project, picked: { pro?: { data: string | Uint8Array } | null; proIsLegacy?: boolean; rules?: { data: string | Uint8Array } | null }, pro: KicadPro | null, report: ImportReport): Project {
+  const kicad: NonNullable<Project["kicad"]> = { ...project.kicad }
+  const text = (data: string | Uint8Array) => (typeof data === "string" ? data : new TextDecoder().decode(data)).replace(/^﻿/, "")
+  if (pro && !picked.proIsLegacy) {
+    const json = JSON.stringify(pro.json)
+    if (json.length <= CARRIED_FILE_LIMIT) {
+      kicad.pro = json
+      const r = project.rules
+      kicad.proRules = { minClearance: r.minClearance ?? null, minTraceWidth: r.minTraceWidth, minDrill: r.minDrill, minViaDiameter: r.minViaDiameter ?? null, minAnnularRing: r.minAnnularRing, holeClearance: r.holeClearance, edgeClearance: r.edgeClearance, clearance: r.clearance }
+    }
+    else report.entries.push({ code: "pro-too-large-to-keep", severity: "not-brought", object: "the project file's settings", why: `The project file is ${Math.round(json.length / 1024)} KB, more than the ${CARRIED_FILE_LIMIT / 1024} KB the project keeps for the export, so the settings the editor has no field for are not written back.` })
+  }
+  if (picked.rules) {
+    const body = text(picked.rules.data)
+    if (body.length <= CARRIED_FILE_LIMIT) kicad.dru = body
+    else report.entries.push({ code: "dru-too-large-to-keep", severity: "not-brought", object: "the custom rules file", why: `The rules file is ${Math.round(body.length / 1024)} KB, more than the ${CARRIED_FILE_LIMIT / 1024} KB the project keeps for the export, so it is not written back.` })
+  }
+  return Object.keys(kicad).length ? { ...project, kicad } : project
 }
 
 /** S9: the variants the project file lists (`schematic.variants`: a name and, in newer files, a description each). */
@@ -777,7 +828,7 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
     void _symbolFlags
     // X23: the footprint's units and points come over, and what the footprint's variants say that the symbol's do not (the symbol's own word stands, as its flags do, flag by flag and field by field).
     const variants = joinOverrides(b?.variants, c.variants)
-    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath && c.inst === undefined && !hierarchical ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}) }
+    return { ...rest, ...(flags ? { flags } : {}), ...(variants ? { variants } : {}), ...(b?.texts ? { texts: b.texts } : {}), ...(b?.fpid ? { fpid: b.fpid } : {}), ...(b?.classes ? { classes: b.classes } : {}), ...(b?.sheetPath && c.inst === undefined && !hierarchical ? { sheetPath: b.sheetPath } : {}), ...(b?.units ? { units: b.units } : {}), ...(b?.points ? { points: b.points } : {}), ...(b?.loneNets ? { loneNets: b.loneNets } : {}), ...(b?.modelRefs ? { modelRefs: b.modelRefs } : {}) }
   })
   if (differing.length) {
     report.entries.push({

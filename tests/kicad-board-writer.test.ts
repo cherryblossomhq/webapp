@@ -369,7 +369,8 @@ describe("what boards new to the round trip (X23) showed", () => {
     const p = imported(board({ body: [footprint({ ref: "U1", at: "5 5", pads: [pad({ at: "0 0" })], extra: field })] }))
     expect(p.components[0].texts!.some((t) => t.text === "Sensor, 1%RH, 0.1%V")).toBe(true)
     const { text, differences } = await roundTrip(p)
-    expect(text).toMatch(/\(property "Text \d+" "Sensor, 1%RH, 0\.1%V"/)
+    // the field keeps its own name
+    expect(text).toMatch(/\(property "Description" "Sensor, 1%RH, 0\.1%V"/)
     expect(differences).toEqual([])
   })
 

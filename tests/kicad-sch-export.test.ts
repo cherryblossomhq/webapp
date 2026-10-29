@@ -636,10 +636,10 @@ describe("the KiCad schematic", () => {
   it("writes the units of a part as the units of one symbol, with one reference", async () => {
     const { files, notes } = await kicadFiles(sheet())
     const text = Object.entries(files).find(([k]) => k.endsWith(".kicad_sch"))![1]
-    const libs = [...text.matchAll(/\n {4}\(symbol "(Device:[^"]+)"/g)].map((m) => m[1])
+    const libs = [...text.matchAll(/\n {4}\(symbol "([A-Za-z]+:[^"]+)"/g)].map((m) => m[1])
     // The op-amp (three units) and the shapes part.
     expect(libs).toHaveLength(2)
-    const opa = libs.find((n) => n.includes("schematic_component_0"))!
+    const opa = libs.find((n) => n === "Test:OPA2")!
     const short = opa.slice(opa.indexOf(":") + 1)
     for (const unit of [1, 2, 3]) expect(text).toContain(`(symbol "${short}_${unit}_1"`)
     expect(text).not.toContain(`(symbol "${short}_0_1"`)
@@ -658,7 +658,7 @@ describe("the KiCad schematic", () => {
     const text = Object.entries(files).find(([k]) => k.endsWith(".kicad_sch"))![1]
     const all = text.slice(text.indexOf("(lib_symbols"), text.indexOf("\n  (symbol\n    (lib_id"))
     // the op-amp's library symbol, not the shapes part's
-    const lib = all.split('\n    (symbol "').find((b) => b.startsWith("Device:") && b.includes("schematic_component_0"))!
+    const lib = all.split('\n    (symbol "').find((b) => b.startsWith("Test:OPA2"))!
     const pins = new Map<string, { type: string; name: string }>()
     for (const m of lib.matchAll(/\(pin (\w+) \w+\n[\s\S]*?\(name "([^"]*)"[\s\S]*?\(number "([^"]*)"/g)) pins.set(m[3], { type: m[1], name: m[2] })
     // The op-amp: output 1, inputs 2 and 3, the other unit's 5, 6 and 7, and the power pins 8 and 4.

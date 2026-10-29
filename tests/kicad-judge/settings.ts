@@ -51,6 +51,8 @@ function canonical(n: SNode): SNode {
       const turned = full >= 90
       const a = turned ? full - 90 : full
       out = out.map((c) => {
+        // a circle has no turn
+        if (c === at && shape === "circle") return ["at", at[1], at[2]]
         if (c === at) return a === 0 ? ["at", at[1], at[2]] : ["at", at[1], at[2], String(a)]
         if (c === size && turned) return ["size", size[2], size[1]]
         if (turned && isList(c) && c[0] === "drill" && c[1] === "oval") return ["drill", "oval", c[3], c[2], ...c.slice(4)]
@@ -91,6 +93,8 @@ function canonical(n: SNode): SNode {
       return std[row[1] as string] === row[3] ? row.slice(0, 3) : row
     })
   }
+  // a group is told by its name and its size (its members are ids the export makes again)
+  if (head(out) === "group") out = out.map((c) => (isList(c) && head(c) === "members" ? ["members", String(c.length - 1)] : c))
   // a net tie's groups are the same with or without a space after the comma
   if (head(out) === "net_tie_pad_groups") out = out.map((c, i) => (i === 0 || isList(c) ? c : String(c).replace(/,\s+/g, ",")))
   // a polygon is the same drawn from any of its corners, either way round, and with any corner on a straight side left out: it is told by its area and its box

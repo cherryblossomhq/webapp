@@ -23,13 +23,18 @@ function setProperty(block: string, name: string, value: string): string {
   return `${block.slice(0, at)}\n${added}${block.slice(at)}`
 }
 
-/** Each pin named as the library entry named it (`~{RESET}`, not the editor's `RESET#`): KiCad names the net of a lone pin after it, so the name is part of the net's. */
+/**
+ * Each pin named as the library entry named it (`~{RESET}`, not the editor's `RESET#`): KiCad names the net of a lone pin after it, so the name is part of the net's. And a pin the entry did not draw
+ * (a hidden power-input pin, which KiCad puts on the global net of its name) is hidden here too: written visible it is a pin nothing is wired to.
+ */
 function restorePinNames(block: string, drawing: SymbolDrawing): string {
-  const byNumber = new Map<string, string>()
-  for (const p of drawing.pins) for (const n of expandPinNumber(p.number)) if (!byNumber.has(n)) byNumber.set(n, p.name)
-  return block.replace(/(\(name )"(?:[^"\\]|\\.)*"([\s\S]*?\(number ")((?:[^"\\]|\\.)*)"/g, (all, head: string, mid: string, num: string) => {
-    const raw = byNumber.get(num.replace(/\\(.)/g, "$1"))
-    return raw === undefined ? all : `${head}${quote(raw)}${mid}${num}"`
+  const byNumber = new Map<string, { name: string; hidden: boolean }>()
+  for (const p of drawing.pins) for (const n of expandPinNumber(p.number)) if (!byNumber.has(n)) byNumber.set(n, { name: p.name, hidden: !!p.hidden })
+  const re = /(\n *\(length [^)]*\))(\n( *)\(name )"(?:[^"\\]|\\.)*"([\s\S]*?\(number ")((?:[^"\\]|\\.)*)"/g
+  return block.replace(re, (all, length: string, nameHead: string, indent: string, mid: string, num: string) => {
+    const pin = byNumber.get(num.replace(/\\(.)/g, "$1"))
+    if (!pin) return all
+    return `${length}${pin.hidden ? `\n${indent}(hide yes)` : ""}${nameHead}${quote(pin.name)}${mid}${num}"`
   })
 }
 

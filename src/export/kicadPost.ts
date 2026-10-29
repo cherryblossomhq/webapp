@@ -90,6 +90,8 @@ export function symbolFields(c: ComponentInstance, footprintIds: Map<string, str
     // A field of a KiCad symbol keeps the name it had; the editor's own properties are capitalised.
     extra.push([fromKicad ? key : capitalise(key), value])
   }
+  // A field the symbol had with nothing in it is not among the properties (the editor keeps none that is empty), but its place is: it is written, empty, as it was.
+  if (fromKicad) for (const name of Object.keys(c.fields ?? {})) if (!RESERVED.has(name.toLowerCase()) && !HANDLED_PROPS.has(name.toLowerCase()) && name !== part?.valueProp && !extra.some(([k]) => k === name)) extra.push([name, ""])
   // A project that came from KiCad says what the symbol's own footprint field said, not the board's footprint (an empty field stays empty).
   const footprint = fromKicad ? named("footprint") : footprintIds.get(c.ref)
   if (fromKicad) return { footprint: footprint ?? "", value: named("value") ?? "", datasheet: named("datasheet") ?? "", description: named("description"), extra, exact: true }

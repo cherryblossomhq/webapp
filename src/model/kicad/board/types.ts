@@ -401,7 +401,7 @@ export interface KicadFootprint {
   units: { name: string; pins: string[] }[]
   /** X23: the footprint's `point` nodes, in the footprint's own frame (an older file's, which has them in the board's, are brought into it). */
   points: KicadPoint[]
-  props: { key: string; value: string }[]
+  props: { key: string; value: string; placed?: boolean }[]
   pads: KicadPad[]
   /** The footprint's own margins, clearance and pour connection, which each of its pads that sets none of its own takes (`PAD::GetSolderMaskExpansion` and the others ask the footprint). */
   local: PadLocal

@@ -119,3 +119,27 @@ describe("what the audit found in a schematic's export", () => {
     expect(sch).toContain('(property "MANUFACTURER" "Acme"')
   })
 })
+
+describe("what the full audit found next", () => {
+  it("writes a hidden power pin hidden, so that KiCad puts it on the net of its name", async () => {
+    const LIB_HID = `(symbol "Test:HID" (in_bom yes) (on_board yes)
+  (property "Reference" "U" (at 0 5.08 0) ${FONT})
+  (property "Value" "HID" (at 0 -5.08 0) ${FONT})
+  (property "Field7" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (symbol "HID_0_1" (rectangle (start -3.81 3.81) (end 3.81 -3.81) (stroke (width 0.254) (type default)) (fill (type none))))
+  (symbol "HID_1_1" (pin input line (at -6.35 0 0) (length 2.54) (name "IN" ${FONT}) (number "1" ${FONT})) (pin power_in line (at 0 6.35 270) (length 0) hide (name "VCC" ${FONT}) (number "2" ${FONT}))))`
+    const project = withFootprint(importSheet({ libs: [LIB_HID], symbols: [place("Test:HID", "100 100", "U1", { value: "HID" })] }))
+    const out = await kicadFiles(project)
+    const sch = out.files[Object.keys(out.files).find((n) => n.endsWith(".kicad_sch"))!]
+    const pin = sch.slice(sch.indexOf('(name "VCC"') - 200, sch.indexOf('(name "VCC"') + 20)
+    expect(pin).toContain("(hide yes)")
+    // and a field the symbol had with nothing in it is still there
+    expect(sch).toContain('(property "Field7" ""')
+  })
+
+  it("writes a footprint's property that has no place back", async () => {
+    const FPP = footprint({ ref: "J1", name: "Local:Edge", pads: [pad({ number: "1", at: "0 0" })], extra: '(property "LCSC" "C15850")' })
+    const { pcb } = await run(board({ version: 20241229, body: [FPP] }))
+    expect(pcb).toContain('(property "LCSC" "C15850")')
+  })
+})

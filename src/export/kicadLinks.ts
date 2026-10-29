@@ -34,7 +34,7 @@ export function symbolLinks(sheets: SheetText[]): Map<string, { path: string; fi
 }
 
 /** The board's text with each footprint that has a symbol given its `path` and its `sheetfile`. */
-export function applyFootprintLinks(pcb: string, sheets: SheetText[]): string {
+export function applyFootprintLinks(pcb: string, sheets: SheetText[], withSheetfile: (reference: string) => boolean = () => true): string {
   const links = symbolLinks(sheets)
   if (!links.size) return pcb
   return pcb.replace(FOOTPRINT_BLOCK, (block) => {
@@ -42,7 +42,7 @@ export function applyFootprintLinks(pcb: string, sheets: SheetText[]): string {
     const link = ref === undefined ? undefined : links.get(unescape(ref))
     if (!link || /\n {2}\(path "/.test(block)) return block
     const lines = [`  (path ${JSON.stringify(link.path)})`]
-    if (!/\n {2}\(sheetfile /.test(block)) lines.push(`  (sheetfile ${JSON.stringify(link.file)})`)
+    if (!/\n {2}\(sheetfile /.test(block) && withSheetfile(unescape(ref!))) lines.push(`  (sheetfile ${JSON.stringify(link.file)})`)
     // after the footprint's name, place, texts and drawings and before its attributes and pads: KiCad reads these in any order
     const at = block.search(/\n {2}\((?:attr|net_tie_pad_groups|pad|embedded_files|model)\b/)
     const cut = at === -1 ? block.lastIndexOf("\n  )") : at

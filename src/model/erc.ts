@@ -727,7 +727,9 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
 /**
  * Nets with more than one name. Most of a net's labels and ports carry the name it goes by (a name someone chose before one `connect`
  * made up); the finding points at the others, the odd ones out, and at all of them when the odd name has nothing to select (a hidden
- * power pin). A sheet used twice can have the same names meet in each use: that is one finding.
+ * power pin). A sheet used twice can have the same names meet in each use: that is one finding. As in KiCad's ERC, which looks at one
+ * sheet at a time, names count as meeting only where one use of a sheet has both: a label on the wire to a sheet pin and the
+ * hierarchical label of another name inside are one net by design (what `wire_sheet_pin` with `net_name` draws).
  */
 function nameFindings(project: Project, conn: SchematicConnectivity): ErcFinding[] {
   if (!conn.conflicts.length) return []
@@ -739,17 +741,31 @@ function nameFindings(project: Project, conn: SchematicConnectivity): ErcFinding
       if (l) (labelsOn.get(net) ?? labelsOn.set(net, []).get(net)!).push({ id, use, name: l.name.trim(), at: { x: l.x, y: l.y } })
     }
   }
-  const portsOn = new Map<string, { id: string; name: string; at: Vec2 }[]>()
+  const portsOn = new Map<string, { id: string; use: string; name: string; at: Vec2 }[]>()
+  // A hidden power-input pin of an ordinary part names its net too, with nothing drawn to select (as `computeConnectivity` joins it).
+  const hiddenOn = new Map<string, { use: string; name: string }[]>()
   for (const c of project.components) {
     const part = findPart(c.partId)
     const name = powerNetName(c, part)
-    const net = name && part!.pins.map((p) => conn.pinNet.get(pinKey(c.id, p.number))).find(Boolean)
-    if (net) (portsOn.get(net) ?? portsOn.set(net, []).get(net)!).push({ id: c.id, name, at: { x: c.sch.x, y: c.sch.y } })
+    const use = c.inst ?? ""
+    if (!name) {
+      for (const p of schematicPins(c, part)) {
+        const hidden = p.hidden && p.type === "power_in" ? p.name.trim() : ""
+        const net = hidden && conn.pinNet.get(pinKey(c.id, p.pin))
+        if (net) (hiddenOn.get(net) ?? hiddenOn.set(net, []).get(net)!).push({ use, name: hidden })
+      }
+      continue
+    }
+    const net = part!.pins.map((p) => conn.pinNet.get(pinKey(c.id, p.number))).find(Boolean)
+    if (net) (portsOn.get(net) ?? portsOn.set(net, []).get(net)!).push({ id: c.id, use, name, at: { x: c.sch.x, y: c.sch.y } })
   }
   const byKey = new Map<string, ErcFinding>()
   for (const { names, netId } of conn.conflicts) {
     const labels = labelsOn.get(netId) ?? []
     const ports = portsOn.get(netId) ?? []
+    const namesOnUse = new Map<string, Set<string>>()
+    for (const x of [...labels, ...ports, ...(hiddenOn.get(netId) ?? [])]) (namesOnUse.get(x.use) ?? namesOnUse.set(x.use, new Set()).get(x.use)!).add(x.name)
+    if (![...namesOnUse.values()].some((n) => n.size > 1)) continue
     const count = (n: string) => labels.filter((l) => l.name === n).length + ports.filter((p) => p.name === n).length
     const chosen = names.filter((n) => !AUTO_NET_NAME.test(n))
     const kept = (chosen.length ? chosen : names).reduce((a, b) => (count(b) > count(a) ? b : a))

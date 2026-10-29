@@ -5,6 +5,7 @@ import { getErc } from "../src/model/connectivityCache"
 import { ignoreCheck, splitIgnored } from "../src/model/erc"
 import { addComponent, createProject, findPin, labelPin, resolvePinSpec } from "../src/model/ops"
 import type { Project } from "../src/model/types"
+import { commitOnUse } from "../src/model/sheets"
 import { useProjectStore } from "../src/store/projectStore"
 
 const tool = (p: Project, name: string, input: Record<string, unknown>) => {
@@ -108,6 +109,23 @@ describe("the check for a net with several names", () => {
     const ignored = ignoreCheck(joined, f.key)
     expect(splitIgnored(getErc(ignored), ignored.ignoredChecks).active.some((x) => x.kind === "net-names")).toBe(false)
     expect(runTool(ignored, "run_checks", {}).result).not.toContain("- Net names merged")
+  })
+
+  it("leaves names that meet only through a sheet pin, and flags two names on one sheet below", () => {
+    let p = createProject("t")
+    p = tool(p, "add_component", { part_id: "resistor", x: 0, y: 0 })
+    p = tool(p, "add_sheet", { name: "SUB", x: 6, y: 0 })
+    p = tool(p, "add_component", { part_id: "resistor", sheet: "SUB", x: 0, y: 0 })
+    p = tool(p, "add_hier_label", { sheet: "SUB", name: "SDA", pins: ["R2.1"] })
+    p = tool(p, "wire_sheet_pin", { sheet: "SUB", pin: "SDA", to: ["R1.2"], net_name: "I2C_SDA" })
+    // I2C_SDA outside and SDA inside are one net by design, as in KiCad.
+    expect(conflicts(p)).toEqual(["I2C_SDA,SDA"])
+    expect(nameFinding(p)).toBeUndefined()
+    const r2 = p.components.find((c) => c.ref === "R2")!
+    const clash = commitOnUse(p, r2.inst!, (v) => labelPin(v, { componentId: r2.id, pin: "1" }, "DATA", 0.1))
+    const f = nameFinding(clash)!
+    expect(f.message).toBe("Net names merged: DATA, I2C_SDA, SDA")
+    expect(f.sheet).toBe(r2.inst)
   })
 
   it("points at the power ports when they are the odd ones out", () => {

@@ -227,18 +227,21 @@ export function parseDrill(text: string): Drill {
  * a file writes its numbers to a tenth of a micrometre, so the pieces of one straight track do not lie on one line to the last digit.
  */
 export function mergeLines(prims: Prim[]): Prim[] {
-  const TOL = 0.001
+  const TOL = 0.002
   const groups = new Map<string, { x: number; y: number; ux: number; uy: number; spans: { from: number; to: number }[] }[]>()
   const out: Prim[] = []
-  for (const p of prims) {
+  // the longest pieces first: a line's axis is told by its longest piece, since a short piece's direction is only as good as the tenth of a micrometre its ends are written to
+  const length = (p: Prim) => Math.hypot(p.nums[2] - p.nums[0], p.nums[3] - p.nums[1])
+  for (const p of [...prims].sort((x, y) => (x.sig.startsWith("L|") && y.sig.startsWith("L|") ? length(y) - length(x) : 0))) {
     if (!p.sig.startsWith("L|")) {
       out.push(p)
       continue
     }
     const [x1, y1, x2, y2] = p.nums
     const len = Math.hypot(x2 - x1, y2 - y1)
-    // a piece of two micrometres or less is a dot of the track's width inside the track it ends: a file that rounds to a tenth of a micrometre keeps it as a dot or loses it, and the copper is the same
-    if (len < 0.002) continue
+    // a piece much shorter than its own width is a dot of the track's width inside the tracks it joins: a file keeps it or loses it, and the copper is the same
+    const width = Number(/^L\|C,([\d.]+)/.exec(p.sig)?.[1] ?? 0)
+    if (len < Math.max(0.002, width * 0.15)) continue
     const list = groups.get(p.sig) ?? groups.set(p.sig, []).get(p.sig)!
     // the group whose line both ends of this piece lie on
     let g = list.find((q) => Math.abs(-q.uy * (x1 - q.x) + q.ux * (y1 - q.y)) <= TOL && Math.abs(-q.uy * (x2 - q.x) + q.ux * (y2 - q.y)) <= TOL)

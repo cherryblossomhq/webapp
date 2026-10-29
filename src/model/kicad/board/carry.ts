@@ -11,7 +11,8 @@ const word = (text: string): string => (/^[A-Za-z0-9_.+\-*:]+$/.test(text) ? tex
 
 /** A node as KiCad's file text, on one line. */
 export function nodeText(node: Node): string {
-  return Array.isArray(node) ? `(${node.map(nodeText).join(" ")})` : word(node)
+  // (A number of seven decimals or more is rounded to six, as the export's own tidying rounds it, so the text is the same after a round trip.)
+  return Array.isArray(node) ? `(${node.map(nodeText).join(" ")})` : /^-?\d+(?:\.\d{7,}|(?:\.\d+)?e[+-]?\d+)$/.test(node) ? String(Number(Number(node).toFixed(6)) || 0) : word(node)
 }
 
 /** The words after a node's head, as text: `"A4"`, `"User" 297 210`. */
@@ -45,11 +46,30 @@ const STANDARD_USER_NAMES: Record<string, string> = {
 }
 
 /** KiCad's fixed layers that the board's layer table does not list (an old board lists only the layers it uses): the export lists them all, so they are on. */
+/** The line widths the board's outline is drawn with, and how many shapes have each. */
+export function edgeWidths(board: KicadBoard): Map<number, number> {
+  const widths = new Map<number, number>()
+  for (const s of board.shapes) {
+    if (s.layer !== "Edge.Cuts" && TRANSLATED_LAYER_NAMES[s.layer] !== "Edge.Cuts") continue
+    if (s.width > 0 && !s.filled) widths.set(s.width, (widths.get(s.width) ?? 0) + 1)
+  }
+  return widths
+}
+
 export function unlistedStandardLayers(board: KicadBoard): string[] {
   if (!board.layers.length) return []
   const listed = new Set(board.layers.map((l) => TRANSLATED_LAYER_NAMES[l.name] ?? l.name))
   return Object.keys(STANDARD_USER_NAMES).filter((n) => !listed.has(n))
 }
+
+/** The words of a `pcbplotparams` that KiCad 9.0's parser has. It stops at a word it does not have, so a word of KiCad 10's (`pngdpi`...) is not carried. */
+export const PLOT_WORDS_9: ReadonlySet<string> = new Set([
+  "layerselection", "plot_on_all_layers_selection", "disableapertmacros", "usegerberextensions", "usegerberattributes", "usegerberadvancedattributes", "creategerberjobfile",
+  "dashed_line_dash_ratio", "dashed_line_gap_ratio", "svgprecision", "excludeedgelayer", "plotframeref", "viasonmask", "mode", "useauxorigin", "hpglpennumber", "hpglpenspeed",
+  "hpglpendiameter", "pdf_front_fp_property_popups", "pdf_back_fp_property_popups", "pdf_metadata", "pdf_single_document", "dxfpolygonmode", "dxfimperialunits", "dxfusepcbnewfont",
+  "psnegative", "psa4output", "plotreference", "plotvalue", "plotinvisibletext", "sketchpadsonfab", "plotpadnumbers", "subtractmaskfromsilk", "outputformat", "mirror", "drillshape",
+  "scaleselection", "outputdirectory", "hidednponfab", "sketchdnponfab", "crossoutdnponfab", "plot_black_and_white", "svguseinch",
+])
 
 /** The first file version that numbers the layers as the files the export writes (KiCad 9's). */
 export const WRITTEN_LAYER_NUMBERING = 20241229
@@ -70,7 +90,7 @@ export function boardCarry(board: KicadBoard): KicadCarry | undefined {
   if (plot && plot.length > 1) {
     // The two layer masks number the layers as the file's release does (KiCad 9 renumbered them), so they are kept only from a release that numbers them as the file the export writes does.
     const same = board.version !== null && board.version >= WRITTEN_LAYER_NUMBERING
-    carry.plot = nodeText(same ? plot : plot.filter((n) => !(Array.isArray(n) && (n[0] === "layerselection" || n[0] === "plot_on_all_layers_selection"))))
+    carry.plot = nodeText(plot.filter((n) => !Array.isArray(n) || (PLOT_WORDS_9.has(String(n[0])) && (same || (n[0] !== "layerselection" && n[0] !== "plot_on_all_layers_selection")))))
   }
   // The nets whose names have a slash: what is a sheet's path and what is the label's own text cannot be told from the name the editor holds, so the file's own spelling is kept.
   const names: Record<string, string> = {}

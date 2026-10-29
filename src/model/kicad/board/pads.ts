@@ -7,7 +7,7 @@ import type { BoardShape, CopperLayer, PadDef, PadLayerShape, PadLayers, PadProp
 import { backdrill, ownLayer, postMachining } from "./build22"
 import { layerMapOf, layersOfNames } from "./layers"
 import { quarterTurns, rotK } from "./geometry"
-import { rawGeometry } from "./graphics"
+import { rawGeometry, TRANSLATED_LAYER_NAMES } from "./graphics"
 import { padLayers, type Face } from "./needs"
 import type { KicadBoard, KicadFootprint, KicadPad, KicadPadLayer, KicadShape, PadLocal } from "./types"
 import { kid } from "./sexpr"
@@ -94,7 +94,7 @@ function sidesOf(faces: Iterable<Face>, bottom: boolean): PadSides {
 }
 
 /** The faces a list of KiCad's layer names puts a silkscreen layer on. */
-const silkFaces = (names: string[]): Face[] => names.flatMap((n) => (n === "F.SilkS" ? (["F"] as Face[]) : n === "B.SilkS" ? (["B"] as Face[]) : n === "*.SilkS" ? (["F", "B"] as Face[]) : []))
+const silkFaces = (names: string[]): Face[] => names.map((n) => TRANSLATED_LAYER_NAMES[n] ?? n).flatMap((n) => (n === "F.SilkS" ? (["F"] as Face[]) : n === "B.SilkS" ? (["B"] as Face[]) : n === "*.SilkS" ? (["F", "B"] as Face[]) : []))
 
 /** The pad's own layers, for the ones that differ from what its kind has; undefined when none does. */
 function layersOf(pad: KicadPad, board: KicadBoard, bottom: boolean): PadLayers | undefined {

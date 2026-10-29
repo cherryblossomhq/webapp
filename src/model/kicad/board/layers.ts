@@ -85,9 +85,12 @@ function stackRow(r: KicadStackupRow): StackRow {
  */
 export function buildStack(board: KicadBoard): BoardStack | undefined {
   const rows = board.layers.filter((l) => TYPES.has(l.type))
-  const copper: StackCopper[] = rows.map((r) => {
+  const copper: StackCopper[] = rows.map((r, i) => {
     const c: StackCopper = {}
+    // A KiCad 5 file names its copper layers itself (`Front`, `Back`, `GNDREF`): the name is the layer's label, as a later release's fourth word is.
+    const own = i === 0 ? "F.Cu" : i === rows.length - 1 ? "B.Cu" : `In${i}.Cu`
     if (r.userName !== undefined && r.userName !== "") c.label = r.userName
+    else if (r.name !== own && !/^(F|B|In\d+)\.Cu$/.test(r.name)) c.label = r.name
     if (r.type !== "signal") c.type = r.type as CopperLayerType
     return c
   })

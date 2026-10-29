@@ -329,15 +329,17 @@ function jsonDiff(a: Json, b: Json, path: string, out: Out) {
   if (a && b && typeof a === "object" && typeof b === "object") {
     if (Array.isArray(a) || Array.isArray(b)) {
       if (!Array.isArray(a) || !Array.isArray(b)) return add(path, `${show(a)} / ${show(b)}`)
-      const named = [...a, ...b].every((x) => x && typeof x === "object" && "name" in (x as object))
+      // a list of items with a name (or a pattern, for the net class patterns) is told item by item, whatever order it is in
+      const idOf = (x: unknown) => (x && typeof x === "object" ? ((x as { name?: string }).name ?? (x as { pattern?: string }).pattern) : undefined)
+      const named = [...a, ...b].length > 0 && [...a, ...b].every((x) => idOf(x) !== undefined)
       if (named) {
-        const mb = new Map(b.map((x) => [(x as { name: string }).name, x] as const))
+        const mb = new Map(b.map((x) => [idOf(x) as string, x] as const))
         for (const x of a) {
-          const y = mb.get((x as { name: string }).name)
+          const y = mb.get(idOf(x) as string)
           if (y === undefined) add(`${path}[] only in the original`, show(x))
           else jsonDiff(x, y, `${path}[]`, out)
         }
-        for (const [n] of mb) if (!a.some((x) => (x as { name: string }).name === n)) add(`${path}[] only in the export`, n)
+        for (const [n] of mb) if (!a.some((x) => idOf(x) === n)) add(`${path}[] only in the export`, n)
         return
       }
       if (a.length !== b.length) add(`${path}[] length`, `${a.length} / ${b.length}`)
@@ -371,7 +373,9 @@ export function compareProFiles(origPro: string | null, outPro: string): Diff[] 
   for (const k of ["board", "net_settings", "text_variables", "erc", "schematic"]) {
     if (k in a || k in b) jsonDiff(a[k] ?? {}, b[k] ?? {}, k, out)
   }
-  return [...out].map(([kind, v]) => ({ kind: `project file: ${kind}`, detail: `${v.count}x; e.g. ${v.example}` }))
+  // What the export adds that the original did not have (KiCad's own housekeeping: `meta`, `last_opened_*`, the text variables of the title block, caches of the classes) is told in one line: it loses nothing
+  const housekeeping = /(^|\.)(meta|last_opened_board|last_opened_files|last_net_id|legacy_lib_dir|legacy_lib_list|text_variables\.[A-Z_0-9]+|netclass_patterns|erc_exclusions|page_layout_descr_file|track_widths|via_dimensions|diff_pair_dimensions|layer_presets|drc_exclusions)( only in the export)?$/
+  return [...out].filter(([k]) => !(/ only in the export$/.test(k) && housekeeping.test(k)) && !/schematic\.(legacy_lib_dir|legacy_lib_list) only in the original$/.test(k)).map(([kind, v]) => ({ kind: `project file: ${kind}`, detail: `${v.count}x; e.g. ${v.example}` }))
 }
 
 export async function compareSettings(origPcb: string, outPcb: string, work: string, origPro: string | null, outPro: string): Promise<Diff[]> {

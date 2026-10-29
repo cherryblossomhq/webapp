@@ -265,6 +265,20 @@ export function compareGerbers(a: Record<string, string>, b: Record<string, stri
     }
     m.onlyA = stillA
     m.onlyB = stillB
+    // Drawn text and thin strokes (silkscreen, fab, user layers) are many short lines that a file may cut at other places: what is left of them is the same when the lengths of one pen add up to the same
+    // (within one per cent), which is told here for those layers only: copper and the outline are matched piece by piece.
+    if (!isCopper(pa.fn) && !/Edge|Mask|Paste/.test(fn)) {
+      const lengths = (list: { sig: string; nums: number[] }[]) => {
+        const sums = new Map<string, number>()
+        for (const p of list) if (p.sig.startsWith("L|")) sums.set(p.sig, (sums.get(p.sig) ?? 0) + Math.hypot(p.nums[2] - p.nums[0], p.nums[3] - p.nums[1]))
+        return sums
+      }
+      const la = lengths(m.onlyA)
+      const lb = lengths(m.onlyB)
+      const same = [...new Set([...la.keys(), ...lb.keys()])].filter((s) => Math.abs((la.get(s) ?? 0) - (lb.get(s) ?? 0)) <= Math.max(0.02, 0.01 * Math.max(la.get(s) ?? 0, lb.get(s) ?? 0)))
+      m.onlyA = m.onlyA.filter((p) => !(p.sig.startsWith("L|") && same.includes(p.sig)))
+      m.onlyB = m.onlyB.filter((p) => !(p.sig.startsWith("L|") && same.includes(p.sig)))
+    }
     const pre = (s: string) => s.split("|")[0]
     const kindOf = (list: { sig: string }[]) => {
       const c: Record<string, number> = {}

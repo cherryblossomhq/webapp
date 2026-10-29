@@ -1,13 +1,8 @@
 import { applyChanges, jsonEqual, type Change, type JsonObject } from "@cherryblossom/project-changes"
-import { pruneGroups } from "../model/boardObjects"
-import { followNetRenames } from "../model/copperNets"
-import { settleLabelNetClasses } from "../model/directives"
 import { followCopies, keepSheetsWithWork, settleStructure } from "../model/settleStructure"
-import { pruneImportMarks } from "../model/importMarks"
-import { settleKicadSheet } from "../model/kicadJoin"
-import { settleMadeUpNames } from "../model/madeUpNames"
 import { create } from "zustand"
 import { registerProjectParts } from "../model/customParts"
+import { settleEdit } from "../model/settleEdit"
 import { registerProjectFootprints } from "../model/footprints"
 import { PROJECT_FILE_VERSION } from "../model/projectFile"
 import { ensureTextFont, textFontMissing } from "../model/textFont"
@@ -19,14 +14,6 @@ import { ProjectSync, type SaveStatus, type SyncHost } from "./sync"
 export type { SaveStatus } from "./sync"
 
 const HISTORY_LIMIT = 200
-
-/**
- * Labels with a name `connect` made up take the name of a net the edit joined them to, copper that names its net follows a rename, what an import marked that no longer holds is retired, and a group loses what an edit deleted (and goes when nothing is left in it).
- * The first three stop at once for an edit that left the schematic alone, the group one for a board with no groups, and the classes directive labels give (S8) for a project with none.
- * S11: whatever made the edit, a sheet joined by KiCad's rules is left with its new T's cut, as KiCad cuts them (an edit that has done it already is unchanged by it, and a project with no such sheet is returned as it is).
- */
-const settleEdit = (before: Project, made: Project) =>
-  settleLabelNetClasses(before, pruneGroups(pruneImportMarks(before, followNetRenames(before, settleMadeUpNames(before, settleKicadSheet(before, made))))))
 
 /**
  * The project with its sheet tree and what hangs on it made whole (`settleStructure`): what is drawn on a sheet or use the tree no longer has goes, each use of a

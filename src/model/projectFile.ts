@@ -421,14 +421,19 @@ function normalizeDatabaseSource(raw: unknown): PartDatabaseSource | null {
 function normalizeSource(raw: unknown): PartSource | null {
   if (!isObject(raw) || typeof raw.pins !== "string") return null
   const out: PartSource = {
-    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "import" ? raw.pins : "memory",
-    land: raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "import" ? raw.land : "memory",
+    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "file" || raw.pins === "import" ? raw.pins : "memory",
+    land:
+      raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "file" || raw.land === "import" ? raw.land : "memory",
   }
   const imported = raw.imported
   if (isObject(imported) && typeof imported.file === "string" && typeof imported.libId === "string") out.imported = { file: imported.file, libId: imported.libId }
   if (typeof raw.note === "string") out.note = raw.note
   const database = normalizeDatabaseSource(raw.database)
   if (database) out.database = database
+  const file = raw.file
+  if (isObject(file) && typeof file.footprint === "string" && file.footprint) {
+    out.file = { symbol: typeof file.symbol === "string" && file.symbol ? file.symbol : null, footprint: file.footprint }
+  }
   const supplier = raw.supplier
   if (isObject(supplier) && typeof supplier.lcsc === "string") {
     const disputes = strings(supplier.disputes)
@@ -449,7 +454,9 @@ function normalizeSource(raw: unknown): PartSource | null {
   // From the parts index, but not saying which part: the same.
   if (out.pins === "database" && !out.database) out.pins = "memory"
   if (out.land === "database" && !out.database) out.land = "memory"
-  // Imported, but not saying from which file: nothing to stand on.
+  // Imported, but not saying from which files: the same.
+  if (out.pins === "file" && !out.file) out.pins = "memory"
+  if (out.land === "file" && !out.file) out.land = "memory"
   if (!out.imported) {
     if (out.pins === "import") out.pins = "memory"
     if (out.land === "import") out.land = "memory"

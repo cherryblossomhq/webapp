@@ -1,5 +1,5 @@
-import { ChevronRight, PanelLeftClose, Search, Sparkles, X } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { ChevronRight, PanelLeftClose, Search, Sparkles, Upload, X } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { SymbolPreview } from "../editor/schematic/SymbolView"
 import { projectPartDefs } from "../model/customParts"
 import { CATEGORIES, PARTS } from "../model/library"
@@ -10,7 +10,9 @@ import { useProjectStore } from "../store/projectStore"
 import { PART_MIME, PRESET_MIME, useUi } from "../store/uiStore"
 import { IconButton } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
+import { ImportNotice, useKicadImport } from "./ImportKicad"
 import { IndexNotice, IndexResults, indexPicker, useIndexSearch } from "./IndexResults"
+import { KICAD_IMPORT_ACCEPT } from "./kicadImport"
 import { usePartPlace, wantsSupplier } from "./partSearch"
 import { SupplierResults, supplierPicker, useSupplierSearch } from "./SupplierResults"
 
@@ -57,6 +59,21 @@ export function LibraryPanel() {
       return next
     })
 
+  // Imported parts show under This project: the search is cleared and the group opened for them.
+  const kicad = useKicadImport((ids) => {
+    if (!ids.length) return
+    setQuery("")
+    setFolded((prev) => {
+      const next = new Set(prev)
+      next.delete("This project")
+      return next
+    })
+  })
+  const importInput = useRef<HTMLInputElement>(null)
+  const [dropping, setDropping] = useState(false)
+  const dragDepth = useRef(0)
+  const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files")
+
   useEffect(() => setActive(0), [query])
   const { clearError } = indexPlace
   useEffect(clearError, [query, clearError])
@@ -79,12 +96,54 @@ export function LibraryPanel() {
   }
 
   return (
-    <aside aria-label="Parts library" className="flex w-[252px] shrink-0 flex-col border-r border-line bg-chrome">
+    <aside
+      aria-label="Parts library"
+      className={`relative flex w-[252px] shrink-0 flex-col border-r border-line bg-chrome ${dropping ? "shadow-[inset_0_0_0_2px_var(--color-select)]" : ""}`}
+      // KiCad files dropped on the panel are imported as the button's are; a viewer adds nothing.
+      onDragEnter={(e) => {
+        if (viewer || !hasFiles(e)) return
+        dragDepth.current++
+        setDropping(true)
+      }}
+      onDragLeave={(e) => {
+        if (hasFiles(e) && --dragDepth.current <= 0) setDropping(false)
+      }}
+      onDragOver={(e) => !viewer && hasFiles(e) && e.preventDefault()}
+      onDrop={(e) => {
+        if (viewer || !hasFiles(e)) return
+        e.preventDefault()
+        dragDepth.current = 0
+        setDropping(false)
+        void kicad.run([...e.dataTransfer.files])
+      }}
+    >
       <div className="flex h-11 shrink-0 items-center justify-between pl-3.5 pr-1.5">
         <h2 className="text-[13px] font-[650] text-ink">Parts</h2>
-        <IconButton label="Hide parts library" shortcut="[" onClick={() => useUi.getState().toggleLibrary()}>
-          <PanelLeftClose size={16} />
-        </IconButton>
+        <span className="flex items-center">
+          <IconButton
+            label="Import KiCad part"
+            hint="Symbol, footprint and 3D model files, or a zip of them"
+            disabled={kicad.busy || viewer}
+            onClick={() => importInput.current?.click()}
+          >
+            <Upload size={15} />
+          </IconButton>
+          <IconButton label="Hide parts library" shortcut="[" onClick={() => useUi.getState().toggleLibrary()}>
+            <PanelLeftClose size={16} />
+          </IconButton>
+        </span>
+        <input
+          ref={importInput}
+          type="file"
+          multiple
+          accept={KICAD_IMPORT_ACCEPT}
+          className="hidden"
+          aria-label="KiCad files to import"
+          onChange={(e) => {
+            void kicad.run([...(e.target.files ?? [])])
+            e.target.value = ""
+          }}
+        />
       </div>
       <div className="px-3 pb-2">
         <label className="relative block">
@@ -125,6 +184,7 @@ export function LibraryPanel() {
       {viewer && (
         <p className="mx-3 mb-2 rounded-[8px] bg-chrome px-2.5 py-2 text-[12px] text-ink-2">You can view this project, not add to it. Ask its owner for edit access.</p>
       )}
+      {kicad.state && <ImportNotice state={kicad.state} onDismiss={kicad.dismiss} />}
       <div ref={listRef} aria-disabled={viewer} className={`scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-4 ${viewer ? "opacity-60" : ""}`}>
         {searching ? (
           <>
@@ -214,7 +274,9 @@ export function LibraryPanel() {
         )}
       </div>
       <p className="border-t border-line px-3 py-2 text-[11px] leading-snug text-ink-3">
-        Click a part, then click the schematic to place it, or drag it onto the canvas. Search for values and packages too, like "10k 0603".
+        {dropping
+          ? "Drop KiCad symbol, footprint and 3D model files, or a zip of them, to import the part."
+          : 'Click a part, then click the schematic to place it, or drag it onto the canvas. Search for values and packages too, like "10k 0603".'}
       </p>
     </aside>
   )

@@ -702,20 +702,29 @@ export interface PartDatabaseSource {
   attribution: string
 }
 
+/** The KiCad files a project part was imported from. */
+export interface PartFileSource {
+  /** The symbol, `Library:Name` with the symbol library's file name as the library (the name alone for a file of its own); null for a footprint imported alone. */
+  symbol: string | null
+  /** The footprint's name, as its file gives it. */
+  footprint: string
+}
+
 /** How far to trust a project part, and why. */
 export interface PartSource {
   /**
    * `supplier`: built from a supplier's pinout. `database`: from a part the parts index stores
-   * whole (KiCad's libraries; `database` says which). `memory`: written by the copilot from what it
-   * recalled.
+   * whole (KiCad's libraries; `database` says which). `file`: from the user's own KiCad files
+   * (`file` says which). `memory`: written by the copilot from what it recalled.
    */
-  pins: "supplier" | "database" | "memory" | "import"
+  pins: "supplier" | "database" | "file" | "memory" | "import"
   /**
    * `supplier`: the supplier's own land. `database`: the stored part's land (a KiCad footprint).
-   * `checked`: a footprinter land checked pad by pad against the supplier's. `memory`: chosen
-   * without one. `import`: the land (if any) is the one the imported board gave it.
+   * `file`: the footprint the user imported. `checked`: a footprinter land checked pad by pad
+   * against the supplier's. `memory`: chosen without one. `import`: the land (if any) is the one
+   * the imported board gave it.
    */
-  land: "supplier" | "database" | "checked" | "memory" | "import"
+  land: "supplier" | "database" | "file" | "checked" | "memory" | "import"
   /**
    * `import`: the part came from a KiCad schematic the user brought in, drawn and wired as that file
    * has it, so there is nothing to check against a supplier. `file` is the schematic's file name and
@@ -724,6 +733,8 @@ export interface PartSource {
   imported?: { file: string; libId: string }
   /** The parts index part it was made from, when it was. */
   database?: PartDatabaseSource
+  /** The user's own KiCad files it was imported from, when it was (`model/kicadImport.ts`). */
+  file?: PartFileSource
   /** The supplier record the part was built from or checked against. */
   supplier?: {
     lcsc: string

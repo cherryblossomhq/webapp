@@ -9,6 +9,47 @@
 
 import { kid, kids, numAt } from "./sexpr.mjs"
 
+// KiCad's own translated layer names of old boards (Italian, Polish, French; `createOldLayerMapping`), as the pad layer lists of such a board use them
+const TRANSLATED_LAYER_NAMES = {
+  "Adesivo.Retro": "B.Adhes",
+  "Adesivo.Fronte": "F.Adhes",
+  "Pasta.Retro": "B.Paste",
+  "Pasta.Fronte": "F.Paste",
+  "Serigrafia.Retro": "B.SilkS",
+  "Serigrafia.Fronte": "F.SilkS",
+  "Maschera.Retro": "B.Mask",
+  "Maschera.Fronte": "F.Mask",
+  Grafica: "Dwgs.User",
+  Commenti: "Cmts.User",
+  Eco1: "Eco1.User",
+  Eco2: "Eco2.User",
+  "Contorno.scheda": "Edge.Cuts",
+  Kleju_Dolna: "B.Adhes",
+  Kleju_Gorna: "F.Adhes",
+  Pasty_Dolna: "B.Paste",
+  Pasty_Gorna: "F.Paste",
+  Opisowa_Dolna: "B.SilkS",
+  Opisowa_Gorna: "F.SilkS",
+  Maski_Dolna: "B.Mask",
+  Maski_Gorna: "F.Mask",
+  Rysunkowa: "Dwgs.User",
+  Komentarzy: "Cmts.User",
+  ECO1: "Eco1.User",
+  ECO2: "Eco2.User",
+  Krawedziowa: "Edge.Cuts",
+  "Dessous.Adhes": "B.Adhes",
+  "Dessus.Adhes": "F.Adhes",
+  "Dessous.Pate": "B.Paste",
+  "Dessus.Pate": "F.Paste",
+  "Dessous.SilkS": "B.SilkS",
+  "Dessus.SilkS": "F.SilkS",
+  "Dessous.Masque": "B.Mask",
+  "Dessus.Masque": "F.Mask",
+  "Dessin.User": "Dwgs.User",
+  "Contours.Ci": "Edge.Cuts",
+}
+
+
 const D2R = Math.PI / 180
 
 /** A vector turned counter-clockwise on screen in a y-down frame. */
@@ -269,8 +310,9 @@ export function padDetail(p, { stamp, copper, px, py, padAngle, kw, kh, fp }) {
     set.add("F")
     set.add("B")
   }
-  for (const n of (kid(p, "layers") ?? []).slice(1)) {
-    if (typeof n !== "string") continue
+  for (const named of (kid(p, "layers") ?? []).slice(1)) {
+    if (typeof named !== "string") continue
+    const n = TRANSLATED_LAYER_NAMES[named] ?? named
     if (n === front || n === "F.Cu") faces.copper.add("F")
     else if (n === back || n === "B.Cu") faces.copper.add("B")
     else if (n === "*.Cu" || n === "F&B.Cu") both(faces.copper)

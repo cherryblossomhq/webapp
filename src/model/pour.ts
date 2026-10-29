@@ -435,6 +435,29 @@ export function padJoinsFill(pad: WorldPad, polygon: FillPolygon): boolean {
   return shared.some((p) => Math.abs(Clipper.area(p)) > least)
 }
 
+/**
+ * `padJoinsFill` by sampling, for a board with thousands of pads and a pour of thousands of corners: the points of the pad's ring (three circles round the drill, every 7.5 degrees) are asked of
+ * the pour's own point tester, which does not walk the pour's outline. A spoke is wider than the 0.13 mm between two points of the middle circle, so none slips between them.
+ */
+export function padJoinsFillBySamples(pad: WorldPad, contains: (p: Vec2) => boolean): boolean {
+  if (!pad.holeDiameter) return false
+  const cx = pad.hole?.x ?? pad.x
+  const cy = pad.hole?.y ?? pad.y
+  const r0 = pad.holeDiameter / 2
+  const copper = padPaths(pad)
+  const inPad = (q: Vec2) => copper.some((path) => Clipper.pointInPolygon(pt(q.x, q.y), path) !== PointInPolygonResult.IsOutside)
+  const outer = Math.max(pad.width, pad.height) / 2
+  const radii = [r0 + 0.04, (r0 + outer) / 2, Math.max(r0 + 0.05, outer - 0.04)]
+  for (const r of radii) {
+    for (let k = 0; k < 48; k++) {
+      const a = (k * Math.PI) / 24
+      const q = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
+      if (contains(q) && inPad(q)) return true
+    }
+  }
+  return false
+}
+
 /** Point-in-fill tester in millimetres, honouring holes. */
 export function fillTester(polygon: FillPolygon): (p: Vec2) => boolean {
   const rings = polygon.map((ring) => ring.map((q) => pt(q.x, q.y))).map(ringTester)

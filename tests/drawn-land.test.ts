@@ -171,14 +171,20 @@ describe("create_part with a land drawn pad by pad", () => {
         pads: [
           { number: "1", x: 0, y: 0, w: 1, h: 2, rotation: 90 },
           { number: "2", x: 4, y: 0, w: 1, h: 2, rotation: 45 },
+          { x: 8, y: 0, drill: 0.6, slot_length: 1.5, plated: false, rotation: 90 },
+          { x: 12, y: 0, drill: 0.6, slot_length: 1.5, plated: false, rotation: 30 },
         ],
       },
     })
     expect(made.isError, made.result).toBe(false)
-    const [one, two] = getFootprint(made.project.parts![0].footprint).pads
+    const [one, two, upright, slanted] = getFootprint(made.project.parts![0].footprint).pads
     expect(one).toMatchObject({ width: 2, height: 1 })
     expect(one.rot).toBeUndefined()
     expect(two).toMatchObject({ width: 1, height: 2, rot: 45 })
+    // A bare slot is turned like a pad, not left along x.
+    expect(upright).toMatchObject({ width: 0.6, height: 1.5, slotLength: 1.5, plated: false })
+    expect(upright.rot).toBeUndefined()
+    expect(slanted).toMatchObject({ width: 1.5, height: 0.6, rot: 30, plated: false })
   })
 
   it("refuses what it can't draw as given, naming the pad, and makes nothing", () => {
@@ -198,6 +204,7 @@ describe("create_part with a land drawn pad by pad", () => {
     expect(refused({ pads: [{ ...pads[0], paste: false }, ...pads.slice(1)] })).toContain("pad 1: paste settings are for surface-mount pads")
     expect(refused({ pads: [{ ...pads[0], slot_length: 2 }, ...pads.slice(1)] })).toContain("a slot runs along a pad's longer side")
     expect(refused({ pads: [{ number: "1", x: 0, y: 0, w: 1, h: 1, drill: 0.5, plated: false }, ...pads.slice(1)] })).toContain("a non-plated hole is no pin")
+    expect(refused({ pads: [...pads, { x: 6.35, y: 3, shape: "oval", w: 1, h: 2, drill: 1, slot_length: 2, plated: false }] })).toContain("leave out shape, w, h and d")
     expect(refused({ pads: [...pads, { number: "4", x: 300, y: 0, d: 2, drill: 1 }] })).toContain("over 250 mm out")
     expect(refused(PHOENIX_LAND, { footprint: "pinrow3" })).toContain("Pass footprint or land, not both")
     // Pins and pads still have to match one to one.

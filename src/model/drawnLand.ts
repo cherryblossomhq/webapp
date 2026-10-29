@@ -54,6 +54,13 @@ const DEFAULT_COURTYARD = 0.25
 
 const mm = (n: number) => `${round(n, 3)} mm`
 
+/** A turn in degrees counter-clockwise: a quarter turn is the size turned (`swap`); any other angle is the pad's own (`rot`). */
+function turnOf(rotation = 0): { swap: boolean; rot?: number } {
+  const turn = ((rotation % 360) + 360) % 360
+  const quarter = Math.abs(turn / 90 - Math.round(turn / 90)) < 1e-6
+  return quarter ? { swap: Math.round(turn / 90) % 2 === 1 } : { swap: false, rot: round(turn, 3) }
+}
+
 /** One pad as the land has it, or why it can't be. */
 function drawnPad(p: DrawnPad, label: string): PadDef | string {
   const number = String(p.number ?? "").trim()
@@ -70,11 +77,27 @@ function drawnPad(p: DrawnPad, label: string): PadDef | string {
     if (number) return `${label}: a non-plated hole is no pin, so it has no number`
     if (drill === undefined) return `${label}: a non-plated hole needs drill`
     if (pasted || p.mask_margin !== undefined || p.corner_ratio !== undefined) return `${label}: a non-plated hole has no copper, so no paste, mask or corner settings`
+    if (p.shape !== undefined || p.w !== undefined || p.h !== undefined || p.d !== undefined) {
+      return `${label}: a non-plated hole has no copper, so its size is drill (and slot_length, along x unless turned by rotation); leave out shape, w, h and d`
+    }
     const x = round(p.x)
     const y = round(p.y)
-    return slot !== undefined
-      ? { pin: null, shape: "pill", x, y, width: round(slot), height: round(drill), holeDiameter: round(drill), slotLength: round(slot), layer: "through", plated: false }
-      : { pin: null, shape: "circle", x, y, width: round(drill), height: round(drill), holeDiameter: round(drill), layer: "through", plated: false }
+    if (slot === undefined) return { pin: null, shape: "circle", x, y, width: round(drill), height: round(drill), holeDiameter: round(drill), layer: "through", plated: false }
+    // A slot runs along x, turned like any pad.
+    const { swap, rot } = turnOf(p.rotation)
+    return {
+      pin: null,
+      shape: "pill",
+      x,
+      y,
+      width: round(swap ? drill : slot),
+      height: round(swap ? slot : drill),
+      holeDiameter: round(drill),
+      slotLength: round(slot),
+      layer: "through",
+      plated: false,
+      ...(rot !== undefined ? { rot } : {}),
+    }
   }
 
   const shape = p.shape ?? (p.d !== undefined ? "circle" : "rect")
@@ -107,11 +130,9 @@ function drawnPad(p: DrawnPad, label: string): PadDef | string {
     if (v !== undefined && Math.abs(v) > 5) return `${label}: ${key} is ${mm(v)}, more than 5 mm: it is a margin round the pad, in mm`
   }
 
-  // A quarter turn is the size turned; any other angle is the pad's own.
-  const turn = (((p.rotation ?? 0) % 360) + 360) % 360
-  const quarter = Math.abs(turn / 90 - Math.round(turn / 90)) < 1e-6
-  if (quarter && Math.round(turn / 90) % 2 === 1) [w, h] = [h, w]
-  const rot = shape === "circle" || quarter ? undefined : round(turn, 3)
+  const turned = turnOf(p.rotation)
+  if (turned.swap) [w, h] = [h, w]
+  const rot = shape === "circle" ? undefined : turned.rot
 
   const through = drill !== undefined
   return {

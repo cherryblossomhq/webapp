@@ -2241,6 +2241,8 @@ export function toolPhase(name: string): string {
     case "route_pcb":
     case "clear_routing":
     case "set_net_width":
+    case "set_net_class":
+    case "draw_trace":
       return "Routing"
     default:
       return "Working"

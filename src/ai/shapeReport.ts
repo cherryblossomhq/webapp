@@ -83,6 +83,8 @@ export function textsReport(project: Project): TextsReport | null {
   for (const t of all) if (!t.hidden) bump(by, t.layer)
   const board = all.filter((t) => t.owner === "#board")
   const listed = board.slice(0, TEXT_LIST_CAP).map((t) => ({
+    // what pcb_text changes it by
+    id: project.texts[t.index].id,
     layer: t.layer,
     text: shownOf(project, t),
     x: round(t.x, 3),

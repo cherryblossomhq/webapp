@@ -8,13 +8,18 @@ import { pinKey } from "../model/connectivity"
 import { padGap } from "../model/decoupling"
 import { isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
-import { classIndex } from "../model/netClasses"
-import { netTraceWidth, resolvePinSpec, updateComponent } from "../model/ops"
+import { addNetClass, assignNet, classIndex, classValuesOfClass, DEFAULT_CLASS_NAME, defaultClassName, removeNetClass, setClassField, setClassPatterns, type ClassField } from "../model/netClasses"
+import { addTrace, addVia, netTraceWidth, resolvePinSpec, updateComponent } from "../model/ops"
+import { pourMissNote } from "../model/pourReach"
+import { copperLayers } from "../model/stack"
+import { addBoardText, removeBoardTexts, updateBoardTexts } from "../model/textOps"
+import { isKicadText, isTextLayer, textLayerKind } from "../model/texts"
+import { defaultTextStyle } from "../editor/pcb/textEditing"
 import { copperOn, removeCopper } from "../model/boardCopper"
 import { pointPadDistance, segmentPadDistance } from "../model/pcb"
 import { findNearSpot, inflateBox, type NearAnchor } from "../model/placeNear"
 import { matchCapability } from "../model/rules"
-import type { ComponentInstance, PcbSide, Project } from "../model/types"
+import type { ComponentInstance, CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
 import { getConnectivity, getPcbAnalysis } from "../store/analysis"
 import type { JsonSchema, ToolOutcome } from "./tools"
 import { onBoard } from "../model/partFlags"
@@ -598,7 +603,218 @@ const clearRoutingTool: PcbToolSpec = {
   },
 }
 
-export const pcbToolSpecs: PcbToolSpec[] = [placePartsTool, setNetWidthTool, clearRoutingTool]
+// ---------- set_net_class ----------
+
+/** The sizes a class sets through the tool, with the range each takes in mm. */
+const CLASS_SIZES: [string, ClassField, number, number][] = [
+  ["clearance", "clearance", 0, 10],
+  ["trace_width", "traceWidth", 0.05, 10],
+  ["via_diameter", "viaDiameter", 0.2, 5],
+  ["via_drill", "viaDrill", 0.1, 3],
+]
+
+/** The named nets with pins, and a sentence that points to the near ones for a name that is not one of them. */
+function netNames(project: Project) {
+  const named = getConnectivity(project).nets.filter((n) => n.pins.length > 0)
+  const has = (name: string) => named.some((n) => n.name === name)
+  const hint = (name: string) => {
+    const near = named.filter((n) => n.name.toLowerCase().includes(name.toLowerCase())).slice(0, 3)
+    return near.length ? ` Did you mean ${near.map((n) => n.name).join(", ")}?` : ` Nets: ${named.filter((n) => n.named).map((n) => n.name).slice(0, 12).join(", ") || "none named yet"}.`
+  }
+  return { named, has, hint }
+}
+
+/** Check errors of these kinds an edit brought that the board did not have, as their messages: what a hand edit by a tool may not leave behind. */
+const errorsAdded = (before: Project, after: Project, kinds: readonly string[]) => newErrors(errorCounts(before, kinds), errorCounts(after, kinds))
+
+/** The errors that copper put down by hand may not bring: anything that shorts, crowds or leaves the board. */
+const COPPER_ERRORS = ["short", "clearance", "edge-clearance", "outside-board", "hole-clearance", "keepout", "via-in-pad", "trace-width"]
+
+const setNetClassTool: PcbToolSpec = {
+  name: "set_net_class",
+  description:
+    "Make, change or remove a net class: nets with their own clearance to every other net, trace width and via size, as KiCad's. Two nets keep the larger of their classes' clearances, so a Mains class at 2.5 mm holds its nets 2.5 mm from the rest while those keep the board's. Routing, pours and checks follow it: clear_routing and route_pcb its nets after a change. A size left out is Default's (the design rules); a width from set_net_width wins.",
+  input_schema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "e.g. Mains; made if new" },
+      nets: { type: "array", items: { type: "string" } },
+      remove_nets: { type: "array", items: { type: "string" }, description: "Back to Default" },
+      patterns: { type: "array", items: { type: "string" }, description: "Net name patterns (* and ?), replacing its own" },
+      ...Object.fromEntries(CLASS_SIZES.map(([key]) => [key, { type: "number" }])),
+      reset: { type: "array", items: { type: "string", enum: CLASS_SIZES.map(([key]) => key) }, description: "Sizes back to Default" },
+      remove: { type: "boolean" },
+    },
+    required: ["name"],
+  },
+  run: (project, input) => {
+    const name = String(input.name ?? "").trim()
+    if (!name) return fail(project, "Name the class")
+    let rules = project.rules
+    if (name === DEFAULT_CLASS_NAME || name === defaultClassName(rules)) return fail(project, `${name} is the design rules themselves: change its sizes with set_design_rules`)
+    const existing = (rules.netClasses ?? []).find((c) => c.name === name) ?? (rules.netClasses ?? []).find((c) => c.name.toLowerCase() === name.toLowerCase())
+    const cls = existing?.name ?? name
+    if (input.remove === true) {
+      if (!existing) return fail(project, `There is no net class ${name}`)
+      const next = { ...project, updatedAt: Date.now(), rules: removeNetClass(rules, cls) }
+      return ok(next, `Removed the net class ${cls}; its nets are in Default again. clear_routing and route_pcb to re-route them.`, `Removed net class ${cls}`)
+    }
+    const { has, hint } = netNames(project)
+    const nets = ((input.nets ?? []) as string[]).map((n) => n.trim()).filter(Boolean)
+    const out = ((input.remove_nets ?? []) as string[]).map((n) => n.trim()).filter(Boolean)
+    const problems = [...nets, ...out].filter((n) => !has(n)).map((n) => `no net named ${n}.${hint(n)}`)
+    for (const [key, , min, max] of CLASS_SIZES) {
+      if (input[key] === undefined) continue
+      const v = Number(input[key])
+      if (!(v >= min && v <= max)) problems.push(`${key} must be between ${min} and ${max} mm`)
+    }
+    if (problems.length) return fail(project, `Nothing was changed. ${problems.join(" ")}`)
+
+    if (!existing) rules = addNetClass(rules, cls)
+    for (const [key, field] of CLASS_SIZES) if (input[key] !== undefined) rules = setClassField(rules, cls, field, round(Number(input[key]), 4))
+    for (const key of (input.reset ?? []) as string[]) {
+      const field = CLASS_SIZES.find(([k]) => k === key)?.[1]
+      if (field) rules = setClassField(rules, cls, field, undefined)
+    }
+    if (Array.isArray(input.patterns)) rules = setClassPatterns(rules, cls, input.patterns as string[])
+    for (const n of nets) rules = assignNet(rules, n, cls)
+    for (const n of out) if (rules.netClasses?.find((c) => c.name === cls)?.nets.includes(n)) rules = assignNet(rules, n, null)
+    const v = classValuesOfClass(rules, cls)
+    if (v.viaDrill >= v.viaDiameter) return fail(project, `Nothing was changed. The class's via drill (${len(v.viaDrill)} mm) must be smaller than its via diameter (${len(v.viaDiameter)} mm)`)
+
+    const next = { ...project, updatedAt: Date.now(), rules }
+    const index = classIndex(rules)
+    const members = getConnectivity(next).nets.filter((n) => n.pins.length > 0 && index.classOf(n.name)?.name === cls).map((n) => n.name)
+    const own = rules.netClasses!.find((c) => c.name === cls)!
+    const size = (field: ClassField, label: string) => `${label} ${len(v[field] as number)} mm${own[field] === undefined ? " (Default's)" : ""}`
+    const analysis = getPcbAnalysis(next)
+    const errors = analysis.violations.filter((x) => x.severity === "error" && x.kind !== "unrouted").length
+    const missed = [...new Set(next.zones.filter((z) => z.net && !z.keepout).map((z) => z.net))].map((net) => pourMissNote(next, analysis, net)).join("")
+    return ok(
+      next,
+      `Net class ${cls}${existing ? "" : " made"}: ${size("clearance", "clearance")}, ${size("traceWidth", "trace width")}, ${size("viaDiameter", "via")}/${len(v.viaDrill)} mm. Nets in it: ${members.join(", ") || "none yet"}. Two nets keep the larger of their classes' clearances; traces already down keep their place, so clear_routing them and route_pcb.${errors ? ` The board now has ${errors} check error(s); run_checks lists them.` : ""}${missed}`,
+      `${existing ? "Changed" : "Made"} net class ${cls}`,
+    )
+  },
+}
+
+// ---------- draw_trace ----------
+
+const drawTraceTool: PcbToolSpec = {
+  name: "draw_trace",
+  description:
+    "Draw a trace by hand on one copper layer through points (mm, y up), at the net's width unless width is given, locked so routing keeps it. It must touch its net's copper (start on a pad's centre, a via or a trace of it) and is refused if it would short, crowd other copper or leave the board. via_at_end ends it on a via, to go on on another layer.",
+  input_schema: {
+    type: "object",
+    properties: {
+      net: { type: "string" },
+      points: { type: "array", items: { type: "number" }, minItems: 4, description: "x1, y1, x2, y2, ..." },
+      layer: { type: "string", description: "top (default), bottom, in1, ..." },
+      width: { type: "number" },
+      via_at_end: { type: "boolean" },
+    },
+    required: ["net", "points"],
+  },
+  run: (project, input) => {
+    const net = String(input.net ?? "").trim()
+    const { named, has, hint } = netNames(project)
+    if (!has(net)) return fail(project, `No net named ${net}.${hint(net)}`)
+    const nums = input.points as unknown[]
+    if (nums.length % 2 || !nums.every((n) => typeof n === "number" && Number.isFinite(n))) return fail(project, "points needs x, y pairs: at least two points")
+    const points: Vec2[] = Array.from({ length: nums.length / 2 }, (_, i) => ({ x: nums[2 * i] as number, y: nums[2 * i + 1] as number }))
+    const layers = copperLayers(project.board) as string[]
+    const layer = (typeof input.layer === "string" ? input.layer : "top") as CopperLayer
+    if (!layers.includes(layer)) return fail(project, `layer must be one of ${layers.join(", ")}`)
+    const rules = project.rules
+    const width = typeof input.width === "number" ? round(input.width, 4) : netTraceWidth(rules, net)
+    if (!(width >= rules.minTraceWidth - 1e-9)) return fail(project, `${width} mm is below the ${len(rules.minTraceWidth)} mm minimum trace width of the design rules`)
+    if (width > 10) return fail(project, `${width} mm is wider than 10 mm`)
+    const drawn = addTrace(project, { layer, width, points, locked: true })
+    if (!drawn.trace) return fail(project, "Those points make no trace: give two different points or more")
+    let next = drawn.project
+    const end = drawn.trace.points[drawn.trace.points.length - 1]
+    if (input.via_at_end === true) next = { ...addVia(next, end, { locked: true, net }).project }
+    const after = getPcbAnalysis(next)
+    const netId = named.find((n) => n.name === net)!.id
+    const on = after.traceNet.get(drawn.trace.id)
+    if (on === "short") return fail(project, `Not drawn: it would short ${net} to another net. ${errorsAdded(project, next, ["short"]).slice(0, 3).join(" ")}`)
+    if (on !== netId) return fail(project, `Not drawn: it touches no copper of ${net}${on ? "" : " (nothing at all)"}. Start or end it on a pad's centre, a via or a trace of ${net}.`)
+    const bad = errorsAdded(project, next, COPPER_ERRORS)
+    if (bad.length) return fail(project, `Not drawn: ${bad.slice(0, 4).join(" ")}${bad.length > 4 ? ` And ${bad.length - 4} more.` : ""} Move its points clear, or narrow it.`)
+    const open = (a: typeof after) => a.ratsnest.filter((r) => r.netId === netId).length
+    const length = drawn.trace.points.reduce((sum, p, i, all) => (i ? sum + Math.hypot(p.x - all[i - 1].x, p.y - all[i - 1].y) : 0), 0)
+    const left = open(after)
+    return ok(
+      next,
+      `Drew a ${len(width)} mm trace of ${net} on ${layer}, ${mm(length)} mm long (id ${drawn.trace.id}), locked${input.via_at_end === true ? `, with a via at (${end.x}, ${end.y})` : ""}. ${net} has ${left ? `${left} open connection(s) left` : "no open connections left"}.`,
+      `Drew a ${len(width)} mm trace of ${net}`,
+    )
+  },
+}
+
+// ---------- pcb_text ----------
+
+const pcbTextTool: PcbToolSpec = {
+  name: "pcb_text",
+  description:
+    "Put text on the board, as the PCB editor's text tool does (a connector's A, B, C, a board name, a version): x, y its middle, size its height, 1 mm by default. layer F.SilkS by default, B.SilkS (mirrored), F.Fab or copper (F.Cu, B.Cu), which may not touch another net. With id (get_design lists board texts), change, move or remove it.",
+  input_schema: {
+    type: "object",
+    properties: {
+      text: { type: "string" },
+      x: { type: "number" },
+      y: { type: "number" },
+      size: { type: "number" },
+      layer: { type: "string" },
+      rotation: { type: "number", description: "Degrees counter-clockwise" },
+      id: { type: "string" },
+      remove: { type: "boolean" },
+    },
+  },
+  run: (project, input) => {
+    const id = typeof input.id === "string" ? input.id.trim().replace(/^x:/, "") : ""
+    const layer = typeof input.layer === "string" ? input.layer.trim() : undefined
+    if (layer !== undefined && (!isTextLayer(layer) || layer === "Edge.Cuts")) return fail(project, `${layer} is not a layer for text: F.SilkS, B.SilkS, F.Fab, B.Fab, F.Cu, B.Cu, ...`)
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined)
+    const size = num(input.size)
+    if (size !== undefined && !(size >= 0.3 && size <= 20)) return fail(project, "size must be between 0.3 and 20 mm")
+    let next: Project
+    let what: string
+    if (id) {
+      const t = (project.texts ?? []).find((x) => x.id === id && isKicadText(x))
+      if (!t) return fail(project, `There is no board text ${id}; get_design lists them`)
+      if (input.remove === true) return ok(removeBoardTexts(project, [id]), `Removed the text "${t.text}".`, "Removed a board text")
+      const to = layer ?? t.layer!
+      next = updateBoardTexts(project, [id], {
+        ...(typeof input.text === "string" ? { text: input.text } : {}),
+        ...(num(input.x) !== undefined ? { x: num(input.x) } : {}),
+        ...(num(input.y) !== undefined ? { y: num(input.y) } : {}),
+        ...(size !== undefined ? { size, w: null, thickness: defaultTextStyle(to).thickness * (size / defaultTextStyle(to).size) } : {}),
+        ...(layer !== undefined ? { layer, mirror: layer.startsWith("B.") } : {}),
+        ...(num(input.rotation) !== undefined ? { rot: num(input.rotation) } : {}),
+      })
+      what = `Changed the text "${typeof input.text === "string" ? input.text : t.text}" (id ${id})`
+    } else {
+      const text = typeof input.text === "string" ? input.text : ""
+      if (!text.trim()) return fail(project, "Give the text")
+      if (num(input.x) === undefined || num(input.y) === undefined) return fail(project, "Give x and y, the text's middle")
+      const on = layer ?? "F.SilkS"
+      const style = defaultTextStyle(on)
+      const height = size ?? style.size
+      const made = addBoardText(project, { layer: on, text, x: num(input.x)!, y: num(input.y)!, rot: num(input.rotation) ?? 0, size: height, thickness: round(style.thickness * (height / style.size), 4), ...(on.startsWith("B.") ? { mirror: true as const } : {}) })
+      next = made.project
+      what = `Put "${text}" on ${on} at (${num(input.x)}, ${num(input.y)}), ${len(height)} mm tall (id ${made.text.id})`
+    }
+    const onCopper = textLayerKind(layer ?? (project.texts ?? []).find((x) => x.id === id)?.layer ?? "F.SilkS") === "copper"
+    if (onCopper) {
+      const bad = errorsAdded(project, next, COPPER_ERRORS)
+      if (bad.length) return fail(project, `Not placed: ${bad.slice(0, 3).join(" ")} Move it clear of other copper, or put it on silkscreen.`)
+    }
+    return ok(next, `${what}.`, id ? "Changed a board text" : "Added a board text")
+  },
+}
+
+export const pcbToolSpecs: PcbToolSpec[] = [placePartsTool, setNetWidthTool, setNetClassTool, clearRoutingTool, drawTraceTool, pcbTextTool]
 
 /** Activity labels of these tools, for the transcript. */
 export function pcbToolLabel(name: string, input: Record<string, unknown>): string | null {
@@ -611,6 +827,12 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       return `Setting trace width on ${Object.keys((input.widths ?? {}) as object).join(", ") || "nets"}`
     case "clear_routing":
       return "Clearing routing"
+    case "set_net_class":
+      return `${input.remove === true ? "Removing" : "Setting"} the net class ${String(input.name ?? "")}`.trim()
+    case "draw_trace":
+      return `Drawing a trace of ${String(input.net ?? "a net")}`
+    case "pcb_text":
+      return input.remove === true ? "Removing a board text" : typeof input.text === "string" ? `Putting "${input.text}" on the board` : "Changing a board text"
     default:
       return null
   }

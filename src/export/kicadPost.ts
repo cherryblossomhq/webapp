@@ -384,7 +384,7 @@ export function applyBoardSettings(pcb: string, project: Project): string {
     return zone
       .replace(/\(connect_pads(?: yes| no| thru_hole_only)?(\s*)\(clearance [^)]*\)/, (_, space: string) => `(connect_pads${join}${space}(clearance ${mm6(gap)})`)
       .replace(/\(min_thickness [^)]*\)/, `(min_thickness ${mm6(rules.pourMinWidth)})`)
-      .replace(/\(thermal_gap [^)]*\)/, `(thermal_gap ${mm6(gap)})`)
+      .replace(/\(thermal_gap [^)]*\)/, `(thermal_gap ${mm6(rules.thermalGap ?? gap)})`)
       .replace(/\(thermal_bridge_width [^)]*\)/, `(thermal_bridge_width ${mm6(rules.thermalSpokeWidth)})`)
   })
   out = out.replace(/\(pad_to_mask_clearance [^)]*\)/, `(pad_to_mask_clearance ${mm6(rules.maskExpansion)})`)

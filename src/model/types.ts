@@ -1700,6 +1700,12 @@ export interface DesignRules {
   thermalSpokeWidth: number
   /** 0 for spokes along the pad's axes, 45 for diagonal ones. */
   thermalSpokeAngle: 0 | 45
+  /**
+   * The ring of clearance round a pad joined to a pour by spokes, unless a zone or the pad sets its own (KiCad's zone `thermal_gap`).
+   * Absent: the pour's clearance, as it always was. A pour kept far from other nets (2.5 mm on a mains board) wants a narrower
+   * one: a 2.5 mm ring round a 2.6 mm pad is 7.6 mm across, wider than the copper round it, and the spokes reach nothing.
+   */
+  thermalGap?: number
   /** Trace width (mm) by net name, for nets that carry current such as supplies and motor outputs. */
   netWidths?: Record<string, number>
   /**

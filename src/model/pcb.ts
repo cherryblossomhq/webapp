@@ -244,6 +244,37 @@ function itemCenter(item: CopperItem): Vec2 {
 /** Points that join an item to a pour when they lie inside the fill. */
 const anchorPoints = (item: CopperItem): Vec2[] => itemPoint(item)
 
+const ringCache = new WeakMap<WorldPad, Vec2[]>()
+
+/**
+ * Points across a through-hole pad's copper, between its hole and its edge, the axes and diagonals first. A pour that joins such a pad
+ * by spokes has the drill cut out of its fill (as KiCad cuts it), so the pad's centre is not in the fill and only the spokes are: every
+ * relieved through-hole pad in a polygon pour, or in a zone with settings of its own (every pour of a KiCad board), used to read as
+ * unconnected, and route_pcb joined it with a trace.
+ */
+function padRing(pad: WorldPad): Vec2[] {
+  let ring = ringCache.get(pad)
+  if (ring) return ring
+  const inner = (pad.holeDiameter ?? 0) / 2
+  const outer = Math.min(pad.width, pad.height) / 2
+  ring = []
+  if (outer > inner) {
+    const r = (inner + outer) / 2
+    // 64 directions, the four axes and four diagonals first: that is where spokes run on a pad that is not turned.
+    const order = [0, 16, 32, 48, 8, 24, 40, 56, ...Array.from({ length: 64 }, (_, k) => k).filter((k) => k % 8)]
+    for (const k of order) {
+      const p = { x: pad.x + r * Math.cos((k * Math.PI) / 32), y: pad.y + r * Math.sin((k * Math.PI) / 32) }
+      if (pointPadDistance(p, pad) === 0) ring.push(p)
+    }
+  }
+  ringCache.set(pad, ring)
+  return ring
+}
+
+/** Whether a pour's fill joins an item: one of its points lies inside it, or, for a through-hole pad, a point of its copper round the hole. */
+const joinsFill = (z: Extract<CopperItem, { kind: "zone" }>, o: CopperItem): boolean =>
+  anchorPoints(o).some((p) => z.contains(p)) || (o.kind === "pad" && o.pad.holeDiameter !== undefined && padRing(o.pad).some((p) => z.contains(p)))
+
 /**
  * The copper of the board as items. A trace or via that names its net (a board brought in from KiCad)
  * carries it as `netId`; `useStored: false` leaves that out, which is what the editor would derive for
@@ -522,7 +553,7 @@ function connectItems(items: CopperItem[], ties: NetTies | null = null): Islands
     if ((x.kind === "shape" && !x.conducts) || (y.kind === "shape" && !y.conducts)) return
     if (x.kind === "zone" || y.kind === "zone") {
       const [z, o] = x.kind === "zone" ? [x, y] : [y, x]
-      if (z.kind === "zone" && o.kind !== "zone" && anchorPoints(o).some((p) => z.contains(p))) union(i, j)
+      if (z.kind === "zone" && o.kind !== "zone" && joinsFill(z, o)) union(i, j)
       return
     }
     if (sameComponentPads(x, y)) return

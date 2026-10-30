@@ -592,6 +592,16 @@ function RulesSection({ project }: { project: Project }) {
               />
             </RuleRow>
             <RuleRow label="Spoke width">{len("thermalSpokeWidth", 0.1, "Thermal spoke width")}</RuleRow>
+            <RuleRow label="Thermal gap">
+              <LengthInput
+                ariaLabel="Thermal gap"
+                min={0}
+                optional
+                placeholder={formatLength(r.pourClearance, unit)}
+                value={r.thermalGap ?? null}
+                onCommit={(v) => setRules({ thermalGap: v === null || v <= 0 ? undefined : v })}
+              />
+            </RuleRow>
           </>
         )}
       </RuleGroup>

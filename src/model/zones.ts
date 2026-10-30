@@ -112,7 +112,7 @@ export function zoneSettings(project: Pick<Project, "rules">, z: Zone): ZoneSett
     clearance,
     minWidth: Math.max(0, z.minWidth ?? rules.pourMinWidth),
     connect: z.connect ?? (rules.thermalRelief === "direct" ? "solid" : rules.thermalRelief === "relief" ? "thermal" : "tht"),
-    thermalGap: z.thermalGap ?? clearance,
+    thermalGap: z.thermalGap ?? rules.thermalGap ?? clearance,
     spokeWidth: z.spokeWidth ?? rules.thermalSpokeWidth,
     priority: z.priority ?? 0,
     smoothing: z.smoothing && z.smoothing.radius > 0 ? z.smoothing : null,

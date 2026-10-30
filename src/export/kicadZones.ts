@@ -78,7 +78,7 @@ export function zoneText(project: Project, z: Zone, fills: ZoneFill[], netNumber
     clearance: z.clearance ?? project.rules.pourClearance,
     minWidth: z.minWidth ?? project.rules.pourMinWidth,
     connect: z.connect ?? (project.rules.thermalRelief === "direct" ? "solid" : project.rules.thermalRelief === "relief" ? "thermal" : "tht"),
-    gap: z.thermalGap ?? z.clearance ?? project.rules.pourClearance,
+    gap: z.thermalGap ?? project.rules.thermalGap ?? z.clearance ?? project.rules.pourClearance,
     spoke: z.spokeWidth ?? project.rules.thermalSpokeWidth,
   }
   const o: string[] = []

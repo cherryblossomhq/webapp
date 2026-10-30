@@ -9,6 +9,7 @@ import { labelTextFor } from "../model/netNames"
 import { componentFootprint, hasUnits, isPhysical, isSchematicPart, powerNetName, schematicBounds, schematicPins, unitGroup, unitOwners, valueText } from "../model/instances"
 import { uid } from "../lib/id"
 import { removeStitching, routeAroundStitching, stitchVias } from "../model/stitch"
+import { pourMissNote } from "../model/pourReach"
 import { autoroute, type AutorouteResult } from "../model/autoroute"
 import { blockPorts, readingOrder } from "../model/blockPorts"
 import { netInfo } from "../model/tidy/nets"
@@ -1565,6 +1566,7 @@ function ruleSummary(r: DesignRules) {
     tent_vias: r.tentVias,
     pour_clearance: r.pourClearance,
     thermal_relief: r.thermalRelief,
+    ...(r.thermalGap !== undefined ? { thermal_gap: r.thermalGap } : {}),
     net_widths: r.netWidths,
     ...netClassSummary(r),
   }
@@ -1639,6 +1641,10 @@ const setRulesTool: ToolSpec = {
       thermal_relief: { type: "string", enum: THERMAL_RELIEF_OPTIONS.map((o) => o.value), description: "relief-tht: spokes on through-hole pads; relief: on every pad; direct: solid" },
       thermal_spokes: { type: "integer", enum: [2, 4] },
       thermal_spoke_angle: { type: "integer", enum: [0, 45] },
+      thermal_gap: {
+        type: "number",
+        description: "The ring round a pad joined to a pour by spokes; the pour clearance by default. Narrow it when pour_clearance is wide, or the ring outgrows the copper round a pad and the spokes reach nothing. 0: back to the default",
+      },
     },
   },
   run: (project, input) => {
@@ -1674,13 +1680,26 @@ const setRulesTool: ToolSpec = {
     if (input.thermal_spokes !== undefined) rules.thermalSpokes = input.thermal_spokes === 2 ? 2 : 4
     if (input.thermal_spoke_angle !== undefined) rules.thermalSpokeAngle = input.thermal_spoke_angle === 45 ? 45 : 0
     if (input.thermal_spokes !== undefined || input.thermal_spoke_angle !== undefined) changed.push(`${rules.thermalSpokes} spokes at ${rules.thermalSpokeAngle === 45 ? 45 : 90}°`)
+    if (input.thermal_gap !== undefined) {
+      const v = Number(input.thermal_gap)
+      if (v === 0) {
+        delete rules.thermalGap
+        changed.push("thermal gap back to the pour clearance")
+      } else if (!(v >= 0.05 && v <= 5)) return fail(project, "thermal_gap must be between 0.05 and 5 mm, or 0 for the pour clearance")
+      else {
+        rules.thermalGap = round(v, 4)
+        changed.push(`thermal_gap ${v}`)
+      }
+    }
     if (!changed.length) return fail(project, "Give at least one rule to change")
     if (rules.traceWidth < rules.minTraceWidth) return fail(project, `trace_width ${rules.traceWidth} is below min_trace_width ${rules.minTraceWidth}`)
     if (rules.viaDrill >= rules.viaDiameter) return fail(project, "via_drill must be smaller than via_diameter")
     const next = { ...project, updatedAt: Date.now(), rules }
-    const errors = getPcbAnalysis(next).violations.filter((v) => v.severity === "error" && v.kind !== "unrouted").length
+    const analysis = getPcbAnalysis(next)
+    const errors = analysis.violations.filter((v) => v.severity === "error" && v.kind !== "unrouted").length
     const after = errors ? ` The board now has ${errors} check error(s); run_checks lists them.` : ""
-    return ok(next, `Design rules: ${changed.join(", ")}.${after}`, `Design rules set: ${changed.join(", ")}`)
+    const missed = [...new Set(next.zones.filter((z) => z.net && !z.keepout).map((z) => z.net))].map((net) => pourMissNote(next, analysis, net)).join("")
+    return ok(next, `Design rules: ${changed.join(", ")}.${after}${missed}`, `Design rules set: ${changed.join(", ")}`)
   },
 }
 
@@ -1786,10 +1805,11 @@ const pourTool: ToolSpec = {
     const poured = add.length ? `Poured ${net} on ${add.join(" and ")}` : `${net} is already poured on ${input.layer}`
     if (input.stitch === true) {
       const res = stitchVias(next, net)
-      if (!res.added) return ok(res.project, `${poured}. No stitching vias fit: ${net} needs solid pours on both layers away from parts.`, "No stitching vias fit")
-      return ok(res.project, `${poured}. Added ${res.added} stitching vias.`, `Stitched ${net} with ${res.added} vias`)
+      const missed = pourMissNote(res.project, getPcbAnalysis(res.project), net)
+      if (!res.added) return ok(res.project, `${poured}. No stitching vias fit: ${net} needs solid pours on both layers away from parts.${missed}`, "No stitching vias fit")
+      return ok(res.project, `${poured}. Added ${res.added} stitching vias.${missed}`, `Stitched ${net} with ${res.added} vias`)
     }
-    return ok(next, `${poured}.`, poured)
+    return ok(next, `${poured}.${pourMissNote(next, getPcbAnalysis(next), net)}`, poured)
   },
 }
 
@@ -1819,13 +1839,16 @@ function polygonZone(project: Project, input: Record<string, unknown>): ToolOutc
     }
     if (net && !z.keepout && !getConnectivity(next).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
     next = updateZone(next, z.id, { ...(net && !z.keepout ? { net } : {}), layers, ...(priority !== undefined ? { priority: priority || undefined } : {}) })
-    return ok(next, "Changed the zone.", "Changed zone")
+    const changedNet = next.zones.find((x) => x.id === z.id)?.net
+    return ok(next, `Changed the zone.${changedNet && !z.keepout ? pourMissNote(next, getPcbAnalysis(next), changedNet) : ""}`, "Changed zone")
   }
   if (!points) return fail(project, "Give the polygon's corners")
   if (!keepout && !getConnectivity(project).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
   const zone = makeZone(points, { layers, net, priority, keepout })
   if (!zone) return fail(project, "That polygon has no area")
-  return ok(addZone(project, zone), `${keepout ? "Added a keepout" : `Poured ${net}`} in a polygon of ${points.length} corners (id ${zone.id}).`, keepout ? "Added keepout" : `Poured ${net} in a polygon`)
+  const next = addZone(project, zone)
+  const missed = keepout ? "" : pourMissNote(next, getPcbAnalysis(next), net)
+  return ok(next, `${keepout ? "Added a keepout" : `Poured ${net}`} in a polygon of ${points.length} corners (id ${zone.id}).${missed}`, keepout ? "Added keepout" : `Poured ${net} in a polygon`)
 }
 
 /** What get_design says of the zones, only for a project that has a polygon or a keepout: nothing for the editor's own pours alone. */

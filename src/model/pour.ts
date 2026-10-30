@@ -338,7 +338,7 @@ function fillZonesIn(project: Project, sch: SchematicConnectivity, input: PourIn
         const own = it.pad.clearance ? Math.max(it.pad.clearance, g, rules.minClearance ?? 0) : g
         if (same && it.pad.zoneConnect !== "none") {
           anchors.push({ x: it.pad.x, y: it.pad.y })
-          if (relieved(it.pad, rules)) clip.push(...inflate(thermalRelief(it.pad, gap, rules), m))
+          if (relieved(it.pad, rules)) clip.push(...inflate(thermalRelief(it.pad, rules.thermalGap ?? gap, rules), m))
         } else clip.push(...padClearance(it.pad, own + m))
       } else if (it.kind === "segment") {
         if (same) anchors.push(it.a, it.b)

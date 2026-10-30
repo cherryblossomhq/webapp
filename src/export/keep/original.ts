@@ -55,7 +55,9 @@ export interface KeptExport {
 
 type Write = (project: Project) => Promise<{ files: Record<string, string>; notes: string[] }>
 
-const MIN_VERSION: Record<Kind, number> = { board: 20241229, schematic: 20250114 }
+// A KiCad 8 schematic (20231120) is patched too: its spelling is the one the exporter writes but for a few words, and the whole-file rewrite it would get instead is a KiCad 9 file as well, which
+// also adds a symbol for every footprint the board has and the schematic does not (on 127_PCBWay that joined two pads to GND).
+const MIN_VERSION: Record<Kind, number> = { board: 20241229, schematic: 20231120 }
 
 const baseOf = (path: string) => path.slice(path.lastIndexOf("/") + 1)
 const extOf = (path: string) => {
@@ -111,11 +113,20 @@ function mergeJson(o: unknown, b: unknown, c: unknown): unknown {
   return out
 }
 
-const cache: { id?: string; before?: { files: Record<string, string>; project: Project } } = {}
+/** The last few projects' `before`, by the zip's id, so that switching between projects does not write each one again; the oldest goes first, and none is kept that is huge. */
+const cache = new Map<string, Record<string, string>>()
+const CACHED_PROJECTS = 3
+const CACHED_CHARS = 48 * 1024 * 1024
+const charsOf = (files: Record<string, string>) => Object.values(files).reduce((n, t) => n + t.length, 0)
 
 /** The project read again from the user's files, and written the way `write` writes: what the export said of it before the user changed anything. */
 async function writtenBefore(id: string, files: OriginalFile[], record: { name?: string; source?: string }, write: Write): Promise<Record<string, string> | string> {
-  if (cache.id === id && cache.before) return cache.before.files
+  const hit = cache.get(id)
+  if (hit) {
+    cache.delete(id)
+    cache.set(id, hit)
+    return hit
+  }
   const { importKicadProject } = await import("../../model/kicad/project")
   const board = files.find((f) => extOf(f.path) === ".kicad_pcb")
   if (board && !kicadFontLoaded()) {
@@ -126,8 +137,10 @@ async function writtenBefore(id: string, files: OriginalFile[], record: { name?:
   const r = importKicadProject(files, { name: record.name, source: record.source, limitBytes: Number.MAX_SAFE_INTEGER })
   if (r.status !== "imported") return `the original files could not be read again (${r.message})`
   const written = await write(r.project)
-  cache.id = id
-  cache.before = { files: written.files, project: r.project }
+  if (charsOf(written.files) <= CACHED_CHARS) {
+    cache.set(id, written.files)
+    while (cache.size > CACHED_PROJECTS || [...cache.values()].reduce((n, f) => n + charsOf(f), 0) > CACHED_CHARS) cache.delete(cache.keys().next().value!)
+  }
   return written.files
 }
 

@@ -692,7 +692,8 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
   for (const c of rebuilt) {
     const was = carriedClasses.find((o) => o.name === c.name)
     if (!was) continue
-    for (const [k, v] of Object.entries(was)) if (!(k in c) && k !== "priority") c[k] = v
+    // (The other classes' priorities are the order the export writes them in; the Default class is last in KiCad's own files, at the largest int.)
+    for (const [k, v] of Object.entries(was)) if (!(k in c) && (k !== "priority" || c.name === "Default")) c[k] = v
   }
 
   // Project properties as text variables, `${REVISION}` in KiCad's text fields.

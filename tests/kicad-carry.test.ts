@@ -23,7 +23,7 @@ const PCB = board({
   outline: `(gr_rect (start 0 0) (end 20 10) (stroke (width 0.15) (type default)) (fill none) (layer "Edge.Cuts"))`,
 }).replace('(paper "A4")', '(paper "A3")')
 
-const PRO = JSON.stringify({ board: { design_settings: { rules: { min_text_height: 0.8 }, rule_severities: { silk_edge_clearance: "ignore" } } }, net_settings: { classes: [{ name: "Default", clearance: 0.2, track_width: 0.25, via_diameter: 0.8, via_drill: 0.4, wire_width: 6 }] } })
+const PRO = JSON.stringify({ board: { design_settings: { rules: { min_text_height: 0.8 }, rule_severities: { silk_edge_clearance: "ignore" } } }, net_settings: { classes: [{ name: "Default", priority: 2147483647, clearance: 0.2, track_width: 0.25, via_diameter: 0.8, via_drill: 0.4, wire_width: 6 }] } })
 const DRU = '(version 1)\n(rule "keep out" (constraint clearance (min 0.3)) (condition "A.NetClass == \'Power\'"))\n'
 
 const files = (): ProjectFile[] => [
@@ -78,6 +78,8 @@ describe("what a KiCad import keeps for the export", () => {
     expect(pro.board.design_settings.rules.min_text_height).toBe(0.8)
     expect(pro.board.design_settings.rule_severities.silk_edge_clearance).toBe("ignore")
     expect(pro.net_settings.classes[0].wire_width).toBe(6)
+    // KiCad writes the Default class with the largest priority, so that every other class comes before it
+    expect(pro.net_settings.classes[0].priority).toBe(2147483647)
     expect(out.files[names.find((n) => n.endsWith(".kicad_dru"))!]).toContain("keep out")
   })
 
@@ -90,5 +92,16 @@ describe("what a KiCad import keeps for the export", () => {
     const pcb = out.files[Object.keys(out.files).find((n) => n.endsWith(".kicad_pcb"))!]
     expect(pcb).toContain('"/DDR3 16x1/SVREF"')
     expect(pcb).not.toContain("{slash}")
+  })
+
+  it("writes a schematic's title block comment into the board's title block, not as a board property", async () => {
+    const r = importKicadProject(files())
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    const project = { ...r.project, properties: [...(r.project.properties ?? []), { key: "Comment1", value: "Rev A notes" }], kicad: { ...r.project.kicad, original: undefined } }
+    const out = await kicadFiles(project)
+    const pcb = out.files[Object.keys(out.files).find((n) => n.endsWith(".kicad_pcb"))!]
+    expect(pcb).toContain('(comment 1 "Rev A notes")')
+    expect(pcb).not.toContain('(property "Comment1"')
   })
 })

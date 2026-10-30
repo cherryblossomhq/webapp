@@ -131,6 +131,16 @@ describe("patching the user's file with what changed", () => {
     expect(r.text).toBe(user.split("\n").filter((l) => !l.includes("000000000032")).join("\n"))
   })
 
+  it("writes a pour's changed fill in as one piece, however many points it has", () => {
+    const pts = (n: number, dx: number) => Array.from({ length: n }, (_, i) => `(xy ${i + dx} ${i % 7})`).join(" ")
+    const zone = (fill: string, sep: string) => `${sep}(zone (net 1) (net_name "GND") (layer "F.Cu") (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10))) (filled_polygon (layer "F.Cu") (pts ${fill})))\n`
+    const put = (text: string, z: string) => text.replace(/\)\n$/, `${z})\n`)
+    const user = put(original, zone(pts(6000, 0), "\t"))
+    const r = patchFile("board", user, put(written({}), zone(pts(6000, 0), "  ")), put(written({}), zone(pts(6000, 1), "  ")))
+    expect(r.ok).toBe(true)
+    expect(r.text).toBe(put(original, zone(pts(6000, 1), "\t")))
+  })
+
   it("adds a track after the last item, with a uuid of its own and the net as the user's file numbers it", () => {
     const r = patchFile("board", original, written({}), written({ segments: [[1, 5], [5, 9], [9, 12]] }))
     expect(r.ok).toBe(true)

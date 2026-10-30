@@ -554,14 +554,18 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   if (stack?.rows?.length || stack?.finish !== undefined || stack?.edgePlating !== undefined || stack?.dielectricConstraints !== undefined || stack?.edgeConnector) setup.push(...stackupText(stack!))
   if (rules.minMicroVia || rules.microVia || rules.microViasAllowed !== undefined || rules.blindBuriedViasAllowed !== undefined) notes.add("The sizes and permissions KiCad 5 kept for micro, blind and buried vias are not in a KiCad 9 board file: the smallest micro via is in the project file, and the rest stay in the project.")
   const kept = (project.properties ?? []).filter((p) => !PROVENANCE_PROPERTIES.has(p.key))
-  const isTitleBlock = (key: string) => /^(Title|Date|Rev|Company|Comment \d+)$/.test(key)
+  // (The board's title block comments are `Comment 1` and the schematic's are `Comment1`: a project from both has the second as well, and neither is a board property.)
+  const isTitleBlock = (key: string) => /^(Title|Date|Rev|Company|Comment ?\d+)$/.test(key)
   const title: string[] = []
   const fileKey = (key: string) => (key === "Title" ? "title" : key === "Date" ? "date" : key === "Rev" ? "rev" : key === "Company" ? "company" : "")
   // The title is the project's name unless the board gave one that is not (then it is a property, kept in its place).
   if (!kept.some((p) => p.key === "Title") && project.name !== "Imported KiCad board") title.push(`    (title ${quote(project.name)})`)
+  const commented = new Set<string>()
   for (const p of kept) {
     if (!isTitleBlock(p.key)) continue
-    const m = p.key.match(/^Comment (\d+)$/)
+    const m = p.key.match(/^Comment ?(\d+)$/)
+    if (m && commented.has(m[1])) continue
+    if (m) commented.add(m[1])
     title.push(m ? `    (comment ${m[1]} ${quote(p.value)})` : `    (${fileKey(p.key)} ${quote(p.value)})`)
   }
   const boardProps = kept.filter((p) => !isTitleBlock(p.key))

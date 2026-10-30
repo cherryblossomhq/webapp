@@ -236,6 +236,8 @@ function relaxedKeys(node: SNode, kind: Kind): string[] {
 
 // ---------- the keys of the children inside an item ----------
 
+/** Lists of points (a pour's fill is thousands of them): when one differs it is replaced as a whole, not point by point. */
+const WHOLE = new Set(["filled_polygon", "pts"])
 const BY_FIRST_ATOM = new Set(["property", "pad", "model", "fp_text", "layer_alias"])
 const GEOMETRIC_KIDS = new Set(["fp_line", "fp_rect", "fp_circle", "fp_arc", "fp_poly", "fp_curve", "fp_text_box", "gr_line", "gr_rect", "gr_circle", "gr_arc", "gr_poly", "gr_curve", "gr_text", "gr_text_box", "segment", "arc", "via", "zone", "dimension", "polyline", "rectangle", "circle", "bezier", "wire", "bus", "junction", "no_connect", "bus_entry", "label", "global_label", "hierarchical_label", "directive_label", "text", "text_box", "image", "pin"])
 
@@ -435,7 +437,7 @@ class Patcher {
   mergeNode(o: SNode, b: SNode, c: SNode) {
     const kind = this.opts.kind
     if (canonOf(this.B.text.slice(b.start, b.end), this.B.nets) === canonOf(this.C.text.slice(c.start, c.end), this.C.nets)) return
-    if (o.head !== b.head || b.head !== c.head || (!hasLists(b) && !hasLists(c))) return this.replaceNode(o, c)
+    if (o.head !== b.head || b.head !== c.head || (!hasLists(b) && !hasLists(c)) || WHOLE.has(b.head)) return this.replaceNode(o, c)
     const ba = atomKids(b).map((a) => a.raw!)
     const ca = atomKids(c).map((a) => a.raw!)
     if (ba.join(" ") !== ca.join(" ")) {

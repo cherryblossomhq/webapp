@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { kicadFiles, kicadZip } from "../src/export/kicad"
+import { keepOriginal } from "../src/export/keep/original"
 import { runImport } from "../src/kicadImport/engine"
 import type { ImportOutcome, WorkerEvent } from "../src/kicadImport/protocol"
 import { saveImported } from "../src/kicadImport/save"
 import { connectAnalytics } from "../src/kicadImport/analytics"
+import type { Project } from "../src/model/types"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { connectModelFiles, modelFileId, type ModelFileStore } from "../src/store/modelFiles"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { entry, fakeStorage, stubLocalStorage } from "./kicad-import-helpers"
+import { importKept } from "./kicad-keep-corpus.test"
 
 // The whole way of the user's own files: the import keeps them, the project saves them beside its file, and the export of the saved project writes them back,
 // byte for byte when nothing changed and with only the change when something did.
@@ -121,5 +124,35 @@ describe("an account that cannot hold the files", () => {
     expect(p.kicad?.original).toBeUndefined()
     const out = await kicadFiles(p)
     expect(out.kept).toBeUndefined()
+  })
+})
+
+describe("a KiCad 8 schematic", () => {
+  it("is patched, not written whole as a KiCad 9 file (which would add a symbol for each footprint it lacks)", async () => {
+    const sch = ["(kicad_sch", "\t(version 20231120)", '\t(generator "eeschema")', '\t(uuid "aaaaaaaa-0000-4000-8000-0000000000ff")', '\t(paper "A4")', "\t(lib_symbols)", ")", ""].join("\n")
+    const p = await importKept([
+      { path: "blink.kicad_pcb", data: text },
+      { path: "blink.kicad_sch", data: sch },
+    ])
+    expect(typeof p).toBe("object")
+    const was = sch.replace("20231120", "20250114")
+    const wire = '\t(wire (pts (xy 1 1) (xy 5 1)) (uuid "bbbbbbbb-0000-4000-8000-000000000001"))\n'
+    const out = await keepOriginal(p as Project, { files: { "blink.kicad_sch": was.replace("\n)\n", `\n${wire})\n`), "blink.kicad_pcb": text }, notes: [] }, async () => ({ files: { "blink.kicad_sch": was, "blink.kicad_pcb": text }, notes: [] }))
+    expect(out.kept?.find((k) => k.file === "blink.kicad_sch")?.mode).toBe("patched")
+    expect(out.files["blink.kicad_sch"]).toBe(sch.replace("\n)\n", `\n${wire})\n`))
+  })
+})
+
+describe("the export as it was before the user changed anything", () => {
+  it("is kept for the last few projects, so going back to one does not write it again", async () => {
+    let writes = 0
+    const write = async () => {
+      writes++
+      return { files: { "blink.kicad_pcb": text }, notes: [] }
+    }
+    const a = (await importKept([{ path: "blink.kicad_pcb", data: text.replace("(at 5 5)", "(at 4 5)") }])) as Project
+    const b = (await importKept([{ path: "blink.kicad_pcb", data: text.replace("(at 5 5)", "(at 6 5)") }])) as Project
+    for (const p of [a, b, a, b, a]) await keepOriginal(p, { files: { "blink.kicad_pcb": text }, notes: [] }, write)
+    expect(writes).toBe(2)
   })
 })

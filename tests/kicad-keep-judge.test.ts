@@ -56,7 +56,8 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? "") || !kicadCliAvailabl
       const text = readFileSync(pcb, "utf8")
       const version = fileVersion(text)
       if (version === null || version < 20241229 || version > 20260101) continue
-      const { files: input } = projectFiles(pcb)
+      // a KiCad backup copy beside the project is not part of it (the import sets it aside too)
+      const input = projectFiles(pcb).files.filter((f) => !f.path.includes("-backups/"))
       const p = await importKept(input)
       if (typeof p === "string") continue
       const mover = p.components.find((c) => c.pcb?.placed && c.pcb.side === "top")
@@ -95,9 +96,12 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? "") || !kicadCliAvailabl
         writeFileSync(join(patched, basename(pcb)), out.files[outPcb])
         for (const f of input.filter((x) => x.path.endsWith(".kicad_sch"))) {
           const o = names.find((nm) => basename(f.path) === nm)
+          if (o && out.exact?.[o] && Buffer.from(out.exact[o]).toString() === readFileSync(join(dir, f.path), "utf8")) continue
           if (o) writeFileSync(join(patched, f.path), out.files[o])
         }
-        const root0 = input.find((x) => x.path.endsWith(".kicad_sch"))
+        const stem = basename(pcb, ".kicad_pcb")
+        const schs = input.filter((x) => x.path.endsWith(".kicad_sch")).sort((a, b) => a.path.split("/").length - b.path.split("/").length)
+        const root0 = schs.find((x) => basename(x.path, ".kicad_sch") === stem) ?? schs[0]
         const sch = (d: string) => (root0 ? join(d, root0.path) : null)
         const [a, b] = await Promise.all([judge(join(truth, basename(pcb)), sch(truth), join(truth, "j")), judge(join(patched, basename(pcb)), sch(patched), join(patched, "j"))])
         const all: Diff[] = compareJudged(a, b)

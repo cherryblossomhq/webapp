@@ -3,7 +3,7 @@ import type { Project } from "../model/types"
 import type { KicadProjectResult } from "../model/kicad/project/import"
 import type { SchematicImportResult } from "../model/kicad/schematic/import"
 import type { KeptFile } from "../model/kicad/board/images"
-import { baseName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, type InputFile, type ProjectFiles } from "./pick"
+import { baseName, dirName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, type InputFile, type ProjectFiles } from "./pick"
 import type { StartRequest, WorkerEvent } from "./protocol"
 import { emptyContext, generatorLabel, stoppedSummary, summarize, type FileContext, type ImportResult } from "./summary"
 
@@ -180,7 +180,9 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       context.notRead.push(...notReadBeside(files))
     }
     // The user's own files are kept with the project, so the export can write back only what the user changes (`export/keep/`).
-    const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: projectBytes }) : null
+    // The library tables beside the board are kept with it though the importer does not read the footprint one.
+    const tables = files.board ? await Promise.all(expanded.files.filter((f) => /^(fp|sym)-lib-table$/i.test(baseName(f.path)) && dirName(f.path) === dirName(files.board!.path) && !projectBytes.some((p) => p.path === f.path)).map(async (f) => ({ name: baseName(f.path), path: f.path, bytes: await f.read() }))) : []
+    const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: [...projectBytes, ...tables] }) : null
     const summary = summarize(result, context)
     if (kept) summary.notes.push(kept.note)
     const project = result.status === "imported" ? (kept ? kept.project : result.project) : null

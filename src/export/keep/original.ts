@@ -67,7 +67,8 @@ const stemOf = (path: string) => baseOf(path).replace(/\.[^.]+$/, "")
 
 /** Which of the user's files an exported file stands for. */
 function originalOf(name: string, files: OriginalFile[]): OriginalFile | null {
-  const exact = files.find((f) => baseOf(f.path) === name)
+  // Two files of one name are in different folders: the one nearest the top is the project's own.
+  const exact = files.filter((f) => baseOf(f.path) === name).sort((a, b) => a.path.split("/").length - b.path.split("/").length)[0]
   if (exact) return exact
   const ext = extOf(name)
   if (ext === ".kicad_pcb" || ext === ".kicad_pro" || ext === ".kicad_dru") {

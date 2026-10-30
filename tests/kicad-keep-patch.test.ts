@@ -147,3 +147,39 @@ describe("patching the user's file with what changed", () => {
     expect(r.text).not.toContain("000000000002)")
   })
 })
+
+describe("patching a schematic", () => {
+  const sym = (uuid: string, ref: string, x: number, inst = "(instances (project \"p\" (path \"/aaaaaaaa-0000-4000-8000-0000000000ff\" (reference \"R1\") (unit 1))))") =>
+    `(symbol (lib_id "Device:R") (at ${x} 50 0) (unit 1) (uuid ${uuid}) (property "Reference" "${ref}" (at ${x} 48 0)) (pin "1" (uuid ${uuid.replace(/.$/, "9")})) ${inst})`
+  const sheet = (symbols: string[], libs = '(symbol "Device:R" (pin passive line (at 0 0 0)))') =>
+    ["(kicad_sch", "\t(version 20250114)", '\t(generator "eeschema")', "\t(uuid aaaaaaaa-0000-4000-8000-0000000000ff)", `\t(lib_symbols ${libs})`, ...symbols.map((s) => `\t${s}`), "\t(wire (pts (xy 1 1) (xy 5 1)))", ")", ""].join("\n")
+  const O = sheet([sym("bbbbbbbb-0000-4000-8000-000000000001", "R1", 10), sym("bbbbbbbb-0000-4000-8000-000000000002", "R2", 20)])
+
+  it("moves a symbol whose uuid the exporter makes differently, by its reference, and keeps the original's uuid", () => {
+    const before = sheet([sym("cccccccc-0000-4000-8000-000000000001", "R1", 10), sym("cccccccc-0000-4000-8000-000000000002", "R2", 20)])
+    const after = sheet([sym("dddddddd-0000-4000-8000-000000000001", "R1", 12), sym("dddddddd-0000-4000-8000-000000000002", "R2", 20)])
+    const r = patchFile("schematic", O, before, after)
+    expect(r.ok).toBe(true)
+    expect(r.text).toBe(O.replace("(at 10 50 0)", "(at 12 50 0)").replace("(at 10 48 0)", "(at 12 48 0)"))
+  })
+
+  it("adds a symbol and its library symbol without touching the rest", () => {
+    const libs = '(symbol "Device:R" (pin passive line (at 0 0 0))) (symbol "Device:C" (pin passive line (at 0 0 0)))'
+    const before = sheet([sym("cccccccc-0000-4000-8000-000000000001", "R1", 10), sym("cccccccc-0000-4000-8000-000000000002", "R2", 20)])
+    const after = sheet([sym("dddddddd-0000-4000-8000-000000000001", "R1", 10), sym("dddddddd-0000-4000-8000-000000000002", "R2", 20), sym("dddddddd-0000-4000-8000-000000000003", "C1", 30)], libs)
+    const r = patchFile("schematic", O, before, after)
+    expect(r.ok).toBe(true)
+    expect(r.text).toContain('(symbol "Device:C"')
+    expect(r.text).toContain('(property "Reference" "C1"')
+    expect(r.text).toContain("bbbbbbbb-0000-4000-8000-000000000001")
+    expect(r.stats.added).toBe(1)
+  })
+
+  it("cuts out a deleted wire", () => {
+    const before = sheet([sym("cccccccc-0000-4000-8000-000000000001", "R1", 10)])
+    const after = before.replace("\t(wire (pts (xy 1 1) (xy 5 1)))\n", "")
+    const r = patchFile("schematic", O, before, after)
+    expect(r.ok).toBe(true)
+    expect(r.text).toBe(O.replace("\t(wire (pts (xy 1 1) (xy 5 1)))\n", ""))
+  })
+})

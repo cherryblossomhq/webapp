@@ -130,6 +130,7 @@ function readDoc(text: string, skip: ReadonlySet<string>): Doc {
 const SKIP_IN_GEOMETRY = new Set(["filled_polygon", "render_cache", "effects", "stroke", "fill", "uuid", "tstamp", "property", "net", "net_name", "width", "locked", "pad", "model", "fp_text", "fp_line", "fp_circle", "fp_arc", "fp_rect", "fp_poly", "fp_curve", "stackup", "teardrop", "connect_pads", "min_thickness", "filled_areas_thickness", "fill_segments", "keepout", "hatch", "priority", "attr", "descr", "tags", "sheetname", "sheetfile", "path", "embedded_fonts", "embedded_files"])
 const COORD = new Set(["start", "end", "mid", "center", "at", "xy", "pos", "origin", "size"])
 const SYMMETRIC = new Set(["segment", "gr_line", "fp_line", "wire", "bus", "arc", "gr_arc", "fp_arc"])
+const SINGLE = new Set(["general", "paper", "title_block", "layers", "setup", "lib_symbols", "sheet_instances", "symbol_instances", "embedded_fonts", "embedded_files", "net_settings", "bus_alias"])
 const TEXTY = new Set(["gr_text", "gr_text_box", "text", "text_box", "label", "global_label", "hierarchical_label", "directive_label", "netclass_flag", "group", "image"])
 
 function collect(node: SNode, text: string, out: string[], layers: string[], depth: number) {
@@ -157,6 +158,8 @@ export function keyOf(node: SNode, text: string, kind: Kind): string {
     if (v) return `${head}|${v}`
   }
   if (head === "property") return `property|${node.kids?.[1]?.value ?? ""}`
+  // A file has one of these: they are told by their name alone, whatever they hold now.
+  if (SINGLE.has(head)) return head
   const parts: string[] = []
   const layers: string[] = []
   collect(node, text, parts, layers, 0)
@@ -167,7 +170,7 @@ export function keyOf(node: SNode, text: string, kind: Kind): string {
     parts.push(`ends:${ends.join("/")}`, ...rest)
   }
   const extra = TEXTY.has(head) ? (node.kids?.[1]?.raw === undefined ? "" : (node.kids[1].value ?? "")) : ""
-  return `${head}|${extra}|${layers.join(",")}|${parts.join(";")}`
+  return `${head}|${extra}|${[...layers].sort().join(",")}|${parts.join(";")}`
 }
 
 interface FootprintKey {

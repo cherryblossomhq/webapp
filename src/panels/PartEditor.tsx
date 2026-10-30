@@ -1,5 +1,5 @@
 import { ExternalLink, Plus, Trash2, X } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { SymbolBody } from "../editor/schematic/SymbolView"
 import { PCB } from "../editor/theme"
 import { buildCustomPart, CUSTOM_CATEGORIES, CUSTOM_SYMBOLS, customPartProblems } from "../model/customParts"
@@ -8,20 +8,25 @@ import { CATEGORIES } from "../model/library"
 import { modelAssignment } from "../model/models3d"
 import { partSourceLine } from "../model/partSource"
 import { hasFieldPlaces, symbolOf } from "../model/symbolDrawing"
-import { draftChanged, editPart, normalizeDraft, partUsers, type PartDraft } from "../model/projectParts"
-import type { CustomPartSpec, FootprintDef, PadDef, PartCategory, PartDef, PinDef, PinSide } from "../model/types"
+import { draftChanged, editPart, normalizeDraft, partUsers, sameModel, type PartDraft } from "../model/projectParts"
+import type { CustomPartSpec, FootprintDef, Model3D, PadDef, PartCategory, PartDef, PinDef, PinSide } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { projectApi, useProjectStore } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
+import { lcscNumber, ModelControls } from "./ModelSection"
 import { listed, removeProjectParts } from "./partActions"
 
-// The part editor: a project part's details, and the place to change them, as Altium's component
-// properties are. Its symbol and footprint drawn beside what defines them; the edit is a draft
-// until Save, which makes it one undo step with every component placed from the part following
-// (`editPart` in `model/projectParts.ts`). A viewer reads it all and changes nothing.
+// three.js loads with the first 3D preview, as with the 3D view.
+const PartPreview3D = lazy(() => import("../editor/three/PartPreview3D").then((m) => ({ default: m.PartPreview3D })))
 
-type Tab = "general" | "pins" | "footprint"
+// The part editor: a project part's details, and the place to change them, as Altium's component
+// properties are. Its symbol and footprint drawn beside what defines them, and its 3D model on
+// the footprint; the edit is a draft until Save, which makes it one undo step with every
+// component placed from the part following (`editPart` in `model/projectParts.ts`). A viewer
+// reads it all and changes nothing.
+
+type Tab = "general" | "pins" | "footprint" | "model"
 
 type EditPin = PinDef & { side?: PinSide }
 
@@ -189,14 +194,26 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
   const [tab, setTab] = useState<Tab>("general")
   const [refused, setRefused] = useState<string[] | null>(null)
   const [removing, setRemoving] = useState(askRemove && !readOnly)
+  /** The 3D model chosen in the draft; undefined while the user hasn't chosen, and the part keeps what it has. */
+  const [chosenModel, setChosenModel] = useState<Model3D | null | undefined>(undefined)
   const set = (patch: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patch }))
+    setRefused(null)
+  }
+  const chooseModel = (model: Model3D | null) => {
+    setChosenModel(model)
     setRefused(null)
   }
   const drawn = spec.drawing !== undefined
   const draft = useMemo(() => draftFrom(form, spec), [form, spec])
   const normalized = useMemo(() => normalizeDraft(draft), [draft])
-  const changed = draftChanged(spec, draft)
+  const footprintFound = !!normalized.footprint && isValidFootprint(normalized.footprint)
+  // What the part has on the draft's footprint unless a model is chosen: its own, or none on a footprint it wasn't on.
+  const savedModel = modelAssignment(project, spec.id, spec.footprint)
+  const keptModel = footprintFound ? modelAssignment(project, spec.id, normalized.footprint) : null
+  const model = chosenModel !== undefined ? chosenModel : keptModel
+  const modelChanged = chosenModel !== undefined && !sameModel(chosenModel, keptModel)
+  const changed = draftChanged(spec, draft) || modelChanged
   const problems = useMemo(() => {
     const keys = form.params.map((p) => p.key.trim()).filter(Boolean)
     const twice = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))].map((k) => `the parameter ${k} is listed twice`)
@@ -214,7 +231,7 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
   const users = partUsers(project, spec.id)
   const refs = [...new Set(users.map((c) => c.ref))]
   const source = partSourceLine(spec)
-  const modelLost = form.footprint.trim() !== spec.footprint && !!modelAssignment(project, spec.id, spec.footprint)
+  const modelLost = normalized.footprint !== spec.footprint && !!savedModel && chosenModel === undefined && !keptModel
 
   const cancel = () => (removing ? setRemoving(false) : close())
   useEscape(cancel)
@@ -222,7 +239,7 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
   const save = () => {
     const live = projectApi().project
     if (!live) return
-    const res = editPart(live, spec.id, draft, { conn: getConnectivity })
+    const res = editPart(live, spec.id, draft, { conn: getConnectivity, ...(chosenModel !== undefined && { model: chosenModel }) })
     if (!res.ok) {
       setRefused(res.problems)
       return
@@ -297,9 +314,26 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
                 { value: "general", label: "General" },
                 { value: "pins", label: `Pins (${preview?.pins.length ?? form.pins.length})` },
                 { value: "footprint", label: "Footprint" },
+                { value: "model", label: "3D model" },
               ]}
             />
           </div>
+          {tab === "model" && (
+            // Outside the fieldset, so a viewer can still turn the part over.
+            <div className="px-5 pt-3">
+              <div className="h-[250px] overflow-hidden rounded-[8px] border border-line bg-[#121116]">
+                {footprintFound ? (
+                  <Suspense fallback={null}>
+                    <PartPreview3D partId={spec.id} footprint={normalized.footprint} model={model} board={project.board} />
+                  </Suspense>
+                ) : (
+                  <p className="flex h-full items-center justify-center px-6 text-center text-[12px] text-[#c9c4d6]">
+                    {normalized.footprint ? `No footprint called ${normalized.footprint}, so nothing to draw.` : "No footprint, so nothing on the board to draw."}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           <fieldset disabled={readOnly} className="scroll-thin min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pb-4 pt-3">
             {tab === "general" && <GeneralTab form={form} set={set} drawn={drawn} />}
             {tab === "pins" &&
@@ -309,6 +343,17 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
                 <PinsTab pins={form.pins} boxed={!form.symbol} onChange={(pins) => set({ pins })} />
               ))}
             {tab === "footprint" && <FootprintTab form={form} set={set} footprints={(project.footprints ?? []).map((f) => f.name)} drawn={drawn} modelLost={modelLost} />}
+            {tab === "model" && footprintFound && (
+              <ModelTab
+                footprint={normalized.footprint}
+                model={model}
+                onChange={chooseModel}
+                lcsc={lcscNumber(normalized.props.lcsc, spec.source?.supplier?.lcsc)}
+                searchText={normalized.props.mpn || normalized.name}
+                lost={modelLost ? { model: savedModel!, footprint: spec.footprint } : null}
+                elsewhere={[...new Set(users.filter((c) => c.partId === spec.id && c.footprint !== spec.footprint).map((c) => c.ref))]}
+              />
+            )}
           </fieldset>
         </div>
       </div>
@@ -596,13 +641,54 @@ function FootprintTab({ form, set, footprints, drawn, modelLost }: { form: Form;
           ))}
         </datalist>
       </Field>
-      {modelLost && <p className="text-[12px] text-ink-2">Its 3D model was fitted to the old footprint and isn't kept: the new one is drawn with a generated body until a model is added in the Inspector.</p>}
+      {modelLost && <p className="text-[12px] text-ink-2">Its 3D model sat on the old footprint, so it isn't kept: the 3D model tab can keep it anyway, or give the new footprint another.</p>}
       {!drawn && (
         <Field label="Shared pads" hint="Pads that are one pin, written pad=pin: a SOT-223's tab is 4=2, an exposed pad wired as pin 9 is EP=9">
           <input className="field mono h-8" value={form.alias} onChange={(e) => set({ alias: e.target.value })} aria-label="Shared pads" placeholder="none" />
         </Field>
       )}
       <PadTable name={form.footprint.trim()} pins={form.pins} alias={parseAlias(form.alias).alias} />
+    </>
+  )
+}
+
+/** The part's 3D model on its footprint: chosen and placed as in the Inspector, kept in the draft until Save. */
+function ModelTab({
+  footprint,
+  model,
+  onChange,
+  lcsc,
+  searchText,
+  lost,
+  elsewhere,
+}: {
+  footprint: string
+  model: Model3D | null
+  onChange: (model: Model3D | null) => void
+  lcsc: string | null
+  searchText: string
+  /** The model the part had on the footprint the draft moves it off, which doesn't follow unless asked. */
+  lost: { model: Model3D; footprint: string } | null
+  /** Components placed from the part on another footprint than its own, each with the model of that one. */
+  elsewhere: string[]
+}) {
+  return (
+    <>
+      {lost && (
+        <p className="text-[12px] text-ink-2">
+          {lost.model.name} sat on {lost.footprint}, so it isn't kept on {footprint}.{" "}
+          <button type="button" className="text-brand hover:underline" onClick={() => onChange(lost.model)}>
+            Keep it anyway
+          </button>
+        </p>
+      )}
+      <div className="space-y-2.5">
+        <ModelControls model={model} footprint={footprint} lcsc={lcsc} searchText={searchText} onChange={onChange} />
+      </div>
+      <p className="text-[11.5px] text-ink-3">
+        Every component of this part on {footprint} is drawn with it.
+        {elsewhere.length > 0 && ` ${listed(elsewhere)} ${elsewhere.length === 1 ? "is" : "are"} on another footprint, with its own model in the Inspector.`}
+      </p>
     </>
   )
 }

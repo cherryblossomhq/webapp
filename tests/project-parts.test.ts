@@ -192,6 +192,28 @@ describe("editing a part", () => {
     expect(res.ok && modelAssignment(res.project, res.id, "sot23_5")).toEqual(fileModel("c".repeat(64), "ldo.step", "step"))
   })
 
+  it("gives the part the 3D model chosen in the editor, on its footprint, with or without another change", () => {
+    const ldo = spec(LDO)
+    const step = fileModel("c".repeat(64), "ldo.step", "step")
+    const p = place(projectWith(ldo), ldo.id)
+    // The model alone: the part stays the part.
+    const only = editPart(p, ldo.id, draftOf(ldo), { model: step })
+    if (!only.ok) throw new Error(only.problems.join("; "))
+    expect(only.id).toBe(ldo.id)
+    expect(only.project.parts).toBe(p.parts)
+    expect(only.project.models).toEqual([{ part: ldo.id, footprint: "sot23_5", model: step }])
+    // The same model again, or none where there is none, changes nothing.
+    expect(editPart(only.project, ldo.id, draftOf(ldo), { model: step })).toMatchObject({ project: only.project })
+    expect(editPart(p, ldo.id, draftOf(ldo), { model: null })).toMatchObject({ project: p })
+    // With a new footprint the model chosen goes on the new one, under the part's new id, where the old one's would be dropped.
+    const moved = editPart(only.project, ldo.id, edit(ldo, { footprint: "sot23_5_p0.95mm" }), { model: { ...step, rotation: { x: 0, y: 0, z: 90 } } })
+    if (!moved.ok) throw new Error(moved.problems.join("; "))
+    expect(moved.project.models).toEqual([{ part: moved.id, footprint: "sot23_5_p0.95mm", model: { ...step, rotation: { x: 0, y: 0, z: 90 } } }])
+    // Null is the generated body.
+    const plain = editPart(only.project, ldo.id, edit(ldo, { description: "Plain" }), { model: null })
+    expect(plain.ok && plain.project.models).toBeUndefined()
+  })
+
   it("keeps the parameter shown as the value when the part gives it no default, as a KiCad part's is", () => {
     const board = spec({ ...SENSOR, name: "U_SENSOR", props: {}, valueProp: "value" })
     const p = place(projectWith(board), board.id, { x: 0, y: 0 }, { value: "SHT31" })

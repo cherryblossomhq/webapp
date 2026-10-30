@@ -3,6 +3,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { customPartId } from "../src/model/customParts"
+import { fileModel, setModel } from "../src/model/models3d"
 import { addComponent, createProject } from "../src/model/ops"
 import type { CustomPartSpec, Project } from "../src/model/types"
 import { LibraryPanel } from "../src/panels/LibraryPanel"
@@ -155,6 +156,43 @@ describe("the part editor", () => {
     click(button("Save"))
     expect(live().parts![0].props).toEqual({ mpn: "TPS7A0233", datasheet: "https://www.ti.com/lit/gpn/tps7a02" })
     expect(live().components[0].props.datasheet).toBe("https://www.ti.com/lit/gpn/tps7a02")
+  })
+
+  it("shows the part's 3D model and takes it off on Save, as one undo step", async () => {
+    projectApi().open(setModel(live(), ldo.id, "sot23_5", fileModel("c".repeat(64), "ldo.step", "step")))
+    render()
+    click(byLabel("Edit TPS7A0233"))
+    click(button("3D model"))
+    expect(text()).toMatch(/ldo\.step/)
+    expect(text()).toMatch(/Every component of this part on sot23_5 is drawn with it/)
+    click(byLabel("Remove 3D model"))
+    expect(text()).toMatch(/Generated body/)
+    click(button("Save"))
+    expect(live().models).toBeUndefined()
+    expect(live().parts![0].id).toBe(ldo.id)
+    act(() => projectApi().undo())
+    expect(live().models).toHaveLength(1)
+    // The preview loads with three.js; jsdom has no WebGL, so it says so rather than failing.
+    click(byLabel("Edit TPS7A0233"))
+    click(button("3D model"))
+    await act(async () => void (await import("../src/editor/three/PartPreview3D")))
+    await act(async () => void (await new Promise((r) => setTimeout(r, 0))))
+    expect(text()).toMatch(/The 3D preview needs WebGL/)
+  })
+
+  it("keeps the model on a new footprint only when asked", () => {
+    const step = fileModel("c".repeat(64), "ldo.step", "step")
+    projectApi().open(setModel(live(), ldo.id, "sot23_5", step))
+    render()
+    click(byLabel("Edit TPS7A0233"))
+    click(button("Footprint"))
+    type(byLabel<HTMLInputElement>("Footprint")!, "sot23_5_p0.95mm")
+    expect(text()).toMatch(/Its 3D model sat on the old footprint/)
+    click(button("3D model"))
+    click(button("Keep it anyway"))
+    click(button("Save"))
+    const [part] = live().parts!
+    expect(live().models).toEqual([{ part: part.id, footprint: "sot23_5_p0.95mm", model: step }])
   })
 
   it("is read only for a viewer", () => {

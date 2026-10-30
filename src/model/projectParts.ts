@@ -4,9 +4,10 @@ import { registerProjectFootprints } from "./footprints"
 import { schematicPins } from "./instances"
 import { findPart, registerPart, unitTwinId } from "./library"
 import { schematicEditProblems } from "./merges"
+import { modelAssignment, setModel } from "./models3d"
 import { removeItems } from "./ops"
 import type { Guard } from "./schematicEdit"
-import type { ComponentInstance, CustomPartSpec, PartDef, PartSource, Project } from "./types"
+import type { ComponentInstance, CustomPartSpec, Model3D, PartDef, PartSource, Project } from "./types"
 
 // The project's own parts as a library the user keeps, as Altium's project library is: which
 // components each part is placed as, taking out the parts a project no longer needs, and editing
@@ -143,19 +144,28 @@ export type PartEditResult =
   | { ok: true; project: Project; id: string; /** Components whose pins are now elsewhere on the sheet: their wiring is worth a look. */ moved: string[] }
   | { ok: false; problems: string[] }
 
+/** Whether two models are the same file placed the same way. */
+export const sameModel = (a: Model3D | null, b: Model3D | null) => canonical(a) === canonical(b)
+
+/** A part's model on a footprint set, or the project itself when it already has that one. */
+function withModel(project: Project, part: string, footprint: string, model: Model3D | null): Project {
+  return sameModel(modelAssignment(project, part, footprint), model) ? project : setModel(project, part, footprint, model)
+}
+
 /**
  * Save an edit of a project part. Its id follows from its definition, so the edited part is a new
  * spec in the old one's place in the list, and every component placed from it switches over: to
  * its footprint too, unless it was given another, and to its parameters where it still has the
  * old ones (a value set on one component stays). Its 3D models follow it while the footprint
- * stays. Refused with the reasons when the spec can't be built, or when its pins would land on
- * the wires of other nets on the sheet.
+ * stays; `model`, when given, is the one it has on its footprint after the edit (null for the
+ * generated body). Refused with the reasons when the spec can't be built, or when its pins would
+ * land on the wires of other nets on the sheet.
  */
-export function editPart(project: Project, id: string, draft: PartDraft, o: Guard = {}): PartEditResult {
+export function editPart(project: Project, id: string, draft: PartDraft, o: Guard & { model?: Model3D | null } = {}): PartEditResult {
   const old = project.parts?.find((s) => s.id === id)
   if (!old) return { ok: false, problems: ["This part is no longer in the project: someone may have changed or removed it."] }
   const next = normalizeDraft(draft)
-  if (!draftChanged(old, next)) return { ok: true, project, id, moved: [] }
+  if (!draftChanged(old, next)) return { ok: true, project: o.model === undefined ? project : withModel(project, id, old.footprint, o.model), id, moved: [] }
   const source = editedSource(old.source, physicalChanges(draftOf(old), next))
   const definition: Omit<CustomPartSpec, "id"> = { ...next, ...(source && { source }) }
   registerProjectFootprints(project)
@@ -202,7 +212,8 @@ export function editPart(project: Project, id: string, draft: PartDraft, o: Guar
   const models = project.models
     ?.filter((m) => !(m.part === id && footprintChanged && m.footprint === old.footprint))
     .map((m) => (m.part === id && !exists ? { ...m, part: spec.id } : m))
-  const edited = withoutLeftovers({ ...project, parts, components, ...(project.models && { models: models?.length ? models : undefined }), updatedAt: Date.now() }, [old])
+  const kept = withoutLeftovers({ ...project, parts, components, ...(project.models && { models: models?.length ? models : undefined }), updatedAt: Date.now() }, [old])
+  const edited = o.model === undefined ? kept : withModel(kept, spec.id, spec.footprint, o.model)
 
   if (!switched.length) return { ok: true, project: edited, id: spec.id, moved: [] }
   const conn = o.conn ?? computeConnectivity

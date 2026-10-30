@@ -13,11 +13,16 @@ import { Button, Field } from "../ui/controls"
 import { CommitInput, LengthInput, Section } from "../ui/form"
 import { Tooltip } from "../ui/Tooltip"
 
+/** The first of these that is an LCSC number, as one: `c919459` is `C919459`. */
+export function lcscNumber(...candidates: (string | undefined)[]): string | null {
+  const n = candidates.find((v) => v?.trim())?.trim()
+  return n && /^C\d+$/i.test(n) ? n.toUpperCase() : null
+}
+
 /** The LCSC number a component's part is sold under, when it says. */
 function lcscOf(c: ComponentInstance, part: PartDef, project: Project): string | null {
   const spec = project.parts?.find((s) => s.id === part.id)
-  const n = c.props.lcsc ?? spec?.props.lcsc ?? spec?.source?.supplier?.lcsc ?? part.defaultProps.lcsc
-  return n && /^C\d+$/i.test(n.trim()) ? n.trim().toUpperCase() : null
+  return lcscNumber(c.props.lcsc, spec?.props.lcsc, spec?.source?.supplier?.lcsc, part.defaultProps.lcsc)
 }
 
 /** What to search the supplier for: the part number, else its value and package. */
@@ -39,7 +44,42 @@ const num = (v: string) => {
  * footprint carries its model. Without one the part is drawn with its generated body.
  */
 export function ModelSection({ c, part, project }: { c: ComponentInstance; part: PartDef; project: Project }) {
-  const model = componentModel(project, c)
+  const sharing = project.components.filter((x) => x.partId === c.partId && x.footprint === c.footprint).length
+  // Into the project this was rendered for: a file still uploading when the user opens another
+  // project must not land in that one.
+  const assign = (next: Model3D | null) => projectApi().commit((p) => (p.id === project.id ? setModel(p, c.partId, c.footprint, next) : p))
+  return (
+    <Section title="3D model" id="inspector-3d-model">
+      <ModelControls model={componentModel(project, c)} footprint={c.footprint} lcsc={lcscOf(c, part, project)} searchText={searchFor(c, part)} onChange={assign} />
+      {sharing > 1 && (
+        <p className="text-[11.5px] text-ink-3">
+          Every {part.name} on {c.footprint} uses it ({sharing} parts).
+        </p>
+      )}
+    </Section>
+  )
+}
+
+/**
+ * Choosing a part's model on one footprint and placing it: a file, the supplier's model of the
+ * part, or the generated body. Shared by the Inspector, which commits each choice, and the part
+ * editor, which keeps it in its draft until Save.
+ */
+export function ModelControls({
+  model,
+  footprint,
+  lcsc,
+  searchText,
+  onChange,
+}: {
+  model: Model3D | null
+  footprint: string
+  /** The LCSC number the part is sold under, when it says: its model is one click away. */
+  lcsc: string | null
+  /** What a supplier search for a model starts from. */
+  searchText: string
+  onChange: (next: Model3D | null) => void
+}) {
   const { state, error } = useModelState(model)
   const realModels = useUi((s) => s.settings.realModels)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -47,14 +87,9 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
   const [problem, setProblem] = useState<string | null>(null)
   const [query, setQuery] = useState<string | null>(null)
   const [hits, setHits] = useState<PartCandidate[] | null>(null)
-  const sharing = project.components.filter((x) => x.partId === c.partId && x.footprint === c.footprint).length
   const source = supplierParts()
-  const lcsc = lcscOf(c, part, project)
 
-  // Into the project this was rendered for: a file still uploading when the user opens another
-  // project must not land in that one.
-  const assign = (next: Model3D | null) => projectApi().commit((p) => (p.id === project.id ? setModel(p, c.partId, c.footprint, next) : p))
-  const edit = (patch: Partial<Model3D>) => model && assign({ ...model, ...patch })
+  const edit = (patch: Partial<Model3D>) => model && onChange({ ...model, ...patch })
   const run = async (what: string, work: () => Promise<void>) => {
     setBusy(what)
     setProblem(null)
@@ -81,7 +116,7 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
       const object = await modelLibrary.prime(drafted, bytes.slice(0))
       await store.put({ name: file.name, bytes })
       const { fitToFootprint } = await import("../editor/three/files/fit")
-      assign(fitToFootprint(drafted, object, c.footprint))
+      onChange(fitToFootprint(drafted, object, footprint))
     })
 
   const takeSupplierModel = (number: string) =>
@@ -90,9 +125,9 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
       const record = await source.part(number)
       if (!record) throw new Error(`No supplier record for ${number}.`)
       if (!record.model3d) throw new Error(`${number} (${record.mpn}) has no 3D model at the supplier.`)
-      const next = supplierModelOn(record, c.footprint)
-      if (!next) throw new Error(`${number}'s land isn't this footprint's (${c.footprint}), so its model wouldn't sit on these pads.`)
-      assign(next)
+      const next = supplierModelOn(record, footprint)
+      if (!next) throw new Error(`${number}'s land isn't this footprint's (${footprint}), so its model wouldn't sit on these pads.`)
+      onChange(next)
       setHits(null)
       setQuery(null)
     })
@@ -106,7 +141,7 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
     })
 
   return (
-    <Section title="3D model" id="inspector-3d-model">
+    <>
       <div className="flex items-start gap-2">
         <Box size={15} className="mt-0.5 shrink-0 text-ink-3" />
         <div className="min-w-0 flex-1">
@@ -140,13 +175,13 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
           </Button>
         )}
         {source?.model && !lcsc && query === null && (
-          <Button onClick={() => setQuery(searchFor(c, part))} disabled={!!busy}>
+          <Button onClick={() => setQuery(searchText)} disabled={!!busy}>
             <Search size={14} /> Find
           </Button>
         )}
         {model && (
           <Tooltip label="Use the generated body">
-            <Button variant="ghost" aria-label="Remove 3D model" onClick={() => assign(null)} disabled={!!busy}>
+            <Button variant="ghost" aria-label="Remove 3D model" onClick={() => onChange(null)} disabled={!!busy}>
               <Trash2 size={14} />
             </Button>
           </Tooltip>
@@ -247,11 +282,6 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
           </div>
         </>
       )}
-      {sharing > 1 && (
-        <p className="text-[11.5px] text-ink-3">
-          Every {part.name} on {c.footprint} uses it ({sharing} parts).
-        </p>
-      )}
-    </Section>
+    </>
   )
 }

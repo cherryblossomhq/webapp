@@ -6,6 +6,7 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of
 // the GNU General Public License along with this program; if not, see <https://www.gnu.org/licenses/>.
 
+import { round } from "../../../lib/geometry"
 import { DEFAULT_EXTENSION_HEIGHT_IU } from "../../dimensions"
 import { isTextLayer } from "../../texts"
 import type { BoardDimension } from "../../types"
@@ -13,10 +14,7 @@ import { resolveLayer } from "./graphics"
 import { convertBoardText } from "./texts"
 import type { KicadBoard, KicadDimension } from "./types"
 
-const r6 = (n: number) => {
-  const v = Math.round(n * 1e6) / 1e6
-  return Object.is(v, -0) ? 0 : v
-}
+const r6 = (n: number) => round(n, 6)
 
 export interface DimensionConversion {
   board: KicadBoard

@@ -7,7 +7,7 @@
 // should have received a copy of the GNU General Public License along with this program; if not, see
 // <https://www.gnu.org/licenses/>.
 
-import { rotate90 } from "../../../lib/geometry"
+import { rotate90, round } from "../../../lib/geometry"
 import { kiRound, mmToIu } from "../../../lib/kicadText"
 import { flipShapeLayer } from "../../shapeLayers"
 import { boardTextWorld, hasExpression, isTextLayer, outlineSignatureOf, partTextWorld, textInk, textPose, textVariables, UNSUPPORTED_VARIABLES, type WorldText } from "../../texts"
@@ -22,10 +22,7 @@ import type { KicadBoard, KicadFootprint, KicadText } from "./types"
 // turn, on the top), so they follow the part, and a text of a part on the bottom is the library's, as its pads are
 // (`landPad`, build.ts): see `partTextWorld` (model/texts.ts) for the map back.
 
-const r6 = (n: number) => {
-  const v = Math.round(n * 1e6) / 1e6
-  return Object.is(v, -0) ? 0 : v
-}
+const r6 = (n: number) => round(n, 6)
 
 const norm360 = (a: number) => ((a % 360) + 360) % 360
 

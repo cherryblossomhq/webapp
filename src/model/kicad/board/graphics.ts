@@ -1,4 +1,4 @@
-import { emptyBox, expandBox } from "../../../lib/geometry"
+import { emptyBox, expandBox, round } from "../../../lib/geometry"
 import { flipShapeLayer, isShapeLayer, shapeLayerInfo } from "../../shapeLayers"
 import { DEFAULT_SHAPE_WIDTH, isClosedShape, mapShape, shapeBox } from "../../shapes"
 import type { BoardShape, ShapeDash, ShapeGeometry, ShapePoint, Vec2 } from "../../types"
@@ -86,10 +86,7 @@ export function resolveLayer(board: Pick<KicadBoard, "copper">, name: string): R
   return { kind: "unknown", name }
 }
 
-const r6 = (n: number) => {
-  const v = Math.round(n * 1e6) / 1e6
-  return Object.is(v, -0) ? 0 : v
-}
+const r6 = (n: number) => round(n, 6)
 
 /** Every number of a shape's geometry rounded to a millionth (a nanometre, KiCad's own unit), and `-0` made `0`. */
 function roundGeometry<T extends ShapeGeometry>(g: T): T {

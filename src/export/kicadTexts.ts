@@ -16,6 +16,7 @@ import { isDimensionText, shownOf, textBoxCorners, worldTexts } from "../model/t
 import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 import { quoteTabs as quote } from "../lib/kicadQuote"
+import { stableUuid } from "./kicadUuid"
 
 // The texts of a board brought in from KiCad, written into the board file the converter made: board text as
 // `gr_text` and `gr_text_box`, and each part's reference, value and own text as the footprint's `property`
@@ -91,7 +92,7 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
   const uuids = new Map<string, string[]>()
   if (!all.length) return { text: pcb, notes: [], uuids }
   let serial = 0
-  const uuid = () => `00000000-0000-4000-a000-${(++serial).toString(16).padStart(12, "0")}`
+  const uuid = () => stableUuid("a000", ++serial)
   const componentOf = new Map(project.components.map((c) => [c.id, c]))
   const refOf = new Map<string, string>()
   for (const c of project.components) if (isPhysical(findPart(c.partId))) refOf.set(c.id, c.ref)

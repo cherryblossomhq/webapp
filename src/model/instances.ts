@@ -56,11 +56,6 @@ export const dirVector = (dir: SymbolPort["dir"]): Vec2 =>
 // A component is replaced, never edited, so its pins stay put for as long as the object does.
 const pinCache = new WeakMap<ComponentInstance, { part: PartDef; pins: WorldPin[] }>()
 
-/** The symbol a component is drawn as: its unit's and body style's, turned and mirrored as the component is. */
-export function placedSymbol(c: ComponentInstance, part = findPart(c.partId)) {
-  return part ? symbolOf(part, c) : undefined
-}
-
 /** Where a component's pins are on the sheet. Cached per component object: treat the result as read-only. */
 export function schematicPins(c: ComponentInstance, part = findPart(c.partId)): WorldPin[] {
   if (!part) return []
@@ -693,6 +688,3 @@ export function unitOwners(components: ComponentInstance[]): Map<string, string>
   ownerCache.set(components, hit)
   return hit
 }
-
-/** The id of the component that is the part this component is a unit of: itself unless it is another unit. */
-export const unitOwner = (components: ComponentInstance[], id: string) => unitOwners(components).get(id) ?? id

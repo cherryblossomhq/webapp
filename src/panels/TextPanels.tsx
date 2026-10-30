@@ -2,7 +2,7 @@ import { Plus, RotateCcw, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { copperCount } from "../model/stack"
 import { addPartText, patchTexts, removeBoardTexts, removePartText, resetPartTexts, withDesignatorText, type TextPatch } from "../model/textOps"
-import { componentTexts, parseTextId, shownOf, type WorldText } from "../model/texts"
+import { componentTexts, shownOf, type WorldText } from "../model/texts"
 import type { ComponentInstance, Project } from "../model/types"
 import { projectApi } from "../store/projectStore"
 import { uiApi } from "../store/uiStore"
@@ -237,10 +237,4 @@ export function PartTextsSection({ c, project }: { c: ComponentInstance; project
       )}
     </Section>
   )
-}
-
-/** The id of a text a selection holds, for the part panel to stay open on. */
-export const textOwner = (selection: string[]): string | null => {
-  const parsed = selection.length === 1 ? parseTextId(selection[0]) : null
-  return parsed?.kind === "part" ? parsed.component : null
 }

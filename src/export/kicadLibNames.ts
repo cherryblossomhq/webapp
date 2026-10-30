@@ -1,3 +1,4 @@
+import { quote } from "../lib/kicadQuote"
 import { expandPinNumber } from "../model/pinNumbers"
 import type { SymbolDrawing } from "../model/types"
 
@@ -7,7 +8,6 @@ import type { SymbolDrawing } from "../model/types"
 
 const SYMBOL_BLOCK = /\n {2}\(symbol\n {4}\(lib_id "((?:[^"\\]|\\.)*)"\)[^\n]*\n[\s\S]*?\n {2}\)(?=\n)/g
 const LIB_SYMBOL = /\n {4}\(symbol "([^"]+)"\n[\s\S]*?\n {4}\)(?=\n)/g
-const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n")}"`
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 const shortName = (id: string) => id.slice(id.indexOf(":") + 1)
 

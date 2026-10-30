@@ -1,4 +1,5 @@
 import { normalizeAngle } from "../lib/geometry"
+import { isObject } from "../lib/guards"
 import { cleanBlockName } from "./blocks"
 import { clean, DEFAULT_TEXT_SIZE, isDrawingColor, isLineDash, isLineWeight } from "./drawings"
 import { normalizeNetChains } from "./netChains"
@@ -179,7 +180,6 @@ const MIGRATIONS: Record<number, (project: Json) => Json> = {
   3: libraryParts,
 }
 
-const isObject = (value: unknown): value is Json => !!value && typeof value === "object" && !Array.isArray(value)
 
 /** The text to store or download for a project. */
 /**

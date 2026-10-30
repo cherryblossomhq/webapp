@@ -2,6 +2,7 @@ import { round } from "../lib/geometry"
 import { flattenPath, type PathSeg } from "../model/shapes"
 import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN } from "./kicadShapes"
+import { stableUuid } from "./kicadUuid"
 
 // A board with an outline of its own, written into the board file as KiCad's own Edge.Cuts items: a line is `gr_line`, an arc
 // `gr_arc` (three points, as KiCad 9 has it), a cubic curve `gr_curve`, a circle two half circle arcs, an elliptical arc the
@@ -56,7 +57,7 @@ export function applyOutline(pcb: string, project: Project): KicadOutline {
   const paths = project.board.outline?.paths ?? roundedBoardPaths(project.board)
   if (!paths) return { text: pcb, notes: [] }
   let serial = 0
-  const uuid = () => `00000000-0000-4000-8000-${(++serial).toString(16).padStart(12, "0")}`
+  const uuid = () => stableUuid("8000", ++serial)
   const tail = () => [`(stroke`, `  (width ${WIDTH})`, `  (type solid)`, `)`, `(layer "Edge.Cuts")`, `(uuid ${uuid()})`]
   const block = (name: string, body: string[]) => [`  (${name}`, ...[...body, ...tail()].map((l) => `    ${l}`), `  )`].join("\n")
   let flattened = false

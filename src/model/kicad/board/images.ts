@@ -7,16 +7,14 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of
 // the GNU General Public License along with this program; if not, see <https://www.gnu.org/licenses/>.
 
+import { round } from "../../../lib/geometry"
 import type { ReferenceImage } from "../../types"
 import { isTextLayer } from "../../texts"
 import { resolveLayer } from "./graphics"
 import { sha256Hex } from "../../../lib/imageFacts"
 import type { KicadBoard, KicadImage } from "./types"
 
-const r6 = (n: number) => {
-  const v = Math.round(n * 1e6) / 1e6
-  return Object.is(v, -0) ? 0 : v
-}
+const r6 = (n: number) => round(n, 6)
 
 /** From this stamp KiCad derives an image's resolution without truncating pixels per centimetre; an older file's scale was made for the truncated one. */
 export const IMAGE_PPI_FIX_FROM = 20260623

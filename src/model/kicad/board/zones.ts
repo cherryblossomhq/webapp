@@ -28,11 +28,6 @@ const FIRST_ORIGIN_HATCH = 20250302
 
 const flip = (p: Pt): Vec2 => ({ x: p.x + 0, y: p.y === 0 ? 0 : -p.y })
 
-/** Where a zone's layers are in the editor (X1): the board's copper layers it is on, in stack order; `*.Cu` is all of them, `F&B.Cu` the two outer ones. */
-export function zoneCopperLayers(z: KicadZone, board: KicadBoard): CopperLayer[] {
-  return layersOfNames(layerMapOf(board), z.layers)
-}
-
 /** Whether every layer of a zone is a copper layer (a zone on mask, paste, silkscreen or a user layer is a different thing, X29). */
 export function zoneOnlyCopper(z: KicadZone, board: KicadBoard): boolean {
   const names = new Set(board.copper.names)

@@ -12,6 +12,7 @@ import { zoneClearance } from "../model/rules"
 import type { ComponentInstance, PinType, Project } from "../model/types"
 import { quoteFlat as quote } from "../lib/kicadQuote"
 import { stableUuid } from "./kicadUuid"
+import { isObject } from "../lib/guards"
 
 // What `circuit-json-to-kicad` leaves out, put into the files it wrote: no-connect flags, the bill
 // of materials fields on each symbol, the board's design rules and the pours' settings. The
@@ -181,7 +182,7 @@ export function applyMountingHoleMarks(pcb: string, project: Project): string {
     if (block.includes('(property "Reference"')) return block
     n++
     const drill = block.match(/\(drill ([0-9.]+)\)/)?.[1] ?? "0"
-    const uuid = (k: number) => `00000000-0000-4000-8001-${(0x1000 + n * 8 + k).toString(16).padStart(12, "0")}`
+    const uuid = (k: number) => stableUuid("8001", 0x1000 + n * 8 + k)
     const field = (key: string, value: string, k: number) =>
       [`    (property ${quote(key)} ${quote(value)}`, "      (at 0 0 0)", "      (layer F.Fab)", "      (hide yes)", `      (uuid ${uuid(k)})`, "      (effects", "        (font", "          (size 1.27 1.27)", "          (thickness 0.15)", "        )", "      )", "    )"].join("\n")
     const attr = "\n    (attr through_hole exclude_from_pos_files exclude_from_bom board_only)\n" + [field("Reference", `H${n}`, 1), field("Value", `MountingHole_${drill}mm`, 2), field(MOUNTING_HOLE_MARK, "yes", 3)].join("\n")
@@ -553,7 +554,6 @@ export interface KicadProject {
 const exactPattern = (net: string) => net.replace(/[\\.+*?^$()[\]{}|]/g, "\\$&")
 
 /** Whether a JSON value is an object that is not a list. */
-const isObject = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v)
 
 /** What the project file says of where its files are and of its sheets, which are the export's own (new files, new ids), not the original's. */
 const NOT_CARRIED = ["meta", "sheets", "boards", "libraries", "cvpcb"]

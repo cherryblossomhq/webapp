@@ -399,9 +399,6 @@ export function worldTexts(project: Project): WorldText[] {
   return out
 }
 
-/** Whether a part has a text of its own that says what its designator is (a part from a KiCad board does; one drawn in the editor has the editor's). */
-export const hasOwnTexts = (c: ComponentInstance) => c.texts !== undefined
-
 // ---------- ink ----------
 
 /** The text of a world text as shown. */

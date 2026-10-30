@@ -1,4 +1,5 @@
 import { uid } from "../lib/id"
+import { finite } from "../lib/guards"
 import { rotate90, round } from "../lib/geometry"
 import { dimensionDrawing } from "./dimensions"
 import { isTextLayer } from "./texts"
@@ -10,7 +11,6 @@ import type { BoardDimension, ComponentInstance, DimensionKind, PcbGroup, Projec
 
 const touch = (p: Project): Project => ({ ...p, updatedAt: Date.now() })
 const r6 = (n: number) => Math.round(n * 1e6) / 1e6 || 0
-const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n)
 
 // ---------- dimensions ----------
 

@@ -1,5 +1,4 @@
-import { shapeLayerInfo } from "../model/shapeLayers"
-import { textFontState, textLayerKind, type WorldText } from "../model/texts"
+import { textFontState, type WorldText } from "../model/texts"
 import type { Project } from "../model/types"
 import { common, layerGroups, MIXED } from "./shapeInspector"
 
@@ -76,9 +75,6 @@ export function textLayerGroups(current: string[] = []) {
   groups.push({ label: "Board", layers: [{ name: "Edge.Cuts", label: "Board edge" }] })
   return groups
 }
-
-export const isCopperText = (layer: string) => textLayerKind(layer) === "copper"
-export const textLayerLabel = (name: string) => (name === "Edge.Cuts" ? "Board edge" : (shapeLayerInfo(name)?.label ?? name))
 
 /** The row a text has in a part's list: what it shows, trimmed. */
 export function textRowText(t: WorldText, shown: string): string {

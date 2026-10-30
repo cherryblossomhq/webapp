@@ -4,7 +4,7 @@ import { resolvedComponents } from "./ruleAreas"
 import { onBoard } from "./partFlags"
 import { defaultStackup } from "./stack"
 import { viaTentedOn } from "./viaRules"
-import type { Backdrill, BoardDef, CopperLayer, DesignRules, PostMachining, Project, StackRow, Via, ViaProtection } from "./types"
+import type { Backdrill, BoardDef, CopperLayer, DesignRules, PostMachining, Project, StackRow, Via } from "./types"
 
 // X22: what a via or a pad is made with after it is drilled (via protection after IPC-4761, backdrills, counterbores and countersinks), and the rules KiCad gives them
 // (drill_enumerator.cpp, padstack.cpp and pcb_track.cpp of the 10.0 line, commit de08734). The outputs (`export/excellon.ts`, `export/notes.ts`) and Checks read it here.
@@ -54,12 +54,6 @@ export function protectionWords(p: ViaProtectionState): string[] {
   else if (p.plugBack) out.push("plugged on the back")
   return out
 }
-
-/** The protection a via says for itself, in words, for the Inspector and the notes; the board's rule is not in it. */
-export const hasOwnProtection = (via: Pick<Via, "protect">) => via.protect !== undefined
-
-/** Whether a protection says anything at all. */
-export const protectionIsEmpty = (p: ViaProtection | undefined) => !p || (p.cap === undefined && p.fill === undefined && !p.cover && !p.plug)
 
 // ---------- layers by KiCad's ids ----------
 

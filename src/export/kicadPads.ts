@@ -11,6 +11,7 @@ import { onBoard } from "../model/partFlags"
 import type { BoardShape, ComponentInstance, CopperLayer, PadDef, PadSides, Project, Vec2 } from "../model/types"
 import { localFrame, polygonItems, ringItems } from "./kicadShapes"
 import { quoteFlat as quote } from "../lib/kicadQuote"
+import { stableUuid } from "./kicadUuid"
 
 // The pads of a part that has X7 features, written into the board file the converter made, exactly as KiCad has them: the shape (rectangle,
 // rounded or chamfered rectangle, oval, circle, custom pad), its size and turn, the hole (round or oval, with its offset), the layers, the
@@ -352,7 +353,7 @@ export function applyPads(pcb: string, project: Project): KicadPadsResult {
     return n
   }
   let serial = 0
-  const uuid = () => `00000000-0000-4000-b000-${(++serial).toString(16).padStart(12, "0")}`
+  const uuid = () => stableUuid("b000", ++serial)
   const byRef = new Map(resolvedComponents(project).filter((c) => onBoard(c) && c.pcb.placed).map((c) => [c.ref, c]))
   let text = pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
     const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]

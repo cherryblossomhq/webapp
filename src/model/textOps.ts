@@ -1,4 +1,5 @@
 import { uid } from "../lib/id"
+import { finite } from "../lib/guards"
 import { remapPartGroups } from "./boardObjects"
 import { rotate90 } from "../lib/geometry"
 import { findPart } from "./library"
@@ -46,7 +47,6 @@ export interface TextPatch {
   y?: number
 }
 
-const finite = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n)
 
 function setFlag<T extends object>(o: T, key: keyof TextAttrs, on: boolean | undefined, value: unknown = true) {
   if (on === undefined) return

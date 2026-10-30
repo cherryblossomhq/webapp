@@ -1,7 +1,6 @@
 import { orientPoint, round, transformPoint } from "../lib/geometry"
 import { pinKindOfType } from "./pinKinds"
 import { expandPinNumber } from "./pinNumbers"
-import { samplePrimitive } from "./primitiveGeometry"
 import { SCH_TEXT, anchorToExtent, computeBounds, rotateExtent } from "./symbols"
 import type {
   ComponentInstance,
@@ -620,9 +619,6 @@ export function readDrawing(raw: unknown): SymbolDrawing | null {
   if (d.ki !== undefined && !(Array.isArray(d.ki) && d.ki.every((k) => !!k && typeof k === "object" && typeof (k as { name: unknown }).name === "string" && typeof (k as { value: unknown }).value === "string"))) delete d.ki
   return d as unknown as SymbolDrawing
 }
-
-/** The samples of a drawing's curved items, for tests that measure them against the file. */
-export const sampleItem = (item: DrawingItem) => itemPrimitives(item).flatMap((p) => samplePrimitive(p))
 
 export type { PinType }
 

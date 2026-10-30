@@ -142,4 +142,23 @@ describe("what the full audit found next", () => {
     const { pcb } = await run(board({ version: 20241229, body: [FPP] }))
     expect(pcb).toMatch(/\(property "LCSC" "C15850"[^)]*?\(at 0 0 0\)[^]*?\(hide yes\)/)
   })
+
+  it("reads its own hidden field back as a property with no place, and keeps a sheet file with no sheet name as it was", async () => {
+    const FPP = footprint({ ref: "J1", name: "Local:Edge", pads: [pad({ number: "1", at: "0 0" })], extra: '(property "ki_fp_filters" "Conn*") (sheetfile "other.kicad_sch")' })
+    const first = importKicadProject([{ path: "b.kicad_pcb", data: board({ version: 20241229, body: [FPP] }) }])
+    if (first.status !== "imported") throw new Error("not imported")
+    const out = await kicadFiles(first.project)
+    const pcb = out.files[Object.keys(out.files).find((n) => n.endsWith(".kicad_pcb"))!]
+    // no sheet name appears where the file had none, and the file's own sheet file is kept
+    expect(pcb).not.toContain("(sheetname")
+    expect(pcb).toContain('(sheetfile "other.kicad_sch")')
+    const second = importKicadProject([{ path: "b.kicad_pcb", data: pcb }])
+    if (second.status !== "imported") throw new Error("not imported")
+    const [a, b] = [first.project.components[0], second.project.components[0]]
+    expect(b.fpProps).toEqual(a.fpProps)
+    expect(a.fpProps).toEqual([{ name: "ki_fp_filters", value: "Conn*" }])
+    expect(b.texts).toEqual(a.texts)
+    expect(b.sheetFile).toBe(a.sheetFile)
+    expect(b.sheetPath).toBeUndefined()
+  })
 })

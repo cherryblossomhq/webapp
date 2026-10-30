@@ -63,6 +63,19 @@ describe("pads a pour leaves out", () => {
     expect(back.result).toContain("The L1 pour does not join J1.1, J2.1")
   })
 
+  it("are only the pads under the pour: one outside a polygon pour is not its to join", () => {
+    // A third L1 block well to the right of the dumbbell, joined to the rest by nothing yet.
+    let p = board()
+    const id = p.components.find((c) => c.ref === "J1")!.partId
+    p = runTool(p, "add_component", { part_id: id, ref: "J3", x: 40, y: 0 }).project
+    p = runTool(p, "connect", { pins: ["J2.1", "J3.1"] }).project
+    p = { ...p, board: { ...p.board, width: 80 }, components: p.components.map((c) => (c.ref === "J3" ? { ...c, pcb: { ...c.pcb, x: 30, y: 3.75, placed: true } } : c)) }
+    const poured = runTool(p, "set_pour", { net: "L1", layer: "top", polygon: DUMBBELL })
+    expect(poured.isError, poured.result).toBe(false)
+    expect(poured.result).not.toContain("does not join")
+    expect(padsPourMisses(poured.project, analyze(poured.project), "L1")).toEqual([])
+  })
+
   it("join a through-hole pad that a zone of its own settings reaches by spokes", () => {
     // Such a fill has the pad's drill cut out, so the pad's centre is not in it: only the spokes are.
     const p = runTool(board(), "set_pour", { net: "L1", layer: "top" }).project

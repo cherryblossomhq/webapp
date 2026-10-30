@@ -1,7 +1,8 @@
 import type { PcbAnalysis } from "./pcb"
+import { pointInPolygon } from "./polygonHits"
 import { zoneClearance } from "./rules"
-import type { Project } from "./types"
-import { zoneLayers, zoneSettings } from "./zones"
+import type { CopperLayer, Project, Vec2, Zone } from "./types"
+import { zoneLayers, zoneRings, zoneSettings } from "./zones"
 
 // Pads a pour leaves out. A pour's fill keeps its pads' own scraps (a pad and the stubs of its spokes) even when nothing joins them
 // to the rest, so "the fill touches the pad" says nothing: a pad is reached when its fill joins it to another pad of the net. An
@@ -9,13 +10,22 @@ import { zoneLayers, zoneSettings } from "./zones"
 // 7.6 mm ring, wider than the 7 mm strip of copper it sat in, so the spokes reached nothing, the pads were dropped without a word,
 // and route_pcb joined them with thin traces.
 
-/** The pads of `net` (as `REF.PAD`) on a layer its pours cover that no fill of them joins to another of its pads, in board order. */
+/** The pours of `net` that join pads. */
+const joiningZones = (project: Project, net: string) => project.zones.filter((z) => z.net === net && !z.keepout && zoneSettings(project, z).connect !== "none")
+
+/** Whether a zone is over a point on one of these layers: the whole board, or inside its polygon and none of its holes. */
+function covers(z: Zone, layers: CopperLayer[], at: Vec2): boolean {
+  if (!zoneLayers(z).some((l) => layers.includes(l))) return false
+  const [outline, ...holes] = zoneRings(z)
+  return !outline || (pointInPolygon(outline, at) && !holes.some((h) => pointInPolygon(h, at)))
+}
+
+/** The pads of `net` (as `REF.PAD`) under one of its pours that no fill of them joins to another of its pads, in board order. A pad outside a polygon pour is not its to join. */
 export function padsPourMisses(project: Project, analysis: PcbAnalysis, net: string): string[] {
-  const zones = project.zones.filter((z) => z.net === net && !z.keepout && zoneSettings(project, z).connect !== "none")
+  const zones = joiningZones(project, net)
   const netId = analysis.zoneFills.find((f) => f.netName === net && f.netId)?.netId
   if (!zones.length || !netId) return []
   const ids = new Set(zones.map((z) => z.id))
-  const layers = new Set(zones.flatMap(zoneLayers))
   const pads = analysis.items.filter((it) => it.kind === "pad" && it.netId === netId && it.pad.zoneConnect !== "none")
   if (pads.length < 2) return []
   const padsIn = new Map<number, number>()
@@ -29,7 +39,7 @@ export function padsPourMisses(project: Project, analysis: PcbAnalysis, net: str
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const out: string[] = []
   for (const it of pads) {
-    if (it.kind !== "pad" || !it.layers.some((l) => layers.has(l)) || reached.has(analysis.island.get(it.id)!)) continue
+    if (it.kind !== "pad" || reached.has(analysis.island.get(it.id)!) || !zones.some((z) => covers(z, it.layers, it.pad))) continue
     out.push(`${refOf.get(it.pad.componentId) ?? "?"}.${it.pad.padNumber ?? it.pad.pin ?? "?"}`)
   }
   return [...new Set(out)]
@@ -39,7 +49,7 @@ export function padsPourMisses(project: Project, analysis: PcbAnalysis, net: str
 export function pourMissNote(project: Project, analysis: PcbAnalysis, net: string): string {
   const missed = padsPourMisses(project, analysis, net)
   if (!missed.length) return ""
-  const zone = project.zones.find((z) => z.net === net && !z.keepout)!
+  const zone = joiningZones(project, net)[0]
   const set = zoneSettings(project, zone)
   const gap = `a ${set.thermalGap} mm thermal gap${zone.thermalGap === undefined && project.rules.thermalGap === undefined ? " (the pour clearance)" : ""}`
   const shown = missed.length > 8 ? `${missed.slice(0, 8).join(", ")} and ${missed.length - 8} more` : missed.join(", ")

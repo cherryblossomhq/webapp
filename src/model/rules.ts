@@ -127,7 +127,7 @@ function normalizeNetClassRules(rules: DesignRules) {
   }
   if (pairs.length) rules.diffPairSizes = pairs
   else delete rules.diffPairSizes
-  for (const key of ["minViaDrill", "minClearance", "maskMinWidth", "maxError"] as const) if (!positive(rules[key])) delete rules[key]
+  for (const key of ["minViaDrill", "minClearance", "maskMinWidth", "maxError", "thermalGap"] as const) if (!positive(rules[key])) delete rules[key]
   // a paste ratio is a fraction of the pad, negative to shrink; zero is none
   if (!(typeof rules.pasteRatio === "number" && Number.isFinite(rules.pasteRatio) && rules.pasteRatio !== 0 && Math.abs(rules.pasteRatio) < 10)) delete rules.pasteRatio
   if (rules.maskBridgesInParts !== true) delete rules.maskBridgesInParts

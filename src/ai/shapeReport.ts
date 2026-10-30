@@ -68,7 +68,7 @@ export interface TextsReport {
   by_layer: Record<string, number>
   hidden: number
   /** Text on the board itself, as shown. */
-  board: { layer: string; text: string; x: number; y: number; size: number; angle?: number; knockout?: true }[]
+  board: { id: string; layer: string; text: string; x: number; y: number; size: number; angle?: number; knockout?: true }[]
   board_more?: string
   /** Parts whose designator is the file's own text, and how many of them show it. */
   parts_with_text: number

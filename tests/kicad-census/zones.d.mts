@@ -28,6 +28,6 @@ export interface OracleZone {
   fills: Map<string, number[][][]>
 }
 export function arcPoints(a: number[], m: number[], b: number[], err?: number): number[][]
-export function zoneOracle(text: string): { zones: OracleZone[]; front: string; back: string }
+export function zoneOracle(text: string): { zones: OracleZone[]; front: string; back: string; names: string[]; ids: string[] }
 export function knownOther(name: string): boolean
 export function importedZone(z: OracleZone): boolean

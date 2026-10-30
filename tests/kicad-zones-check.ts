@@ -173,7 +173,9 @@ export function compareFills(text: string, project: Project, reach = 3, which: "
     }
     if (onlyOther || !zoneLayers(z).length) return
     for (const layer of zoneLayers(z)) {
-      const name = layer === "top" ? zoneOracleOf(text).front : zoneOracleOf(text).back
+      // (a kept fill is compared on its own layer by name, inner layers included; the editor's engine is compared on the outer two as it always was)
+      const oracle = zoneOracleOf(text)
+      const name = kept ? (oracle.names[oracle.ids.indexOf(layer)] ?? (layer === "top" ? oracle.front : oracle.back)) : layer === "top" ? oracle.front : oracle.back
       // KiCad 5's thermal relief leaves the zone's copper under the pad, and the editor's does not: the pad's own copper is on top of it either
       // way, so the two are compared with the pads of the layer added to both.
       const padCopper: Paths64 = analysis.items.flatMap((it) => (it.kind === "pad" && it.layers.includes(layer) && !isNpth(it.pad) ? padShape(it.pad) : []))

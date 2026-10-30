@@ -131,7 +131,7 @@ export function zoneOracle(text) {
   }
   for (const z of kids(tree, "zone")) read(z, false)
   for (const fp of tree) if (Array.isArray(fp) && (fp[0] === "footprint" || fp[0] === "module")) for (const z of kids(fp, "zone")) read(z, true)
-  return { zones, front, back }
+  return { zones, front, back, names: copperNames, ids }
 }
 
 /**

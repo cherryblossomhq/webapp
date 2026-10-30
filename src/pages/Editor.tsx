@@ -14,6 +14,7 @@ import { FollowFrame } from "../panels/Collaborators"
 import { Inspector } from "../panels/Inspector"
 import { HistoryPanel } from "../panels/HistoryPanel"
 import { LibraryPanel } from "../panels/LibraryPanel"
+import { PartEditor } from "../panels/PartEditor"
 import { PreviewBanner } from "../panels/PreviewBanner"
 import { SaveNotice } from "../panels/SaveNotice"
 import { SettingsDialog } from "../panels/SettingsDialog"
@@ -312,6 +313,7 @@ export function Editor() {
         </aside>
       </div>
       <SettingsDialog />
+      <PartEditor />
     </div>
   )
 }

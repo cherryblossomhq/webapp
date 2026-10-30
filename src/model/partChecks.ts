@@ -10,7 +10,8 @@ import type { CustomPartSpec, Project } from "./types"
 // copilot says how many drawings agreed when it makes the part. Nor is a part placed from the parts
 // index (KiCad's libraries): its symbol and footprint were paired pin for pad when it was stored.
 // Nor one imported from the user's own KiCad files: those were paired the same way, and they are
-// the user's word for the part.
+// the user's word for the part. Nor one whose pins or land the user changed by hand in the part
+// editor, for the same reason (a part made from memory stays a warning however it is edited).
 
 export interface PartFinding {
   partId: string
@@ -70,10 +71,11 @@ export function partFindings(project: Project): PartFinding[] {
         else add("warning", `${label}: footprint ${spec.footprint} not checked against a supplier land; ${why}`)
       }
     } else if (src.supplier) {
-      if (src.supplier.confidence === "disputed") {
+      // Pins the user changed by hand are their word for the part, whatever the record they started from said.
+      if (src.supplier.confidence === "disputed" && src.pins !== "user") {
         add("warning", `${label}: supplier drawings of LCSC ${src.supplier.lcsc} disagree about its pins: ${src.supplier.disputes?.[0] ?? "check the datasheet"}`)
       }
-      if (src.supplier.userUpload) {
+      if (src.supplier.userUpload && src.pins !== "user") {
         add("warning", `${label}: LCSC ${src.supplier.lcsc} is an EasyEDA user's upload, not a catalogue part: check its pinout and land against the datasheet`)
       }
       if (src.land === "memory") {
@@ -82,7 +84,7 @@ export function partFindings(project: Project): PartFinding[] {
     }
 
     // A checked land swapped on a component for one nobody checked.
-    if (src && src.land !== "memory" && src.land !== "import") {
+    if (src && src.land !== "memory" && src.land !== "import" && src.land !== "user") {
       for (const c of users) {
         if (c.footprint && c.footprint !== spec.footprint) {
           out.push({

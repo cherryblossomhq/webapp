@@ -421,9 +421,11 @@ function normalizeDatabaseSource(raw: unknown): PartDatabaseSource | null {
 function normalizeSource(raw: unknown): PartSource | null {
   if (!isObject(raw) || typeof raw.pins !== "string") return null
   const out: PartSource = {
-    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "file" || raw.pins === "import" ? raw.pins : "memory",
+    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "file" || raw.pins === "import" || raw.pins === "user" ? raw.pins : "memory",
     land:
-      raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "file" || raw.land === "import" ? raw.land : "memory",
+      raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "file" || raw.land === "import" || raw.land === "user"
+        ? raw.land
+        : "memory",
   }
   const imported = raw.imported
   if (isObject(imported) && typeof imported.file === "string" && typeof imported.libId === "string") out.imported = { file: imported.file, libId: imported.libId }

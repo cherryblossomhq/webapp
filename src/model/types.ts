@@ -715,16 +715,18 @@ export interface PartSource {
   /**
    * `supplier`: built from a supplier's pinout. `database`: from a part the parts index stores
    * whole (KiCad's libraries; `database` says which). `file`: from the user's own KiCad files
-   * (`file` says which). `memory`: written by the copilot from what it recalled.
+   * (`file` says which). `memory`: written by the copilot from what it recalled. `user`: changed
+   * by hand in the part editor (`model/projectParts.ts`) after it was built from one of the others,
+   * which the rest of the source still names: the user's word for the part, as their own files are.
    */
-  pins: "supplier" | "database" | "file" | "memory" | "import"
+  pins: "supplier" | "database" | "file" | "memory" | "import" | "user"
   /**
    * `supplier`: the supplier's own land. `database`: the stored part's land (a KiCad footprint).
    * `file`: the footprint the user imported. `checked`: a footprinter land checked pad by pad
    * against the supplier's. `memory`: chosen without one. `import`: the land (if any) is the one
-   * the imported board gave it.
+   * the imported board gave it. `user`: changed by hand in the part editor.
    */
-  land: "supplier" | "database" | "file" | "checked" | "memory" | "import"
+  land: "supplier" | "database" | "file" | "checked" | "memory" | "import" | "user"
   /**
    * `import`: the part came from a KiCad schematic the user brought in, drawn and wired as that file
    * has it, so there is nothing to check against a supplier. `file` is the schematic's file name and

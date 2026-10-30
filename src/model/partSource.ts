@@ -7,7 +7,7 @@ import type { CustomPartSpec, PartSource } from "./types"
 // ask for their own credit. A part imported from the user's own files asks for none.
 
 export interface SourceLine {
-  /** The short name of the source: "KiCad library", "LCSC C6186", "Imported KiCad files", "From memory". */
+  /** The short name of the source: "KiCad library", "LCSC C6186", "Imported KiCad files", "From memory", "Edited by hand". */
   label: string
   /** What else is known: the library part and release, how many drawings agree. */
   detail: string
@@ -36,8 +36,18 @@ export function partSourceLine(spec: CustomPartSpec | undefined): SourceLine | n
     }
     return { label: "From memory", detail: s?.note ?? "Pins and footprint not checked against a supplier." }
   }
-  if (s.pins === "import") return { label: "KiCad file", detail: `${s.imported?.libId ?? spec.name}, as ${s.imported?.file ?? "the file"} has it` }
-  const line = builtLine(s)
+  const imported: SourceLine | undefined = s.imported && { label: "KiCad file", detail: `${s.imported.libId}, as ${s.imported.file} has it` }
+  const origin: SourceLine | null = s.pins === "import" ? (imported ?? { label: "KiCad file", detail: `${spec.name}, as the file has it` }) : (builtLine(s) ?? imported ?? null)
+  // Changed by hand in the part editor: the user's word for the part, still crediting what it started from.
+  if (s.pins === "user") {
+    const what = s.land === "user" ? "Pins and footprint" : "Pins"
+    return {
+      label: "Edited by hand",
+      detail: origin ? `${what} changed from ${origin.label}${origin.detail ? `, ${origin.detail}` : ""}` : `${what} changed in the part editor`,
+      ...(origin?.credit && { credit: origin.credit }),
+    }
+  }
+  const line = origin && s.land === "user" ? { ...origin, detail: `${origin.detail}. Footprint changed by hand` } : origin
   // A supplier's record that disagrees with the drawing is said wherever the drawing came from.
   if (line && s.check?.verdict === "contradicted") return { ...line, detail: `${line.detail}. Disagrees with ${s.check.lcsc ? `LCSC ${s.check.lcsc}` : "the supplier's records"}` }
   return line

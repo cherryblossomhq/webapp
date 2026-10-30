@@ -1,8 +1,9 @@
-import { ChevronRight, PanelLeftClose, Search, Sparkles, Upload, X } from "lucide-react"
+import { ChevronRight, Eraser, PanelLeftClose, Pencil, Search, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { SymbolPreview } from "../editor/schematic/SymbolView"
 import { projectPartDefs } from "../model/customParts"
 import { CATEGORIES, PARTS } from "../model/library"
+import { unusedParts } from "../model/projectParts"
 import { searchLibrary, type PartHit } from "../model/search"
 import type { PartDef } from "../model/types"
 import { askCopilot, useCopilot } from "../store/copilotStore"
@@ -13,6 +14,7 @@ import { Tooltip } from "../ui/Tooltip"
 import { ImportNotice, useKicadImport } from "./ImportKicad"
 import { IndexNotice, IndexResults, indexPicker, useIndexSearch } from "./IndexResults"
 import { KICAD_IMPORT_ACCEPT } from "./kicadImport"
+import { removeProjectParts } from "./partActions"
 import { usePartPlace, wantsSupplier } from "./partSearch"
 import { SupplierResults, supplierPicker, useSupplierSearch } from "./SupplierResults"
 
@@ -25,6 +27,23 @@ export function LibraryPanel() {
   const viewer = useProjectStore((s) => s.role === "viewer")
   const projectSymbols = useProjectStore((s) => s.project?.symbols)
   const own = useMemo(() => projectPartDefs({ parts: projectParts, symbols: projectSymbols }), [projectParts, projectSymbols])
+  // The parts placed in the project, as one string: a drag changes the components, not which parts they are, and must not redraw the panel.
+  const placed = useProjectStore((s) => [...new Set(s.project?.components.map((c) => c.partId))].sort().join("\n"))
+  // The project's parts nothing is placed from: marked in the list, and removed together from its heading.
+  const unused = useMemo(
+    () => new Set(unusedParts({ parts: projectParts, components: placed.split("\n").map((partId) => ({ partId })) }).map((s) => s.id)),
+    [projectParts, placed],
+  )
+  /** What a project part's row offers besides placing it: its details, and taking it out of the project. */
+  const ownActions = (part: PartDef): PartActions | undefined =>
+    part.custom && projectParts?.some((s) => s.id === part.id)
+      ? {
+          unused: unused.has(part.id),
+          onEdit: () => useUi.getState().openPartEditor(part.id),
+          // A part nothing is placed from goes at once (undo brings it back); one that is placed asks first, in the part editor.
+          onRemove: viewer ? undefined : () => (unused.has(part.id) ? removeProjectParts([part.id]) : useUi.getState().openPartEditor(part.id, { remove: true })),
+        }
+      : undefined
   const searching = query.trim().length > 0
   const hits = useMemo(() => (searching ? searchLibrary(query, own) : []), [query, own, searching])
   // The parts database's answer, after the library's: KiCad parts the library doesn't have.
@@ -45,8 +64,8 @@ export function LibraryPanel() {
   const groups = useMemo(() => {
     if (searching) return []
     return [
-      { title: "This project", parts: own },
-      ...CATEGORIES.map((category) => ({ title: category, parts: PARTS.filter((p) => p.category === category) })),
+      { title: "This project", parts: own, own: true },
+      ...CATEGORIES.map((category) => ({ title: category, parts: PARTS.filter((p) => p.category === category), own: false })),
     ].filter((g) => g.parts.length)
   }, [own, searching])
   const listRef = useRef<HTMLDivElement>(null)
@@ -205,6 +224,7 @@ export function LibraryPanel() {
                   active={placing?.partId === hit.part.id}
                   onHover={() => setActive(i)}
                   onPlace={() => place(hit)}
+                  actions={ownActions(hit.part)}
                 />
               ))}
             </ul>
@@ -243,16 +263,27 @@ export function LibraryPanel() {
             const open = !folded.has(g.title)
             return (
               <section key={g.title} className={open ? "mb-3" : "mb-0.5"}>
-                <h3>
+                <h3 className="flex items-center">
                   <button
                     aria-expanded={open}
                     onClick={() => toggleFold(g.title)}
-                    className="flex w-full items-center gap-1 rounded-[6px] px-1.5 pb-1 pt-2 text-left text-[12px] font-[650] text-ink-2 transition-colors hover:text-ink"
+                    className="flex min-w-0 flex-1 items-center gap-1 rounded-[6px] px-1.5 pb-1 pt-2 text-left text-[12px] font-[650] text-ink-2 transition-colors hover:text-ink"
                   >
                     <ChevronRight size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? "rotate-90" : ""}`} />
                     <span className="flex-1 truncate">{g.title}</span>
                     <span className="text-[11px] font-normal text-ink-3">{g.parts.length}</span>
                   </button>
+                  {g.own && unused.size > 0 && !viewer && (
+                    <Tooltip label={`Remove ${unused.size} unused ${unused.size === 1 ? "part" : "parts"}`} hint="The project's parts nothing is placed from. Undo brings them back">
+                      <button
+                        aria-label={`Remove ${unused.size} unused ${unused.size === 1 ? "part" : "parts"}`}
+                        onClick={() => removeProjectParts([...unused])}
+                        className="ml-0.5 mt-1 rounded p-1 text-ink-3 transition-colors hover:bg-chrome-2 hover:text-ink"
+                      >
+                        <Eraser size={13} />
+                      </button>
+                    </Tooltip>
+                  )}
                 </h3>
                 {open && (
                   <ul>
@@ -264,6 +295,7 @@ export function LibraryPanel() {
                         onPlace={() => {
                           if (!viewer) startPlacing(p.id)
                         }}
+                        actions={g.own ? ownActions(p) : undefined}
                       />
                     ))}
                   </ul>
@@ -316,6 +348,14 @@ function CreateWithCopilot({ query, prominent }: { query: string; prominent: boo
   )
 }
 
+interface PartActions {
+  /** Nothing in the project is placed from it. */
+  unused: boolean
+  onEdit: () => void
+  /** Absent for a viewer, who removes nothing. */
+  onRemove?: () => void
+}
+
 interface PartRowProps {
   part: PartDef
   hit?: PartHit
@@ -326,12 +366,14 @@ interface PartRowProps {
   active: boolean
   onHover?: () => void
   onPlace: () => void
+  /** A project part's: open it in the part editor, or take it out of the project. */
+  actions?: PartActions
 }
 
-function PartRow({ part, hit, index, id, focused, active, onHover, onPlace }: PartRowProps) {
+function PartRow({ part, hit, index, id, focused, active, onHover, onPlace, actions }: PartRowProps) {
   const chips = [...Object.values(hit?.props ?? {}), ...(hit?.footprint ? [hit.footprint] : [])]
   return (
-    <li id={id} role={hit ? "option" : undefined} aria-selected={hit ? focused : undefined} data-hit={index}>
+    <li id={id} role={hit ? "option" : undefined} aria-selected={hit ? focused : undefined} data-hit={index} className={actions ? "group relative" : undefined}>
       <button
         draggable
         onDragStart={(e) => {
@@ -341,6 +383,15 @@ function PartRow({ part, hit, index, id, focused, active, onHover, onPlace }: Pa
         }}
         onClick={onPlace}
         onMouseEnter={onHover}
+        // Altium's double-click on a library component: its properties.
+        onDoubleClick={
+          actions
+            ? () => {
+                useUi.getState().stopPlacing()
+                actions.onEdit()
+              }
+            : undefined
+        }
         title={part.description}
         className={`flex w-full items-center gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left transition-colors ${
           active ? "bg-surface shadow-[inset_0_0_0_1.5px_var(--color-select)]" : focused ? "bg-surface" : "hover:bg-surface"
@@ -353,6 +404,11 @@ function PartRow({ part, hit, index, id, focused, active, onHover, onPlace }: Pa
           <span className="flex items-center gap-1">
             <span className="truncate text-[13px] font-[600] text-ink">{part.name}</span>
             {part.custom && <span className="shrink-0 rounded-[4px] bg-brand-soft px-1 text-[10px] font-medium text-brand">Project</span>}
+            {actions?.unused && (
+              <span className="shrink-0 rounded-[4px] bg-chrome-2 px-1 text-[10px] text-ink-2" title="Nothing in the project is placed from this part">
+                Unused
+              </span>
+            )}
           </span>
           <span className="block truncate text-[11.5px] text-ink-2">{part.description}</span>
           {chips.length > 0 && (
@@ -366,6 +422,23 @@ function PartRow({ part, hit, index, id, focused, active, onHover, onPlace }: Pa
           )}
         </span>
       </button>
+      {actions && (
+        // Over the row's right end while it is hovered or a control in it has focus.
+        <span className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-[6px] bg-surface opacity-0 shadow-chip transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <Tooltip label={actions.onRemove ? "Edit part" : "View part"} hint="Its symbol, pins, footprint and parameters">
+            <button aria-label={`${actions.onRemove ? "Edit" : "View"} ${part.name}`} onClick={actions.onEdit} className="rounded-[5px] p-1 text-ink-2 hover:bg-chrome-2 hover:text-ink">
+              <Pencil size={13} />
+            </button>
+          </Tooltip>
+          {actions.onRemove && (
+            <Tooltip label="Remove from project" hint={actions.unused ? "Nothing is placed from it. Undo brings it back" : "Asks first: the components placed from it go too"}>
+              <button aria-label={`Remove ${part.name} from the project`} onClick={actions.onRemove} className="rounded-[5px] p-1 text-ink-2 hover:bg-danger-soft hover:text-danger">
+                <Trash2 size={13} />
+              </button>
+            </Tooltip>
+          )}
+        </span>
+      )}
     </li>
   )
 }

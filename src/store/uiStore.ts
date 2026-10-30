@@ -113,6 +113,8 @@ interface UiState {
   focusRequest: { x: number; y: number; box?: Box; fit?: boolean; view: View; n: number } | null
   settings: Settings
   settingsOpen: boolean
+  /** The project part open in the part editor (`panels/PartEditor.tsx`), by id, or null; `remove` opens it on the question whether to remove it. */
+  partEditor: { id: string; remove?: true } | null
   /** Inspector sections folded away, by id, for the session. */
   folded: Record<string, boolean>
   /** A line over the canvas saying why an edit was refused; `n` makes the same line show again. */
@@ -156,6 +158,7 @@ interface UiState {
   focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
   updateSettings: (s: Partial<Settings>) => void
   setSettingsOpen: (open: boolean) => void
+  openPartEditor: (partId: string | null, opts?: { remove?: boolean }) => void
   toggleFolded: (id: string) => void
   setDrawDefaults: (kind: keyof DrawDefaults, patch: Partial<DrawDefaults["text"]>) => void
 }
@@ -191,6 +194,7 @@ export const useUi = create<UiState>((set, get) => ({
   focusRequest: null,
   settings: loadSettings(),
   settingsOpen: false,
+  partEditor: null,
   folded: {},
   notice: null,
   drawDefaults: INITIAL_DRAW_DEFAULTS,
@@ -252,6 +256,7 @@ export const useUi = create<UiState>((set, get) => ({
     set({ settings })
   },
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  openPartEditor: (id, opts) => set({ partEditor: id ? { id, ...(opts?.remove && { remove: true as const }) } : null }),
   toggleFolded: (id) => set({ folded: { ...get().folded, [id]: !get().folded[id] } }),
   setDrawDefaults: (kind, patch) => {
     const d = get().drawDefaults

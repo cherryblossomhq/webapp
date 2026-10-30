@@ -795,6 +795,14 @@ From memory (no supplier record):
 /** How a part was made, in a phrase: "from LCSC C1852149, 2 supplier drawings agree". */
 export function describeSource(spec: Pick<CustomPartSpec, "source">): string {
   const s = spec.source
+  // Changed by hand in the part editor: the user's word for the part, whatever it was built from.
+  const edited = [s?.pins === "user" && "pins", s?.land === "user" && "land"].filter(Boolean)
+  if (s && edited.length) {
+    // What it was built from, which the rest of the source still names.
+    const was = s.file ? "file" : s.database ? "database" : s.supplier ? "supplier" : s.imported ? "import" : "memory"
+    const base = describeSource({ source: { ...s, pins: s.pins === "user" ? was : s.pins, land: s.land === "user" ? was : s.land } })
+    return `${base}, then its ${edited.join(" and ")} edited by hand by the user, who stands by them`
+  }
   if (s?.file) return `imported from the user's own KiCad files (${s.file.symbol ? `symbol ${s.file.symbol}, ` : "a footprint alone, a pin for each pad, "}footprint ${s.file.footprint}), pins and land from them`
   const d = s?.database
   if (s?.pins === "import") return `from the KiCad schematic ${s.imported?.file ?? "the user brought in"} (${s.imported?.libId ?? "its own symbol"}), drawn and pinned as that file has it`
@@ -865,7 +873,7 @@ export async function verifyProjectParts(
   await Promise.all(
     specs.map(async (spec) => {
       // A stored or imported part's land is its own, drawn with other pads than a supplier's: compared by pins only.
-      const ownLand = spec.source?.pins === "database" || spec.source?.pins === "file"
+      const ownLand = spec.source?.pins === "database" || spec.source?.pins === "file" || spec.source?.land === "user"
       const got = await supplierVerdict(source, spec, { lands: !ownLand, signal })
       if ("failed" in got) {
         recentFailures.set(spec.id, Date.now())

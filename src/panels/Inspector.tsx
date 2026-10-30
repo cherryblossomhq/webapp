@@ -1,4 +1,4 @@
-import { CircuitBoard, Eye, EyeOff, FilePlus2, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
+import { CircuitBoard, Eye, EyeOff, FilePlus2, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Pencil, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
 import { useState } from "react"
 import { groupSelected, ungroupSelected } from "../editor/schematic/blockActions"
 import { moveSelectedToNewSheet } from "../editor/schematic/sheetActions"
@@ -558,6 +558,8 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
   const [customFp, setCustomFp] = useState("")
   const [fpError, setFpError] = useState(false)
   if (!part) return <Section title="Unknown part">This part isn't in the library.</Section>
+  // The project part it is placed from, if it is one (a lone unit is placed as the part's twin).
+  const spec = project.parts?.find((s) => s.id === c.partId.replace(/@sub$/, ""))
   const physical = isPhysical(part)
   const update = (patch: Parameters<typeof updateComponent>[2]) => commitFor(c.id, (p) => updateComponent(p, c.id, patch))
   // The same turn as the R key: labels and wires follow the pins, or it is refused and says why.
@@ -610,22 +612,31 @@ function ComponentInspector({ c, project }: { c: ComponentInstance; project: Pro
       <Section
         title={part.name}
         action={
-          <Tooltip label="Delete part" shortcut="Del">
-            <button
-              className="rounded p-1 text-ink-3 hover:bg-danger-soft hover:text-danger"
-              aria-label={`Delete ${c.ref}`}
-              onClick={() => {
-                commitFor(c.id, (p) => removeItems(p, { components: [c.id] }))
-                uiApi().clearSelection()
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
-          </Tooltip>
+          <span className="flex items-center">
+            {spec && (
+              <Tooltip label="Edit part" hint="The project part it is placed from: its symbol, pins, footprint and parameters, for every component placed from it">
+                <button className="rounded p-1 text-ink-3 hover:bg-chrome-2 hover:text-ink" aria-label={`Edit part ${part.name}`} onClick={() => uiApi().openPartEditor(spec.id)}>
+                  <Pencil size={14} />
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label="Delete part" shortcut="Del">
+              <button
+                className="rounded p-1 text-ink-3 hover:bg-danger-soft hover:text-danger"
+                aria-label={`Delete ${c.ref}`}
+                onClick={() => {
+                  commitFor(c.id, (p) => removeItems(p, { components: [c.id] }))
+                  uiApi().clearSelection()
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </Tooltip>
+          </span>
         }
       >
         <p className="-mt-1 text-[12px] text-ink-2">{part.description}</p>
-        <PartSourceLine spec={project.parts?.find((s) => s.id === c.partId)} />
+        <PartSourceLine spec={spec} />
         {!isPower && (
           <Field label="Designator">
             <CommitInput

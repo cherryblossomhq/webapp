@@ -93,7 +93,7 @@ function textOf(data: Uint8Array): string | null {
 }
 
 /** A project file's text without what the writer makes afresh each time (the times, and the uuids made from ids). */
-const steady = (text: string) => text.replace(/"d{4}-dd-ddT[d:.]+Z"/g, '"~"').replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "~")
+const steady = (text: string) => text.replace(/"\d{4}-\d\d-\d\dT[\d:.]+Z"/g, '"~"').replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "~")
 const same = (a: unknown, b: unknown) => steady(JSON.stringify(a)) === steady(JSON.stringify(b))
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
@@ -201,9 +201,16 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
     }
     if (ext === ".kicad_pro") {
       try {
-        const merged = mergeJson(JSON.parse(text), JSON.parse(was), JSON.parse(after))
-        files[name] = `${JSON.stringify(merged, null, 2)}${text.endsWith("\n") ? "\n" : ""}`
-        kept.push({ file: name, mode: "patched", detail: "the settings that changed" })
+        const parsed = JSON.parse(text)
+        const merged = mergeJson(parsed, JSON.parse(was), JSON.parse(after))
+        if (JSON.stringify(merged) === JSON.stringify(parsed)) {
+          files[name] = text
+          exact[name] = orig.data
+          kept.push({ file: name, mode: "original", detail: "unchanged" })
+        } else {
+          files[name] = `${JSON.stringify(merged, null, 2)}${text.endsWith("\n") ? "\n" : ""}`
+          kept.push({ file: name, mode: "patched", detail: "the settings that changed" })
+        }
       } catch {
         fall("the project file could not be read")
       }
@@ -223,13 +230,13 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
     exact[name] = f.data
     kept.push({ file: name, mode: "original", detail: "beside the project" })
   }
-  const written = kept.filter((k) => k.mode === "written")
+  const written = kept.filter((k) => k.mode === "written" && k.detail !== "it is new")
   const patched = kept.filter((k) => k.mode === "patched")
   const notes: string[] = []
   if (!patched.length && !written.length) notes.push("Your original KiCad files are written back byte for byte: nothing was changed.")
   else {
     notes.push(`Your original KiCad files are kept: ${patched.length ? `${patched.map((k) => `${k.file} (${k.detail})`).join("; ")} had only what you changed written into it` : "no file needed a change"}; everything else is your own bytes.`)
-    for (const k of written) if (k.detail !== "it is new") notes.push(`${k.file} was written from the project as before: ${k.detail}.`)
+    for (const k of written) notes.push(`${k.file} was written from the project as before: ${k.detail}.`)
   }
   return { files, notes: written.length || patched.length ? [...notes, ...fresh.notes] : notes, exact, kept }
 }

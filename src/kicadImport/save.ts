@@ -44,7 +44,8 @@ const FINAL = /too large|full or blocked/
  * Resolves to the new project's id.
  */
 export async function saveImported(storage: ProjectStorage, outcome: ImportOutcome, name?: string): Promise<string> {
-  const { project, summary } = outcome
+  const { summary } = outcome
+  let project = outcome.project
   if (!project || summary.status !== "imported") throw new SaveRefused("There is no imported project to save.", "final")
   const bytes = new TextEncoder().encode(serializeProject(project)).length
   if (bytes > STORED_PROJECT_LIMIT_BYTES) {
@@ -52,10 +53,18 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
   }
   // The files the project names (reference images, embedded fonts) go to the file store first, so a project is never saved naming files that are not kept (and a refused one leaves only files, which cost nothing but room).
   for (const f of outcome.files ?? []) {
+    const isOriginal = project?.kicad?.original?.file === f.id
     try {
       const kept = await putImageFile(f.name, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
       if (kept !== f.id) throw new Error("The file was kept under another name than the project's.")
     } catch (e) {
+      // The user's own KiCad files are a kindness, not what the project is: an account that cannot hold them (its files are full) still gets the project, which then exports as it always did.
+      if (isOriginal && project) {
+        const { original: _dropped, ...rest } = project.kicad!
+        project = { ...project, kicad: Object.keys(rest).length ? rest : undefined }
+        summary.notes = [...summary.notes.filter((n) => n.code !== "originals-kept"), { code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The project is saved, and export writes every file from it.` }]
+        continue
+      }
       throw new SaveRefused(`Couldn't keep the board's files (reference images and embedded fonts)${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")
     }
   }

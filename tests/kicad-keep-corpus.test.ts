@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { basename, dirname, join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
@@ -54,6 +54,7 @@ export function projectFiles(pcb: string): { files: ProjectFile[] } {
   return { files }
 }
 
+const log = (text: string) => process.env.KEEP_OUT && appendFileSync(process.env.KEEP_OUT, `${text}\n`)
 const bytesEqual = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i])
 
 /** The project as the import screen keeps it: with the record of the kept files, which are in the page's file cache. */
@@ -80,6 +81,7 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiC
     let skipped = 0
     for (const pcb of files) {
       const rel = fwd(relative(CORPUS!, pcb))
+      log(`${new Date().toISOString().slice(11, 19)} ${rel}`)
       if (statSync(pcb).size > Number(process.env.KEEP_MAX_MB ?? 4) * 1048576) {
         skipped++
         continue
@@ -104,8 +106,8 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiC
       if (!bad.length && out.kept?.some((k) => k.mode === "original" && k.detail === "unchanged")) identical++
       else rows.push(`${rel}: ${bad.join("; ") || "no kept files"}`)
     }
-    console.log(`byte for byte: ${identical} of ${files.length - skipped} imported boards (${skipped} not imported)`)
-    if (rows.length) console.log(rows.slice(0, 40).join("\n"))
+    log(`byte for byte: ${identical} of ${files.length - skipped} imported boards (${skipped} not imported)`)
+    if (rows.length) log(rows.slice(0, 40).join("\n"))
     expect(rows).toEqual([])
   }, 3600_000)
   it("one edit changes only the edited item in the edited file", async () => {
@@ -119,18 +121,25 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiC
     for (const pcb of files) {
       if (statSync(pcb).size > Number(process.env.KEEP_MAX_MB ?? 4) * 1048576) continue
       const rel = fwd(relative(CORPUS!, pcb))
+      log(`${new Date().toISOString().slice(11, 19)} ${rel}`)
       const { files: input } = projectFiles(pcb)
       const p = await importKept(input)
       if (typeof p === "string") continue
       const original = new TextDecoder().decode(input[0].data as Uint8Array)
       const edits: Record<string, (q: Project) => Project> = {
-        move: (q) => ({ ...q, components: q.components.map((c, i) => (i === 0 && c.pcb ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 1 } } : c)) }),
+        move: (q) => {
+          const m = q.components.find((c) => c.pcb?.placed)
+          return { ...q, components: q.components.map((c) => (c === m ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 1 } } : c)) }
+        },
         deleteTrack: (q) => ({ ...q, traces: q.traces.slice(1) }),
+        moveSymbol: (q) => ({ ...q, components: q.components.map((c, i) => (i === 0 ? { ...c, sch: { ...c.sch, x: c.sch.x + 1 } } : c)) }),
+        renameRef: (q) => ({ ...q, components: q.components.map((c, i) => (i === 0 ? { ...c, ref: "ZZ1" } : c)) }),
+        deleteWire: (q) => ({ ...q, wires: q.wires.slice(1) }),
         addPart: (q) => (q.components.length && q.components[0].pcb ? { ...q, components: [...q.components, { ...q.components[0], id: "zz-new", ref: "ZZ99", uuid: undefined, pcb: { ...q.components[0].pcb, x: q.components[0].pcb.x + 5 } }] } : q),
       }
       for (const [name, edit] of Object.entries(edits)) {
         const q = edit(p)
-        if (q === p || (name === "deleteTrack" && !p.traces.length)) continue
+        if (q === p || (name === "deleteTrack" && !p.traces.length) || (name === "deleteWire" && !p.wires.length)) continue
         tried++
         try {
           const out = await kicadFiles(q)
@@ -142,12 +151,12 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiC
           const set = new Set(was)
           const added = now.filter((l) => !set.has(l)).length
           const back = importKicadProject([{ path: basename(pcb), data: text }, ...input.slice(1).filter((f) => !f.path.endsWith(".kicad_sch") || true)], { limitBytes: Number.MAX_SAFE_INTEGER, name: "x" })
-          rows.push(`${rel} ${name}: ${board?.mode} (${board?.detail}) new lines ${added} of ${now.length}; re-imports: ${back.status}`)
+          rows.push(`${rel} ${name}: ${(out.kept ?? []).filter((k) => k.mode !== "original" || k.detail !== "unchanged").map((k) => `${k.file} ${k.mode} (${k.detail})`).join("; ") || "all original"} | board new lines ${added} of ${now.length}; re-imports: ${back.status}`)
         } catch (e) {
           rows.push(`${rel} ${name}: ERROR ${e instanceof Error ? e.stack?.split("\n").slice(0, 3).join(" | ") : e}`)
         }
       }
     }
-    console.log(`edits tried ${tried}, board patched in ${patchedBoards}\n${rows.join("\n")}`)
+    log(`edits tried ${tried}, board patched in ${patchedBoards}\n${rows.join("\n")}`)
   }, 3600_000)
 })

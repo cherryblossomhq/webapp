@@ -1,3 +1,4 @@
+import { UNPLACED_PROPERTY_UUID_PREFIX } from "../../model/unplacedProperty"
 import { atomKids, fileVersion, hasLists, listNamed, parseAt, roundKey, scanList, type SNode, type Span } from "./sexp"
 
 // Writing back only what the user changed.
@@ -62,7 +63,7 @@ interface Doc {
 const UUID_RE = /\s*\((?:uuid|tstamp)\s+"?[0-9A-Za-z-]+"?\s*\)/g
 const NET_RE = /\(net (\d+)(?: "((?:[^"\\]|\\.)*)")?\)/g
 const ANY_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g
-const SERIAL_UUID_RE = /^00000000-0000-4000-8000-[0-9a-f]{12}$/
+const SERIAL_UUID_RE = /^00000000-0000-4000-800[02]-[0-9a-f]{12}$/
 const MEMBERS_RE = /\(members((?:\s+"?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"?)*)\s*\)/g
 
 /** A text with what does not matter for "is this the same item" taken out: uuids, net numbers (by the net's name instead) and the layout. */
@@ -193,6 +194,30 @@ function footprintKey(node: SNode): FootprintKey {
   return { exact: `fp|${ref}|${name}|${x}|${y}|${a}|${layer}`, ref: `fp|${ref}|${name}|${layer}`, pos: `fp|${name}|${x}|${y}|${a}|${layer}` }
 }
 
+/** What an item is exactly: a footprint by its reference, name and place, anything else by its geometry and text. */
+function exactKey(node: SNode, text: string, kind: Kind): string {
+  return node.head === "footprint" ? footprintKey(node).exact : keyOf(node, text, kind)
+}
+
+/**
+ * What stays of an item when it is edited, from the most to the least certain: a footprint is told by its reference (when it moved) then by its place (when it was
+ * renamed); a symbol by its reference, then by its place.
+ */
+function relaxedKeys(node: SNode, kind: Kind): string[] {
+  if (node.head === "footprint") {
+    const k = footprintKey(node)
+    return [k.ref, k.pos]
+  }
+  if (kind === "schematic" && node.head === "symbol") {
+    const libId = listNamed(node, "lib_id")?.kids?.[1]?.value ?? ""
+    const unit = listNamed(node, "unit")?.kids?.[1]?.value ?? "1"
+    const ref = (node.kids ?? []).find((k) => k.head === "property" && k.kids?.[1]?.value === "Reference")?.kids?.[2]?.value ?? ""
+    const at = listNamed(node, "at")
+    return [`symref|${ref}|${libId}|${unit}`, `sympos|${libId}|${unit}|${roundKey(at?.kids?.[1]?.raw)}|${roundKey(at?.kids?.[2]?.raw)}`]
+  }
+  return []
+}
+
 // ---------- the keys of the children inside an item ----------
 
 const BY_FIRST_ATOM = new Set(["property", "pad", "model", "fp_text", "layer_alias"])
@@ -204,7 +229,8 @@ function childBase(k: SNode, text: string, kind: Kind): string {
   if (k.head === "pin" && kind === "schematic") return `pin|${k.kids?.[1]?.value ?? ""}`
   if (BY_FIRST_ATOM.has(k.head)) return `${k.head}|${k.kids?.[1]?.value ?? ""}`
   if (GEOMETRIC_KIDS.has(k.head)) return keyOf(k, text, kind)
-  if (k.head === "path" || k.head === "project") return `${k.head}|${k.kids?.[1]?.value ?? ""}`
+  // A path is told by what it names, but a uuid in it is the exporter's own (made from an id).
+  if (k.head === "path" || k.head === "project") return `${k.head}|${(k.kids?.[1]?.value ?? "").replace(ANY_UUID_RE, "U")}`
   return k.head
 }
 
@@ -271,7 +297,7 @@ class Patcher {
   readonly oDoc: Doc
   readonly unitUsed = new Set<Unit>()
   private oByHead = new Map<string, Unit[]>()
-  private oKeys = new Map<Unit, { key: string; fp?: FootprintKey }>()
+  private oKeys = new Map<Unit, { key: string; relaxed: string[] }>()
   private oNode = new Map<Unit, SNode>()
   readonly uuidMap = new Map<string, string>()
   private newNets = new Map<string, number>()
@@ -317,7 +343,7 @@ class Patcher {
     let k = this.oKeys.get(u)
     if (!k) {
       const node = this.oNodeOf(u)
-      k = { key: keyOf(node, this.O, this.opts.kind), ...(u.head === "footprint" ? { fp: footprintKey(node) } : {}) }
+      k = { key: exactKey(node, this.O, this.opts.kind), relaxed: relaxedKeys(node, this.opts.kind) }
       this.oKeys.set(u, k)
     }
     return k
@@ -327,16 +353,16 @@ class Patcher {
   findOriginal(b: Unit, bNode: SNode): Unit | null {
     const candidates = (this.oByHead.get(b.head) ?? []).filter((u) => !this.unitUsed.has(u))
     if (!candidates.length) return null
-    if (b.head === "footprint") {
-      const bk = footprintKey(bNode)
-      for (const pick of ["exact", "ref", "pos"] as const) {
-        const hit = candidates.find((u) => this.oKeyOf(u).fp![pick] === bk[pick])
-        if (hit) return hit
-      }
-      return null
+    const key = exactKey(bNode, this.B.text, this.opts.kind)
+    const exact = candidates.find((u) => this.oKeyOf(u).key === key)
+    if (exact) return exact
+    // An item the editor's ids make differently each time (a symbol with no uuid) or that was moved or renamed is told by what stays of it.
+    const relaxed = relaxedKeys(bNode, this.opts.kind)
+    for (let i = 0; i < relaxed.length; i++) {
+      const hit = candidates.find((u) => this.oKeyOf(u).relaxed[i] === relaxed[i])
+      if (hit) return hit
     }
-    const key = keyOf(bNode, this.B.text, this.opts.kind)
-    return candidates.find((u) => this.oKeyOf(u).key === key) ?? null
+    return null
   }
 
   // ----- emitting text -----
@@ -365,7 +391,8 @@ class Patcher {
   private mapUuids(o: SNode, c: SNode) {
     const ou = listNamed(o, "uuid")?.kids?.[1]?.value ?? listNamed(o, "tstamp")?.kids?.[1]?.value
     const cu = listNamed(c, "uuid")?.kids?.[1]?.value ?? listNamed(c, "tstamp")?.kids?.[1]?.value
-    if (ou && cu) this.uuidMap.set(cu, ou)
+    // A footprint property with no place is told by its uuid's prefix (`unplacedProperty.ts`), so it keeps one that has it, never the original's.
+    if (ou && cu && !cu.startsWith(UNPLACED_PROPERTY_UUID_PREFIX)) this.uuidMap.set(cu, ou)
   }
 
   private replaceNode(o: SNode, c: SNode) {
@@ -440,7 +467,7 @@ class Patcher {
   }
 
   private fresh(u: string): string {
-    const made = uuidOf(`${this.salt}:${u}`)
+    const made = u.startsWith(UNPLACED_PROPERTY_UUID_PREFIX) ? UNPLACED_PROPERTY_UUID_PREFIX + uuidOf(`${this.salt}:${u}`).slice(-12) : uuidOf(`${this.salt}:${u}`)
     this.uuidMap.set(u, made)
     return made
   }
@@ -474,8 +501,8 @@ class Patcher {
   private findOriginalAny(b: Unit, bNode: SNode): Unit | null {
     const found = this.findOriginal(b, bNode)
     if (found) return found
-    const key = b.head === "footprint" ? footprintKey(bNode).exact : keyOf(bNode, this.B.text, this.opts.kind)
-    return (this.oByHead.get(b.head) ?? []).find((u) => (b.head === "footprint" ? this.oKeyOf(u).fp!.exact : this.oKeyOf(u).key) === key) ?? null
+    const key = exactKey(bNode, this.B.text, this.opts.kind)
+    return (this.oByHead.get(b.head) ?? []).find((u) => this.oKeyOf(u).key === key) ?? null
   }
 
 
@@ -487,7 +514,7 @@ class Patcher {
 
   private keyIn(u: Unit, doc: Doc): string {
     const node = this.parse(doc, u)
-    return u.head === "footprint" ? footprintKey(node).exact : keyOf(node, doc.text, this.opts.kind)
+    return exactKey(node, doc.text, this.opts.kind)
   }
 
   /** Pairs the items of BEFORE and AFTER that are left, by `key` (read the same way from each side). */
@@ -535,13 +562,13 @@ class Patcher {
     // Pair what is left: the same item changed (same key), and a footprint that moved or was renamed.
     const pairs: { b: Unit; c: Unit }[] = []
     this.pairLeft(freeB, freeC, pairs, (u, doc) => this.keyIn(u, doc))
-    for (const pick of ["ref", "pos"] as const) this.pairLeft(freeB, freeC, pairs, (u, doc) => (u.head === "footprint" ? footprintKey(this.parse(doc, u))[pick] : null))
+    for (let level = 0; level < 2; level++) this.pairLeft(freeB, freeC, pairs, (u, doc) => relaxedKeys(this.parse(doc, u), this.opts.kind)[level] ?? null)
 
     // Changed items: found in the original, merged.
     for (const { b, c } of pairs) {
       const bNode = this.parse(B, b)
       const o = this.findOriginal(b, bNode)
-      if (!o) throw new Unpatchable(`a changed ${b.head} was not found in the original file`)
+      if (!o) throw new Unpatchable(`a changed ${b.head} was not found in the original file (${exactKey(bNode, B.text, this.opts.kind).slice(0, 160)} / ${relaxedKeys(bNode, this.opts.kind).join(" / ").slice(0, 200)})`)
       this.unitUsed.add(o)
       const oNode = this.oNodeOf(o)
       this.mapUuids(oNode, this.parse(C, c))
@@ -552,6 +579,8 @@ class Patcher {
     const root = scanList(this.O, this.oDoc.root.start)
     for (const b of freeB) {
       const o = this.findOriginal(b, this.parse(B, b))
+      // A junction is made by the exporter from where wires meet: one the original does not have is nothing to cut out.
+      if (!o && b.head === "junction") continue
       if (!o) throw new Unpatchable(`a deleted ${b.head} was not found in the original file`)
       this.unitUsed.add(o)
       const i = root.kids.findIndex((k) => k.start === o.span.start)

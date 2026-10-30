@@ -12,7 +12,8 @@ import { registerProjectFootprints } from "../model/footprints"
 import { draftFromIndexPart } from "../model/indexPart"
 import { kicadFootprintLand } from "../model/kicadImport"
 import { registerPart } from "../model/library"
-import { schematicEditProblems } from "../model/merges"
+import { pinsCutOff, schematicEditProblems } from "../model/merges"
+import { pinsLeft, switchPart } from "../model/ops"
 import { setModel, modelAssignment } from "../model/models3d"
 import { landForSupplierPart, landPads, supplierLandPads, supplierPins } from "../model/supplier/build"
 import { supplierModelOn } from "../model/supplier/model"
@@ -484,7 +485,7 @@ From memory (no supplier record):
         additionalProperties: { type: "string" },
       },
       keywords: { type: "array", items: { type: "string" } },
-      replaces: { type: "string", description: "part_id of a part made earlier in this project that this definition corrects; its components switch to the new one" },
+      replaces: { type: "string", description: "part_id of a part made earlier in this project that this definition corrects; its components switch to the new one, their wiring kept on each pin by number" },
     },
     required: ["category"],
   },
@@ -754,24 +755,31 @@ From memory (no supplier record):
       }
       return ok(project, `${name} already exists in this project as part_id "${spec.id}" (${origin}). ${usage}.${tail}`, `${name} already exists`)
     }
-    let switched = 0
-    const components = replaces
-      ? project.components.map((c) => (c.partId === replaces ? (switched++, { ...c, partId: spec.id, footprint: spec.footprint }) : c))
-      : project.components
     const parts = [...(project.parts ?? []).filter((s) => s.id !== replaces), spec]
-    const next = withModel({ ...project, parts, components, footprints, updatedAt: Date.now() })
-    if (switched) {
-      // The new symbol puts its pins elsewhere, which can land them on other nets' wires.
-      const joined = schematicEditProblems(project, next, getConnectivity(project), getConnectivity(next), new Set())
+    let next = withModel({ ...project, parts, footprints, updatedAt: Date.now() })
+    const olds = replaces ? project.components.filter((c) => c.partId === replaces) : []
+    // The new symbol may draw its pins elsewhere: the wiring follows each pin by its number.
+    for (const c of olds) next = switchPart(next, c.id, { partId: spec.id, footprint: spec.footprint })
+    let rewired = ""
+    if (olds.length) {
+      const before = getConnectivity(project)
+      const after = getConnectivity(next)
+      const joined = schematicEditProblems(project, next, before, after, new Set())
       if (joined.length) {
         return fail(
           project,
-          `Not switched: ${name} draws its pins where ${joined.join("; ")}. Nothing was changed. Remove the ${switched} component(s) made from ${replaces} and add the new part with add_component part_id "${spec.id}" instead.`,
+          `Not switched: with its wiring moved to its pins by number, ${name} would still be wrong: ${joined.join("; ")}. Nothing was changed. Remove the ${olds.length} component(s) made from ${replaces} and add the new part with add_component part_id "${spec.id}" instead.`,
         )
       }
+      const left = olds.flatMap((c) => pinsLeft(c, next.components.find((x) => x.id === c.id)!, before).map((n) => `${c.ref}.${n}`))
+      const cut = pinsCutOff(project, next, before, after)
+      rewired = [
+        left.length ? ` ${name} has no pin ${left.join(", ")}, which had wiring: it is left where it was.` : "",
+        cut.length ? ` Not all of its wiring could follow: the switch ${cut.map((x) => x.replace(/^it would /, "")).join("; ")}. run_checks, and redraw those.` : "",
+      ].join("")
     }
     const after = replaces
-      ? ` It replaces ${replaces}: ${switched} component(s) switched over; run_checks to find pins whose wiring moved.`
+      ? ` It replaces ${replaces}: ${olds.length} component(s) switched over, their wiring kept on each pin by number.${rewired}`
       : ` Add it with add_component part_id "${spec.id}".`
     const recheck = source.check?.verdict === "pending" ? " A re-check is pending: call verify_parts when the supplier lookup is back, and tell the user it is unverified until then." : ""
     const memory =

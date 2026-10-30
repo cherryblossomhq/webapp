@@ -669,6 +669,101 @@ export function reorientComponent(project: Project, id: string, w: Reorient, con
   return settleKicadSheet(project, { ...moved, wires: [...kept.wires, ...bridges], labels: kept.labels, updatedAt: Date.now() })
 }
 
+/**
+ * Give a part another definition (`create_part`'s `replaces`: a corrected symbol, its pins by the same numbers) and keep its wiring on
+ * its pins by number. What hangs off one pin alone (a stub to a net label, a power symbol on the pin) moves with that pin, a label
+ * or power symbol right on a pin goes to where the pin now is, and a wire that ends on a pin is stretched to it. A fragment that
+ * hangs off several of its pins that move apart (a comb of supply pins) has its ends stretched instead. A pin number the new
+ * definition lacks keeps nothing: what was on it stays where it was, and `pinsLeft` names it.
+ */
+export function switchPart(project: Project, id: string, patch: { partId: string; footprint: string }, conn?: SchematicConnectivity): Project {
+  const c = project.components.find((x) => x.id === id)
+  if (!c) return project
+  const digits = kicadRulesShown(project) ? 6 : 4
+  const switched = updateComponent(project, id, patch)
+  const now = switched.components.find((x) => x.id === id)!
+  // Pins that share a number pair up in the order each symbol lists them.
+  const fresh = new Map<string, WorldPin[]>()
+  for (const p of schematicPins(now)) fresh.set(p.pin, [...(fresh.get(p.pin) ?? []), p])
+  const taken = new Map<string, number>()
+  const moves = new Map<number, { from: Vec2; to: WorldPin }>()
+  for (const p of schematicPins(c)) {
+    const k = taken.get(p.pin) ?? 0
+    taken.set(p.pin, k + 1)
+    const to = fresh.get(p.pin)?.[k]
+    if (to && !samePoint(to.pos, p.pos) && !moves.has(pointKey(p.pos))) moves.set(pointKey(p.pos), { from: p.pos, to })
+  }
+  if (!moves.size) return switched
+
+  const fr = fragmentsOf(project)
+  const deltaOf = (m: { from: Vec2; to: WorldPin }): Vec2 => ({ x: m.to.pos.x - m.from.x, y: m.to.pos.y - m.from.y })
+  const othersAt = (k: number) => (fr.pinComps.get(k) ?? []).some((o) => o !== id)
+  // The fragments that are the part's own, each with the one shift its pins give it; one its pins pull apart is null.
+  const shift = new Map<number, Vec2 | null>()
+  for (const k of fr.compKeys.get(id) ?? []) {
+    const m = moves.get(k)
+    const d = m ? deltaOf(m) : { x: 0, y: 0 }
+    for (const o of fr.ownersAt.get(k) ?? []) {
+      const r = fr.root[o]
+      if ([...(fr.touching.get(r) ?? [])].some((x) => x !== id)) continue
+      const had = shift.get(r)
+      shift.set(r, had === undefined ? d : had && samePoint(had, d) ? had : null)
+    }
+  }
+  const by = (p: Vec2, d: Vec2): Vec2 => ({ x: round(p.x + d.x, digits), y: round(p.y + d.y, digits) })
+  const carriedWires = new Map<string, Vec2>()
+  const carriedLabels = new Map<string, Vec2>()
+  const carriedSymbols = new Map<string, Vec2>()
+  for (const [r, d] of shift) {
+    if (!d || (!d.x && !d.y)) continue
+    const m = fr.members.get(r)
+    m?.wires.forEach((w) => carriedWires.set(w, d))
+    m?.labels.forEach((l) => carriedLabels.set(l, d))
+    m?.symbols.forEach((s) => carriedSymbols.set(s, d))
+  }
+  // What sits right on a moving pin, and on no other part's, goes to it.
+  const onPin = new Map<string, WorldPin>()
+  for (const [k, m] of moves) {
+    if (othersAt(k)) continue
+    for (const l of fr.labelsAt.get(k) ?? []) if (!carriedLabels.has(l)) onPin.set(l, m.to)
+    for (const s of fr.symbolsAt.get(k) ?? []) if (!carriedSymbols.has(s)) carriedSymbols.set(s, deltaOf(m))
+  }
+
+  const components = switched.components.map((x) => {
+    const d = carriedSymbols.get(x.id)
+    return d ? { ...x, sch: { ...x.sch, x: round(x.sch.x + d.x, digits), y: round(x.sch.y + d.y, digits) } } : x
+  })
+  const wires = project.wires.map((w) => {
+    const d = carriedWires.get(w.id)
+    if (d) return { ...w, points: w.points.map((p) => by(p, d)) }
+    if (w.points.length < 2) return w
+    // The far end first, so the near end keeps index 0 when a bend is added.
+    let points = w.points
+    const tail = moves.get(pointKey(points[points.length - 1]))
+    if (tail && !othersAt(pointKey(tail.from))) points = stretchEnd(points, points.length - 1, tail.to.pos, digits > 4)
+    const head = moves.get(pointKey(points[0]))
+    if (head && !othersAt(pointKey(head.from))) points = stretchEnd(points, 0, head.to.pos, digits > 4)
+    return points === w.points ? w : { ...w, points }
+  })
+  const labels = project.labels.map((l) => {
+    const d = carriedLabels.get(l.id)
+    if (d) return { ...l, ...by(l, d) }
+    const pin = onPin.get(l.id)
+    if (!pin) return l
+    const v = dirVector(pin.dir)
+    return { ...l, x: pin.pos.x, y: pin.pos.y, rot: (v.x > 0 ? 0 : v.y > 0 ? 90 : v.x < 0 ? 180 : 270) as Rotation }
+  })
+  const kept = reseat(project, { components, wires: simplifyChanged(project.wires, wires), labels }, new Set(carriedWires.keys()), new Set([...carriedLabels.keys(), ...onPin.keys()]), { x: 0, y: 0 }, conn, digits)
+  const bridges = bridgePinContacts(project, components, new Set([id, ...carriedSymbols.keys()]))
+  return settleKicadSheet(project, { ...switched, components, wires: [...kept.wires, ...bridges], labels: kept.labels, updatedAt: Date.now() })
+}
+
+/** The pins of `before`'s part that something was wired to and that `after`'s definition has no number for, as numbers. */
+export function pinsLeft(before: ComponentInstance, after: ComponentInstance, conn: SchematicConnectivity): string[] {
+  const kept = new Set(schematicPins(after).map((p) => p.pin))
+  return [...new Set(schematicPins(before).map((p) => p.pin))].filter((n) => !kept.has(n) && conn.pinNet.has(`${before.id}:${n}`))
+}
+
 /** Turn one part to `rot`. Its stubs turn with it; wires that reach other things stay attached to its pins. */
 export function rotateComponent(project: Project, id: string, rot: Rotation, conn?: SchematicConnectivity): Project {
   const c = project.components.find((x) => x.id === id)

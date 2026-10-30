@@ -6,6 +6,7 @@ import { findPart } from "../src/model/library"
 import { createProject } from "../src/model/ops"
 import type { CustomPartSpec, Project } from "../src/model/types"
 import { normalizeProject } from "../src/model/projectFile"
+import { getConnectivity } from "../src/store/analysis"
 
 /** A TPS7A02-style LDO in SOT-23-5. */
 const ldo = {
@@ -128,6 +129,34 @@ describe("create_part", () => {
     expect(fixed.project.parts?.map((s) => s.id)).toEqual([fixed.id])
     expect(fixed.project.components[0].partId).toBe(fixed.id)
     expect(runTool(p, "create_part", { ...ldo, replaces: "resistor" }).isError).toBe(true)
+  })
+
+  it("keeps the wiring on each pin by number when the new definition draws its pins elsewhere", () => {
+    // Drawn first with its pins on the wrong sides, then corrected: the same numbers and footprint, another symbol.
+    const sides: Record<string, string> = { "1": "left", "2": "left", "3": "right", "4": "right", "5": "left" }
+    const first = create(createProject("fix"), { ...ldo, pins: ldo.pins.map((x) => ({ ...x, side: sides[x.number] })) })
+    let p = runTool(first.project, "add_component", { part_id: first.id, x: 0, y: 0 }).project
+    p = runTool(p, "add_component", { part_id: "resistor", ref: "R1", x: -12, y: 0 }).project
+    p = runTool(p, "add_component", { part_id: "capacitor", ref: "C1", x: 12, y: 0 }).project
+    p = runTool(p, "connect", { pins: ["U1.1", "R1.1"] }).project
+    p = runTool(p, "connect", { pins: ["U1.5", "C1.1"], net_name: "VOUT" }).project
+    p = runTool(p, "connect", { pins: ["U1.2", "C1.2", "R1.2"], net_name: "GND" }).project
+    p = runTool(p, "connect", { pins: ["U1.3"], net_name: "EN" }).project
+    const netsOf = (q: Project) => {
+      const conn = getConnectivity(q)
+      const name = (key: string) => conn.nets.find((n) => n.id === conn.pinNet.get(key))?.name
+      return Object.fromEntries(q.components.flatMap((c) => schematicPins(c).map((pin) => [`${c.ref}.${pin.pin}`, name(`${c.id}:${pin.pin}`) ?? null])))
+    }
+    const before = netsOf(p)
+    const u1 = (q: Project) => schematicPins(q.components.find((c) => c.ref === "U1")!)
+    const fixed = create(p, { ...ldo, replaces: first.id })
+    expect(fixed.isError, fixed.result).toBe(false)
+    expect(fixed.result).toContain("their wiring kept on each pin by number")
+    expect(fixed.result).not.toContain("Not all of its wiring")
+    // The pins moved, and every pin is on the net it was on.
+    expect(u1(fixed.project).map((x) => x.pos)).not.toEqual(u1(p).map((x) => x.pos))
+    expect(netsOf(fixed.project)).toEqual(before)
+    expect(before["U1.1"]).toBe(before["R1.1"])
   })
 
   it("survives a reload: specs are saved in the project and rebuilt on load", () => {

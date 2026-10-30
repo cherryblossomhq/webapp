@@ -1,6 +1,7 @@
 import type { KicadCarry } from "../../types"
 import type { KicadBoard } from "./types"
 import { TRANSLATED_LAYER_NAMES } from "./graphics"
+import { decodeNetName } from "./read"
 import { kid, numAt, type List, type Node } from "./sexpr"
 
 // What a board import keeps for the export and the editor does not edit (`KicadCarry`): the page, the two origins, the plot settings and the layer table's names,
@@ -93,10 +94,12 @@ export function boardCarry(board: KicadBoard): KicadCarry | undefined {
     carry.plot = nodeText(plot.filter((n) => !Array.isArray(n) || (PLOT_WORDS_9.has(String(n[0])) && (same || (n[0] !== "layerselection" && n[0] !== "plot_on_all_layers_selection")))))
   }
   // The nets whose names have a slash: what is a sheet's path and what is the label's own text cannot be told from the name the editor holds, so the file's own spelling is kept.
+  // (A file from KiCad 10 has no net table: its nets are the names its items carry.)
   const names: Record<string, string> = {}
+  const spelled = board.nets.length ? board.nets.map((n) => n.raw) : [...new Set([...board.footprints.flatMap((f) => f.pads), ...board.segments, ...board.arcTracks, ...board.vias, ...board.zones].flatMap((o) => (o.netRaw ? [o.netRaw] : [])))]
   const seen = new Map<string, number>()
-  for (const n of board.nets) seen.set(n.name, (seen.get(n.name) ?? 0) + 1)
-  for (const n of board.nets) if (n.name.includes("/") && seen.get(n.name) === 1) names[n.name] = n.raw
+  for (const raw of spelled) seen.set(decodeNetName(raw), (seen.get(decodeNetName(raw)) ?? 0) + 1)
+  for (const [name, count] of seen) if (name.includes("/") && count === 1) names[name] = spelled.find((raw) => decodeNetName(raw) === name)!
   if (Object.keys(names).length) carry.netNames = names
   // The width the outline was drawn with: the one most of the Edge.Cuts lines have.
   const widths = new Map<number, number>()

@@ -80,4 +80,15 @@ describe("what a KiCad import keeps for the export", () => {
     expect(pro.net_settings.classes[0].wire_width).toBe(6)
     expect(out.files[names.find((n) => n.endsWith(".kicad_dru"))!]).toContain("keep out")
   })
+
+  it("keeps a sheet's path in a net name of a file that has no net table (KiCad 10 names the nets in place)", async () => {
+    const fp = footprint({ ref: "R1", pads: [pad({ number: "1", at: "-1 0", net: '(net "/DDR3 16x1/SVREF")' }), pad({ number: "2", at: "1 0", net: '(net "GND")' })] })
+    const r = importKicadProject([{ path: "b.kicad_pcb", data: board({ version: 20251028, nets: [], body: [fp] }) }])
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    const out = await kicadFiles({ ...r.project, kicad: { ...r.project.kicad, original: undefined } })
+    const pcb = out.files[Object.keys(out.files).find((n) => n.endsWith(".kicad_pcb"))!]
+    expect(pcb).toContain('"/DDR3 16x1/SVREF"')
+    expect(pcb).not.toContain("{slash}")
+  })
 })

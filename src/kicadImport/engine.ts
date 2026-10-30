@@ -1,6 +1,8 @@
 import type { ImportOptions, KicadImportResult } from "../model/kicad/board/import"
+import type { Project } from "../model/types"
 import type { KicadProjectResult } from "../model/kicad/project/import"
 import type { SchematicImportResult } from "../model/kicad/schematic/import"
+import type { KeptFile } from "../model/kicad/board/images"
 import { baseName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, type InputFile, type ProjectFiles } from "./pick"
 import type { StartRequest, WorkerEvent } from "./protocol"
 import { emptyContext, generatorLabel, stoppedSummary, summarize, type FileContext, type ImportResult } from "./summary"
@@ -150,6 +152,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     post({ type: "progress", id, phase: "building" })
     const importOptions: ImportOptions = { ...options.importOptions, name: projectName(files) }
     let result: ImportResult
+    let projectBytes: ReadFile[] = []
     if (projectImporter) {
       const read = async (f: InputFile): Promise<ReadFile> => ({ name: baseName(f.path), path: f.path, bytes: await f.read() })
       const project: ProjectBytes = {
@@ -161,6 +164,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
         libraries: await Promise.all(files.libraries.map(read)),
       }
       result = await projectImporter(project, importOptions)
+      projectBytes = [project.projectFile, ...project.schematics, project.rules, ...project.libraries].flatMap((f) => (f ? [f] : []))
       context.used.push(...[project.projectFile, ...project.schematics, project.rules].flatMap((f) => (f ? [f.name] : [])))
       // S12: a library is read only for a symbol the schematic's own cache lacks, which is the report's to say; the files are used.
       context.used.push(...project.libraries.map((f) => f.name))
@@ -175,7 +179,13 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       result = importer.importKicadBoard(bytes, importOptions)
       context.notRead.push(...notReadBeside(files))
     }
-    done({ summary: summarize(result, context), project: result.status === "imported" ? result.project : null, ...(result.status === "imported" && result.files?.length ? { files: result.files } : {}) })
+    // The user's own files are kept with the project, so the export can write back only what the user changes (`export/keep/`).
+    const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: projectBytes }) : null
+    const summary = summarize(result, context)
+    if (kept) summary.notes.push(kept.note)
+    const project = result.status === "imported" ? (kept ? kept.project : result.project) : null
+    const saved = result.status === "imported" ? [...(result.files ?? []), ...(kept ? [kept.file] : [])] : []
+    done({ summary, project, ...(saved.length ? { files: saved } : {}) })
   } catch (e) {
     // A file that unpacks past the limit (its size field said less, or nothing) is said in plain words.
     if (e instanceof ImportInputError) return done({ project: null, summary: stoppedSummary("bad-input", e.message) })
@@ -183,6 +193,29 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     // user gets a plain sentence and a next step.
     const why = (e instanceof Error ? e.message.split("\n")[0].trim().slice(0, 200) : "") || "an unknown error"
     done({ project: null, summary: stoppedSummary("failed", "The import stopped before it finished. Nothing was saved. Reload the page and try again; if it keeps happening, download this report and contact us at trycherryblossom.com/contact.", emptyContext(), why) })
+  }
+}
+
+/**
+ * The files the import was given, kept as one zip beside the project: the project's record of them, the file to put in the host's file store,
+ * and the line for the report. Nothing is kept when the zip would be larger than the store takes (the project is imported all the same).
+ */
+async function keepOriginals(
+  result: Extract<ImportResult, { status: "imported" }>,
+  importOptions: ImportOptions,
+  given: { board: { path: string; data: Uint8Array }; beside: ReadFile[] },
+): Promise<{ project: Project; file: KeptFile; note: { code: string; object: string; why: string } } | null> {
+  const { packOriginal, MAX_ORIGINAL_BYTES } = await import("../export/keep/original")
+  const list = [given.board, ...given.beside.map((f) => ({ path: f.path, data: f.bytes }))]
+  const total = list.reduce((n, f) => n + f.data.length, 0)
+  if (total > MAX_ORIGINAL_BYTES * 4) return null
+  const packed = await packOriginal(list)
+  if (packed.bytes.length > MAX_ORIGINAL_BYTES) return null
+  const original = { file: packed.id, size: packed.bytes.length, ...(importOptions.name !== undefined ? { name: importOptions.name } : {}), ...(importOptions.source !== undefined ? { source: importOptions.source } : {}) }
+  return {
+    project: { ...result.project, kicad: { ...result.project.kicad, original } },
+    file: { id: packed.id, name: "kicad-original.zip", bytes: packed.bytes },
+    note: { code: "originals-kept", object: "Your original KiCad files are kept", why: "export writes back only what you change." },
   }
 }
 

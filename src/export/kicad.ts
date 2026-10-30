@@ -12,6 +12,7 @@ import { applyZones } from "./kicadZones"
 import { slugify } from "./bundle"
 import { projectToCircuitJson, type PlacedText } from "./circuitJson"
 import { imageBytes, preloadImages } from "../store/imageFiles"
+import { keepOriginal, type KeptExport } from "./keep/original"
 import { applyOutline } from "./kicadOutline"
 import { applyPads } from "./kicadPads"
 import { applyBoardObjects } from "./kicadObjects"
@@ -193,10 +194,24 @@ export interface KicadExport {
   files: Record<string, string>
   /** What didn't come across, in words for whoever exported it. */
   notes: string[]
+  /** The exact bytes of the files that are the user's own, for a project imported from KiCad files (`keep/original.ts`); a zip is written from these. */
+  exact?: Record<string, Uint8Array>
+  /** What became of each file of a project imported from KiCad files: the user's own, patched with what changed, or written from the project. */
+  kept?: NonNullable<KeptExport["kept"]>
 }
 
-/** The schematic, board and project files of a KiCad 9 project. */
+/**
+ * The schematic, board and project files of a KiCad 9 project. A project that came from KiCad files has them kept (`KicadCarry.original`): what the user did not
+ * change is the user's own file, byte for byte, and what changed is written into it.
+ */
 export async function kicadFiles(source: Project): Promise<KicadExport> {
+  const fresh = await writtenKicadFiles(source)
+  if (!source.kicad?.original) return fresh
+  return keepOriginal(source, fresh, writtenKicadFiles)
+}
+
+/** The schematic, board and project files of a KiCad 9 project, all written from the project. */
+async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   // S8: KiCad 9's file has no flag on a rule area, so the flags of one are written on the symbols it touches, which is where KiCad 9 reads them.
   // S9: nor does it have schematic variants, so its files are written from the symbols as the active variant makes them; `withRuleAreaFlags` applies the variant,
   // the sheet symbols' flags and the areas' in one chain. A project that is written as KiCad 10 files anyway (it has a local power symbol) keeps its variants in the
@@ -319,9 +334,9 @@ export async function kicadFiles(source: Project): Promise<KicadExport> {
 }
 
 export async function kicadZip(project: Project): Promise<{ blob: Blob; notes: string[] }> {
-  const { files, notes } = await kicadFiles(project)
+  const { files, notes, exact } = await kicadFiles(project)
   const zip = new JSZip()
   const folder = zip.folder(slugify(project.name))!
-  for (const [name, content] of Object.entries(files)) folder.file(name, content)
+  for (const [name, content] of Object.entries(files)) folder.file(name, exact?.[name] ?? content)
   return { blob: await zip.generateAsync({ type: "blob", compression: "DEFLATE" }), notes }
 }

@@ -94,6 +94,14 @@ describe("patching the user's file with what changed", () => {
     expect(r.text).toBe(original)
   })
 
+  it("does not write the day the project was saved into the user's title block", () => {
+    const titled = (date: string) => written({}).replace("  (general", `  (title_block (title "p") (date "${date}"))
+  (general`)
+    const r = patchFile("board", original, titled("2026-10-29"), titled("2026-10-30"))
+    expect(r.ok).toBe(true)
+    expect(r.text).toBe(original)
+  })
+
   it("moves one footprint and leaves every other byte alone", () => {
     const r = patchFile("board", original, written({}), written({ r1x: 11 }))
     expect(r.ok).toBe(true)

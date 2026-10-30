@@ -156,12 +156,15 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
   for (const [name, after] of Object.entries(fresh.files)) {
     const orig = originalOf(name, originals)
     const was = before[name]
+    const unchanged = was !== undefined && (was === after || (extOf(name) === ".kicad_pro" ? steady(was) === steady(after) : neutralText(was) === neutralText(after)))
+    // A file the user did not have (a board with no schematic or project file) and the edits did not touch is not made up: the export is the user's file set. (A made-up project file also changes the sheet name a netlist gives the root.)
+    if (!orig && unchanged) continue
     if (!orig || was === undefined) {
       files[name] = after
       kept.push({ file: name, mode: "written", detail: orig ? "the file was not written before" : "it is new" })
       continue
     }
-    if (was === after || (extOf(name) === ".kicad_pro" ? steady(was) === steady(after) : neutralText(was) === neutralText(after))) {
+    if (unchanged) {
       // Nothing of this file changed: the user's own bytes.
       files[name] = textOf(orig.data) ?? after
       exact[name] = orig.data

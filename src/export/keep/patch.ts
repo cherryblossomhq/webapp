@@ -61,6 +61,8 @@ interface Doc {
 }
 
 const UUID_RE = /\s*\((?:uuid|tstamp)\s+"?[0-9A-Za-z-]+"?\s*\)/g
+/** The title block's date: the exporter writes the day the project was saved, which is not something the user changed. */
+const DATE_RE = /\s*\(date\s+"[^"]*"\)/g
 const NET_RE = /\(net (\d+)(?: "((?:[^"\\]|\\.)*)")?\)/g
 const ANY_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g
 const SERIAL_UUID_RE = /^00000000-0000-4000-800[02]-[0-9a-f]{12}$/
@@ -70,6 +72,7 @@ const MEMBERS_RE = /\(members((?:\s+"?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 function canonOf(text: string, nets: Map<number, string>, keepUuids = false): string {
   const out = text
     .replace(UUID_RE, "")
+    .replace(DATE_RE, "")
     .replace(NET_RE, (_m, n: string, inline?: string) => `(net "${nets.get(Number(n)) ?? inline ?? n}")`)
     .replace(/\s+/g, " ")
   // A uuid that is made from an id (a sheet's, in the instance paths) says nothing of the item either.
@@ -653,4 +656,4 @@ export function patchFile(kind: Kind, original: string, before: string, after: s
 export { fileVersion }
 
 /** A file's text without its uuids and layout: two files that say the same thing but for the ids made afresh each time are the same here. */
-export const neutralText = (text: string): string => text.replace(UUID_RE, "").replace(ANY_UUID_RE, "U").replace(/\s+/g, " ")
+export const neutralText = (text: string): string => text.replace(UUID_RE, "").replace(DATE_RE, "").replace(ANY_UUID_RE, "U").replace(/\s+/g, " ")

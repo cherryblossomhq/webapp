@@ -69,6 +69,8 @@ describe("the user's own files go with the project", () => {
     const reopened = parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 })
     const out = await kicadFiles(reopened)
     expect(out.files["blink.kicad_pcb"]).toBe(text)
+    // a board with no schematic or project file is exported as just that: no file is made up
+    expect(Object.keys(out.files)).toEqual(["blink.kicad_pcb"])
     expect(new TextDecoder().decode(out.exact!["blink.kicad_pcb"])).toBe(text)
     expect(out.notes[0]).toMatch(/byte for byte/)
     const zip = await kicadZip(reopened)
@@ -88,6 +90,7 @@ describe("the user's own files go with the project", () => {
     expect(out.kept?.find((k) => k.file === "blink.kicad_pcb")?.mode).toBe("patched")
     expect(pcb).toBe(text.replace('(at 5 5)', '(at 7 5)'))
     expect(pcb).toContain("KICAD9_3DMODEL_DIR")
+    expect(Object.keys(out.files)).toEqual(["blink.kicad_pcb"])
   })
 
   it("a project made in the editor has no original and exports as before", async () => {

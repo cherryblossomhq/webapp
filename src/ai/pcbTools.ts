@@ -477,7 +477,7 @@ const MAX_WIDTH = 10
 const setNetWidthTool: PcbToolSpec = {
   name: "set_net_width",
   description:
-    "Set the trace width of nets, in millimetres: the Inspector's net list does the same. Use it for supply and power-stage nets (VIN, SW, VOUT, GND) before route_pcb; the autorouter and hand routing use it for new traces on that net, and connections into pads too small for it fall back to narrower ones. Widths below the design rules' minimum trace width are refused. Existing traces keep their width: clear_routing the net, then route_pcb. widths maps net names to widths; reset lists nets to return to the default width.",
+    "Set the trace width of nets, in millimetres: the Inspector's net list does the same. Use it for supply and power-stage nets (VIN, SW, VOUT, GND) before route_pcb; the autorouter and hand routing use it for new traces on that net. A pad narrower than the width is left by a short neck as wide as the pad; a connection with no room for the width at all goes in narrower, and route_pcb says which. Widths below the design rules' minimum trace width are refused. Existing traces keep their width: clear_routing the net, then route_pcb. widths maps net names to widths; reset lists nets to return to the default width.",
   input_schema: {
     type: "object",
     properties: {
@@ -525,7 +525,7 @@ const setNetWidthTool: PcbToolSpec = {
         .filter((p) => p.pin && !p.holeDiameter && conn.pinNet.get(pinKey(p.componentId, p.pin)) === id)
       const narrow = pads.filter((p) => Math.min(p.width, p.height) < width - 1e-6)
       const notes: string[] = []
-      if (narrow.length) notes.push(`${narrow.length} pad(s) are narrower, down to ${mm(Math.min(...narrow.map((p) => Math.min(p.width, p.height))))} mm; routes into them fall back to narrower traces`)
+      if (narrow.length) notes.push(`${narrow.length} pad(s) are narrower, down to ${mm(Math.min(...narrow.map((p) => Math.min(p.width, p.height))))} mm; traces into them neck down to the pad's width at the pad`)
       if (traces.length) notes.push(`${traces.length} existing trace(s) keep their width; clear_routing this net and run route_pcb to use the new one`)
       lines.push(`${name}: ${len(width)} mm (was ${len(before)}${rules.netWidths?.[name] === undefined ? ", the default" : ""})${notes.length ? `; ${notes.join("; ")}` : ""}`)
     }

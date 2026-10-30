@@ -34,6 +34,8 @@ export interface AutorouteResult {
   finePitchOpen: number
   /** The thinnest trace width (mm) the fine-pitch retry went down to, or null when it did not run. */
   finePitchTried: number | null
+  /** Nets with a width of their own (`netWidths`, a class's) that had connections routed narrower for want of room: absent when none did. A neck at a pad too small for the width is not one. */
+  narrowed?: { net: string; width: number; widths: number[] }[]
 }
 
 const FREE = -1
@@ -573,7 +575,30 @@ class Router {
     return (a === FREE || a === net) && (b === FREE || b === net)
   }
 
-  /** Stamp the cells covered by own-net copper so the search may start or end there. */
+  /**
+   * The neck a trace of `width` leaves `pad` by when no cell of the pad holds it whole (a 3 mm supply trace into a 2.6 mm pad): the
+   * widest trace a cell does hold, to 0.01 mm. 0 for no neck: the trace fits, it is no wider than the default, or the pad is too
+   * small for a default-width neck, where the narrower widths and the fine-pitch retry take over as before.
+   */
+  private neckWidth(pad: WorldPad, width: number): number {
+    const { traceWidth } = this.project.rules
+    if (width <= traceWidth + 1e-9) return 0
+    const b = padBox(pad)
+    let best = 0
+    const p = { x: 0, y: 0 }
+    for (let iy = Math.max(0, Math.ceil((b.minY - this.oy) / this.g)); iy <= Math.min(this.ny - 1, Math.floor((b.maxY - this.oy) / this.g)); iy++) {
+      p.y = this.cy(iy)
+      for (let ix = Math.max(0, Math.ceil((b.minX - this.ox) / this.g)); ix <= Math.min(this.nx - 1, Math.floor((b.maxX - this.ox) / this.g)); ix++) {
+        p.x = this.cx(ix)
+        if (pointPadDistance(p, pad) === 0) best = Math.max(best, padInset(p, pad))
+      }
+    }
+    if (2 * best >= width - 2e-6) return 0
+    const neck = Math.floor(2 * best * 100 + 1e-6) / 100
+    return neck >= traceWidth - 1e-9 ? neck : 0
+  }
+
+  /** Stamp the cells covered by own-net copper so the search may start or end there. Pads a trace of `width` leaves by a neck are put in `necks`, with its width. */
   private stampShapes(
     target: Uint32Array[],
     shapes: Shape[],
@@ -581,11 +606,15 @@ class Router {
     net: number,
     owner: Int32Array[],
     seeds?: number[],
+    necks?: Map<WorldPad, number>,
   ): Box {
     const n = this.nx * this.ny
     const box: Box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
     const p = { x: 0, y: 0 }
     for (const s of shapes) {
+      // A pad too small for the trace is left by a neck of its own width: the search starts where the neck fits in the pad and the wide trace would be clear.
+      const neck = s.kind === "pad" && necks ? this.neckWidth(s.pad, width) : 0
+      if (neck && s.kind === "pad") necks!.set(s.pad, neck)
       const sb = shapeBox(s)
       const x0 = Math.max(0, Math.floor((sb.minX - this.ox) / this.g))
       const x1 = Math.min(this.nx - 1, Math.ceil((sb.maxX - this.ox) / this.g))
@@ -597,7 +626,7 @@ class Router {
           p.x = this.cx(ix)
           const i = iy * this.nx + ix
           let ok: boolean
-          if (s.kind === "pad") ok = pointPadDistance(p, s.pad) === 0 && padInset(p, s.pad) >= width / 2 - 1e-6
+          if (s.kind === "pad") ok = pointPadDistance(p, s.pad) === 0 && padInset(p, s.pad) >= (neck || width) / 2 - 1e-6
           else if (s.kind === "segment" && this.stubKeys.has(`${s.a.x},${s.a.y},${s.b.x},${s.b.y}`)) ok = Math.hypot(p.x - s.b.x, p.y - s.b.y) <= this.g * 0.5
           else if (s.kind === "segment") ok = pointSegmentDistance(p, s.a, s.b) <= Math.max(this.g * 0.5, (s.width - width) / 2)
           else if (s.kind === "drawing") ok = false
@@ -607,8 +636,8 @@ class Router {
             const li = outerIndex(layer)
             if (li < 0) continue
             const v = owner[li][i]
-            // Inside a pad by half a trace width the new copper is covered by the pad itself.
-            if (s.kind !== "pad" && v !== FREE && v !== net) continue
+            // Inside a pad by half a trace width the new copper is covered by the pad itself; a trace wider than the pad, which a neck leaves it by, is not.
+            if ((s.kind !== "pad" || neck) && v !== FREE && v !== net) continue
             if (target[li][i] !== this.stamp) seeds?.push(li * n + i)
             target[li][i] = this.stamp
           }
@@ -642,13 +671,14 @@ class Router {
     this.stamp++
     const srcStamp = this.stamp
     const seeds: number[] = []
-    this.stampShapes(this.stampSrc, source, width, net, owner, seeds)
+    const necks = new Map<WorldPad, number>()
+    this.stampShapes(this.stampSrc, source, width, net, owner, seeds, necks)
     let tb: Box = { minX: 0, minY: 0, maxX: 0, maxY: 0 }
     let tgtStamp = 0
     if (target) {
       this.stamp++
       tgtStamp = this.stamp
-      tb = this.stampShapes(this.stampTgt, target, width, net, owner)
+      tb = this.stampShapes(this.stampTgt, target, width, net, owner, undefined, necks)
       if (!Number.isFinite(tb.minX)) return null
     }
     const fillMemo = new Map<number, boolean>()
@@ -798,14 +828,22 @@ class Router {
     }
     const first = runs[0]
     const lastRun = runs[runs.length - 1]
+    // The pad an end leaves by a neck, found from the cell the search began or ended in, which is inside it.
+    const neckAt = (p: Vec2, shapes: Shape[], layer: CopperLayer): Neck | null => {
+      for (const sh of shapes) if (sh.kind === "pad" && necks.has(sh.pad) && sh.layers.includes(layer) && pointPadDistance(p, sh.pad) === 0) return { pad: sh.pad, width: necks.get(sh.pad)! }
+      return null
+    }
+    const startNeck = neckAt(first.pts[0], source, LAYERS[first.layer])
+    const endNeck = target ? neckAt(lastRun.pts[lastRun.pts.length - 1], target, LAYERS[lastRun.layer]) : null
     first.pts.unshift(snapEnd(first.pts[0], source, LAYERS[first.layer]))
     if (target) lastRun.pts.push(snapEnd(lastRun.pts[lastRun.pts.length - 1], target, LAYERS[lastRun.layer]))
 
     const traces: Omit<Trace, "id">[] = []
-    for (const run of runs) {
-      const pts = simplifyPolyline(run.pts.filter((p, k) => k === 0 || !samePoint(p, run.pts[k - 1])))
-      if (pts.length >= 2) traces.push({ layer: LAYERS[run.layer], width, points: pts })
-    }
+    runs.forEach((run, k) => {
+      const pts = simplifyPolyline(run.pts.filter((p, i) => i === 0 || !samePoint(p, run.pts[i - 1])))
+      if (pts.length < 2) return
+      for (const piece of neckDown(pts, width, k === 0 ? startNeck : null, k === runs.length - 1 ? endNeck : null)) traces.push({ layer: LAYERS[run.layer], ...piece })
+    })
     const result = { traces, vias, net: netName }
     this.commit(netName, result)
     return result
@@ -820,6 +858,59 @@ class Router {
     const via = this.rr.of(netName)
     for (const v of path.vias) this.addShape({ kind: "via", at: v, diameter: via.viaDiameter, drill: via.viaDrill, layers: [...copperLayers(this.project.board)] }, netName)
   }
+}
+
+/** A pad a trace leaves by a neck, and the neck's width. */
+interface Neck {
+  pad: WorldPad
+  width: number
+}
+
+/** The first point along `points` where a trace of `width` is clear of `pad` (its copper no longer reaches the pad), with the segment it is on; null when it never is. */
+function clearOfPad(points: Vec2[], pad: WorldPad, width: number): { seg: number; at: Vec2 } | null {
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.02))
+    for (let k = 1; k <= steps; k++) {
+      const q = { x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps }
+      if (pointPadDistance(q, pad) >= width / 2) return { seg: i, at: { x: round(q.x, 4), y: round(q.y, 4) } }
+    }
+  }
+  return null
+}
+
+const distinct = (points: Vec2[]) => points.filter((p, i) => i === 0 || !samePoint(p, points[i - 1]))
+
+/**
+ * A routed run of `width` cut into its pieces: at an end on a pad too small for the width, a neck of the pad's own width as far as
+ * the wide copper is clear of the pad, then the wide trace. The search kept the whole run clear at `width`, so the narrower necks are
+ * too. A run that never clears its pad is narrow throughout.
+ */
+function neckDown(points: Vec2[], width: number, start: Neck | null, end: Neck | null): { width: number; points: Vec2[] }[] {
+  if (!start && !end) return [{ width, points }]
+  const out: { width: number; points: Vec2[] }[] = []
+  let wide = points
+  if (start) {
+    const c = clearOfPad(wide, start.pad, width)
+    if (!c) return [{ width: Math.min(start.width, end?.width ?? Infinity), points }]
+    out.push({ width: start.width, points: distinct([...wide.slice(0, c.seg), c.at]) })
+    wide = distinct([c.at, ...wide.slice(c.seg)])
+  }
+  let tail: { width: number; points: Vec2[] } | null = null
+  if (end && wide.length >= 2) {
+    const back = [...wide].reverse()
+    const c = clearOfPad(back, end.pad, width)
+    if (!c) {
+      out.push({ width: end.width, points: wide })
+      return out.filter((piece) => piece.points.length >= 2)
+    }
+    tail = { width: end.width, points: distinct([...back.slice(0, c.seg), c.at].reverse()) }
+    wide = distinct([...back.slice(c.seg).reverse(), c.at])
+  }
+  out.push({ width, points: wide })
+  if (tail) out.push(tail)
+  return out.filter((piece) => piece.points.length >= 2)
 }
 
 type PadItem = Extract<CopperItem, { kind: "pad" }>
@@ -1138,15 +1229,32 @@ function attempt(
   // A connection that can't be made wide, e.g. into a small pad, falls back to the next. The
   // fine-pitch mode adds widths down to the board's minimum, but only for a signal net with no width of
   // its own: supply nets and nets the user gave a width keep it away from the pads.
+  const nameOf = (netId: string) => sch.nets.find((n) => n.id === netId)?.name
+  /** The width the net was given: by name, which wins over its class's, else its class's. A net with neither has none of its own. */
+  const ownWidth = (netId: string) => {
+    const name = nameOf(netId)
+    return name !== undefined ? (netWidths[name] ?? classWidth(name)) : undefined
+  }
   const widthsFor = (netId: string) => {
-    const name = sch.nets.find((n) => n.id === netId)?.name
-    // a width given to the net by name wins over its class's, which is what a net with neither gets from the rules
-    const own = name !== undefined ? (netWidths[name] ?? classWidth(name)) : undefined
+    const own = ownWidth(netId)
     const out = own !== undefined ? [own] : []
     if (isPowerNet(sch, p, netId) && (own === undefined || own > powerW)) out.push(powerW)
     if (!out.includes(signalW) && (own === undefined || own > signalW)) out.push(signalW)
     if (ladder.length && own === undefined && !isPowerNet(sch, p, netId)) out.push(...ladder.filter((w) => w < Math.min(...out) - 1e-9))
     return out
+  }
+  /** Connections of nets with a width of their own that went in narrower, for want of room: the widths they took, by net. */
+  const narrowed = new Map<string, number[]>()
+  /** The connection routed at the first of `ws` it can be, widest first, or null. */
+  const widest = (netId: string, ws: number[], go: (w: number) => RoutedPath | null): RoutedPath | null => {
+    for (const w of ws) {
+      const path = go(w)
+      if (!path) continue
+      const own = ownWidth(netId)
+      if (own !== undefined && w < own - 1e-9) narrowed.set(netId, [...(narrowed.get(netId) ?? []), w])
+      return path
+    }
+    return null
   }
   const wanted = opts.nets ? new Set(opts.nets) : null
   const pourNets = new Set(
@@ -1258,8 +1366,7 @@ function attempt(
         const zone: Box = { minX: Math.min(line.a.x, line.b.x) - 3, maxX: Math.max(line.a.x, line.b.x) + 3, minY: Math.min(line.a.y, line.b.y) - 3, maxY: Math.max(line.a.y, line.b.y) + 3 }
         if (at !== undefined && !addedBoxes.slice(at).some((b) => boxesOverlap(b, zone))) continue
       }
-      let path: RoutedPath | null = null
-      for (const w of line.widths) if ((path = getRouter().route(line.netId, src, tgt, w))) break
+      const path = widest(line.netId, line.widths, (w) => getRouter().route(line.netId, src, tgt, w))
       if (!path) {
         failedAt.set(key, addedBoxes.length)
         continue
@@ -1316,8 +1423,7 @@ function attempt(
           if (pad.layers.includes(fill.layer) && pad.layers.length === 1) continue
           const testers = fill.polygons.map(fillTester)
           const inFill = (q: Vec2) => testers.some((t) => t(q))
-          let path: RoutedPath | null = null
-          for (const w of widthsFor(netId)) if ((path = getRouter().route(netId, shapes, null, w, { layer: li, inFill }))) break
+          const path = widest(netId, widthsFor(netId), (w) => getRouter().route(netId, shapes, null, w, { layer: li, inFill }))
           if (path) {
             paths.push(path)
             routed++
@@ -1408,7 +1514,7 @@ function attempt(
   if (mode.fine && !late()) {
     const open = analyze().ratsnest.filter((r) => !wanted || wanted.has(r.netId))
     if (open.length) {
-      const snapshot = { p, routed, addedTraces, addedVias, left: open.length }
+      const snapshot = { p, routed, addedTraces, addedVias, left: open.length, narrowed: new Map([...narrowed].map(([k, v]) => [k, [...v]])) }
       const ends = open.flatMap((r) => [r.a, r.b])
       const hasStub = (it: PadItem) => p.traces.some((t) => stubIds.has(t.id) && samePoint(t.points[0], it.pad))
       addStubs((it) => ends.some((e) => samePoint(e, it.pad)) && !hasStub(it))
@@ -1438,8 +1544,7 @@ function attempt(
         const pa = pads.find((x) => samePoint(r.a, x.pad))
         const pb = pads.find((x) => samePoint(r.b, x.pad))
         if (!pa || !pb) continue
-        let path: RoutedPath | null = null
-        for (const w of widthsFor(r.netId)) if ((path = router.route(r.netId, padShapes(pa), padShapes(pb), w))) break
+        const path = widest(r.netId, widthsFor(r.netId), (w) => router.route(r.netId, padShapes(pa), padShapes(pb), w))
         if (path) forced.push(path)
       }
       p = apply(p, forced, rr)
@@ -1452,7 +1557,11 @@ function attempt(
       fanout()
       for (let i = 0; i < 2; i++) if (!pass(() => true)) break
       const left = analyze().ratsnest.filter((r) => !wanted || wanted.has(r.netId)).length
-      if (left >= snapshot.left) ({ p, routed, addedTraces, addedVias } = snapshot)
+      if (left >= snapshot.left) {
+        ;({ p, routed, addedTraces, addedVias } = snapshot)
+        narrowed.clear()
+        for (const [k, v] of snapshot.narrowed) narrowed.set(k, v)
+      }
     }
   }
 
@@ -1482,8 +1591,18 @@ function attempt(
   const open = final.ratsnest.filter((r) => !wanted || wanted.has(r.netId))
   const finePads = final.items.filter((it): it is PadItem => it.kind === "pad")
   const fineOpen = open.filter((r) => [r.a, r.b].some((at) => finePads.some((x) => samePoint(at, x.pad) && isFinePad(x, finePads)))).length
+  const thin = [...narrowed].map(([netId, ws]) => ({ net: nameOf(netId) ?? netId, width: ownWidth(netId)!, widths: ws }))
   return {
-    result: { project: p, routed, remaining: open.length, addedTraces, addedVias, finePitchOpen: fineOpen, finePitchTried: mode.fine ? widthLadder(project).at(-1)! : null },
+    result: {
+      project: p,
+      routed,
+      remaining: open.length,
+      addedTraces,
+      addedVias,
+      finePitchOpen: fineOpen,
+      finePitchTried: mode.fine ? widthLadder(project).at(-1)! : null,
+      ...(thin.length ? { narrowed: thin } : {}),
+    },
     failed: [...new Set(open.map((r) => r.netId))],
     fineOpen,
     mode,

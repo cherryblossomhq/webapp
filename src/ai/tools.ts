@@ -1717,6 +1717,13 @@ export function unroutedAdvice(res: AutorouteResult): string {
   return parts.join("")
 }
 
+/** What to tell the model about nets that were given a width and had connections routed narrower: quietly thinner copper on a supply is a fault. */
+export function narrowedAdvice(res: AutorouteResult): string {
+  if (!res.narrowed?.length) return ""
+  const nets = res.narrowed.map((n) => `${n.net} (${n.widths.length} at ${[...new Set(n.widths)].sort((a, b) => b - a).map((w) => `${w} mm`).join(" or ")}, not ${n.width} mm)`)
+  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, clear_routing the net and make room (place_parts, set_board) before route_pcb, or carry it in copper with set_pour polygon; else tell the user.`
+}
+
 const routePcbTool: ToolSpec = {
   name: "route_pcb",
   description:
@@ -1728,7 +1735,7 @@ const routePcbTool: ToolSpec = {
     }
     const res = routeAroundStitching(project, (p) => autoroute(p))
     if (!res.routed && !res.remaining) return ok(project, "Every connection is already routed.", "Nothing to route")
-    const tail = res.remaining ? unroutedAdvice(res) : ""
+    const tail = narrowedAdvice(res) + (res.remaining ? unroutedAdvice(res) : "")
     return ok(
       res.project,
       `Routed ${res.routed} connection(s) with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${copperLayers(project.board).length > 2 ? " The router uses the two outer layers only; the inner layers are as they were." : ""}${tail}`,

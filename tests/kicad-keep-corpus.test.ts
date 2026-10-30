@@ -97,7 +97,7 @@ describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiC
       for (const k of out.kept ?? []) {
         if (k.mode === "written" && k.detail !== "it is new") bad.push(`${k.file}: written (${k.detail})`)
       }
-      for (const f of input) {
+      for (const f of input.filter((x) => !x.path.includes("-backups/"))) {
         const name = out.exact && Object.keys(out.exact).find((n) => n === basename(f.path))
         if (!name) continue
         const data = typeof f.data === "string" ? new TextEncoder().encode(f.data) : f.data

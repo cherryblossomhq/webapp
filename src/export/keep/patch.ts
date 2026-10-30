@@ -176,6 +176,16 @@ export function keyOf(node: SNode, text: string, kind: Kind): string {
   return `${head}|${extra}|${[...layers].sort().join(",")}|${parts.join(";")}`
 }
 
+const NUMBER_RE = /-?\d+(?:\.\d+)?/g
+
+/** Two keys that say the same item with coordinates that differ by no more than the rounding of one micrometre. */
+function keysClose(a: string, b: string): boolean {
+  if (a.replace(NUMBER_RE, "#") !== b.replace(NUMBER_RE, "#")) return false
+  const x = a.match(NUMBER_RE) ?? []
+  const y = b.match(NUMBER_RE) ?? []
+  return x.every((n, i) => Math.abs(Number(n) - Number(y[i])) <= 0.0011)
+}
+
 interface FootprintKey {
   exact: string
   ref: string
@@ -368,7 +378,8 @@ class Patcher {
       const hit = candidates.find((u) => this.oKeyOf(u).relaxed[i] === relaxed[i])
       if (hit) return hit
     }
-    return null
+    // The exporter writes a coordinate to a tenth of a micrometre, so one the original has just under half a micrometre can be rounded to the other micrometre in a key.
+    return candidates.find((u) => keysClose(this.oKeyOf(u).key, key)) ?? null
   }
 
   // ----- emitting text -----
@@ -585,9 +596,10 @@ class Patcher {
     const root = scanList(this.O, this.oDoc.root.start)
     for (const b of freeB) {
       const o = this.findOriginal(b, this.parse(B, b))
-      // A junction is made by the exporter from where wires meet: one the original does not have is nothing to cut out.
-      if (!o && b.head === "junction") continue
-      if (!o) throw new Unpatchable(`a deleted ${b.head} was not found in the original file`)
+      // A junction is made by the exporter from where wires meet, and a kind of item the original has none of (the labels the exporter makes for a board's nets
+      // when the user's schematic is an empty page) was never in it: there is nothing to cut out.
+      if (!o && (b.head === "junction" || !this.oByHead.get(b.head)?.length)) continue
+      if (!o) throw new Unpatchable(`a deleted ${b.head} was not found in the original file (${this.keyIn(b, B).slice(0, 160)})`)
       this.unitUsed.add(o)
       const i = root.kids.findIndex((k) => k.start === o.span.start)
       this.edit(i > 0 ? root.kids[i - 1].end : root.start + 1 + root.head.length, o.span.end, "")

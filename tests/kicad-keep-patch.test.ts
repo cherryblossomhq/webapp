@@ -122,6 +122,15 @@ describe("patching the user's file with what changed", () => {
     expect(r.stats.removed).toBe(1)
   })
 
+  it("finds a track whose coordinate the exporter rounded to the other side of a micrometre", () => {
+    // 1.000475 is 1.000 to the micrometre and the exporter's 1.0005 is 1.001
+    const user = original.replace("(start 5 1) (end 9 1)", "(start 5 1.000475) (end 9 1.000475)")
+    const round = (text: string) => text.replace("(start 5 1)", "(start 5 1.0005)").replace("(end 9 1)", "(end 9 1.0005)")
+    const r = patchFile("board", user, round(written({})), round(written({ segments: [[1, 5]] })))
+    expect(r.ok).toBe(true)
+    expect(r.text).toBe(user.split("\n").filter((l) => !l.includes("000000000032")).join("\n"))
+  })
+
   it("adds a track after the last item, with a uuid of its own and the net as the user's file numbers it", () => {
     const r = patchFile("board", original, written({}), written({ segments: [[1, 5], [5, 9], [9, 12]] }))
     expect(r.ok).toBe(true)
@@ -181,6 +190,15 @@ describe("patching a schematic", () => {
     expect(r.text).toContain('(property "Reference" "C1"')
     expect(r.text).toContain("bbbbbbbb-0000-4000-8000-000000000001")
     expect(r.stats.added).toBe(1)
+  })
+
+  it("has nothing to cut out of a page that never had that kind of item (labels made for a board's nets)", () => {
+    const label = '(global_label "gnd" (shape input) (at 5 17 180) (uuid cccccccc-0000-4000-8000-0000000000aa))'
+    const before = sheet([sym("cccccccc-0000-4000-8000-000000000001", "R1", 10), label])
+    const after = sheet([sym("dddddddd-0000-4000-8000-000000000001", "R1", 12)])
+    const r = patchFile("schematic", O, before, after)
+    expect(r.ok).toBe(true)
+    expect(r.text).not.toContain("global_label")
   })
 
   it("cuts out a deleted wire", () => {

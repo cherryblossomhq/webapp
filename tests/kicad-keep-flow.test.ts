@@ -143,6 +143,21 @@ describe("a KiCad 8 schematic", () => {
   })
 })
 
+describe("the user's file set", () => {
+  it("goes back under the user's own names, with a sheet no sheet symbol uses", async () => {
+    const own = text.replace("(at 5 5)", "(at 3 5)")
+    const stray = '(kicad_sch (version 20250114) (generator "eeschema") (uuid "aaaaaaaa-0000-4000-8000-0000000000fe") (paper "A4") (lib_symbols))\n'
+    const p = (await importKept([
+      { path: "my_board.kicad_pcb", data: own },
+      { path: "notes.kicad_sch", data: stray },
+    ])) as Project
+    const files = { "my-board.kicad_pcb": own }
+    const out = await keepOriginal(p, { files, notes: [] }, async () => ({ files, notes: [] }))
+    expect(Object.keys(out.files).sort()).toEqual(["my_board.kicad_pcb", "notes.kicad_sch"])
+    expect(out.files["notes.kicad_sch"]).toBe(stray)
+  })
+})
+
 describe("the export as it was before the user changed anything", () => {
   it("is kept for the last few projects, so going back to one does not write it again", async () => {
     let writes = 0

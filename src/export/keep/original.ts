@@ -166,29 +166,33 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
   const files: Record<string, string> = {}
   const exact: Record<string, Uint8Array> = {}
   const kept: NonNullable<KeptExport["kept"]> = []
+  const matched = new Set<OriginalFile>()
   for (const [name, after] of Object.entries(fresh.files)) {
     const orig = originalOf(name, originals)
+    // The file goes by the user's own name for it (the exporter names the board and project after the project: `fb-t2q-fresh` for `fb_t2q_fresh`).
+    const out = orig && !(baseOf(orig.path) in files) ? baseOf(orig.path) : name
+    if (orig) matched.add(orig)
     const was = before[name]
     const unchanged = was !== undefined && (was === after || (extOf(name) === ".kicad_pro" ? steady(was) === steady(after) : neutralText(was) === neutralText(after)))
     // A file the user did not have (a board with no schematic or project file) and the edits did not touch is not made up: the export is the user's file set. (A made-up project file also changes the sheet name a netlist gives the root.)
     if (!orig && unchanged) continue
     if (!orig || was === undefined) {
-      files[name] = after
-      kept.push({ file: name, mode: "written", detail: orig ? "the file was not written before" : "it is new" })
+      files[out] = after
+      kept.push({ file: out, mode: "written", detail: orig ? "the file was not written before" : "it is new" })
       continue
     }
     if (unchanged) {
       // Nothing of this file changed: the user's own bytes.
-      files[name] = textOf(orig.data) ?? after
-      exact[name] = orig.data
-      kept.push({ file: name, mode: "original", detail: "unchanged" })
+      files[out] = textOf(orig.data) ?? after
+      exact[out] = orig.data
+      kept.push({ file: out, mode: "original", detail: "unchanged" })
       continue
     }
     const text = textOf(orig.data)
     const ext = extOf(name)
     const fall = (why: string) => {
-      files[name] = after
-      kept.push({ file: name, mode: "written", detail: why })
+      files[out] = after
+      kept.push({ file: out, mode: "written", detail: why })
     }
     if (text === null) {
       fall("the original is not UTF-8 text")
@@ -207,13 +211,13 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
         continue
       }
       if (patched.text === text) {
-        files[name] = text
-        exact[name] = orig.data
-        kept.push({ file: name, mode: "original", detail: "unchanged" })
+        files[out] = text
+        exact[out] = orig.data
+        kept.push({ file: out, mode: "original", detail: "unchanged" })
         continue
       }
-      files[name] = patched.text
-      kept.push({ file: name, mode: "patched", detail: `${patched.stats.changed} changed, ${patched.stats.added} added, ${patched.stats.removed} removed, ${patched.stats.kept} untouched` })
+      files[out] = patched.text
+      kept.push({ file: out, mode: "patched", detail: `${patched.stats.changed} changed, ${patched.stats.added} added, ${patched.stats.removed} removed, ${patched.stats.kept} untouched` })
       continue
     }
     if (ext === ".kicad_pro") {
@@ -221,12 +225,12 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
         const parsed = JSON.parse(text)
         const merged = mergeJson(parsed, JSON.parse(was), JSON.parse(after))
         if (JSON.stringify(merged) === JSON.stringify(parsed)) {
-          files[name] = text
-          exact[name] = orig.data
-          kept.push({ file: name, mode: "original", detail: "unchanged" })
+          files[out] = text
+          exact[out] = orig.data
+          kept.push({ file: out, mode: "original", detail: "unchanged" })
         } else {
-          files[name] = `${JSON.stringify(merged, null, 2)}${text.endsWith("\n") ? "\n" : ""}`
-          kept.push({ file: name, mode: "patched", detail: "the settings that changed" })
+          files[out] = `${JSON.stringify(merged, null, 2)}${text.endsWith("\n") ? "\n" : ""}`
+          kept.push({ file: out, mode: "patched", detail: "the settings that changed" })
         }
       } catch {
         fall("the project file could not be read")
@@ -235,11 +239,10 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
     }
     fall("it changed")
   }
-  // The files beside the project that the editor does not write (library tables and libraries) go back as they were.
+  // The files of the user's that the editor does not write (library tables and libraries, a sheet no sheet symbol uses) go back as they were.
   const seen = new Set(Object.keys(files).map((n) => n.toLowerCase()))
   for (const f of originals) {
-    const ext = extOf(f.path)
-    if (ext === ".kicad_pcb" || ext === ".kicad_sch" || ext === ".kicad_pro" || ext === ".kicad_dru") continue
+    if (matched.has(f)) continue
     const name = baseOf(f.path)
     if (seen.has(name.toLowerCase())) continue
     seen.add(name.toLowerCase())

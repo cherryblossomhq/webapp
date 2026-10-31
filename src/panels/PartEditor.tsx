@@ -9,6 +9,7 @@ import { modelAssignment } from "../model/models3d"
 import { partSourceLine } from "../model/partSource"
 import { hasFieldPlaces, symbolOf } from "../model/symbolDrawing"
 import { draftChanged, editPart, normalizeDraft, partUsers, sameModel, type PartDraft } from "../model/projectParts"
+import { useOf } from "../model/sheets"
 import type { CustomPartSpec, FootprintDef, Model3D, PadDef, PartCategory, PartDef, PinDef, PinSide } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { projectApi, useProjectStore } from "../store/projectStore"
@@ -252,11 +253,12 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
     close()
     removeProjectParts([spec.id])
   }
-  /** Show a component placed from the part, on the schematic. */
+  /** Show a component placed from the part, on the schematic, on the sheet it is drawn on. */
   const reveal = (ref: string) => {
     const c = users.find((x) => x.ref === ref)
     if (!c) return
     close()
+    uiApi().setSheet(useOf(c))
     uiApi().focus("schematic", c.sch.x, c.sch.y)
     uiApi().select([`c:${c.id}`])
   }

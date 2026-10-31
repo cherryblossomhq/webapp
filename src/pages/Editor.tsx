@@ -206,9 +206,12 @@ export function Editor() {
     stopCleanup()
   }, [viewer])
 
-  // A project opens on its root sheet.
+  // A project opens on its root sheet, with no other project's part open in the part editor.
   const projectId = useProjectStore((s) => s.project?.id)
-  useEffect(() => uiApi().setSheet(""), [projectId])
+  useEffect(() => {
+    uiApi().setSheet("")
+    uiApi().openPartEditor(null)
+  }, [projectId])
 
   return (
     <div className="flex h-full flex-col">

@@ -20,7 +20,7 @@ import { readKicadBoard } from "../board/read"
 import { KicadReadError } from "../board/sexpr"
 import { BUILT_EXTENSIONS as BOARD_BUILT, EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../board/needs"
 import { decodeNetName } from "../board/read"
-import { refusals, type ImportReport, type NodeAccount } from "../board/report"
+import { refusals, type ImportReport, type NodeAccount, type ReportEntry } from "../board/report"
 import type { KicadBoard, KicadFootprint } from "../board/types"
 import { netLabelNames } from "../board/build"
 import { settleImportedLabelClasses } from "../../directives"
@@ -83,6 +83,8 @@ export interface NetDifference {
   /** The net the schematic gives the pin, or null for none. */
   schematic: string | null
   why: string
+  /** The same pads on both sides, only the net's name differs: the report says these in one line, not one per pin. */
+  nameOnly?: true
 }
 
 export type KicadProjectResult =
@@ -242,10 +244,35 @@ function compareNets(project: Project, pairs: { fp: KicadFootprint; components: 
     }
     // The same pads on both sides: a name the user gave must agree too, as KiCad writes it (`/NAME` for a local label). A name KiCad made up (`Net-(R1-Pad2)`) depends on the release that wrote the board, so it is not compared.
     if (f.schematic?.named && boardName && !AUTO_NET.test(boardName) && boardName !== f.schematic.name) {
-      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the net is called ${boardName} on the board and ${schName} in the schematic. The board has not been updated from its schematic.` })
+      out.push({ ref, pin: f.pad, board: boardName, schematic: schName, why: `${ref} pin ${f.pad}: the net is called ${boardName} on the board and ${schName} in the schematic. The board has not been updated from its schematic.`, nameOnly: true })
     }
   }
   return out
+}
+
+/** The report's one line for nets the board and the schematic name differently with the same pins on each, every net in `items`. */
+export function netNamesEntry(renamed: NetDifference[]): ReportEntry {
+  const nets = new Map<string, { board: string; schematic: string; pins: string[] }>()
+  for (const d of renamed) {
+    const k = `${d.board}\u0001${d.schematic}`
+    const net = nets.get(k) ?? nets.set(k, { board: d.board ?? "", schematic: d.schematic ?? "", pins: [] }).get(k)!
+    net.pins.push(`${d.ref}.${d.pin}`)
+  }
+  const list = [...nets.values()]
+  // The usual case: a board written without the sheet path a local label's name has in KiCad (`S5` on the board, `/S5` in the schematic).
+  const sheetPathOnly = list.every((n) => n.schematic.replace(/^\/+/, "") === n.board.replace(/^\/+/, ""))
+  const example = list[0]
+  const why = sheetPathOnly
+    ? `The board names these nets without the sheet path the schematic gives them (${example.board} on the board, ${example.schematic} in the schematic). The same pins are on each net on both sides, so nothing is connected differently; the board has not been updated from its schematic.`
+    : `The board and the schematic name these nets differently (${example.board} on the board, ${example.schematic} in the schematic). The same pins are on each net on both sides, so nothing is connected differently; the board has not been updated from its schematic.`
+  return {
+    code: "board-net-names-differ",
+    severity: "changed",
+    object: `${list.length} net${list.length > 1 ? "s" : ""} named differently on the board (${renamed.length} pin${renamed.length > 1 ? "s" : ""})`,
+    why,
+    count: list.length,
+    items: list.map((n) => `${n.board} on the board, ${n.schematic} in the schematic: ${n.pins.join(", ")}`),
+  }
 }
 
 /**
@@ -511,10 +538,14 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   // A symbol taken from a library of a KiCad 5 project, not from the schematic's cache, may have other pin numbers than the drawing the wires were made for: a renumbered part shows as a pad whose net is not its pin's, and the difference says where the symbol came from.
   const fromLibrary = new Map(librarySymbols(gate.tree).map((s) => [symbolRef(s), s] as const))
   for (const d of differences) {
+    if (d.nameOnly) continue
     const lib = fromLibrary.get(d.ref)
     if (lib) d.why += ` The symbol ${d.ref} comes from a library of the project, not from the drawing the sheet was saved with, so its pin numbers may differ from the ones its wires were drawn to.`
     report.entries.push({ code: "board-differs-from-schematic", severity: "changed", object: `${d.ref} pin ${d.pin}`, why: d.why })
   }
+  // Names alone are one line: the pins are wired the same on both sides, so a pin by pin list (67 lines on a board an older export wrote) says one thing many times.
+  const renamed = differences.filter((d) => d.nameOnly)
+  if (renamed.length) report.entries.push(netNamesEntry(renamed))
   const covered = new Set<object>()
   for (const l of link.links) {
     if (!l.record || !sch.byRecord.has(l.record)) continue

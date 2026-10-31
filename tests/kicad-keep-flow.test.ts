@@ -160,6 +160,39 @@ describe("a KiCad 8 schematic", () => {
   })
 })
 
+describe("the user's folder", () => {
+  it("comes back whole: the footprint library and 3D models in their folders, KiCad's local settings, and no backups", async () => {
+    const { store } = memoryFiles()
+    connectModelFiles(store)
+    const step = new Uint8Array([73, 83, 79, 45, 49, 48, 51, 48, 51, 45, 50, 49, 59, 0, 255, 1])
+    const events: WorkerEvent[] = []
+    await runImport(
+      {
+        type: "start",
+        id: 1,
+        files: [
+          entry("cube/blink.kicad_pcb", text),
+          entry("cube/blink.kicad_prl", "{}"),
+          entry("cube/fp-lib-table", "(fp_lib_table)"),
+          entry("cube/blink.pretty/R.kicad_mod", "(footprint R)"),
+          { path: "cube/3d models/R.step", file: new File([step], "R.step") },
+          entry("cube/blink-backups/blink-2026-10-30.zip", "x"),
+          entry("cube/~blink.kicad_pcb.lck", "x"),
+        ],
+      },
+      (e) => events.push(e),
+    )
+    const done = events.find((e) => e.type === "done")
+    if (!done || done.type !== "done") throw new Error("the import did not finish")
+    const { storage, created } = fakeStorage()
+    await saveImported(storage, done.outcome)
+    const out = await kicadFiles(parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 }))
+    expect(Object.keys(out.files).sort()).toEqual(["3d models/R.step", "blink.kicad_pcb", "blink.kicad_prl", "blink.pretty/R.kicad_mod", "fp-lib-table"])
+    expect(out.exact!["3d models/R.step"]).toEqual(step)
+    expect(out.files["blink.kicad_pcb"]).toBe(text)
+  })
+})
+
 describe("the user's file set", () => {
   it("goes back under the user's own names, with a sheet no sheet symbol uses", async () => {
     const own = text.replace("(at 5 5)", "(at 3 5)")

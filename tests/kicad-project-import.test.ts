@@ -124,6 +124,16 @@ describe("a board and its schematic", () => {
       ["R1", "2", "R1 pin 2: the net is called /MIDDLE on the board and /MID in the schematic. The board has not been updated from its schematic."],
       ["R2", "1", "R2 pin 1: the net is called /MIDDLE on the board and /MID in the schematic. The board has not been updated from its schematic."],
     ])
+    // the report says it once, with every net and its pins, not a line per pin
+    const entries = r.report.entries.filter((e) => e.code === "board-net-names-differ" || e.code === "board-differs-from-schematic")
+    expect(entries.map((e) => [e.code, e.object, e.items])).toEqual([["board-net-names-differ", "1 net named differently on the board (2 pins)", ["/MIDDLE on the board, /MID in the schematic: R1.2, R2.1"]]])
+  })
+
+  it("a board whose nets lack only the schematic's sheet path is one line that says so", () => {
+    const r = imported(importKicadProject(files(dividerBoard({ nets: ["VCC", "MID", "MID", "GND"] }), divider()), { built: BOARD_ALL }))
+    const entries = r.report.entries.filter((e) => e.code === "board-net-names-differ" || e.code === "board-differs-from-schematic")
+    expect(entries).toHaveLength(1)
+    expect(entries[0].why).toMatch(/^The board names these nets without the sheet path the schematic gives them \(MID on the board, \/MID in the schematic\)\./)
   })
 
   it("a net the editor names by its pads, not by a name the user gave, agrees with KiCad's own `Net-(R1-Pad2)`", () => {

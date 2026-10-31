@@ -123,6 +123,22 @@ describe("the project", () => {
     expect(r.report.entries.some((e) => e.code === "renamed-ref" && e.count === 3)).toBe(true)
   })
 
+  it("names a part with no reference after its footprint: H for a mounting hole, FID, TP, G for a logo, U for the rest", () => {
+    const at = (x: number) => `${x} 0`
+    const r = imported(
+      board({
+        body: [
+          footprint({ ref: "", name: "MountingHole:MountingHole_3.2mm_M3", at: at(0), pads: [pad({ at: "0 0" })] }),
+          footprint({ ref: "", name: "Fiducial:Fiducial_1mm_Mask2mm", at: at(5), pads: [pad({ at: "0 0" })] }),
+          footprint({ ref: "", name: "TestPoint:TestPoint_Pad_1.0x1.0mm", at: at(10), pads: [pad({ at: "0 0" })] }),
+          footprint({ ref: "", name: "Symbol:OSHW-Logo_5.7x6mm_SilkScreen", at: at(15), pads: [] }),
+          footprint({ ref: "", name: "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", at: at(20), pads: [pad({ at: "0 0" })] }),
+        ],
+      }),
+    )
+    expect(r.project.components.map((c) => c.ref).sort()).toEqual(["FID1", "G1", "H1", "TP1", "U1"])
+  })
+
   it("a part with no pads comes in as a part with no pins on a land with no pads, and the report says so", () => {
     const r = importKicadBoard(board({ body: [footprint({ ref: "G1", name: "Symbol:Logo", pads: [], extra: '(fp_line (start -1 0) (end 1 0) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))' })] }), { built: ALL })
     expect(r.status).toBe("imported")

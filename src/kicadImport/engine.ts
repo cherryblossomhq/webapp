@@ -180,9 +180,10 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       context.notRead.push(...notReadBeside(files))
     }
     // The user's own files are kept with the project, so the export can write back only what the user changes (`export/keep/`).
-    // The library tables beside the board are kept with it though the importer does not read the footprint one.
-    const tables = files.board ? await Promise.all(expanded.files.filter((f) => /^(fp|sym)-lib-table$/i.test(baseName(f.path)) && dirName(f.path) === dirName(files.board!.path) && !projectBytes.some((p) => p.path === f.path)).map(async (f) => ({ name: baseName(f.path), path: f.path, bytes: await f.read() }))) : []
-    const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: [...projectBytes, ...tables] }) : null
+    // The rest of the board's folder goes with it though the importer does not read it (the library tables, the project's footprint library, its 3D
+    // models, KiCad's local settings), so the export gives the folder back whole.
+    const extras = files.board ? await folderExtras(expanded.files, files.board.path, [files.board.path, ...projectBytes.map((p) => p.path)]) : []
+    const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: [...projectBytes, ...extras] }) : null
     const summary = summarize(result, context)
     if (kept) summary.notes.push(kept.note)
     const project = result.status === "imported" ? (kept ? kept.project : result.project) : null
@@ -202,6 +203,39 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
  * The files the import was given, kept as one zip beside the project: the project's record of them, the file to put in the host's file store,
  * and the line for the report. Nothing is kept when the zip would be larger than the store takes (the project is imported all the same).
  */
+/** What the kept files beside the KiCad ones may weigh, unpacked: half of what the kept zip holds, so the KiCad files always fit. */
+const EXTRAS_BYTES = 18 * 1024 * 1024
+/** Files the importer reads, or would choose among: one the import did not read stays out, so reading the kept files again picks the same ones. */
+const DESIGN_FILE = /\.(kicad_pcb|kicad_sch|kicad_pro|kicad_dru|kicad_sym|sch|pro|lib|dcm|brd)$/i
+/** Backups, lock files and caches KiCad leaves in a folder, and a computer's own files: not the project. */
+const NOT_PROJECT = /(^|\/)(__MACOSX|[^/]*-backups)\/|(^|\/)(\._[^/]*|\.DS_Store|~[^/]*|_autosave-[^/]*|[^/]*\.lck|[^/]*-bak|fp-info-cache)$/i
+/** Which of them first, when not all fit: what KiCad opens the project with, then the footprints and 3D models its board names. */
+const RANK: [RegExp, number][] = [
+  [/(^|\/)(fp|sym)-lib-table$/i, 0],
+  [/\.(kicad_prl|kicad_wks|kicad_mod)$/i, 1],
+  [/\.(step|stp|wrl|stl|glb|obj)$/i, 2],
+]
+
+/** The files under the board's folder the import did not read, read and smallest first within their rank, up to `EXTRAS_BYTES`. */
+async function folderExtras(all: InputFile[], boardPath: string, taken: string[]): Promise<ReadFile[]> {
+  const root = dirName(boardPath)
+  const skip = new Set(taken)
+  const rank = (path: string) => RANK.find(([re]) => re.test(path))?.[1] ?? 3
+  const candidates = all
+    .filter((f) => !skip.has(f.path) && (root ? f.path.startsWith(`${root}/`) : true) && !DESIGN_FILE.test(f.path) && !NOT_PROJECT.test(f.path))
+    .sort((a, b) => rank(a.path) - rank(b.path) || (a.size ?? Infinity) - (b.size ?? Infinity))
+  const out: ReadFile[] = []
+  let total = 0
+  for (const f of candidates) {
+    if (f.size !== null && total + f.size > EXTRAS_BYTES) continue
+    const bytes = await f.read()
+    if (total + bytes.length > EXTRAS_BYTES) continue
+    total += bytes.length
+    out.push({ name: baseName(f.path), path: f.path, bytes })
+  }
+  return out
+}
+
 async function keepOriginals(
   result: Extract<ImportResult, { status: "imported" }>,
   importOptions: ImportOptions,

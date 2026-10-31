@@ -83,6 +83,17 @@ const CATEGORY_BY_PREFIX: [RegExp, PartCategory][] = [
   [/^(R|C|L|F|FB|Y|XTAL|TP)$/, "Passives"],
 ]
 
+/** The letters a footprint with no reference is numbered under, read from its footprint as KiCad's libraries name them: `H` for a mounting hole, not the `U` of a chip. */
+function unnamedPrefix(footprint: string, pads: number): string {
+  const name = footprint.toLowerCase()
+  if (/mounting.?hole|^hole/.test(name)) return "H"
+  if (name.includes("fiducial")) return "FID"
+  if (/test.?point/.test(name)) return "TP"
+  // A logo or a drawing: KiCad's own graphics are `G***`.
+  if (!pads) return "G"
+  return "U"
+}
+
 const slug = (text: string) =>
   text
     .toLowerCase()
@@ -446,7 +457,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const pinNames = new Map<string, PinFacts>(plan.pins.map((q) => [q.pin, { name: q.name, kind: q.kind }]))
     const foldsHere: string[] = plan.pins.filter((q) => q.fold).map((q) => `pin ${q.pin} ${q.fold}`)
     const letters = (fp.ref.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase().slice(0, 3)
-    const prefix = letters || "U"
+    const prefix = letters || unnamedPrefix(nameBase, pads.length)
     const category = CATEGORY_BY_PREFIX.find(([re]) => re.test(prefix))?.[1] ?? "ICs"
     const keywords = [...new Set(fp.tags.split(/[\s,]+/).filter(Boolean))]
     const spec: Omit<CustomPartSpec, "id"> = {

@@ -40,6 +40,13 @@ const extOf = (path: string) => {
 }
 const stemOf = (path: string) => baseOf(path).replace(/\.[^.]+$/, "")
 
+/** Where a kept file goes in the export: its path under the board's folder (`3d models/U1.step`, a footprint library's `.pretty/`), its name for one beside the board. */
+function placesOf(files: OriginalFile[]): (f: OriginalFile) => string {
+  const board = files.filter((f) => extOf(f.path) === ".kicad_pcb").sort((a, b) => a.path.split("/").length - b.path.split("/").length)[0]
+  const root = board && board.path.includes("/") ? board.path.slice(0, board.path.lastIndexOf("/") + 1) : ""
+  return (f) => (f.path.startsWith(root) && f.path.slice(root.length).includes("/") ? f.path.slice(root.length) : baseOf(f.path))
+}
+
 /** Which of the user's files an exported file stands for. */
 function originalOf(name: string, files: OriginalFile[]): OriginalFile | null {
   // Two files of one name are in different folders: the one nearest the top is the project's own.
@@ -225,11 +232,12 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
     }
     fall("it changed")
   }
-  // The files of the user's that the editor does not write (library tables and libraries, a sheet no sheet symbol uses) go back as they were.
+  // The files of the user's that the editor does not write (library tables and libraries, a sheet no sheet symbol uses, the footprint library and 3D models in their folders) go back as they were.
   const seen = new Set(Object.keys(files).map((n) => n.toLowerCase()))
+  const placeOf = placesOf(originals)
   for (const f of originals) {
     if (matched.has(f)) continue
-    const name = baseOf(f.path)
+    const name = placeOf(f)
     if (seen.has(name.toLowerCase())) continue
     seen.add(name.toLowerCase())
     files[name] = textOf(f.data) ?? ""
@@ -269,8 +277,9 @@ export async function unchangedExport(source: Project): Promise<KeptExport | nul
   const kept: NonNullable<KeptExport["kept"]> = []
   // Two files of one name are in different folders: the one nearest the top is the project's own, as in `originalOf`.
   const depth = (f: OriginalFile) => f.path.split("/").length
+  const placeOf = placesOf(originals)
   for (const f of [...originals].sort((a, b) => depth(a) - depth(b))) {
-    const name = baseOf(f.path)
+    const name = placeOf(f)
     if (name.toLowerCase() in exact || name in files) continue
     files[name] = textOf(f.data) ?? ""
     exact[name] = f.data

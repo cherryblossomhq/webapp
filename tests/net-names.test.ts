@@ -124,7 +124,8 @@ describe("the check for a net with several names", () => {
     const r2 = p.components.find((c) => c.ref === "R2")!
     const clash = commitOnUse(p, r2.inst!, (v) => labelPin(v, { componentId: r2.id, pin: "1" }, "DATA", 0.1))
     const f = nameFinding(clash)!
-    expect(f.message).toBe("Net names merged: DATA, I2C_SDA, SDA")
+    // The names that meet on the sheet below, as KiCad's ERC says them: I2C_SDA is the sheet above's name for the net.
+    expect(f.message).toBe("Net names merged: DATA, SDA")
     expect(f.sheet).toBe(r2.inst)
   })
 

@@ -1,3 +1,4 @@
+import { fromKicad } from "./checkRules"
 import type { CustomPartSpec, Project } from "./types"
 
 // What the Checks panel and run_checks say about a project's own parts: which ones were built from
@@ -46,6 +47,9 @@ export function partFindings(project: Project): PartFinding[] {
     const add = (severity: PartFinding["severity"], message: string) => out.push({ partId: spec.id, severity, message, componentIds: ids })
     const src = spec.source
     const check = src?.check
+    // A part with no source whose every use is a footprint of the user's KiCad board (`fpid`) is one an import made before the board's own parts said so
+    // (`pins: "import"`, a mounting hole only the board has): the user's footprint, nothing to check against a supplier.
+    if (!src && fromKicad(project) && users.every((c) => c.fpid)) continue
 
     if (check?.verdict === "contradicted") {
       add("error", `${label} doesn't match LCSC ${check.lcsc ?? "the supplier"}. ${check.findings.slice(0, 2).join(" ")}`)

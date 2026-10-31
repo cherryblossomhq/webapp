@@ -470,6 +470,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       props: {},
       valueProp: "value",
       ...(keywords.length ? { keywords } : {}),
+      // The user's own footprint, from their board: nothing to check against a supplier (a part the schematic also has is replaced by the schematic's).
+      source: { pins: "import", land: "import", imported: { file: `${options.name ?? "board"}.kicad_pcb`, libId: fp.name } },
     }
     const partId = customPartId(spec)
     if (!specs.has(partId)) specs.set(partId, { id: partId, ...spec })

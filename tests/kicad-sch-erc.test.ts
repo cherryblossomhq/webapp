@@ -4,6 +4,7 @@ import { ignoreCheck, pinPairLevel, restoreCheck, runErc, splitIgnored, type Erc
 import { EXAMPLES } from "../src/model/examples"
 import { findPart, registerPart, unregisterPart } from "../src/model/library"
 import { labelPin } from "../src/model/ops"
+import { schematicPins } from "../src/model/instances"
 import { normalizeProject } from "../src/model/projectFile"
 import type { PinType, Project } from "../src/model/types"
 import { ALL_LIBS, importSheet as imported, place } from "./kicad-sch-parts"
@@ -119,6 +120,33 @@ describe("units that are not all placed", () => {
   })
 })
 
+describe("a no-connect flag on a wire", () => {
+  it("at the end of a stub out of a pin leaves the pin open on purpose, as KiCad's flag marks all it touches; one on a wire to no pin is still stray", () => {
+    const p0 = importSheet({ symbols: [place("Test:AND2", "60 100", "U2")] })
+    const u2 = comp(p0, "U2")
+    const pin = schematicPins(u2).find((x) => x.pin === "3")!
+    const end = { x: pin.pos.x + 1, y: pin.pos.y }
+    const p = { ...p0, wires: [...p0.wires, { id: "w1", points: [pin.pos, end] }], drawings: [...(p0.drawings ?? []), { id: "n1", type: "noconnect", x: end.x, y: end.y }] } as Project
+    const open = (q: Project) => computeConnectivity(q).unconnectedPins.some((x) => x.componentId === u2.id && x.pin === "3")
+    expect(open(p0)).toBe(true)
+    expect(open(p)).toBe(false)
+    expect(kinds(p, "stray-no-connect")).toEqual([])
+    const away = { ...p, wires: [...p.wires, { id: "w2", points: [{ x: end.x + 5, y: end.y }, { x: end.x + 6, y: end.y }] }], drawings: [...(p.drawings ?? []), { id: "n2", type: "noconnect", x: end.x + 6, y: end.y }] } as Project
+    expect(kinds(away, "stray-no-connect")).toHaveLength(1)
+  })
+})
+
+describe("a hierarchical label on the root sheet", () => {
+  it("joins nothing, and on a project from KiCad is what KiCad calls a pin not connected, at its severity", () => {
+    const p = importSheet({ symbols: [place("Test:AND2", "60 100", "U2")], body: ['(hierarchical_label "SDA" (shape input) (at 40 80 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid "00000000-0000-4000-8000-0000000000aa"))'] })
+    const found = kinds(p, "label-no-sheet-pin")
+    expect(found.map((f) => f.severity)).toEqual(["error"])
+    expect(kinds({ ...p, kicad: { ...p.kicad, checks: { erc: { pin_not_connected: "ignore" } } } }, "label-no-sheet-pin")).toEqual([])
+    // hier_label_mismatch, which KiCad would use for a label with no pin of its name on the symbol above, does not hide it
+    expect(kinds({ ...p, kicad: { ...p.kicad, checks: { erc: { hier_label_mismatch: "ignore" } } } }, "label-no-sheet-pin")).toHaveLength(1)
+  })
+})
+
 describe("pin types on one net", () => {
   it("two outputs on a net are a conflict, named by their pins", () => {
     let p = importSheet({
@@ -132,6 +160,23 @@ describe("pin types on one net", () => {
     expect(found[0].componentIds).toHaveLength(2)
     expect(found[0].key).toMatch(/^pin-conflict:/)
     expect(erc(p).some((f) => f.kind === "missing-unit")).toBe(false)
+  })
+
+  it("takes the project's own pin table and severity from its KiCad project file", () => {
+    let p = importSheet({
+      symbols: [place("Test:OPA2", "60 100", "U1", { unit: 1 }), place("Test:OPA2", "60 160", "U1", { unit: 2 }), place("Test:OPA2", "120 100", "U1", { unit: 3 })],
+    })
+    p = label(p, "U1", "1", "SIG", 1)
+    p = label(p, "U1", "7", "SIG", 2)
+    // KiCad's table: two outputs are an error, as KiCad reports it
+    expect(kinds(p, "pin-conflict").map((f) => f.severity)).toEqual(["error"])
+    // a table that makes them a warning (row and column 1, output, of `erc.pin_map`), or fine
+    const table = (v: string) => ["000000100002", `0${v}0100102222`, "000000101012", "010000112112", "000000100002", "000000000002", "111110111112", "000100100002", "021200102222", "020100102002", "021100102002", "222222222222"]
+    expect(kinds({ ...p, kicad: { ...p.kicad, checks: { pinMap: table("1") } } }, "pin-conflict").map((f) => f.severity)).toEqual(["warning"])
+    expect(kinds({ ...p, kicad: { ...p.kicad, checks: { pinMap: table("0") } } }, "pin-conflict")).toEqual([])
+    // the rule set to ignore hides it; a project drawn here has warnings only
+    expect(kinds({ ...p, kicad: { ...p.kicad, checks: { erc: { pin_to_pin: "ignore" } } } }, "pin-conflict")).toEqual([])
+    expect(kinds({ ...p, kicad: undefined, netNames: undefined, properties: undefined }, "pin-conflict").map((f) => f.severity)).toEqual([undefined])
   })
 
   it("an output on an input is fine, so is a correct multi-unit part", () => {
@@ -236,6 +281,9 @@ describe("lone labels and the pins of other units", () => {
     p = label(p, "R1", "2", "A")
     p = label(p, "R2", "1", "A")
     p = label(p, "R2", "2", "B")
-    expect(kinds(p, "shorted").map((f) => f.subject)).toEqual(["R1"])
+    // KiCad's ERC has no such check, so a project from KiCad is not told of it; the same schematic drawn here is.
+    expect(kinds(p, "shorted")).toEqual([])
+    const drawnHere: Project = { ...p, kicad: undefined, netNames: undefined, properties: undefined }
+    expect(kinds(drawnHere, "shorted").map((f) => f.subject)).toEqual(["R1"])
   })
 })

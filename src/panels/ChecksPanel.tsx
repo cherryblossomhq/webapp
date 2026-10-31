@@ -2,6 +2,7 @@ import { ChevronRight, CircleAlert, CircleCheck, TriangleAlert } from "lucide-re
 import { useMemo, useState } from "react"
 import { describeVerify, verifyProjectParts, withPartChecks } from "../ai/partTools"
 import { lookupFailure, supplierParts } from "../ai/supplierParts"
+import { unconnectedPinSeverity } from "../model/checkRules"
 import { ignoreCheck, restoreCheck, splitIgnored, type ErcFinding } from "../model/erc"
 import { needsCheck, partFindings } from "../model/partChecks"
 import type { DrcViolation } from "../model/pcb"
@@ -25,10 +26,10 @@ export interface CheckItem {
   ignoreKey?: string
 }
 
-/** An electrical check finding as a row of the list. */
+/** An electrical check finding as a row of the list: a warning, unless a project from KiCad sets its rule to an error. */
 const ercItem = (f: ErcFinding): CheckItem => ({
   id: `erc:${f.key}`,
-  severity: "warning",
+  severity: f.severity ?? "warning",
   message: f.message,
   where: "schematic",
   at: f.at,
@@ -67,10 +68,12 @@ export function useChecks(): CheckItem[] {
       byMessage.set(key, full)
       items.push(full)
     }
-    for (const p of conn.unconnectedPins) {
+    // A pin left open is a warning here; on a project from KiCad it is what the project makes KiCad's `pin_not_connected`, and not listed when it ignores it.
+    const openPin = unconnectedPinSeverity(project)
+    for (const p of openPin ? conn.unconnectedPins : []) {
       add({
         id: `u${p.componentId}${p.pin}`,
-        severity: "warning",
+        severity: openPin!,
         message: `${refOf.get(p.componentId)} pin ${p.pin} (${p.name}) isn't connected`,
         where: "schematic",
         at: p.pos,
@@ -86,7 +89,7 @@ export function useChecks(): CheckItem[] {
     if (unrouted.length) {
       items.push({
         id: "unrouted",
-        severity: "warning",
+        severity: unrouted[0].severity,
         message: `${unrouted.length} ${unrouted.length === 1 ? "connection is" : "connections are"} not routed yet`,
         where: "pcb",
         at: unrouted[0].at,

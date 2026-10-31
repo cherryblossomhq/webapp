@@ -55,7 +55,8 @@ export function ExportMenu() {
   const exportGerbers = () =>
     run(async () => {
       const p = placedProject()
-      const errors = getPcbAnalysis(p).violations.filter((v) => v.severity === "error").length
+      // Unrouted connections are counted on their own (a project from KiCad makes them errors, as KiCad's unconnected_items is one).
+      const errors = getPcbAnalysis(p).violations.filter((v) => v.severity === "error" && v.kind !== "unrouted").length
       const unrouted = getPcbAnalysis(p).ratsnest.length
       downloadBlob(await buildFabricationZip(p), projectFileName(p, "zip"))
       setNotice({

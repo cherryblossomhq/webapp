@@ -640,7 +640,21 @@ export function computeConnectivity(project: Project): SchematicConnectivity {
     const net = netById.get(netId)
     return !!net && net.pins.length < 2 && !net.named
   })
-  const isNc = (p: WorldPin) => ncSet.has(pinKey(p.componentId, p.pin))
+  // A no-connect flag on a wire rather than on a pin (the end of a stub drawn out of the pin) leaves the pins of that wire's net open on purpose, as
+  // KiCad's flag marks the whole piece of the schematic it touches (`CONNECTION_SUBGRAPH::GetNoConnect`).
+  const wireNc = new Set<string>()
+  for (const d of project.drawings ?? []) {
+    if (d.type !== "noconnect") continue
+    const at = { x: d.x, y: d.y }
+    for (const w of project.wires) {
+      if ((w.sheet ?? ROOT_SHEET) !== (d.sheet ?? ROOT_SHEET) || !w.points.some((q, i) => samePoint(q, at) || (i > 0 && pointOnSegment(at, w.points[i - 1], q)))) continue
+      for (const nets of [wireNet, ...useWireNet.values()]) {
+        const net = netById.get(nets.get(w.id) ?? "")
+        for (const p of net?.pins ?? []) wireNc.add(pinKey(p.componentId, p.pin))
+      }
+    }
+  }
+  const isNc = (p: WorldPin) => ncSet.has(pinKey(p.componentId, p.pin)) || wireNc.has(pinKey(p.componentId, p.pin))
   const unconnectedPins = floating.filter((p) => !isNc(p))
   const ncPins = floating.filter(isNc)
 

@@ -7,12 +7,14 @@ import { AUTO_NET_NAME } from "./merges"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners, type WorldPin } from "./instances"
 import { ROOT_SHEET, refusedSheetSymbols, sheetSymbolName, sheetUses, useAt } from "./sheets"
 import { unitCount, unitLetters } from "./symbolDrawing"
+import { ercCheckSeverity, fromKicad, keptPinMap } from "./checkRules"
 import type { ComponentInstance, CustomPartSpec, Net, PartDef, PinType, Project, Vec2 } from "./types"
 
 /**
  * Electrical rule checks: is the circuit right, as opposed to drawn right. Schematic only, and
  * every finding is a warning: each rule can be wrong about a real part, so none of them may
- * block fabrication, and each can be ignored for good (`Project.ignoredChecks`).
+ * block fabrication, and each can be ignored for good (`Project.ignoredChecks`). On a project from
+ * KiCad a finding takes the severity its project file gives KiCad's rule (`model/checkRules.ts`).
  *
  * - **lone-label**: a pin whose net is that pin and a label no other pin shares, usually a
  *   misspelt label. Connectivity counts a named net as connected, so nothing else sees it.
@@ -60,6 +62,11 @@ export interface ErcFinding {
   at: Vec2
   /** S1: the use of a sheet it is on (`ComponentInstance.inst`), when it is not the root: the editor opens that sheet to show it. */
   sheet?: string
+  /**
+   * How severe it is on a project from KiCad: the project's severity for KiCad's rule (`model/checkRules.ts`), and a pin pair's own level by the pin
+   * table for a pin conflict. Absent on a project drawn here, where every finding is a warning.
+   */
+  severity?: "error" | "warning"
 }
 
 /** Ground and its usual spellings. Ground is shared by construction, so it never counts as a series link. */
@@ -262,10 +269,13 @@ const PIN_PAIRS = [
   /* no connect     */ "EEEEEEEEEEEE",
 ]
 
-/** What two pin types on one net make: "ok", a "warning" or an "error" by KiCad's table. */
-export function pinPairLevel(a: PinType, b: PinType): "ok" | "warning" | "error" {
-  const c = PIN_PAIRS[PIN_ORDER.indexOf(a)][PIN_ORDER.indexOf(b)]
-  return c === "E" ? "error" : c === "W" ? "warning" : "ok"
+/**
+ * What two pin types on one net make: "ok", a "warning" or an "error" by KiCad's table, or by a project's own (`erc.pin_map`, rows of digits: 0 fine,
+ * 1 a warning, 2 an error), which a project from KiCad keeps when it changed KiCad's.
+ */
+export function pinPairLevel(a: PinType, b: PinType, table?: readonly string[]): "ok" | "warning" | "error" {
+  const c = (table ?? PIN_PAIRS)[PIN_ORDER.indexOf(a)][PIN_ORDER.indexOf(b)]
+  return c === "E" || c === "2" ? "error" : c === "W" || c === "1" ? "warning" : "ok"
 }
 
 /**
@@ -378,6 +388,11 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   }
 
   const findings: ErcFinding[] = []
+  // A project from KiCad: its findings take the project's severities, and its pin conflicts its own pin table (`model/checkRules.ts`).
+  const kicad = fromKicad(project)
+  const pinTable = kicad ? keptPinMap(project) : undefined
+  /** A pin conflict's own level by the pin table, which its rule's severity only turns on or off. */
+  const levelOf = new Map<ErcFinding, "error" | "warning">()
 
   // ---------- A pin only on a label nothing else shares ----------
   const labelsOf = new Map<string, string[]>()
@@ -655,7 +670,7 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
           a.pin.name === b.pin.name &&
           (a.type === b.type || a.type === "passive" || a.type === "free" || b.type === "passive" || b.type === "free")
         if (stacked) continue
-        const level = pinPairLevel(a.type, b.type)
+        const level = pinPairLevel(a.type, b.type, pinTable)
         if (level === "ok") continue
         clashes.push({ a: i, b: j, level })
         weight.set(i, PIN_WEIGHT[a.type])
@@ -685,7 +700,7 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
       const a = pins[i]
       const b = pins[nearest]
       const slot = (t: TypedPin) => `${t.c.id}:${t.pin.pin}${t.pin.slot ? `#${t.pin.slot}` : ""}`
-      findings.push({
+      const finding: ErcFinding = {
         kind: "pin-conflict",
         key: `pin-conflict:${slot(a)}:${slot(b)}`,
         message: `${pinSubject(a)} is ${PIN_TYPE_TEXT[a.type]} and ${pinSubject(b)} is ${PIN_TYPE_TEXT[b.type]}, ${level === "error" ? "which cannot share a net" : "which may not work on one net"}`,
@@ -693,16 +708,21 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
         componentIds: a.c.id === b.c.id ? [a.c.id] : [a.c.id, b.c.id],
         labelIds: [],
         at: a.pin.pos,
-      })
+      }
+      findings.push(finding)
+      levelOf.set(finding, level)
     }
   }
 
-  // A no-connect flag drawn where no pin is: it means nothing, and KiCad says so.
+  // A no-connect flag drawn where no pin is: it means nothing, and KiCad says so. One on a wire that reaches a pin is not: it leaves that net open (`computeConnectivity`).
   for (const it of project.drawings ?? []) {
     if (it.type !== "noconnect") continue
     // A pin counts on the sheet the flag is drawn on, not on another sheet at the same place.
     const pinHere = project.components.some((c) => (project.sheetSymbols?.length ? useAt(project, c.inst ?? "").sheet === (it.sheet ?? ROOT_SHEET) : true) && schematicPins(c).some((p) => Math.hypot(p.pos.x - it.x, p.pos.y - it.y) < 1e-3))
     if (pinHere) continue
+    const at = { x: it.x, y: it.y }
+    const onWire = (w: (typeof project.wires)[number]) => (w.sheet ?? ROOT_SHEET) === (it.sheet ?? ROOT_SHEET) && w.points.some((q, i) => Math.hypot(q.x - at.x, q.y - at.y) < 1e-3 || (i > 0 && pointOnSegment(at, w.points[i - 1], q)))
+    if (project.wires.some((w) => onWire(w) && !!nets.get(conn.wireNet.get(w.id) ?? "")?.pins.length)) continue
     findings.push({ kind: "stray-no-connect", key: `stray-no-connect:${it.id}`, message: `A no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)}) is not on a pin`, subject: `no-connect flag at (${round(it.x, 2)}, ${round(it.y, 2)})`, componentIds: [], labelIds: [], at: { x: it.x, y: it.y } })
   }
 
@@ -717,11 +737,21 @@ export function runErc(project: Project, conn: SchematicConnectivity): ErcFindin
   }
 
   const order: Record<ErcKind, number> = { "bare-led": 0, shorted: 1, "lone-label": 2, "pin-conflict": 3, "missing-unit": 4, "stray-no-connect": 5, "sheet-pin-no-label": 6, "label-no-sheet-pin": 7, "sheet-pin-unconnected": 8, "sheet-loop": 9, "bus-entry-no-bus": 10, "net-not-bus-member": 11, "net-names": 12 }
-  return findings.sort(
+  const sorted = findings.sort(
     (x, y) =>
       order[x.kind] - order[y.kind] ||
       x.subject.localeCompare(y.subject, undefined, { numeric: true }),
   )
+  if (!kicad) return sorted
+  // A project from KiCad: each finding at the project's severity, none for a rule it ignores or a check KiCad does not have. A hierarchical label on a sheet
+  // no sheet symbol stands for (the root's) is one KiCad calls a pin not connected.
+  const symbolSheets = new Set((project.sheetSymbols ?? []).map((x) => x.child))
+  const labelSheet = new Map(project.labels.map((l) => [l.id, l.sheet ?? ROOT_SHEET]))
+  return sorted.flatMap((f) => {
+    const orphan = f.kind === "label-no-sheet-pin" && !symbolSheets.has(labelSheet.get(f.labelIds[0] ?? "") ?? ROOT_SHEET)
+    const severity = ercCheckSeverity(project, f.kind, levelOf.get(f), orphan ? "pin_not_connected" : undefined)
+    return severity ? [{ ...f, severity }] : []
+  })
 }
 
 /**
@@ -760,12 +790,16 @@ function nameFindings(project: Project, conn: SchematicConnectivity): ErcFinding
     if (net) (portsOn.get(net) ?? portsOn.set(net, []).get(net)!).push({ id: c.id, use, name, at: { x: c.sch.x, y: c.sch.y } })
   }
   const byKey = new Map<string, ErcFinding>()
-  for (const { names, netId } of conn.conflicts) {
-    const labels = labelsOn.get(netId) ?? []
-    const ports = portsOn.get(netId) ?? []
+  for (const { names: all, netId } of conn.conflicts) {
     const namesOnUse = new Map<string, Set<string>>()
-    for (const x of [...labels, ...ports, ...(hiddenOn.get(netId) ?? [])]) (namesOnUse.get(x.use) ?? namesOnUse.set(x.use, new Set()).get(x.use)!).add(x.name)
-    if (![...namesOnUse.values()].some((n) => n.size > 1)) continue
+    for (const x of [...(labelsOn.get(netId) ?? []), ...(portsOn.get(netId) ?? []), ...(hiddenOn.get(netId) ?? [])]) (namesOnUse.get(x.use) ?? namesOnUse.set(x.use, new Set()).get(x.use)!).add(x.name)
+    const meeting = [...namesOnUse.values()].filter((n) => n.size > 1)
+    if (!meeting.length) continue
+    // On a schematic with sheets, the names that meet on one sheet, as KiCad's ERC names them ("Both SXX_P and SPX are attached to the same items"):
+    // the label on the wire to the sheet pin outside is another sheet's name. A sheet used several times meets them once in each use, and is one finding (below).
+    const names = conn.byUse ? all.filter((n) => meeting.some((m) => m.has(n))) : all
+    const labels = (labelsOn.get(netId) ?? []).filter((l) => names.includes(l.name))
+    const ports = (portsOn.get(netId) ?? []).filter((p) => names.includes(p.name))
     const count = (n: string) => labels.filter((l) => l.name === n).length + ports.filter((p) => p.name === n).length
     const chosen = names.filter((n) => !AUTO_NET_NAME.test(n))
     const kept = (chosen.length ? chosen : names).reduce((a, b) => (count(b) > count(a) ? b : a))

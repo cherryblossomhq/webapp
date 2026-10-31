@@ -34,7 +34,8 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
         say(z.id, `t:${it.traceId}`, `A trace is inside ${name} that keeps tracks out`, { x: (it.a.x + it.b.x) / 2, y: (it.a.y + it.b.y) / 2 })
       } else if (it.kind === "via" && z.keepout!.vias && areaTouches(area, [it.at], it.diameter / 2)) {
         say(z.id, `v:${it.viaId}`, `A via is inside ${name} that keeps vias out`, it.at)
-      } else if (it.kind === "pad" && z.keepout!.pads && it.layers.some((l) => layers.includes(l)) && it.pad.componentId !== "#board") {
+      } else if (it.kind === "pad" && z.keepout!.pads && it.layers.some((l) => layers.includes(l)) && it.pad.componentId !== "#board" && it.pad.componentId !== z.part) {
+        // A part's own keepout keeps out other parts' pads, never its own (the same `intersectsArea` rule as for parts, below).
         const pts = it.pad.points?.length ? it.pad.points : boxRing(it.box)
         if (areaTouches(area, pts, 0, true)) say(z.id, `p:${it.id}`, `${refOf.get(it.pad.componentId) ?? "A part"}.${it.pad.padNumber ?? it.pad.pin ?? "pad"} is inside ${name} that keeps pads out`, { x: it.pad.x, y: it.pad.y })
       }

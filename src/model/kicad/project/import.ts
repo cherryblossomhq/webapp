@@ -38,6 +38,7 @@ import { KicadRulesFileError, accountRules, readKicadRules, reportUnknownRules, 
 import { LegacyProFileError, accountLegacyPro, readLegacyPro, reportUnknownLegacyPro } from "./legacyPro"
 import { applyClassRules } from "./classRules"
 import { applyProRules, lostRuleSettings } from "./rules"
+import { kicadChecksOf } from "../../checkRules"
 import { KicadProjectFileError, accountPro, designSettingsNeeds, proBusAliases, readKicadPro, reportUnknownPro, type KicadPro } from "./pro"
 import { isMarkedHole, restoreMountingHoles } from "../mountingHoles"
 
@@ -609,6 +610,9 @@ function carryProjectFiles(project: Project, picked: { pro?: { data: string | Ui
   const kicad: NonNullable<Project["kicad"]> = { ...project.kicad }
   const text = (data: string | Uint8Array) => (typeof data === "string" ? data : new TextDecoder().decode(data)).replace(/^﻿/, "")
   if (pro && !picked.proIsLegacy) {
+    // The severities and pin table the editor's checks follow on this project, kept whatever the file's size (`model/checkRules.ts`).
+    const checks = kicadChecksOf(pro.json)
+    if (checks) kicad.checks = checks
     const json = JSON.stringify(pro.json)
     if (json.length <= CARRIED_FILE_LIMIT) {
       kicad.pro = json

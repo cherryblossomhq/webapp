@@ -39,7 +39,7 @@ import { findPart } from "../model/library"
 import { holeCentre, padOutline } from "../model/padDistance"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
-import { analyzePcb } from "../model/pcb"
+import { analyzePcbOnce } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
 import { withPartZones } from "../model/partZones"
 import { isOtherZone, kicadWritesZones, zoneLayers } from "../model/zones"
@@ -713,7 +713,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   const projectFootprints = new Set((project.footprints ?? []).map((f) => f.name))
 
   const sch = computeConnectivity(project)
-  const pcb = analyzePcb(project, sch)
+  const pcb = analyzePcbOnce(project, sch)
   const designators = getDesignators(project)
 
   elements.push({ type: "source_project_metadata", name: project.name, software_used_string: "Cherry Blossom", created_at: new Date(project.createdAt).toISOString() })

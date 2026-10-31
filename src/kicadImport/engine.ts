@@ -207,13 +207,14 @@ async function keepOriginals(
   importOptions: ImportOptions,
   given: { board: { path: string; data: Uint8Array }; beside: ReadFile[] },
 ): Promise<{ project: Project; file: KeptFile; note: { code: string; object: string; why: string } } | null> {
-  const { packOriginal, MAX_ORIGINAL_BYTES } = await import("../export/keep/original")
+  // `pack.ts`, not `original.ts`: this runs in the import's worker, and `original.ts` reaches the project store, which needs a page.
+  const { packOriginal, contentHash, MAX_ORIGINAL_BYTES } = await import("../export/keep/pack")
   const list = [given.board, ...given.beside.map((f) => ({ path: f.path, data: f.bytes }))]
   const total = list.reduce((n, f) => n + f.data.length, 0)
   if (total > MAX_ORIGINAL_BYTES * 4) return null
   const packed = await packOriginal(list)
   if (packed.bytes.length > MAX_ORIGINAL_BYTES) return null
-  const original = { file: packed.id, size: packed.bytes.length, ...(importOptions.name !== undefined ? { name: importOptions.name } : {}), ...(importOptions.source !== undefined ? { source: importOptions.source } : {}) }
+  const original = { file: packed.id, size: packed.bytes.length, content: await contentHash(result.project), ...(importOptions.name !== undefined ? { name: importOptions.name } : {}), ...(importOptions.source !== undefined ? { source: importOptions.source } : {}) }
   return {
     project: { ...result.project, kicad: { ...result.project.kicad, original } },
     file: { id: packed.id, name: "kicad-original.zip", bytes: packed.bytes },

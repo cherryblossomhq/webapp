@@ -30,7 +30,9 @@ function placedProject() {
 export function ExportMenu() {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState<{ text: string; notes?: string[] } | null>(null)
+  // A line saying what was exported, and nothing more: the exporters' notes (what does not carry over) are for the tests and the docs, not
+  // a wall of fine print after every download.
+  const [notice, setNotice] = useState<{ text: string } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   useDismiss(ref, open, () => setOpen(false))
@@ -67,9 +69,9 @@ export function ExportMenu() {
   const exportCircuitJson = () =>
     run(() => {
       const p = placedProject()
-      const { text, notes } = circuitJsonFile(p)
+      const { text } = circuitJsonFile(p)
       downloadText(text, projectFileName(p, "circuit.json"), "application/json")
-      setNotice({ text: "Exported Circuit JSON, which tscircuit and its tools read.", notes })
+      setNotice({ text: "Exported Circuit JSON, which tscircuit and its tools read." })
     })
 
   // The KiCad writer is a few megabytes of its own, fetched when it is first asked for.
@@ -77,9 +79,9 @@ export function ExportMenu() {
     run(async () => {
       const p = placedProject()
       const { kicadZip } = await import("../export/kicad")
-      const { blob, notes } = await kicadZip(p)
+      const { blob } = await kicadZip(p)
       downloadBlob(blob, projectFileName(p, "kicad.zip"))
-      setNotice({ text: "Exported a KiCad project: schematic, board and project file.", notes })
+      setNotice({ text: "Exported a KiCad project: schematic, board and project file." })
     })
 
   // The STEP writer and the model files it reads are fetched when it is first asked for.
@@ -87,16 +89,16 @@ export function ExportMenu() {
     run(async () => {
       const p = placedProject()
       const { stepFile } = await import("../export/step3d")
-      const { text, notes } = await stepFile(p, {
+      const { text } = await stepFile(p, {
         onProgress: ({ done, total }) => total > 0 && done < total && setNotice({ text: `Reading 3D models: ${done} of ${total}` }),
       })
       downloadText(text, projectFileName(p, "step"), "model/step")
-      setNotice({ text: "Exported the board and its parts as a STEP assembly.", notes })
+      setNotice({ text: "Exported the board and its parts as a STEP assembly." })
     })
 
   useEffect(() => {
     if (!notice) return
-    const t = setTimeout(() => setNotice(null), notice.notes?.length ? 20000 : 5000)
+    const t = setTimeout(() => setNotice(null), 5000)
     return () => clearTimeout(t)
   }, [notice])
 
@@ -125,24 +127,7 @@ export function ExportMenu() {
       )}
       {notice && (
         <div role="status" className="absolute right-0 top-10 z-20 w-[340px] rounded-[10px] bg-ink px-3 py-2 text-[12.5px] text-surface shadow-lg">
-          <div className="flex items-start justify-between gap-2">
-            <span>{notice.text}</span>
-            {notice.notes?.length ? (
-              <button onClick={() => setNotice(null)} className="shrink-0 underline" aria-label="Close">
-                Close
-              </button>
-            ) : null}
-          </div>
-          {notice.notes?.length ? (
-            <div className="mt-1.5 border-t border-surface/20 pt-1.5">
-              <div className="font-[600]">What does not carry over</div>
-              <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
-                {notice.notes.map((n) => (
-                  <li key={n}>{n}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+          {notice.text}
         </div>
       )}
     </div>

@@ -22,6 +22,8 @@ export {
 // The KiCad import, for a projects page with a look of its own: the same controller the editor's
 // dashboard runs, and the report as data to draw (`src/kicadImport/`, AGENTS.md).
 export { connectAnalytics, type EventSink } from "./kicadImport/analytics"
+// Where an import keeps the files a project names (the user's own KiCad files, reference images): a projects page connects the account's.
+export { connectModelFiles, type ModelFileStore } from "./store/modelFiles"
 export { KicadImportController, type ImportState } from "./kicadImport/controller"
 export { downloadReport } from "./kicadImport/download"
 export { entriesFromDrop, entriesFromFiles, isProjectFileDrop } from "./kicadImport/dropped"

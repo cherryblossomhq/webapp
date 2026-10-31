@@ -30,8 +30,9 @@ export function fractureRings(outer: Vec2[], holes: Vec2[][]): Vec2[] {
   const todo = holes
     .filter((h) => h.length >= 3)
     .map((h) => oriented(h, false))
-    .sort((a, b) => Math.max(...b.map((p) => p.x)) - Math.max(...a.map((p) => p.x)))
-  for (const hole of todo) {
+    .map((hole) => ({ hole, right: hole.reduce((m, p) => Math.max(m, p.x), -Infinity) }))
+    .sort((a, b) => b.right - a.right)
+  for (const { hole } of todo) {
     let mi = 0
     for (let i = 1; i < hole.length; i++) if (hole[i].x > hole[mi].x) mi = i
     const m = hole[mi]
@@ -75,7 +76,7 @@ export function fractureRings(outer: Vec2[], holes: Vec2[][]): Vec2[] {
       })
     }
     const around = [...hole.slice(mi), ...hole.slice(0, mi)]
-    ring = [...ring.slice(0, target + 1), ...around, around[0], ring[target], ...ring.slice(target + 1)]
+    ring.splice(target + 1, 0, ...around, around[0], ring[target])
   }
   return ring
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { kicadFiles, kicadZip } from "../src/export/kicad"
-import { keepOriginal } from "../src/export/keep/original"
+import { keepOriginal, unchangedExport } from "../src/export/keep/original"
 import { runImport } from "../src/kicadImport/engine"
 import type { ImportOutcome, WorkerEvent } from "../src/kicadImport/protocol"
 import { saveImported } from "../src/kicadImport/save"
@@ -78,6 +78,23 @@ describe("the user's own files go with the project", () => {
     expect(out.notes[0]).toMatch(/byte for byte/)
     const zip = await kicadZip(reopened)
     expect(zip.blob.size).toBeGreaterThan(0)
+  })
+
+  it("a project nobody changed is known to be so, without writing it; any change, or a project with no record of its content, is not", async () => {
+    const { store } = memoryFiles()
+    connectModelFiles(store)
+    const { storage, created } = fakeStorage()
+    await saveImported(storage, await imported())
+    const p = parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 })
+    expect(p.kicad?.original?.content).toMatch(/^[0-9a-f]{64}$/)
+    expect((await unchangedExport(p))?.exact?.["blink.kicad_pcb"]).toBeDefined()
+    // the project's id and the time of an edit do not count; a part's place, its name and the sheet the view is on do
+    expect(await unchangedExport({ ...p, id: "other", updatedAt: 5 })).not.toBeNull()
+    const first = p.components.find((c) => c.ref === "R1")!
+    expect(await unchangedExport({ ...p, components: p.components.map((c) => (c === first ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 0.001 } } : c)) })).toBeNull()
+    expect(await unchangedExport({ ...p, name: "renamed" })).toBeNull()
+    expect(await unchangedExport({ ...p, scope: "x" } as Project)).toBeNull()
+    expect(await unchangedExport({ ...p, kicad: { ...p.kicad, original: { ...p.kicad!.original!, content: undefined } } })).toBeNull()
   })
 
   it("after a move, only the footprint's place is written into the original", async () => {

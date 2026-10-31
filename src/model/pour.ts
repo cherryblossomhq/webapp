@@ -481,7 +481,6 @@ type Place = (q: { x: number; y: number }) => PointInPolygonResult
  */
 function ringTester(path: Path64): Place {
   const n = path.length
-  if (n < 48) return (q) => Clipper.pointInPolygon(q, path)
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -492,6 +491,8 @@ function ringTester(path: Path64): Place {
     if (q.y < minY) minY = q.y
     if (q.y > maxY) maxY = q.y
   }
+  // A short ring is walked whole, but a point outside its box is outside it: a pour with thousands of small holes asks each one for every point.
+  if (n < 48) return (q) => (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY ? PointInPolygonResult.IsOutside : Clipper.pointInPolygon(q, path))
   const bands = Math.min(2048, Math.max(8, n >> 2))
   const height = (maxY - minY) / bands || 1
   const band = (y: number) => Math.min(bands - 1, Math.max(0, Math.floor((y - minY) / height)))

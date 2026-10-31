@@ -1,7 +1,7 @@
-import JSZip from "jszip"
 import { kicadFontLoaded, loadKicadFont } from "../../lib/kicadFont/load"
 import type { Project } from "../../model/types"
 import { imageBytes, loadImage } from "../../store/imageFiles"
+import { contentHash, unpackOriginal, type OriginalFile } from "./pack"
 import { fileVersion } from "./sexp"
 import { neutralText, patchFile, type Kind } from "./patch"
 
@@ -12,34 +12,7 @@ import { neutralText, patchFile, type Kind } from "./patch"
 // again by the importer), and the difference between the two is carried into the user's file (`patch.ts`). Nothing changed: the
 // original, byte for byte. A file the patch cannot be made for is written as before, and said.
 
-export interface OriginalFile {
-  path: string
-  data: Uint8Array
-}
-
-/** What the zip may hold: more is not kept (a project folder is megabytes, the store's file is 40 MB). */
-export const MAX_ORIGINAL_BYTES = 36 * 1024 * 1024
-
-const hex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
-
-/** The files as one zip: the same files always make the same bytes, so the same import is kept once. */
-export async function packOriginal(files: OriginalFile[]): Promise<{ id: string; bytes: Uint8Array }> {
-  const zip = new JSZip()
-  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) zip.file(f.path, f.data, { date: new Date(0), createFolders: false, binary: true })
-  const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } })
-  const id = hex(await crypto.subtle.digest("SHA-256", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer))
-  return { id, bytes }
-}
-
-export async function unpackOriginal(bytes: ArrayBuffer | Uint8Array): Promise<OriginalFile[]> {
-  const zip = await JSZip.loadAsync(bytes)
-  const out: OriginalFile[] = []
-  for (const [path, entry] of Object.entries(zip.files)) {
-    if (entry.dir) continue
-    out.push({ path, data: await entry.async("uint8array") })
-  }
-  return out
-}
+export { MAX_ORIGINAL_BYTES, contentHash, packOriginal, unpackOriginal, type OriginalFile } from "./pack"
 
 // ---------- the export ----------
 
@@ -117,6 +90,8 @@ function mergeJson(o: unknown, b: unknown, c: unknown): unknown {
 const cache = new Map<string, Record<string, string>>()
 const CACHED_PROJECTS = 3
 const CACHED_CHARS = 48 * 1024 * 1024
+/** Forget every project's `before` (a test of the cold export). */
+export const clearOriginalCache = () => cache.clear()
 const charsOf = (files: Record<string, string>) => Object.values(files).reduce((n, t) => n + t.length, 0)
 
 /** The project read again from the user's files, and written the way `write` writes: what the export said of it before the user changed anything. */
@@ -127,6 +102,17 @@ async function writtenBefore(id: string, files: OriginalFile[], record: { name?:
     cache.set(id, hit)
     return hit
   }
+  // One at a time per project: an export asked for while the background one runs waits for it.
+  const running = making.get(id)
+  if (running) return running
+  const made = makeBefore(id, files, record, write).finally(() => making.delete(id))
+  making.set(id, made)
+  return made
+}
+
+const making = new Map<string, Promise<Record<string, string> | string>>()
+
+async function makeBefore(id: string, files: OriginalFile[], record: { name?: string; source?: string }, write: Write): Promise<Record<string, string> | string> {
   const { importKicadProject } = await import("../../model/kicad/project")
   const board = files.find((f) => extOf(f.path) === ".kicad_pcb")
   if (board && !kicadFontLoaded()) {
@@ -259,4 +245,46 @@ export async function keepOriginal(source: Project, fresh: { files: Record<strin
     for (const k of written) notes.push(`${k.file} was written from the project as before: ${k.detail}.`)
   }
   return { files, notes: written.length || patched.length ? [...notes, ...fresh.notes] : notes, exact, kept }
+}
+
+/**
+ * The export of a project that is as it was imported: the user's files, byte for byte, without writing the project at all.
+ * Null unless that is certain (no record of the content, a scoped view, the files not at hand, or any difference in what is kept of the project), and then the export goes the long way.
+ */
+export async function unchangedExport(source: Project): Promise<KeptExport | null> {
+  const record = source.kicad?.original
+  if (!record?.content || source.scope !== undefined) return null
+  if ((await contentHash(source)) !== record.content) return null
+  await loadImage(record.file)
+  const zipped = imageBytes(record.file)
+  if (!zipped) return null
+  let originals: OriginalFile[]
+  try {
+    originals = await unpackOriginal(zipped)
+  } catch {
+    return null
+  }
+  const files: Record<string, string> = {}
+  const exact: Record<string, Uint8Array> = {}
+  const kept: NonNullable<KeptExport["kept"]> = []
+  // Two files of one name are in different folders: the one nearest the top is the project's own, as in `originalOf`.
+  const depth = (f: OriginalFile) => f.path.split("/").length
+  for (const f of [...originals].sort((a, b) => depth(a) - depth(b))) {
+    const name = baseOf(f.path)
+    if (name.toLowerCase() in exact || name in files) continue
+    files[name] = textOf(f.data) ?? ""
+    exact[name] = f.data
+    kept.push({ file: name, mode: "original", detail: /^\.kicad_(pcb|sch|pro|dru)$/.test(extOf(name)) ? "unchanged" : "beside the project" })
+  }
+  return { files, notes: ["Your original KiCad files are written back byte for byte: nothing was changed."], exact, kept }
+}
+
+/** Write the project's `before` now, so that an export asked for later finds it (the first export of a project would write the files twice). */
+export async function warmBefore(source: Project, write: Write): Promise<void> {
+  const record = source.kicad?.original
+  if (!record) return
+  await loadImage(record.file)
+  const zipped = imageBytes(record.file)
+  if (!zipped) return
+  await writtenBefore(record.file, await unpackOriginal(zipped), record, write)
 }

@@ -41,7 +41,8 @@ function unquote(raw: string): string {
   if (raw.charCodeAt(0) !== 34) return raw
   const body = raw.slice(1, -1)
   if (!body.includes("\\")) return body
-  return body.replace(/\\(.)/gs, (_m, e: string) => (e === "n" ? "\n" : e === "t" ? "\t" : e))
+  // `[\s\S]`, not `.` with the `s` flag: the website compiles this package for ES2017, which has no `s`.
+  return body.replace(/\\([\s\S])/g, (_m, e: string) => (e === "n" ? "\n" : e === "t" ? "\t" : e))
 }
 
 /** The index one past the `)` that closes the list opening at `start`. */

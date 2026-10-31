@@ -463,6 +463,23 @@ useProjectStore.subscribe((state, prev) => {
     })
 })
 
+// A project from KiCad files is exported against what its own files make when they are written as they came (`export/keep/`), which is most of an export's time the first time.
+// The first edit starts writing that, once the user pauses; an export asked for sooner waits for it. Only for the files an editor session can write in a few seconds.
+const PREPARE_MAX_BYTES = 3 * 1024 * 1024
+const prepared = new Set<string>()
+let preparing: ReturnType<typeof setTimeout> | undefined
+useProjectStore.subscribe((state, prev) => {
+  const file = state.project?.kicad?.original?.file
+  if (typeof window === "undefined" || !file || prepared.has(file) || state.past.length <= prev.past.length || (state.project?.kicad?.original?.size ?? 0) > PREPARE_MAX_BYTES) return
+  clearTimeout(preparing)
+  preparing = setTimeout(() => {
+    const open = useProjectStore.getState().project
+    if (open?.kicad?.original?.file !== file) return
+    prepared.add(file)
+    void import("../export/kicad").then((m) => m.prepareKicadExport(open)).catch(() => prepared.delete(file))
+  }, 4000)
+})
+
 /** Non-hook accessor for event handlers. */
 export const projectApi = () => useProjectStore.getState()
 

@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from 
 import { basename, dirname, join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
-import { packOriginal } from "../src/export/keep/original"
+import { contentHash, packOriginal } from "../src/export/keep/original"
 import { loadKicadFont } from "../src/lib/kicadFont/load"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
 import type { Project } from "../src/model/types"
@@ -67,7 +67,7 @@ export async function importKept(input: ProjectFile[]): Promise<Project | string
   const data = input.map((f) => ({ path: f.path, data: typeof f.data === "string" ? new TextEncoder().encode(f.data) : f.data }))
   const packed = await packOriginal(data)
   rememberImage(packed.id, packed.bytes.buffer.slice(packed.bytes.byteOffset, packed.bytes.byteOffset + packed.bytes.byteLength) as ArrayBuffer)
-  return { ...r.project, kicad: { ...r.project.kicad, original: { file: packed.id, size: packed.bytes.length, name } } }
+  return { ...r.project, kicad: { ...r.project.kicad, original: { file: packed.id, size: packed.bytes.length, content: await contentHash(r.project), name } } }
 }
 
 describe.skipIf(!ON || !CORPUS || !existsSync(CORPUS ?? ""))("the user's own KiCad files are kept", () => {

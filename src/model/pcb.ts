@@ -747,6 +747,8 @@ export function analyzePcb(
     reuseOnly?: { stale: ZoneFill[] }
     /** Take `fills` as they were made with the copper whose ids are in `known`, and cut the copper added since out of them (`carveFills`), instead of filling again. */
     carve?: { fills: ZoneFill[]; known: ReadonlySet<string> }
+    /** Stop at the fills: the rest of the analysis (islands, ratsnest, checks) is empty (`zoneFillsOf`). */
+    fillsOnly?: boolean
   } = {},
 ): PcbAnalysis {
   // X30: the zones of the parts are zones of the board here (a keepout of a part keeps out, a pour of a part is filled).
@@ -777,6 +779,7 @@ export function analyzePcb(
       pending = r.missing
     } else zoneFills = fillZones(project, sch, { items: copper, netOf, keepIslands: opts.keepIslands })
   }
+  if (opts.fillsOnly) return { items: copper, island: new Map(), islandNet: new Map(), traceNet: new Map(), viaNet: new Map(), ratsnest: [], violations: [], zoneFills }
   const items = zoneFills.length ? [...copper, ...zoneItems(zoneFills)] : copper
   // Net ties: a net tie footprint's own copper may overlap itself, and a track is excused where it enters a tie pad of its own net.
   const ties = netTies(project, items)
@@ -1003,6 +1006,20 @@ export function analyzePcb(
   manufacturability(project, items, find, push)
 
   return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}) }
+}
+
+const analyses = new WeakMap<Project, PcbAnalysis>()
+
+/** `analyzePcb` of the project as it is, kept for as long as the project object is (an export asks for it more than once, and a pour's fill is seconds). */
+export function analyzePcbOnce(project: Project, sch: SchematicConnectivity): PcbAnalysis {
+  let made = analyses.get(project)
+  if (!made) analyses.set(project, (made = analyzePcb(project, sch)))
+  return made
+}
+
+/** The pour fills of the project: those of its analysis when that is made already, else made without the rest of an analysis. */
+export function zoneFillsOf(project: Project, sch: () => SchematicConnectivity): ZoneFill[] {
+  return (analyses.get(project) ?? analyzePcb(project, sch(), { fillsOnly: true })).zoneFills
 }
 
 // ---------- Manufacturability ----------

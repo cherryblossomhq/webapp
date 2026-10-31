@@ -1,7 +1,8 @@
 import * as THREE from "three"
 import { describe, expect, it } from "vitest"
 import { partHolder } from "../src/editor/three/buildBoard"
-import { placementMatrix } from "../src/editor/three/files/placement"
+import { placementMatrix, rotationScale } from "../src/editor/three/files/placement"
+import { kicadFiles } from "../src/export/kicad"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
 import { componentTexts } from "../src/model/texts"
@@ -554,6 +555,30 @@ describe("B6: every model is kept or named, never dropped", () => {
     const e = r.report.entries.filter((x) => x.code === "model-not-brought")
     expect(e.map((x) => x.object).sort()).toEqual(["3D model Capacitors_SMD.3dshapes/C_0603.wrl of C2", "3D model ${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603.wrl of C1"].sort())
     expect(e.every((x) => /has no Capacitors_SMD.3dshapes\/C_0603.step/.test(x.why))).toBe(true)
+  })
+  it("a model KiCad stretches is held stretched, and the export writes the same scale back", async () => {
+    const tall = "${KICAD6_3DMODEL_DIR}/Capacitor_THT.3dshapes/CP_Radial_D10.0mm_P5.00mm.wrl"
+    const r = importKicadBoard(board({ body: [fp("C5", [`(model "${tall}" (offset (xyz 0 0 0)) (scale (xyz 1 1 1.25)) (rotate (xyz 0 0 0)))`])] }), { built: ALL })
+    if (r.status !== "imported") throw new Error(r.message)
+    expect(r.project.models?.[0].model).toMatchObject({ id: "10.0.7/Capacitor_THT.3dshapes/CP_Radial_D10.0mm_P5.00mm.step", stretch: { x: 1, y: 1, z: 1.25 } })
+    expect(r.report.entries.filter((x) => x.code === "model-not-brought")).toEqual([])
+    // the 3D view and the STEP export place it 1.25 times as tall
+    const m = rotationScale(r.project.models![0].model)
+    expect([m.elements[0], m.elements[5], m.elements[10]]).toEqual([1, 1, 1.25])
+    const { files } = await kicadFiles(r.project)
+    expect(Object.values(files).find((t) => t.includes("CP_Radial_D10.0mm_P5.00mm"))).toMatch(/\(scale \(xyz 1 1 1\.25\)\)/)
+  })
+  it("a model the library has under a shorter name only is drawn as that one, said in the report, and written back under the file's name", async () => {
+    const old = "${KICAD6_3DMODEL_DIR}/Package_DFN_QFN.3dshapes/QFN-24_3x3mm_P0.4mm_EP1.7x1.54mm.wrl"
+    const r = importKicadBoard(board({ body: [fp("U7", [m(old)]), fp("D5", [m("${KICAD6_3DMODEL_DIR}/Diode_SMD.3dshapes/D_0402_1005Metric.wrl")])] }), { built: ALL })
+    if (r.status !== "imported") throw new Error(r.message)
+    expect(r.project.models).toHaveLength(1)
+    expect(r.project.models![0].model).toMatchObject({ id: "10.0.7/Package_DFN_QFN.3dshapes/QFN-24_3x3mm_P0.4mm.step", named: old })
+    expect(r.report.entries.filter((x) => x.code === "model-nearest").map((x) => x.object)).toEqual([`3D model ${old} of U7`])
+    // a name with no model of its package left (no 0402 diode in the library) is not drawn as another part
+    expect(r.report.entries.filter((x) => x.code === "model-not-brought").map((x) => x.object)).toEqual(["3D model ${KICAD6_3DMODEL_DIR}/Diode_SMD.3dshapes/D_0402_1005Metric.wrl of D5"])
+    const { files } = await kicadFiles(r.project)
+    expect(Object.values(files).find((t) => t.includes("QFN-24"))).toContain(`(model "${old}"`)
   })
   it("the nodes of a model that is not held are not counted as imported", () => {
     const r = importKicadBoard(board({ body: [fp("D1", [m(SMA), m(SMB)])] }), { built: ALL })

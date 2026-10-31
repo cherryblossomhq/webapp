@@ -877,6 +877,10 @@ export interface Model3D {
   rotation: { x: number; y: number; z: number }
   /** Millimetres per unit of the file: 1 for a millimetre model, 25.4 for inches. Meshes only; STEP files say their own units. */
   scale?: number
+  /** KiCad's own scale of a model, per axis of the file, applied before it is turned (a capacitor drawn 1.25 times its library model's height). Absent for none. */
+  stretch?: { x: number; y: number; z: number }
+  /** The path a KiCad file named the model by, written back for it: a stock model drawn for a name KiCad's library no longer has (`nearestStockModel`). */
+  named?: string
   /** Who made the model, as it should be credited wherever it is used. */
   attribution?: string
 }

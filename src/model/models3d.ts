@@ -89,12 +89,12 @@ export function supplierModel(m: SupplierModel3D, attribution?: string): Model3D
  * 3D viewer scales a model, turns it about x, then y, then z by the written angles *clockwise*
  * (so the negatives here, ours being counter-clockwise), then moves it by `offset`, which is in
  * millimetres from the footprint's origin with z up: the footprint's frame, as `footprint.ts`
- * reads it. That is `origin: "model"`. A STEP file says its own units, so a scale other than 1
- * (which KiCad's own library never writes for STEP) leaves no model rather than a wrong one.
+ * reads it. That is `origin: "model"`. KiCad's own scale of the model (a part drawn taller than its library model) is its `stretch`; a scale of
+ * zero or less leaves no model rather than a wrong one.
  */
 export function kicadModel(m: PartIndexKicadModel): Model3D | null {
-  const { x, y, z } = m.scale
-  if (x !== 1 || y !== 1 || z !== 1) return null
+  const stretch = kicadStretch(m.scale)
+  if (stretch === null) return null
   const flip = (v: number) => (v === 0 ? 0 : -v)
   return {
     source: "kicad",
@@ -104,15 +104,24 @@ export function kicadModel(m: PartIndexKicadModel): Model3D | null {
     origin: "model",
     offset: { x: m.offset.x, y: m.offset.y, z: m.offset.z },
     rotation: { x: flip(m.rotate.x), y: flip(m.rotate.y), z: flip(m.rotate.z) },
+    ...(stretch ? { stretch } : {}),
     attribution: "KiCad library",
   }
+}
+
+/** KiCad's scale of a model as a `stretch`: undefined for none (1, 1, 1), null for one that cannot be drawn (zero or less on an axis). */
+export function kicadStretch(s: { x: number; y: number; z: number }): Model3D["stretch"] | null {
+  if (!(s.x > 0 && s.y > 0 && s.z > 0)) return null
+  return s.x === 1 && s.y === 1 && s.z === 1 ? undefined : { x: s.x, y: s.y, z: s.z }
 }
 
 /**
  * A model file that came with a KiCad board (`${KIPRJMOD}/3d models/U1.step`), kept in the host's file store, placed as `kicadModel` places a
  * stock one: the file's own origin, KiCad's offset, the angles negated. A VRML file is in KiCad's tenths of an inch.
  */
-export function givenFileModel(file: { id: string; name: string; format: Model3DFormat }, m: { offset: { x: number; y: number; z: number }; rotate: { x: number; y: number; z: number } }): Model3D {
+export function givenFileModel(file: { id: string; name: string; format: Model3DFormat }, m: { offset: { x: number; y: number; z: number }; rotate: { x: number; y: number; z: number }; scale: { x: number; y: number; z: number } }): Model3D | null {
+  const stretch = kicadStretch(m.scale)
+  if (stretch === null) return null
   const flip = (v: number) => (v === 0 ? 0 : -v)
   const scale = defaultModelScale(file.format)
   return {
@@ -124,6 +133,7 @@ export function givenFileModel(file: { id: string; name: string; format: Model3D
     offset: { x: m.offset.x, y: m.offset.y, z: m.offset.z },
     rotation: { x: flip(m.rotate.x), y: flip(m.rotate.y), z: flip(m.rotate.z) },
     ...(scale !== 1 ? { scale } : {}),
+    ...(stretch ? { stretch } : {}),
   }
 }
 
@@ -166,6 +176,8 @@ function normalizeModel(raw: unknown): Model3D | null {
   if (source === "file" && !/^[0-9a-f]{64}$/.test(id)) return null
   if (source === "kicad" && (format !== "step" || !KICAD_MODEL_ID.test(id))) return null
   const scale = num(raw.scale, 1)
+  const stretch = isRecord(raw.stretch) ? vec(raw.stretch) : null
+  const stretched = stretch && stretch.x > 0 && stretch.y > 0 && stretch.z > 0 && (stretch.x !== 1 || stretch.y !== 1 || stretch.z !== 1)
   return {
     source,
     id,
@@ -175,6 +187,8 @@ function normalizeModel(raw: unknown): Model3D | null {
     offset: vec(raw.offset),
     rotation: vec(raw.rotation),
     ...(scale > 0 && scale !== 1 && format !== "step" ? { scale } : {}),
+    ...(stretched ? { stretch } : {}),
+    ...(typeof raw.named === "string" && raw.named ? { named: raw.named } : {}),
     ...(typeof raw.attribution === "string" && raw.attribution ? { attribution: raw.attribution } : {}),
   }
 }

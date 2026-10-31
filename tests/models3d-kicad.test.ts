@@ -39,9 +39,11 @@ describe("a KiCad library model as the document keeps it", () => {
     expect(modelFileKey(kicadModel(kicad())!)).toBe(`kicad:${ID}`)
   })
 
-  it("is left out when its scale isn't 1, rather than drawn at the wrong size", () => {
-    expect(kicadModel(kicad({ scale: { x: 0.3937, y: 0.3937, z: 0.3937 } }))).toBeNull()
-    expect(kicadModel(kicad({ scale: { x: 1, y: 1, z: 2 } }))).toBeNull()
+  it("keeps KiCad's scale as a stretch, so it is drawn at the size KiCad draws it; a scale of zero or less is left out", () => {
+    expect(kicadModel(kicad({ scale: { x: 0.3937, y: 0.3937, z: 0.3937 } }))?.stretch).toEqual({ x: 0.3937, y: 0.3937, z: 0.3937 })
+    expect(kicadModel(kicad({ scale: { x: 1, y: 1, z: 2 } }))?.stretch).toEqual({ x: 1, y: 1, z: 2 })
+    expect(kicadModel(kicad({}))?.stretch).toBeUndefined()
+    expect(kicadModel(kicad({ scale: { x: 1, y: 0, z: 1 } }))).toBeNull()
   })
 
   // KiCad's 3D viewer takes a model's vertices through the scale, then a turn about x by -rotate.x,
@@ -155,9 +157,11 @@ describe("a database part's model when it is added to a project", () => {
     expect(project.models).toBeUndefined()
   })
 
-  it("leaves out a KiCad model with a scale that isn't 1", () => {
-    const part = { ...storedPart(imported, "Interface_USB:CH340G"), model3d: kicad({ scale: { x: 0.3937, y: 0.3937, z: 0.3937 } }) }
-    expect(add(part).project.models).toBeUndefined()
+  it("gives a KiCad model with a scale that isn't 1 that scale as its stretch, and leaves out one of zero", () => {
+    const part = { ...storedPart(imported, "Interface_USB:CH340G"), model3d: kicad({ scale: { x: 1, y: 1, z: 1.25 } }) }
+    expect(add(part).project.models?.[0].model.stretch).toEqual({ x: 1, y: 1, z: 1.25 })
+    const flat = { ...storedPart(imported, "Interface_USB:CH340G"), model3d: kicad({ scale: { x: 1, y: 1, z: 0 } }) }
+    expect(add(flat).project.models).toBeUndefined()
   })
 
   const cube: SupplierModel3D = { id: "a".repeat(32), title: "CH340G", center: { x: 0, y: 0 }, bottom: 0, rotation: { x: 0, y: 0, z: 90 } }

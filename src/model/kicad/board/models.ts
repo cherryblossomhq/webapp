@@ -39,6 +39,23 @@ export function stockModelId(path: string): string | null {
   return KICAD_MODEL_PATH.test(file) ? `${KICAD_LIBRARY_RELEASE}/${file}` : null
 }
 
+/**
+ * The stock model of the nearest name when the library at the release has no file of this one: the name less its last `_` parts, longest first,
+ * keeping at least the package and its size (`QFN-24_3x3mm_P0.4mm` for `QFN-24_3x3mm_P0.4mm_EP1.7x1.54mm`, the same body without its exposed pad's
+ * size in the name). Null when none is left, so a part is never drawn as another package.
+ */
+export function nearestStockModel(path: string): { id: string; name: string } | null {
+  const s = stockPath(path)
+  if (!s) return null
+  const parts = s.name.split("_")
+  for (let n = parts.length - 1; n >= 3; n--) {
+    const name = parts.slice(0, n).join("_")
+    const file = `${s.library}/${name}.step`
+    if (stockModelExists(s.library, name) && KICAD_MODEL_PATH.test(file)) return { id: `${KICAD_LIBRARY_RELEASE}/${file}`, name }
+  }
+  return null
+}
+
 export interface DroppedModel {
   model: KicadModel
   why: string
@@ -48,7 +65,7 @@ export { givenModelFor, type GivenModel, type GivenModels }
 
 export interface ModelPlan {
   /** The model the project holds for this footprint, with its id; `file` when it is a file given with the board, not one of KiCad's stock library. */
-  kept: { model: KicadModel; id: string; file?: GivenModel } | null
+  kept: { model: KicadModel; id: string; file?: GivenModel; /** The stock model of a nearby name drawn for one the library no longer has (`nearestStockModel`). */ nearest?: string } | null
   /** Every other model of the footprint, each with the reason it is not in the project. */
   dropped: DroppedModel[]
 }
@@ -60,7 +77,7 @@ export function planModels(fp: KicadFootprint, given: GivenModels = new Map()): 
     const drop = (why: string) => plan.dropped.push({ model, why })
     const { x, y, z } = model.scale
     if (model.hidden) drop("It is hidden in KiCad, and a model the editor holds is always shown.")
-    else if (x !== 1 || y !== 1 || z !== 1) drop("It is scaled, which the editor does not do for STEP models.")
+    else if (!(x > 0 && y > 0 && z > 0)) drop("Its scale is zero or less on an axis, so it has no size to draw.")
     else {
       const s = stockPath(model.path)
       const file = s ? null : givenModelFor(model.path, given)
@@ -70,9 +87,10 @@ export function planModels(fp: KicadFootprint, given: GivenModels = new Map()): 
       } else if (!s) drop("It is not a model of KiCad's stock library, and the file it names was not among the files imported.")
       else {
         const id = stockModelId(model.path)
-        if (!id) drop(`KiCad's 3D library at release ${KICAD_LIBRARY_RELEASE} has no ${s.library}/${s.name}.step (the libraries were renamed after KiCad 5), so the parts index cannot serve it.`)
+        const near = id ? null : nearestStockModel(model.path)
+        if (!id && !near) drop(`KiCad's 3D library at release ${KICAD_LIBRARY_RELEASE} has no ${s.library}/${s.name}.step, nor one of a nearby name (the libraries were renamed after KiCad 5), so the parts index cannot serve it.`)
         else if (plan.kept) drop("The editor holds one 3D model per part and land, and this footprint has another one.")
-        else plan.kept = { model, id }
+        else plan.kept = id ? { model, id } : { model, id: near!.id, nearest: near!.name }
       }
     }
   }
@@ -80,4 +98,8 @@ export function planModels(fp: KicadFootprint, given: GivenModels = new Map()): 
 }
 
 /** A model's identity for the land it is held with: two footprints share a land only when they would share this too. */
-export const modelKey = (plan: ModelPlan): string => (plan.kept ? JSON.stringify([plan.kept.id, plan.kept.model.offset, plan.kept.model.rotate]) : "")
+export const modelKey = (plan: ModelPlan): string => {
+  if (!plan.kept) return ""
+  const { offset, rotate, scale } = plan.kept.model
+  return JSON.stringify(scale.x === 1 && scale.y === 1 && scale.z === 1 ? [plan.kept.id, offset, rotate] : [plan.kept.id, offset, rotate, scale])
+}

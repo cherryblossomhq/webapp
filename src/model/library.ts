@@ -933,6 +933,17 @@ export function getPart(id: string): PartDef {
 
 export const findPart = (id: string) => byId.get(id) ?? projectParts.get(id)
 
+/**
+ * The parts the library panel offers: generic parts, symbols, connectors and switches. A specific
+ * chip or module (the ICs and Modules, and the regulators and the addressable LED filed with Power
+ * and Diodes) is found by name in the parts database instead. The others stay defined, so the
+ * projects and examples that place them, and Sakura, still have them.
+ */
+export const isBasicPart = (part: PartDef) =>
+  part.category !== "ICs" && part.category !== "Modules" && !(part.mpn && (part.category === "Power" || part.category === "Diodes"))
+
+export const BASIC_PARTS = PARTS.filter(isBasicPart)
+
 export const CATEGORIES: PartCategory[] = [
   "Symbols",
   "Passives",

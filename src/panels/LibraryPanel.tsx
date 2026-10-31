@@ -1,8 +1,8 @@
-import { ChevronRight, Eraser, PanelLeftClose, Pencil, Search, Sparkles, Trash2, Upload, X } from "lucide-react"
+import { ChevronRight, PanelLeftClose, Pencil, Search, Sparkles, Trash2, Upload, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { SymbolPreview } from "../editor/schematic/SymbolView"
 import { projectPartDefs } from "../model/customParts"
-import { CATEGORIES, PARTS } from "../model/library"
+import { BASIC_PARTS, CATEGORIES } from "../model/library"
 import { unusedParts } from "../model/projectParts"
 import { searchLibrary, type PartHit } from "../model/search"
 import type { PartDef } from "../model/types"
@@ -29,7 +29,7 @@ export function LibraryPanel() {
   const own = useMemo(() => projectPartDefs({ parts: projectParts, symbols: projectSymbols }), [projectParts, projectSymbols])
   // The parts placed in the project, as one string: a drag changes the components, not which parts they are, and must not redraw the panel.
   const placed = useProjectStore((s) => [...new Set(s.project?.components.map((c) => c.partId))].sort().join("\n"))
-  // The project's parts nothing is placed from: marked in the list, and removed together from its heading.
+  // The project's parts nothing is placed from: marked in the list, and removed at once from their row.
   const unused = useMemo(
     () => new Set(unusedParts({ parts: projectParts, components: placed.split("\n").map((partId) => ({ partId })) }).map((s) => s.id)),
     [projectParts, placed],
@@ -45,18 +45,22 @@ export function LibraryPanel() {
         }
       : undefined
   const searching = query.trim().length > 0
-  const hits = useMemo(() => (searching ? searchLibrary(query, own) : []), [query, own, searching])
+  // The panel's library is the basic parts: a specific chip or module comes from the parts database below.
+  const matched = useMemo(() => (searching ? searchLibrary(query, own, BASIC_PARTS) : []), [query, own, searching])
+  const partial = !!matched[0]?.partial
   // The parts database's answer, after the library's: KiCad parts the library doesn't have.
-  const index = useIndexSearch(searching ? query : "", hits.map((h) => h.part.name))
+  const index = useIndexSearch(searching ? query : "", partial ? [] : matched.map((h) => h.part.name))
   const stored = index.found
   const storedHits = stored?.hits ?? []
+  // Basic parts that match only some of the words ("op amp" finding a push button) give way to the database's real hits.
+  const hits = partial && storedHits.length ? [] : matched
   // The supplier's catalogue, for a part number the library and the database don't have.
   // Enter on a part number asks LCSC as soon as the database has answered (tens of milliseconds)
   // instead of after the pause: the database is free, and a part it has never costs a lookup.
   const [pushed, setPushed] = useState<{ q: string; n: number } | null>(null)
   // Not for a viewer, who can't place what it finds: each search spends one of their lookups.
   const supplierWanted =
-    !viewer && searching && wantsSupplier({ query, databaseSettled: index.settled, hits: index.hits, libraryHasIt: hits.length > 0 && !hits[0].partial })
+    !viewer && searching && wantsSupplier({ query, databaseSettled: index.settled, hits: index.hits, libraryHasIt: matched.length > 0 && !partial })
   const supplier = useSupplierSearch(query, supplierWanted, pushed)
   const total = hits.length + storedHits.length + supplier.candidates.length
   const indexPlace = usePartPlace(indexPicker)
@@ -65,7 +69,7 @@ export function LibraryPanel() {
     if (searching) return []
     return [
       { title: "This project", parts: own, own: true },
-      ...CATEGORIES.map((category) => ({ title: category, parts: PARTS.filter((p) => p.category === category), own: false })),
+      ...CATEGORIES.map((category) => ({ title: category, parts: BASIC_PARTS.filter((p) => p.category === category), own: false })),
     ].filter((g) => g.parts.length)
   }, [own, searching])
   const listRef = useRef<HTMLDivElement>(null)
@@ -256,34 +260,27 @@ export function LibraryPanel() {
                 }}
               />
             )}
-            <CreateWithCopilot query={query.trim()} prominent={(!hits.length || !!hits[0].partial) && !storedHits.length && !supplier.candidates.length} />
+            <NotFound
+              query={query.trim()}
+              prominent={(!hits.length || !!hits[0].partial) && !storedHits.length && !supplier.candidates.length}
+              onImport={viewer || kicad.busy ? undefined : () => importInput.current?.click()}
+            />
           </>
         ) : (
           groups.map((g) => {
             const open = !folded.has(g.title)
             return (
               <section key={g.title} className={open ? "mb-3" : "mb-0.5"}>
-                <h3 className="flex items-center">
+                <h3>
                   <button
                     aria-expanded={open}
                     onClick={() => toggleFold(g.title)}
-                    className="flex min-w-0 flex-1 items-center gap-1 rounded-[6px] px-1.5 pb-1 pt-2 text-left text-[12px] font-[650] text-ink-2 transition-colors hover:text-ink"
+                    className="flex w-full min-w-0 items-center gap-1 rounded-[6px] px-1.5 pb-1 pt-2 text-left text-[12px] font-[650] text-ink-2 transition-colors hover:text-ink"
                   >
                     <ChevronRight size={12} className={`shrink-0 text-ink-3 transition-transform ${open ? "rotate-90" : ""}`} />
                     <span className="flex-1 truncate">{g.title}</span>
                     <span className="text-[11px] font-normal text-ink-3">{g.parts.length}</span>
                   </button>
-                  {g.own && unused.size > 0 && !viewer && (
-                    <Tooltip label={`Remove ${unused.size} unused ${unused.size === 1 ? "part" : "parts"}`} hint="The project's parts nothing is placed from. Undo brings them back">
-                      <button
-                        aria-label={`Remove ${unused.size} unused ${unused.size === 1 ? "part" : "parts"}`}
-                        onClick={() => removeProjectParts([...unused])}
-                        className="ml-0.5 mt-1 rounded p-1 text-ink-3 transition-colors hover:bg-chrome-2 hover:text-ink"
-                      >
-                        <Eraser size={13} />
-                      </button>
-                    </Tooltip>
-                  )}
                 </h3>
                 {open && (
                   <ul>
@@ -308,31 +305,42 @@ export function LibraryPanel() {
       <p className="border-t border-line px-3 py-2 text-[11px] leading-snug text-ink-3">
         {dropping
           ? "Drop KiCad symbol, footprint and 3D model files, or a zip of them, to import the part."
-          : 'Click a part, then click the schematic to place it, or drag it onto the canvas. Search for values and packages too, like "10k 0603".'}
+          : searching
+            ? "We look in the basic parts first, then in our parts database (KiCad's libraries and the LCSC parts we keep), then at LCSC for a part number neither has."
+            : 'These are the basic parts. Search finds any other by name or number, like "NE555", or by value and package, like "10k 0603". Click a part, then the schematic, to place it.'}
       </p>
     </aside>
   )
 }
 
-/** Hand a part the library doesn't have to Sakura, the copilot, which can make it from the datasheet. */
-function CreateWithCopilot({ query, prominent }: { query: string; prominent: boolean }) {
+/**
+ * What to do about a part no search found: hand it to Sakura, the copilot, which can make it from
+ * supplier data or the datasheet, or import the part's own KiCad files. `onImport` is absent for a
+ * viewer, who adds nothing, and while an import runs.
+ */
+function NotFound({ query, prominent, onImport }: { query: string; prominent: boolean; onImport?: () => void }) {
   const busy = useCopilot((s) => s.runningProject !== null)
   const ask = () => askCopilot(`Add a ${query.slice(0, 80)} to the schematic. If the parts library doesn't have it, create the part.`)
   if (!prominent) {
+    const row = "flex w-full items-center gap-1.5 rounded-[8px] px-1.5 py-1.5 text-left text-[12px] text-ink-2 transition-colors hover:bg-surface hover:text-ink disabled:opacity-50"
     return (
-      <button
-        disabled={busy}
-        onClick={ask}
-        className="mt-2 flex w-full items-center gap-1.5 rounded-[8px] px-1.5 py-1.5 text-left text-[12px] text-ink-2 transition-colors hover:bg-surface hover:text-ink disabled:opacity-50"
-      >
-        <Sparkles size={13} className="shrink-0 text-brand" />
-        <span className="truncate">Not here? Ask Sakura to create it</span>
-      </button>
+      <div className="mt-2">
+        <button disabled={busy} onClick={ask} className={row}>
+          <Sparkles size={13} className="shrink-0 text-brand" />
+          <span className="truncate">Not here? Ask Sakura to create it</span>
+        </button>
+        {onImport && (
+          <button onClick={onImport} className={row}>
+            <Upload size={13} className="shrink-0 text-ink-3" />
+            <span className="truncate">Or import its KiCad files</span>
+          </button>
+        )}
+      </div>
     )
   }
   return (
     <div className="mx-1 mt-3 rounded-[var(--radius-panel)] border border-line bg-surface p-3 text-center">
-      <p className="text-[12px] text-ink-2">"{query}" isn't in the library.</p>
+      <p className="text-[12px] text-ink-2">Can't find "{query}"?</p>
       <button
         disabled={busy}
         onClick={ask}
@@ -342,8 +350,17 @@ function CreateWithCopilot({ query, prominent }: { query: string; prominent: boo
         Create it with Sakura
       </button>
       <p className="mt-2 text-[11px] leading-snug text-ink-3">
-        {busy ? "Sakura is busy. Try again when it finishes." : "It builds the symbol and footprint from the datasheet pinout."}
+        {busy ? "Sakura is busy. Try again when it finishes." : "It builds the symbol and footprint from supplier data or the datasheet."}
       </p>
+      {onImport && (
+        <button
+          onClick={onImport}
+          className="mx-auto mt-2.5 inline-flex h-7 items-center gap-1.5 rounded-full border border-line px-3 text-[12px] font-medium text-ink-2 transition-colors hover:bg-chrome-2 hover:text-ink"
+        >
+          <Upload size={13} />
+          Import KiCad files
+        </button>
+      )}
     </div>
   )
 }

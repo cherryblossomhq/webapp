@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { PARTS } from "../src/model/library"
+import { BASIC_PARTS, PARTS } from "../src/model/library"
 import { parseValue, searchLibrary } from "../src/model/search"
 
 const ids = (query: string) => searchLibrary(query).map((h) => h.part.id)
@@ -57,6 +57,18 @@ describe("parts search", () => {
     const hits = searchLibrary("ldo tps7a02")
     expect(hits[0]).toMatchObject({ part: { id: "ams1117_3v3" }, partial: true })
     expect(searchLibrary("bme280")).toEqual([])
+  })
+
+  it("searches only the basic parts it is given, as the library panel does, leaving chips and modules to the parts database", () => {
+    const basic = (query: string) => searchLibrary(query, [], BASIC_PARTS).map((h) => h.part.id)
+    expect(BASIC_PARTS.filter((p) => p.category === "ICs" || p.category === "Modules")).toEqual([])
+    expect(BASIC_PARTS.filter((p) => p.mpn && (p.category === "Power" || p.category === "Diodes"))).toEqual([])
+    expect(BASIC_PARTS.map((p) => p.id)).toEqual(expect.arrayContaining(["resistor", "capacitor", "led", "npn", "power", "ground", "battery", "header_1x4", "usb_c", "pushbutton"]))
+    expect(basic("555")).toEqual([])
+    expect(basic("ldo")).toEqual([])
+    expect(basic("10k 0603")[0]).toBe("resistor")
+    // Sakura still searches every built-in part.
+    expect(ids("555")[0]).toBe("ne555")
   })
 
   it("searches the project's own parts first", () => {

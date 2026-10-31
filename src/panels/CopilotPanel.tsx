@@ -46,7 +46,8 @@ export function CopilotPanel() {
   // The panel mounts when it opens, from its tab or ⌘L: either way the next thing is to type. The
   // account may have been asked before the session was there (Clean up asks it too), so a composer
   // that opens disabled takes the focus once it is enabled, unless the user has put it elsewhere.
-  const focus = useRef<"mount" | "waiting" | "done">("mount")
+  // Open from the start, it leaves the focus alone, so the canvas's shortcuts work as the editor loads.
+  const focus = useRef<"mount" | "waiting" | "done">(useUi.getState().copilotAsked ? "mount" : "done")
   useEffect(() => {
     if (focus.current === "done") return
     if (gate) {

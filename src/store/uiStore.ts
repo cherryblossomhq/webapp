@@ -94,11 +94,13 @@ interface UiState {
   /** The kind of dimension the dimension tool places. */
   dimensionKind: DimensionKind
   sidePanel: SidePanel
-  /** Parts library on the left and the inspector column on the right; closed by default in narrow windows. */
+  /** Parts library on the left, closed by default (Sakura is the way in), and the inspector column on the right, closed by default in narrow windows. */
   libraryOpen: boolean
   panelOpen: boolean
-  /** The copilot (Sakura), a column of its own between the parts library and the canvas. */
+  /** The copilot (Sakura), a column of its own between the parts library and the canvas; open by default except in narrow windows. */
   copilotOpen: boolean
+  /** The copilot was opened by asking for it (its tab, ⌘L, a hand-off), so its composer takes the focus; open from the start, it leaves the focus to the canvas's shortcuts. */
+  copilotAsked: boolean
   /** The menu of every sheet, over the left end of the sheet tabs (`panels/SheetMenu.tsx`); a project of one sheet has none. */
   sheetMenuOpen: boolean
   /** The use of a sheet whose tab is being renamed (a new sheet's starts so), or null. */
@@ -184,9 +186,10 @@ export const useUi = create<UiState>((set, get) => ({
   slotWidth: 2,
   dimensionKind: "aligned",
   sidePanel: "inspector",
-  libraryOpen: wide(),
+  libraryOpen: false,
   panelOpen: wide(),
-  copilotOpen: false,
+  copilotOpen: wide(),
+  copilotAsked: false,
   sheetMenuOpen: false,
   renamingSheet: null,
   historyOpen: false,
@@ -242,8 +245,8 @@ export const useUi = create<UiState>((set, get) => ({
   setSidePanel: (sidePanel) => set({ sidePanel, panelOpen: true }),
   toggleLibrary: () => set({ libraryOpen: !get().libraryOpen }),
   togglePanel: () => set({ panelOpen: !get().panelOpen }),
-  setCopilotOpen: (copilotOpen) => set({ copilotOpen }),
-  toggleCopilot: () => set({ copilotOpen: !get().copilotOpen }),
+  setCopilotOpen: (copilotOpen) => set({ copilotOpen, ...(copilotOpen && { copilotAsked: true }) }),
+  toggleCopilot: () => set({ copilotOpen: !get().copilotOpen, copilotAsked: true }),
   setSheetMenu: (sheetMenuOpen) => set({ sheetMenuOpen }),
   setRenamingSheet: (renamingSheet) => set({ renamingSheet }),
   toggleHistory: () => set({ historyOpen: !get().historyOpen }),

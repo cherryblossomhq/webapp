@@ -75,6 +75,26 @@ afterEach(() => {
   host.remove()
 })
 
+describe("the library panel's built-in parts", () => {
+  it("lists the basic parts only: a specific chip or module is found in the parts database", () => {
+    render()
+    const headings = [...document.querySelectorAll("h3")].map((h) => h.textContent ?? "")
+    expect(headings.filter((h) => /^(ICs|Modules)\d/.test(h))).toEqual([])
+    expect(text()).toContain("Resistor")
+    expect(text()).not.toContain("ATmega328P")
+    expect(text()).not.toContain("AMS1117")
+  })
+
+  it("offers Sakura and a KiCad import for a part no search found, and says where it looked", () => {
+    render()
+    type(byLabel<HTMLInputElement>("Search parts")!, "ne555")
+    expect(text()).toContain('Can\'t find "ne555"?')
+    expect(button("Create it with Sakura")).toBeTruthy()
+    expect(button("Import KiCad files")).toBeTruthy()
+    expect(text()).toMatch(/basic parts first, then in our parts database .*, then at LCSC/)
+  })
+})
+
 describe("the project's parts in the library panel", () => {
   it("marks the part nothing is placed from, and removes it at once, as one undo step", () => {
     render()
@@ -85,12 +105,6 @@ describe("the project's parts in the library panel", () => {
     expect(uiApi().notice?.text).toBe("Removed SHT31 from the project. Undo brings it back.")
     act(() => projectApi().undo())
     expect(live().parts!.map((s) => s.name)).toEqual(["TPS7A0233", "SHT31"])
-  })
-
-  it("removes every unused part from the heading", () => {
-    render()
-    click(byLabel("Remove 1 unused part"))
-    expect(live().parts!.map((s) => s.name)).toEqual(["TPS7A0233"])
   })
 
   it("asks before removing a part that is placed, and takes its components with it", () => {

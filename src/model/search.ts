@@ -189,7 +189,8 @@ function wordScore(t: string, list: string[], weights: [number, number, number, 
   for (const w of list) {
     if (w === t) return exact
     if (w.startsWith(t)) best = Math.max(best, prefix)
-    else if (t.length >= 3 && w.includes(t)) best = Math.max(best, inner)
+    // Three letters inside a longer word are a coincidence more often than not: "ldo" in "pulldown".
+    else if ((t.length >= 4 || /\d/.test(t)) && t.length >= 3 && w.includes(t)) best = Math.max(best, inner)
     else if (fuzzy && best < typo && editDistance(t, w, fuzzy) <= fuzzy) best = typo
   }
   return best
@@ -246,9 +247,11 @@ function matchToken(token: Token, e: Indexed): TokenMatch {
 /**
  * Rank parts for a query. Every word has to match for a real hit; when nothing does, parts
  * matching at least half the words come back marked `partial`. An empty query lists every part.
+ * `library` is the built-in parts searched after `extraParts`: all of them for Sakura, the basic
+ * ones for the library panel.
  */
-export function searchLibrary(query: string, extraParts: PartDef[] = []): PartHit[] {
-  const parts = [...extraParts, ...PARTS]
+export function searchLibrary(query: string, extraParts: PartDef[] = [], library: PartDef[] = PARTS): PartHit[] {
+  const parts = [...extraParts, ...library]
   const tokens = tokenize(query)
   if (!tokens.length) return parts.map((part) => ({ part, score: 0 }))
 

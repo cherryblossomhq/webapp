@@ -23,7 +23,12 @@ export interface ManagedAiHost {
    * upgrade.
    */
   assistantsUrl?: string
+  /** Each assistant's own steps on that page, by client; one without links to the page. */
+  assistantGuides?: Partial<Record<AssistantClient, string>>
 }
+
+/** The assistants the notice on Free names, each by the setup steps the host has for it. */
+export type AssistantClient = "claude" | "chatgpt" | "claudeCode" | "codex" | "cursor"
 
 let host: ManagedAiHost | null = null
 

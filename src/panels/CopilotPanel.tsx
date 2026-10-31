@@ -7,6 +7,7 @@ import { useCopilot, type Entry } from "../store/copilotStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { Button, IconButton } from "../ui/controls"
+import { OwnAiNotice } from "./OwnAiNotice"
 
 const SUGGESTIONS = [
   "Add a 3.3 V regulator with input and output caps",
@@ -133,6 +134,8 @@ export function CopilotPanel() {
                 Thinking
               </div>
             )}
+            {/* A plan that lost Sakura mid-conversation (a refusal reloads it) says why under the thread. */}
+            {planGated && gate && !running && <GateNotice gate={gate} />}
           </div>
         )}
       </div>
@@ -254,20 +257,21 @@ function GateNotice({ gate }: { gate: Exclude<Gate, null> }) {
   }
   if (gate === "upgrade") {
     return (
-      <Notice title="Sakura is included from the Pro plan up" action={<LinkButton href={host?.upgradeUrl}>Upgrade to Pro</LinkButton>}>
-        The Free plan is the whole editor, by hand. Upgrade to design with Sakura
-        {host?.assistantsUrl ? (
+      <div className="flex flex-col gap-2.5">
+        <Notice title="Sakura is included from the Pro plan up" action={<LinkButton href={host?.upgradeUrl}>Upgrade to Pro</LinkButton>}>
+          The Free plan is the whole editor, by hand. Upgrade to design with Sakura.
+        </Notice>
+        {host?.assistantsUrl && (
           <>
-            , or{" "}
-            <a href={host.assistantsUrl} target="_blank" rel="noreferrer" className="text-ink underline underline-offset-2">
-              connect your own AI
-            </a>{" "}
-            (Claude, ChatGPT, Cursor) on any plan.
+            <div className="flex items-center gap-2 text-[11px] text-ink-3" aria-hidden>
+              <span className="h-px flex-1 bg-line" />
+              or
+              <span className="h-px flex-1 bg-line" />
+            </div>
+            <OwnAiNotice page={host.assistantsUrl} guides={host.assistantGuides} />
           </>
-        ) : (
-          "."
         )}
-      </Notice>
+      </div>
     )
   }
   return <Notice title="Sakura isn't enabled for your account yet">Your boards are still here to edit by hand and export.</Notice>

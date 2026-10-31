@@ -90,6 +90,9 @@ describe("the user's own files go with the project", () => {
     expect((await unchangedExport(p))?.exact?.["blink.kicad_pcb"]).toBeDefined()
     // the project's id and the time of an edit do not count; a part's place, its name and the sheet the view is on do
     expect(await unchangedExport({ ...p, id: "other", updatedAt: 5 })).not.toBeNull()
+    // the same values with their keys in another order (a project read back from storage) are the same project
+    const reordered = (o: object) => Object.fromEntries(Object.entries(o).reverse())
+    expect(await unchangedExport({ ...p, board: reordered(p.board) as Project["board"], components: p.components.map((c) => reordered(c) as typeof c) })).not.toBeNull()
     const first = p.components.find((c) => c.ref === "R1")!
     expect(await unchangedExport({ ...p, components: p.components.map((c) => (c === first ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 0.001 } } : c)) })).toBeNull()
     expect(await unchangedExport({ ...p, name: "renamed" })).toBeNull()

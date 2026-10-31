@@ -546,7 +546,28 @@ export function mapKicadProjectNetClasses(nets: KicadProjectNets, base: Pick<Des
     ...(defaultClass ? { defaultClass } : {}),
     ...(netClasses.length ? { netClasses } : {}),
   }
-  const overlapping = netClasses.length ? overlappingNets({ netClasses }, netNames) : []
+  const claimed = netClasses.length ? overlappingNets({ netClasses }, netNames) : []
+  // A file of KiCad 8 or before gives its classes no priority, and puts a net in one class: the one an assignment names, else the one of the first pattern in the
+  // file it matches (`NET_SETTINGS::GetEffectiveNetClass` of 8.0). That is the editor's rule too, so such a net is only a problem where the two would pick
+  // different classes. A KiCad 9 file combines the classes of a net by priority, which is not built.
+  const prioritized = nets.classes.some((c) => typeof c.priority === "number")
+  const overlapping = prioritized ? claimed : claimed.filter((net) => kicad8Class(nets, net) !== editorClass(netClasses, net))
   for (const net of overlapping) problems.push(`net "${net}" is claimed by more than one class (KiCad 9 combines them by priority, which the editor does not do yet)`)
   return { rules, problems, overlapping }
+}
+
+/** The class KiCad 8 puts a net in, by name (Default for none), or null when the file names more than one (a KiCad 9 list). */
+function kicad8Class(nets: KicadProjectNets, net: string): string | null {
+  const assigned = nets.assignments?.[net]
+  const list = Array.isArray(assigned) ? assigned : assigned ? [assigned] : []
+  if (list.length > 1) return null
+  if (list.length === 1) return list[0]
+  return nets.patterns.find((p) => patternMatcher(p.pattern)(net))?.netclass ?? DEFAULT_CLASS_NAME
+}
+
+/** The class the editor puts a net in, by name: `classIndex`'s rule (a class listing it, then the first class with a pattern it matches). */
+function editorClass(classes: NetClass[], net: string): string {
+  const listed = classes.find((c) => c.nets.includes(net) || c.labelNets?.includes(net))
+  if (listed) return listed.name
+  return classes.find((c) => (c.patterns ?? []).some((p) => patternMatcher(p)(net)))?.name ?? DEFAULT_CLASS_NAME
 }

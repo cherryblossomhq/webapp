@@ -85,9 +85,23 @@ export async function sha256Hex(data: Uint8Array): Promise<string> {
   return hex(await crypto.subtle.digest("SHA-256", data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer))
 }
 
-/** What is kept of a project, hashed: its stored text without the record of the files (the ids, the times and the sheet it is scoped to are not in it). */
+/**
+ * What is kept of a project, hashed: its stored text without the record of the files (the ids, the times and the sheet it is scoped to are not in it), with the keys
+ * of every object in order, since a project read back from storage holds the same values with its keys in the order the reader writes them.
+ */
 export async function contentHash(project: Project): Promise<string> {
   const { original: _original, ...rest } = project.kicad ?? {}
-  const text = serializeProject({ ...project, kicad: Object.keys(rest).length ? rest : undefined })
+  const text = canonical(JSON.parse(serializeProject({ ...project, kicad: Object.keys(rest).length ? rest : undefined })))
   return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))
+}
+
+/** JSON with every object's keys sorted. */
+function canonical(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v)
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`
+  const o = v as Record<string, unknown>
+  return `{${Object.keys(o)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+    .join(",")}}`
 }

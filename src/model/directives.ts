@@ -256,14 +256,16 @@ export function withLabelNetClasses(project: Project, known?: Map<string, string
 
 /**
  * Nets that more than one class claims, the labels' classes counted: KiCad 9 and later combine such classes by priority, which the editor's one class
- * per net does not do (`model/netClasses.ts`), so an import that finds one refuses it.
+ * per net does not do (`model/netClasses.ts`), so an import that finds one refuses it. A project of KiCad 8 or before (`combines` false: its classes
+ * have no priority) puts a net in the one class its label names, whatever pattern it also matches (`NET_SETTINGS::GetEffectiveNetClass` of 8.0), which
+ * is the editor's rule too: only two labels of two classes, or a label against the class the project file assigns the net, are a conflict there.
  */
-export function labelClassConflicts(project: Project, claims: Map<string, string[]> = labelNetClasses(project)): string[] {
+export function labelClassConflicts(project: Project, claims: Map<string, string[]> = labelNetClasses(project), combines = true): string[] {
   const out: string[] = []
   const classes = project.rules.netClasses ?? []
   for (const [net, names] of claims) {
     const claimed = new Set(names)
-    for (const c of classes) if (!c.implicit && (c.nets.includes(net) || (c.patterns ?? []).some((p) => patternMatcher(p)(net)))) claimed.add(c.name)
+    for (const c of classes) if (!c.implicit && (c.nets.includes(net) || (combines && (c.patterns ?? []).some((p) => patternMatcher(p)(net))))) claimed.add(c.name)
     if (names.length > 1) out.push(net)
     else if (claimed.size > 1) out.push(net)
   }
@@ -282,7 +284,7 @@ export function settleLabelNetClasses(before: Project, after: Project): Project 
 }
 
 /** What an import says about the classes labels give, and the project with them set: the conflicts it cannot hold are refusals, the rest is said. */
-export function settleImportedLabelClasses(project: Project, report: { entries: { code: string; severity: string; object: string; why: string; count?: number }[] }): Project {
+export function settleImportedLabelClasses(project: Project, report: { entries: { code: string; severity: string; object: string; why: string; count?: number }[] }, combines = true): Project {
   const directives = (project.drawings ?? []).filter(isDirective)
   const fields = [...directives.flatMap((d) => d.fields), ...project.labels.flatMap((l) => l.fields ?? [])]
   if (!directives.length && !fields.some((f) => isNetclassFieldName(f.name))) return project
@@ -291,7 +293,7 @@ export function settleImportedLabelClasses(project: Project, report: { entries: 
     if (!report.entries.some((x) => x.code === e.code && x.object === e.object)) report.entries.push(e)
   }
   const claims = labelNetClasses(project)
-  for (const net of labelClassConflicts(project, claims)) {
+  for (const net of labelClassConflicts(project, claims, combines)) {
     say({
       code: "netclass-conflict",
       severity: "refused",

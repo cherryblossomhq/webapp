@@ -516,7 +516,8 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
     merged.project = withRules.project
   }
   // S8: the net classes the schematic's labels give, on top of the project file's.
-  merged.project = settleImportedLabelClasses(merged.project, report)
+  // A project file whose classes have no priority is KiCad 8's or before, where a label's class wins over a pattern (`labelClassConflicts`).
+  merged.project = settleImportedLabelClasses(merged.project, report, !pro || pro.netClasses.some((c) => typeof (c.json as { priority?: unknown }).priority === "number"))
   // X20: the class rules of the project file, worked out for the footprints.
   const classed = applyClassRules(pro, merged.project.components)
   report.entries.push(...classed.entries)

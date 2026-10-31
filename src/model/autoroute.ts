@@ -34,7 +34,7 @@ export interface AutorouteResult {
   finePitchOpen: number
   /** The thinnest trace width (mm) the fine-pitch retry went down to, or null when it did not run. */
   finePitchTried: number | null
-  /** Nets with a width of their own (`netWidths`, a class's) that had connections routed narrower for want of room: absent when none did. A neck at a pad too small for the width is not one. */
+  /** Nets with a width of their own (`netWidths`, a class's) that have connections on the finished board routed narrower for want of room: absent when none do. A neck at a pad too small for the width is not one. */
   narrowed?: { net: string; width: number; widths: number[] }[]
 }
 
@@ -1057,12 +1057,15 @@ function obstacleShapes(analysis: PcbAnalysis, drills?: Map<string, number>): { 
   return out
 }
 
-function apply(project: Project, paths: RoutedPath[], rr: RouteRules): Project {
+/** The board with `paths` laid on it; `laid` hears the ids each path's traces were given. */
+function apply(project: Project, paths: RoutedPath[], rr: RouteRules, laid?: (path: RoutedPath, traceIds: string[]) => void): Project {
   if (!paths.length) return project
   const traces: Trace[] = []
   const vias: Via[] = []
   for (const p of paths) {
-    for (const t of p.traces) traces.push({ ...t, id: uid("t") })
+    const ids = p.traces.map(() => uid("t"))
+    p.traces.forEach((t, i) => traces.push({ ...t, id: ids[i] }))
+    laid?.(p, ids)
     // a via is the size of its net's class (the rules' for a board with no classes)
     const size = rr.of(p.net)
     for (const v of p.vias) {
@@ -1243,15 +1246,25 @@ function attempt(
     if (ladder.length && own === undefined && !isPowerNet(sch, p, netId)) out.push(...ladder.filter((w) => w < Math.min(...out) - 1e-9))
     return out
   }
-  /** Connections of nets with a width of their own that went in narrower, for want of room: the widths they took, by net. */
-  const narrowed = new Map<string, number[]>()
+  /**
+   * Connections of nets with a width of their own that went in narrower, for want of room: the width each took and, once laid, the ids of
+   * its traces at that width (its necks are no narrowing, unless the run is all neck). The result names only those still on the finished
+   * board: a rip-up can take one up and lay it again at full width, and leave its necks behind.
+   */
+  const thin = new Map<RoutedPath, { netId: string; width: number; runIds: string[] }>()
+  const laid = (path: RoutedPath, traceIds: string[]) => {
+    const t = thin.get(path)
+    if (!t) return
+    const runs = traceIds.filter((_, i) => path.traces[i].width >= t.width - 1e-9)
+    t.runIds = runs.length ? runs : traceIds
+  }
   /** The connection routed at the first of `ws` it can be, widest first, or null. */
   const widest = (netId: string, ws: number[], go: (w: number) => RoutedPath | null): RoutedPath | null => {
     for (const w of ws) {
       const path = go(w)
       if (!path) continue
       const own = ownWidth(netId)
-      if (own !== undefined && w < own - 1e-9) narrowed.set(netId, [...(narrowed.get(netId) ?? []), w])
+      if (own !== undefined && w < own - 1e-9) thin.set(path, { netId, width: w, runIds: [] })
       return path
     }
     return null
@@ -1385,7 +1398,7 @@ function attempt(
       entry.shapes.set(cb, merged)
       entry.shapes.delete(ca)
     }
-    p = apply(p, paths, rr)
+    p = apply(p, paths, rr, laid)
     noteAdded(paths)
     synced()
     for (const path of paths) {
@@ -1432,7 +1445,7 @@ function attempt(
         }
       }
     }
-    p = apply(p, paths, rr)
+    p = apply(p, paths, rr, laid)
     noteAdded(paths)
     synced()
     for (const path of paths) {
@@ -1514,7 +1527,7 @@ function attempt(
   if (mode.fine && !late()) {
     const open = analyze().ratsnest.filter((r) => !wanted || wanted.has(r.netId))
     if (open.length) {
-      const snapshot = { p, routed, addedTraces, addedVias, left: open.length, narrowed: new Map([...narrowed].map(([k, v]) => [k, [...v]])) }
+      const snapshot = { p, routed, addedTraces, addedVias, left: open.length }
       const ends = open.flatMap((r) => [r.a, r.b])
       const hasStub = (it: PadItem) => p.traces.some((t) => stubIds.has(t.id) && samePoint(t.points[0], it.pad))
       addStubs((it) => ends.some((e) => samePoint(e, it.pad)) && !hasStub(it))
@@ -1547,7 +1560,7 @@ function attempt(
         const path = widest(r.netId, widthsFor(r.netId), (w) => router.route(r.netId, padShapes(pa), padShapes(pb), w))
         if (path) forced.push(path)
       }
-      p = apply(p, forced, rr)
+      p = apply(p, forced, rr, laid)
       noteAdded(forced)
       failedAt.clear()
       synced()
@@ -1557,11 +1570,7 @@ function attempt(
       fanout()
       for (let i = 0; i < 2; i++) if (!pass(() => true)) break
       const left = analyze().ratsnest.filter((r) => !wanted || wanted.has(r.netId)).length
-      if (left >= snapshot.left) {
-        ;({ p, routed, addedTraces, addedVias } = snapshot)
-        narrowed.clear()
-        for (const [k, v] of snapshot.narrowed) narrowed.set(k, v)
-      }
+      if (left >= snapshot.left) ({ p, routed, addedTraces, addedVias } = snapshot)
     }
   }
 
@@ -1591,7 +1600,10 @@ function attempt(
   const open = final.ratsnest.filter((r) => !wanted || wanted.has(r.netId))
   const finePads = final.items.filter((it): it is PadItem => it.kind === "pad")
   const fineOpen = open.filter((r) => [r.a, r.b].some((at) => finePads.some((x) => samePoint(at, x.pad) && isFinePad(x, finePads)))).length
-  const thin = [...narrowed].map(([netId, ws]) => ({ net: nameOf(netId) ?? netId, width: ownWidth(netId)!, widths: ws }))
+  const onBoard = new Set(p.traces.map((t) => t.id))
+  const narrowed = new Map<string, number[]>()
+  for (const t of thin.values()) if (t.runIds.some((id) => onBoard.has(id))) narrowed.set(t.netId, [...(narrowed.get(t.netId) ?? []), t.width])
+  const narrower = [...narrowed].map(([netId, ws]) => ({ net: nameOf(netId) ?? netId, width: ownWidth(netId)!, widths: ws }))
   return {
     result: {
       project: p,
@@ -1601,7 +1613,7 @@ function attempt(
       addedVias,
       finePitchOpen: fineOpen,
       finePitchTried: mode.fine ? widthLadder(project).at(-1)! : null,
-      ...(thin.length ? { narrowed: thin } : {}),
+      ...(narrower.length ? { narrowed: narrower } : {}),
     },
     failed: [...new Set(open.map((r) => r.netId))],
     fineOpen,

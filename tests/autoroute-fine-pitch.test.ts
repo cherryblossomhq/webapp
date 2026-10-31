@@ -86,6 +86,24 @@ describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () =
     expect(open(s.project).filter((n) => USB.includes(n))).toEqual([])
     expect(out.result).not.toContain("spread the parts out")
   }, 120_000)
+
+  it("names as narrower only the connections still on the board, not those the rip-up took up and laid again", () => {
+    // At 0.6 mm the supplies fall back to 0.4 by the receptacle, and the rip-up takes up two of 3V3's and lays them again: the list
+    // used to count those too (four 3V3 connections at 0.4 mm, with three such traces on the board).
+    const s = firstRequest()
+    s.must("layout_pcb")
+    s.must("set_pour", { net: "GND", layer: "both" })
+    s.must("set_net_width", { widths: { VBUS: 0.6, "3V3": 0.6, GND: 0.6 } })
+    const res = autoroute(s.project, { timeLimitMs: Infinity })
+    const a = analysis(res.project)
+    expect(res.narrowed?.length).toBeGreaterThan(0)
+    for (const n of res.narrowed!) {
+      for (const w of new Set(n.widths)) {
+        const laid = res.project.traces.filter((t) => a.traceNet.get(t.id) === `net:${n.net}` && Math.abs(t.width - w) < 1e-9)
+        expect(n.widths.filter((x) => x === w).length, `${n.net} at ${w} mm`).toBeLessThanOrEqual(laid.length)
+      }
+    }
+  }, 120_000)
 })
 
 describe("what route_pcb says about connections it could not route", () => {

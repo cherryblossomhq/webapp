@@ -595,7 +595,7 @@ describe("the size of what is read is bounded", () => {
     expect(Date.now() - t0).toBeLessThan(2000)
     expect(r.reason).toBe("too-large")
     expect(r.report.entries.some((e) => e.code === "too-costly")).toBe(true)
-    expect(r.message).toMatch(/^This schematic is too large to import: it has wires that run along the same lines in such numbers, or are so long, that the editor would need minutes to read its nets, and a sheet this big would be over the 900 KB project limit anyway/)
+    expect(r.message).toMatch(/^This schematic is too large to import: it has wires that run along the same lines in such numbers, or are so long, that the editor would need minutes to read its nets \(/)
     const spread = schematic({ wires: Array.from({ length: 24000 }, (_, i) => `${(i % 200) * 10} ${Math.floor(i / 200) * 7} ${(i % 200) * 10 + 5} ${Math.floor(i / 200) * 7}`) })
     const t1 = Date.now()
     expect(refused(importKicadSchematic(spread, { built: SYMBOLS })).reason).toBe("too-large")
@@ -609,7 +609,7 @@ describe("the size of what is read is bounded", () => {
     const r = refused(importKicadSchematic(divider(), { built: SYMBOLS, maxObjects: 3 }))
     expect(r.reason).toBe("too-large")
     expect(r.report.entries.some((e) => e.code === "too-many-objects")).toBe(true)
-    expect(r.message).toMatch(/^This schematic is too large to import: it has \d+ drawn objects .* over the 900 KB project limit anyway\.$/)
+    expect(r.message).toMatch(/^This schematic is too large to import: it has \d+ drawn objects .* and the editor reads up to 3\.$/)
   })
 
   it("parts registered to check a build are taken out again when the import is refused", () => {

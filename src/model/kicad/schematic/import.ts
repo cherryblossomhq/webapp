@@ -41,9 +41,9 @@ export interface SchematicImportOptions {
 }
 
 /**
- * The most drawn objects a schematic may have. A project over 900 KiB is refused anyway, and a hostile
- * file of hundreds of thousands of wires would take minutes to read the nets of before it could be
- * measured; the corpus's largest project (the `video` demo, all its sheets) has 4,607.
+ * The most drawn objects a schematic may have. A hostile file of hundreds of thousands of wires would
+ * take minutes to read the nets of before it could be measured against the project limit; the corpus's
+ * largest project (the `video` demo, all its sheets) has 4,607.
  */
 export const MAX_SCHEMATIC_OBJECTS = 25000
 
@@ -145,12 +145,12 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   const objects = list.reduce((n, f) => n + f.schematic.wires.length + f.schematic.buses.length + f.schematic.symbols.length + f.schematic.labels.length + f.schematic.junctions.length + f.schematic.noConnects.length + f.schematic.busEntries.length + Object.values(f.schematic.others).reduce((m, l) => m + l.length, 0), 0)
   const costly = list.map((f) => ({ f, cost: readCost(f.schematic) })).find((c) => c.cost.line > (options.maxLineSteps ?? MAX_LINE_STEPS) || c.cost.cells > (options.maxCellSteps ?? MAX_CELL_STEPS))
   if (costly && objects <= limit) {
-    const message = `This schematic is too large to import: it has wires that run along the same lines in such numbers, or are so long, that the editor would need minutes to read its nets, and a sheet this big would be over the 900 KB project limit anyway (${costly.f.path}: ${costly.cost.line.toLocaleString("en-US")} and ${costly.cost.cells.toLocaleString("en-US")} steps against ${(options.maxLineSteps ?? MAX_LINE_STEPS).toLocaleString("en-US")} and ${(options.maxCellSteps ?? MAX_CELL_STEPS).toLocaleString("en-US")}).`
+    const message = `This schematic is too large to import: it has wires that run along the same lines in such numbers, or are so long, that the editor would need minutes to read its nets (${costly.f.path}: ${costly.cost.line.toLocaleString("en-US")} and ${costly.cost.cells.toLocaleString("en-US")} steps against ${(options.maxLineSteps ?? MAX_LINE_STEPS).toLocaleString("en-US")} and ${(options.maxCellSteps ?? MAX_CELL_STEPS).toLocaleString("en-US")}).`
     report.entries.push({ code: "too-costly", severity: "refused", object: "the schematic", why: message })
     return { refused: { status: "refused", reason: "too-large", message, report, needs: [], tree } }
   }
   if (objects > limit) {
-    const message = `This schematic is too large to import: it has ${objects.toLocaleString("en-US")} drawn objects (wires, symbols, labels, junctions, text and the rest) and the editor reads up to ${limit.toLocaleString("en-US")}; a sheet this big would be over the 900 KB project limit anyway.`
+    const message = `This schematic is too large to import: it has ${objects.toLocaleString("en-US")} drawn objects (wires, symbols, labels, junctions, text and the rest) and the editor reads up to ${limit.toLocaleString("en-US")}.`
     report.entries.push({ code: "too-many-objects", severity: "refused", object: "the schematic", why: message, count: objects })
     return { refused: { status: "refused", reason: "too-large", message, report, needs: [], tree } }
   }

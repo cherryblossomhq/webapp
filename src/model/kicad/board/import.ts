@@ -22,9 +22,10 @@ import type { KicadBoard } from "./types"
 
 /**
  * What a stored project may weigh, in bytes of its file. The same number as `MAX_DOCUMENT_BYTES`
- * in the hosted app's storage policy (a stored row's limit is 1 MiB); a test pins the two.
+ * in the hosted app's storage policy (the server keeps the file gzipped under its 1 MiB row
+ * limit); a test pins the two.
  */
-export const PROJECT_SIZE_LIMIT_BYTES = 900 * 1024
+export const PROJECT_SIZE_LIMIT_BYTES = 3 * 1024 * 1024
 
 export interface ImportOptions {
   name?: string

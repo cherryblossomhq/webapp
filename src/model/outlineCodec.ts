@@ -3,7 +3,7 @@ import type { BoardOutline, Vec2 } from "./types"
 import { finite } from "../lib/guards"
 
 // A board outline stored compactly. A board brought in from KiCad can have thousands of edges, and as objects each costs 100 to 200
-// bytes against the project's 900 KB limit. The stored form is one flat array per path: `"c"` (closed) or `"o"` (open), the first
+// bytes against the project's 3 MB limit. The stored form is one flat array per path: `"c"` (closed) or `"o"` (open), the first
 // point, then each piece as a letter and the numbers it needs after its start, which is where the piece before it ended:
 //
 //   L x y                          a straight piece

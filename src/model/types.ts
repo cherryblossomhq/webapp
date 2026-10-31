@@ -520,6 +520,11 @@ export interface FootprintDef {
    */
   noCourtyard?: true
   /**
+   * A KiCad footprint the file gives no 3D model it shows (none, or only hidden ones: mounting hardware, a net tie, a debug header kept off the 3D view): the 3D view
+   * and the STEP export draw no body for it, as KiCad draws none, rather than a body guessed from its pads.
+   */
+  noBody?: true
+  /**
    * X30: the zones drawn inside the footprint (keepouts, and pours on no net), in the land's frame, which is the part's own side's: they move, turn and flip with every part that has the land
    * (`partZones.ts` puts them on the board). Their ids (`z0`, `z1`...) name their place in the land; none has a net, a uuid or a priority tie to break against the board's zones.
    */

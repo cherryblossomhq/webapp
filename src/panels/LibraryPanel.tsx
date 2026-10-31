@@ -400,15 +400,8 @@ function PartRow({ part, hit, index, id, focused, active, onHover, onPlace, acti
         }}
         onClick={onPlace}
         onMouseEnter={onHover}
-        // Altium's double-click on a library component: its properties.
-        onDoubleClick={
-          actions
-            ? () => {
-                useUi.getState().stopPlacing()
-                actions.onEdit()
-              }
-            : undefined
-        }
+        // Altium's double-click on a library component: its properties (opening them drops the part the first click took in hand).
+        onDoubleClick={actions?.onEdit}
         title={part.description}
         className={`flex w-full items-center gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left transition-colors ${
           active ? "bg-surface shadow-[inset_0_0_0_1.5px_var(--color-select)]" : focused ? "bg-surface" : "hover:bg-surface"

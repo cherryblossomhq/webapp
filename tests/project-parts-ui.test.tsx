@@ -143,6 +143,13 @@ describe("the part editor", () => {
     expect(live().components[0].partId).toBe(ldo.id)
   })
 
+  it("drops a part in hand when it opens, so a save can't leave it to be placed under its old id", () => {
+    render()
+    act(() => uiApi().startPlacing(ldo.id))
+    click(byLabel("Edit TPS7A0233"))
+    expect(uiApi().placing).toBeNull()
+  })
+
   it("edits pins, and won't save a pin with no pad", () => {
     render()
     click(byLabel("Edit TPS7A0233"))

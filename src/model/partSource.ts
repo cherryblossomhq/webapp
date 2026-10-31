@@ -55,7 +55,8 @@ export function partSourceLine(spec: CustomPartSpec | undefined): SourceLine | n
 
 /** The source of a part built from data: the user's own files, the database's KiCad or supplier record, a supplier's own, or the editor's library. */
 function builtLine(s: PartSource): SourceLine | null {
-  if (s.pins === "library") return { label: "Cherry Blossom library", detail: "Drawn for the editor's own library, which no longer lists chips and modules" }
+  // Either half says so: a library chip whose pins were edited by hand keeps its land from the library.
+  if (s.pins === "library" || s.land === "library") return { label: "Cherry Blossom library", detail: "Drawn for the editor's own library, which no longer lists chips and modules" }
   if (s.file) {
     return { label: "Imported KiCad files", detail: s.file.symbol ? `${s.file.symbol} on ${s.file.footprint}` : `Footprint ${s.file.footprint}, a pin for each pad` }
   }

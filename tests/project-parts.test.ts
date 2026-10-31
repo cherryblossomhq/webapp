@@ -327,4 +327,15 @@ describe("the provenance of an edited part", () => {
     expect(line.credit).toMatch(/KiCad's libraries/)
     expect(partFindings(res.project)).toEqual([])
   })
+
+  it("still credits the library for a library chip whose pins were edited, and never calls one from memory", () => {
+    const library: PartSource = { pins: "library", land: "library" }
+    const pinsEdited = spec({ ...LDO, source: editedSource(library, { pins: true, land: false }) })
+    expect(partSourceLine(pinsEdited)).toMatchObject({ label: "Edited by hand", detail: expect.stringMatching(/^Pins changed from Cherry Blossom library/) })
+    expect(describeSource(pinsEdited)).toMatch(/^from the editor's own library.*then its pins edited by hand/)
+    // Both halves edited: nothing left says where it came from, and it was never made from memory.
+    const bothEdited = spec({ ...LDO, source: editedSource(library, { pins: true, land: true }) })
+    expect(describeSource(bothEdited)).not.toMatch(/memory/)
+    expect(describeSource(bothEdited)).toMatch(/pins and land edited by hand/)
+  })
 })

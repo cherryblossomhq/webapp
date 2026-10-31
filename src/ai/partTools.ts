@@ -798,8 +798,11 @@ export function describeSource(spec: Pick<CustomPartSpec, "source">): string {
   // Changed by hand in the part editor: the user's word for the part, whatever it was built from.
   const edited = [s?.pins === "user" && "pins", s?.land === "user" && "land"].filter(Boolean)
   if (s && edited.length) {
-    // What it was built from, which the rest of the source still names.
-    const was = s.file ? "file" : s.database ? "database" : s.supplier ? "supplier" : s.imported ? "import" : s.pins === "library" || s.land === "library" ? "library" : "memory"
+    // What it was built from, which the rest of the source still names. A part from memory stays
+    // `memory` however it is edited, so one the rest doesn't name is a library chip or a schematic's
+    // part with both halves edited: nothing left says which.
+    const was = s.file ? "file" : s.database ? "database" : s.supplier ? "supplier" : s.imported ? "import" : s.pins === "library" || s.land === "library" ? "library" : null
+    if (!was) return `drawn by the user in the part editor, its ${edited.join(" and ")} edited by hand, which they stand by`
     const base = describeSource({ source: { ...s, pins: s.pins === "user" ? was : s.pins, land: s.land === "user" ? was : s.land } })
     return `${base}, then its ${edited.join(" and ")} edited by hand by the user, who stands by them`
   }

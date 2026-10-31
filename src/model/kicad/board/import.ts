@@ -6,6 +6,7 @@ import { signKeptFills } from "../../zoneKeepSign"
 import type { KeptFile } from "./images"
 import { acceptEmbeddedFonts, accountNodes, countPaths, reportDroppedModels, reportedNodes, reportUnknown } from "./account"
 import { buildKicadProject } from "./build"
+import type { GivenModels } from "./models"
 import { settleFor } from "./carried"
 import { BUILT_EXTENSIONS, EXTENSION_NAMES, needsOf, refusalMessage, unbuilt, type Need } from "./needs"
 import { outlineOf, type OutlineResult } from "./outline"
@@ -35,6 +36,8 @@ export interface ImportOptions {
   limitBytes?: number
   /** Whether to sign the zones' kept fills (`zoneKeep.ts`) as the board is built; the project import, which changes the board's nets after, signs them itself. Default: yes. */
   signFills?: boolean
+  /** The 3D model files given with the board, which its footprints' models may name (`build.ts`). */
+  models?: GivenModels
 }
 
 /**
@@ -121,7 +124,7 @@ export function importKicadBoard(input: string | Uint8Array, options: ImportOpti
   if (unreadable) return { status: "refused", reason: "unreadable", message: `${unreadable.object}: ${unreadable.why}`, report, needs: missing, board }
   if (missing.length) return { status: "refused", reason: "unsupported", message: refusalMessage(missing), report, needs: missing, board }
 
-  const result = buildKicadProject(board, outline, report, { name: options.name, source: options.source })
+  const result = buildKicadProject(board, outline, report, { name: options.name, source: options.source, models: options.models })
   if (result.lossy.length || refusals(report).length) {
     const message = result.lossy.length ? `This board cannot be imported exactly: ${result.lossy.join("; ")}.` : refusals(report)[0].why
     return { status: "refused", reason: "inexact", message, report, needs: missing, board }

@@ -15,6 +15,7 @@ import { dropKeptFills, importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, formatSize, 
 import { hasKeptFills } from "../../zoneKeep"
 import { signKeptFills } from "../../zoneKeepSign"
 import { buildKicadProject } from "../board/build"
+import type { GivenModels } from "../board/models"
 import { outlineOf } from "../board/outline"
 import { readKicadBoard } from "../board/read"
 import { KicadReadError } from "../board/sexpr"
@@ -70,6 +71,8 @@ export interface ProjectImportOptions {
   allowLossyBoard?: boolean
   /** S12: symbols of the parts database by `lib_id`, as the text of each one's `.kicad_sym` file; see `SchematicImportOptions.databaseSymbols`. */
   databaseSymbols?: ReadonlyMap<string, string>
+  /** The 3D model files given with the board, which its footprints' models may name (the board builder's `models`). */
+  models?: GivenModels
 }
 
 /** One pad whose net on the board is not the net of its pin in the schematic. */
@@ -321,7 +324,7 @@ function importBoardLossy(data: string | Uint8Array, options: ProjectImportOptio
     return { status: "refused", reason: "unreadable", message, report: { entries: [{ code: "unreadable", severity: "refused", object: "the file", why: message }], account: null }, needs: [], board: null }
   }
   const outline = outlineOf(read.board)
-  const result = buildKicadProject(read.board, outline, read.report, { name: options.name, source: options.source, allowLossy: true })
+  const result = buildKicadProject(read.board, outline, read.report, { name: options.name, source: options.source, allowLossy: true, models: options.models })
   return { status: "imported", project: result.project, report: read.report, board: read.board, bytes: byteLength(serializeProject(result.project)), files: result.files, footprintComponents: result.footprintComponents }
 }
 
@@ -396,7 +399,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
 
   // ---------- the board ----------
   const partsBefore = new Set(projectPartIds())
-  const boardResult = options.allowLossyBoard ? importBoardLossy(picked.board.data, options) : importKicadBoard(picked.board.data, { name: options.name, source: options.source, built, limitBytes: options.limitBytes, signFills: false })
+  const boardResult = options.allowLossyBoard ? importBoardLossy(picked.board.data, options) : importKicadBoard(picked.board.data, { name: options.name, source: options.source, built, limitBytes: options.limitBytes, signFills: false, models: options.models })
   // The board importer notes that KiCad 6's rules live in a project file it did not read; the project file was read here, and says its own.
   report.entries.push(...boardResult.report.entries.filter((e) => !((pro || rules) && e.code === "rules-in-project-file")))
   boardParts = projectPartIds().filter((id) => !partsBefore.has(id))

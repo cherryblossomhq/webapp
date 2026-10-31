@@ -108,6 +108,25 @@ export function kicadModel(m: PartIndexKicadModel): Model3D | null {
   }
 }
 
+/**
+ * A model file that came with a KiCad board (`${KIPRJMOD}/3d models/U1.step`), kept in the host's file store, placed as `kicadModel` places a
+ * stock one: the file's own origin, KiCad's offset, the angles negated. A VRML file is in KiCad's tenths of an inch.
+ */
+export function givenFileModel(file: { id: string; name: string; format: Model3DFormat }, m: { offset: { x: number; y: number; z: number }; rotate: { x: number; y: number; z: number } }): Model3D {
+  const flip = (v: number) => (v === 0 ? 0 : -v)
+  const scale = defaultModelScale(file.format)
+  return {
+    source: "file",
+    id: file.id,
+    name: file.name,
+    format: file.format,
+    origin: "model",
+    offset: { x: m.offset.x, y: m.offset.y, z: m.offset.z },
+    rotation: { x: flip(m.rotate.x), y: flip(m.rotate.y), z: flip(m.rotate.z) },
+    ...(scale !== 1 ? { scale } : {}),
+  }
+}
+
 /** A file the user added, placed by its own origin as KiCad places one. */
 export function fileModel(id: string, name: string, format: Model3DFormat): Model3D {
   const scale = defaultModelScale(format)

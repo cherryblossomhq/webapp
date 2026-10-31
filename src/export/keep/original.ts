@@ -1,7 +1,7 @@
 import { kicadFontLoaded, loadKicadFont } from "../../lib/kicadFont/load"
 import type { Project } from "../../model/types"
 import { imageBytes, loadImage } from "../../store/imageFiles"
-import { contentHash, unpackOriginal, type OriginalFile } from "./pack"
+import { boardModels, contentHash, unpackOriginal, type OriginalFile } from "./pack"
 import { fileVersion } from "./sexp"
 import { neutralText, patchFile, type Kind } from "./patch"
 
@@ -127,7 +127,9 @@ async function makeBefore(id: string, files: OriginalFile[], record: { name?: st
     const utf16 = (d[0] === 0xff && d[1] === 0xfe) || (d[0] === 0xfe && d[1] === 0xff)
     await loadKicadFont({ cjk: utf16 || d.some((b) => b >= 0xe3 && b <= 0xef) })
   }
-  const r = importKicadProject(files, { name: record.name, source: record.source, limitBytes: Number.MAX_SAFE_INTEGER })
+  // The model files kept with the board are found again, as the import found them, so the project read again holds the same models.
+  const models = board ? (await boardModels(files.map((f) => ({ path: f.path, size: f.data.length, read: async () => f.data })), board.path, board.data)).given : undefined
+  const r = importKicadProject(files, { name: record.name, source: record.source, limitBytes: Number.MAX_SAFE_INTEGER, ...(models?.size ? { models } : {}) })
   if (r.status !== "imported") return `the original files could not be read again (${r.message})`
   const written = await write(r.project)
   if (charsOf(written.files) <= CACHED_CHARS) {

@@ -52,8 +52,10 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
     throw new SaveRefused(`This board needs ${sizeText(bytes)} and projects hold up to ${sizeText(STORED_PROJECT_LIMIT_BYTES)}. Nothing was saved.`, "final")
   }
   // The files the project names (reference images, embedded fonts) go to the file store first, so a project is never saved naming files that are not kept (and a refused one leaves only files, which cost nothing but room).
+  let modelsLost = 0
   for (const f of outcome.files ?? []) {
     const isOriginal = project?.kicad?.original?.file === f.id
+    const isModel = !isOriginal && !!project?.models?.some((m) => m.model.source === "file" && m.model.id === f.id)
     try {
       const kept = await putImageFile(f.name, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
       if (kept !== f.id) throw new Error("The file was kept under another name than the project's.")
@@ -63,6 +65,12 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
         const { original: _dropped, ...rest } = project.kicad!
         project = { ...project, kicad: Object.keys(rest).length ? rest : undefined }
         summary.notes = [...summary.notes.filter((n) => n.code !== "originals-kept"), { code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The project is saved, and export writes every file from it.` }]
+        continue
+      }
+      // A 3D model the board came with is how a part looks, not what it is: the part keeps its model line for the export and draws its generated body.
+      if (isModel) {
+        modelsLost++
+        if (modelsLost === 1) summary.notes.push({ code: "models-not-kept", object: "3D model files of the board", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The parts they belong to show their generated bodies, and the export still names the files.` })
         continue
       }
       throw new SaveRefused(`Couldn't keep the board's files (reference images and embedded fonts)${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")

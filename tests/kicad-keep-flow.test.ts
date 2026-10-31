@@ -193,6 +193,32 @@ describe("the user's folder", () => {
   })
 })
 
+describe("the 3D models a board names in its own folder", () => {
+  it("are drawn from the file store, placed as KiCad places them, and named again by the export as the file named them", async () => {
+    const { store, kept } = memoryFiles()
+    connectModelFiles(store)
+    const line = '(model "${KIPRJMOD}/3d models/R.step" (offset (xyz 0 0 0.3)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 90)))'
+    const own = board({ version: 20241229, body: [footprint({ ref: "R1", at: "5 5", pads: [pad({ at: "-1 0", size: "1 1" }), pad({ number: "2", at: "1 0", size: "1 1" })], extra: line })] })
+    const step = new TextEncoder().encode("ISO-10303-21;\nEND-ISO-10303-21;\n")
+    const events: WorkerEvent[] = []
+    await runImport({ type: "start", id: 1, files: [entry("cube/r.kicad_pcb", own), { path: "cube/3d models/R.step", file: new File([step], "R.step") }, { path: "cube/3d models/unused.step", file: new File([step, step], "unused.step") }] }, (e) => events.push(e))
+    const done = events.find((e) => e.type === "done")
+    if (!done || done.type !== "done") throw new Error("the import did not finish")
+    const model = done.outcome.project!.models?.[0]?.model
+    expect(model).toMatchObject({ source: "file", name: "R", format: "step", origin: "model", offset: { x: 0, y: 0, z: 0.3 }, rotation: { x: 0, y: 0, z: -90 } })
+    // the file a part holds goes to the store with the project, and one no footprint names does not
+    expect(done.outcome.files?.filter((f) => f.id === model!.id).map((f) => f.name)).toEqual(["R.step"])
+    expect(done.outcome.summary.notBrought.some((n) => /R\.step/.test(n.object))).toBe(false)
+    const { storage, created } = fakeStorage()
+    await saveImported(storage, done.outcome)
+    expect(kept.has(model!.id)).toBe(true)
+    // written from the project (not the original), the board still names the model by the user's path
+    const reopened = parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 })
+    const fresh = await kicadFiles({ ...reopened, kicad: { ...reopened.kicad, original: undefined } })
+    expect(fresh.files["r.kicad_pcb"]).toContain('"${KIPRJMOD}/3d models/R.step"')
+  })
+})
+
 describe("the user's file set", () => {
   it("goes back under the user's own names, with a sheet no sheet symbol uses", async () => {
     const own = text.replace("(at 5 5)", "(at 3 5)")

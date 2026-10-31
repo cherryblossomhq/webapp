@@ -1,4 +1,6 @@
 import { KICAD_MODEL_PATH } from "../../supplier/kicadModel"
+import type { GivenModel, GivenModels } from "../givenModels"
+import { givenModelFor } from "../givenModels"
 import { STOCK_MODEL_RELEASE, stockModelExists } from "./stockModels"
 import type { KicadFootprint, KicadModel } from "./types"
 
@@ -42,15 +44,17 @@ export interface DroppedModel {
   why: string
 }
 
+export { givenModelFor, type GivenModel, type GivenModels }
+
 export interface ModelPlan {
-  /** The model the project holds for this footprint, with its id. */
-  kept: { model: KicadModel; id: string } | null
+  /** The model the project holds for this footprint, with its id; `file` when it is a file given with the board, not one of KiCad's stock library. */
+  kept: { model: KicadModel; id: string; file?: GivenModel } | null
   /** Every other model of the footprint, each with the reason it is not in the project. */
   dropped: DroppedModel[]
 }
 
 /** What the project holds of a footprint's models: the first one that can be, and a reason for each of the rest. */
-export function planModels(fp: KicadFootprint): ModelPlan {
+export function planModels(fp: KicadFootprint, given: GivenModels = new Map()): ModelPlan {
   const plan: ModelPlan = { kept: null, dropped: [] }
   for (const model of fp.models) {
     const drop = (why: string) => plan.dropped.push({ model, why })
@@ -59,7 +63,11 @@ export function planModels(fp: KicadFootprint): ModelPlan {
     else if (x !== 1 || y !== 1 || z !== 1) drop("It is scaled, which the editor does not do for STEP models.")
     else {
       const s = stockPath(model.path)
-      if (!s) drop("It is not a model of KiCad's stock library, so the file it names is not here.")
+      const file = s ? null : givenModelFor(model.path, given)
+      if (file) {
+        if (plan.kept) drop("The editor holds one 3D model per part and land, and this footprint has another one.")
+        else plan.kept = { model, id: file.id, file }
+      } else if (!s) drop("It is not a model of KiCad's stock library, and the file it names was not among the files imported.")
       else {
         const id = stockModelId(model.path)
         if (!id) drop(`KiCad's 3D library at release ${KICAD_LIBRARY_RELEASE} has no ${s.library}/${s.name}.step (the libraries were renamed after KiCad 5), so the parts index cannot serve it.`)

@@ -150,7 +150,10 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     const load = options.loadProjectImporter === undefined ? loadProjectImporter : options.loadProjectImporter
     const projectImporter = (hasProject || !files.board) && load ? await load() : null
     post({ type: "progress", id, phase: "building" })
-    const importOptions: ImportOptions = { ...options.importOptions, name: projectName(files) }
+    // The 3D model files the board's footprints name among the files given (a project's `3d models/` folder): the 3D view draws them, from the file store.
+    const { boardModels } = await import("../export/keep/pack")
+    const models = files.board && bytes ? await boardModels(expanded.files, files.board.path, bytes) : null
+    const importOptions: ImportOptions = { ...options.importOptions, name: projectName(files), ...(models?.given.size ? { models: models.given } : {}) }
     let result: ImportResult
     let projectBytes: ReadFile[] = []
     if (projectImporter) {
@@ -187,7 +190,10 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     const summary = summarize(result, context)
     if (kept) summary.notes.push(kept.note)
     const project = result.status === "imported" ? (kept ? kept.project : result.project) : null
-    const saved = result.status === "imported" ? [...(result.files ?? []), ...(kept ? [kept.file] : [])] : []
+    // Only the model files a part holds go to the file store, once each.
+    const held = new Set(project?.models?.flatMap((m) => (m.model.source === "file" ? [m.model.id] : [])) ?? [])
+    const modelFiles = (models?.files ?? []).filter((f) => held.delete(f.id)).map((f) => ({ id: f.id, name: f.name, bytes: f.data }))
+    const saved = result.status === "imported" ? [...(result.files ?? []), ...(kept ? [kept.file] : []), ...modelFiles] : []
     done({ summary, project, ...(saved.length ? { files: saved } : {}) })
   } catch (e) {
     // A file that unpacks past the limit (its size field said less, or nothing) is said in plain words.

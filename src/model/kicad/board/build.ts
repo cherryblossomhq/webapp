@@ -1117,7 +1117,7 @@ function verifyNets(project: Project, padFacts: Map<string, { number: string; ne
  */
 function compareCopperNets(project: Project, conn: SchematicConnectivity, board: KicadBoard, report: ImportReport): number {
   if (!project.traces.length && !project.vias.length) return 0
-  const derived = derivedCopperNets(project, conn)
+  const derived = derivedCopperNets(project, conn, { keptFills: true })
   const nameOf = new Map(conn.nets.map((n) => [n.id, n.name]))
   const says = (id: string | null | undefined) => (id === undefined || id === null ? "no net" : id === "short" ? "pads of more than one net" : `net ${nameOf.get(id) ?? id}`)
   const front = board.copper.front

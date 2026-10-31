@@ -173,3 +173,25 @@ describe("a zone keeps KiCad's own fill", () => {
     expect(refillZones(plain)).toBe(plain)
   })
 })
+
+describe("a via in another net's zone outline but in a hole of its stored fill", () => {
+  // SIG's zone on the top covers the via's place by its outline, but KiCad's fill of it stops short of the via; GND's zone on the bottom is filled over it.
+  const zones = (fill: boolean) => [
+    `(zone (net 2) (net_name "SIG") (layer "F.Cu") (uuid "c3") (hatch edge 0.5) ${settings} ${polygon(1, 19)} ${fill ? filledPolygon("F.Cu", "(xy 1.5 1.5) (xy 10 1.5) (xy 10 8.5) (xy 1.5 8.5)") : ""})`,
+    `(zone (net 1) (net_name "GND") (layer "B.Cu") (uuid "d4") (hatch edge 0.5) ${settings} ${polygon(1, 19)} ${fill ? filledPolygon("B.Cu", "(xy 1.5 1.5) (xy 18.5 1.5) (xy 18.5 8.5) (xy 1.5 8.5)") : ""})`,
+  ]
+  const via = '(via (at 13 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))'
+  const differs = (fill: boolean) => {
+    const r = importKicadBoard(board({ nets, body: [r1, r2, ...zones(fill), via] }))
+    if (r.status !== "imported") throw new Error(r.message)
+    return r.report.entries.filter((e) => e.code === "copper-net-differs").length
+  }
+
+  it("is on the net of the copper it is in, KiCad's fill, so the report does not call a stitching via netless", () => {
+    expect(differs(true)).toBe(0)
+  })
+
+  it("with no stored fill, two zones' outlines of two nets leave it on neither, as before", () => {
+    expect(differs(false)).toBe(1)
+  })
+})

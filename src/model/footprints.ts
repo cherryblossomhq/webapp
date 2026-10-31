@@ -1,9 +1,23 @@
 import { fp } from "@tscircuit/footprinter"
 import { emptyBox, expandBox, round } from "../lib/geometry"
-import { libraryFootprint } from "./footprintLibrary"
+import { LIBRARY_FOOTPRINTS, libraryFootprint } from "./footprintLibrary"
+import { scoped } from "./scope"
 import type { FootprintDef, PadDef, Project, Vec2 } from "./types"
 
-const cache = new Map<string, FootprintDef>()
+/**
+ * What the library and the footprinter draw for a name: the same for every project, so kept for the
+ * process, and only those. Names come from projects, so the oldest goes past `DRAWN_LIMIT`.
+ */
+const drawn = new Map<string, FootprintDef>()
+const DRAWN_LIMIT = 4096
+
+function keep(def: FootprintDef): FootprintDef {
+  drawn.set(def.name, def)
+  if (drawn.size > DRAWN_LIMIT) drawn.delete(drawn.keys().next().value as string)
+  return def
+}
+
+const LIBRARY = new Set(LIBRARY_FOOTPRINTS)
 
 interface CjElement {
   type: string
@@ -104,33 +118,32 @@ function toPad(e: CjElement): PadDef | null {
   return null
 }
 
-/** Projects' own land patterns (`Project.footprints`), by name. */
-const projectFootprints = new Map<string, FootprintDef>()
+/**
+ * Projects' own land patterns (`Project.footprints`), by name: the scope's (`model/scope.ts`), so on
+ * a server one project's land never stands in for another's of the same name.
+ */
+const projectFootprints = scoped(() => new Map<string, FootprintDef>())
+const ownFootprint = (name: string) => projectFootprints().get(name) ?? projectFootprints.base.get(name)
 
 /** Whether a name is a project's own land pattern (registered), rather than a library or footprinter one. */
-export const isProjectFootprint = (name: string) => projectFootprints.has(name)
+export const isProjectFootprint = (name: string) => ownFootprint(name) !== undefined
 
 /** Make a project's own land patterns resolve by name, as `registerProjectParts` does its parts. */
 export function registerProjectFootprints(project: Pick<Project, "footprints">) {
-  for (const def of project.footprints ?? []) {
-    if (projectFootprints.get(def.name) === def) continue
-    projectFootprints.set(def.name, def)
-    cache.delete(def.name)
-  }
+  const own = projectFootprints()
+  for (const def of project.footprints ?? []) own.set(def.name, def)
 }
 
 /**
- * Build (and cache) footprint geometry from a library name, a project's own land pattern or a
- * footprinter string such as "0603" or "soic8".
+ * Footprint geometry from a library name, a project's own land pattern or a footprinter string such
+ * as "0603" or "soic8", in that order.
  */
 export function getFootprint(name: string): FootprintDef {
-  const hit = cache.get(name)
+  if (LIBRARY.has(name)) return drawn.get(name) ?? keep(libraryFootprint(name)!)
+  const own = ownFootprint(name)
+  if (own) return own
+  const hit = drawn.get(name)
   if (hit) return hit
-  const own = libraryFootprint(name) ?? projectFootprints.get(name)
-  if (own) {
-    cache.set(name, own)
-    return own
-  }
   let elements: CjElement[] = []
   try {
     elements = fp.string(name).circuitJson() as unknown as CjElement[]
@@ -188,9 +201,7 @@ export function getFootprint(name: string): FootprintDef {
       : { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }
   }
 
-  const def: FootprintDef = { name, pads, silk, courtyard }
-  cache.set(name, def)
-  return def
+  return keep({ name, pads, silk, courtyard })
 }
 
 // ---------- options the footprinter reads past ----------
@@ -234,7 +245,7 @@ function copperOf(name: string): string | null {
 export function footprintOptions(name: string): { ignored: string[]; takes: string[] } {
   const none = { ignored: [], takes: [] }
   const s = name.trim()
-  if (!s || libraryFootprint(s) || projectFootprints.has(s)) return none
+  if (!s || LIBRARY.has(s) || isProjectFootprint(s)) return none
   let params: Record<string, unknown>
   let read: Record<string, unknown>
   try {
@@ -271,7 +282,7 @@ export function footprintOptions(name: string): { ignored: string[]; takes: stri
 
 export function isValidFootprint(name: string): boolean {
   if (!name.trim()) return false
-  if (libraryFootprint(name) || projectFootprints.has(name)) return true
+  if (LIBRARY.has(name) || isProjectFootprint(name)) return true
   try {
     const cj = fp.string(name).circuitJson() as unknown as CjElement[]
     return cj.some((e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole")

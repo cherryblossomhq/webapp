@@ -3,6 +3,7 @@ import { componentTextBoxes } from "../blocks"
 import { schematicBounds, schematicPins } from "../instances"
 import { labelBox } from "../labels"
 import { findPart } from "../library"
+import { scoped } from "../scope"
 import { fieldsInFrame, fieldsOnSheet, symbolOf } from "../symbolDrawing"
 import { SCH_GRID } from "../symbols"
 import type { ComponentInstance, PartDef, Rotation, SymbolPort } from "../types"
@@ -48,7 +49,8 @@ export interface PartShape {
   pins: PinShape[]
 }
 
-const shapeCache = new Map<string, PartShape>()
+/** By part id, which names what the scope registered (`model/scope.ts`), so the cache is the scope's too. */
+const shapeCache = scoped(() => new Map<string, PartShape>())
 
 /** Parts whose text Tidy leaves out of its shapes: only while it finds out whether that text is what leaves no room (`withoutTexts`). */
 let ignoredTexts: ReadonlySet<string> = new Set()
@@ -109,7 +111,7 @@ function shapeOf(c: ComponentInstance, rot: Rotation): PartShape {
   const at: ComponentInstance = reseat(c, { x: 0, y: 0, rot })
   const texts = ignoredTexts.has(c.id) ? [] : componentTextBoxes(at)
   const key = `${c.partId}|${rot}${drawingKey(c)}|${texts.map((t) => `${t.minX},${t.minY},${t.maxX},${t.maxY}`).join(";")}`
-  const hit = shapeCache.get(key)
+  const hit = shapeCache().get(key)
   if (hit) return hit
   const b = boxToGrid(schematicBounds(at, part))
   const world = schematicPins(at, part)
@@ -123,7 +125,7 @@ function shapeOf(c: ComponentInstance, rot: Rotation): PartShape {
     maxY: b.maxY - inset((p) => p.dir === "up" && Math.abs(p.y - b.maxY) < 1e-6),
   }
   const shape: PartShape = { rot, body, texts: texts.map(boxToGrid), pins }
-  shapeCache.set(key, shape)
+  shapeCache().set(key, shape)
   return shape
 }
 
@@ -178,7 +180,7 @@ export interface PortShape {
   text: Box
 }
 
-const portCache = new Map<string, PortShape>()
+const portCache = scoped(() => new Map<string, PortShape>())
 
 /** The way a wire leaves the pin of a port drawn unturned: down for a supply, up for ground, whichever the imported symbol says. */
 export function portOwnDir(kind: RailKind, via?: PortVia): Dir {
@@ -209,7 +211,7 @@ export function portProblem(partId: string): string | null {
 export function portShape(kind: RailKind, net: string, out: Dir): PortShape {
   const via = portVias.get(net)
   const key = via ? `${kind}|${net}|${out}|${via.partId}|${via.fields ? JSON.stringify(via.fields) : ""}` : `${kind}|${net}|${out}`
-  const hit = portCache.get(key)
+  const hit = portCache().get(key)
   if (hit) return hit
   const partId = via?.partId ?? kind
   const rot = portTurn(portOwnDir(kind, via), OPPOSITE[out])
@@ -231,7 +233,7 @@ export function portShape(kind: RailKind, net: string, out: Dir): PortShape {
   // The editor's own port has one text, its name. An imported one writes each field it shows: all of them are its text.
   const text: Box = !via ? texts[0] : texts.length ? texts.reduce((a, b) => ({ minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) })) : body
   const shape: PortShape = { partId, ...(via?.fields ? { fields: fieldsOnSheet(via.fields, { rot }) } : {}), rot, ox: -px, oy: -py, body, text }
-  portCache.set(key, shape)
+  portCache().set(key, shape)
   return shape
 }
 

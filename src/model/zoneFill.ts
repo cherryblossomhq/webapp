@@ -1,6 +1,7 @@
 import { Clipper, Clipper64, ClipType, FillRule, JoinType, PointInPolygonResult, PolyTree64, type Path64, type Paths64, type PolyPath64 } from "@countertype/clipper2-ts"
 import type { SchematicConnectivity } from "./connectivity"
 import { classIndex, type ClassIndex } from "./netClasses"
+import { scoped } from "./scope"
 import { isNpth, type WorldPad } from "./instances"
 import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
@@ -364,14 +365,18 @@ function classSignature(rules: Project["rules"]): string {
 
 /** What a group's kept fill is held under: at most this many groups, the least recently used going first. */
 let cacheLimit = 96
-const fillCache = new Map<string, ZoneFill[]>()
-/** The groups filled (not read from the cache) since the last `takeFilled`: what a worker sends back to the thread that asked. */
-let filledSinceTaken: { key: string; fills: ZoneFill[] }[] = []
+/**
+ * The kept fills, and the groups filled (not read from the cache) since the last `takeFilled`: what
+ * a worker sends back to the thread that asked. The scope's (`model/scope.ts`): on a server the
+ * fills of one call's board are neither read by another's nor left behind, where nothing takes them.
+ */
+const fillStore = scoped(() => ({ cache: new Map<string, ZoneFill[]>(), sinceTaken: [] as { key: string; fills: ZoneFill[] }[] }))
 
-function remember(key: string, fills: ZoneFill[]) {
-  fillCache.delete(key)
-  fillCache.set(key, fills)
-  while (fillCache.size > cacheLimit) fillCache.delete(fillCache.keys().next().value as string)
+function remember(key: string, made: ZoneFill[]) {
+  const { cache } = fillStore()
+  cache.delete(key)
+  cache.set(key, made)
+  while (cache.size > cacheLimit) cache.delete(cache.keys().next().value as string)
 }
 
 /** Put in the fills another thread made, under the keys it made them under. */
@@ -381,21 +386,24 @@ export function seedZoneFills(entries: { key: string; fills: ZoneFill[] }[]): vo
 
 /** The groups filled since this was last called (and forget them): the worker's reply. */
 export function takeFilled(): { key: string; fills: ZoneFill[] }[] {
-  const out = filledSinceTaken
-  filledSinceTaken = []
+  const kept = fillStore()
+  const out = kept.sinceTaken
+  kept.sinceTaken = []
   return out
 }
 
 /** How many groups' fills are kept (0 keeps none: every fill is made again, as before fills were kept). */
 export function setZoneFillCacheLimit(n: number): void {
   cacheLimit = Math.max(0, Math.floor(n))
-  while (fillCache.size > cacheLimit) fillCache.delete(fillCache.keys().next().value as string)
+  const { cache } = fillStore()
+  while (cache.size > cacheLimit) cache.delete(cache.keys().next().value as string)
 }
 
 /** Forget every kept fill (tests, and a measure of a cold fill). */
 export function clearZoneFillCache(): void {
-  fillCache.clear()
-  filledSinceTaken = []
+  const kept = fillStore()
+  kept.cache.clear()
+  kept.sinceTaken = []
 }
 
 /** A 64-bit hash of a string as 16 hex digits (two 32-bit hashes of different kinds), which is what keys are made of. */
@@ -511,7 +519,7 @@ export function fillPolygonZonesEx(project: Project, sch: SchematicConnectivity,
   const byKey = new Map<string, ZoneFill>()
   const missing: PendingGroup[] = []
   for (const group of groupZones(prep, settings, input.keepIslands === true)) {
-    const kept = fillCache.get(group.key)
+    const kept = fillStore().cache.get(group.key)
     if (kept) {
       remember(group.key, kept)
       for (const f of kept) byKey.set(`${f.zoneId}|${f.layer}`, f)
@@ -527,7 +535,7 @@ export function fillPolygonZonesEx(project: Project, sch: SchematicConnectivity,
     }
     const fills = fillGroup(prep, group.zones, settings)
     remember(group.key, fills)
-    filledSinceTaken.push({ key: group.key, fills })
+    fillStore().sinceTaken.push({ key: group.key, fills })
     for (const f of fills) byKey.set(`${f.zoneId}|${f.layer}`, f)
   }
   // The result keeps the order the zones are stored in, as every consumer expects.

@@ -1,6 +1,7 @@
 import { passive } from "./partKit"
 import { CONNECTOR_PARTS } from "./partsConnectors"
 import { discreteSymbol } from "./discreteSymbols"
+import { scoped } from "./scope"
 import { makeBoxSymbol } from "./symbols"
 import type { PartCategory, PartDef } from "./types"
 
@@ -415,16 +416,20 @@ const byId = new Map(PARTS.map((p) => [p.id, p]))
 /**
  * Parts made for a project (`Project.parts`), registered as projects are opened or edited.
  * Ids carry a hash of the definition, so one id never names two different parts and
- * entries never need removing.
+ * entries never need removing. The ids are only as honest as the file that holds them, so the
+ * registry is the scope's (`model/scope.ts`): on a server, a part one project registers under an
+ * id is never what another project reads by it.
  */
-const projectParts = new Map<string, PartDef>()
+const projectParts = scoped(() => new Map<string, PartDef>())
+const projectPart = (id: string) => projectParts().get(id) ?? projectParts.base.get(id)
 
 export function registerPart(part: PartDef) {
   if (byId.has(part.id)) return
-  projectParts.set(part.id, part)
+  const parts = projectParts()
+  parts.set(part.id, part)
   // A part with several units is placed as several symbols of one reference; only one of them is on the board.
   // The others are placements of its twin, which has the same pins and drawings and no footprint (`unitOf`).
-  if (part.units && part.units.count > 1 && !part.powerNet && !part.unitOf) projectParts.set(unitTwinId(part.id), { ...part, id: unitTwinId(part.id), footprints: [], unitOf: part.id })
+  if (part.units && part.units.count > 1 && !part.powerNet && !part.unitOf) parts.set(unitTwinId(part.id), { ...part, id: unitTwinId(part.id), footprints: [], unitOf: part.id })
 }
 
 /** The id of the twin a part's other units are placed as (see `registerPart`). */
@@ -432,14 +437,14 @@ export const unitTwinId = (id: string) => `${id}@sub`
 
 /** Takes a project part out of memory again: for an import that registered parts to check a project and then refused it. */
 export function unregisterPart(id: string) {
-  projectParts.delete(id)
-  projectParts.delete(unitTwinId(id))
+  projectParts().delete(id)
+  projectParts().delete(unitTwinId(id))
 }
 
 /** The ids of the project parts in memory, so that an import can tell which parts it registered. */
-export const projectPartIds = (): string[] => [...projectParts.keys()].filter((id) => !id.endsWith("@sub"))
+export const projectPartIds = (): string[] => [...projectParts().keys()].filter((id) => !id.endsWith("@sub"))
 
-export const isRegistered = (id: string) => byId.has(id) || projectParts.has(id)
+export const isRegistered = (id: string) => byId.has(id) || projectPart(id) !== undefined
 
 export function getPart(id: string): PartDef {
   const part = findPart(id)
@@ -447,7 +452,7 @@ export function getPart(id: string): PartDef {
   return part
 }
 
-export const findPart = (id: string) => byId.get(id) ?? projectParts.get(id)
+export const findPart = (id: string) => byId.get(id) ?? projectPart(id)
 
 export const CATEGORIES: PartCategory[] = [
   "Symbols",

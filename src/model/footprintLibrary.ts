@@ -252,5 +252,6 @@ const BUILDERS: Record<string, () => FootprintDef> = {
 export const LIBRARY_FOOTPRINTS = Object.keys(BUILDERS)
 
 export function libraryFootprint(name: string): FootprintDef | null {
-  return BUILDERS[name]?.() ?? null
+  // Own keys only: `constructor` or `toString` is a name a project can give, and no land.
+  return Object.hasOwn(BUILDERS, name) ? BUILDERS[name]() : null
 }

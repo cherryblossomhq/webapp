@@ -95,7 +95,8 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
  * project have no library link, and get_design naming each chip by its part's id.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
-  "esp32-robot": { circuit: "c62f5c073b4216f8", notes: "1c3eb23971c052c9", svg: "c494fdf7fd9da98c", design: "0d556351697db72d" },
+  // its routed copper changed once a through-hole pad joined a pour by its copper and not only by its centre (`joinsFill`), and with it the board in its Circuit JSON
+  "esp32-robot": { circuit: "0593aeab245aa91c", notes: "1c3eb23971c052c9", svg: "c494fdf7fd9da98c", design: "0d556351697db72d" },
   node: { circuit: "8c25f23fa2131473", notes: "1c3eb23971c052c9", svg: "80a9fd3babf7591e", design: "10131824a2130a1a" },
   blinker: { circuit: "51cb1a459952ff8e", notes: "1c3eb23971c052c9", svg: "d47e7e1b0e8856f5", design: "f36466f25da0aa02" },
   regulator: { circuit: "322e01a20d7dfc72", notes: "1c3eb23971c052c9", svg: "70e18bc28b56ec8e", design: "2ebca66d732e60a2" },

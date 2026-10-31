@@ -2,9 +2,13 @@ import { imp } from "./kicad-sheets-fixtures"
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
-import { registerProjectParts } from "../src/model/customParts"
+import { customPartId, customPartProblems, registerProjectParts } from "../src/model/customParts"
 import { EXAMPLES } from "../src/model/examples"
-import { addComponent, createProject } from "../src/model/ops"
+import { schematicPins } from "../src/model/instances"
+import RETIRED from "../src/model/migrations/libraryParts.json"
+import { fileModel, setModel } from "../src/model/models3d"
+import { addComponent, connectPins, createProject, resolvePinSpec } from "../src/model/ops"
+import { partFindings } from "../src/model/partChecks"
 import {
   migrateProjectFile,
   parseProjectFile,
@@ -14,7 +18,7 @@ import {
   serializeProject,
   summarizeProject,
 } from "../src/model/projectFile"
-import type { Project } from "../src/model/types"
+import type { CustomPartSpec, Project } from "../src/model/types"
 
 const origin = { id: "p1", createdAt: 1_000, updatedAt: 2_000 }
 
@@ -70,7 +74,7 @@ describe("the project file", () => {
     expect(again.project.futureField).toEqual({ a: 1 })
   })
 
-  it.each([4, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
+  it.each([5, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
     const file = JSON.parse(serializeProject(createProject()))
     file.version = version
     expect(problem(() => parseProjectFile(file, origin))).toBe("too_new")
@@ -253,7 +257,7 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     const migrated = migrateProjectFile(v2)
     expect(migrated).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(3)
+    expect(PROJECT_FILE_VERSION).toBe(4)
   })
   it("a reader of version 2 would refuse a newer file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -414,7 +418,7 @@ describe("version 2, before symbols had units, mirrors, fields of their own and 
 
   it("is not refused, and a newer file is: a reader of this version does not guess at a newer one", () => {
     expect(() => migrateProjectFile({ format: PROJECT_FILE_FORMAT, version: 2, project: { name: "x", components: [] } })).not.toThrow()
-    expect(problem(() => parseProjectFile({ format: PROJECT_FILE_FORMAT, version: 4, project: {} }, origin))).toBe("too_new")
+    expect(problem(() => parseProjectFile({ format: PROJECT_FILE_FORMAT, version: PROJECT_FILE_VERSION + 1, project: {} }, origin))).toBe("too_new")
   })
 })
 
@@ -682,7 +686,7 @@ describe("a one-sheet project, before sheets (S1)", () => {
     expect(back.sheetSymbols).toEqual(project.sheetSymbols)
     expect(back.components.map((c) => [c.ref, c.inst])).toEqual(project.components.map((c) => [c.ref, c.inst]))
     expect(back.scope).toBeUndefined()
-    expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(project)), version: 4 }, origin))).toBe("too_new")
+    expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(project)), version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
   })
 })
 
@@ -747,7 +751,7 @@ describe("before variants (S9) and KiCad's joining rules (S11)", () => {
   })
 
   it("a file newer than this reader is refused, so it cannot save over one with variants", () => {
-    expect(problem(() => parseProjectFile({ ...v13, version: 4 }, origin))).toBe("too_new")
+    expect(problem(() => parseProjectFile({ ...v13, version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
   })
 })
 
@@ -795,7 +799,7 @@ describe("before directive labels and rule areas (S8)", () => {
     expect(read.drawings).toEqual(doc.project.drawings)
     expect(read.rules.netClasses).toEqual(doc.project.rules.netClasses)
     expect(parseProjectFile(serializeProject(read), origin).drawings).toEqual(read.drawings)
-    expect(problem(() => parseProjectFile({ ...doc, version: 4 }, origin))).toBe("too_new")
+    expect(problem(() => parseProjectFile({ ...doc, version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
   })
 })
 
@@ -807,13 +811,13 @@ describe("version 3 is the whole KiCad import", () => {
   }
   const body = (p: Project) => JSON.parse(serializeProject(p)).project
 
-  it("a newly saved file says 3", () => {
-    expect(PROJECT_FILE_VERSION).toBe(3)
-    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(3)
-    expect(JSON.parse(serializeProject(rich())).version).toBe(3)
+  it("a newly saved file says 4, the version after it", () => {
+    expect(PROJECT_FILE_VERSION).toBe(4)
+    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(4)
+    expect(JSON.parse(serializeProject(rich())).version).toBe(4)
   })
 
-  it("reading a version 3 file changes nothing", () => {
+  it("reading a file of the current version changes nothing", () => {
     const file = JSON.parse(serializeProject(rich()))
     expect(migrateProjectFile(file)).toEqual(file.project)
     expect(body(parseProjectFile(file, origin))).toEqual(file.project)
@@ -825,11 +829,61 @@ describe("version 3 is the whole KiCad import", () => {
   it("a version 2 file goes to 3 unchanged, with the root sheet listed", () => {
     expect(migrateProjectFile(v2)).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v2, origin)
-    expect(JSON.parse(serializeProject(read)).version).toBe(3)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
     expect(read.sheets).toEqual([{ id: "root" }])
   })
 
-  it("a file at 4, 14 or 15 is newer than this editor", () => {
-    for (const version of [4, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
+  it("a file at 5, 14 or 15 is newer than this editor", () => {
+    for (const version of [5, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
+  })
+})
+
+describe("version 4: the library holds basic parts only, and a project keeps the chips it placed as its own", () => {
+  // A version 3 document as the editor wrote it while the library listed chips: a 555 on its DIP land (the library's
+  // second package for it) with a STEP model, wired to a resistor. "ne555" is the library's id, which `tests/chips.ts` still draws.
+  const ne555 = RETIRED.ne555 as unknown as CustomPartSpec
+  const v3 = () => {
+    let p = createProject("555")
+    p = addComponent(p, "ne555", { sch: { x: 0, y: 0 }, footprint: "dip8" }).project
+    p = addComponent(p, "resistor", { sch: { x: 3, y: 0 } }).project
+    p = connectPins(p, resolvePinSpec(p, "U1.OUT")!, resolvePinSpec(p, "R1.1")!)
+    p = setModel(p, "ne555", "dip8", fileModel("c".repeat(64), "u1.step", "step"))
+    return { before: p, file: { ...JSON.parse(serializeProject(p)), version: 3 } }
+  }
+  const nets = (p: Project) => computeConnectivity(p).nets.map((n) => [n.name, n.pins.map((q) => `${q.componentId}.${q.pin}`).sort()])
+
+  it("gives the project the chip as a part of its own, drawn as the library drew it, on the land it had", () => {
+    const { before, file } = v3()
+    const read = parseProjectFile(file, origin)
+    const u1 = read.components.find((c) => c.ref === "U1")!
+    expect(u1).toMatchObject({ partId: ne555.id, footprint: "dip8" })
+    expect(read.components.find((c) => c.ref === "R1")!.partId).toBe("resistor")
+    expect(read.parts).toEqual([ne555])
+    expect(read.parts![0].source).toEqual({ pins: "library", land: "library" })
+    expect(read.models).toEqual([{ part: ne555.id, footprint: "dip8", model: before.models![0].model }])
+    // Every pin where it was, so every wire still meets it.
+    expect(schematicPins(u1).map((w) => [w.pin, w.pos])).toEqual(schematicPins(before.components[0]).map((w) => [w.pin, w.pos]))
+    expect(nets(read)).toEqual(nets(before))
+    // As unreported in Checks as it was in the library, on its other package too.
+    expect(partFindings(read)).toEqual([])
+    const saved = JSON.parse(serializeProject(read))
+    expect(saved.version).toBe(4)
+    expect(migrateProjectFile(saved)).toEqual(saved.project)
+  })
+
+  it("adds a chip once, however many components and models name it, and leaves a project without one as it was", () => {
+    const { file } = v3()
+    const twice = { ...file, project: { ...file.project, components: [...file.project.components, { ...file.project.components[0], id: "c_copy", ref: "U2" }] } }
+    expect(migrateProjectFile(twice).parts).toEqual([ne555])
+    const plain = { ...file, project: { ...file.project, components: file.project.components.filter((c: { partId: string }) => c.partId === "resistor"), models: undefined } }
+    expect(migrateProjectFile(plain)).toEqual(plain.project)
+  })
+
+  it("keeps every chip the library had as a part that builds, under an id that is the hash of its definition", () => {
+    for (const spec of Object.values(RETIRED) as unknown as CustomPartSpec[]) {
+      const { id, source: _source, ...body } = spec
+      expect(customPartProblems(spec), spec.name).toEqual([])
+      expect(customPartId(body)).toBe(id)
+    }
   })
 })

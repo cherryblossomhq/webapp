@@ -286,7 +286,7 @@ describe("dimensions, groups and images are stored compactly and read back as th
     expect(written.project).not.toHaveProperty("im")
   })
   it("a newer file is still refused", () => {
-    expect(() => parseProjectFile({ format: "cherryblossom.project", version: 4, project: {} }, { id: "x" })).toThrow(/newer version/)
+    expect(() => parseProjectFile({ format: "cherryblossom.project", version: PROJECT_FILE_VERSION + 1, project: {} }, { id: "x" })).toThrow(/newer version/)
   })
 })
 

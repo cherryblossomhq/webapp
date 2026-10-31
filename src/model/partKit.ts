@@ -8,60 +8,6 @@ export const passive = (...pins: [string, string][]): PinDef[] => pins.map(([num
 /** Pin numbers in reading order: 1, 2, 10, A1, A2, B1... */
 export const byPinNumber = (a: PinDef, b: PinDef) => a.number.localeCompare(b.number, undefined, { numeric: true })
 
-export interface IcSpec {
-  id: string
-  name: string
-  category?: PartCategory
-  description: string
-  mpn: string
-  footprints: string[]
-  left?: [string, string][]
-  right?: [string, string][]
-  top?: [string, string][]
-  bottom?: [string, string][]
-  /** Kind of the left and right pins; inputs on the left and outputs on the right by default. */
-  sideKind?: PinDef["kind"]
-  refPrefix?: string
-  keywords?: string[]
-  padAlias?: Record<string, string>
-  body3d?: PartDef["body3d"]
-}
-
-/** A box-symbol part: power pins on top, ground below, the rest on the sides. */
-export function ic(spec: IcSpec): PartDef {
-  const toPins = (list?: [string, string][]) => list?.map(([number, name]) => ({ number, name })) ?? []
-  const left = toPins(spec.left)
-  const right = toPins(spec.right)
-  const top = toPins(spec.top)
-  const bottom = toPins(spec.bottom)
-  const pinDefs: PinDef[] = []
-  for (const [list, kind] of [
-    [left, spec.sideKind ?? "input"],
-    [right, spec.sideKind ?? "output"],
-    [top, "power"],
-    [bottom, "ground"],
-  ] as const) {
-    for (const p of list) pinDefs.push({ number: p.number, name: p.name, kind })
-  }
-  pinDefs.sort(byPinNumber)
-  return {
-    id: spec.id,
-    name: spec.name,
-    category: spec.category ?? "ICs",
-    description: spec.description,
-    refPrefix: spec.refPrefix ?? "U",
-    pins: pinDefs,
-    symbol: makeBoxSymbol({ left, right, top, bottom }),
-    footprints: spec.footprints,
-    defaultProps: { mpn: spec.mpn },
-    valueProp: "mpn",
-    keywords: spec.keywords,
-    padAlias: spec.padAlias,
-    mpn: spec.mpn,
-    body3d: spec.body3d ?? { height: 1.4, color: "#1c1c1f" },
-  }
-}
-
 export function header(n: number, female = false): PartDef {
   const pins = Array.from({ length: n }, (_, i) => ({ number: String(i + 1), name: String(i + 1) }))
   return {

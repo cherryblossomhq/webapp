@@ -2,7 +2,7 @@ import { ChevronRight, PanelLeftClose, Pencil, Search, Sparkles, Trash2, Upload,
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { SymbolPreview } from "../editor/schematic/SymbolView"
 import { projectPartDefs } from "../model/customParts"
-import { BASIC_PARTS, CATEGORIES } from "../model/library"
+import { CATEGORIES, PARTS } from "../model/library"
 import { unusedParts } from "../model/projectParts"
 import { searchLibrary, type PartHit } from "../model/search"
 import type { PartDef } from "../model/types"
@@ -46,7 +46,7 @@ export function LibraryPanel() {
       : undefined
   const searching = query.trim().length > 0
   // The panel's library is the basic parts: a specific chip or module comes from the parts database below.
-  const matched = useMemo(() => (searching ? searchLibrary(query, own, BASIC_PARTS) : []), [query, own, searching])
+  const matched = useMemo(() => (searching ? searchLibrary(query, own) : []), [query, own, searching])
   const partial = !!matched[0]?.partial
   // The parts database's answer, after the library's: KiCad parts the library doesn't have.
   const index = useIndexSearch(searching ? query : "", partial ? [] : matched.map((h) => h.part.name))
@@ -69,7 +69,7 @@ export function LibraryPanel() {
     if (searching) return []
     return [
       { title: "This project", parts: own, own: true },
-      ...CATEGORIES.map((category) => ({ title: category, parts: BASIC_PARTS.filter((p) => p.category === category), own: false })),
+      ...CATEGORIES.map((category) => ({ title: category, parts: PARTS.filter((p) => p.category === category), own: false })),
     ].filter((g) => g.parts.length)
   }, [own, searching])
   const listRef = useRef<HTMLDivElement>(null)

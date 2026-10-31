@@ -85,7 +85,7 @@ function pinsOfRegulator(part: PartDef): boolean {
 export const switchPins = (part: PartDef | undefined) => (part?.pins ?? []).filter((p) => SWITCH_PIN.test(p.name.trim()))
 
 export const isLed = (part: PartDef | undefined) =>
-  part?.id === "led" || part?.id === "ws2812b" || (!!part?.jumpers && part.category === "Diodes" && part.pins.length === 2 && /led/i.test(`${part.refPrefix} ${part.name}`))
+  part?.id === "led" || /^(WS2812|SK6812)/i.test(part?.mpn ?? "") || (!!part?.jumpers && part.category === "Diodes" && part.pins.length === 2 && /led/i.test(`${part.refPrefix} ${part.name}`))
 
 /** Farads in a capacitor's value ("100nF", "4u7", "10 uF"), or null when it isn't one. */
 export function capacitance(c: ComponentInstance): number | null {

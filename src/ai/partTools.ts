@@ -799,12 +799,13 @@ export function describeSource(spec: Pick<CustomPartSpec, "source">): string {
   const edited = [s?.pins === "user" && "pins", s?.land === "user" && "land"].filter(Boolean)
   if (s && edited.length) {
     // What it was built from, which the rest of the source still names.
-    const was = s.file ? "file" : s.database ? "database" : s.supplier ? "supplier" : s.imported ? "import" : "memory"
+    const was = s.file ? "file" : s.database ? "database" : s.supplier ? "supplier" : s.imported ? "import" : s.pins === "library" || s.land === "library" ? "library" : "memory"
     const base = describeSource({ source: { ...s, pins: s.pins === "user" ? was : s.pins, land: s.land === "user" ? was : s.land } })
     return `${base}, then its ${edited.join(" and ")} edited by hand by the user, who stands by them`
   }
   if (s?.file) return `imported from the user's own KiCad files (${s.file.symbol ? `symbol ${s.file.symbol}, ` : "a footprint alone, a pin for each pad, "}footprint ${s.file.footprint}), pins and land from them`
   const d = s?.database
+  if (s?.pins === "library") return "from the editor's own library, which listed chips and modules until October 2026; pins and land not checked against a supplier"
   if (s?.pins === "import") return `from the KiCad schematic ${s.imported?.file ?? "the user brought in"} (${s.imported?.libId ?? "its own symbol"}), drawn and pinned as that file has it`
   if (d?.origin === "kicad") return `from the KiCad library part ${d.key}${d.release ? ` (release ${d.release})` : ""}, pins and land from the library`
   if (d?.origin === "easyeda") return `from LCSC ${d.key}, a supplier record the parts database kept, pins and land from it`

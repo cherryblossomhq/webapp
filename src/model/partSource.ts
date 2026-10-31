@@ -7,7 +7,7 @@ import type { CustomPartSpec, PartSource } from "./types"
 // ask for their own credit. A part imported from the user's own files asks for none.
 
 export interface SourceLine {
-  /** The short name of the source: "KiCad library", "LCSC C6186", "Imported KiCad files", "From memory", "Edited by hand". */
+  /** The short name of the source: "KiCad library", "LCSC C6186", "Imported KiCad files", "Cherry Blossom library", "From memory", "Edited by hand". */
   label: string
   /** What else is known: the library part and release, how many drawings agree. */
   detail: string
@@ -53,8 +53,9 @@ export function partSourceLine(spec: CustomPartSpec | undefined): SourceLine | n
   return line
 }
 
-/** The source of a part built from data: the user's own files, the database's KiCad or supplier record, or a supplier's own. */
+/** The source of a part built from data: the user's own files, the database's KiCad or supplier record, a supplier's own, or the editor's library. */
 function builtLine(s: PartSource): SourceLine | null {
+  if (s.pins === "library") return { label: "Cherry Blossom library", detail: "Drawn for the editor's own library, which no longer lists chips and modules" }
   if (s.file) {
     return { label: "Imported KiCad files", detail: s.file.symbol ? `${s.file.symbol} on ${s.file.footprint}` : `Footprint ${s.file.footprint}, a pin for each pad` }
   }

@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { BASIC_PARTS, PARTS } from "../src/model/library"
+import { findPart, PARTS } from "../src/model/library"
+import RETIRED from "../src/model/migrations/libraryParts.json"
 import { parseValue, searchLibrary } from "../src/model/search"
 
 const ids = (query: string) => searchLibrary(query).map((h) => h.part.id)
 const top = (query: string) => searchLibrary(query)[0]
+// A project's own chips are searched with the same understanding of numbers, synonyms and typos:
+// the ones the library used to list (`tests/chips.ts`), as a project's parts.
+const CHIPS = Object.keys(RETIRED).map((id) => findPart(id)!)
+const own = (query: string) => searchLibrary(query, CHIPS).map((h) => h.part.id)
+const ownTop = (query: string) => searchLibrary(query, CHIPS)[0]
 
 describe("parts search", () => {
   it("lists every part for an empty query", () => {
@@ -12,20 +18,20 @@ describe("parts search", () => {
 
   it("finds parts by name, keyword, MPN fragment and synonym", () => {
     expect(ids("resistor")[0]).toBe("resistor")
-    expect(ids("555")[0]).toBe("ne555")
-    expect(ids("328p")[0]).toBe("atmega328p")
-    expect(ids("op-amp")[0]).toBe("lm358")
-    expect(ids("ldo")).toContain("ams1117_3v3")
+    expect(own("555")[0]).toBe("ne555")
+    expect(own("328p")[0]).toBe("atmega328p")
+    expect(own("op-amp")[0]).toBe("lm358")
+    expect(own("ldo")).toContain("ams1117_3v3")
     expect(ids("mosfet")).toEqual(expect.arrayContaining(["nmos", "pmos"]))
-    expect(ids("usb serial")[0]).toBe("ch340c")
+    expect(own("usb serial")[0]).toBe("ch340c")
   })
 
   it("forgives typos and plurals", () => {
-    expect(ids("regualtor")).toEqual(expect.arrayContaining(["ams1117_3v3", "lm7805"]))
+    expect(own("regualtor")).toEqual(expect.arrayContaining(["ams1117_3v3", "lm7805"]))
     expect(ids("potentiometr")[0]).toBe("potentiometer")
     expect(ids("resistors")[0]).toBe("resistor")
     // A part number with a different digit is a different part, not a typo.
-    expect(ids("ne556")).toEqual([])
+    expect(own("ne556")).toEqual([])
   })
 
   it("reads values into the properties a placed part gets", () => {
@@ -43,38 +49,35 @@ describe("parts search", () => {
     expect(top("100nF 0603")).toMatchObject({ part: { id: "capacitor" }, props: { capacitance: "100nF" }, footprint: "0603" })
     expect(top("10k 1206")).toMatchObject({ part: { id: "resistor" }, footprint: "1206" })
     expect(ids("sot-23")).toEqual(expect.arrayContaining(["npn", "pnp", "nmos", "pmos"]))
-    expect(top("to-220")).toMatchObject({ part: { id: "lm7805" }, footprint: "to220_3" })
+    expect(ownTop("to-220")).toMatchObject({ part: { id: "lm7805" }, footprint: "to220_3" })
     expect(ids("6 pin header")[0]).toBe("header_1x6")
     expect(ids("header 4")[0]).toBe("header_1x4")
   })
 
   it("normalizes voltages, so 3.3V finds the 3v3 regulator", () => {
-    expect(ids("3.3V regulator")).toEqual(["ams1117_3v3", "ap2112k_3v3"])
-    expect(ids("5v regulator")).toEqual(["lm7805", "ams1117_5v0"])
+    expect(own("3.3V regulator")).toEqual(["ams1117_3v3", "ap2112k_3v3"])
+    expect(own("5v regulator")).toEqual(["lm7805", "ams1117_5v0"])
   })
 
   it("falls back to the closest parts, marked partial, when not every word matches", () => {
-    const hits = searchLibrary("ldo tps7a02")
+    const hits = searchLibrary("ldo tps7a02", CHIPS)
     expect(hits[0]).toMatchObject({ part: { id: "ams1117_3v3" }, partial: true })
     expect(searchLibrary("bme280")).toEqual([])
   })
 
-  it("searches only the basic parts it is given, as the library panel does, leaving chips and modules to the parts database", () => {
-    const basic = (query: string) => searchLibrary(query, [], BASIC_PARTS).map((h) => h.part.id)
-    expect(BASIC_PARTS.filter((p) => p.category === "ICs" || p.category === "Modules")).toEqual([])
-    expect(BASIC_PARTS.filter((p) => p.mpn && (p.category === "Power" || p.category === "Diodes"))).toEqual([])
-    expect(BASIC_PARTS.map((p) => p.id)).toEqual(expect.arrayContaining(["resistor", "capacitor", "led", "npn", "power", "ground", "battery", "header_1x4", "usb_c", "pushbutton"]))
-    expect(basic("555")).toEqual([])
-    expect(basic("ldo")).toEqual([])
-    expect(basic("10k 0603")[0]).toBe("resistor")
-    // Sakura still searches every built-in part.
-    expect(ids("555")[0]).toBe("ne555")
+  it("holds basic parts only, leaving chips and modules to the parts database", () => {
+    expect(PARTS.filter((p) => p.category === "ICs" || p.category === "Modules")).toEqual([])
+    expect(PARTS.filter((p) => p.mpn && (p.category === "Power" || p.category === "Diodes"))).toEqual([])
+    expect(PARTS.map((p) => p.id)).toEqual(expect.arrayContaining(["resistor", "capacitor", "led", "npn", "power", "ground", "battery", "header_1x4", "usb_c", "pushbutton"]))
+    expect(ids("555")).toEqual([])
+    expect(ids("ldo")).toEqual([])
+    expect(ids("10k 0603")[0]).toBe("resistor")
   })
 
   it("searches the project's own parts first", () => {
-    const own = { ...PARTS.find((p) => p.id === "lm358")!, id: "bme280-abc123", name: "BME280", mpn: "BME280", custom: true }
-    expect(searchLibrary("bme280", [own])[0].part.id).toBe("bme280-abc123")
-    expect(searchLibrary("", [own])[0].part.id).toBe("bme280-abc123")
+    const bme280 = { ...findPart("lm358")!, id: "bme280-abc123", name: "BME280", mpn: "BME280", custom: true }
+    expect(searchLibrary("bme280", [bme280])[0].part.id).toBe("bme280-abc123")
+    expect(searchLibrary("", [bme280])[0].part.id).toBe("bme280-abc123")
   })
 })
 

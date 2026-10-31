@@ -6,7 +6,7 @@
   "updatedAt": 0,
   "components": [
     {"id":"c_1","partId":"screw_terminal_2","ref":"J1","props":{},"footprint":"pinrow2_p5.08mm","sch":{"x":-4,"y":0,"rot":0},"pcb":{"x":-12,"y":0,"rot":90,"side":"top","placed":true}},
-    {"id":"c_2","partId":"ams1117_3v3","ref":"U1","props":{"mpn":"AMS1117-3.3"},"footprint":"sot223","sch":{"x":-0.6,"y":-0.1,"rot":0},"pcb":{"x":0,"y":0,"rot":0,"side":"top","placed":true}},
+    {"id":"c_2","partId":"ams1117_3_3-6xcjud","ref":"U1","props":{"mpn":"AMS1117-3.3"},"footprint":"sot223","sch":{"x":-0.6,"y":-0.1,"rot":0},"pcb":{"x":0,"y":0,"rot":0,"side":"top","placed":true}},
     {"id":"c_3","partId":"capacitor","ref":"C1","props":{"capacitance":"10uF"},"footprint":"0603","sch":{"x":-1.6,"y":-0.7,"rot":270},"pcb":{"x":-6.5,"y":-3.5,"rot":90,"side":"top","placed":true}},
     {"id":"c_4","partId":"capacitor","ref":"C2","props":{"capacitance":"10uF"},"footprint":"0603","sch":{"x":0.2,"y":-0.7,"rot":270},"pcb":{"x":6.5,"y":0.5,"rot":90,"side":"top","placed":true}},
     {"id":"c_5","partId":"capacitor","ref":"C3","props":{"capacitance":"100nF"},"footprint":"0603","sch":{"x":0.9,"y":-0.5,"rot":270},"pcb":{"x":8.5,"y":0.5,"rot":90,"side":"top","placed":true}},
@@ -96,6 +96,9 @@
   ],
   "board": {"width":36,"height":24,"x":0,"y":0,"thickness":1.6,"cornerRadius":1,"mountingHoles":{"drill":2.2,"diameter":4.4,"inset":2.8}},
   "rules": {"traceWidth":0.25,"minTraceWidth":0.15,"preferredWidths":[0.15,0.25,0.4,0.75,1],"clearance":0.2,"edgeClearance":0.4,"holeClearance":0.25,"viaDiameter":0.6,"viaDrill":0.3,"minDrill":0.2,"minAnnularRing":0.13,"viaInPad":false,"maskExpansion":0.05,"pasteExpansion":0,"tentVias":true,"pourClearance":0.3,"pourMinWidth":0.25,"thermalRelief":"relief-tht","thermalSpokes":4,"thermalSpokeWidth":0.5,"thermalSpokeAngle":0},
+  "parts": [
+    {"id":"ams1117_3_3-6xcjud","name":"AMS1117-3.3","description":"1 A low-dropout 3.3 V linear regulator (SOT-223)","category":"Power","refPrefix":"U","footprint":"sot223","pins":[{"number":"3","name":"VIN","kind":"input","side":"left"},{"number":"2","name":"VOUT","kind":"output","side":"right"},{"number":"1","name":"GND","kind":"ground","side":"bottom"}],"props":{"mpn":"AMS1117-3.3"},"valueProp":"mpn","padAlias":{"4":"2"},"keywords":["ldo","regulator","3v3","linear"],"source":{"pins":"library","land":"library"}}
+  ],
   "blocks": [
     {"id":"b_11","name":"INPUT","components":["c_1"]},
     {"id":"b_12","name":"3.3V LDO","components":["c_2","c_3","c_4","c_5"]},

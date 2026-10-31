@@ -2,17 +2,20 @@ import { uid, withStableIds } from "../lib/id"
 import { strokeTextWidth } from "../lib/strokeFont"
 import { autoroute } from "./autoroute"
 import { createBlock } from "./blocks"
+import { registerProjectParts } from "./customParts"
+import EXAMPLE_PARTS from "./examples/parts.json"
 import { M3_HOLES } from "./board"
 import { stitchVias } from "./stitch"
 import { findPin, addComponent, addLabel, addTrace, addVia, autoPlacePcb, connectPins, createProject, labelPin, resolvePinSpec } from "./ops"
 import { SCH_GRID } from "./symbols"
 import { tidySchematic } from "./tidy"
-import type { BoardText, CopperLayer, MountingHoles, PcbSide, Project, Rotation, Vec2 } from "./types"
+import type { BoardText, CopperLayer, CustomPartSpec, MountingHoles, PcbSide, Project, Rotation, Vec2 } from "./types"
 
 interface Builder {
   project: Project
+  /** A library part by its id, or one of the examples' chips by its name in `CHIPS`. */
   add: (
-    partId: string,
+    part: string,
     x: number,
     y: number,
     opts?: { rot?: Rotation; props?: Record<string, string>; footprint?: string; ref?: string },
@@ -52,11 +55,23 @@ const snap = (v: number) => Math.round(v / SCH_GRID) * SCH_GRID
 
 const M2_HOLES: MountingHoles = { drill: 2.2, diameter: 4.4, inset: 2.8 }
 
+/**
+ * The examples' chips and modules, by the names the templates give them. The library holds basic
+ * parts only, so each example has its chips as parts of its own, as a project gets them from the
+ * parts database; these are drawn as the library drew them before (the migration's, `migrations/libraryParts.json`).
+ */
+const CHIPS = new Map<string, CustomPartSpec>(Object.entries(EXAMPLE_PARTS as Record<string, CustomPartSpec>))
+
 function builder(name: string, description: string): Builder {
   const b: Builder = {
     project: createProject(name, description),
-    add(partId, x, y, opts = {}) {
-      const res = addComponent(b.project, partId, { sch: { x, y, rot: opts.rot ?? 0 }, props: opts.props, footprint: opts.footprint, ref: opts.ref })
+    add(part, x, y, opts = {}) {
+      const chip = CHIPS.get(part)
+      if (chip && !b.project.parts?.some((s) => s.id === chip.id)) {
+        b.project = { ...b.project, parts: [...(b.project.parts ?? []), chip] }
+        registerProjectParts(b.project)
+      }
+      const res = addComponent(b.project, chip?.id ?? part, { sch: { x, y, rot: opts.rot ?? 0 }, props: opts.props, footprint: opts.footprint, ref: opts.ref })
       b.project = res.project
       return res.component.ref
     },

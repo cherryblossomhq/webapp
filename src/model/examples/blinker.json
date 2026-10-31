@@ -5,7 +5,7 @@
   "createdAt": 0,
   "updatedAt": 0,
   "components": [
-    {"id":"c_1","partId":"ne555","ref":"U1","props":{"mpn":"NE555"},"footprint":"soic8","sch":{"x":2.1,"y":0.9,"rot":0},"pcb":{"x":0,"y":1,"rot":0,"side":"top","placed":true}},
+    {"id":"c_1","partId":"ne555_timer-ae7is0","ref":"U1","props":{"mpn":"NE555"},"footprint":"soic8","sch":{"x":2.1,"y":0.9,"rot":0},"pcb":{"x":0,"y":1,"rot":0,"side":"top","placed":true}},
     {"id":"c_6","partId":"resistor","ref":"R1","props":{"resistance":"470"},"footprint":"0603","sch":{"x":-3.4,"y":-2.3,"rot":180},"pcb":{"x":-5.5,"y":0.4,"rot":180,"side":"top","placed":true}},
     {"id":"c_7","partId":"led","ref":"D1","props":{"color":"red"},"footprint":"0603","sch":{"x":-3.8,"y":-2.7,"rot":270},"pcb":{"x":-9,"y":0.4,"rot":180,"side":"top","placed":true}},
     {"id":"c_c","partId":"resistor","ref":"R2","props":{"resistance":"10k"},"footprint":"0603","sch":{"x":-0.1,"y":1.4,"rot":270},"pcb":{"x":7.5,"y":2.9,"rot":90,"side":"top","placed":true}},
@@ -127,6 +127,9 @@
   ],
   "board": {"width":40,"height":26,"x":0,"y":0,"thickness":1.6,"cornerRadius":1,"mountingHoles":{"drill":2.2,"diameter":4.4,"inset":2.8}},
   "rules": {"traceWidth":0.25,"minTraceWidth":0.15,"preferredWidths":[0.15,0.25,0.4,0.75,1],"clearance":0.2,"edgeClearance":0.4,"holeClearance":0.25,"viaDiameter":0.6,"viaDrill":0.3,"minDrill":0.2,"minAnnularRing":0.13,"viaInPad":false,"maskExpansion":0.05,"pasteExpansion":0,"tentVias":true,"pourClearance":0.3,"pourMinWidth":0.25,"thermalRelief":"relief-tht","thermalSpokes":4,"thermalSpokeWidth":0.5,"thermalSpokeAngle":0},
+  "parts": [
+    {"id":"ne555_timer-ae7is0","name":"NE555 Timer","description":"Precision timer for astable / monostable circuits","category":"ICs","refPrefix":"U","footprint":"soic8","pins":[{"number":"2","name":"TRIG","kind":"input","side":"left"},{"number":"6","name":"THR","kind":"input","side":"left"},{"number":"7","name":"DIS","kind":"input","side":"left"},{"number":"4","name":"RST","kind":"input","side":"left"},{"number":"5","name":"CV","kind":"input","side":"left"},{"number":"3","name":"OUT","kind":"output","side":"right"},{"number":"8","name":"VCC","kind":"power","side":"top"},{"number":"1","name":"GND","kind":"ground","side":"bottom"}],"props":{"mpn":"NE555"},"valueProp":"mpn","keywords":["timer","oscillator","pwm","blink"],"source":{"pins":"library","land":"library"}}
+  ],
   "blocks": [
     {"id":"b_1i","name":"POWER IN","components":["c_1b"]},
     {"id":"b_1j","name":"555 TIMER","components":["c_1","c_c","c_d","c_e","c_f","c_16"]},

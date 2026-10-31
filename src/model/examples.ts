@@ -3,6 +3,7 @@ import esp32Robot from "./examples/esp32-robot.json"
 import mcu from "./examples/mcu.json"
 import node from "./examples/node.json"
 import regulator from "./examples/regulator.json"
+import { registerProjectParts } from "./customParts"
 import { TEMPLATES } from "./templates"
 import type { Project } from "./types"
 
@@ -22,3 +23,7 @@ export interface Example {
 }
 
 export const EXAMPLES: Example[] = TEMPLATES.map(({ id, name, description }) => ({ id, name, description, project: BUILT[id] as Project }))
+
+// An example's chips are parts of its own, as a project's are, so they are registered with it: the
+// dashboard draws an example's preview straight from it, without opening it.
+for (const { project } of EXAMPLES) registerProjectParts(project)

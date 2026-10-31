@@ -6,6 +6,7 @@ import { buildCustomPart, customPartProblems, registerProjectParts } from "./cus
 import { registerProjectFootprints } from "./footprints"
 import { findPart } from "./library"
 import { kicadSymbols } from "./migrations/kicadSymbols"
+import { libraryParts } from "./migrations/libraryParts"
 import { schematicUnits } from "./migrations/schematicUnits"
 import { sheetsRoot } from "./migrations/sheetsRoot"
 import { normalizeModels } from "./models3d"
@@ -33,7 +34,7 @@ import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, Compone
  * account, this browser's storage and a file the user downloads, so a download
  * is a backup that opens anywhere and there is one reader to keep working.
  *
- *     { "format": "cherryblossom.project", "version": 3, "project": { "name": ..., ... } }
+ *     { "format": "cherryblossom.project", "version": 4, "project": { "name": ..., ... } }
  *
  * - `format` says the JSON is ours. A file dropped on the dashboard could be anything.
  * - `version` is an integer for the shape of `project`. It goes up when a change would make an
@@ -61,7 +62,7 @@ import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, Compone
  */
 
 export const PROJECT_FILE_FORMAT = "cherryblossom.project"
-export const PROJECT_FILE_VERSION = 3
+export const PROJECT_FILE_VERSION = 4
 
 /** A project as stored: everything but where it is stored. */
 export type ProjectDocument = Omit<Project, "id" | "createdAt" | "updatedAt">
@@ -165,11 +166,15 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * - `schematicUnits` rewrites two shapes only a development build of the schematic track wrote: a symbol's flags
  *   (`inBom: false`, ...) become the one `PartFlags` set, and a sheet's `items` become `drawings`. A document with neither comes out as it went in.
  * - `sheetsRoot` lists a one-sheet project's sheet as the root (`sheets: [{ id: "root" }]`).
+ *
+ * Version 4 took the chips and modules out of the built-in library: a project that placed one has
+ * it as a part of its own, drawn as the library drew it (`migrations/libraryParts.ts`).
  */
 const MIGRATIONS: Record<number, (project: Json) => Json> = {
   0: ({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...project }) => project,
   1: kicadSymbols,
   2: (project) => STEPS_2_TO_3.reduce((doc, step) => step(doc), project),
+  3: libraryParts,
 }
 
 const isObject = (value: unknown): value is Json => !!value && typeof value === "object" && !Array.isArray(value)
@@ -421,9 +426,9 @@ function normalizeDatabaseSource(raw: unknown): PartDatabaseSource | null {
 function normalizeSource(raw: unknown): PartSource | null {
   if (!isObject(raw) || typeof raw.pins !== "string") return null
   const out: PartSource = {
-    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "file" || raw.pins === "import" || raw.pins === "user" ? raw.pins : "memory",
+    pins: raw.pins === "supplier" || raw.pins === "database" || raw.pins === "file" || raw.pins === "import" || raw.pins === "library" || raw.pins === "user" ? raw.pins : "memory",
     land:
-      raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "file" || raw.land === "import" || raw.land === "user"
+      raw.land === "supplier" || raw.land === "checked" || raw.land === "database" || raw.land === "file" || raw.land === "import" || raw.land === "library" || raw.land === "user"
         ? raw.land
         : "memory",
   }

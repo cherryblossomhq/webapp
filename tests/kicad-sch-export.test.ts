@@ -90,14 +90,16 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
 /**
  * Hashes of the Circuit JSON text, its notes, the schematic picture and get_design, taken from the code as it was before units, mirrors and
  * drawings existed. The picture of the shipped examples is the one main draws since it frames their blocks and paints drawings (the golden outputs
- * in `tests/golden` hold the same picture); the frozen examples have no blocks, so theirs is still the first.
+ * in `tests/golden` hold the same picture); the frozen examples have no blocks, so theirs is still the first. Since the library held basic parts
+ * only (file version 4), the shipped examples' chips are their own parts: the same Circuit JSON and picture, a note that says parts made for the
+ * project have no library link, and get_design naming each chip by its part's id.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
-  "esp32-robot": { circuit: "c62f5c073b4216f8", notes: "ecde5db8bdf09607", svg: "c494fdf7fd9da98c", design: "cea3a5409b5cd61a" },
-  node: { circuit: "8c25f23fa2131473", notes: "ecde5db8bdf09607", svg: "80a9fd3babf7591e", design: "6e3736cc58f74c73" },
-  blinker: { circuit: "51cb1a459952ff8e", notes: "ecde5db8bdf09607", svg: "d47e7e1b0e8856f5", design: "b235594bea29204a" },
-  regulator: { circuit: "322e01a20d7dfc72", notes: "ecde5db8bdf09607", svg: "70e18bc28b56ec8e", design: "3f743bc76a39b52a" },
-  mcu: { circuit: "beea3a0b6b98297f", notes: "ecde5db8bdf09607", svg: "38e3d9a1edc04938", design: "e510b5035f202dd8" },
+  "esp32-robot": { circuit: "c62f5c073b4216f8", notes: "1c3eb23971c052c9", svg: "c494fdf7fd9da98c", design: "0d556351697db72d" },
+  node: { circuit: "8c25f23fa2131473", notes: "1c3eb23971c052c9", svg: "80a9fd3babf7591e", design: "10131824a2130a1a" },
+  blinker: { circuit: "51cb1a459952ff8e", notes: "1c3eb23971c052c9", svg: "d47e7e1b0e8856f5", design: "f36466f25da0aa02" },
+  regulator: { circuit: "322e01a20d7dfc72", notes: "1c3eb23971c052c9", svg: "70e18bc28b56ec8e", design: "2ebca66d732e60a2" },
+  mcu: { circuit: "beea3a0b6b98297f", notes: "1c3eb23971c052c9", svg: "38e3d9a1edc04938", design: "da2a35ea9a601755" },
   "frozen-esp32-robot": { circuit: "730bfa45500b69ff", notes: "ecde5db8bdf09607", svg: "299271660a4155b1", design: "7f38678ff141de94" },
   "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "4b107b7ad8115ed8", design: "42abfae5421666e4" },
   "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "c87ee948dc652b73", design: "ee03b0c27a4e4c41" },

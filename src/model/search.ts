@@ -247,11 +247,9 @@ function matchToken(token: Token, e: Indexed): TokenMatch {
 /**
  * Rank parts for a query. Every word has to match for a real hit; when nothing does, parts
  * matching at least half the words come back marked `partial`. An empty query lists every part.
- * `library` is the built-in parts searched after `extraParts`: all of them for Sakura, the basic
- * ones for the library panel.
  */
-export function searchLibrary(query: string, extraParts: PartDef[] = [], library: PartDef[] = PARTS): PartHit[] {
-  const parts = [...extraParts, ...library]
+export function searchLibrary(query: string, extraParts: PartDef[] = []): PartHit[] {
+  const parts = [...extraParts, ...PARTS]
   const tokens = tokenize(query)
   if (!tokens.length) return parts.map((part) => ({ part, score: 0 }))
 

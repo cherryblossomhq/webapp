@@ -11,7 +11,9 @@ import type { CustomPartSpec, Project } from "./types"
 // index (KiCad's libraries): its symbol and footprint were paired pin for pad when it was stored.
 // Nor one imported from the user's own KiCad files: those were paired the same way, and they are
 // the user's word for the part. Nor one whose pins or land the user changed by hand in the part
-// editor, for the same reason (a part made from memory stays a warning however it is edited).
+// editor, for the same reason (a part made from memory stays a warning however it is edited). Nor a
+// chip from the editor's own library, which a project placed before the library held basic parts
+// only: it was never reported while the library had it, and becoming the project's own changes nothing.
 
 export interface PartFinding {
   partId: string
@@ -84,7 +86,8 @@ export function partFindings(project: Project): PartFinding[] {
     }
 
     // A checked land swapped on a component for one nobody checked.
-    if (src && src.land !== "memory" && src.land !== "import" && src.land !== "user") {
+    // The library's chips came in several packages (a 555 in SOIC-8 or DIP-8), so their components keep theirs.
+    if (src && src.land !== "memory" && src.land !== "import" && src.land !== "library" && src.land !== "user") {
       for (const c of users) {
         if (c.footprint && c.footprint !== spec.footprint) {
           out.push({

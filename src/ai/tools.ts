@@ -507,7 +507,7 @@ const editBlockTool: ToolSpec = {
 const searchPartsTool: ToolSpec = {
   name: "search_parts",
   description:
-    "Search the part library and this project's own parts by name, function, MPN, value or package (e.g. \"3v3 regulator\", \"10k 0603\", \"mosfet\", \"6 pin header\"). Returns part ids, pins, footprints and default properties, plus the properties and footprint the query named (suggested_props, suggested_footprint) to pass to add_component. An empty query lists every part.",
+    "Search this project's own parts and the library of basic parts by name, function, MPN, value or package (e.g. \"10k 0603\", \"mosfet\", \"6 pin header\"). The library has no chips or modules: find_part finds those. Returns part ids, pins, footprints and default properties, plus the properties and footprint the query named (suggested_props, suggested_footprint) to pass to add_component. An empty query lists every part.",
   input_schema: {
     type: "object",
     properties: { query: { type: "string", description: "Search terms" } },
@@ -524,7 +524,7 @@ const searchPartsTool: ToolSpec = {
     if (!hits.length) {
       return ok(
         project,
-        `No parts match "${query}". Try a broader term, or, if the user wants a specific part the library doesn't have, make it with create_part.`,
+        `No parts match "${query}". The library has basic parts only: for a specific part (a chip, a regulator, a module), call find_part, or create_part with its name.`,
         `No parts for "${query}"`,
       )
     }
@@ -541,7 +541,7 @@ const searchPartsTool: ToolSpec = {
       ...(footprint && { suggested_footprint: footprint }),
     }))
     const partial = hits[0].partial
-      ? `No part matches every word of "${query}"; these are the closest. If none fits, make the part with create_part.\n`
+      ? `No part matches every word of "${query}"; these are the closest. If none fits, find the specific part with find_part, or create_part with its name.\n`
       : ""
     return ok(project, partial + JSON.stringify(rows), `Searched parts for "${query}" (${hits.length} found)`)
   },

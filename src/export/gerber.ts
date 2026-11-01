@@ -15,7 +15,7 @@ import { worldShapes } from "../model/shapeItems"
 import { arcCircle, dashShape, drawnPaths, flattenSeg, isClosedShape, lineEndParts, segStart, shapeRings, type DashPiece, type PathSeg } from "../model/shapes"
 import { textsOnLayer } from "../model/texts"
 import { fractureRings } from "./fracture"
-import { requireClosedOutline } from "./outlineGuard"
+import { requireOutline } from "./outlineGuard"
 import { maskRegions } from "./maskMerge"
 import { otherFillsOn } from "../model/nonCopperFill"
 
@@ -553,7 +553,8 @@ export type GerberLayerName =
 export const gerberNameOf = (layer: CopperLayer): GerberLayerName => kicadLayerName(layer).replace(".", "_") as GerberLayerName
 
 export function gerberLayers(project: Project, fills: ZoneFill[] = [], items?: CopperItem[]): Record<GerberLayerName, string> {
-  requireClosedOutline(project, "The Gerber and drill files")
+  // An outline with gaps or crossings is plotted as drawn, as KiCad plots it; the export says so (`outlineWarning`).
+  requireOutline(project, "The Gerber and drill files")
   const copper = Object.fromEntries(copperLayers(project.board).map((l) => [gerberNameOf(l), gerberCopper(project, l, fills, items)])) as Record<string, string>
   return {
     F_Cu: copper.F_Cu,

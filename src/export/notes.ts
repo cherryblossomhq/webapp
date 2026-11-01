@@ -12,6 +12,7 @@ import { worldShapes } from "../model/shapeItems"
 import { isDimensionText, textFontState, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
+import { outlineWarning } from "./outlineGuard"
 import { padMachining, postMachiningComment, protectionWords, viaProtection, viaBackdrills } from "../model/machining"
 import { padDieTimes, tuningPatterns } from "../model/netLengths"
 
@@ -59,10 +60,13 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
   const smallestTrace = project.traces.length ? Math.min(...project.traces.map((t) => t.width)) : null
   // Filling and capping costs extra, so ask for it only when a via really sits in a pad.
   const inPad = viasInSmdPads(project, items).length
+  const warning = outlineWarning(project)
   const lines = [
     `${project.name}`,
     "Fabrication notes from Cherry Blossom",
     "",
+    // An outline a fab cannot cut is plotted as drawn, and said first, where a fab reads it.
+    ...(warning ? [`WARNING: ${warning}`, ""] : []),
     ...(project.properties ?? []).map((p) => `${p.key}: ${p.value}`),
     ...(project.properties?.length ? [""] : []),
     "BOARD",

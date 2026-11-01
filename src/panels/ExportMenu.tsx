@@ -3,6 +3,7 @@ import { resolvedComponents } from "../model/ruleAreas"
 import { useEffect, useRef, useState } from "react"
 import { buildFabricationZip, downloadBlob, downloadText, projectFileName } from "../export/bundle"
 import { circuitJsonFile } from "../export/circuitJson"
+import { outlineWarning } from "../export/outlineGuard"
 import { serializeProject } from "../model/projectFile"
 import { bomCsv } from "../export/bom"
 import { pnpCsv } from "../export/pnp"
@@ -59,9 +60,11 @@ export function ExportMenu() {
       const errors = getPcbAnalysis(p).violations.filter((v) => v.severity === "error" && v.kind !== "unrouted").length
       const unrouted = getPcbAnalysis(p).ratsnest.length
       downloadBlob(await buildFabricationZip(p), projectFileName(p, "zip"))
+      const warning = outlineWarning(p)
       setNotice({
-        text:
-          errors || unrouted
+        text: warning
+          ? `Exported, but: ${warning}`
+          : errors || unrouted
             ? `Exported with ${[errors && `${errors} DRC ${errors === 1 ? "error" : "errors"}`, unrouted && `${unrouted} unrouted ${unrouted === 1 ? "connection" : "connections"}`].filter(Boolean).join(" and ")}. Check before ordering.`
             : "Exported Gerbers, drill file, BOM and pick-and-place.",
       })

@@ -12,7 +12,7 @@ import { excellonDrill, npthHoles } from "../src/export/excellon"
 import { gerberEdgeCuts, gerberLayers } from "../src/export/gerber"
 import { kicadFiles } from "../src/export/kicad"
 import { applyOutline } from "../src/export/kicadOutline"
-import { OutlineNotClosedError } from "../src/export/outlineGuard"
+import { outlineWarning } from "../src/export/outlineGuard"
 import { stepBoard, stepFile } from "../src/export/step3d"
 import { writeStep } from "../src/export/step"
 import { autoroute } from "../src/model/autoroute"
@@ -337,10 +337,18 @@ describe("a board drawn from scratch with an outline, a cutout and a slot", () =
 
   describe("a board that does not close", () => {
     const open = () => addOutlinePaths(populated(), [{ closed: false, segs: [{ kind: "line", a: P(2, 2), b: P(6, 2) }] }]).project
-    it("refuses the exports that need it, with a message that says what to do", async () => {
-      expect(() => gerberLayers(open())).toThrow(OutlineNotClosedError)
-      expect(() => buildFabricationFiles(open())).toThrow(/outline is not closed \(1 piece of it ends in the open\)/)
-      await expect(stepFile(open())).rejects.toThrow(/STEP model cannot be made/)
+    it("plots the outline as drawn in the Gerbers, as KiCad does, and the fab notes say first that a fab cannot cut it", () => {
+      const files = buildFabricationFiles(open())
+      const edgeOf = (f: Record<string, string>) => Object.entries(f).find(([k]) => k.endsWith("Edge_Cuts.gm1"))![1]
+      // the stray piece is in the edge layer, as drawn: one more path than the closed board's
+      const moves = (text: string) => text.match(/D02\*/g)?.length ?? 0
+      expect(moves(edgeOf(files))).toBe(moves(edgeOf(buildFabricationFiles(populated()))) + 1)
+      const notes = Object.entries(files).find(([k]) => k.endsWith("-fabrication.txt"))![1]
+      expect(notes.split("\n")[3]).toBe("WARNING: The board outline is not closed (1 piece of it ends in the open), so a fab cannot cut it as it is drawn. Close it in the PCB view, or delete the stray piece, before ordering.")
+      expect(outlineWarning(populated())).toBeNull()
+    })
+    it("refuses the exports that need it closed or need one at all, with a message that says what to do", async () => {
+      await expect(stepFile(open())).rejects.toThrow(/STEP model cannot be made: the board outline is not closed/)
       const none = { ...populated(), board: { ...populated().board, outline: { paths: [] } } }
       expect(() => gerberLayers(none)).toThrow(/the board has no outline/)
       await expect(stepFile(none)).rejects.toThrow(/Draw one on the Edge\.Cuts layer/)

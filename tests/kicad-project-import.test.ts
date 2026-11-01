@@ -422,6 +422,15 @@ describe("the project file and the design rules", () => {
     expect([...a.notNeeded.keys()]).toContain("how KiCad colours nets on screen, where a KiCad 6 nightly kept it (beside net_settings)")
   })
 
+  it("KiCad 8's development name for the length tuning settings is read as their later one", () => {
+    const meander = { corner_radius_percentage: 100, corner_style: 1, max_amplitude: 1, min_amplitude: 0.1, single_sided: false, spacing: 0.6 }
+    const json = JSON.parse(proJson({}))
+    json.board.design_settings.meander_settings = { single_track_meander_defaults: meander, diff_pair_meander_defaults: meander, skew_meander_defaults: meander }
+    const a = accountPro(json)
+    expect(a.unknownPaths.size).toBe(0)
+    expect(a.pending.get("X21")).toBeGreaterThan(0)
+  })
+
   it("a rules file: comments are cut out, every rule is pending X10, and a damaged file is named", () => {
     const dru = `(version 1)\n# a comment (with a bracket\n(rule "clearance 2"\n  (condition "A.NetClass == 'HV'")\n  (constraint clearance (min 1mm))\n  (severity error))\n`
     expect(stripComments(dru)).not.toContain("a comment")

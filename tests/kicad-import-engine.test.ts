@@ -24,6 +24,42 @@ async function run(files: ReturnType<typeof entry>[], options = {}, choice?: str
   await runImport({ type: "start", id: 1, files, choice }, (e) => events.push(e), options)
   return events
 }
+/** A KiCad 5 project: R1 with pin 2 on GND, the board (its stamp 20171130) and the schematic linked by the symbol's timestamp, the cache library beside them. */
+function kicad5() {
+  const pcb = `(kicad_pcb (version 20171130) (host pcbnew 5.1.6)
+  (general (thickness 1.6))
+  (page A4)
+  (layers (0 F.Cu signal) (31 B.Cu signal) (44 Edge.Cuts user))
+  (setup (last_trace_width 0.25))
+  (net 0 "")
+  (net 1 "GND")
+  (net_class Default "" (clearance 0.2) (trace_width 0.25) (via_dia 0.8) (via_drill 0.4) (uvia_dia 0.3) (uvia_drill 0.1) (add_net "GND"))
+  (module R_0805 (layer F.Cu) (tedit 0) (tstamp 5A000001) (at 100 100)
+    (fp_text reference R1 (at 0 -1.5) (layer F.SilkS) (effects (font (size 1 1) (thickness 0.15))))
+    (fp_text value 10k (at 0 1.5) (layer F.Fab) (effects (font (size 1 1) (thickness 0.15))))
+    (path /5A000001)
+    (pad 1 smd rect (at -1 0) (size 1 1.2) (layers F.Cu F.Paste F.Mask))
+    (pad 2 smd rect (at 1 0) (size 1 1.2) (layers F.Cu F.Paste F.Mask) (net 1 "GND"))
+  )
+  (gr_line (start 90 90) (end 110 90) (layer Edge.Cuts) (width 0.1))
+  (gr_line (start 110 90) (end 110 110) (layer Edge.Cuts) (width 0.1))
+  (gr_line (start 110 110) (end 90 110) (layer Edge.Cuts) (width 0.1))
+  (gr_line (start 90 110) (end 90 90) (layer Edge.Cuts) (width 0.1))
+)
+`
+  const comp = (lib: string, ref: string, ts: string, x: number, y: number, value: string) =>
+    `$Comp\nL ${lib} ${ref}\nU 1 1 ${ts}\nP ${x} ${y}\nF 0 "${ref}" H ${x + 100} ${y} 50  0000 L CNN\nF 1 "${value}" H ${x + 100} ${y + 100} 50  0000 L CNN\nF 2 "R_0805" V ${x - 70} ${y} 50  0001 C CNN\nF 3 "~" H ${x} ${y} 50  0001 C CNN\n\t1    ${x} ${y}\n\t1    0    0    -1  \n$EndComp\n`
+  const sch =
+    'EESchema Schematic File Version 4\nLIBS:power\nEELAYER 25 0\nEELAYER END\n$Descr A4 11693 8268\nencoding utf-8\nSheet 1 1\nTitle "Test"\nDate "2020-01-02"\nRev "B"\nComp "Acme"\nComment1 ""\nComment2 ""\nComment3 ""\nComment4 ""\n$EndDescr\n' +
+    comp("Device:R", "R1", "5A000001", 5000, 4000, "10k") +
+    comp("power:GND", "#PWR01", "5A000003", 5000, 4400, "GND") +
+    "Wire Wire Line\n\t5000 3850 5000 3700\nWire Wire Line\n\t5000 4150 5000 4400\n$EndSCHEMATC\n"
+  const cache =
+    'EESchema-LIBRARY Version 2.4\n#encoding utf-8\n#\n# Device_R\n#\nDEF Device_R R 0 0 N Y 1 F N\nF0 "R" 80 0 50 V V C CNN\nF1 "R" 0 0 50 V V C CNN\nF2 "" -70 0 50 V I C CNN\nF3 "" 0 0 50 H I C CNN\n$FPLIST\n R_*\n$ENDFPLIST\nDRAW\nS -40 -100 40 100 0 1 10 N\nX ~ 1 0 150 50 D 50 50 1 1 P\nX ~ 2 0 -150 50 U 50 50 1 1 P\nENDDRAW\nENDDEF\n' +
+    '#\n# power_GND\n#\nDEF power_GND #PWR 0 0 Y Y 1 F P\nF0 "#PWR" 0 -250 50 H I C CNN\nF1 "GND" 0 -150 50 H V C CNN\nF2 "" 0 0 50 H I C CNN\nF3 "" 0 0 50 H I C CNN\nDRAW\nP 2 0 1 0 0 0 0 -100 N\nX GND 1 0 0 0 D 50 50 1 1 W N\nENDDRAW\nENDDEF\n'
+  return [entry("p.kicad_pcb", pcb), entry("p.sch", sch), entry("p-cache.lib", cache), entry("p.pro", "update=1\nversion=1\n[general]\nversion=1\nRootSch=\nBoardNm=\n[eeschema/libraries]\n")]
+}
+
 const last = (events: WorkerEvent[]) => events[events.length - 1]
 const outcomeOf = (events: WorkerEvent[]) => {
   const e = last(events)
@@ -242,12 +278,36 @@ ${LIB_R.replace('"Device:R"', '"R"')}
     expect(o.summary.missing[0].name).toBe(PLAIN_NAMES.X26)
   })
 
-  it("KiCad 5's schematic beside a board is set aside with its reason, and the board imports alone", async () => {
-    const o = outcomeOf(await run([entry("p.kicad_pcb", empty), entry("p.sch", "EESchema Schematic File Version 4"), entry("p.pro", "update=1")]))
+  it("a KiCad 5 project (its .sch, .pro and cache library beside the board) imports with its schematic", async () => {
+    const o = outcomeOf(await run(kicad5()))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.kind).toBe("project")
+    expect(o.summary.used).toEqual(expect.arrayContaining(["p.kicad_pcb", "p.sch", "p.pro", "p-cache.lib"]))
+    expect(o.summary.notRead).toEqual([])
+    expect(o.project?.components.map((c) => c.ref).filter((r) => !r.startsWith("#"))).toEqual(["R1"])
+  })
+
+  it("a KiCad 5 schematic that cannot be read (a symbol no library has) leaves the board, which imports alone and says why", async () => {
+    const o = outcomeOf(await run(kicad5().filter((f) => f.path !== "p-cache.lib")))
     expect(o.summary.status).toBe("imported")
     expect(o.summary.kind).toBeUndefined()
     expect(o.summary.notRead.map((n) => n.file).sort()).toEqual(["p.pro", "p.sch"])
-    expect(o.summary.notRead.every((n) => /KiCad 5/.test(n.why))).toBe(true)
+    expect(o.summary.notRead.every((n) => /^the KiCad 5 schematic could not be read, so the board came in alone: /.test(n.why))).toBe(true)
+  })
+
+  it("a .sch that is not KiCad's beside a board is said as such, and the board imports alone", async () => {
+    const o = outcomeOf(await run([entry("p.kicad_pcb", empty), entry("p.sch", '<?xml version="1.0"?><eagle/>')]))
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.notRead).toEqual([{ file: "p.sch", why: "this is not a KiCad schematic, so the board came in alone" }])
+  })
+
+  it("an older KiCad 5 copy beside a KiCad 6 schematic is set aside, and the KiCad 6 one is read", async () => {
+    const o = outcomeOf(await run([entry("demo.kicad_pcb", dividerBoard), entry("demo.kicad_sch", divider()), entry("demo.sch", "EESchema Schematic File Version 4"), entry("demo.pro", "update=1")]))
+    expect(o.summary.kind).toBe("project")
+    expect(o.summary.notRead.map((n) => [n.file, n.why]).sort()).toEqual([
+      ["demo.pro", "an older KiCad 5 copy; the project's KiCad 6 or later schematic beside it is read"],
+      ["demo.sch", "an older KiCad 5 copy; the project's KiCad 6 or later schematic beside it is read"],
+    ])
   })
 
   it("a schematic that is not a schematic is refused with the reader's words", async () => {

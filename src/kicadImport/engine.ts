@@ -139,15 +139,19 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
       }
     }
 
-    // KiCad 5's schematic and project files (`.sch`, `.pro`) are not read; KiCad 6 and later's are. A rules file, a project file or a schematic means the project import.
-    const projectFile = files.projectFile && !legacy(files.projectFile) ? files.projectFile : null
-    const schematics = files.schematics.filter((f) => !legacy(f))
+    // KiCad 4 and 5's schematic and project files (`.sch`, `.pro`) are read when they are the project's schematic: there is no `.kicad_sch` beside them.
+    // Beside a `.kicad_sch` they are an older copy, and the newer one is read. A rules file, a project file or a schematic means the project import.
+    const load = options.loadProjectImporter === undefined ? loadProjectImporter : options.loadProjectImporter
+    const useLegacy = !!load && files.schematics.some(legacy) && !files.schematics.some((f) => !legacy(f))
+    const projectFile = files.projectFile && (useLegacy || !legacy(files.projectFile)) ? files.projectFile : null
+    const schematics = files.schematics.filter((f) => useLegacy || !legacy(f))
     const rules = files.rules
-    for (const f of [files.projectFile, ...files.schematics].filter((x): x is InputFile => !!x && legacy(x))) {
-      context.notRead.push({ file: baseName(f.path), why: "this is KiCad 5's own format, which is not read; open the project in KiCad 6 or later and save it, then import it again" })
+    const newer = files.schematics.some((f) => !legacy(f))
+    for (const f of [files.projectFile, ...files.schematics].filter((x): x is InputFile => !!x && legacy(x) && !useLegacy)) {
+      const why = newer ? "an older KiCad 5 copy; the project's KiCad 6 or later schematic beside it is read" : kindOf(f.path) === "legacy-project" && !files.schematics.length ? "a KiCad 5 project file is read with its schematic, and there is no schematic here" : "the schematic importer is not available here"
+      context.notRead.push({ file: baseName(f.path), why })
     }
     const hasProject = !!(projectFile || schematics.length || rules)
-    const load = options.loadProjectImporter === undefined ? loadProjectImporter : options.loadProjectImporter
     const projectImporter = (hasProject || !files.board) && load ? await load() : null
     post({ type: "progress", id, phase: "building" })
     // The 3D model files the board's footprints name among the files given (a project's `3d models/` folder): the 3D view draws them, from the file store.
@@ -167,12 +171,26 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
         libraries: await Promise.all(files.libraries.map(read)),
       }
       result = await projectImporter(project, importOptions)
-      projectBytes = [project.projectFile, ...project.schematics, project.rules, ...project.libraries].flatMap((f) => (f ? [f] : []))
-      context.used.push(...[project.projectFile, ...project.schematics, project.rules].flatMap((f) => (f ? [f.name] : [])))
-      // S12: a library is read only for a symbol the schematic's own cache lacks, which is the report's to say; the files are used.
-      context.used.push(...project.libraries.map((f) => f.name))
-      if (!files.board && project.projectFile) context.notRead.push({ file: project.projectFile.name, why: "its net classes and rules belong to the board; they are read when the board comes with it" })
-      if (!files.board && project.rules) context.notRead.push({ file: project.rules.name, why: "its rules belong to the board; they are read when the board comes with it" })
+      if (useLegacy && result.status !== "imported" && bytes) {
+        // A KiCad 5 schematic that cannot be read (most often a symbol its project's libraries do not have) leaves the board, which comes in alone with a
+        // schematic drawn from its connections, as it did before KiCad 5 schematics were read. What the board alone says is the answer, refusal included.
+        const why = result.message.split(/(?<=\.)\s/)[0]
+        const importer = await (options.loadBoardImporter ?? loadBoardImporter)()
+        await loadKicadFontFor(bytes)
+        result = importer.importKicadBoard(bytes, importOptions)
+        // A `.sch` that is not KiCad's (EAGLE uses the extension too) is said as such.
+        const kicad5 = project.schematics.some((s) => /^\s*EESchema Schematic File/.test(new TextDecoder("latin1").decode(s.bytes.subarray(0, 120)).replace(/^﻿|^ï»¿/, "")))
+        const because = kicad5 ? `the KiCad 5 schematic could not be read, so the board came in alone: ${why}` : "this is not a KiCad schematic, so the board came in alone"
+        for (const f of [project.projectFile, ...project.schematics]) if (f) context.notRead.push({ file: f.name, why: because })
+        context.notRead.push(...notReadBeside(files))
+      } else {
+        projectBytes = [project.projectFile, ...project.schematics, project.rules, ...project.libraries].flatMap((f) => (f ? [f] : []))
+        context.used.push(...[project.projectFile, ...project.schematics, project.rules].flatMap((f) => (f ? [f.name] : [])))
+        // S12: a library is read only for a symbol the schematic's own cache lacks, which is the report's to say; the files are used.
+        context.used.push(...project.libraries.map((f) => f.name))
+        if (!files.board && project.projectFile) context.notRead.push({ file: project.projectFile.name, why: "its net classes and rules belong to the board; they are read when the board comes with it" })
+        if (!files.board && project.rules) context.notRead.push({ file: project.rules.name, why: "its rules belong to the board; they are read when the board comes with it" })
+      }
     } else if (!bytes) {
       return done({ project: null, summary: stoppedSummary("no-board", "A schematic alone cannot be imported here: the schematic importer is not available.", context) })
     } else {

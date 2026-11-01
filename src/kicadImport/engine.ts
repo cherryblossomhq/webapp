@@ -3,7 +3,7 @@ import type { Project } from "../model/types"
 import type { KicadProjectResult } from "../model/kicad/project/import"
 import type { SchematicImportResult } from "../model/kicad/schematic/import"
 import type { KeptFile } from "../model/kicad/board/images"
-import { baseName, dirName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, type InputFile, type ProjectFiles } from "./pick"
+import { baseName, dirName, expand, ImportInputError, kindOf, MAX_FILE_BYTES, pick, withNamedSheets, type InputFile, type ProjectFiles } from "./pick"
 import type { StartRequest, WorkerEvent } from "./protocol"
 import { emptyContext, generatorLabel, stoppedSummary, summarize, type FileContext, type ImportResult } from "./summary"
 
@@ -121,7 +121,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     }
     if (picked.kind === "choose") return post({ type: "choose", id, boards: picked.boards })
 
-    const { files } = picked
+    const files = await withNamedSheets(picked.files, expanded.files, ignored)
     const context: FileContext = { used: files.board ? [baseName(files.board.path)] : [], notRead: [], ignored, boardBytes: 0 }
     const size = (f: InputFile) => f.size !== null && f.size > MAX_FILE_BYTES
     const tooBig = [files.board, ...files.schematics].find((f) => f && size(f))

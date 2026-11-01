@@ -270,6 +270,20 @@ ${LIB_R.replace('"Device:R"', '"R"')}
     expect(o.project?.sheets?.map((s) => s.id)).toEqual(["root", "s1"])
   })
 
+  it("a sheet the schematic names outside the board's folder (a shared ../modules/ folder) is taken from the files given, as KiCad opens it there", async () => {
+    const top = schematic({
+      body: [`(sheet (at 10 10) (size 20 10) (uuid s1) (property "Sheetname" "Power" (at 0 0 0)) (property "Sheetfile" "../modules/power.kicad_sch" (at 0 0 0)))`],
+    })
+    const o = outcomeOf(
+      await run([entry("proj/board/top.kicad_pcb", empty), entry("proj/board/top.kicad_sch", top), entry("proj/modules/power.kicad_sch", schematic({})), entry("proj/modules/unused.kicad_sch", schematic({}))]),
+    )
+    expect(o.summary.status).toBe("imported")
+    expect(o.summary.kind).toBe("project")
+    expect(o.project?.sheets?.map((s) => s.id)).toEqual(["root", "s1"])
+    expect(o.summary.used).toContain("power.kicad_sch")
+    expect(o.summary.ignored.flatMap((i) => i.examples)).toEqual(["unused.kicad_sch"])
+  })
+
   it("a refusal of the project's board or schematic says project, with the board's own reason", async () => {
     const o = outcomeOf(await run([entry("demo.kicad_pcb", board({ nets: ['(net 0 "")', '(net 1 "VCC")'], setup: "(setup (pad_to_mask_clearance 0) (creepage 1.5))" })), entry("demo.kicad_sch", divider())]))
     expect(o.summary.kind).toBe("project")

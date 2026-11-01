@@ -267,9 +267,54 @@ export function pick(expanded: ExpandResult, choice?: string): PickResult {
   return readyBeside(usable, ignored, chosen, chosen)
 }
 
+/** A path with its `.` and `..` worked out, as the schematic's sheet tree resolves the file a sheet names (`model/kicad/schematic/tree.ts`). */
+function resolvePath(path: string): string {
+  const out: string[] = []
+  for (const part of path.replace(/\\/g, "/").split("/")) {
+    if (part === "" || part === ".") continue
+    if (part === ".." && out.length && out[out.length - 1] !== "..") out.pop()
+    else out.push(part)
+  }
+  return out.join("/")
+}
+
+const isSchematic = (path: string) => kindOf(path) === "schematic" || kindOf(path) === "legacy-schematic"
+
+/**
+ * The project's files with the sheets its schematics name outside the board's folder, among the files given: a project that keeps shared
+ * sheets in `../modules/` names them by a relative path, and KiCad opens them there. Each schematic is read for the files its sheets name
+ * (a KiCad 6 sheet's `Sheetfile`, a KiCad 5 sheet's `F1`), and a file of that path joins the project, with the sheets it names in turn;
+ * it is no longer among the files set aside. Nothing is read when no schematic was given outside the folder.
+ */
+export async function withNamedSheets(files: ProjectFiles, given: InputFile[], ignored: IgnoredFile[]): Promise<ProjectFiles> {
+  const have = new Set(files.schematics.map((f) => f.path.toLowerCase()))
+  const elsewhere = new Map(given.filter((f) => isSchematic(f.path) && !have.has(f.path.toLowerCase())).map((f) => [f.path.toLowerCase(), f]))
+  if (!files.schematics.length || !elsewhere.size) return files
+  const added: InputFile[] = []
+  const queue = [...files.schematics]
+  while (queue.length) {
+    const s = queue.shift()!
+    if (s.size !== null && s.size > MAX_FILE_BYTES) continue
+    const text = new TextDecoder().decode(await s.read())
+    const re = kindOf(s.path) === "legacy-schematic" ? /^F1\s+"([^"]+)"/gm : /\(property\s+"(?:Sheetfile|Sheet file|File)"\s+"([^"]+)"/g
+    for (const m of text.matchAll(re)) {
+      const f = elsewhere.get(resolvePath(`${dirName(s.path)}/${m[1]}`).toLowerCase())
+      if (!f) continue
+      elsewhere.delete(f.path.toLowerCase())
+      added.push(f)
+      queue.push(f)
+    }
+  }
+  if (!added.length) return files
+  const paths = new Set(added.map((f) => f.path))
+  for (let i = ignored.length - 1; i >= 0; i--) if (paths.has(ignored[i].path)) ignored.splice(i, 1)
+  return { ...files, schematics: [...files.schematics, ...added] }
+}
+
 /**
  * The files that go with a board (or, with no board, with the schematic that starts the project): its project file and rules
- * in its folder, the schematics and libraries in or below it. Everything else is set aside with the reason.
+ * in its folder, the schematics and libraries in or below it. Everything else is set aside with the reason; the sheets its
+ * schematics name elsewhere are taken back by `withNamedSheets`, which reads them.
  */
 function readyBeside(usable: InputFile[], ignored: IgnoredFile[], chosen: InputFile, board: InputFile | null): PickResult {
   const dir = dirName(chosen.path)

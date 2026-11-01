@@ -170,8 +170,8 @@ const yes = (n: List | undefined) => !!n && (n[1] === "yes" || n[1] === "true" |
 const pt = (p: Pt) => ({ x: u(p.x), y: u(p.y) })
 const unitBody = (g: { unit: number; bodyStyle: number }) => ({ ...(g.unit ? { unit: g.unit } : {}), ...(g.bodyStyle ? { body: g.bodyStyle } : {}) })
 
-/** One graphic of a cached symbol as a drawing item, or a note saying why it is not one. */
-function itemOf(g: LibGraphic, notes: Set<string>): DrawingItem | string {
+/** One graphic of a cached symbol as drawing items, or a note saying why it is not one. */
+function itemOf(g: LibGraphic, notes: Set<string>): DrawingItem | DrawingItem[] | string {
   const base = { ...unitBody(g), ...lookOf(g), ...(flagOf(g.node, "private") ? { private: true as const } : {}) }
   switch (g.kind) {
     case "polyline":
@@ -204,9 +204,43 @@ function itemOf(g: LibGraphic, notes: Set<string>): DrawingItem | string {
       const angle = numAt(kid(g.node, "at"), 3) / 10
       return { kind: "text", text: g.text ?? "", at: pt(g.pts[0]), angle: ((angle % 360) + 360) % 360, ...effectsOf(g.node, notes), ...base }
     }
+    case "text_box":
+      return textBoxItems(g, base, notes)
     default:
       return `a drawing of a kind the editor does not know (${String(g.node[0])})`
   }
+}
+
+/**
+ * A text box of a cached symbol (KiCad 7 and later) as what it draws: its border and fill as a box, and its text inside
+ * the margins, placed by its justification. `at` is a corner and `size` reaches the other, y up, as the file has them.
+ * Without margins (files before KiCad 8) KiCad's own for a symbol's box is 0.8 of the text's height on every side.
+ */
+function textBoxItems(g: LibGraphic, base: Look & { unit?: number; body?: number; private?: true }, notes: Set<string>): DrawingItem[] | string {
+  const at = kid(g.node, "at")
+  const size = kid(g.node, "size")
+  if (!at || !size) return "a text box with no corner or size"
+  if (Math.round(numAt(at, 3, 0)) % 360 !== 0) return "a turned text box"
+  const x0 = numAt(at, 1)
+  const y0 = numAt(at, 2)
+  const x1 = x0 + numAt(size, 1)
+  const y1 = y0 + numAt(size, 2)
+  const e = effectsOf(g.node, notes)
+  const legacy = numAt(kid(kid(kid(g.node, "effects"), "font"), "size"), 1, 1.27) * 0.8
+  const m = kid(g.node, "margins")
+  const [ml, mt, mr, mb] = m ? [1, 2, 3, 4].map((i) => numAt(m, i, 0)) : [legacy, legacy, legacy, legacy]
+  const left = Math.min(x0, x1)
+  const right = Math.max(x0, x1)
+  const top = Math.max(y0, y1)
+  const bottom = Math.min(y0, y1)
+  const x = e.h === "left" ? left + ml : e.h === "right" ? right - mr : (left + ml + right - mr) / 2
+  const y = e.v === "top" ? top - mt : e.v === "bottom" ? bottom + mb : (top - mt + bottom + mb) / 2
+  const { width: _w, dash: _d, color: _c, fill: _f, fillColor: _fc, ...where } = base
+  const items: DrawingItem[] = []
+  // A border of a negative width is KiCad's box without one, which leaves its text alone.
+  if (g.strokeWidth >= 0) items.push({ kind: "rectangle", a: pt({ x: x0, y: y0 }), b: pt({ x: x1, y: y1 }), ...base })
+  if (g.text) items.push({ kind: "text", text: g.text, at: pt({ x, y }), angle: 0, ...e, ...where })
+  return items
 }
 
 const PIN_TYPES = new Set<string>(["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect"])
@@ -288,6 +322,7 @@ export function drawingFromLib(lib: ResolvedLibSymbol): DrawingResult {
   for (const g of lib.graphics) {
     const item = itemOf(g, notes)
     if (typeof item === "string") problems.push(item)
+    else if (Array.isArray(item)) items.push(...item)
     else items.push(item)
   }
   const pins: DrawingPin[] = []

@@ -42,6 +42,7 @@ export const RULES_SCH = [
   rule("lib_symbols>symbol>symbol>pin", "extend", "SymbolPort", { ext: "S5" }),
   rule("lib_symbols>symbol>symbol>pin>(?:at|length|hide|name|number|name>.*|number>.*|alternate|alternate>.*)", "extend", "SymbolPort, PinDef", { ext: "S5", note: "alternates, per-pin visibility, name and number text, any length and any of four directions" }),
   rule("lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|text|bezier|ellipse)(?:>.*)?", "extend", "SymbolPrimitive: path, circle, text", { ext: "S6", note: "arcs, beziers, ellipses, fills and stroke styles; the editor's drawing has paths, circles and text only" }),
+  rule("lib_symbols>symbol>symbol>text_box(?:>.*)?", "extend", "-", { ext: "S6", note: "a symbol's text box (KiCad 7 and later), drawn as its border and its text" }),
   rule("lib_symbols>symbol>embedded_files(?:>.*)?", "report", "-", { note: "files a symbol packs inside the KiCad file (KiCad 9), as the schematic's own: a report entry" }),
 
   // ---- symbols on the sheet ----
@@ -114,7 +115,7 @@ export const ATOMS_SCH = [
   atoms("lib_symbols>symbol>(?:in_bom|on_board|in_pos_files|exclude_from_sim|duplicate_pin_numbers_are_jumpers)", YES_NO),
   atoms("lib_symbols>symbol>pin_(?:names|numbers)", ["hide"]),
   atoms("lib_symbols>symbol>pin_(?:names|numbers)>hide", YES_NO),
-  atoms("(?:lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|bezier)|rectangle|circle|polyline|arc|text_box|table>cells>table_cell|sheet|rule_area>polyline)>fill>type", ["none", "outline", "background", "color"]),
+  atoms("(?:lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|bezier|text_box)|rectangle|circle|polyline|arc|text_box|table>cells>table_cell|sheet|rule_area>polyline)>fill>type", ["none", "outline", "background", "color"]),
   atoms("(?:.*>)?stroke>type", ["default", "dash", "dot", "dash_dot", "dash_dot_dot", "solid"]),
   atoms("(?:global_label|hierarchical_label)>shape", ["input", "output", "bidirectional", "tri_state", "passive"]),
   atoms("netclass_flag>shape", ["dot", "round", "diamond", "rectangle"]),

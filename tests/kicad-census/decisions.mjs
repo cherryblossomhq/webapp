@@ -38,6 +38,7 @@ export const RULES = [
   rule("footprint>fp_text_box(?:>.*)?", "extend", "PartText.box", { ext: "X25", note: "a footprint's text box (KiCad 7): its corners are stored in the footprint's own frame in some releases and the board's in others, which no corpus board shows (X9 builds the board's text boxes)" }),
   rule("(?:gr_text|gr_text_box|footprint>fp_text|footprint>fp_text_box|footprint>property)>(?:keep_upright|line_spacing|background|effects>(?:line_spacing|href))", "extend", "BoardText", { ext: "X9" }),
   rule("(?:footprint>)?table>cells>table_cell>ij", "extend", "BoardShape, BoardText", { ext: "X25", note: "a table cell's row and column" }),
+  rule("footprint>stackup(?:>layer)?", "not-needed", "-", { note: "the layers a KiCad 10 footprint lists as its own stackup, for its footprint editor: every pad and drawing names the layer it is on" }),
   rule("footprint>private_layers(?:><layer number>)?", "report", "-", { note: "layers a footprint draws on that KiCad does not show or plot on the board (KiCad 7): the footprint's drawings on them are not brought in, and the import report names how many" }),
   rule("(?:[^>]+>)*custom_property(?:>.*)?", "extend", "-", { ext: "X23X", note: "custom properties on any board object (KiCad 11 development)" }),
   rule("(?:footprint>)?variants?>(?:variant>)?(?:description|exclude_from_sim)|footprint>variant>(?:description|exclude_from_sim)", "extend", "-", { ext: "X23" }),

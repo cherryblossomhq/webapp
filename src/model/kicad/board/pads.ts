@@ -178,7 +178,8 @@ function layerPad(pad: KicadPad, l: KicadPadLayer): KicadPad {
   if (l.offset) out.drill = pad.drill ? { ...pad.drill, offset: l.offset } : { oval: false, w: 0, h: 0, offset: l.offset }
   const local: PadLocal = { ...pad.local }
   if (l.clearance !== undefined) local.clearance = l.clearance
-  if (l.zoneConnect !== undefined) local.zoneConnect = l.zoneConnect
+  // `(zone_connect -1)` is KiCad 9's inherited (ZONE_CONNECTION::INHERITED), which it writes on every layer of a stack: the layer says nothing, and the pad's own setting stands.
+  if (l.zoneConnect !== undefined && l.zoneConnect >= 0) local.zoneConnect = l.zoneConnect
   if (l.thermalGap !== undefined) local.thermalGap = l.thermalGap
   if (l.thermalWidth !== undefined) local.thermalWidth = l.thermalWidth
   if (l.thermalAngle !== undefined) local.thermalAngle = l.thermalAngle

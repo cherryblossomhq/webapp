@@ -394,3 +394,13 @@ describe("the converter's zones sit where its parts do", () => {
     expect(out).toContain("(xy 88 108)")
   })
 })
+
+describe("a footprint drawn with a polygon of 200,000 points", () => {
+  it("is written, not stopped by the stack", async () => {
+    // A TRS-80 board's artwork footprint is one polygon of 168,798 points: a line each, past what a spread passes to `push`.
+    const pts = Array.from({ length: 200_000 }, (_, i) => `(xy ${(Math.cos(i / 31831) * 5).toFixed(4)} ${(Math.sin(i / 31831) * 5).toFixed(4)})`).join(" ")
+    const art = footprint({ ref: "G1", at: "50 50 0", layer: "F.Cu", pads: [], extra: `(fp_poly (pts ${pts}) (stroke (width 0) (type solid)) (fill solid) (layer "F.SilkS")) (attr board_only exclude_from_pos_files exclude_from_bom)` })
+    const out = await pcbOf(imported(board({ nets: NETS, body: [art] })))
+    expect(out.split("(xy ").length - 1).toBeGreaterThanOrEqual(200_000)
+  }, 120_000)
+})

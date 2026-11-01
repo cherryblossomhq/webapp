@@ -42,6 +42,13 @@ const AREA: JsonSchema = {
   description: "A rectangle",
 }
 
+/**
+ * The most get_wiring answers at once, in characters: about 10k tokens, where Claude Code starts
+ * warning about a tool's output (it cuts one off at 25k by default). A whole sheet grows with the
+ * board (a dense 41-part board's was 32k characters), and one block of it stays well under.
+ */
+export const WIRING_BUDGET = 30_000
+
 const inBox = (p: Vec2, b: Box) => p.x >= b.minX - 1e-6 && p.x <= b.maxX + 1e-6 && p.y >= b.minY - 1e-6 && p.y <= b.maxY + 1e-6
 
 export const getWiringTool: ToolSpec = {
@@ -93,7 +100,14 @@ export const getWiringTool: ToolSpec = {
       ...(junctions.length ? { junctions } : {}),
       ...(frames.length ? { frames } : {}),
     }
-    return ok(project, JSON.stringify(out), `Read the wiring${typeof input.block === "string" ? ` of ${input.block}` : box ? " of an area" : ""} (${plural(pins.length, "pin")}, ${plural(wires.length, "wire")})`)
+    const text = JSON.stringify(out)
+    if (text.length > WIRING_BUDGET) {
+      // Too much for one answer: the frames, to ask again for a block or an area of the sheet.
+      const all = blockFrames(project).map((f) => ({ block: f.name, min_x: f.box.minX, min_y: f.box.minY, max_x: f.box.maxX, max_y: f.box.maxY }))
+      const why = `${plural(pins.length, "pin")} and ${plural(wires.length, "wire")} are too many for one answer. Ask again with block, or with an area of the sheet.`
+      return { ...ok(project, JSON.stringify({ too_big: why, ...(all.length ? { frames: all } : {}) }), "Too much wiring for one answer"), empty: true }
+    }
+    return ok(project, text, `Read the wiring${typeof input.block === "string" ? ` of ${input.block}` : box ? " of an area" : ""} (${plural(pins.length, "pin")}, ${plural(wires.length, "wire")})`)
   },
 }
 

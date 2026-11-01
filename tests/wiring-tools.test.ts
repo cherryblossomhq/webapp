@@ -1,10 +1,13 @@
+import { readdirSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { runTool, type ToolOutcome } from "../src/ai/tools"
+import { WIRING_BUDGET } from "../src/ai/wiringTools"
 import { computeConnectivity } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { powerNetName } from "../src/model/instances"
 import { findPart } from "../src/model/library"
 import { createProject, resolvePinSpec } from "../src/model/ops"
+import { parseProjectFile } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
 
 // get_wiring, draw_wiring and edit_net: the schematic by its coordinates, and nets by their names.
@@ -56,6 +59,36 @@ describe("get_wiring", () => {
 
   it("refuses a block that isn't there", () => {
     expect(runTool(example("blinker"), "get_wiring", { block: "NOPE" }).result).toMatch(/No block NOPE/)
+  })
+
+  // Claude Code warns about a tool's output past 10k tokens and cuts it at 25k: a whole sheet grows
+  // with the board, so past the budget it answers with the frames, and every block fits.
+  const BLOG = readdirSync(new URL("./fixtures/blog-boards/", import.meta.url)).filter((f) => f.endsWith(".json"))
+  const boards: [string, Project][] = [
+    ...EXAMPLES.map((e): [string, Project] => [e.id, e.project]),
+    ...BLOG.map((f): [string, Project] => [f, parseProjectFile(readFileSync(new URL(`./fixtures/blog-boards/${f}`, import.meta.url), "utf8"), { id: f })]),
+  ]
+  it.each(boards)("keeps every answer for %s within what an assistant is shown", (_, p) => {
+    const whole = runTool(p, "get_wiring", {})
+    expect(whole.result.length).toBeLessThanOrEqual(WIRING_BUDGET)
+    if (whole.empty) {
+      const read = JSON.parse(whole.result) as { too_big: string; frames: { block: string }[] }
+      expect(read.too_big).toMatch(/Ask again with block/)
+      expect(read.frames.length).toBe(p.blocks!.length)
+    }
+    for (const b of p.blocks ?? []) {
+      const one = runTool(p, "get_wiring", { block: b.name })
+      expect(one.isError || one.empty, `${b.name}: ${one.result.slice(0, 80)}`).toBeFalsy()
+      expect(one.result.length).toBeLessThanOrEqual(WIRING_BUDGET)
+    }
+  })
+
+  it("answers a whole sheet past the budget with its frames", () => {
+    const p = boards.find(([n]) => n === "rp2040-dense-4layer.json")![1]
+    const out = runTool(p, "get_wiring", {})
+    expect(out.isError).toBe(false)
+    expect(out.empty).toBe(true)
+    expect(out.result).toMatch(/too many for one answer/)
   })
 })
 

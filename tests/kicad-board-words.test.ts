@@ -17,3 +17,10 @@ describe("a footprint's own stackup (KiCad 10)", () => {
     expect(r.project.components.map((c) => c.ref)).toEqual(["C1"])
   })
 })
+
+describe("the board's default for stroked fills (a KiCad 6 nightly, 2019)", () => {
+  it("is passed over: every zone says it itself", () => {
+    const r = imported(board({ version: 20190905, setup: "(setup (filled_areas_thickness no))", body: [footprint({ pads: [pad({ at: "0 0" })] })] }))
+    expect(r.project.components).toHaveLength(1)
+  })
+})

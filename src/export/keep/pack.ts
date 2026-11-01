@@ -86,11 +86,12 @@ export async function sha256Hex(data: Uint8Array): Promise<string> {
 }
 
 /**
- * What is kept of a project, hashed: its stored text without the record of the files (the ids, the times and the sheet it is scoped to are not in it), with the keys
+ * What is kept of a project, hashed: its stored text without the record of the files or of the report (the ids, the times and the sheet it is scoped to are not in it), with the keys
  * of every object in order, since a project read back from storage holds the same values with its keys in the order the reader writes them.
  */
 export async function contentHash(project: Project): Promise<string> {
-  const { original: _original, ...rest } = project.kicad ?? {}
+  // The report the import kept beside the project is named after this is worked out, and is not what the project is.
+  const { original: _original, report: _report, ...rest } = project.kicad ?? {}
   const text = canonical(JSON.parse(serializeProject({ ...project, kicad: Object.keys(rest).length ? rest : undefined })))
   return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))
 }

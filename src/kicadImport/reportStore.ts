@@ -1,10 +1,10 @@
 import type { EntryLine, ImportSummary } from "./summary"
 
-// The report of a KiCad import, kept in this browser beside the project it made, so the project's
-// panel can show it again. It is not part of the project file: a project opened on another
-// computer, or after the browser's data is cleared, has no report, and says nothing about one.
-// What is kept is bounded: the last 20 reports, each cut to a size a browser can hold. The
-// download of the import has all of it.
+// The report of a KiCad import, kept beside the project it made, so the project's panel can show it
+// again: in this browser (the last 20, at once), and as a file in the account's file store that the
+// project names (`KicadCarry.report`), so it is there on another computer and for the people the
+// project is shared with. It is not part of the project file. What is kept is bounded: each report
+// is cut to a size a browser can hold. The download of the import has all of it.
 
 const key = (projectId: string) => `cherryblossom:editor:kicad-report:${projectId}`
 const INDEX = "cherryblossom:editor:kicad-report-index"
@@ -58,14 +58,55 @@ function shortened(summary: ImportSummary, entries: number): ImportSummary {
   }
 }
 
+/** The report as it is kept: cut again, harder, until the one report is small enough. */
+function reportText(summary: ImportSummary, name: string): string {
+  let text = ""
+  for (const entries of [MAX_ENTRIES, 100, 30, 10, 0]) {
+    text = JSON.stringify({ name: cut(name), summary: shortened(summary, entries) } satisfies StoredReport)
+    if (text.length <= MAX_REPORT_CHARS) break
+  }
+  return text
+}
+
+const REPORT_FILE = "report.json"
+
+/**
+ * Keeps the report in the account's file store, as a zip of one `report.json` (the store takes zips, not JSON), and resolves to the file's id for the
+ * project to name; null when it could not be kept, which leaves the report in this browser only.
+ */
+export async function keepReportFile(summary: ImportSummary, name: string): Promise<string | null> {
+  try {
+    const [{ packOriginal }, { putImageFile }] = await Promise.all([import("../export/keep/pack"), import("../store/imageFiles")])
+    const packed = await packOriginal([{ path: REPORT_FILE, data: new TextEncoder().encode(reportText(summary, name)) }])
+    return await putImageFile("kicad-import-report.zip", packed.bytes.buffer.slice(packed.bytes.byteOffset, packed.bytes.byteOffset + packed.bytes.byteLength) as ArrayBuffer)
+  } catch {
+    return null
+  }
+}
+
+const parsed = (raw: string): StoredReport | null => {
+  const stored = JSON.parse(raw) as Partial<StoredReport>
+  return stored.summary && typeof stored.name === "string" && Array.isArray(stored.summary.notBrought) ? (stored as StoredReport) : null
+}
+
+/** The report of a project: this browser's copy, else the file the project names (`file`), read from the account's file store. Null when there is neither. */
+export async function loadProjectReport(projectId: string, file: string | undefined): Promise<StoredReport | null> {
+  const here = loadReport(projectId)
+  if (here || !file) return here
+  try {
+    const [{ unpackOriginal }, { loadImage, imageBytes }] = await Promise.all([import("../export/keep/pack"), import("../store/imageFiles")])
+    await loadImage(file)
+    const bytes = imageBytes(file)
+    const json = bytes ? (await unpackOriginal(bytes)).find((f) => f.path === REPORT_FILE) : undefined
+    return json ? parsed(new TextDecoder().decode(json.data)) : null
+  } catch {
+    return null
+  }
+}
+
 export function saveReport(projectId: string, summary: ImportSummary, name: string) {
   try {
-    // Cut again, harder, until the one report is small enough.
-    let text = ""
-    for (const entries of [MAX_ENTRIES, 100, 30, 10, 0]) {
-      text = JSON.stringify({ name: cut(name), summary: shortened(summary, entries) } satisfies StoredReport)
-      if (text.length <= MAX_REPORT_CHARS) break
-    }
+    const text = reportText(summary, name)
     // The index first: if it cannot be written nothing is stored, and a report is never one the index does not know,
     // which is what lets the oldest be found and forgotten.
     const index = [...readIndex().filter((id) => id !== projectId), projectId]
@@ -81,9 +122,7 @@ export function saveReport(projectId: string, summary: ImportSummary, name: stri
 export function loadReport(projectId: string): StoredReport | null {
   try {
     const raw = localStorage.getItem(key(projectId))
-    if (!raw) return null
-    const stored = JSON.parse(raw) as Partial<StoredReport>
-    return stored.summary && typeof stored.name === "string" && Array.isArray(stored.summary.notBrought) ? (stored as StoredReport) : null
+    return raw ? parsed(raw) : null
   } catch {
     return null
   }

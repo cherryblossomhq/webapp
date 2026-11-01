@@ -7,6 +7,7 @@ import { stopTidy } from "../editor/schematic/tidyAction"
 import { stopZoneFills } from "../store/analysis"
 import { isTyping } from "../editor/viewport"
 import { CanvasNotice } from "../panels/CanvasNotice"
+import { ImportedNote } from "../kicadImport/ImportedNote"
 import { PcbToolbar, SchematicToolbar } from "../panels/CanvasToolbar"
 import { ChecksPanel } from "../panels/ChecksPanel"
 import { CollabNotices } from "../panels/CollabNotices"
@@ -252,6 +253,7 @@ export function Editor() {
             <FollowFrame />
             <CollabNotices />
             <CanvasNotice />
+            <ImportedNote />
             <PreviewBanner />
             {(!libraryOpen || !copilotOpen) && (
               <div className={`pointer-events-none absolute left-0 z-10 flex flex-col gap-2 ${EDGE_TABS_TOP}`}>

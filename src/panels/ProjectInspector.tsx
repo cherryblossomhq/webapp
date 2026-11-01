@@ -2,8 +2,7 @@ import { ChevronDown, Plus, Trash2 } from "lucide-react"
 import { resolvedComponents } from "../model/ruleAreas"
 import { useMemo, useState } from "react"
 import { uid } from "../lib/id"
-import { Shell } from "../kicadImport/KicadImportDialog"
-import { ReportView } from "../kicadImport/ReportView"
+import { KicadReportDialog } from "../kicadImport/ReportDialog"
 import { loadReport } from "../kicadImport/reportStore"
 import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
 import { boardAreaMm2, describeOutline } from "../model/outline"
@@ -69,7 +68,7 @@ export function ProjectInspector({ project }: { project: Project }) {
       )}
       <PropertiesSection project={project} />
       <VariantsSection project={project} />
-      <KicadReportSection projectId={project.id} />
+      <KicadReportSection projectId={project.id} file={project.kicad?.report} />
       <BoardSection project={project} />
       <LayersSection project={project} />
       <RulesSection project={project} />
@@ -153,25 +152,16 @@ function DescriptionField({ value }: { value: string }) {
   )
 }
 
-/** The report of the KiCad import that made this project, kept in this browser; nothing shows for any other project. */
-export function KicadReportSection({ projectId }: { projectId: string }) {
-  const stored = useMemo(() => loadReport(projectId), [projectId])
+/** The report of the KiCad import that made this project, from this browser or the file the project names; nothing shows for any other project. */
+export function KicadReportSection({ projectId, file }: { projectId: string; file: string | undefined }) {
+  const here = useMemo(() => !!loadReport(projectId), [projectId])
   const [open, setOpen] = useState(false)
-  if (!stored) return null
+  if (!here && !file) return null
   return (
     <Section title="KiCad import" id="kicad-import">
       <p className="text-[12.5px] text-ink-2">What came in from KiCad, what was left out and why.</p>
       <Button onClick={() => setOpen(true)}>View import report</Button>
-      {open && (
-        <Shell label="KiCad import report" onDismiss={() => setOpen(false)}>
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1 scroll-thin">
-            <ReportView summary={stored.summary} name={stored.name} />
-          </div>
-          <div className="mt-4 flex justify-end">
-            <Button onClick={() => setOpen(false)}>Close</Button>
-          </div>
-        </Shell>
-      )}
+      {open && <KicadReportDialog projectId={projectId} file={file} onClose={() => setOpen(false)} />}
     </Section>
   )
 }

@@ -1,8 +1,9 @@
 import { CheckCircle2, CircuitBoard, Loader2 } from "lucide-react"
-import type { ReactNode } from "react"
+import { useEffect, useRef, type ReactNode } from "react"
 import { Button } from "../ui/controls"
 import type { KicadImportController, ImportState } from "./controller"
 import { useModal } from "./focus"
+import { markJustImported } from "./justImported"
 import { PHASE_LABELS, type Phase } from "./protocol"
 import { sizeText } from "./save"
 import { ReportView } from "./ReportView"
@@ -65,7 +66,17 @@ function Progress({ phase, slow, onCancel }: { phase: Phase | "matching" | "savi
 }
 
 export function KicadImportDialog({ state, controller, onOpen }: { state: ImportState; controller: KicadImportController; onOpen: (projectId: string) => void }) {
-  if (state.step === "idle") return null
+  // A project the import saved opens at once, and says it was imported in one line there (`ImportedNote`); the report is a click away in the
+  // project. Only a refusal or a save that failed stays on this screen.
+  const saved = state.step === "report" && state.projectId && !state.saveError ? state.projectId : null
+  const open = useRef(onOpen)
+  open.current = onOpen
+  useEffect(() => {
+    if (!saved) return
+    markJustImported(saved)
+    open.current(saved)
+  }, [saved])
+  if (state.step === "idle" || saved) return null
   const close = () => controller.close()
   if (state.step === "working") {
     // No dismiss: a click outside or Escape must not end an import that may be minutes of work. A
@@ -107,15 +118,10 @@ export function KicadImportDialog({ state, controller, onOpen }: { state: Import
         <ReportView summary={state.summary} name={state.name} saveError={state.saveError} saveKind={state.saveKind} />
       </div>
       <div className="mt-4 flex flex-wrap justify-end gap-2">
-        <Button onClick={close}>{state.projectId ? "Stay here" : "Close"}</Button>
+        <Button onClick={close}>Close</Button>
         {state.saveError && state.saveKind !== "uncertain" && state.saveKind !== "final" && (
           <Button variant="primary" data-autofocus onClick={() => controller.retry()}>
             Try again
-          </Button>
-        )}
-        {state.projectId && (
-          <Button variant="primary" data-autofocus onClick={() => onOpen(state.projectId!)}>
-            Open the project
           </Button>
         )}
       </div>

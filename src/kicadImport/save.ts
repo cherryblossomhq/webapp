@@ -3,7 +3,7 @@ import { putImageFile } from "../store/imageFiles"
 import { createStoredProject } from "../store/projectActions"
 import type { ProjectStorage } from "../store/storage"
 import type { ImportOutcome } from "./protocol"
-import { saveReport } from "./reportStore"
+import { keepReportFile, saveReport } from "./reportStore"
 
 /**
  * What a stored project may weigh, in bytes of its file: `MAX_DOCUMENT_BYTES` in
@@ -77,6 +77,9 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
       throw new SaveRefused(`Couldn't keep the board's files (reference images and embedded fonts)${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")
     }
   }
+  // The report goes to the file store too, and the project names it, so it opens on any computer; a store that refuses it leaves it in this browser only.
+  const report = await keepReportFile(summary, name ?? project.name)
+  if (report) project = { ...project, kicad: { ...project.kicad, report } }
   let id: string
   try {
     id = await createStoredProject(storage, project)

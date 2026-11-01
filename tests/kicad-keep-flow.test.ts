@@ -68,8 +68,9 @@ describe("the user's own files go with the project", () => {
     connectModelFiles(store)
     const { storage, created } = fakeStorage()
     await saveImported(storage, await imported())
-    expect(kept.size).toBe(1)
     const reopened = parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 })
+    // the user's files, and the import's report beside them
+    expect([...kept.keys()].sort()).toEqual([reopened.kicad!.original!.file, reopened.kicad!.report!].sort())
     const out = await kicadFiles(reopened)
     expect(out.files["blink.kicad_pcb"]).toBe(text)
     // a board with no schematic or project file is exported as just that: no file is made up

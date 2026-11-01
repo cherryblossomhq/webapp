@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { KicadImportController, ImportState } from "../src/kicadImport/controller"
 import { KicadImportDialog } from "../src/kicadImport/KicadImportDialog"
 import { ReportView } from "../src/kicadImport/ReportView"
-import { loadReport, saveReport } from "../src/kicadImport/reportStore"
+import { keepReportFile, loadProjectReport, loadReport, saveReport } from "../src/kicadImport/reportStore"
+import { ImportedNote } from "../src/kicadImport/ImportedNote"
+import { markJustImported } from "../src/kicadImport/justImported"
+import { connectModelFiles } from "../src/store/modelFiles"
+import { useProjectStore } from "../src/store/projectStore"
+import { createProject } from "../src/model/ops"
 import { stoppedSummary, summarize, unsupportedLead, type ImportSummary } from "../src/kicadImport/summary"
 import { KicadReportSection } from "../src/panels/ProjectInspector"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
@@ -151,15 +156,15 @@ describe("the dialog", () => {
     expect(c.close).toHaveBeenCalledTimes(2)
   })
 
-  it("a report with a saved project offers Open the project, focused", () => {
+  it("a saved import opens the project at once, marked for the editor's one line, with no dialog left on this page", () => {
     const c = fakeController()
     const onOpen = vi.fn()
     mount(<KicadImportDialog state={{ step: "report", summary: withParts, projectId: "p9", name: "n", saveError: null }} controller={c} onOpen={onOpen} />)
-    expect(document.activeElement).toBe(button("Open the project"))
-    act(() => button("Open the project").click())
-    expect(onOpen).toHaveBeenCalledWith("p9")
-    act(() => button("Stay here").click())
-    expect(c.close).toHaveBeenCalled()
+    expect(q('[role="dialog"]')).toBeNull()
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith("p9")
+    expect(sessionStorage.getItem("cherryblossom:editor:kicad-just-imported")).toBe("p9")
+    mount(<KicadImportDialog state={{ step: "report", summary: withParts, projectId: "p9", name: "n", saveError: null }} controller={c} onOpen={onOpen} />)
+    expect(onOpen).toHaveBeenCalledOnce()
   })
 
   it("a report of a failed save offers Try again, focused, and no Open", () => {
@@ -182,7 +187,7 @@ describe("the dialog", () => {
 
 describe("the keyboard", () => {
   it("Tab stays inside the dialog, in both directions", () => {
-    mount(<KicadImportDialog state={{ step: "report", summary: refused, projectId: "p", name: "n", saveError: null }} controller={fakeController()} onOpen={() => {}} />)
+    mount(<KicadImportDialog state={{ step: "report", summary: refused, projectId: null, name: "n", saveError: null }} controller={fakeController()} onOpen={() => {}} />)
     const items = [...q('[role="dialog"]')!.querySelectorAll<HTMLElement>("button")]
     items[items.length - 1].focus()
     expect(key("Tab").defaultPrevented).toBe(true)
@@ -238,18 +243,18 @@ describe("the keyboard", () => {
 
 describe("the project panel's report", () => {
   it("shows nothing for a project with no kept report", () => {
-    mount(<KicadReportSection projectId="none" />)
+    mount(<KicadReportSection projectId="none" file={undefined} />)
     expect(host.textContent).toBe("")
   })
 
-  it("shows a button for one with a report, which opens it and closes again, with the keyboard behaving the same", () => {
+  it("shows a button for one with a report, which opens it and closes again, with the keyboard behaving the same", async () => {
     saveReport("p1", withParts, "Imported board")
     expect(loadReport("p1")).not.toBeNull()
-    mount(<KicadReportSection projectId="p1" />)
+    mount(<KicadReportSection projectId="p1" file={undefined} />)
     expect(host.textContent).toContain("KiCad import")
     // A real click focuses the button first; `click()` alone does not.
     act(() => button("View import report").focus())
-    act(() => button("View import report").click())
+    await act(async () => button("View import report").click())
     const dialog = q('[role="dialog"]')!
     expect(dialog.getAttribute("aria-label")).toBe("KiCad import report")
     expect(dialog.textContent).toContain("Imported from KiCad")
@@ -257,51 +262,54 @@ describe("the project panel's report", () => {
     expect(q('[role="dialog"]')).toBeNull()
     expect(document.activeElement).toBe(button("View import report"))
   })
+
+  it("reads the report from the file the project names when this browser has none: another computer, or someone it is shared with", async () => {
+    const files = new Map<string, ArrayBuffer>()
+    connectModelFiles({
+      put: async ({ bytes }) => {
+        const id = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("")
+        files.set(id, bytes)
+        return id
+      },
+      get: async (id) => files.get(id) ?? null,
+    })
+    try {
+      const file = await keepReportFile(withParts, "Imported board")
+      expect(file).toMatch(/^[0-9a-f]{64}$/)
+      expect(files.has(file!)).toBe(true)
+      // no copy in this browser: the file is what is read
+      stubLocalStorage()
+      const report = await loadProjectReport("p2", file!)
+      expect(report?.name).toBe("Imported board")
+      expect(report?.summary.status).toBe("imported")
+    } finally {
+      connectModelFiles(null)
+    }
+  })
 })
 
-describe("a save that waits for the connection", () => {
-  it("says it is still saving, with a Close that closes, by button, Escape or a click outside", () => {
-    const c = fakeController()
-    mount(<KicadImportDialog state={{ step: "working", phase: "saving", slow: true }} controller={c} onOpen={() => {}} />)
-    expect(q('[role="status"]')!.textContent).toBe("Still saving: it will finish when your connection is back. Check your projects list.")
-    expect((button("Close") as HTMLButtonElement).disabled).toBe(false)
-    expect(button("Cancel")).toBeUndefined()
+describe("the line a just-imported project opens with", () => {
+  it("says it was imported once, links the report, and is not said again", async () => {
+    saveReport("p3", withParts, "Imported board")
+    useProjectStore.setState({ project: { ...createProject(), id: "p3" } })
+    markJustImported("p3")
+    mount(<ImportedNote />)
+    expect(q('[role="status"]')!.textContent).toBe("Imported from KiCad. See the report")
+    await act(async () => button("See the report").click())
+    expect(q('[role="dialog"]')!.textContent).toContain("Imported from KiCad")
     act(() => button("Close").click())
-    key("Escape")
-    act(() => void q('[role="dialog"]')!.parentElement!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })))
-    expect(c.cancel).toHaveBeenCalledOnce()
-    expect(c.close).toHaveBeenCalledTimes(2)
-  })
-
-  it("before it is slow, saving cannot be closed", () => {
-    mount(<KicadImportDialog state={{ step: "working", phase: "saving" }} controller={fakeController()} onOpen={() => {}} />)
+    expect(q('[role="dialog"]')).toBeNull()
     expect(q('[role="status"]')).toBeNull()
-    expect((button("Cancel") as HTMLButtonElement).disabled).toBe(true)
-  })
-})
-
-describe("what a failed save offers", () => {
-  const report = (saveKind: "again" | "final" | "uncertain" | undefined, saveError = "The reason.") => (
-    <KicadImportDialog state={{ step: "report", summary: withParts, projectId: null, name: "n", saveError, saveKind }} controller={fakeController()} onOpen={() => {}} />
-  )
-
-  it("an uncertain failure is titled Saving did not finish, says to look in the projects list, and offers no Try again", () => {
-    mount(report("uncertain"))
-    expect(q("h2")!.textContent).toBe("Saving did not finish")
-    expect(q('[role="alert"]')!.textContent).toContain("may be in your projects list already")
-    expect(button("Try again")).toBeUndefined()
+    act(() => root.unmount())
+    root = createRoot(host)
+    mount(<ImportedNote />)
+    expect(q('[role="status"]')).toBeNull()
   })
 
-  it("a failure that would repeat is Not saved, says so, and offers no Try again", () => {
-    mount(report("final"))
-    expect(q("h2")!.textContent).toBe("Not saved")
-    expect(q('[role="alert"]')!.textContent).toContain("would give the same answer")
-    expect(button("Try again")).toBeUndefined()
-  })
-
-  it("a failure that may work next time offers Try again", () => {
-    mount(report("again"))
-    expect(q("h2")!.textContent).toBe("Not saved")
-    expect(button("Try again")).toBeDefined()
+  it("says nothing for a project the import did not just make", () => {
+    useProjectStore.setState({ project: { ...createProject(), id: "p4" } })
+    markJustImported("p5")
+    mount(<ImportedNote />)
+    expect(q('[role="status"]')).toBeNull()
   })
 })

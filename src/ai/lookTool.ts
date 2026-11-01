@@ -73,7 +73,7 @@ const header = (what: string, noun: string, image: LookImage | null, ctx: ToolCo
     : `${noun} showing ${what}.`
 
 const SCHEMATIC_KEY =
-  "Drawn on a light sheet: red symbols, blue wires and net labels, blue block frames with their titles, and the sheet's drawings (texts, lines and shapes) in their own colours; red dashed boxes outline overlaps, wires through symbols and texts over symbols; hollow red circles are unconnected pins."
+  "Drawn on a light sheet: red symbols, blue wires and net labels, blue block frames with their titles, and the sheet's drawings (texts, lines and shapes) in their own colours; red dashed boxes outline overlaps (block frames included), wires through symbols and texts over symbols or block titles; hollow red circles are unconnected pins."
 
 function pcbKey(side: PcbSide, extras: ReadonlySet<PcbExtra>) {
   const layers = side === "both" ? "both copper layers (top in front)" : `the ${side} copper layer only`

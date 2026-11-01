@@ -3,7 +3,7 @@ import { bareName, computeConnectivity, pinKey, type SchematicConnectivity } fro
 import { isSchematicPart, powerNetName, schematicPins, unitOwners } from "../instances"
 import { findPart } from "../library"
 import { fieldsInFrame, hasFieldPlaces } from "../symbolDrawing"
-import type { ComponentInstance, Project } from "../types"
+import type { ComponentInstance, NetStyle, Project } from "../types"
 import { portProblem, type PortVia, type RailKind } from "./shapes"
 
 // The nets as Tidy needs them: which pin is on which, which are supply rails (drawn with power
@@ -65,6 +65,16 @@ function railOf(name: string, kinds: Set<string>, ports: Set<string>): RailKind 
   if (SUPPLY.test(name) && !NOT_SUPPLY.test(name)) return "power"
   if (kinds.has("power") && !NOT_SUPPLY.test(name)) return "power"
   return null
+}
+
+/**
+ * A net's rail with the style chosen for it: drawn with labels it is no rail, drawn with ports it
+ * is one, ground when its name says so.
+ */
+function styledRail(style: NetStyle | undefined, name: string, found: RailKind | null): RailKind | null {
+  if (style === "label") return null
+  if (style === "port") return found ?? (GROUND.test(name) ? "ground" : "power")
+  return found
 }
 
 /** The nets of a project, with their rails. */
@@ -130,7 +140,11 @@ export function netInfo(project: Project): NetInfo {
       // the port Tidy would draw there would name it and join it to whatever shares that name.
       // A name Tidy made up says nothing of what the net is: the pins and ports on it do.
       // A net a local label names stays one: a power port in its place would name it NAME where KiCad names it /NAME.
-      rail: (!net.named && pins.length < 2) || net.label?.kind === "local" || net.label?.kind === "hierarchical" ? null : railOf(made && !ports.get(id)?.size ? "" : bareName(net), kinds.get(id) ?? new Set(), ports.get(id) ?? new Set()),
+      // A choice someone made for the net's name (`Project.netStyles`) wins over the rest.
+      rail:
+        (!net.named && pins.length < 2) || net.label?.kind === "local" || net.label?.kind === "hierarchical"
+          ? null
+          : styledRail(project.netStyles?.[bareName(net)], bareName(net), railOf(made && !ports.get(id)?.size ? "" : bareName(net), kinds.get(id) ?? new Set(), ports.get(id) ?? new Set())),
       pins,
       ...portOf(imported.get(id)),
     })

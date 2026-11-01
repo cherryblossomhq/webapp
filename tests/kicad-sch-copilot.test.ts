@@ -9,14 +9,16 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "9ee8d03b8178fd16d349e4ebbad96253b3f39096"
+const BASE_SHA = "7be930997795b7360c2585f788b5349d68091697"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
  * Then 164 characters longer: a bullet that keeps high-voltage nets apart with set_net_class, where an assistant raised every net's clearance instead.
  * Then 59 longer: the library holds basic parts only, so the bullet listing its specific parts says it has no chips and that find_part finds them.
+ * Then 401 longer: when to order blocks with arrange_blocks, draw a supply as labels or rename a net with edit_net, and draw by coordinates with
+ * get_wiring and draw_wiring, which an assistant laying out a power board had none of.
  */
-const BASE_CHARS = 10583
+const BASE_CHARS = 10984
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -40,6 +42,12 @@ const DRAWN_LAND_GROWTH = 2178
  * The budget below was raised by exactly this.
  */
 const HAND_TOOLS_GROWTH = 2215
+/**
+ * What an assistant drawing a power board's schematic by hand asked for, in bytes: `get_wiring` (814) and `draw_wiring` (1210), the sheet by
+ * its coordinates, which it measured from pictures instead; `edit_net` (651), a rename that keeps the wires and a choice of labels or ports;
+ * `arrange_blocks` (785), blocks in an order of its own; and get_design's pointer to get_wiring (64). The budget below was raised by exactly this.
+ */
+const SCHEMATIC_DRAWING_GROWTH = 3528
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -73,6 +81,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH).toBeLessThan(2100)
   })
 })

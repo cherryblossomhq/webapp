@@ -261,6 +261,6 @@ export function schematicSvg(project: Project, box: Box, size: PixelSize, m: Sch
       `<line x1="${n(p.pos.x - d)}" y1="${n(p.pos.y - d)}" x2="${n(p.pos.x + d)}" y2="${n(p.pos.y + d)}"/>` +
       `<line x1="${n(p.pos.x - d)}" y1="${n(p.pos.y + d)}" x2="${n(p.pos.x + d)}" y2="${n(p.pos.y - d)}"/></g>`
   }
-  for (const c of [...m.symbolOverlaps, ...m.labelsOnSymbols, ...m.labelOverlaps, ...m.wiresThroughSymbols, ...m.textsOnSymbols]) body += outline(c, px)
+  for (const c of [...m.symbolOverlaps, ...m.labelsOnSymbols, ...m.labelOverlaps, ...m.wiresThroughSymbols, ...m.textsOnSymbols, ...m.frameOverlaps, ...m.textsOnFrames]) body += outline(c, px)
   return svgDocument(box, size, sch.paper, body)
 }

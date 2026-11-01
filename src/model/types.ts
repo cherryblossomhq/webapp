@@ -1864,6 +1864,9 @@ export interface SheetSymbol {
   fieldsAutoplaced?: true
 }
 
+/** How a net is drawn on the schematic when Tidy draws it: net labels, or power and ground ports. */
+export type NetStyle = "label" | "port"
+
 export interface Project {
   id: string
   name: string
@@ -1924,6 +1927,12 @@ export interface Project {
   properties?: { key: string; value: string }[]
   /** Electrical check findings the user ignored, by key, e.g. "bare-led:c_4" (see model/erc.ts). */
   ignoredChecks?: string[]
+  /**
+   * How Tidy draws a net, where someone chose, by the name its labels and ports give it (`NAME` for KiCad's `/NAME`):
+   * `label` draws it with net labels even when its name or pins make it a supply (a 10 A path named VBUS through a fuse),
+   * `port` with power or ground ports. Absent: Tidy decides from the net's ports, name and pins (`model/tidy/nets.ts`).
+   */
+  netStyles?: Record<string, NetStyle>
   /**
    * What a KiCad import set by itself, so it can be undone or retired without touching the user's own
    * choices (`model/importMarks.ts`): the keys in `ignoredChecks` it wrote, and the pins it marked no

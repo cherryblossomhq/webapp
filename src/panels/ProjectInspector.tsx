@@ -11,6 +11,8 @@ import { resetOutline } from "../model/outlineOps"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
 import { valueText } from "../model/instances"
 import { classIndex, classNameOf, hasNetClasses } from "../model/netClasses"
+import { bareName } from "../model/connectivity"
+import { setNetStyle } from "../model/netEdit"
 import { findPart } from "../model/library"
 import { netTraceWidth } from "../model/ops"
 import {
@@ -26,7 +28,7 @@ import {
 } from "../model/rules"
 import { copperLayers, layerLabel } from "../model/stack"
 import { removeStitching, STITCH_PITCHES, stitchCount, stitchPitch, stitchVias } from "../model/stitch"
-import type { CopperLayer, CopperWeight, DesignRules, Project, SurfaceFinish } from "../model/types"
+import type { CopperLayer, CopperWeight, DesignRules, NetStyle, Project, SurfaceFinish } from "../model/types"
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
@@ -742,7 +744,27 @@ function NetsSection({ project }: { project: Project }) {
       )}
       {highlighted && <NetClassField project={project} net={highlighted.name} />}
       {highlighted && <NetWidthField project={project} net={highlighted.name} />}
+      {highlighted?.named && <NetStyleField project={project} net={bareName(highlighted)} />}
     </Section>
+  )
+}
+
+/** How Tidy draws one named net: by its own judgement, or always with labels, or always with ports. */
+function NetStyleField({ project, net }: { project: Project; net: string }) {
+  const style = project.netStyles?.[net] ?? "auto"
+  return (
+    <Field label={`${net} on the schematic`} hint="How Tidy draws it. Auto draws supplies and ground with ports and the rest with labels.">
+      <Segmented<NetStyle | "auto">
+        size="sm"
+        value={style}
+        onChange={(v) => commitProject((p) => setNetStyle(p, net, v === "auto" ? null : v))}
+        options={[
+          { value: "auto", label: "Auto" },
+          { value: "label", label: "Labels", title: "Net labels, even for a supply" },
+          { value: "port", label: "Ports", title: "Power or ground ports" },
+        ]}
+      />
+    </Field>
   )
 }
 

@@ -66,6 +66,8 @@ import { lookTool } from "./lookTool"
 import { readDatasheetTool } from "./datasheetTool"
 import { createPartTool, findPartTool, getPartDataTool, verifyPartsTool } from "./partTools"
 import { designDrawings, drawingsMore, drawingToolLabel, drawingToolSpecs } from "./drawingTools"
+import { arrangeBlocksTool } from "./arrangeTool"
+import { drawWiringTool, editNetTool, getWiringTool } from "./wiringTools"
 import { fail, ok, pinList, stringProps, type JsonSchema, type ToolContext, type ToolInput, type ToolOutcome, type ToolSpec } from "./toolKit"
 
 export type { JsonSchema, ToolContext, ToolInput, ToolOutcome } from "./toolKit"
@@ -267,7 +269,7 @@ function pinHelp(project: Project, spec: string) {
 const getDesign: ToolSpec = {
   name: "get_design",
   description:
-    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design.",
+    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels.",
   input_schema: { type: "object", properties: { sheet: SHEET_PROPERTY } },
   run: (project, input) => {
     // A project with sheets: the whole design, each part saying which sheet it is on, or one sheet's parts and the nets that touch them.
@@ -480,7 +482,11 @@ const editBlockTool: ToolSpec = {
     if (input.move_by) {
       const by = input.move_by as { x: number; y: number }
       const delta = { x: snapSch(by.x), y: snapSch(by.y) }
-      if (delta.x || delta.y) {
+      if (!delta.x && !delta.y) {
+        // Nothing to move: what an assistant asking for no move wants is where the frame is.
+        const frame = blockFrames(next).find((f) => f.id === block.id)?.box
+        changes.push(`not moved${frame ? `; its frame is x ${frame.minX} to ${frame.maxX}, y ${frame.minY} to ${frame.maxY}` : ""}`)
+      } else {
         // Checked as a drag of the block's title is: a move that would join or cut nets changes nothing.
         const held = contentsOf(next, [block.id])
         const moved = dragSelection(next, held, delta, { conn: getConnectivity })
@@ -1960,9 +1966,12 @@ const tidyTool: ToolSpec = {
 }
 
 const [addHierLabelTool, wireSheetPinTool] = sheetWiringTools(connectTool)
+// A net with no name is renamed by putting a label on it, which is connect's to draw, on the sheet of its pins.
+const editNet = editNetTool((project, input) => runSpec(connectTool, project, input, undefined, {}))
 
 export const TOOL_SPECS: ToolSpec[] = [
   getDesign,
+  getWiringTool,
   searchPartsTool,
   findPartTool,
   getPartDataTool,
@@ -1974,11 +1983,14 @@ export const TOOL_SPECS: ToolSpec[] = [
   removeComponentTool,
   connectTool,
   removeWiringTool,
+  drawWiringTool,
+  editNet,
   ...sheetEditTools,
   addHierLabelTool,
   wireSheetPinTool,
   groupPartsTool,
   editBlockTool,
+  arrangeBlocksTool,
   tidyTool,
   ...drawingToolSpecs,
   runChecksTool,
@@ -2074,7 +2086,7 @@ function sheetOfPins(project: Project, input: ToolInput): string | { error: stri
   return undefined
 }
 
-const SHEET_BUILDERS = new Set(["add_component", "group_parts", "edit_block", "draw"])
+const SHEET_BUILDERS = new Set(["add_component", "group_parts", "edit_block", "arrange_blocks", "draw", "draw_wiring", "get_wiring"])
 
 /** A tool with a sheet runs on that sheet alone; the others on the project. */
 function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: unknown, ctx: ToolContext): ToolOutcome {
@@ -2085,7 +2097,7 @@ function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: u
     const r = shownUse(p, ctx)
     return "error" in r ? r : r.use.path
   })
-  // What is built on a sheet goes on the one named, or the one the editor shows.
+  // What is built on a sheet goes on the one named, or the one the editor shows; get_wiring reads that one.
   if (SHEET_BUILDERS.has(spec.name)) return onSheet(spec, project, input, prepared, ctx, (p) => { const r = shownUse(p, ctx); return "error" in r ? r : r.use.path })
   const out = spec.run(project, input, prepared, ctx)
   // A part edited or removed on a sheet used more than once is edited in every use.
@@ -2167,12 +2179,20 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return `Connecting ${Array.isArray(i.pins) ? i.pins.join(", ") : "pins"}`
     case "remove_wiring":
       return Array.isArray(i.pins) && i.pins.length ? `Removing the wiring at ${i.pins.join(", ")}` : "Removing loose wiring"
+    case "get_wiring":
+      return `Reading the wiring${typeof i.block === "string" ? ` of ${i.block}` : ""}`
+    case "draw_wiring":
+      return "Drawing wires and labels"
+    case "edit_net":
+      return typeof i.rename_to === "string" ? `Renaming ${String(i.net ?? "a net")} to ${i.rename_to}` : `Editing the net ${String(i.net ?? "")}`
     case "look":
       return `Looking at the ${i.target === "pcb" ? "PCB" : i.target === "3d" ? "3D board" : "schematic"}`
     case "group_parts":
       return `Grouping parts into ${String(i.block ?? "a block")}`
     case "edit_block":
       return `Editing block ${String(i.block ?? "")}`
+    case "arrange_blocks":
+      return "Arranging the blocks"
     case "tidy_schematic":
       return Array.isArray(i.blocks) && i.blocks.length ? `Tidying ${i.blocks.map(String).join(", ")}` : "Tidying the schematic"
     case "add_sheet":
@@ -2211,6 +2231,7 @@ export function toolActivityLabel(name: string, input: unknown): string {
 export function toolPhase(name: string): string {
   switch (name) {
     case "get_design":
+    case "get_wiring":
     case "look":
     case "read_datasheet":
       return "Reading"
@@ -2226,9 +2247,12 @@ export function toolPhase(name: string): string {
       return "Editing parts"
     case "connect":
     case "remove_wiring":
+    case "draw_wiring":
+    case "edit_net":
       return "Wiring"
     case "group_parts":
     case "edit_block":
+    case "arrange_blocks":
     case "propose_blocks":
       return "Grouping"
     case "tidy_schematic":

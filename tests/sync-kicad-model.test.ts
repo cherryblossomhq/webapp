@@ -64,6 +64,7 @@ const HOW: Record<keyof Project, "item" | "value" | "never"> = {
   properties: "item",
   ignoredChecks: "value",
   importMarks: "value",
+  netStyles: "value",
 }
 const KEYS: Partial<Record<keyof Project, string>> = { footprints: "name", properties: "key" }
 
@@ -96,6 +97,7 @@ function rich(): Project {
     properties: [{ key: "rev", value: "A" }],
     ignoredChecks: ["bare-led:c_1"],
     importMarks: { checks: ["bare-led:c_1"], noConnect: { c_1: ["1"] } },
+    netStyles: { VBUS: "label" },
     zones: [{ id: "z1", net: "GND", layer: "top" } as Zone],
     board: withCopperCount({ ...p.board }, 4),
   }

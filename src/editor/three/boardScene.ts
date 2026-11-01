@@ -16,7 +16,7 @@ import {
   type BoardBuild,
   type SharedMaterials,
 } from "./buildBoard"
-import { partBox } from "./contactShadow"
+import { partBox, setContactShadowBoard } from "./contactShadow"
 import { modelLibrary } from "./files/library"
 import { placeModel } from "./files/place"
 import { StudioFloor } from "./studio"
@@ -208,6 +208,7 @@ export class BoardScene {
     if (partsChanged) this.rebuildParts(project)
 
     this.boardRect = { x: b.x, y: b.y, width: b.width, height: b.height }
+    setContactShadowBoard(this.shared.contact, b)
     this.updateBounds()
     this.updateFloor(project)
     this.fitShadow()

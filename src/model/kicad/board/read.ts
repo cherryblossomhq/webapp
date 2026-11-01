@@ -1410,7 +1410,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   const dimensions: KicadDimension[] = []
   const groups: KicadGroup[] = []
   const generators: KicadGenerator[] = []
-  const images: KicadImage[] = []
+  // A footprint's pictures are written at their place on the board, not in the footprint's frame (KiCad's parser adds them as they are).
+  const images: KicadImage[] = footprints.flatMap((f) => kids(f.node, "image").map((c) => ({ ...imageOf(c), footprint: f.ref })))
   const others: Record<string, List[]> = {}
   for (const c of tree) {
     if (!Array.isArray(c) || typeof c[0] !== "string") continue

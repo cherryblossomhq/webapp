@@ -196,6 +196,7 @@ export const RULES = [
   // ---- the rest of the board ----
   rule("group(?:>.*)?", "extend", "SchematicBlock is schematic-only", { ext: "X12" }),
   rule("image(?:>.*)?", "extend", "-", { ext: "X14", note: "reference image: a bitmap on a layer" }),
+  rule("footprint>image(?:>.*)?", "extend", "-", { ext: "X14", note: "a reference image a footprint holds (KiCad 8 and later), written at its place on the board: kept on the board there" }),
   rule("generated(?:>.*)?", "extend", "PcbGroup.gen", { ext: "X21", note: "tuning patterns, via stacks and via stitching: kept as a named group of tracks or vias with their parameters, so a pattern can be re-tuned or taken apart" }),
 ]
 
@@ -271,7 +272,7 @@ export const ATOMS = [
   atoms("setup>(?:zone_45_only|uvias_allowed|blind_buried_vias_allowed|allow_soldermask_bridges_in_footprints)", YES_NO),
   atoms("setup>(?:tenting|covering|plugging|capping|filling)", ["front", "back", "none", "yes", "no"]),
   atoms("net_class", [], [1, 2]),
-  atoms("image", ["locked"]),
+  atoms("(?:footprint>)?image", ["locked"]),
   atoms("(?:module|footprint)>model", ["hide"], [1]),
   // A node the table says is not needed or is reported is accounted for as a whole, whatever its words say (account.ts), so the rows below are for the nodes that are carried or need an extension.
   // names, identities and text

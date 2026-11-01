@@ -306,6 +306,8 @@ export interface KicadImage {
   ppi: number
   /** The resolution a KiCad before 20260623 derived (which truncated pixels per centimetre), and the file's version rescales the image by the ratio. */
   legacyPpi: number
+  /** The reference of the footprint that holds it: KiCad 8 and later keep a picture in a footprint, written at its place on the board. */
+  footprint?: string
   node: List
 }
 

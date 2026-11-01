@@ -770,6 +770,17 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     }
     addRef(k.uuid, ...(made ? [made.image.id] : []))
   }
+  const footprintImages = board.images.filter((k) => k.footprint !== undefined)
+  if (footprintImages.length) {
+    const refs = [...new Set(footprintImages.map((k) => k.footprint || "a footprint with no reference"))]
+    report.entries.push({
+      code: "footprint-image-on-board",
+      severity: "note",
+      object: `${footprintImages.length} reference image${footprintImages.length > 1 ? "s" : ""} inside footprints (${refs.join(", ")})`,
+      why: "KiCad keeps them in a footprint, at their place on the board. The project keeps them on the board in that place, so they no longer move with the part.",
+      count: footprintImages.length,
+    })
+  }
   // X21: the generated items (tuning patterns, via stacks, via stitching) are groups with what made them. KiCad does not keep a tuning pattern or a via stack with no members (`parseGENERATOR`, parser `:8777`).
   const generated: RawGroup[] = []
   const droppedGenerators: string[] = []

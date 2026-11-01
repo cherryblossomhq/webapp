@@ -60,6 +60,11 @@ export interface RulesReadResult {
   /** The text that was read, comments cut out. */
   text: string
   notes: string[]
+  /**
+   * The first words standing outside every list, which KiCad's rule reader stops on ("Missing '('"): it takes only a `#` at a
+   * line's start as a comment, so a file with `;` comments is one KiCad checks the board without. Empty for a file KiCad reads.
+   */
+  stray: string[]
 }
 
 /** Reads a `.kicad_dru`, as text or bytes. Throws `KicadRulesFileError` for a file that is not balanced s-expressions. */
@@ -91,8 +96,9 @@ export function readKicadRules(input: string | Uint8Array): RulesReadResult {
     constraints: kids(r, "constraint").map((c) => ({ type: strAt(c, 1) ?? "", min: strAt(kid(c, "min"), 1), opt: strAt(kid(c, "opt"), 1), max: strAt(kid(c, "max"), 1), node: c })),
     node: r,
   }))
+  const stray = root.filter((n): n is string => typeof n === "string").slice(0, 3)
   // A rules file has no root list: its lists stand side by side. They are given one, named as the file is, so the accounting reads them as it reads the others.
-  return { rules: { version, rules, tree: ["kicad_dru", ...root] }, text, notes }
+  return { rules: { version, rules, tree: ["kicad_dru", ...root] }, text, notes, stray }
 }
 
 // ---------- the table ----------

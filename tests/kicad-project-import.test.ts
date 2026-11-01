@@ -450,6 +450,20 @@ describe("the project file and the design rules", () => {
     expect(imported(run([{ path: "demo.kicad_dru", data: "(version 1)" }])).rules?.rules).toEqual([])
   })
 
+  it("a rules file KiCad's own reader stops on (words outside the rules, as ; comments are) is left out, and the project comes in without its rules", () => {
+    const dru = `(version 1)
+; Vias may not sit in an SMD pad, except:
+;  - pad 25 (AW9523 thermal pad)
+(rule "via_in_smd_pad" (condition "A.Type == 'Via'") (constraint physical_hole_clearance (min 0.1mm)))
+`
+    expect(readKicadRules(dru).stray).toEqual([";", "Vias", "may"])
+    const r = imported(run([{ path: "demo.kicad_dru", data: dru }]))
+    expect(r.rules).toBeNull()
+    const entry = r.report.entries.find((e) => e.code === "rules-file-not-read")!
+    expect(entry).toMatchObject({ severity: "not-brought", object: "demo.kicad_dru" })
+    expect(entry.why).toContain(`(";", "Vias", "may")`)
+  })
+
   it("a node of a rules file that the table does not know refuses the project", () => {
     const r = refused(run([{ path: "demo.kicad_dru", data: `(version 1) (rule "x" (frobnicate 1))` }]))
     expect(r.reason).toBe("unknown")

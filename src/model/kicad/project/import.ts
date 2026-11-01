@@ -384,11 +384,21 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   if (picked.rules) {
     try {
       const read = readKicadRules(picked.rules.data)
-      rules = read.rules
-      const account = accountRules(read.rules.tree)
-      rulesAccount = account
-      reportUnknownRules(account, report, picked.rules.path)
-      proNeeds = [...proNeeds, ...projectNeeds(null, read.rules)].filter((n, i, all) => all.findIndex((m) => m.ext === n.ext) === i)
+      if (read.stray.length) {
+        // KiCad opens the board and refuses only the rules ("Missing '('"), so its checks run without them; the project comes in so too.
+        report.entries.push({
+          code: "rules-file-not-read",
+          severity: "not-brought",
+          object: picked.rules.path,
+          why: `The design rules file has words outside its rules (${read.stray.map((w) => `"${w}"`).join(", ")}): KiCad takes only a # at the start of a line as a comment, so its own rule reader stops there too. Its rules are not brought in, and the board's checks run without them, as KiCad's do.`,
+        })
+      } else {
+        rules = read.rules
+        const account = accountRules(read.rules.tree)
+        rulesAccount = account
+        reportUnknownRules(account, report, picked.rules.path)
+        proNeeds = [...proNeeds, ...projectNeeds(null, read.rules)].filter((n, i, all) => all.findIndex((m) => m.ext === n.ext) === i)
+      }
     } catch (e) {
       if (!(e instanceof KicadRulesFileError)) throw e
       report.entries.push({ code: e.code, severity: "refused", object: picked.rules.path, why: e.message })

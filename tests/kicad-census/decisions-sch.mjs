@@ -71,7 +71,7 @@ export const RULES_SCH = [
   rule("global_label|global_label>(?:at|shape|fields_autoplaced|uuid)", "extend", "NetLabel is sheet-local", { ext: "S2", note: "a global label joins nets across every sheet; its shape is input, output, bidirectional, tri_state or passive" }),
   rule(`global_label>${TEXT}|global_label>property(?:>.*)?`, "extend", "-", { ext: "S2" }),
   rule("hierarchical_label|hierarchical_label>(?:at|shape|fields_autoplaced|uuid)", "extend", "-", { ext: "S1", note: "joins a sheet's net to the pin of the same name on the sheet symbol that holds it" }),
-  rule(`hierarchical_label>${TEXT}`, "extend", "-", { ext: "S2" }),
+  rule(`hierarchical_label>${TEXT}|hierarchical_label>property(?:>.*)?`, "extend", "-", { ext: "S2", note: "a hierarchical label's own fields (KiCad 9), read as any label's" }),
   rule("netclass_flag|netclass_flag>(?:at|length|shape|fields_autoplaced)|netclass_flag>property(?:>.*)?", "extend", "-", { ext: "S8", note: "a directive label that assigns a net class to the net it touches" }),
   rule(`netclass_flag>${TEXT}`, "extend", "-", { ext: "S8" }),
 

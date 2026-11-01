@@ -106,8 +106,8 @@ const YES_NO = ["yes", "no", "true", "false"]
 const atoms = (path, values, skip = []) => ({ path: new RegExp(`^(${path})$`), values: new Set(values), skip })
 
 export const ATOMS_SCH = [
-  atoms("lib_symbols>symbol>symbol>pin", ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect", "line", "inverted", "clock", "inverted_clock", "input_low", "clock_low", "output_low", "edge_clock_high", "non_logic", "hide"]),
-  atoms("lib_symbols>symbol>symbol>pin>alternate", ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect", "line", "inverted", "clock", "inverted_clock", "input_low", "clock_low", "output_low", "edge_clock_high", "non_logic"], [1]),
+  atoms("lib_symbols>symbol>symbol>pin", ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect", "unconnected", "line", "inverted", "clock", "inverted_clock", "input_low", "clock_low", "output_low", "edge_clock_high", "non_logic", "hide"]),
+  atoms("lib_symbols>symbol>symbol>pin>alternate", ["input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect", "unconnected", "line", "inverted", "clock", "inverted_clock", "input_low", "clock_low", "output_low", "edge_clock_high", "non_logic"], [1]),
   atoms("lib_symbols>symbol>power", ["global", "local"]),
   atoms("lib_symbols>symbol>(?:in_bom|on_board|in_pos_files|exclude_from_sim|duplicate_pin_numbers_are_jumpers)", YES_NO),
   atoms("lib_symbols>symbol>pin_(?:names|numbers)", ["hide"]),

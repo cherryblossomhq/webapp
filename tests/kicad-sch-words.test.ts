@@ -28,3 +28,12 @@ describe("a sheet's page number and count (KiCad 6 nightlies, 2020)", () => {
     expect(r.project.components.map((c) => c.ref)).toEqual(["R1"])
   })
 })
+
+describe("the pin type unconnected (KiCad 6 nightlies, before 20210123)", () => {
+  it("is read as no_connect, the name KiCad gave it later", () => {
+    const lib = LIB_R.replace(`(pin passive line (at 0 -3.81 90)`, `(pin unconnected line (at 0 -3.81 90)`)
+    const r = imp(schematic({ version: 20201015, libs: [lib], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: R1 }] }))
+    const pins = Object.values(r.project.symbols ?? {}).flatMap((d) => d.pins)
+    expect(pins.map((p) => p.type).sort()).toEqual(["no_connect", "passive"])
+  })
+})

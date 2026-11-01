@@ -600,7 +600,9 @@ function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): K
     variants: [],
   }))
   const sheetInstances: SheetInstance[] = kids(kid(tree, "sheet_instances"), "path").map((p) => ({ project: "", path: strAt(p, 1) ?? "", page: strAt(kid(p, "page"), 1) ?? "", variants: [] }))
-  const embeddedFiles: EmbeddedFileRef[] = kids(kid(tree, "embedded_files"), "file").map((f) => ({ name: strAt(kid(f, "name"), 1) ?? "(no name)", type: strAt(kid(f, "type"), 1) ?? "" }))
+  const fileRef = (f: List, symbol?: string): EmbeddedFileRef => ({ name: strAt(kid(f, "name"), 1) ?? "(no name)", type: strAt(kid(f, "type"), 1) ?? "", ...(symbol ? { symbol } : {}) })
+  const embeddedFiles: EmbeddedFileRef[] = kids(kid(tree, "embedded_files"), "file").map((f) => fileRef(f))
+  for (const s of kids(kid(tree, "lib_symbols"), "symbol")) for (const f of kids(kid(s, "embedded_files"), "file")) embeddedFiles.push(fileRef(f, strAt(s, 1) ?? ""))
 
   const others: Record<string, List[]> = {}
   for (const c of tree.slice(1)) {

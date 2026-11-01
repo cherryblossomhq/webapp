@@ -166,7 +166,7 @@ export function gateSchematic(input: SchematicInput, options: SchematicImportOpt
   reportedNodes(account, report)
   for (const f of list) {
     for (const e of f.schematic.embeddedFiles) {
-      report.entries.push({ code: "embedded-file-not-brought", severity: "not-brought", object: `the embedded file ${e.name}${e.type ? ` (${e.type})` : ""} in ${f.path}`, why: "Files packed inside a KiCad schematic are not brought across for now." })
+      report.entries.push({ code: "embedded-file-not-brought", severity: "not-brought", object: `the embedded file ${e.name}${e.type ? ` (${e.type})` : ""}${e.symbol ? ` of the symbol ${e.symbol}` : ""} in ${f.path}`, why: "Files packed inside a KiCad schematic are not brought across for now." })
     }
   }
   // A sheet that several projects share keeps each project's own references in its symbols; only this project's are read.

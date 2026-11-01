@@ -219,6 +219,8 @@ export interface SchGroup {
 export interface EmbeddedFileRef {
   name: string
   type: string
+  /** The cached symbol that packs it (KiCad 9), where it is a symbol's and not the schematic's. */
+  symbol?: string
 }
 
 /** What is known about a schematic that was read from KiCad 5 or an older legacy file (`.sch`): the file's own version and encoding, every record by kind, and where each symbol came from. */

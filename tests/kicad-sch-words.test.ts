@@ -45,3 +45,12 @@ describe("a symbol's default instance (a KiCad 7 nightly, 2022)", () => {
     expect(r.project.components.map((c) => [c.ref, c.props.value])).toEqual([["R1", "4k7"]])
   })
 })
+
+describe("files a symbol packs inside the schematic (KiCad 9)", () => {
+  it("are left out, each named in the report with its symbol", () => {
+    const lib = LIB_R.replace(/\)$/, ` (embedded_files (file (name "R_datasheet.pdf") (type datasheet) (data |KLUv/QBYAQAA|))))`)
+    const r = imp(schematic({ version: 20250114, libs: [lib], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: R1 }] }))
+    const entry = r.report.entries.find((e) => e.code === "embedded-file-not-brought")
+    expect(entry?.object).toContain("R_datasheet.pdf (datasheet) of the symbol Device:R")
+  })
+})

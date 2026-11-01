@@ -42,6 +42,7 @@ export const RULES_SCH = [
   rule("lib_symbols>symbol>symbol>pin", "extend", "SymbolPort", { ext: "S5" }),
   rule("lib_symbols>symbol>symbol>pin>(?:at|length|hide|name|number|name>.*|number>.*|alternate|alternate>.*)", "extend", "SymbolPort, PinDef", { ext: "S5", note: "alternates, per-pin visibility, name and number text, any length and any of four directions" }),
   rule("lib_symbols>symbol>symbol>(?:arc|circle|polyline|rectangle|text|bezier|ellipse)(?:>.*)?", "extend", "SymbolPrimitive: path, circle, text", { ext: "S6", note: "arcs, beziers, ellipses, fills and stroke styles; the editor's drawing has paths, circles and text only" }),
+  rule("lib_symbols>symbol>embedded_files(?:>.*)?", "report", "-", { note: "files a symbol packs inside the KiCad file (KiCad 9), as the schematic's own: a report entry" }),
 
   // ---- symbols on the sheet ----
   rule("symbol", "native", "ComponentInstance", { effort: "M" }),

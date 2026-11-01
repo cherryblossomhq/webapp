@@ -62,9 +62,10 @@ export const getWiringTool: ToolSpec = {
   },
   run: (project, input) => {
     let box: Box | null = null
-    if (typeof input.block === "string" && input.block.trim()) {
-      const block = findBlock(project, input.block)
-      if (!block) return fail(project, `No block ${input.block}. Blocks: ${(project.blocks ?? []).map((b) => b.name).join(", ") || "none"}`)
+    const blockName = typeof input.block === "string" ? input.block.trim() : ""
+    if (blockName) {
+      const block = findBlock(project, blockName)
+      if (!block) return fail(project, `No block ${blockName}. Blocks: ${(project.blocks ?? []).map((b) => b.name).join(", ") || "none"}`)
       box = blockFrames(project).find((f) => f.id === block.id)?.box ?? null
       if (!box) return fail(project, `${block.name} has no parts on this sheet, so it has no frame.`)
     } else if (input.area) {
@@ -78,10 +79,11 @@ export const getWiringTool: ToolSpec = {
     for (const c of project.components) {
       const part = findPart(c.partId)
       for (const p of schematicPins(c)) {
-        if (p.hidden || !inside(p.pos)) continue
+        if (!inside(p.pos)) continue
         const key = pinKey(c.id, p.pin)
+        // A KiCad power symbol's pin is hidden, and still where its wire ends.
         if (part?.powerNet) ports.push({ ref: c.ref, net: powerNetName(c, part) ?? "", x: p.pos.x, y: p.pos.y })
-        else pins.push({ pin: pinText(project, key), x: p.pos.x, y: p.pos.y, faces: p.dir, net: netName(conn, conn.pinNet.get(key)) })
+        else if (!p.hidden) pins.push({ pin: pinText(project, key), x: p.pos.x, y: p.pos.y, faces: p.dir, net: netName(conn, conn.pinNet.get(key)) })
       }
     }
     const wires = project.wires
@@ -108,7 +110,7 @@ export const getWiringTool: ToolSpec = {
       const why = `${plural(pins.length, "pin")} and ${plural(wires.length, "wire")} are too many for one answer. Ask again with block, or with an area of the sheet.`
       return { ...ok(project, JSON.stringify({ too_big: why, ...(all.length ? { frames: all } : {}) }), "Too much wiring for one answer"), empty: true }
     }
-    return ok(project, text, `Read the wiring${typeof input.block === "string" ? ` of ${input.block}` : box ? " of an area" : ""} (${plural(pins.length, "pin")}, ${plural(wires.length, "wire")})`)
+    return ok(project, text, `Read the wiring${blockName ? ` of ${blockName}` : box ? " of an area" : ""} (${plural(pins.length, "pin")}, ${plural(wires.length, "wire")})`)
   },
 }
 

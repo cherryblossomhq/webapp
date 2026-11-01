@@ -9,6 +9,7 @@ import { findPart } from "../src/model/library"
 import { createProject, resolvePinSpec } from "../src/model/ops"
 import { parseProjectFile } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
+import { importSheet, place } from "./kicad-sch-parts"
 
 // get_wiring, draw_wiring and edit_net: the schematic by its coordinates, and nets by their names.
 
@@ -59,6 +60,16 @@ describe("get_wiring", () => {
 
   it("refuses a block that isn't there", () => {
     expect(runTool(example("blinker"), "get_wiring", { block: "NOPE" }).result).toMatch(/No block NOPE/)
+  })
+
+  it("lists a KiCad power symbol, whose pin is hidden, as a port where its wire ends", () => {
+    const p = importSheet({
+      symbols: [place("Device:R", "100 100 0", "R1"), place("power:VCC", "100 90", "#PWR01"), place("power:GND", "100 110", "#PWR02")],
+      wires: ["100 90 100 96.19", "100 103.81 100 110"],
+    })
+    const read = JSON.parse(runTool(p, "get_wiring", {}).result) as { ports: { ref: string; net: string; x: number; y: number }[]; wires: { points: number[][] }[] }
+    expect(read.ports.map((x) => `${x.ref} ${x.net}`).sort()).toEqual(["#PWR01 VCC", "#PWR02 GND"])
+    for (const port of read.ports) expect(read.wires.some((w) => w.points.some(([x, y]) => x === port.x && y === port.y)), port.ref).toBe(true)
   })
 
   // Claude Code warns about a tool's output past 10k tokens and puts one past 50,000 characters in a

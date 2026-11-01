@@ -799,7 +799,13 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         if (other.keepout?.pour) holes.push(...outlinePaths(project, other))
       } else if (other.net !== zone.net && higherPriority(project, other, zone)) {
         const theirs = fillOf(other, layer)
-        if (theirs?.length) zoneHoles.push(...inflate(theirs, Math.max(set.clearance, zoneSettings(project, other).clearance, prep.classes.pair(zoneNet, other.net || null)) + EXTRA))
+        if (!theirs?.length) continue
+        const g = Math.max(set.clearance, zoneSettings(project, other).clearance, prep.classes.pair(zoneNet, other.net || null)) + EXTRA
+        // Only the part of their fill within the gap of this one's matters: it is cut to a box two gaps round this fill before it is grown, so a board-wide
+        // pour is not grown whole for each small zone it outranks (a keyboard's 150 row zones under one ground pour took most of a minute). The cut's own
+        // edges grow by one gap, which stays outside this fill.
+        const near = crop(theirs, pad0(box, 2 * g * U))
+        if (near.length) zoneHoles.push(...inflate(near, g))
       }
     }
   }
@@ -883,19 +889,26 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   fill = difference(fill, cut)
   // Different-net zones of higher priority cut in last, and the thinnest copper is judged again where they did: the band the trim to the
   // polygon took off where a zone of the same net abuts stands in for that zone, so the shrinking leaves no notch along the border.
+  // Copper thinner than the minimum that a cut leaves is within two shrinks of it, and whether a point there stays reads the copper within
+  // two more: so the shrinking and growing run on the copper within six shrinks of the cuts (the pieces the crop makes there are wider than
+  // the minimum, so none is taken for a sliver), and the fill loses the cuts and what the growing did not give back within two shrinks of
+  // them; the rest is kept as it was. The whole pour is cut twice (the crop and the last difference): a board-wide hatched pour under a
+  // keyboard's 150 row zones was shrunk, grown and cut whole here, 32 of its 62 seconds.
   if (zoneCut.length && fill.length) {
-    const apron = difference(difference(startFill, maxExtents), cut)
-    fill = difference(fill, zoneCut)
-    const before = fill
-    if (prune && fill.length) {
-      let work = apron.length ? union(fill, inflate(difference(apron, zoneCut), EPSILON_MM)) : fill
+    if (!prune) fill = difference(fill, zoneCut)
+    else {
+      const apron = difference(difference(startFill, maxExtents), cut)
+      const band = union(inflate(zoneCut, 2 * shrink + EPSILON_MM))
+      const reach = union(inflate(zoneCut, 6 * shrink + EPSILON_MM))
+      const local = difference(intersect(fill, reach), zoneCut)
+      let work = apron.length ? union(local, intersect(inflate(difference(apron, zoneCut), EPSILON_MM), reach)) : local
       work = inflate(work, -shrink, SQUARE)
       const kept = groupsOf(work).filter((g) => {
         const b = boundsOf([g.paths[0]])
         return Math.max(b.maxX - b.minX, b.maxY - b.minY) >= minWidth * U
       })
       work = kept.length ? inflate(pathsOfGroups(kept), shrink) : []
-      fill = intersect(work, before)
+      fill = difference(fill, union(zoneCut, difference(band, work)))
     }
   }
   // The zones of the same net that outrank this one are in charge of their own polygon.

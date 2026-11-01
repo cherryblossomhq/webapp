@@ -1,4 +1,4 @@
-import { Check, Link2, Mail, RotateCw, Users, X } from "lucide-react"
+import { Check, Globe, Link2, Lock, Mail, RotateCw, Users, X } from "lucide-react"
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react"
 import { goHome } from "../App"
 import { isTyping } from "../editor/viewport"
@@ -9,13 +9,15 @@ import { Button, IconButton } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 
 /**
- * Sharing the open project: invite people by email as editors or viewers, see who has it, and
- * (for the owner) change what they may do or take it away. Who may do what is the host's to decide;
- * this shows what `SharingState` says the user may do, and says the host's refusals as they come.
+ * Sharing the open project: invite people by email as editors or viewers, see who has it, (for the
+ * owner) change what they may do or take it away, and open it to anyone with its link. Who may do
+ * what is the host's to decide; this shows what `SharingState` says the user may do, and says the
+ * host's refusals as they come.
  */
 
 const EMAIL = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/
 const ROLE_LABEL: Record<MemberRole, string> = { editor: "Can edit", viewer: "Can view" }
+const VERB: Record<MemberRole, string> = { editor: "edit", viewer: "view" }
 
 function useSharing(source: SharingSource, projectId: string) {
   const [state, setState] = useState<SharingState | null | undefined>(undefined)
@@ -353,6 +355,20 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 )}
                 {invalid.length > 0 && <p className="mt-1.5 text-[12px] text-danger">{listOf(invalid)} {invalid.length === 1 ? "isn't an email address" : "aren't email addresses"}.</p>}
               </form>
+            ) : state.viaLink ? (
+              <div className="flex items-center gap-2 rounded-[8px] bg-chrome px-3 py-1.5 text-[12.5px] text-ink-2">
+                <span className="min-w-0 flex-1">You opened this project through its link, so you can {state.role === "viewer" ? "view" : "edit"} it. Pass the link on to bring others in.</span>
+                <ConfirmButton
+                  label="Leave"
+                  confirm="Leave project?"
+                  onConfirm={() =>
+                    act(async () => {
+                      await source.removeMember(projectId, state.you)
+                      goHome()
+                    })
+                  }
+                />
+              </div>
             ) : (
               <p className="rounded-[8px] bg-chrome px-3 py-2 text-[12.5px] text-ink-2">You can view this project. Its owner and editors can invite people.</p>
             )}
@@ -417,6 +433,7 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 </PersonRow>
               ))}
             </ul>
+            <GeneralAccess state={state} source={source} projectId={projectId} onError={(text) => setSent({ tone: "error", text })} />
             <p className="mt-4 flex items-start gap-1.5 text-[12px] leading-[1.45] text-ink-3">
               <Users size={13} className="mt-px shrink-0" />
               Everyone with access works on the same board, live: they see each other's cursors and changes as they happen.
@@ -459,12 +476,98 @@ function MemberRow({ member, state, onRole, onRemove }: { member: ShareMember; s
   )
 }
 
+/**
+ * Who can open the project besides the people listed: only them, or anyone signed in who has its
+ * link, as viewers or editors. The owner chooses, and may reset the link; everyone with access sees
+ * the link while it is on, to copy and pass on.
+ */
+function GeneralAccess({ state, source, projectId, onError }: { state: SharingState; source: SharingSource; projectId: string; onError: (text: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const { link } = state
+  const set = (role: MemberRole | null, reset?: boolean) => {
+    if (busy) return
+    setBusy(true)
+    source
+      .setLink(projectId, role, reset)
+      .then((r) => (r.ok ? undefined : onError(r.message)))
+      .catch(() => onError("Couldn't change the link. Check your connection and try again."))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <>
+      <h3 className="mb-1 mt-5 text-[12px] font-[600] text-ink-2">General access</h3>
+      <div className="flex min-h-11 items-center gap-2.5 py-1">
+        <span className={`flex size-7 shrink-0 items-center justify-center rounded-full ${link.role ? "bg-brand-soft text-brand" : "bg-chrome-2 text-ink-2"}`}>
+          {link.role ? <Globe size={14} /> : <Lock size={13} />}
+        </span>
+        <div className="min-w-0 flex-1">
+          {state.canManage ? (
+            <select
+              aria-label="Who can open the project"
+              value={link.role ? "link" : "invited"}
+              disabled={busy}
+              onChange={(e) => set(e.target.value === "link" ? "viewer" : null)}
+              className="-ml-1 h-6 max-w-full cursor-pointer rounded-[5px] bg-transparent px-1 text-[13px] font-[600] text-ink outline-none hover:bg-hover focus-visible:bg-hover disabled:cursor-default disabled:opacity-60"
+            >
+              <option value="invited">Only people invited</option>
+              <option value="link">Anyone with the link</option>
+            </select>
+          ) : (
+            <div className="truncate text-[13px] font-[600] text-ink">{link.role ? "Anyone with the link" : "Only people invited"}</div>
+          )}
+          <div className="truncate text-[12px] text-ink-2">
+            {link.role ? `Anyone signed in who opens the link can ${VERB[link.role]} it` : "Only the people listed above can open it"}
+          </div>
+        </div>
+        {link.role &&
+          (state.canManage ? (
+            <RoleSelect value={link.role} onChange={(r) => set(r)} disabled={busy} label="What anyone with the link may do" />
+          ) : (
+            <span className="px-2 text-[12.5px] text-ink-2">{ROLE_LABEL[link.role]}</span>
+          ))}
+      </div>
+      {link.role && link.token && (
+        <div className="mt-1.5 flex items-center gap-2">
+          <input
+            readOnly
+            aria-label="The project's link"
+            value={source.linkUrl(link.token)}
+            onFocus={(e) => e.currentTarget.select()}
+            className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-line bg-field px-2.5 text-[12.5px] text-ink-2 outline-none focus:border-select"
+          />
+          <CopyProjectLink url={source.linkUrl(link.token)} />
+          {/* A new link: the old one stops working, and whoever came in through it loses the project. */}
+          {state.canManage && <ConfirmButton label="Reset" confirm="Make a new link?" onConfirm={() => set(link.role, true)} />}
+        </div>
+      )}
+    </>
+  )
+}
+
+function CopyProjectLink({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <Button
+      className="h-8 shrink-0"
+      onClick={() => {
+        void navigator.clipboard?.writeText(url).then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1800)
+        })
+      }}
+    >
+      {copied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}
+      {copied ? "Copied" : "Copy link"}
+    </Button>
+  )
+}
+
 const listOf = (items: string[]) => (items.length <= 2 ? items.join(" and ") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`)
 
 /** The top bar's Share button: brand-coloured, as the way to bring someone in. */
 export function ShareButton({ onClick }: { onClick: () => void }) {
   return (
-    <Tooltip label="Share" hint="Invite people by email to work on this board with you">
+    <Tooltip label="Share" hint="Invite people by email, or share a link, to work on this board with you">
       <button onClick={onClick} className="flex h-8 items-center gap-1.5 rounded-[var(--radius-ctl)] bg-brand px-3 text-[12.5px] font-[650] text-white transition-[filter] hover:brightness-110">
         Share
       </button>

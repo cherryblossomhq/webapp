@@ -1,10 +1,11 @@
 import type { ProjectRole } from "./storage"
 
 /**
- * Sharing a project with other people by email, as the Share dialog (`panels/ShareDialog.tsx`)
- * sees it. The host implements it: the website's is the hosted app's, which sends the
- * invitations. The editor holds no rule about who may do what: `SharingState` says what the user
- * may do (`canInvite`, `canManage`), and the host refuses anything else whatever the dialog shows.
+ * Sharing a project with other people, by email or by link, as the Share dialog
+ * (`panels/ShareDialog.tsx`) sees it. The host implements it: the website's is the hosted
+ * app's, which sends the invitations. The editor holds no rule about who may do what:
+ * `SharingState` says what the user may do (`canInvite`, `canManage`), and the host refuses
+ * anything else whatever the dialog shows.
  */
 
 export type MemberRole = "editor" | "viewer"
@@ -38,12 +39,26 @@ export interface ShareInvite {
   createdAt: number
 }
 
+/**
+ * Who the project's link lets in: anyone signed in who opens it, as `role`, or (`role: null`) no
+ * one but the people invited. `token` is the link's secret while it is on, which
+ * `SharingSource.linkUrl` makes the link to copy.
+ */
+export interface ShareLink {
+  role: MemberRole | null
+  token?: string
+}
+
 export interface SharingState {
   role: ProjectRole
   /** The user's own id, to tell them apart in the list. */
   you: string
   canInvite: boolean
+  /** Changing roles, removing people, and the link: the owner's. */
   canManage: boolean
+  /** The user has the project only through its link: they invite no one, and see no addresses. */
+  viaLink: boolean
+  link: ShareLink
   owner: SharePerson
   members: ShareMember[]
   /** Open invitations; empty for a viewer, who sees none. */
@@ -73,21 +88,30 @@ export interface SharingSource {
   removeMember(projectId: string, userId: string): Promise<void>
   /** The link an invitation opens, to copy and send by hand. */
   inviteUrl(token: string): string
+  /**
+   * Open the project to anyone signed in with its link, as viewers or editors, or (`null`) only to
+   * the people invited. `reset` makes a new link: the old one stops working, for everyone who came
+   * in through it too. Turning the link off and on again keeps it.
+   */
+  setLink(projectId: string, role: MemberRole | null, reset?: boolean): Promise<{ ok: true } | { ok: false; message: string }>
+  /** The project's link, to copy and post anywhere. */
+  linkUrl(token: string): string
 }
 
 /**
- * Sharing for the development harness, which has no accounts: invitations kept in this tab's
- * memory and never sent, so the Share dialog can be seen and driven (`/editor-harness?account`)
- * without a backend. Nobody can accept one.
+ * Sharing for the development harness, which has no accounts: invitations and the link kept in
+ * this tab's memory and never sent, so the Share dialog can be seen and driven
+ * (`/editor-harness?account`) without a backend. Nobody can accept or open one.
  */
 export function localSharing(owner: SharePerson): SharingSource {
-  let state: SharingState = { role: "owner", you: owner.userId, canInvite: true, canManage: true, owner, members: [], invites: [] }
+  let state: SharingState = { role: "owner", you: owner.userId, canInvite: true, canManage: true, viaLink: false, link: { role: null }, owner, members: [], invites: [] }
+  let linkToken: string | undefined
   const listeners = new Set<(s: SharingState) => void>()
   const set = (next: SharingState) => {
     state = next
     for (const listener of listeners) listener(state)
   }
-  const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("").slice(0, 43)
+  const token = () => Array.from(crypto.getRandomValues(new Uint8Array(43)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("")
   return {
     watch(_projectId, listener) {
       listeners.add(listener)
@@ -125,5 +149,11 @@ export function localSharing(owner: SharePerson): SharingSource {
       set({ ...state, members: state.members.filter((m) => m.userId !== userId) })
     },
     inviteUrl: (t) => `${window.location.origin}/invite/${t}`,
+    async setLink(_projectId, role, reset) {
+      if (reset || !linkToken) linkToken = token()
+      set({ ...state, link: role ? { role, token: linkToken } : { role: null } })
+      return { ok: true }
+    },
+    linkUrl: (t) => `${window.location.origin}/share/${t}`,
   }
 }

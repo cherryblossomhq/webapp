@@ -29,18 +29,91 @@ const EPSILON_MM = 0.001
 
 const toPolygons = (paths: Paths64): FillPolygon[] => groupsOf(paths).map((g) => g.paths.map(toVec))
 
+type Box = { minX: number; minY: number; maxX: number; maxY: number }
+
+function boxOf(paths: Paths64): Box | null {
+  let box: Box | null = null
+  for (const path of paths) {
+    for (const p of path) {
+      if (!box) box = { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y }
+      else {
+        if (p.x < box.minX) box.minX = p.x
+        if (p.x > box.maxX) box.maxX = p.x
+        if (p.y < box.minY) box.minY = p.y
+        if (p.y > box.maxY) box.maxY = p.y
+      }
+    }
+  }
+  return box
+}
+
+const overlaps = (a: Box, b: Box) => a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
+
+/**
+ * What the fills of one project's non-copper zones share, made once rather than once per zone: each zone's outline and its box, the board's loops,
+ * the zones of each layer that join and the rule areas that keep pours out. A board converted from EAGLE had 8,827 zones on its solder mask, and
+ * each one's fill went over every other zone's outline: 78 million tests and 11 minutes for its Gerbers.
+ */
+class OtherZones {
+  private readonly outlines = new Map<Zone, { paths: Paths64; box: Box | null }>()
+  private readonly joinable = new Map<string, Zone[]>()
+  private readonly keepouts = new Map<string, Paths64>()
+  private boardPaths: Paths64 | null = null
+  constructor(private readonly project: Project) {}
+
+  outline(zone: Zone) {
+    let o = this.outlines.get(zone)
+    if (!o) {
+      const paths = outlinePaths(this.project, zone)
+      this.outlines.set(zone, (o = { paths, box: boxOf(paths) }))
+    }
+    return o
+  }
+
+  board(): Paths64 {
+    return (this.boardPaths ??= boardLoops(this.project.board))
+  }
+
+  /** The zones a zone on `layer` may join. KiCad's `GetInteractingZones` looks only at `board->Zones()`: a zone that belongs to a part is never joined to a board zone's outline. */
+  joining(layer: string): Zone[] {
+    let zones = this.joinable.get(layer)
+    if (!zones) this.joinable.set(layer, (zones = this.project.zones.filter((o) => !o.part && isOtherZone(o) && !isRuleArea(o) && o.other!.includes(layer))))
+    return zones
+  }
+
+  /** The rule areas on `layer` that keep pours out, as one shape. */
+  keptOut(layer: string): Paths64 {
+    let paths = this.keepouts.get(layer)
+    if (!paths) {
+      const areas = this.project.zones.filter((o) => o.keepout?.pour === true && o.other?.includes(layer) && hasPolygon(o))
+      this.keepouts.set(layer, (paths = areas.length ? union(areas.flatMap((a) => this.outline(a).paths)) : []))
+    }
+    return paths
+  }
+}
+
+const contexts = new WeakMap<Project, OtherZones>()
+const contextOf = (project: Project): OtherZones => {
+  let ctx = contexts.get(project)
+  if (!ctx) contexts.set(project, (ctx = new OtherZones(project)))
+  return ctx
+}
+
 /** The zone's smoothed outline on a layer: what its fill starts from, and what the solder mask is built from when the board has a minimum web (`TransformSmoothedOutlineToPolygon`). */
 export function smoothedOtherOutline(project: Project, zone: Zone, layer: string): Paths64 {
-  const flat = outlinePaths(project, zone)
+  const ctx = contextOf(project)
+  const own = ctx.outline(zone)
+  const flat = own.paths
   if (!flat.length) return []
   let joined = flat
-  for (const other of project.zones) {
-    // KiCad's `GetInteractingZones` looks only at `board->Zones()`: a zone that belongs to a part is never joined to a board zone's outline.
-    if (other === zone || other.part || !isOtherZone(other) || isRuleArea(other) || !other.other!.includes(layer)) continue
-    const o = outlinePaths(project, other)
-    if (o.length && intersect(flat, o).length) joined = union(joined, o)
+  for (const other of ctx.joining(layer)) {
+    if (other === zone) continue
+    const o = ctx.outline(other)
+    // A zone whose box is apart from this one's can't overlap it; the polygons decide for the rest.
+    if (!o.paths.length || !own.box || !o.box || !overlaps(own.box, o.box)) continue
+    if (intersect(flat, o.paths).length) joined = union(joined, o.paths)
   }
-  const inside = intersect(joined, boardLoops(project.board))
+  const inside = intersect(joined, ctx.board())
   const smoothed = zone.smoothing && zone.smoothing.radius > 0 ? smoothPaths(inside, zone.smoothing.kind, zone.smoothing.radius) : inside
   return intersect(smoothed, flat)
 }
@@ -51,8 +124,9 @@ export const smoothedOtherRings = (project: Project, zone: Zone, layer: string):
 function fillOne(project: Project, zone: Zone, layer: string): Paths64 {
   let fill = smoothedOtherOutline(project, zone, layer)
   if (!fill.length) return []
-  const areas = project.zones.filter((o) => o !== zone && o.keepout?.pour === true && o.other?.includes(layer) && hasPolygon(o))
-  if (areas.length) fill = difference(fill, union(areas.flatMap((a) => outlinePaths(project, a))))
+  // The zone itself is never one of them: a rule area has no fill of its own.
+  const keptOut = contextOf(project).keptOut(layer)
+  if (keptOut.length) fill = difference(fill, keptOut)
   const minWidth = Math.max(0, zone.minWidth ?? project.rules.pourMinWidth)
   const shrink = minWidth / 2 - EPSILON_MM
   if (shrink > 0 && fill.length) fill = inflate(fill, -shrink, JoinType.Square)

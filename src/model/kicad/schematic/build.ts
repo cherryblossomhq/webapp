@@ -11,6 +11,9 @@ import { aliasLookup, analyzeSheet, mayHaveBuses } from "../../busConnectivity"
 import { BusTooLarge, differsBetweenGenerations, parseBusName } from "../../busNames"
 import type { BusAlias, ComponentInstance, CustomPartSpec, DirectiveShape, DrawingDirective, FieldPlace, VariantOverride, LabelShape, Mirror, NetLabel, PartFlags, Project, Rotation, SchematicBlock, SchematicDrawing, SchematicSheet, SheetPin, SheetSymbol, SymbolDrawing, Vec2, Wire } from "../../types"
 import type { ImportReport } from "../board/report"
+import type { KeptFile } from "../board/images"
+import { decodeBase64, sha256Hex } from "../../../lib/imageFacts"
+import { pngInfo } from "../../sheetItems"
 import { kid, numAt, strAt, type List } from "../board/sexpr"
 import { labelFields, readSheetItems, strokeOf, textLookOf } from "./annotations"
 import { symbolRecords, type SymbolRecord } from "./link"
@@ -80,6 +83,8 @@ export interface SchematicBuild {
   recordOf: Map<PlacedSymbol, SymbolRecord>
   /** The ids of the parts this build registered in memory (not those a registered part of the same id already was). `releaseBuild` takes them out when the project is not imported. */
   registered: string[]
+  /** The sheets' pictures, for the host's file store: the project names each by its file (`storePictures`). */
+  pictures: KeptFile[]
   stats: { components: number; wires: number; labels: number; powerPorts: number }
 }
 
@@ -1186,13 +1191,33 @@ function buildPass(
     const view = sheetView(project, first.path)
     for (const d of junctionsAndFlags(view, f.schematic, pinPlacesOf.get(f.path) ?? new Set(), kicadFiles.has(f.path), (p) => pinAt.get(`${f.path}|${keyOf(p)}`) ?? (kicadFiles.has(f.path) ? { x: X(p.x), y: Y(p.y) } : { x: PX(p.x), y: PY(p.y) }))) extra.push({ ...d, ...sheetTag(f) } as SchematicDrawing)
   }
-  const all: SchematicDrawing[] = [...sheetDrawings, ...extra]
+  const { drawings: all, pictures } = storePictures([...sheetDrawings, ...extra])
   if (all.length) project = { ...project, drawings: all }
   checkBusNames(project, [...new Set(sheetId.values())], lose)
   reportSplitPads(project, report)
-  return { build: { project, lossy, bySymbol, byRecord, recordOf, registered, stats: { components: components.length, wires: wires.length, labels: labels.length, powerPorts } }, joinCases, pinsAt, pinsMoved, snapped: { count: snappedKeys.size, maxUm: snapped.maxUm } }
+  return { build: { project, lossy, bySymbol, byRecord, recordOf, registered, pictures, stats: { components: components.length, wires: wires.length, labels: labels.length, powerPorts } }, joinCases, pinsAt, pinsMoved, snapped: { count: snappedKeys.size, maxUm: snapped.maxUm } }
 }
 
+
+/**
+ * The sheets' pictures go to the host's file store, as a board's do, and the project names each by the SHA-256 of its PNG with its size in pixels and
+ * resolution (version 5): a picture does not compress, and kept as base64 in the project it was what took schematics over the stored project's limits.
+ * One PNG drawn on several sheets is one file. A picture that is not a PNG stays as it was read.
+ */
+function storePictures(drawings: SchematicDrawing[]): { drawings: SchematicDrawing[]; pictures: KeptFile[] } {
+  const pictures = new Map<string, KeptFile>()
+  const out = drawings.map((d): SchematicDrawing => {
+    if (d.type !== "image" || !d.data) return d
+    const bytes = decodeBase64(d.data)
+    if (!bytes || bytes[0] !== 0x89 || bytes[1] !== 0x50) return d
+    const info = pngInfo(d.data)
+    const id = sha256Hex(bytes)
+    pictures.set(id, { id, name: "schematic-picture.png", bytes })
+    const { data: _data, ...rest } = d
+    return { ...rest, file: id, px: info.width, py: info.height, ...(info.ppi ? { ppi: info.ppi } : {}) }
+  })
+  return { drawings: out, pictures: [...pictures.values()] }
+}
 
 /**
  * S3: the bus names the model reads as KiCad does. A label or sheet pin whose name is a bus but that sits on a wire is a net's name in the

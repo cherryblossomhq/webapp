@@ -312,7 +312,7 @@ describe("S3: the project file", () => {
     expect(read.busAliases).toBeUndefined()
     expect(read.drawings).toBeUndefined()
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(4)
+    expect(PROJECT_FILE_VERSION).toBe(5)
   })
 
   it("keeps a bus, an entry and an alias through a save and a load, and drops a malformed one without losing the rest", () => {

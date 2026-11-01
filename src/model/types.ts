@@ -1723,14 +1723,24 @@ export interface DrawingTextBox extends DrawingStyle {
   look?: TextLook
 }
 
-/** A picture on the sheet: a PNG, base64, drawn `scale` times its own size around `x`, `y`. */
+/**
+ * A picture on the sheet: a PNG drawn `scale` times its own size around `x`, `y`. Since version 5 the PNG is a file in the host's file store (`file`,
+ * the SHA-256 of its bytes, with its size in pixels and resolution, so the sheet is laid out before the file is read), as a board's pictures are:
+ * pictures do not compress, and were what took schematics over the stored project's limits. Before, and where it was written so, it is held in the
+ * project as base64 (`data`). One of the two.
+ */
 export interface DrawingImage extends DrawingStyle {
   id: string
   type: "image"
   x: number
   y: number
   scale: number
-  data: string
+  data?: string
+  file?: string
+  /** Its size in pixels, and its resolution in pixels per inch where the PNG says (300 where it does not): with `file`. */
+  px?: number
+  py?: number
+  ppi?: number
 }
 
 /** A table (KiCad 8 on). */

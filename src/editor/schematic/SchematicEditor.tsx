@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { pictureFiles } from "../../store/imageFiles"
+import { useImages } from "../../store/useImages"
 import {
   boxContains,
   boxesOverlap,
@@ -215,6 +217,9 @@ export function SchematicEditor() {
   const whole = useProjectStore((s) => s.project)!
   const sheet = useUi((s) => s.sheet)
   const project = useMemo(() => shownProject(whole, sheet), [whole, sheet])
+  // The sheet's pictures in the file store, read and drawn as they arrive.
+  const pictures = useMemo(() => pictureFiles(project).map((file) => ({ file })), [project])
+  useImages(pictures)
   const selection = useUi((s) => s.selection)
   const tool = useUi((s) => s.schTool)
   const placing = useUi((s) => s.placing)

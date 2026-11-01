@@ -60,7 +60,7 @@ export function fromProjectResult(r: KicadProjectResult): ImportResult {
 export function fromSchematicResult(r: SchematicImportResult): ImportResult {
   const root = r.tree?.files.get(r.tree.root)?.schematic
   const file = { stamp: root?.version ?? null, era: root?.era ?? null, generator: root ? generatorLabel(root.generator, root.generatorVersion) : null }
-  if (r.status === "imported") return { status: "imported", project: r.project, report: r.report, bytes: r.bytes, file, kind: "schematic" }
+  if (r.status === "imported") return { status: "imported", project: r.project, report: r.report, bytes: r.bytes, file, kind: "schematic", ...(r.build.pictures.length ? { files: r.build.pictures } : {}) }
   return { status: "refused", reason: r.reason, message: r.message, report: r.report, needs: r.needs, file, kind: "schematic" }
 }
 

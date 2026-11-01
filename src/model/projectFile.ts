@@ -65,7 +65,7 @@ import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, Compone
  */
 
 export const PROJECT_FILE_FORMAT = "cherryblossom.project"
-export const PROJECT_FILE_VERSION = 4
+export const PROJECT_FILE_VERSION = 5
 
 /** A project as stored: everything but where it is stored. */
 export type ProjectDocument = Omit<Project, "id" | "createdAt" | "updatedAt">
@@ -172,12 +172,17 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  *
  * Version 4 took the chips and modules out of the built-in library: a project that placed one has
  * it as a part of its own, drawn as the library drew it (`migrations/libraryParts.ts`).
+ *
+ * Version 5 lets a schematic picture be a file in the host's file store (`DrawingImage.file`, with its size in pixels and
+ * resolution) instead of base64 in the project (`data`), which a KiCad import now does. A version 4 document reads as it was;
+ * the bump is what keeps a version 4 reader, which would drop such a picture and save the loss back, from opening one.
  */
 const MIGRATIONS: Record<number, (project: Json) => Json> = {
   0: ({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...project }) => project,
   1: kicadSymbols,
   2: (project) => STEPS_2_TO_3.reduce((doc, step) => step(doc), project),
   3: libraryParts,
+  4: (project) => project,
 }
 
 

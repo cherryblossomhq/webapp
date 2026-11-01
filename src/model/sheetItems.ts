@@ -192,8 +192,14 @@ export function normalizeKicadOnly(r: Record<string, unknown> & { id: string }):
       const p = r.points as Vec2[]
       return { ...base, type: "bezier", points: [p[0], p[1], p[2], p[3]].map((q) => ({ x: q.x, y: q.y })) as [Vec2, Vec2, Vec2, Vec2] }
     }
-    case "image":
-      return typeof r.data === "string" && r.data && finite(r.x, r.y, r.scale) && (r.scale as number) > 0 ? { ...base, type: "image", x: r.x as number, y: r.y as number, scale: r.scale as number, data: r.data } : null
+    case "image": {
+      if (!finite(r.x, r.y, r.scale) || (r.scale as number) <= 0) return null
+      const at = { ...base, type: "image" as const, x: r.x as number, y: r.y as number, scale: r.scale as number }
+      if (typeof r.data === "string" && r.data) return { ...at, data: r.data }
+      // A picture in the file store: its file and its size, which the sheet is laid out by.
+      if (typeof r.file !== "string" || !/^[0-9a-f]{64}$/.test(r.file) || !finite(r.px, r.py) || (r.px as number) <= 0 || (r.py as number) <= 0) return null
+      return { ...at, file: r.file, px: r.px as number, py: r.py as number, ...(finite(r.ppi) && (r.ppi as number) > 0 ? { ppi: r.ppi as number } : {}) }
+    }
     case "junction":
       return finite(r.x, r.y)
         ? { ...base, type: "junction", x: r.x as number, y: r.y as number, ...(finite(r.diameter) && (r.diameter as number) > 0 ? { diameter: r.diameter as number } : {}), ...(typeof r.dotColor === "string" && COLOR.test(r.dotColor) ? { dotColor: r.dotColor } : {}) }
@@ -300,8 +306,8 @@ export function textPlacement(at: Vec2, rot: Rotation, look: TextLook | undefine
 export const textLines = (text: string) => text.split(/\r?\n/)
 
 /** The size a picture is drawn at, in schematic units: its pixels at the resolution it names (300 per inch when it names none), times its scale. */
-export function imageSize(item: Pick<Extract<SchematicDrawing, { type: "image" }>, "data" | "scale">): { w: number; h: number } {
-  const info = pngInfo(item.data)
+export function imageSize(item: Pick<Extract<SchematicDrawing, { type: "image" }>, "data" | "scale" | "px" | "py" | "ppi">): { w: number; h: number } {
+  const info = item.data ? pngInfo(item.data) : { width: item.px ?? 100, height: item.py ?? 100, ppi: item.ppi ?? null }
   const ppi = info.ppi ?? 300
   const unit = (25.4 / ppi) * item.scale
   return { w: round((info.width * unit) / 12.7, 6), h: round((info.height * unit) / 12.7, 6) }

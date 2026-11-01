@@ -577,7 +577,7 @@ export function importKicadProject(files: ProjectFile[], options: ProjectImportO
   }
   if (refusals(report).length) return refuseBuilt("inexact", refusals(report)[0].why)
   report.account = gate.report.account
-  return { status: "imported", project: merged.project, report, differences, link, board: kicadBoard, tree: gate.tree, pro, rules, accounts: { board: boardResult.report.account, schematic: gate.report.account, pro: proAccount, rules: rulesAccount }, bytes, files: boardResult.files }
+  return { status: "imported", project: merged.project, report, differences, link, board: kicadBoard, tree: gate.tree, pro, rules, accounts: { board: boardResult.report.account, schematic: gate.report.account, pro: proAccount, rules: rulesAccount }, bytes, files: [...(boardResult.files ?? []), ...sch.pictures] }
 }
 
 /** The nets a board gave pads that no net of the project holds, by part and pin (`ComponentInstance.loneNets`). */

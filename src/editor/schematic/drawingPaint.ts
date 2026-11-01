@@ -3,6 +3,7 @@ import { primitivePathData } from "../../model/primitiveGeometry"
 import { BUS_WIDTH, boxCorners, boxTextAt, directiveShape, imageSize, lookOfText, textLines as kicadLines, textLines2 } from "../../model/sheetItems"
 import type { DrawingLine, DrawingStyle, DrawingTable, Rotation, SchematicDrawing, SheetFill, ShapeLook, TextLook, Vec2 } from "../../model/types"
 import type { SchPalette } from "../theme"
+import { imageDataUri } from "../../store/imageFiles"
 
 // How a drawing is painted, as a list of SVG elements, in world space (y up). The schematic editor
 // renders the list as React elements and the copilot's pictures as SVG text (`ai/vision`), so what
@@ -207,7 +208,10 @@ function kicadOnlyNodes(d: Exclude<SchematicDrawing, { type: "line" | "rect" | "
       return [{ tag: "path", attrs: { d: primitivePathData({ type: "bezier", points: d.points, fill: false }) ?? "", fill, ...draw } }]
     case "image": {
       const s = imageSize(d)
-      return [{ tag: "image", attrs: { href: `data:image/png;base64,${d.data}`, transform: `translate(${d.x},${d.y}) scale(1,-1)`, x: -s.w / 2, y: -s.h / 2, width: s.w, height: s.h, preserveAspectRatio: "none" } }]
+      // A picture in the file store draws once its bytes are on the page (`useImages` loads them); until then, or when the file is not here, a frame of its size.
+      const href = d.data ? `data:image/png;base64,${d.data}` : d.file ? imageDataUri({ file: d.file, format: "png" }) : null
+      if (!href) return [{ tag: "rect", attrs: { x: d.x - s.w / 2, y: d.y - s.h / 2, width: s.w, height: s.h, fill: "none", stroke: sch.ink2, strokeWidth: px, strokeDasharray: `${4 * px} ${3 * px}` } }]
+      return [{ tag: "image", attrs: { href, transform: `translate(${d.x},${d.y}) scale(1,-1)`, x: -s.w / 2, y: -s.h / 2, width: s.w, height: s.h, preserveAspectRatio: "none" } }]
     }
     case "table":
       return tableNodes(d, sch, px)

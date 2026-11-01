@@ -1,5 +1,6 @@
 import { imp } from "./kicad-sheets-fixtures"
 import { readFileSync } from "node:fs"
+import { drawingBounds } from "../src/model/drawings"
 import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { customPartId, customPartProblems, registerProjectParts } from "../src/model/customParts"
@@ -74,7 +75,7 @@ describe("the project file", () => {
     expect(again.project.futureField).toEqual({ a: 1 })
   })
 
-  it.each([5, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
+  it.each([6, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
     const file = JSON.parse(serializeProject(createProject()))
     file.version = version
     expect(problem(() => parseProjectFile(file, origin))).toBe("too_new")
@@ -257,7 +258,7 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     const migrated = migrateProjectFile(v2)
     expect(migrated).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(4)
+    expect(PROJECT_FILE_VERSION).toBe(5)
   })
   it("a reader of version 2 would refuse a newer file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -811,10 +812,10 @@ describe("version 3 is the whole KiCad import", () => {
   }
   const body = (p: Project) => JSON.parse(serializeProject(p)).project
 
-  it("a newly saved file says 4, the version after it", () => {
-    expect(PROJECT_FILE_VERSION).toBe(4)
-    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(4)
-    expect(JSON.parse(serializeProject(rich())).version).toBe(4)
+  it("a newly saved file says 5, two versions after it", () => {
+    expect(PROJECT_FILE_VERSION).toBe(5)
+    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(5)
+    expect(JSON.parse(serializeProject(rich())).version).toBe(5)
   })
 
   it("reading a file of the current version changes nothing", () => {
@@ -833,8 +834,8 @@ describe("version 3 is the whole KiCad import", () => {
     expect(read.sheets).toEqual([{ id: "root" }])
   })
 
-  it("a file at 5, 14 or 15 is newer than this editor", () => {
-    for (const version of [5, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
+  it("a file at 6, 14 or 15 is newer than this editor", () => {
+    for (const version of [6, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
   })
 })
 
@@ -867,7 +868,7 @@ describe("version 4: the library holds basic parts only, and a project keeps the
     // As unreported in Checks as it was in the library, on its other package too.
     expect(partFindings(read)).toEqual([])
     const saved = JSON.parse(serializeProject(read))
-    expect(saved.version).toBe(4)
+    expect(saved.version).toBe(PROJECT_FILE_VERSION)
     expect(migrateProjectFile(saved)).toEqual(saved.project)
   })
 
@@ -885,5 +886,38 @@ describe("version 4: the library holds basic parts only, and a project keeps the
       expect(customPartProblems(spec), spec.name).toEqual([])
       expect(customPartId(body)).toBe(id)
     }
+  })
+})
+
+describe("version 5: a schematic picture in the file store", () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DwHwwYYBQAvF8L9XE1oVgAAAAASUVORK5CYII="
+  const FILE = "a".repeat(64)
+  const doc = (version: number, picture: Record<string, unknown>) => ({
+    format: PROJECT_FILE_FORMAT,
+    version,
+    project: { ...JSON.parse(serializeProject(createProject("pictures"))).project, drawings: [{ id: "d1", type: "image", x: 1, y: 2, scale: 1, ...picture }] },
+  })
+
+  it("a version 4 file's picture, held as base64, reads as it was and is saved as it was", () => {
+    const read = parseProjectFile(doc(4, { data: PNG }), origin)
+    expect(read.drawings).toEqual([{ id: "d1", type: "image", x: 1, y: 2, scale: 1, data: PNG }])
+    expect(JSON.parse(serializeProject(read)).project.drawings).toEqual([{ id: "d1", type: "image", x: 1, y: 2, scale: 1, data: PNG }])
+  })
+
+  it("a picture in the file store keeps its file, its size and its resolution, and is laid out by them", () => {
+    const read = parseProjectFile(doc(5, { file: FILE, px: 600, py: 300, ppi: 150 }), origin)
+    expect(read.drawings).toEqual([{ id: "d1", type: "image", x: 1, y: 2, scale: 1, file: FILE, px: 600, py: 300, ppi: 150 }])
+    // 600 px at 150 ppi is 4 in, 101.6 mm, 8 units of 12.7 mm
+    expect(drawingBounds(read.drawings![0])).toEqual({ minX: -3, minY: 0, maxX: 5, maxY: 4 })
+  })
+
+  it("a picture with neither its data nor a file and size is dropped, not drawn as nothing", () => {
+    expect(parseProjectFile(doc(5, { file: FILE }), origin).drawings ?? []).toEqual([])
+    expect(parseProjectFile(doc(5, { file: "not-a-hash", px: 2, py: 3 }), origin).drawings ?? []).toEqual([])
+  })
+
+  it("a version 4 reader would refuse the file: the bump is what keeps a stored picture from being dropped", () => {
+    expect(problem(() => parseProjectFile({ ...doc(5, { file: FILE, px: 2, py: 3 }), version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
+    expect(migrateProjectFile(doc(4, { data: PNG }))).toEqual(doc(4, { data: PNG }).project)
   })
 })

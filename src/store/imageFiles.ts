@@ -65,9 +65,12 @@ export async function putImageFile(name: string, bytes: ArrayBuffer, projectId?:
   return id
 }
 
-/** Loads every image of a project, and every font file a KiCad board embeds (X19: kept in the same store), that is not loaded yet, for a picture or an export that wants them all. */
-export async function preloadImages(project: Pick<Project, "images" | "fonts">): Promise<void> {
-  await Promise.all([...(project.images ?? []).map((m) => m.file), ...(project.fonts?.files ?? []).map((f) => f.file)].map((id) => loadImage(id)))
+/** The files of a project's schematic pictures that are in the file store (version 5 on). */
+export const pictureFiles = (project: Pick<Project, "drawings">): string[] => (project.drawings ?? []).flatMap((d) => (d.type === "image" && d.file ? [d.file] : []))
+
+/** Loads every image of a project (the board's and the schematic's), and every font file a KiCad board embeds (X19: kept in the same store), that is not loaded yet, for a picture or an export that wants them all. */
+export async function preloadImages(project: Pick<Project, "images" | "fonts" | "drawings">): Promise<void> {
+  await Promise.all([...(project.images ?? []).map((m) => m.file), ...pictureFiles(project), ...(project.fonts?.files ?? []).map((f) => f.file)].map((id) => loadImage(id)))
 }
 
 /** What the page knows about an image file: loading, the bytes, or why it is missing. */

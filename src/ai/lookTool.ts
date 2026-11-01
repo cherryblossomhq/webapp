@@ -1,7 +1,7 @@
 import { isHierarchical, sheetUses, useAt } from "../model/sheets"
 import { resolvedComponents } from "../model/ruleAreas"
 import { shownProject } from "../store/sheetScope"
-import { preloadImages } from "../store/imageFiles"
+import { pictureFiles, preloadImages } from "../store/imageFiles"
 import type { Project } from "../model/types"
 import { lookRenderer, type Board3dView, type LookImage, type LookRenderer } from "./vision/encode"
 import { frame, matchAspect, type FrameRequest } from "./vision/framing"
@@ -118,7 +118,7 @@ async function lookFlat(whole: Project, target: "schematic" | "pcb", input: Tool
   } else {
     const m = measurePcb(project)
     // A board's reference images are read from the file store first, so the picture has them (a board with none waits for nothing).
-    if (project.images?.length) await preloadImages(project)
+    if (project.images?.length || pictureFiles(project).length) await preloadImages(project)
     const side = (input.side as PcbSide | undefined) ?? "both"
     const wanted = refList(input.layers)
     const extras = new Set<PcbExtra>(wanted ? wanted.filter((l): l is PcbExtra => (PCB_EXTRAS as string[]).includes(l)) : DEFAULT_PCB_EXTRAS)

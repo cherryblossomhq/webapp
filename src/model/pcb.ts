@@ -734,6 +734,57 @@ export function derivedCopperNets(project: Project, sch: SchematicConnectivity):
 }
 
 /**
+ * The connections that join a net's islands (each a list of points): a minimum spanning tree, grown from the first island by joining the island
+ * nearest to the tree at its nearest pair of points (Prim's). Ties go as the plain search over every pair broke them: the island joined to the
+ * earliest island of the tree, then the island listed first, then the points in order. Each island keeps its nearest pair to the tree, updated as
+ * an island joins, so the time grows with the square of the net's points and not the cube of its islands: a 2,970-part board opened while its
+ * pours were still filling had each ground pad an island of its own, and the plain search held the editor for hours.
+ */
+export function spanningLines(groups: Vec2[][]): { a: Vec2; b: Vec2 }[] {
+  const n = groups.length
+  const lines: { a: Vec2; b: Vec2 }[] = []
+  const joined = new Uint8Array(n)
+  const bestD = new Float64Array(n).fill(Infinity)
+  const bestT = new Int32Array(n)
+  const bestA: (Vec2 | null)[] = new Array(n).fill(null)
+  const bestB: (Vec2 | null)[] = new Array(n).fill(null)
+  // Island `t` joins the tree as its `order`th island: the islands still out take its points where they are nearer.
+  const join = (t: number, order: number) => {
+    joined[t] = 1
+    for (let g = 0; g < n; g++) {
+      if (joined[g]) continue
+      for (const a of groups[t]) {
+        for (const b of groups[g]) {
+          // A pair whose squared distance is clearly past the nearest so far can't be nearer, so `dist` (exact, and slow) is taken only near it.
+          const dx = a.x - b.x
+          const dy = a.y - b.y
+          if (dx * dx + dy * dy > bestD[g] * bestD[g] * (1 + 1e-9)) continue
+          const d = dist(a, b)
+          if (d < bestD[g]) {
+            bestD[g] = d
+            bestT[g] = order
+            bestA[g] = a
+            bestB[g] = b
+          }
+        }
+      }
+    }
+  }
+  join(0, 0)
+  for (let order = 1; order < n; order++) {
+    let next = -1
+    for (let g = 0; g < n; g++) {
+      if (joined[g] || !bestA[g]) continue
+      if (next < 0 || bestD[g] < bestD[next] || (bestD[g] === bestD[next] && bestT[g] < bestT[next])) next = g
+    }
+    if (next < 0) break
+    lines.push({ a: bestA[next]!, b: bestB[next]! })
+    join(next, order)
+  }
+  return lines
+}
+
+/**
  * Connectivity, ratsnest and DRC for the board. `fills` reuses earlier pour fills instead of
  * recomputing them, which keeps drags responsive.
  */
@@ -825,25 +876,7 @@ export function analyzePcb(
   for (const [netId, islands] of netIslands) {
     const groups = [...islands.values()]
     if (groups.length < 2) continue
-    const inTree = [0]
-    const remaining = new Set(groups.map((_, i) => i).slice(1))
-    while (remaining.size) {
-      let best: { d: number; a: Vec2; b: Vec2; g: number } | null = null
-      for (const ti of inTree) {
-        for (const gi of remaining) {
-          for (const a of groups[ti]) {
-            for (const b of groups[gi]) {
-              const d = dist(a, b)
-              if (!best || d < best.d) best = { d, a, b, g: gi }
-            }
-          }
-        }
-      }
-      if (!best) break
-      ratsnest.push({ netId, a: best.a, b: best.b })
-      inTree.push(best.g)
-      remaining.delete(best.g)
-    }
+    for (const { a, b } of spanningLines(groups)) ratsnest.push({ netId, a, b })
   }
   for (const r of ratsnest) {
     const name = sch.nets.find((x) => x.id === r.netId)?.name ?? r.netId

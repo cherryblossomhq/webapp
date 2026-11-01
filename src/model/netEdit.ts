@@ -23,13 +23,26 @@ function partition(conn: SchematicConnectivity): Set<string> {
   return new Set([...byNet.values()].filter((keys) => keys.length > 1).map((keys) => keys.sort().join(" ")))
 }
 
+/** A name the editor makes up for a net nobody named (`NET3`, `Net-(R1-Pad2)`), and renames as it pleases. */
+export const isMadeUpName = (name: string) => AUTO_NET_NAME.test(name) || isAutoNetName(name)
+
 /** What a name may not be: empty, or one the editor makes up and renames as it pleases. */
 export function netNameProblem(name: string): string | null {
   const n = name.trim()
   if (!n) return "The new name is empty."
   if (/\s/.test(n)) return `"${n}" has a space in it; net names don't.`
-  if (AUTO_NET_NAME.test(n) || isAutoNetName(n)) return `"${n}" is a name the editor makes up for nets nobody named, and renames when it likes. Give the net a name that says what it is.`
+  if (isMadeUpName(n)) return `"${n}" is a name the editor makes up for nets nobody named, and renames when it likes. Give the net a name that says what it is.`
   return null
+}
+
+/** Why `net` can't take the name `target`: a name the editor makes up, or one another net has (taking it would join the two). */
+export function renameTargetProblem(project: Project, conn: SchematicConnectivity, net: Net, target: string): string | null {
+  const problem = netNameProblem(target)
+  if (problem) return problem
+  const clash = conn.nets.find((n) => n.id !== net.id && (n.name === target || bareName(n) === target))
+  if (!clash) return null
+  const pins = clash.pins.slice(0, 4).map((p) => pinText(project, pinKey(p.componentId, p.pin)))
+  return `${target} is already a net${pins.length ? ` (${pins.join(", ")})` : ""}: renaming ${net.named ? bareName(net) : net.name} to it would join the two. To join them, connect a pin of each with net_name ${target}.`
 }
 
 export type RenameResult = { project: Project; labels: number; ports: number; net: string } | { error: string }
@@ -49,14 +62,9 @@ export function renameNet(project: Project, from: string, to: string): RenameRes
   if (!net.named) return { error: `${net.name} has no name of its own yet` }
   const text = bareName(net)
   const target = to.trim()
-  const problem = netNameProblem(target)
+  if (target === text && !netNameProblem(target)) return { project, labels: 0, ports: 0, net: net.name }
+  const problem = renameTargetProblem(project, conn, net, target)
   if (problem) return { error: problem }
-  if (target === text) return { project, labels: 0, ports: 0, net: net.name }
-  const clash = conn.nets.find((n) => n.id !== net.id && (n.name === target || bareName(n) === target))
-  if (clash) {
-    const pins = clash.pins.slice(0, 4).map((p) => pinText(project, pinKey(p.componentId, p.pin)))
-    return { error: `${target} is already a net${pins.length ? ` (${pins.join(", ")})` : ""}: renaming ${text} to it would join the two. To join them, connect a pin of each with net_name ${target}.` }
-  }
 
   const labels = new Set(project.labels.filter((l) => conn.labelNet.get(l.id) === net.id && l.name.trim() === text).map((l) => l.id))
   const ports = new Set(

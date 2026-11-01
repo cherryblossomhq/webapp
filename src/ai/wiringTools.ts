@@ -4,7 +4,7 @@ import { bareName, pinKey, type SchematicConnectivity } from "../model/connectiv
 import { powerNetName, schematicBounds, schematicPins } from "../model/instances"
 import { findPart } from "../model/library"
 import { pinText, schematicEditProblems } from "../model/merges"
-import { findNet, renameNet, setNetStyle } from "../model/netEdit"
+import { findNet, isMadeUpName, renameNet, renameTargetProblem, setNetStyle } from "../model/netEdit"
 import { addLabel, addWire } from "../model/ops"
 import type { NetStyle, Project, Rotation, Vec2 } from "../model/types"
 import { getConnectivity } from "../store/analysis"
@@ -99,8 +99,8 @@ export const getWiringTool: ToolSpec = {
 
 // ---------- draw_wiring ----------
 
-/** What sits at a point of the sheet as it is: pins, wire corners and sides, labels, by the net each is on. */
-function touchedAt(project: Project, conn: SchematicConnectivity, p: Vec2): { groups: Set<string>; what: string[] } {
+/** What sits at a point of the sheet as it is: pins, wire corners and sides, labels, by the net each is on; `except` a wire of its own. */
+function touchedAt(project: Project, conn: SchematicConnectivity, p: Vec2, except?: string): { groups: Set<string>; what: string[] } {
   const groups = new Set<string>()
   const what: string[] = []
   for (const c of project.components) {
@@ -113,7 +113,7 @@ function touchedAt(project: Project, conn: SchematicConnectivity, p: Vec2): { gr
     }
   }
   for (const w of project.wires) {
-    if (!w.points.some((q, i) => samePoint(q, p) || (i > 0 && pointOnSegment(p, w.points[i - 1], q)))) continue
+    if (w.id === except || !w.points.some((q, i) => samePoint(q, p) || (i > 0 && pointOnSegment(p, w.points[i - 1], q)))) continue
     const id = conn.wireNet.get(w.id)
     groups.add(id ?? `wire:${w.id}`)
     const name = netName(conn, id)
@@ -218,7 +218,7 @@ export const drawWiringTool: ToolSpec = {
     for (const w of wires) {
       const added = addWire(next, w)
       next = added.project
-      if (added.wire) ids.push(added.wire.id)
+      ids.push(added.wire?.id ?? "")
     }
     const labelIds: string[] = []
     for (const l of labels) {
@@ -234,9 +234,11 @@ export const drawWiringTool: ToolSpec = {
     problems.push(...schematicEditProblems(project, next, before, after, allowed))
     if (problems.length) return fail(project, `Nothing was drawn: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? `; and ${problems.length - 5} more` : ""}.`)
 
+    // What each end touches once everything is drawn: a wire or label of this call counts too.
+    const reached = wires.map((w, i) => [w[0], w[w.length - 1]].map((p) => touchedAt(next, after, p, ids[i])))
     const said: string[] = []
     for (const [i, w] of wires.entries()) {
-      const [a, b] = ends[i].map((e) => (e.what.length ? e.what.join(" and ") : "nothing"))
+      const [a, b] = reached[i].map((e) => (e.what.length ? e.what.join(" and ") : "nothing"))
       const net = netName(after, after.wireNet.get(ids[i]))
       const through = project.components.filter((c) => !findPart(c.partId)?.powerNet).filter((c) => {
         const inner = schematicBounds(c)
@@ -249,7 +251,7 @@ export const drawWiringTool: ToolSpec = {
       const net = netName(after, after.labelNet.get(labelIds[i]))
       said.push(`Label ${l.name} at ${xy(l)}${net && net !== l.name ? `, on ${net}` : ""}.`)
     }
-    const dangling = ends.flat().filter((e) => !e.what.length).length
+    const dangling = reached.flat().filter((e) => !e.what.length).length
     if (dangling) said.push(`${plural(dangling, "wire end")} touch${dangling === 1 ? "es" : ""} nothing yet: put a label there or draw on to a pin.`)
     const summary = [wires.length && plural(wires.length, "wire"), labels.length && plural(labels.length, "label")].filter(Boolean).join(" and ")
     return ok(next, said.join(" "), `Drew ${summary}`)
@@ -300,7 +302,10 @@ export function editNetTool(connect: ConnectRunner): ToolSpec {
           const what = [r.labels && plural(r.labels, "label"), r.ports && plural(r.ports, "power port")].filter(Boolean).join(" and ")
           said.push(r.project === project ? `${net.name} is already called that.` : `Renamed ${net.name} to ${r.net}: ${what}.`)
         } else {
-          // A net nobody named gets its name from a label, which connect puts on one of its pins.
+          // A net nobody named gets its name from a label, which connect puts on one of its pins; checked first,
+          // since connect with another net's name would join the two.
+          const problem = renameTargetProblem(project, conn, net, renameTo)
+          if (problem) return fail(project, problem)
           const pin = net.pins.find((p) => !findPart(project.components.find((c) => c.id === p.componentId)?.partId ?? "")?.powerNet)
           const c = pin && project.components.find((x) => x.id === pin.componentId)
           if (!pin || !c) return fail(project, `${net.name} has no pin to put a label on.`)
@@ -312,7 +317,11 @@ export function editNetTool(connect: ConnectRunner): ToolSpec {
         }
       }
       if (drawAs !== undefined) {
-        if (!name) return fail(project, `${net.name} has no name of its own, and Tidy names a net it labels as it likes. Name it with rename_to as well.`)
+        if (!name || isMadeUpName(name)) return fail(project, `${net.name} has no name of its own, and Tidy names a net it labels as it likes. Name it with rename_to as well.`)
+        // Tidy keeps a net a local or hierarchical label names as labels, whatever is chosen: a port would name it on every sheet.
+        const kind = findNet(getConnectivity(next), name)?.label?.kind
+        if (drawAs === "port" && (kind === "local" || kind === "hierarchical"))
+          return fail(project, `${name} is named by a ${kind} label, which names it on its sheet only, so Tidy keeps it as labels: a port would name it on every sheet.`)
         next = setNetStyle(next, name, drawAs === "auto" ? null : drawAs)
         const pinsOn = net.pins.map((p) => blockOf(next, p.componentId)?.name).filter((b): b is string => !!b)
         const blocks = [...new Set(pinsOn)]

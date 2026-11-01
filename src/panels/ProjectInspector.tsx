@@ -12,7 +12,7 @@ import { clearImportedNoConnect, importedNoConnectCount } from "../model/importM
 import { valueText } from "../model/instances"
 import { classIndex, classNameOf, hasNetClasses } from "../model/netClasses"
 import { bareName } from "../model/connectivity"
-import { setNetStyle } from "../model/netEdit"
+import { isMadeUpName, setNetStyle } from "../model/netEdit"
 import { findPart } from "../model/library"
 import { netTraceWidth } from "../model/ops"
 import {
@@ -744,13 +744,18 @@ function NetsSection({ project }: { project: Project }) {
       )}
       {highlighted && <NetClassField project={project} net={highlighted.name} />}
       {highlighted && <NetWidthField project={project} net={highlighted.name} />}
-      {highlighted?.named && <NetStyleField project={project} net={bareName(highlighted)} />}
+      {highlighted?.named && !isMadeUpName(bareName(highlighted)) && (
+        <NetStyleField project={project} net={bareName(highlighted)} ports={highlighted.label?.kind !== "local" && highlighted.label?.kind !== "hierarchical"} />
+      )}
     </Section>
   )
 }
 
-/** How Tidy draws one named net: by its own judgement, or always with labels, or always with ports. */
-function NetStyleField({ project, net }: { project: Project; net: string }) {
+/**
+ * How Tidy draws one named net: by its own judgement, or always with labels, or always with ports. A net a local or
+ * hierarchical label names is never drawn with ports (a port would name it on every sheet), so it isn't offered.
+ */
+function NetStyleField({ project, net, ports }: { project: Project; net: string; ports: boolean }) {
   const style = project.netStyles?.[net] ?? "auto"
   return (
     <Field label={`${net} on the schematic`} hint="How Tidy draws it. Auto draws supplies and ground with ports and the rest with labels.">
@@ -761,7 +766,7 @@ function NetStyleField({ project, net }: { project: Project; net: string }) {
         options={[
           { value: "auto", label: "Auto" },
           { value: "label", label: "Labels", title: "Net labels, even for a supply" },
-          { value: "port", label: "Ports", title: "Power or ground ports" },
+          ...(ports ? [{ value: "port" as const, label: "Ports", title: "Power or ground ports" }] : []),
         ]}
       />
     </Field>

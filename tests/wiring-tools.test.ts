@@ -94,6 +94,17 @@ describe("draw_wiring", () => {
     refused({ wires: [[{ x: 2.3, y: 0.7 }, { x: 0.5, y: 0.7 }]] }, /under the wire/)
   })
 
+  it("says what each end reached, a wire or label drawn in the same call included", () => {
+    const tee = runTool(three(), "draw_wiring", { wires: [[{ x: 0.3, y: 0 }, { x: 1.7, y: 0 }], [{ x: 1, y: 0.7 }, { x: 1, y: 0 }]] })
+    expect(tee.isError, tee.result).toBe(false)
+    expect(tee.result).toMatch(/Wire 2 from \(1, 0\.7\) at R3\.1 to \(1, 0\) at a wire/)
+    expect(tee.result).not.toMatch(/touch(es)? nothing/)
+    const labelled = runTool(three(), "draw_wiring", { wires: [[{ x: 0.3, y: 0 }, { x: 0.3, y: -0.5 }]], labels: [{ name: "X", x: 0.3, y: -0.5 }] })
+    expect(labelled.isError, labelled.result).toBe(false)
+    expect(labelled.result).toMatch(/at the label X/)
+    expect(labelled.result).not.toMatch(/touch(es)? nothing/)
+  })
+
   it("never joins two nets that each have a name", () => {
     let p = ok(runTool(three(), "connect", { pins: ["R1.1"], net_name: "VBUS" }))
     p = ok(runTool(p, "connect", { pins: ["R2.2"], net_name: "GND" }))
@@ -134,6 +145,28 @@ describe("edit_net", () => {
     const q = ok(runTool(p, "edit_net", { net: netOf(p, "R1.2")!.name, rename_to: "MID" }))
     expect(netOf(q, "R2.1")!.name).toBe("MID")
     expect(groups(q)).toEqual(groups(p))
+  })
+
+  it("refuses to name a net nobody named after another net, or with a made-up name, and changes nothing", () => {
+    let p = ok(runTool(three(), "connect", { pins: ["R1.2", "R2.1"] }))
+    p = ok(runTool(p, "connect", { pins: ["R3.1"], net_name: "VBUS" }))
+    const unnamed = netOf(p, "R1.2")!.name
+    for (const [rename_to, why] of [["VBUS", /already a net/], ["NET7", /makes up/], ["A B", /space/]] as const) {
+      const out = runTool(p, "edit_net", { net: unnamed, rename_to })
+      expect(out.isError, out.result).toBe(true)
+      expect(out.result).toMatch(why)
+      expect(out.project).toBe(p)
+    }
+    expect(sameNet(p, "R1.2", "R3.1")).toBe(false)
+  })
+
+  it("refuses ports for a net a local label names, which Tidy keeps as labels", () => {
+    let p: Project = { ...three(), netNames: "kicad" }
+    p = ok(runTool(p, "connect", { pins: ["R1.2", "R2.1"], net_name: "MID" }))
+    const out = runTool(p, "edit_net", { net: "MID", draw_as: "port" })
+    expect(out.isError, out.result).toBe(true)
+    expect(out.result).toMatch(/local label/)
+    expect(ok(runTool(p, "edit_net", { net: "MID", draw_as: "label" })).netStyles).toEqual({ MID: "label" })
   })
 
   it("draws a supply with labels when told, keeps the netlist, and Tidy keeps to it", () => {

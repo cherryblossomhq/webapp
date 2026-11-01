@@ -416,6 +416,12 @@ describe("the project file and the design rules", () => {
     expect(a.imported + [...a.pending.values(), ...a.notNeeded.values()].reduce((x, y) => x + y, 0)).toBe(a.total)
   })
 
+  it("net colours at the file's root, where a KiCad 6 nightly kept them, are not needed", () => {
+    const a = accountPro(JSON.parse(proJson({ net_colors: null })))
+    expect(a.unknownPaths.size).toBe(0)
+    expect([...a.notNeeded.keys()]).toContain("how KiCad colours nets on screen, where a KiCad 6 nightly kept it (beside net_settings)")
+  })
+
   it("a rules file: comments are cut out, every rule is pending X10, and a damaged file is named", () => {
     const dru = `(version 1)\n# a comment (with a bracket\n(rule "clearance 2"\n  (condition "A.NetClass == 'HV'")\n  (constraint clearance (min 1mm))\n  (severity error))\n`
     expect(stripComments(dru)).not.toContain("a comment")

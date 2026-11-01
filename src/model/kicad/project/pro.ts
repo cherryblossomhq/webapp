@@ -115,6 +115,7 @@ export const PRO_RULES: ProRule[] = [
   rule(`net_settings>(?:netclass_assignments|netclass_patterns)${SUB}`, "pending", "which nets are in which net class", "X10"),
   rule(`net_settings>(?:net_chain_classes|net_chain_netclasses)${SUB}`, "pending", "net chains and their classes (KiCad 11 development)", "X21"),
   rule(`net_settings>(?:net_colors|hidden_nets)${SUB}`, "not-needed", "how KiCad colours and hides nets on screen"),
+  rule(`net_colors${SUB}`, "not-needed", "how KiCad colours nets on screen, where a KiCad 6 nightly kept it (beside net_settings)"),
   rule(`net_settings>meta${SUB}`, "not-needed", "the section's version"),
   rule(`board>design_settings>(?:rules|defaults|track_widths|via_dimensions|diff_pair_dimensions|via_stack_presets)${SUB}`, "pending", "design rules, the sizes new items get, and the track and via sizes KiCad offers", "X10"),
   rule(`board>design_settings>(?:teardrop_options|teardrop_parameters|zones_allow_external_fillets|zones_use_no_outline)${SUB}`, "pending", "teardrop and copper zone settings", "X3"),

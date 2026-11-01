@@ -8,9 +8,9 @@ import type { DefaultNetClass, DesignRules, NetClass } from "./types"
 //    (`NetClass.patterns`); every other net, and copper that has no net, is in Default, which is the
 //    design rules themselves (`DesignRules.clearance`, `traceWidth`, `viaDiameter`, `viaDrill`, with
 //    `DesignRules.defaultClass` for what only a class has). KiCad 9 and later let a net be in several
-//    classes and combine them by priority (`NET_SETTINGS::GetEffectiveNetClass`); that is not built:
-//    `overlappingNets` names every net two classes claim, so a reader of a file that does it can refuse
-//    and say so.
+//    classes and combine them by priority (`NET_SETTINGS::GetEffectiveNetClass`); the reader of a
+//    project file makes that combined class a class of its own and lists the net in it
+//    (`mapKicadProjectNetClasses`), so a net is still in one class here.
 //  - A class field that is absent is the Default class's.
 //  - Two items on different nets are checked at the larger of their two classes' clearances, never
 //    below the board's own minimum (`DesignRules.minClearance`). KiCad: `DRC_ENGINE::EvalRules` for a
@@ -473,45 +473,56 @@ export interface MappedNetClasses {
   rules: Pick<DesignRules, "clearance" | "traceWidth" | "viaDiameter" | "viaDrill" | "defaultClass" | "netClasses">
   /** What the project file says that the model cannot hold exactly, for the reader to report or refuse on; empty when nothing was lost. */
   problems: string[]
+  /** What is held as KiCad holds it but not as the file writes it (a class the file names and does not define, a combined class), for the report. */
+  notes: string[]
   /** Nets that two classes claim (KiCad 9 combines these by priority; see the head of this file). */
   overlapping: string[]
 }
+
+/** KiCad's priority for a class a net or pattern names and the file does not define: weaker than every class the file defines (`getOrAddImplicitNetclass`). */
+const IMPLICIT_PRIORITY = 2147483646
+
+const listOf = (names: string[], most = 3) => `${names.slice(0, most).map((n) => `"${n}"`).join(", ")}${names.length > most ? ` and ${names.length - most} more` : ""}`
 
 /**
  * The mapping from a `.kicad_pro` to the model, for the schematic track's reader to call with `net_settings` as it parsed it and the
  * net names of the board. `base` supplies what the file leaves out of the Default class (the editor's own defaults, or the board's rules).
  * Only the clearance, track width and via size of the Default class are the design rules; its micro via size, differential pair and
  * any name or description go to `defaultClass`; every other class is a `NetClass` with the nets the file lists and its patterns. A
- * class with a priority is kept in priority order (lower first). `problems` lists what could not be kept (a pattern or net naming a
- * class the file does not define, two classes of one name, a net in two classes); the reader refuses on them, since the editor
- * does not guess.
+ * class with a priority is kept in priority order (lower first). A class a net or pattern names and the file does not define is an
+ * empty class, as KiCad makes it, whose nets take Default's values. A net several classes claim in a KiCad 9 file is in the class KiCad
+ * combines from them (named by them, joined with commas, in priority order; each value from the first that sets it), and in a KiCad 8 file
+ * in the one class KiCad 8 picks. `problems` lists what could not be kept (two classes of one name, a net KiCad 8 keeps in Default while
+ * a pattern of another class matches it); the reader refuses on them, since the editor does not guess.
  */
 export function mapKicadProjectNetClasses(nets: KicadProjectNets, base: Pick<DesignRules, "clearance" | "traceWidth" | "viaDiameter" | "viaDrill">, netNames: Iterable<string> = []): MappedNetClasses {
   const problems: string[] = []
+  const notes: string[] = []
   const def = nets.classes.find((c) => c.name === DEFAULT_CLASS_NAME)
+  // KiCad 9 writes every class's priority, and is the first to let an assignment name several classes.
+  const prioritized = nets.classes.some((c) => typeof c.priority === "number") || Object.values(nets.assignments ?? {}).some((a) => Array.isArray(a) && a.length > 1)
   const others = nets.classes.filter((c) => c !== def)
   const seen = new Set<string>()
   for (const c of others) {
     if (seen.has(c.name)) problems.push(`two net classes are named "${c.name}"`)
     seen.add(c.name)
   }
-  const defined = new Set([DEFAULT_CLASS_NAME, ...others.map((c) => c.name)])
+  // A class a net or a pattern names and the file does not define: KiCad 9 makes an empty one of that name, weaker than every class
+  // the file defines, and KiCad 8 gives the net the Default class. Either way the net has Default's values, as it has in an empty class.
+  const assigned = Object.entries(nets.assignments ?? {}).map(([net, cls]) => [net, Array.isArray(cls) ? cls : cls ? [cls] : []] as const)
+  const named = [...assigned.flatMap(([, list]) => list), ...nets.patterns.map((p) => p.netclass)]
+  const undefinedNames = [...new Set(named.filter((n) => n !== DEFAULT_CLASS_NAME && !seen.has(n)))]
+  if (undefinedNames.length) {
+    const one = undefinedNames.length === 1
+    notes.push(`the class${one ? "" : "es"} ${listOf(undefinedNames)}, which nets or patterns name and the file does not define: KiCad gives ${one ? "its" : "their"} nets the Default class's values, and so does the project, in an empty class of ${one ? "that name" : "each name"}`)
+  }
+  const all = [...others, ...undefinedNames.map((name): KicadProjectNetClass => ({ name, ...(prioritized ? { priority: IMPLICIT_PRIORITY } : {}) }))]
   const listed = new Map<string, string[]>()
-  const addNet = (net: string, cls: string) => {
-    if (cls === DEFAULT_CLASS_NAME) return
-    if (!defined.has(cls)) {
-      problems.push(`net "${net}" is in the class "${cls}", which the file does not define`)
-      return
-    }
-    listed.set(cls, [...(listed.get(cls) ?? []), net])
-  }
-  for (const [net, cls] of Object.entries(nets.assignments ?? {})) for (const name of Array.isArray(cls) ? cls : cls ? [cls] : []) addNet(net, name)
+  for (const [net, list] of assigned) for (const cls of list) if (cls !== DEFAULT_CLASS_NAME) listed.set(cls, [...(listed.get(cls) ?? []), net])
   const patterns = new Map<string, string[]>()
-  for (const p of nets.patterns) {
-    if (p.netclass !== DEFAULT_CLASS_NAME && !defined.has(p.netclass)) problems.push(`the pattern "${p.pattern}" names the class "${p.netclass}", which the file does not define`)
-    else if (p.netclass !== DEFAULT_CLASS_NAME) patterns.set(p.netclass, [...(patterns.get(p.netclass) ?? []), p.pattern])
-  }
-  const ordered = [...others].sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
+  for (const p of nets.patterns) if (p.netclass !== DEFAULT_CLASS_NAME) patterns.set(p.netclass, [...(patterns.get(p.netclass) ?? []), p.pattern])
+  const rank = (c: { priority?: number }) => c.priority ?? Number.MAX_SAFE_INTEGER
+  const ordered = [...all].sort((a, b) => rank(a) - rank(b))
   const num = (v: number | undefined) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined)
   const netClasses = normalizeNetClasses(
     ordered.map((c) => ({
@@ -548,12 +559,51 @@ export function mapKicadProjectNetClasses(nets: KicadProjectNets, base: Pick<Des
   }
   const claimed = netClasses.length ? overlappingNets({ netClasses }, netNames) : []
   // A file of KiCad 8 or before gives its classes no priority, and puts a net in one class: the one an assignment names, else the one of the first pattern in the
-  // file it matches (`NET_SETTINGS::GetEffectiveNetClass` of 8.0). That is the editor's rule too, so such a net is only a problem where the two would pick
-  // different classes. A KiCad 9 file combines the classes of a net by priority, which is not built.
-  const prioritized = nets.classes.some((c) => typeof c.priority === "number")
+  // file it matches (`NET_SETTINGS::GetEffectiveNetClass` of 8.0). That is the editor's rule too, so only where the two would pick different classes is the net
+  // listed in KiCad 8's class (and taken out of the others' lists), which wins over every pattern.
   const overlapping = prioritized ? claimed : claimed.filter((net) => kicad8Class(nets, net) !== editorClass(netClasses, net))
-  for (const net of overlapping) problems.push(`net "${net}" is claimed by more than one class (KiCad 9 combines them by priority, which the editor does not do yet)`)
-  return { rules, problems, overlapping }
+  const unlist = (net: string) => {
+    for (const c of netClasses) if (c.nets.includes(net)) c.nets = c.nets.filter((n) => n !== net)
+  }
+  if (prioritized) {
+    // KiCad 9 combines every class that claims a net (its assignments and every pattern it matches), ordered by priority, lower first, and by name between equals;
+    // each value comes from the first class that sets it, and Default's where none does (`makeEffectiveNetclass`). The combination is a class of its own here,
+    // named as KiCad names it, with the net listed in it.
+    const priorities = new Map(all.map((c) => [c.name, rank(c)]))
+    const combined = new Map<string, NetClass>()
+    for (const net of overlapping) {
+      const members = netClasses
+        .filter((c) => c.nets.includes(net) || (c.patterns ?? []).some((p) => patternMatcher(p)(net)))
+        .sort((a, b) => (priorities.get(a.name) ?? 0) - (priorities.get(b.name) ?? 0) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      const name = members.map((c) => c.name).join(",")
+      let made = combined.get(name)
+      if (!made) {
+        made = { name, nets: [] }
+        for (const f of CLASS_FIELDS) {
+          const from = members.find((c) => c[f] !== undefined)
+          if (from) made[f] = from[f]
+        }
+        combined.set(name, made)
+      }
+      unlist(net)
+      made.nets.push(net)
+    }
+    for (const c of combined.values()) if (!netClasses.some((x) => x.name === c.name)) netClasses.push(c)
+    if (overlapping.length) {
+      notes.push(`${overlapping.length} net${overlapping.length === 1 ? "" : "s"} that several classes claim (${listOf(overlapping)}): each is in the class KiCad 9 combines from them, a class of its own here (${listOf([...combined.keys()], 2)}), with each value from the first class by priority that sets it`)
+    }
+  } else {
+    for (const net of overlapping) {
+      const into = netClasses.find((c) => c.name === kicad8Class(nets, net))
+      if (!into) {
+        problems.push(`net "${net}" is in the Default class for KiCad 8, and a pattern of another class matches it`)
+        continue
+      }
+      unlist(net)
+      into.nets.push(net)
+    }
+  }
+  return { rules, problems, notes, overlapping }
 }
 
 /** The class KiCad 8 puts a net in, by name (Default for none), or null when the file names more than one (a KiCad 9 list). */

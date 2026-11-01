@@ -51,6 +51,9 @@ export function applyProRules(project: Project, pro: KicadPro, board: KicadBoard
     for (const [net, cls] of Object.entries(pro.netclassAssignments)) assignments[labelText.get(net) ?? net] = (cls as string | string[] | null) ?? null
     const mapped = mapKicadProjectNetClasses({ classes, patterns: pro.netclassPatterns, assignments }, rules, labelText.values())
     problems = mapped.problems
+    if (!problems.length && mapped.notes.length) {
+      report.entries.push({ code: "net-classes-as-kicad", severity: "note", object: "the net classes", why: `Held as KiCad resolves them: ${mapped.notes.join("; ")}.` })
+    }
     if (!problems.length) {
       const m = mapped.rules
       const before = { clearance: rules.clearance, traceWidth: rules.traceWidth, viaDiameter: rules.viaDiameter, viaDrill: rules.viaDrill }

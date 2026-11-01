@@ -146,13 +146,14 @@ describe("the project file's net classes and design rules", () => {
     expect(r.project.rules.netClasses).toBeUndefined()
   })
 
-  it("a net two classes claim, or a pattern naming a class the file lacks, is not guessed", () => {
+  it("a net two classes claim is in the class KiCad 9 combines from them, and a pattern naming a class the file lacks makes it, empty, as KiCad does", () => {
     const twice = JSON.stringify({ meta: { version: 1 }, net_settings: { classes: [{ name: "Default" }, { name: "A", track_width: 0.5 }, { name: "B", track_width: 0.6 }], netclass_assignments: { VCC: ["A", "B"] } } })
-    const r = importKicadProject(files(fixture(), twice))
-    expect(r.status).toBe("refused")
-    if (r.status === "refused") expect(r.message).toMatch(/net "VCC" is claimed by more than one class/)
+    const r = ok(importKicadProject(files(fixture(), twice)))
+    expect(r.project.rules.netClasses?.find((c) => c.name === "A,B")).toMatchObject({ traceWidth: 0.5, nets: ["VCC"] })
+    expect(r.report.entries.find((e) => e.code === "net-classes-as-kicad")?.why).toMatch(/combines from them/)
     const missing = JSON.stringify({ meta: { version: 1 }, net_settings: { classes: [{ name: "Default" }], netclass_patterns: [{ netclass: "Nope", pattern: "GND" }] } })
-    expect(importKicadProject(files(fixture(), missing)).status).toBe("refused")
+    const m = ok(importKicadProject(files(fixture(), missing)))
+    expect(m.project.rules.netClasses).toEqual([{ name: "Nope", nets: [], patterns: ["GND"] }])
   })
 
   it("custom rules in a .kicad_dru are read but not applied, and the report says so", () => {

@@ -37,3 +37,11 @@ describe("the pin type unconnected (KiCad 6 nightlies, before 20210123)", () => 
     expect(pins.map((p) => p.type).sort()).toEqual(["no_connect", "passive"])
   })
 })
+
+describe("a symbol's default instance (a KiCad 7 nightly, 2022)", () => {
+  it("is passed over: the symbol's fields and the instance list hold the same", () => {
+    const extra = `(default_instance (reference "R?") (unit 1) (value "10k") (footprint ""))`
+    const r = imp(schematic({ version: 20220904, libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", value: "4k7", uuid: R1, extra }] }))
+    expect(r.project.components.map((c) => [c.ref, c.props.value])).toEqual([["R1", "4k7"]])
+  })
+})

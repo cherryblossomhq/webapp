@@ -53,6 +53,7 @@ export const RULES_SCH = [
   rule("symbol>pin(?:>alternate)?", "extend", "-", { ext: "S5", note: "the alternate function chosen on this instance" }),
   rule("symbol>instances(?:>project(?:>path(?:>(?:reference|unit|value|footprint))?)?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "one reference per use of a sheet; the path names the sheet instance" }),
   rule("symbol>instances>project>path>variant(?:>.*)?", "extend", "-", { ext: "S9", note: "per-variant DNP and BOM flags and field overrides (KiCad 10)" }),
+  rule("symbol>default_instance(?:>.*)?", "not-needed", "-", { note: "a KiCad 7 nightly's copy of the reference, unit, value and footprint (2022): the symbol's fields and the instance list hold them" }),
   rule("sheet>instances>project>path>variant(?:>.*)?", "extend", "-", { ext: "S9", note: "per-variant DNP and BOM flags and field overrides of a sheet (KiCad 10)" }),
   rule("symbol_instances(?:>path(?:>(?:reference|unit|value|footprint))?)?", "extend", "ComponentInstance.ref", { ext: "S1", note: "KiCad 6 keeps all instance data in one root list" }),
 

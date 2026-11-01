@@ -266,7 +266,8 @@ export const ATOMS = [
   atoms("target", ["plus", "x"]),
   atoms("group", ["locked"], [1]),
   atoms("general>legacy_teardrops", YES_NO),
-  atoms("layers><layer number>", ["signal", "power", "mixed", "jumper", "user", "auxiliary", "front", "hide"], [1]),
+  // KiCad 10 types a user layer `front` or `back`, the side it belongs to (a flipped part's drawings move to the other side's layer)
+  atoms("layers><layer number>", ["signal", "power", "mixed", "jumper", "user", "auxiliary", "front", "back", "hide"], [1]),
   atoms("setup>(?:zone_45_only|uvias_allowed|blind_buried_vias_allowed|allow_soldermask_bridges_in_footprints)", YES_NO),
   atoms("setup>(?:tenting|covering|plugging|capping|filling)", ["front", "back", "none", "yes", "no"]),
   atoms("net_class", [], [1, 2]),

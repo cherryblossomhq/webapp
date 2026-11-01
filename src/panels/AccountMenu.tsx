@@ -28,7 +28,8 @@ function MenuLink({ href, icon, children }: { href: string; icon: ReactNode; chi
 /**
  * Who is signed in, at the right of the top bar, and the ways out of the editor that belong to the
  * account: the projects page, account settings and signing out. Every item is a link to the host's
- * pages, a full page load, since the session and those pages are the host's.
+ * pages, a full page load, since the session and those pages are the host's. Signed out (a project
+ * open to anyone with its link), a button to sign in.
  */
 export function AccountMenu() {
   const account = useEditorAccount()
@@ -36,6 +37,13 @@ export function AccountMenu() {
   const ref = useRef<HTMLDivElement>(null)
   useDismiss(ref, open, () => setOpen(false))
   if (!account) return null
+  if (account.signIn) {
+    return (
+      <button onClick={account.signIn} className="flex h-8 items-center rounded-[var(--radius-ctl)] bg-brand px-3 text-[12.5px] font-[650] text-white transition-[filter] hover:brightness-110">
+        Sign in
+      </button>
+    )
+  }
   const { user } = account
   return (
     <div ref={ref} className="relative">

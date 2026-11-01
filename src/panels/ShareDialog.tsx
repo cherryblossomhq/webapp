@@ -1,6 +1,6 @@
 import { Check, Globe, Link2, Lock, Mail, RotateCw, Users, X } from "lucide-react"
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react"
-import { goHome } from "../App"
+import { goHome, projectLink } from "../App"
 import { isTyping } from "../editor/viewport"
 import { projectStorage, useProjectStore } from "../store/projectStore"
 import type { MemberRole, ShareInvite, ShareMember, SharingSource, SharingState } from "../store/sharing"
@@ -356,19 +356,9 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 {invalid.length > 0 && <p className="mt-1.5 text-[12px] text-danger">{listOf(invalid)} {invalid.length === 1 ? "isn't an email address" : "aren't email addresses"}.</p>}
               </form>
             ) : state.viaLink ? (
-              <div className="flex items-center gap-2 rounded-[8px] bg-chrome px-3 py-1.5 text-[12.5px] text-ink-2">
-                <span className="min-w-0 flex-1">You opened this project through its link, so you can {state.role === "viewer" ? "view" : "edit"} it. Pass the link on to bring others in.</span>
-                <ConfirmButton
-                  label="Leave"
-                  confirm="Leave project?"
-                  onConfirm={() =>
-                    act(async () => {
-                      await source.removeMember(projectId, state.you)
-                      goHome()
-                    })
-                  }
-                />
-              </div>
+              <p className="rounded-[8px] bg-chrome px-3 py-2 text-[12.5px] text-ink-2">
+                You have this project through its link, so you can {VERB[state.role === "viewer" ? "viewer" : "editor"]} it. Copy the link below to bring others in.
+              </p>
             ) : (
               <p className="rounded-[8px] bg-chrome px-3 py-2 text-[12.5px] text-ink-2">You can view this project. Its owner and editors can invite people.</p>
             )}
@@ -477,18 +467,19 @@ function MemberRow({ member, state, onRole, onRemove }: { member: ShareMember; s
 }
 
 /**
- * Who can open the project besides the people listed: only them, or anyone signed in who has its
- * link, as viewers or editors. The owner chooses, and may reset the link; everyone with access sees
- * the link while it is on, to copy and pass on.
+ * Who can open the project besides the people listed: only them, or anyone who has its link, as
+ * viewers or editors (signed out, only viewers). The owner chooses. The link is the project's own
+ * address, so everyone with access can copy it: while the link is off it opens only for them.
  */
 function GeneralAccess({ state, source, projectId, onError }: { state: SharingState; source: SharingSource; projectId: string; onError: (text: string) => void }) {
   const [busy, setBusy] = useState(false)
   const { link } = state
-  const set = (role: MemberRole | null, reset?: boolean) => {
+  const url = projectLink(projectId)
+  const set = (role: MemberRole | null) => {
     if (busy) return
     setBusy(true)
     source
-      .setLink(projectId, role, reset)
+      .setLink(projectId, role)
       .then((r) => (r.ok ? undefined : onError(r.message)))
       .catch(() => onError("Couldn't change the link. Check your connection and try again."))
       .finally(() => setBusy(false))
@@ -497,14 +488,14 @@ function GeneralAccess({ state, source, projectId, onError }: { state: SharingSt
     <>
       <h3 className="mb-1 mt-5 text-[12px] font-[600] text-ink-2">General access</h3>
       <div className="flex min-h-11 items-center gap-2.5 py-1">
-        <span className={`flex size-7 shrink-0 items-center justify-center rounded-full ${link.role ? "bg-brand-soft text-brand" : "bg-chrome-2 text-ink-2"}`}>
-          {link.role ? <Globe size={14} /> : <Lock size={13} />}
+        <span className={`flex size-7 shrink-0 items-center justify-center rounded-full ${link ? "bg-brand-soft text-brand" : "bg-chrome-2 text-ink-2"}`}>
+          {link ? <Globe size={14} /> : <Lock size={13} />}
         </span>
         <div className="min-w-0 flex-1">
           {state.canManage ? (
             <select
               aria-label="Who can open the project"
-              value={link.role ? "link" : "invited"}
+              value={link ? "link" : "invited"}
               disabled={busy}
               onChange={(e) => set(e.target.value === "link" ? "viewer" : null)}
               className="-ml-1 h-6 max-w-full cursor-pointer rounded-[5px] bg-transparent px-1 text-[13px] font-[600] text-ink outline-none hover:bg-hover focus-visible:bg-hover disabled:cursor-default disabled:opacity-60"
@@ -513,33 +504,33 @@ function GeneralAccess({ state, source, projectId, onError }: { state: SharingSt
               <option value="link">Anyone with the link</option>
             </select>
           ) : (
-            <div className="truncate text-[13px] font-[600] text-ink">{link.role ? "Anyone with the link" : "Only people invited"}</div>
+            <div className="truncate text-[13px] font-[600] text-ink">{link ? "Anyone with the link" : "Only people invited"}</div>
           )}
-          <div className="truncate text-[12px] text-ink-2">
-            {link.role ? `Anyone signed in who opens the link can ${VERB[link.role]} it` : "Only the people listed above can open it"}
+          <div className="text-[12px] text-ink-2">
+            {link === "editor"
+              ? "Anyone signed in who has the link can edit it; anyone else can view it"
+              : link === "viewer"
+                ? "Anyone who has the link can view it, with no account needed"
+                : "Only the people listed above can open it"}
           </div>
         </div>
-        {link.role &&
+        {link &&
           (state.canManage ? (
-            <RoleSelect value={link.role} onChange={(r) => set(r)} disabled={busy} label="What anyone with the link may do" />
+            <RoleSelect value={link} onChange={set} disabled={busy} label="What anyone with the link may do" />
           ) : (
-            <span className="px-2 text-[12.5px] text-ink-2">{ROLE_LABEL[link.role]}</span>
+            <span className="px-2 text-[12.5px] text-ink-2">{ROLE_LABEL[link]}</span>
           ))}
       </div>
-      {link.role && link.token && (
-        <div className="mt-1.5 flex items-center gap-2">
-          <input
-            readOnly
-            aria-label="The project's link"
-            value={source.linkUrl(link.token)}
-            onFocus={(e) => e.currentTarget.select()}
-            className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-line bg-field px-2.5 text-[12.5px] text-ink-2 outline-none focus:border-select"
-          />
-          <CopyProjectLink url={source.linkUrl(link.token)} />
-          {/* A new link: the old one stops working, and whoever came in through it loses the project. */}
-          {state.canManage && <ConfirmButton label="Reset" confirm="Make a new link?" onConfirm={() => set(link.role, true)} />}
-        </div>
-      )}
+      <div className="mt-1.5 flex items-center gap-2">
+        <input
+          readOnly
+          aria-label="The project's link"
+          value={url}
+          onFocus={(e) => e.currentTarget.select()}
+          className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-line bg-field px-2.5 text-[12.5px] text-ink-2 outline-none focus:border-select"
+        />
+        <CopyProjectLink url={url} />
+      </div>
     </>
   )
 }

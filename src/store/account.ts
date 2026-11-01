@@ -24,6 +24,11 @@ export interface EditorAccount {
   settingsUrl: string
   /** A navigation that ends the session. */
   signOutUrl: string
+  /**
+   * Set when no one is signed in: the project is open to anyone with its link, and the editor shows
+   * it view only, with this in place of the account menu. Signing in comes back to the project.
+   */
+  signIn?: () => void
 }
 
 export const AccountContext = createContext<EditorAccount | undefined>(undefined)

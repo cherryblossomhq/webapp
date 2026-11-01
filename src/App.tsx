@@ -39,6 +39,8 @@ const navigate = (path: string, { replace = false } = {}) => {
 const projectPath = (id: string) => `${basePath}/p/${id}`
 
 export const openProjectRoute = (id: string) => navigate(projectPath(id))
+/** A project's address in full: its link, to copy and send. */
+export const projectLink = (id: string) => `${window.location.origin}${projectPath(id)}`
 /** The host's projects page, when it has one (`AppProps.account`); the editor's own dashboard otherwise. */
 let projectsUrl: string | undefined
 
@@ -160,15 +162,16 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
   }, [])
 
   // Projects from before they were saved to accounts are still in this browser's storage, and a
-  // link to one names the id it had here.
+  // link to one names the id it had here. Signed out, there is no account to move them to yet.
+  const signedOut = !!account?.signIn
   useEffect(() => {
-    if (storage.location !== "account") return
+    if (storage.location !== "account" || signedOut) return
     void moveBrowserProjects(storage).then(() => {
       const r = parseRoute()
       const to = r.page === "editor" ? movedProjectId(r.id) : undefined
       if (to) navigate(projectPath(to), { replace: true })
     })
-  }, [storage])
+  }, [storage, signedOut])
 
   useEffect(() => {
     if (!initialPrompt?.trim() || promptHandled) return

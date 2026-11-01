@@ -39,16 +39,6 @@ export interface ShareInvite {
   createdAt: number
 }
 
-/**
- * Who the project's link lets in: anyone signed in who opens it, as `role`, or (`role: null`) no
- * one but the people invited. `token` is the link's secret while it is on, which
- * `SharingSource.linkUrl` makes the link to copy.
- */
-export interface ShareLink {
-  role: MemberRole | null
-  token?: string
-}
-
 export interface SharingState {
   role: ProjectRole
   /** The user's own id, to tell them apart in the list. */
@@ -58,7 +48,11 @@ export interface SharingState {
   canManage: boolean
   /** The user has the project only through its link: they invite no one, and see no addresses. */
   viaLink: boolean
-  link: ShareLink
+  /**
+   * What anyone who has the project's link, its own address, may do, or null while it is only for
+   * the people invited. Signed out, they may only view it.
+   */
+  link: MemberRole | null
   owner: SharePerson
   members: ShareMember[]
   /** Open invitations; empty for a viewer, who sees none. */
@@ -88,30 +82,23 @@ export interface SharingSource {
   removeMember(projectId: string, userId: string): Promise<void>
   /** The link an invitation opens, to copy and send by hand. */
   inviteUrl(token: string): string
-  /**
-   * Open the project to anyone signed in with its link, as viewers or editors, or (`null`) only to
-   * the people invited. `reset` makes a new link: the old one stops working, for everyone who came
-   * in through it too. Turning the link off and on again keeps it.
-   */
-  setLink(projectId: string, role: MemberRole | null, reset?: boolean): Promise<{ ok: true } | { ok: false; message: string }>
-  /** The project's link, to copy and post anywhere. */
-  linkUrl(token: string): string
+  /** Open the project to anyone who has its link, as viewers or editors, or (`null`) only to the people invited. */
+  setLink(projectId: string, role: MemberRole | null): Promise<{ ok: true } | { ok: false; message: string }>
 }
 
 /**
- * Sharing for the development harness, which has no accounts: invitations and the link kept in
- * this tab's memory and never sent, so the Share dialog can be seen and driven
- * (`/editor-harness?account`) without a backend. Nobody can accept or open one.
+ * Sharing for the development harness, which has no accounts: invitations and the link's setting
+ * kept in this tab's memory and never sent, so the Share dialog can be seen and driven
+ * (`/editor-harness?account`) without a backend. Nobody can accept one.
  */
 export function localSharing(owner: SharePerson): SharingSource {
-  let state: SharingState = { role: "owner", you: owner.userId, canInvite: true, canManage: true, viaLink: false, link: { role: null }, owner, members: [], invites: [] }
-  let linkToken: string | undefined
+  let state: SharingState = { role: "owner", you: owner.userId, canInvite: true, canManage: true, viaLink: false, link: null, owner, members: [], invites: [] }
   const listeners = new Set<(s: SharingState) => void>()
   const set = (next: SharingState) => {
     state = next
     for (const listener of listeners) listener(state)
   }
-  const token = () => Array.from(crypto.getRandomValues(new Uint8Array(43)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("")
+  const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("").slice(0, 43)
   return {
     watch(_projectId, listener) {
       listeners.add(listener)
@@ -149,11 +136,9 @@ export function localSharing(owner: SharePerson): SharingSource {
       set({ ...state, members: state.members.filter((m) => m.userId !== userId) })
     },
     inviteUrl: (t) => `${window.location.origin}/invite/${t}`,
-    async setLink(_projectId, role, reset) {
-      if (reset || !linkToken) linkToken = token()
-      set({ ...state, link: role ? { role, token: linkToken } : { role: null } })
+    async setLink(_projectId, role) {
+      set({ ...state, link: role })
       return { ok: true }
     },
-    linkUrl: (t) => `${window.location.origin}/share/${t}`,
   }
 }

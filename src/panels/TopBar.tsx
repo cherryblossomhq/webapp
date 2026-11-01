@@ -1,6 +1,7 @@
 import { ChevronLeft, Eye, History, Redo2, Settings, Undo2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
+import { useEditorAccount } from "../store/account"
 import { stopFollowing, usePresence } from "../store/presence"
 import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
 import { useUi, type View } from "../store/uiStore"
@@ -42,13 +43,17 @@ export function TopBar() {
   const [sharing, setSharing] = useState(false)
   const canShare = !!projectStorage()?.sharing
   const canSeeHistory = !!projectStorage()?.history
+  // Someone signed out, on a project open to anyone with its link, has no projects to go back to.
+  const signedOut = !!useEditorAccount()?.signIn
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-2.5">
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <IconButton label="All projects" onClick={goHome}>
-          <ChevronLeft size={18} />
-        </IconButton>
+        {!signedOut && (
+          <IconButton label="All projects" onClick={goHome}>
+            <ChevronLeft size={18} />
+          </IconButton>
+        )}
         <span className="hidden items-center gap-1.5 text-[15px] font-[750] tracking-[-0.01em] text-ink lg:flex">
           <img src="/logo.svg" alt="" className="size-5" />
           Cherry Blossom
@@ -76,7 +81,7 @@ export function TopBar() {
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
         />
         {viewer && !previewing && (
-          <Tooltip label="View only" hint="You can look around, select, run checks and export. Ask the owner for edit access to change it.">
+          <Tooltip label="View only" hint={signedOut ? "You can look around, select, run checks and export. Sign in to do more." : "You can look around, select, run checks and export. Ask the owner for edit access to change it."}>
             <span className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-chrome-2 px-2 text-[11.5px] font-[600] text-ink-2">
               <Eye size={12} />
               View only

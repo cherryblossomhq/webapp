@@ -79,7 +79,7 @@ export interface StoredProjectSummary extends ProjectSummary {
   role?: ProjectRole
   /** People besides its owner who have it. */
   sharedWith?: number
-  /** What anyone signed in with its link may do, while it is shared by link. */
+  /** What anyone who has its link may do (signed out, only view it), while it is shared by link. */
   link?: "editor" | "viewer"
   /** Who shared it, on a project the user doesn't own. */
   owner?: { name: string; email: string; pictureUrl?: string }

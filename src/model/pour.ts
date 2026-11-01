@@ -21,6 +21,7 @@ import { classPourClearance, hasNetClasses } from "./netClasses"
 import { zoneClearance } from "./rules"
 import { fillPolygonZones, fillPolygonZonesEx, type PendingGroup } from "./zoneFill"
 import { needsZoneEngine } from "./zones"
+import { regionTester } from "./regionTester"
 import type { CopperLayer, DesignRules, Project, Vec2 } from "./types"
 
 /** One filled region: the outer ring (counter-clockwise) followed by its holes (clockwise). */
@@ -260,13 +261,13 @@ function relieved(pad: WorldPad, rules: DesignRules): boolean {
   return rules.thermalRelief === "relief" || pad.holeDiameter !== undefined
 }
 
+const insideTesters = new WeakMap<Path64[], (q: { x: number; y: number }) => boolean>()
+
+/** Whether a point is in a region (its outline and holes), asked through the region's boxes (`regionTester`), made once per region. */
 function inside(p: Vec2, polygon: Path64[]): boolean {
-  const q = pt(p.x, p.y)
-  if (Clipper.pointInPolygon(q, polygon[0]) === PointInPolygonResult.IsOutside) return false
-  for (let i = 1; i < polygon.length; i++) {
-    if (Clipper.pointInPolygon(q, polygon[i]) === PointInPolygonResult.IsInside) return false
-  }
-  return true
+  let t = insideTesters.get(polygon)
+  if (!t) insideTesters.set(polygon, (t = regionTester(polygon)))
+  return t(pt(p.x, p.y))
 }
 
 /** Flatten a polytree into [outer, ...holes] groups, including islands nested inside holes. */
@@ -462,58 +463,7 @@ export function padJoinsFillBySamples(pad: WorldPad, contains: (p: Vec2) => bool
 
 /** Point-in-fill tester in millimetres, honouring holes. */
 export function fillTester(polygon: FillPolygon): (p: Vec2) => boolean {
-  const rings = polygon.map((ring) => ring.map((q) => pt(q.x, q.y))).map(ringTester)
-  return (p) => {
-    const q = pt(p.x, p.y)
-    // A point on the outline counts as inside it; one on the edge of a hole is not inside the hole.
-    if (rings[0](q) === PointInPolygonResult.IsOutside) return false
-    for (let i = 1; i < rings.length; i++) if (rings[i](q) === PointInPolygonResult.IsInside) return false
-    return true
-  }
+  const inside = regionTester(polygon.map((ring) => ring.map((q) => pt(q.x, q.y))))
+  return (p) => inside(pt(p.x, p.y))
 }
 
-type Place = (q: { x: number; y: number }) => PointInPolygonResult
-
-/**
- * Where a point is against one ring, as `Clipper.pointInPolygon` says it. A ring of many corners (a big pour's outline, or the copper
- * round its pads) is held with its edges sorted into bands of y, so a point is tested against the edges of its band and not all of them,
- * and with the box of the ring, so a point that is far from it costs nothing. The sums are exact (whole micrometres).
- */
-function ringTester(path: Path64): Place {
-  const n = path.length
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const q of path) {
-    if (q.x < minX) minX = q.x
-    if (q.x > maxX) maxX = q.x
-    if (q.y < minY) minY = q.y
-    if (q.y > maxY) maxY = q.y
-  }
-  // A short ring is walked whole, but a point outside its box is outside it: a pour with thousands of small holes asks each one for every point.
-  if (n < 48) return (q) => (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY ? PointInPolygonResult.IsOutside : Clipper.pointInPolygon(q, path))
-  const bands = Math.min(2048, Math.max(8, n >> 2))
-  const height = (maxY - minY) / bands || 1
-  const band = (y: number) => Math.min(bands - 1, Math.max(0, Math.floor((y - minY) / height)))
-  const edges: number[][] = Array.from({ length: bands }, () => [])
-  for (let i = 0; i < n; i++) {
-    const a = path[i]
-    const b = path[(i + 1) % n]
-    for (let k = band(Math.min(a.y, b.y)); k <= band(Math.max(a.y, b.y)); k++) edges[k].push(i)
-  }
-  return (q) => {
-    if (q.x < minX || q.x > maxX || q.y < minY || q.y > maxY) return PointInPolygonResult.IsOutside
-    let crossings = 0
-    for (const i of edges[band(q.y)]) {
-      const a = path[i]
-      const b = path[(i + 1) % n]
-      const cross = (b.x - a.x) * (q.y - a.y) - (q.x - a.x) * (b.y - a.y)
-      // On the edge: collinear and between its ends.
-      if (cross === 0 && q.x >= Math.min(a.x, b.x) && q.x <= Math.max(a.x, b.x) && q.y >= Math.min(a.y, b.y) && q.y <= Math.max(a.y, b.y)) return PointInPolygonResult.IsOn
-      // A crossing of the ray to the right, the half-open way so a corner on the ray counts once.
-      if (a.y > q.y !== b.y > q.y && (b.y > a.y ? cross > 0 : cross < 0)) crossings++
-    }
-    return crossings & 1 ? PointInPolygonResult.IsInside : PointInPolygonResult.IsOutside
-  }
-}

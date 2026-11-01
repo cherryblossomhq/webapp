@@ -6,6 +6,7 @@ import { isNpth, type WorldPad } from "./instances"
 import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
 import type { FillPolygon, PourInput, ZoneFill } from "./pour"
+import { regionTester } from "./regionTester"
 import {
   areaMm2,
   boardArea,
@@ -120,12 +121,13 @@ function boundsOf(paths: Path64[]): Bounds {
 const overlaps = (a: Bounds, b: Bounds, pad = 0) => a.minX <= b.maxX + pad && b.minX <= a.maxX + pad && a.minY <= b.maxY + pad && b.minY <= a.maxY + pad
 
 /** Whether a point is inside a group (its outline, and not inside one of its holes); a point on the edge counts as inside. */
+const groupTesters = new WeakMap<Group, (q: { x: number; y: number }) => boolean>()
+
+/** Whether a point is in a group's copper (on its outline counts): its outline and holes asked through their boxes (`regionTester`), made once per group. */
 function insideGroup(p: { x: number; y: number }, g: Group): boolean {
-  const o = Clipper.pointInPolygon(p, g.paths[0])
-  if (o === PointInPolygonResult.IsOutside) return false
-  if (o === PointInPolygonResult.IsOn) return true
-  for (let i = 1; i < g.paths.length; i++) if (Clipper.pointInPolygon(p, g.paths[i]) === PointInPolygonResult.IsInside) return false
-  return true
+  let t = groupTesters.get(g)
+  if (!t) groupTesters.set(g, (t = regionTester(g.paths)))
+  return t(p)
 }
 
 /** The part of some paths inside a box: cheap for a large polygon, which a test against a small shape then meets in a few pieces. */

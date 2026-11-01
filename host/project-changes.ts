@@ -396,15 +396,18 @@ function readChange(raw: unknown): Change | null {
 /**
  * Changes as another copy sent them, checked change by change: null when the text isn't a list of
  * well-formed changes, so a client that sends anything else is refused rather than half applied.
+ * `max` is how many one batch may carry: a batch that was taken without being read (one uploaded
+ * as a file, which every reader then applies) is read with no cap, so every reader applies what
+ * its sender did.
  */
-export function readChanges(text: string): Change[] | null {
+export function readChanges(text: string, max = MAX_CHANGES): Change[] | null {
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch {
     return null
   }
-  if (!Array.isArray(raw) || raw.length > MAX_CHANGES) return null
+  if (!Array.isArray(raw) || raw.length > max) return null
   const changes: Change[] = []
   for (const r of raw) {
     const change = readChange(r)

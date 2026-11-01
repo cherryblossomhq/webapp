@@ -187,8 +187,8 @@ describe("the project", () => {
 })
 
 describe("the size limit", () => {
-  it("is the storage limit, 3 MB", () => {
-    expect(PROJECT_SIZE_LIMIT_BYTES).toBe(3 * 1024 * 1024)
+  it("is the storage limit, 32 MB", () => {
+    expect(PROJECT_SIZE_LIMIT_BYTES).toBe(32 * 1024 * 1024)
   })
 
   it("refuses a project over the limit before anything is saved, naming the size and the limit", () => {

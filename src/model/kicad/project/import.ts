@@ -610,7 +610,7 @@ function withLoneNets(project: Project, pairs: { fp: KicadFootprint; components:
   return lone.size ? { ...project, components: project.components.map((c) => (lone.has(c.id) ? { ...c, loneNets: { ...c.loneNets, ...lone.get(c.id) } } : c)) } : project
 }
 
-/** The most of a project file or rules file the project keeps for the export (the project holds up to 3 MB in all). */
+/** The most of a project file or rules file the project keeps for the export (the project holds up to 32 MB in all). */
 const CARRIED_FILE_LIMIT = 200 * 1024
 
 /**

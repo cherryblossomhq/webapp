@@ -21,11 +21,12 @@ import type { KicadBoard } from "./types"
 // all: a lossy import is worse than none, since the user would not know.
 
 /**
- * What a stored project may weigh, in bytes of its file. The same number as `MAX_DOCUMENT_BYTES`
- * in the hosted app's storage policy (the server keeps the file gzipped under its 1 MiB row
- * limit); a test pins the two.
+ * What a stored project may weigh, in bytes of its file. The same number as the hosted
+ * app's storage limit (a project past a row is kept as a file and a log, and
+ * the server folds the log in one action's memory); a test pins the two. The largest board of 1,145
+ * open-source KiCad projects was 22 MB with its fills.
  */
-export const PROJECT_SIZE_LIMIT_BYTES = 3 * 1024 * 1024
+export const PROJECT_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
 
 export interface ImportOptions {
   name?: string

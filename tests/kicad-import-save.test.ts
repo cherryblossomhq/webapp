@@ -30,7 +30,7 @@ beforeEach(() => {
 
 describe("the limit", () => {
   it("is the one number in the importer, the storage policy and here", () => {
-    expect(STORED_PROJECT_LIMIT_BYTES).toBe(3 * 1024 * 1024)
+    expect(STORED_PROJECT_LIMIT_BYTES).toBe(32 * 1024 * 1024)
     expect(PROJECT_SIZE_LIMIT_BYTES).toBe(STORED_PROJECT_LIMIT_BYTES)
   })
 
@@ -58,8 +58,8 @@ describe("saving an imported project", () => {
     const err = await saveImported(storage, { ...outcome, project: fat }).catch((e) => e)
     expect(err).toBeInstanceOf(SaveRefused)
     expect(err.kind).toBe("final")
-    expect(err.message).toMatch(/^This board needs 3\.0 MB and/)
-    expect(err.message).toMatch(/projects hold up to 3\.0 MB\. Nothing was saved\.$/)
+    expect(err.message).toMatch(/^This board needs 32\.0 MB and/)
+    expect(err.message).toMatch(/projects hold up to 32\.0 MB\. Nothing was saved\.$/)
     expect(created).toHaveLength(0)
     expect(loadReport("p1")).toBeNull()
   })

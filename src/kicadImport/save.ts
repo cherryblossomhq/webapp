@@ -6,12 +6,12 @@ import type { ImportOutcome } from "./protocol"
 import { keepReportFile, saveReport } from "./reportStore"
 
 /**
- * What a stored project may weigh, in bytes of its file: `MAX_DOCUMENT_BYTES` in
- * the hosted app's storage policy, and the importer's own limit. A test pins the three
- * together. It is repeated here so the page does not load the importer to know it. The server also
- * refuses a file that packs to over 900 KB (its rows are gzipped), which only it can measure.
+ * What a stored project may weigh, in bytes of its file: the hosted app's storage limit,
+ * and the importer's own limit. A test pins the two
+ * together. It is repeated here so the page does not load the importer to know it. Up to 3 MB a
+ * project is kept in a row; past that, as a file and a log, which storage sees to.
  */
-export const STORED_PROJECT_LIMIT_BYTES = 3 * 1024 * 1024
+export const STORED_PROJECT_LIMIT_BYTES = 32 * 1024 * 1024
 
 /** A size in the words of the refusal: `1.4 MB`, `900 KB`. */
 export const sizeText = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`)

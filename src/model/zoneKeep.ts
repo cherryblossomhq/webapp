@@ -1,6 +1,6 @@
 import type { CopperItem } from "./pcb"
 import type { SchematicConnectivity } from "./connectivity"
-import { polygonKit, type FillPolygon, type ZoneFill } from "./pour"
+import { polygonKit, withMaxError, type FillPolygon, type ZoneFill } from "./pour"
 import { hashText } from "./zoneFill"
 import { zoneLayers } from "./zones"
 import type { CopperLayer, Project, Vec2, Zone } from "./types"
@@ -204,8 +204,16 @@ function polygonsOf(zone: Zone, minWidth: number, layer: CopperLayer): FillPolyg
   const key = `${layer}|${grow}`
   let hit = cache.get(key)
   if (!hit) {
-    const joined = polygonKit.unionEvenOdd(on.rings.map((r) => polygonKit.path(r)))
-    hit = polygonKit.regions(grow ? polygonKit.inflate(joined, grow) : joined)
+    // In nanometres, KiCad's own unit, where the file's points are exact: rounded to microns, the rings of a fill can come out with edges that just
+    // touch, and Clipper's union of such a fill ran out of memory (a 219-ring, 4,905-point fill of RevK's ESP32-LED took over 3 GB and stopped).
+    hit = withMaxError(
+      undefined,
+      () => {
+        const joined = polygonKit.unionEvenOdd(on.rings.map((r) => polygonKit.path(r)))
+        return polygonKit.regions(grow ? polygonKit.inflate(joined, grow) : joined)
+      },
+      1e6,
+    )
     cache.set(key, hit)
   }
   return hit

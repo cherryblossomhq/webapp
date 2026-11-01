@@ -53,6 +53,15 @@ describe("a zone keeps KiCad's own fill", () => {
     expect(fa.netName).toBe("GND")
   })
 
+  it("reads the stored fill in KiCad's nanometres: two pieces 0.3 um apart stay two, where microns would join them", () => {
+    const close = "(xy 1.5 1.5) (xy 4.0001 1.5) (xy 4.0001 8) (xy 1.5 8)"
+    const far = "(xy 4.0004 1.5) (xy 7.5 1.5) (xy 7.5 8) (xy 4.0004 8)"
+    const zone = `(zone (net 1) (net_name "GND") (layer "F.Cu") (uuid "a1") (hatch edge 0.5) ${settings} ${polygon(1, 8)} ${filledPolygon("F.Cu", close)} ${filledPolygon("F.Cu", far)})`
+    const fill = fillOfZone(imported([zone]), 0)
+    expect(fill.fromFile).toBe(true)
+    expect(fill.polygons).toHaveLength(2)
+  })
+
   it("the export writes the fill as the file had it: the same points in the same order, the island mark, the pen flag", async () => {
     const text = await out(imported([zoneA(), zoneB()]))
     const polys = text.match(/\(filled_polygon [^\n]*/g) ?? []

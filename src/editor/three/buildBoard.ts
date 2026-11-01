@@ -10,6 +10,7 @@ import { holeCentre } from "../../model/padDistance"
 import { polygonKit, withMaxError, type ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
 import { buildBoardTextures, type BoardTextureSet } from "./boardTextures"
+import { contactShadow, createContactShadowMaterial } from "./contactShadow"
 import { onBoard } from "../../model/partFlags"
 
 // Finished copper plus surface finish stands this far proud of the mask (mm).
@@ -22,6 +23,8 @@ export interface SharedMaterials {
   /** Exposed pads by finish metal, and the plated hole walls under them. */
   pad: Record<FinishMetal, THREE.MeshPhysicalMaterial>
   barrel: Record<FinishMetal, THREE.MeshStandardMaterial>
+  /** The soft shadow under each part's model (`contactShadow.ts`). */
+  contact: THREE.ShaderMaterial
 }
 
 type FinishMetal = ReturnType<typeof finishMetal>
@@ -41,11 +44,12 @@ export function createSharedMaterials(): SharedMaterials {
       tin: new THREE.MeshStandardMaterial({ color: "#8e9096", metalness: 1, roughness: 0.6, side: THREE.DoubleSide }),
       copper: new THREE.MeshStandardMaterial({ color: "#9a6644", metalness: 1, roughness: 0.6, side: THREE.DoubleSide }),
     },
+    contact: createContactShadowMaterial(),
   }
 }
 
 export function disposeSharedMaterials(m: SharedMaterials) {
-  for (const mat of [m.edge, m.hidden, ...Object.values(m.pad), ...Object.values(m.barrel)]) mat.dispose()
+  for (const mat of [m.edge, m.hidden, m.contact, ...Object.values(m.pad), ...Object.values(m.barrel)]) mat.dispose()
 }
 
 // ---------- 2D shapes (board plane is XY, mm, y up) ----------
@@ -400,10 +404,13 @@ export function partHolder(project: Project, c: ComponentInstance): { holder: TH
   return { holder, content }
 }
 
-/** Hold one component's model where it goes on the board. */
-export function partModel(project: Project, c: ComponentInstance, model: THREE.Group): THREE.Group {
+/** Hold one component's model where it goes on the board, with its shadow on the board under it. */
+export function partModel(project: Project, c: ComponentInstance, model: THREE.Group, shared: SharedMaterials): THREE.Group {
   const { holder, content } = partHolder(project, c)
+  // Measured before the model is in the holder, so in the footprint's own frame.
+  const shadow = contactShadow(model, shared.contact)
   content.add(model)
+  if (shadow) content.add(shadow)
   return holder
 }
 
@@ -411,12 +418,12 @@ export function partModel(project: Project, c: ComponentInstance, model: THREE.G
  * Place each component's model: `model` gives a part's model file when it has one and it is read.
  * A part with none has no holder, and the board shows only its pads, as KiCad's 3D viewer does.
  */
-export function buildParts(project: Project, model: (c: ComponentInstance) => THREE.Group | null): THREE.Group {
+export function buildParts(project: Project, model: (c: ComponentInstance) => THREE.Group | null, shared: SharedMaterials): THREE.Group {
   const parts = new THREE.Group()
   parts.name = "parts"
   for (const c of placedComponents(project)) {
     const m = model(c)
-    if (m) parts.add(partModel(project, c, m))
+    if (m) parts.add(partModel(project, c, m, shared))
   }
   return parts
 }

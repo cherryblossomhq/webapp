@@ -16,6 +16,7 @@ import {
   type BoardBuild,
   type SharedMaterials,
 } from "./buildBoard"
+import { partBox } from "./contactShadow"
 import { modelLibrary } from "./files/library"
 import { placeModel } from "./files/place"
 import { StudioFloor } from "./studio"
@@ -263,7 +264,7 @@ export class BoardScene {
 
   private rebuildParts(project: Project) {
     this.clearParts()
-    this.parts = buildParts(project, (c) => this.placedModel(project, c))
+    this.parts = buildParts(project, (c) => this.placedModel(project, c), this.shared)
     this.parts.visible = this.partsVisible
     this.content.add(this.parts)
     this.updateSelectionBox()
@@ -286,7 +287,7 @@ export class BoardScene {
       } else if (!holder) {
         const model = this.placedModel(project, c)
         if (!model) continue
-        this.parts.add(partModel(project, c, model))
+        this.parts.add(partModel(project, c, model, this.shared))
         changed = true
       }
     }
@@ -356,7 +357,7 @@ export class BoardScene {
     }
     if (!this.selectedId || !this.parts) return
     const holder = this.parts.children.find((c) => c.userData.componentId === this.selectedId)
-    const box = holder ? new THREE.Box3().setFromObject(holder) : this.courtyardBox(this.selectedId)
+    const box = holder ? partBox(holder) : this.courtyardBox(this.selectedId)
     if (!box || box.isEmpty()) return
     box.expandByScalar(0.25)
     this.selectionBox = new THREE.Box3Helper(box, new THREE.Color("#6f97ff"))

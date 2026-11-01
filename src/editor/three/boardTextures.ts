@@ -2,7 +2,7 @@ import { viaLayers } from "../../model/stack"
 import { viaTentedOn } from "../../model/viaRules"
 import * as THREE from "three"
 import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../../model/board"
-import { isNpth, maskSides, pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
+import { isNpth, maskSides, pcbSilk, type WorldPad } from "../../model/instances"
 import { maskMargin, padOpeningRings } from "../../model/padOpening"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
@@ -24,7 +24,7 @@ export function texelsPerMm(width: number, height: number): number {
 }
 
 export interface SideTextures {
-  /** sRGB colour: mask, copper seen through the mask, silkscreen, baked contact shadows. */
+  /** sRGB colour: mask, copper seen through the mask, silkscreen. */
   albedo: THREE.CanvasTexture
   /** Linear data: R = height (bump), G = roughness. */
   surface: THREE.CanvasTexture
@@ -297,24 +297,6 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   a.ctx.filter = blurPx(0.02)
   drawCopper(a.ctx, input, side)
   a.ctx.filter = "none"
-
-  // Contact shadows where bodies sit close to the board.
-  a.ctx.save()
-  a.ctx.filter = blurPx(0.55)
-  a.ctx.fillStyle = "rgba(0,0,0,0.32)"
-  a.ctx.beginPath()
-  for (const c of input.placed) {
-    if (c.pcb.side !== side) continue
-    const box = pcbCourtyard(c)
-    if (!box) continue
-    const bw = (box.maxX - box.minX) * 0.82
-    const bh = (box.maxY - box.minY) * 0.82
-    const cx = (box.minX + box.maxX) / 2
-    const cy = (box.minY + box.maxY) / 2
-    a.ctx.roundRect(cx - bw / 2, cy - bh / 2, bw, bh, Math.min(bw, bh) * 0.2)
-  }
-  a.ctx.fill()
-  a.ctx.restore()
 
   const silkSets = silkStrokes(input, side)
   const silkShapes = drawingsOn(input.project, side === "top" ? "F.SilkS" : "B.SilkS")

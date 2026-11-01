@@ -278,6 +278,13 @@ const viaPad = (it: Extract<CopperItem, { kind: "via" }>): WorldPad => ({ compon
 
 /** A box grown by `d` on every side. */
 const pad0 = (b: Bounds, d: number): Bounds => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
+/** A box as a path in Clipper's units, wound as an outline. */
+const boxPath = (b: Bounds): Path64 => [
+  { x: Math.floor(b.minX), y: Math.floor(b.minY) },
+  { x: Math.ceil(b.maxX), y: Math.floor(b.minY) },
+  { x: Math.ceil(b.maxX), y: Math.ceil(b.maxY) },
+  { x: Math.floor(b.minX), y: Math.ceil(b.maxY) },
+]
 
 /** The zone's outline with its holes, flattened, as paths that fill with the even-odd rule. */
 export function outlinePaths(project: Project, z: Zone): Paths64 {
@@ -803,8 +810,8 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         const g = Math.max(set.clearance, zoneSettings(project, other).clearance, prep.classes.pair(zoneNet, other.net || null)) + EXTRA
         // Only the part of their fill within the gap of this one's matters: it is cut to a box two gaps round this fill before it is grown, so a board-wide
         // pour is not grown whole for each small zone it outranks (a keyboard's 150 row zones under one ground pour took most of a minute). The cut's own
-        // edges grow by one gap, which stays outside this fill.
-        const near = crop(theirs, pad0(box, 2 * g * U))
+        // edges grow by one gap, which stays outside this fill. The cut is a boolean, not `crop`: Clipper's rectangle clip gets some unions' paths wrong.
+        const near = intersect(theirs, [boxPath(pad0(box, 2 * g * U))])
         if (near.length) zoneHoles.push(...inflate(near, g))
       }
     }

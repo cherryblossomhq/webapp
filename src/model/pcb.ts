@@ -1009,17 +1009,30 @@ export function analyzePcb(
 }
 
 const analyses = new WeakMap<Project, PcbAnalysis>()
+const givenFills = new WeakMap<Project, ZoneFill[]>()
+
+/**
+ * Give a copy of a project the project's pour fills, for its analysis to take rather than fill again: a copy an export writes from (the KiCad export's,
+ * with the rule areas' flags on its symbols, and each sheet's view of it) has the project's board. Its fills could be judged anew otherwise, and one
+ * zone that is not current refills every zone (a KiCad 5 board's export took 5 minutes, after its checks had taken 2 seconds on the project).
+ */
+export function useFillsOf(copy: Project, fills: ZoneFill[]): void {
+  if (!analyses.has(copy)) givenFills.set(copy, fills)
+}
 
 /** `analyzePcb` of the project as it is, kept for as long as the project object is (an export asks for it more than once, and a pour's fill is seconds). */
 export function analyzePcbOnce(project: Project, sch: SchematicConnectivity): PcbAnalysis {
   let made = analyses.get(project)
-  if (!made) analyses.set(project, (made = analyzePcb(project, sch)))
+  if (!made) {
+    const fills = givenFills.get(project)
+    analyses.set(project, (made = analyzePcb(project, sch, fills ? { fills } : {})))
+  }
   return made
 }
 
-/** The pour fills of the project: those of its analysis when that is made already, else made without the rest of an analysis. */
+/** The pour fills of the project: those of its analysis when that is made already, or given it (`useFillsOf`), else made without the rest of an analysis. */
 export function zoneFillsOf(project: Project, sch: () => SchematicConnectivity): ZoneFill[] {
-  return (analyses.get(project) ?? analyzePcb(project, sch(), { fillsOnly: true })).zoneFills
+  return (analyses.get(project)?.zoneFills ?? givenFills.get(project) ?? analyzePcb(project, sch(), { fillsOnly: true }).zoneFills)
 }
 
 // ---------- Manufacturability ----------

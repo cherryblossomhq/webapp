@@ -85,6 +85,18 @@ function expectRoundTrip(original: Project) {
   return { elements, back }
 }
 
+describe("projectToCircuitJson without the copper", () => {
+  it("leaves the traces, vias and pours out, and the rest as it is: the KiCad export writes a board from KiCad's files itself", () => {
+    const project = EXAMPLES.find((e) => e.project.traces.length && e.project.vias.length)!.project
+    const all = projectToCircuitJson(project).elements
+    const noCopper = projectToCircuitJson(project, { copper: false }).elements
+    const copper = (e: { type: string }) => e.type === "pcb_trace" || e.type === "pcb_via" || e.type === "pcb_copper_pour"
+    expect(all.some(copper)).toBe(true)
+    expect(noCopper.some(copper)).toBe(false)
+    expect(noCopper).toEqual(all.filter((e) => !copper(e)))
+  })
+})
+
 describe("projectToCircuitJson", () => {
   describe.each(EXAMPLES.map((e) => [e.name, e.project] as const))("the %s example", (_name, project) => {
     const { elements } = projectToCircuitJson(project)

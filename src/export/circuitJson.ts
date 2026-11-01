@@ -39,7 +39,7 @@ import { findPart } from "../model/library"
 import { holeCentre, padOutline } from "../model/padDistance"
 import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
-import { analyzePcbOnce } from "../model/pcb"
+import { analyzePcbOnce, type PcbAnalysis } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
 import { withPartZones } from "../model/partZones"
 import { isOtherZone, kicadWritesZones, zoneLayers } from "../model/zones"
@@ -684,7 +684,12 @@ function drawingElements2(item: SchematicDrawing, ids: Ids, drawn: SchematicUse,
  * Project to Circuit JSON, with notes on what it could not carry. A project with sheets is flattened first (`flatten.ts`): Circuit
  * JSON has no sheets, and says so in the notes. A view of one sheet is exported as the sheet it is.
  */
-export function projectToCircuitJson(source: Project, options: { nameAllNets?: boolean; forKicad?: boolean; keepVariants?: boolean; extraUnits?: ExtraUnit[] } = {}): CircuitJsonExport {
+/**
+ * `copper: false` leaves the board's copper (traces, vias, pours) out, and with it the analysis of the board it is read from: the KiCad export writes the
+ * board of a project from KiCad's files itself, and a sheet's schematic, so it has no use for the converter's copper (a 19-sheet KiCad 5 board spent a
+ * minute of its export analysing copies of its board for it).
+ */
+export function projectToCircuitJson(source: Project, options: { nameAllNets?: boolean; forKicad?: boolean; keepVariants?: boolean; extraUnits?: ExtraUnit[]; copper?: boolean } = {}): CircuitJsonExport {
   // S8, S9: a rule area's flags are the flags of the parts it touches, and Circuit JSON has no variants: the symbols are written as the active variant, the sheet symbols
   // and the areas make them. (`keepVariants`: the KiCad export that writes the variants itself, so only the areas' flags are put on the symbols.)
   const project = options.keepVariants ? withRuleAreaFlagsOnly(source) : withRuleAreaFlags(source)
@@ -698,7 +703,7 @@ export function projectToCircuitJson(source: Project, options: { nameAllNets?: b
   return { ...out, notes: [...flat.notes, ...out.notes, ...variantNotes] }
 }
 
-function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boolean; forKicad?: boolean; extraUnits?: ExtraUnit[] } = {}): CircuitJsonExport {
+function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boolean; forKicad?: boolean; extraUnits?: ExtraUnit[]; copper?: boolean } = {}): CircuitJsonExport {
   registerProjectParts(project)
   const notes: string[] = []
   const elements: AnyCircuitElement[] = []
@@ -713,7 +718,10 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   const projectFootprints = new Set((project.footprints ?? []).map((f) => f.name))
 
   const sch = computeConnectivity(project)
-  const pcb = analyzePcbOnce(project, sch)
+  // The board's analysis, made when the copper is written.
+  let analysis: PcbAnalysis | undefined
+  const pcb = () => (analysis ??= analyzePcbOnce(project, sch))
+  const copper = options.copper !== false
   const designators = getDesignators(project)
 
   elements.push({ type: "source_project_metadata", name: project.name, software_used_string: "Cherry Blossom", created_at: new Date(project.createdAt).toISOString() })
@@ -977,13 +985,13 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   const layerNotes: string[] = []
   let flattenedArcs = 0
   let beyond = 0
-  for (const t of project.traces) {
+  for (const t of copper ? project.traces : []) {
     const layer = cjLayer(t.layer)
     if (!layer) {
       beyond++
       continue
     }
-    const netId = pcb.traceNet.get(t.id)
+    const netId = pcb().traceNet.get(t.id)
     // X4: Circuit JSON has no arc in a route, so an arc track is the points of its curve, within 0.0002 mm.
     const points = isArcTrace(t) ? arcPolyline(t.points) : t.points
     if (isArcTrace(t)) flattenedArcs++
@@ -995,8 +1003,8 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
     }
     elements.push(trace)
   }
-  for (const v of project.vias) {
-    const netId = pcb.viaNet.get(v.id)
+  for (const v of copper ? project.vias : []) {
+    const netId = pcb().viaNet.get(v.id)
     const span = viaLayers(project.board, v)
     const via: PcbVia = {
       type: "pcb_via",
@@ -1020,7 +1028,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
   const emptyZones: string[] = []
   // The KiCad export writes the zones of a project that has polygon zones itself, so they are not in the circuit it converts.
   const zonesWrittenByKicadExport = options.forKicad === true && kicadWritesZones(project)
-  for (const fill of zonesWrittenByKicadExport ? [] : pcb.zoneFills) {
+  for (const fill of zonesWrittenByKicadExport || !copper ? [] : pcb().zoneFills) {
     const netId = fill.netId ?? sch.nets.find((n) => n.name === fill.netName)?.id
     const sourceNetId = netId ? netIds.get(netId) : undefined
     if (!fill.polygons.length) {

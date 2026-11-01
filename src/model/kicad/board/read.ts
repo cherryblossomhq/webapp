@@ -950,6 +950,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
           break
         case "format":
           for (const f of n.slice(1)) {
+            // KiCad 6 and 7 write a bare `suppress_zeroes`, which KiCad's parser takes as the flag set (`parseMaybeAbsentBool`), as for `keep_text_aligned` below.
+            if (f === "suppress_zeroes") d.zeros = true
             if (!Array.isArray(f)) continue
             if (f[0] === "prefix") d.prefix = strAt(f, 1) ?? ""
             else if (f[0] === "suffix") d.suffix = strAt(f, 1) ?? ""

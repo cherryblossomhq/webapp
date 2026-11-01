@@ -295,6 +295,8 @@ export const ATOMS = [
   atoms("(?:.*>)?(?:start|end)_shape", ["arrow", "arrow_open", "circle", "square", "diamond", "dot", "round"]),
   atoms("(?:.*>)?chamfer", ["top_left", "top_right", "bottom_left", "bottom_right"]),
   atoms("dimension>style|footprint>dimension>style", ["keep_text_aligned"]),
+  // KiCad 6 and 7 wrote `suppress_zeroes` bare in a dimension's format, the flag set (`parseMaybeAbsentBool`)
+  atoms("dimension>format|footprint>dimension>format", ["suppress_zeroes"]),
   // KiCad 6 and 7 wrote `locked` first in a dimension, which the parser frees ("Free 'locked' token from 6.0/7.0 formats")
   atoms("dimension|footprint>dimension", ["locked"]),
   atoms("barcode>type", ["qr", "qrcode", "datamatrix", "data_matrix", "code39", "code128", "microqr", "micro_qr"]),

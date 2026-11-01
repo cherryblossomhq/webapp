@@ -171,6 +171,8 @@ export interface GraphicsContext {
   badNets: string[]
   /** Layers the footprint keeps private (KiCad shows and plots nothing on them). */
   privateLayers?: string[]
+  /** Where each target mark drawn on Edge.Cuts was, which the board keeps on Dwgs.User instead (`convertTarget`). */
+  edgeTargets?: string[]
   /** A label for messages: where the shape is. */
   where: string
 }
@@ -252,11 +254,16 @@ export function convertShape(s: KicadShape, cx: GraphicsContext): BoardShape[] {
 
 /** A `target` mark as shapes: a circle, and a cross or an X through it, as KiCad plots one (`PlotPcbTarget`). */
 export function convertTarget(t: KicadBoard["targets"][number], cx: GraphicsContext): BoardShape[] {
-  const r = resolveLayer(cx.board, t.layer)
-  // The board's outline is made of the shapes on Edge.Cuts, and a mark is no part of it: a target there has nowhere to be kept.
+  let r = resolveLayer(cx.board, t.layer)
+  // KiCad leaves a target out of the board's outline (it is no shape) and plots it on Edge.Cuts. The editor reads every drawing on Edge.Cuts as the
+  // outline, so a mark there is kept beside it, on Dwgs.User, and the import says where (fabs and labs draw alignment marks on the edge layer).
   if (r.kind === "edge") {
-    cx.lose(`a target mark on ${t.layer} at (${t.at.x}, ${t.at.y}) (an alignment mark drawn on the board outline's layer, which the editor reads as the outline)`)
-    return []
+    if (!cx.edgeTargets) {
+      cx.lose(`a target mark on ${t.layer} at (${t.at.x}, ${t.at.y}) (an alignment mark drawn on the board outline's layer, which the editor reads as the outline)`)
+      return []
+    }
+    cx.edgeTargets.push(`(${t.at.x}, ${t.at.y})`)
+    r = { kind: "layer", name: "Dwgs.User" }
   }
   if (r.kind === "unknown" || r.kind === "inner") {
     cx.lose(r.kind === "inner" ? `a target on ${t.layer}, a copper layer the board's layer table does not list` : `a target on the layer "${t.layer}", which is not one of KiCad's`)

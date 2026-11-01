@@ -714,7 +714,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   for (const what of zoneResult.lossy) lose(what)
 
   // ---------- drawings on the board ----------
-  const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, where: "the board" }
+  const edgeTargets: string[] = []
+  const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, edgeTargets, where: "the board" }
   const graphics: BoardGraphic[] = []
   const drawn = (node: List, made: ReturnType<typeof convertShape>) => {
     const ids = made.map((g) => {
@@ -726,6 +727,15 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
   for (const s of board.shapes) drawn(s.node, convertShape(s, graphicsCx))
   for (const t of board.targets) drawn(t.node, convertTarget(t, graphicsCx))
+  if (edgeTargets.length) {
+    report.entries.push({
+      code: "target-off-edge",
+      severity: "note",
+      object: `${edgeTargets.length} alignment mark${edgeTargets.length > 1 ? "s" : ""} on Edge.Cuts (at ${edgeTargets.slice(0, 5).join(", ")}${edgeTargets.length > 5 ? ", ..." : ""})`,
+      why: "KiCad leaves a target mark out of the board's outline and plots it on the edge layer. The editor reads every drawing on Edge.Cuts as the outline, so the marks are kept on Dwgs.User, where they are drawn but not cut: the Edge.Cuts Gerber does not have them.",
+      count: edgeTargets.length,
+    })
+  }
 
   if (degenerate.length) {
     report.entries.push({ code: "polygon-too-small", severity: "not-brought", object: `${degenerate.length} polygon${degenerate.length > 1 ? "s" : ""} with fewer than three corners (${[...new Set(degenerate)].slice(0, 5).join(", ")}${new Set(degenerate).size > 5 ? ", ..." : ""})`, why: "KiCad draws and plots nothing for a polygon with fewer than three corners, so none was brought in.", count: degenerate.length })

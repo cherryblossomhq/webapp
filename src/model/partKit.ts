@@ -21,7 +21,6 @@ export function header(n: number, female = false): PartDef {
     footprints: female ? [`pinrow${n}_female`] : [`pinrow${n}`, `pin_header_1x${n}`],
     defaultProps: {},
     keywords: female ? ["connector", "socket", "female header", "receptacle", "dupont"] : ["connector", "header", "pins", "dupont"],
-    body3d: { height: female ? 8.5 : 2.5, color: "#111111" },
   }
 }
 
@@ -41,7 +40,6 @@ export function dualHeader(n: number, extra: { name?: string; description?: stri
     footprints: [`pinrow${count}_rows2`],
     defaultProps: {},
     keywords: ["connector", "header", "dual row", "box header", "idc", ...(extra.keywords ?? [])],
-    body3d: { height: 2.5, color: "#111111" },
   }
 }
 
@@ -59,7 +57,6 @@ export interface ConnectorSpec {
   mpn?: string
   keywords?: string[]
   padAlias?: Record<string, string>
-  body3d?: PartDef["body3d"]
 }
 
 /** A connector: its contacts down the right of a box, so wires run off into the circuit. */
@@ -82,7 +79,6 @@ export function connector(spec: ConnectorSpec): PartDef {
     keywords: spec.keywords,
     padAlias: spec.padAlias,
     mpn: spec.mpn,
-    body3d: spec.body3d,
   }
 }
 

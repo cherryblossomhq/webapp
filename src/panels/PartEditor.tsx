@@ -5,6 +5,7 @@ import { PCB } from "../editor/theme"
 import { buildCustomPart, CUSTOM_CATEGORIES, CUSTOM_SYMBOLS, customPartProblems } from "../model/customParts"
 import { getFootprint, isValidFootprint, registerProjectFootprints } from "../model/footprints"
 import { CATEGORIES } from "../model/library"
+import { libraryModel } from "../model/libraryModels"
 import { modelAssignment } from "../model/models3d"
 import { partSourceLine } from "../model/partSource"
 import { hasFieldPlaces, symbolOf } from "../model/symbolDrawing"
@@ -349,6 +350,7 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
               <ModelTab
                 footprint={normalized.footprint}
                 model={model}
+                builtIn={libraryModel(spec.id, normalized.footprint)}
                 onChange={chooseModel}
                 lcsc={lcscNumber(normalized.props.lcsc, spec.source?.supplier?.lcsc)}
                 searchText={normalized.props.mpn || normalized.name}
@@ -658,6 +660,7 @@ function FootprintTab({ form, set, footprints, drawn, modelLost }: { form: Form;
 function ModelTab({
   footprint,
   model,
+  builtIn,
   onChange,
   lcsc,
   searchText,
@@ -666,6 +669,7 @@ function ModelTab({
 }: {
   footprint: string
   model: Model3D | null
+  builtIn: Model3D | null
   onChange: (model: Model3D | null) => void
   lcsc: string | null
   searchText: string
@@ -685,7 +689,7 @@ function ModelTab({
         </p>
       )}
       <div className="space-y-2.5">
-        <ModelControls model={model} footprint={footprint} lcsc={lcsc} searchText={searchText} onChange={onChange} />
+        <ModelControls model={model} builtIn={builtIn} footprint={footprint} lcsc={lcsc} searchText={searchText} onChange={onChange} />
       </div>
       <p className="text-[11.5px] text-ink-3">
         Every component of this part on {footprint} is drawn with it.

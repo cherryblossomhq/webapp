@@ -4,16 +4,12 @@ import * as THREE from "three"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
 import { boardColors, boardFinish, finishMetal, mountingHoles } from "../../model/board"
-import { getFootprint } from "../../model/footprints"
-import { findPart } from "../../model/library"
-import { packageOf } from "../../model/partPackage"
 import { isNpth, pcbPads, slotEnds, type WorldPad } from "../../model/instances"
 import { outlineGeometry, pointInRing } from "../../model/outline"
 import { holeCentre } from "../../model/padDistance"
 import { polygonKit, withMaxError, type ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
 import { buildBoardTextures, type BoardTextureSet } from "./boardTextures"
-import { buildComponentModel, type ModelMaterials } from "./models"
 import { onBoard } from "../../model/partFlags"
 
 // Finished copper plus surface finish stands this far proud of the mask (mm).
@@ -385,31 +381,6 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
 
 // ---------- Parts ----------
 
-/** A component's generated body: built from its part and footprint alone, so it is there at once. */
-export function generatedModel(project: Project, c: ComponentInstance, models: ModelMaterials): THREE.Group | null {
-  const part = findPart(c.partId)
-  if (!part) return null
-  const fp = getFootprint(c.footprint)
-  if (!fp.pads.length) return null
-  try {
-    return buildComponentModel({
-      component: c,
-      part,
-      footprint: c.footprint,
-      package: packageOf(fp, project.parts?.find((s) => s.id === c.partId)),
-      // Non-plated holes get no pin or solder joint; models that care see them as holes.
-      pads: fp.pads.filter((p) => p.plated !== false),
-      holes: fp.pads.filter((p) => p.plated === false),
-      courtyard: fp.courtyard,
-      boardThickness: project.board.thickness,
-      materials: models,
-    })
-  } catch (err) {
-    console.warn(`3D model for ${c.ref} failed`, err)
-    return null
-  }
-}
-
 /** Where a component's model goes: rotated about z, and bottom-side parts flipped about local y onto the bottom face. */
 export function partHolder(project: Project, c: ComponentInstance): { holder: THREE.Group; content: THREE.Group } {
   const t = project.board.thickness
@@ -429,34 +400,25 @@ export function partHolder(project: Project, c: ComponentInstance): { holder: TH
   return { holder, content }
 }
 
+/** Hold one component's model where it goes on the board. */
+export function partModel(project: Project, c: ComponentInstance, model: THREE.Group): THREE.Group {
+  const { holder, content } = partHolder(project, c)
+  content.add(model)
+  return holder
+}
+
 /**
- * Place each component's model. `real` gives a part's real model file when it has one and it is
- * read; every other part gets its generated body. `userData.real` says which a part has.
+ * Place each component's model: `model` gives a part's model file when it has one and it is read.
+ * A part with none has no holder, and the board shows only its pads, as KiCad's 3D viewer does.
  */
-export function buildParts(project: Project, models: ModelMaterials, real?: (c: ComponentInstance) => THREE.Group | null): THREE.Group {
+export function buildParts(project: Project, model: (c: ComponentInstance) => THREE.Group | null): THREE.Group {
   const parts = new THREE.Group()
   parts.name = "parts"
   for (const c of placedComponents(project)) {
-    const file = real?.(c) ?? null
-    const model = file ?? generatedModel(project, c, models)
-    if (!model) continue
-    const { holder, content } = partHolder(project, c)
-    holder.userData.real = !!file
-    content.add(model)
-    parts.add(holder)
+    const m = model(c)
+    if (m) parts.add(partModel(project, c, m))
   }
   return parts
-}
-
-/** Put a real model in place of a part's generated body (or the reverse), keeping where it is. */
-export function swapPartModel(holder: THREE.Object3D, model: THREE.Group, real: boolean) {
-  const content = holder.children.find((o) => o.userData.flip) ?? holder
-  for (const old of [...content.children]) {
-    content.remove(old)
-    disposeGeometries(old)
-  }
-  content.add(model)
-  holder.userData.real = real
 }
 
 /** Dispose geometries under a group; materials are cached and owned elsewhere, and real model files' meshes are shared. */

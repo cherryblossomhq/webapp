@@ -307,7 +307,7 @@ const LAND_SCHEMA: JsonSchema = {
       properties: { x1: mmField(), y1: mmField(), x2: mmField(), y2: mmField() },
     },
     courtyard_margin: mmField("Default 0.25"),
-    package: { type: "string", description: "e.g. TO-220-3, for the 3D body" },
+    package: { type: "string", description: "e.g. TO-220-3: the land is named after it" },
     kicad_mod: { type: "string", description: "A .kicad_mod file's text, e.g. a vendor's download the user gave you" },
   },
 }
@@ -728,7 +728,7 @@ From memory (no supplier record):
     // The supplier's 3D model comes with its land: the 3D view and the STEP export draw the part with it.
     const model3d = prepared?.kind === "supplier" ? supplierModelOn(prepared.part, spec.footprint) : storedModel
     // A part made now gets its model; one the project already has keeps what the user chose for it,
-    // the generated body included, unless it was a memory part that only now has a record behind it.
+    // no model included, unless it was a memory part that only now has a record behind it.
     const withModel = (p: Project) => (model3d && !modelAssignment(p, spec.id, spec.footprint) ? setModel(p, spec.id, spec.footprint, model3d) : p)
     const replaces = typeof input.replaces === "string" ? input.replaces.trim() : ""
     if (replaces && !project.parts?.some((s) => s.id === replaces)) {

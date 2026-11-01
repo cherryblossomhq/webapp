@@ -19,7 +19,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { resistance: "10k" },
     valueProp: "resistance",
     keywords: ["res", "ohm", "pullup", "pulldown"],
-    body3d: { height: 0.45, color: "#1f2328" },
   },
   {
     id: "capacitor",
@@ -33,7 +32,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { capacitance: "100nF" },
     valueProp: "capacitance",
     keywords: ["cap", "decoupling", "mlcc", "farad"],
-    body3d: { height: 0.8, color: "#b48a5a" },
   },
   {
     id: "capacitor_polarized",
@@ -47,7 +45,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { capacitance: "10uF", voltage: "16V" },
     valueProp: "capacitance",
     keywords: ["cap", "bulk", "polarized", "electrolytic"],
-    body3d: { height: 11, color: "#1d3a6e" },
   },
   {
     id: "capacitor_tantalum",
@@ -61,7 +58,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { capacitance: "10uF", voltage: "25V" },
     valueProp: "capacitance",
     keywords: ["cap", "tantalum", "bulk", "polarized", "3528"],
-    body3d: { height: 1.9, color: "#d9a43a" },
   },
   {
     id: "inductor",
@@ -75,7 +71,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { inductance: "10uH" },
     valueProp: "inductance",
     keywords: ["coil", "choke", "henry"],
-    body3d: { height: 1, color: "#3a3f45" },
   },
   {
     id: "potentiometer",
@@ -89,13 +84,12 @@ export const PARTS: PartDef[] = [
     defaultProps: { resistance: "10k" },
     valueProp: "resistance",
     keywords: ["pot", "trimmer", "variable resistor"],
-    body3d: { height: 5, color: "#2b5fa8" },
   },
   {
     id: "crystal",
     name: "Crystal",
     category: "Passives",
-    description: "Quartz crystal, HC-49 package",
+    description: "Quartz crystal, HC-49/S (low-profile HC-49) package",
     refPrefix: "Y",
     pins: passive(["1", "1"], ["2", "2"]),
     symbol: discreteSymbol("crystal"),
@@ -103,7 +97,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { frequency: "16MHz" },
     valueProp: "frequency",
     keywords: ["xtal", "oscillator", "clock"],
-    body3d: { height: 3.5, color: "#c9ccd1" },
   },
 
   // ---------- Diodes ----------
@@ -122,7 +115,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "1N4148W" },
     valueProp: "mpn",
     keywords: ["rectifier", "1n4148"],
-    body3d: { height: 1.1, color: "#202024" },
   },
   {
     id: "schottky",
@@ -139,7 +131,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "SS34" },
     valueProp: "mpn",
     keywords: ["reverse polarity", "ss34", "bat54"],
-    body3d: { height: 2.2, color: "#202024" },
   },
   {
     id: "zener",
@@ -156,7 +147,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { voltage: "5.1V" },
     valueProp: "voltage",
     keywords: ["clamp", "reference", "tvs"],
-    body3d: { height: 1.1, color: "#202024" },
   },
   {
     id: "led",
@@ -173,7 +163,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { color: "red" },
     valueProp: "color",
     keywords: ["light", "indicator", "status"],
-    body3d: { height: 0.8, color: "#ef4444" },
   },
 
   // ---------- Transistors (SOT-23 pinout: BJT 1=B 2=E 3=C, MOSFET 1=G 2=S 3=D) ----------
@@ -193,7 +182,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "MMBT3904" },
     valueProp: "mpn",
     keywords: ["bjt", "2n3904", "switch"],
-    body3d: { height: 1, color: "#202024" },
   },
   {
     id: "pnp",
@@ -211,7 +199,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "MMBT3906" },
     valueProp: "mpn",
     keywords: ["bjt", "2n3906", "high side"],
-    body3d: { height: 1, color: "#202024" },
   },
   {
     id: "nmos",
@@ -233,7 +220,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "2N7002" },
     valueProp: "mpn",
     keywords: ["fet", "low side", "switch", "ao3400"],
-    body3d: { height: 1, color: "#202024" },
   },
   {
     id: "pmos",
@@ -255,7 +241,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { mpn: "AO3401" },
     valueProp: "mpn",
     keywords: ["fet", "high side", "load switch", "reverse polarity"],
-    body3d: { height: 1, color: "#202024" },
   },
 
   // ---------- Power ----------
@@ -302,7 +287,6 @@ export const PARTS: PartDef[] = [
     defaultProps: { voltage: "3.7V" },
     valueProp: "voltage",
     keywords: ["lipo", "cell", "jst"],
-    body3d: { height: 6, color: "#f4f4f2" },
   },
   {
     id: "coin_cell_cr2032",
@@ -320,7 +304,6 @@ export const PARTS: PartDef[] = [
     valueProp: "voltage",
     padAlias: { "3": "1" },
     keywords: ["coin cell", "button cell", "cr2032", "battery holder", "rtc backup", "lithium"],
-    body3d: { height: 4.2, color: "#c4c9cf" },
   },
 
   // ---------- Connectors ----------
@@ -339,7 +322,6 @@ export const PARTS: PartDef[] = [
     defaultProps: {},
     padAlias: { "2": "1", "3": "2", "4": "2" },
     keywords: ["switch", "tactile", "button", "reset"],
-    body3d: { height: 3.5, color: "#2b2b2e" },
   },
   {
     id: "pushbutton_smd",
@@ -353,7 +335,6 @@ export const PARTS: PartDef[] = [
     defaultProps: {},
     padAlias: { "2": "1", "3": "2", "4": "2" },
     keywords: ["switch", "tactile", "button", "smd", "tl3342"],
-    body3d: { height: 2.5, color: "#2b2b2e" },
   },
   {
     id: "slide_switch",
@@ -366,7 +347,6 @@ export const PARTS: PartDef[] = [
     footprints: ["eg1218"],
     defaultProps: {},
     keywords: ["switch", "power switch", "on off", "slide", "spdt", "eg1218"],
-    body3d: { height: 5.5, color: "#1d1d20" },
   },
   {
     id: "relay_srd05",
@@ -391,7 +371,6 @@ export const PARTS: PartDef[] = [
     valueProp: "mpn",
     mpn: "SRD-05VDC-SL-C",
     keywords: ["relay", "songle", "spdt", "coil", "mains", "switch"],
-    body3d: { height: 15.3, color: "#2457b8" },
   },
   {
     id: "buzzer",
@@ -407,7 +386,6 @@ export const PARTS: PartDef[] = [
     footprints: ["buzzer_12mm"],
     defaultProps: {},
     keywords: ["buzzer", "beeper", "piezo", "speaker", "sound", "alarm"],
-    body3d: { height: 9.5, color: "#151517" },
   },
 ]
 

@@ -100,12 +100,6 @@ export const DEFAULT_REF_PREFIX: Record<PartCategory, string> = {
   Symbols: "#",
 }
 
-const BODY: Partial<Record<PartCategory, PartDef["body3d"]>> = {
-  Modules: { height: 3.2, color: "#1f3b2c" },
-  Connectors: { height: 5, color: "#111111" },
-  Electromechanical: { height: 3.5, color: "#2b2b2e" },
-}
-
 /** Map library port labels to pin numbers; an error names the pins a polarized symbol needs. */
 function symbolPinMap(kind: SymbolKind, pins: PinDef[]): Record<string, string> | string {
   if (pins.length !== kind.ports.length) return `needs exactly ${kind.ports.length} pins, got ${pins.length}`
@@ -247,7 +241,6 @@ function buildDrawnPart(spec: CustomPartSpec, drawing: SymbolDrawing): PartDef {
     keywords: spec.keywords,
     padAlias: spec.padAlias,
     mpn: spec.props.mpn,
-    body3d: BODY[spec.category] ?? { height: 1.4, color: "#1c1c1f" },
     custom: true,
     units: d.units,
     ...(d.jumpers ? { jumpers: d.jumpers } : {}),
@@ -280,7 +273,6 @@ export function buildCustomPart(spec: CustomPartSpec, symbols?: Drawings): PartD
     keywords: spec.keywords,
     padAlias: spec.padAlias,
     mpn: spec.props.mpn,
-    body3d: BODY[spec.category] ?? { height: 1.4, color: "#1c1c1f" },
     custom: true,
   }
 }

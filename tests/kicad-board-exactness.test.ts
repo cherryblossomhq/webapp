@@ -543,7 +543,7 @@ describe("B6: every model is kept or named, never dropped", () => {
     const r = importKicadBoard(board({ body: [fp("D1", [m(SMA, "hide"), m(SMB)])] }), { built: ALL })
     expect(r.status === "imported" && r.project.models![0].model.id).toBe("10.0.7/Diode_SMD.3dshapes/D_SMB.step")
   })
-  it("M3: a name the parts index cannot serve is named with its path, not drawn as a generated body in silence", () => {
+  it("M3: a name the parts index cannot serve is named with its path, not left out in silence", () => {
     expect(stockModelId("${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603.wrl")).toBeNull()
     expect(stockModelId("Capacitors_SMD.3dshapes/C_0603.wrl")).toBeNull()
     expect(stockModelId("${KISYS3DMOD}/Capacitor_SMD.3dshapes/C_0603_1608Metric.wrl")).toBe("10.0.7/Capacitor_SMD.3dshapes/C_0603_1608Metric.step")

@@ -1,8 +1,9 @@
+import { libraryModel } from "./libraryModels"
 import { KICAD_MODEL_ID } from "./supplier/kicadModel"
 import type { PartIndexKicadModel, SupplierModel3D } from "@cherryblossom/api-contract"
 import type { ComponentInstance, Model3D, Model3DFormat, ModelAssignment, Project } from "./types"
 
-// Real 3D models in the document: which file a part is drawn with on a footprint. The files
+// 3D models in the document: which file a part is drawn with on a footprint. The files
 // themselves are the host's (`store/modelFiles.ts`, `SupplierPartsSource.model`); the project
 // names them and says where they sit on the footprint.
 
@@ -39,15 +40,19 @@ export function defaultModelScale(format: Model3DFormat): number {
   return 1
 }
 
-/** The model of a part on a footprint, or null for the generated body. */
+/** The model the project gives a part on a footprint, or null when it gives none. */
 export function modelAssignment(project: Pick<Project, "models">, part: string, footprint: string): Model3D | null {
   return project.models?.find((m) => m.part === part && m.footprint === footprint)?.model ?? null
 }
 
+/**
+ * The model a component is drawn with: the project's for its part on its footprint, else the
+ * built-in one (`libraryModels.ts`), else null, and the 3D view and the STEP export draw only its pads.
+ */
 export const componentModel = (project: Pick<Project, "models">, c: Pick<ComponentInstance, "partId" | "footprint">) =>
-  modelAssignment(project, c.partId, c.footprint)
+  modelAssignment(project, c.partId, c.footprint) ?? libraryModel(c.partId, c.footprint)
 
-/** Give a part on a footprint a model, or take it away (`null`) to draw the generated body. */
+/** Give a part on a footprint a model, or take it away (`null`): it is drawn with its built-in model then, if it has one. */
 export function setModel(project: Project, part: string, footprint: string, model: Model3D | null): Project {
   const rest = (project.models ?? []).filter((m) => !(m.part === part && m.footprint === footprint))
   const models = model ? [...rest, { part, footprint, model }] : rest

@@ -42,7 +42,7 @@ export interface DrawnLandInput {
   /** The body's outline, two opposite corners: drawn on the silkscreen and kept inside the courtyard. */
   body?: { x1: number; y1: number; x2: number; y2: number }
   courtyard_margin?: number
-  /** The package's name (`TO-220-3`, `SOIC-8`): the 3D view draws the body it names. */
+  /** The package's name (`TO-220-3`, `SOIC-8`): the land is named after its family. */
   package?: string
 }
 

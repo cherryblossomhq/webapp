@@ -15,8 +15,8 @@ export interface PartsIndexSource {
   /** One part whole by its index id; null when it isn't stored whole. Failures throw as `part` does. */
   part(id: string, signal?: AbortSignal): Promise<PartIndexPart | null>
   /**
-   * A KiCad 3D model's STEP file, by `PartIndexKicadModel.id`. Absent in a host that can't: KiCad
-   * parts are then drawn with their generated bodies. Failures throw as `part` does.
+   * A KiCad 3D model's STEP file, by `PartIndexKicadModel.id`. Absent in a host that can't: parts
+   * with a KiCad model, the built-in ones included, then show only their pads. Failures throw as `part` does.
    */
   model?(id: string, signal?: AbortSignal): Promise<ArrayBuffer>
 }
@@ -38,8 +38,7 @@ export interface SupplierPartsSource {
   /**
    * The supplier's 3D model of a part, by the model id a part's record names
    * (`SupplierPart.model3d.id`): `obj`, a mesh, to draw, and `step`, exact, to export. Absent in a
-   * host that can't: parts are then drawn with their generated bodies. Failures throw as `part`
-   * does.
+   * host that can't: those parts then show only their pads. Failures throw as `part` does.
    */
   model?(id: string, format: "obj" | "step", signal?: AbortSignal): Promise<ArrayBuffer>
   /** The parts index; a host without one leaves it out, and the library panel searches only the built-in library. */

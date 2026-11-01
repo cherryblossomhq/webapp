@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowUpFromLine, Box, Boxes, Camera, FileBox, Grid3x3, House, LoaderCircle } from "lucide-react"
+import { ArrowDownToLine, ArrowUpFromLine, Box, Camera, FileBox, Grid3x3, House, LoaderCircle } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { downloadText, projectFileName } from "../../export/bundle"
 import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, SURFACE_FINISHES } from "../../model/board"
@@ -15,6 +15,16 @@ import { placedComponents } from "./buildBoard"
 const REBUILD_DEBOUNCE_MS = 120
 const shell =
   "pointer-events-auto flex items-center gap-0.5 rounded-[10px] border border-line bg-surface/95 p-1 shadow-float backdrop-blur"
+
+const MISSING_LISTED = 6
+
+/** "No 3D model: J1, SW1 and U2", listing a few. */
+function missingText(refs: string[]): string {
+  const listed = refs.slice(0, MISSING_LISTED)
+  const more = refs.length - listed.length
+  const names = more > 0 ? `${listed.join(", ")} and ${more} more` : listed.length > 1 ? `${listed.slice(0, -1).join(", ")} and ${listed.at(-1)}` : listed[0]
+  return `No 3D model: ${names}`
+}
 
 function fileName(name: string) {
   const base = name.trim().replace(/[^\w\- ]+/g, "").replace(/\s+/g, "-").toLowerCase() || "board"
@@ -33,7 +43,6 @@ export function Board3D() {
   const [showGrid, setShowGrid] = useState(true)
   const [finishOpen, setFinishOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const realModels = useUi((s) => s.settings.realModels)
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null)
   const [stepNotice, setStepNotice] = useState<{ text: string; notes: string[] } | null>(null)
 
@@ -51,7 +60,6 @@ export function Board3D() {
     if (process.env.NODE_ENV === "development") Object.assign(window, { __board3d: scene })
     scene.onPickPart = (id) => uiApi().select(id ? [`c:${id}`] : [])
     scene.onModelStatus = setModelStatus
-    scene.setRealModels(useUi.getState().settings.realModels)
     const p = useProjectStore.getState().project
     scene.setProject(p, p ? getLiveZoneFills(p) : [])
     return () => {
@@ -74,7 +82,6 @@ export function Board3D() {
   }, [project, fillTick])
 
   useEffect(() => sceneRef.current?.setPartsVisible(showParts), [showParts])
-  useEffect(() => sceneRef.current?.setRealModels(realModels), [realModels])
   useEffect(() => sceneRef.current?.setGridVisible(showGrid), [showGrid])
   useEffect(() => {
     const comps = selectionIds(selection, "c")
@@ -160,14 +167,6 @@ export function Board3D() {
               <IconButton label={showParts ? "Hide components" : "Show components"} active={showParts} onClick={() => setShowParts((v) => !v)}>
                 <Box size={16} />
               </IconButton>
-              <IconButton
-                label={realModels ? "Draw generated bodies only" : "Draw real 3D models"}
-                active={realModels}
-                disabled={!showParts}
-                onClick={() => uiApi().updateSettings({ realModels: !realModels })}
-              >
-                <Boxes size={16} />
-              </IconButton>
               <IconButton label={showGrid ? "Hide grid" : "Show grid"} active={showGrid} onClick={() => setShowGrid((v) => !v)}>
                 <Grid3x3 size={16} />
               </IconButton>
@@ -233,8 +232,8 @@ export function Board3D() {
 
           <div ref={cubeRef} className="absolute right-3 top-3 z-10 h-[104px] w-[104px]" aria-label="View cube: click a face, edge or corner to look from there" />
 
-          {showParts && modelStatus && (modelStatus.loading > 0 || modelStatus.failed.length > 0) && (
-            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">
+          {showParts && modelStatus && (modelStatus.loading > 0 || modelStatus.failed.length > 0 || modelStatus.missing.length > 0) && (
+            <div className="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">
               {modelStatus.loading > 0 ? (
                 <>
                   <LoaderCircle size={13} className="animate-spin" />
@@ -242,17 +241,21 @@ export function Board3D() {
                     Loading 3D models: {modelStatus.total - modelStatus.loading} of {modelStatus.total}
                   </span>
                 </>
-              ) : (
+              ) : modelStatus.failed.length > 0 ? (
                 <>
                   <span title={modelStatus.failed.map((f) => `${f.name}: ${f.error}`).join("\n")}>
                     {modelStatus.failed.length === 1
                       ? `${modelStatus.failed[0].name} couldn't be drawn: ${modelStatus.failed[0].error}`
-                      : `${modelStatus.failed.length} 3D models couldn't be drawn, so their parts show generated bodies.`}
+                      : `${modelStatus.failed.length} 3D models couldn't be drawn, so their parts show only their pads.`}
                   </span>
                   <button className="font-medium text-white underline underline-offset-2" onClick={() => sceneRef.current?.retryModels()}>
                     Retry
                   </button>
                 </>
+              ) : (
+                <span className="truncate" title={`Only their pads are drawn. Select one to add its model in the Inspector.\n${modelStatus.missing.join(", ")}`}>
+                  {missingText(modelStatus.missing)}
+                </span>
               )}
             </div>
           )}

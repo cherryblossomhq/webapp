@@ -27,11 +27,9 @@ export interface Settings {
   units: LengthUnit
   /** How the dashboard lists the projects: cards with a board preview, or rows. */
   projectsView: "grid" | "list"
-  /** The 3D view draws parts' real model files; off, it draws only the generated bodies, which are instant. */
-  realModels: boolean
 }
 
-export const DEFAULT_SETTINGS: Settings = { model: null, units: "mm", projectsView: "grid", realModels: true }
+export const DEFAULT_SETTINGS: Settings = { model: null, units: "mm", projectsView: "grid" }
 
 export function loadSettings(): Settings {
   const stored = read<Record<string, unknown>>(SETTINGS_KEY)
@@ -39,7 +37,6 @@ export function loadSettings(): Settings {
     model: typeof stored?.model === "string" ? stored.model : null,
     units: stored?.units === "mil" ? "mil" : "mm",
     projectsView: stored?.projectsView === "list" ? "list" : "grid",
-    realModels: stored?.realModels !== false,
   }
   // The copilot used to take an Anthropic key pasted in here; don't leave one sitting in storage.
   if (stored && "anthropicApiKey" in stored) saveSettings(settings)

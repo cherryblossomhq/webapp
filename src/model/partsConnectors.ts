@@ -16,7 +16,6 @@ function dipSocket(n: number, wide = false): PartDef {
     footprints: [wide ? `dip${n}_w15.24mm` : `dip${n}`],
     defaultProps: {},
     keywords: ["socket", "ic socket", "dip socket", "dil", "turned pin"],
-    body3d: { height: 4.2, color: "#151517" },
   }
 }
 
@@ -32,7 +31,6 @@ const phoenixBlock = (series: string, n: number, pitch: string, mpn: string, foo
     pins: numbered(n),
     mpn,
     keywords: [...SCREW_KEYWORDS, series.toLowerCase(), `${pitch}mm`],
-    body3d: { height: series === "PT" ? 8.4 : 10, color: "#2f7d4f" },
   })
 
 /** Phoenix Contact right-angle header for a pluggable screw plug. */
@@ -45,7 +43,6 @@ const phoenixHeader = (series: string, n: number, pitch: string, mpn: string, fo
     pins: numbered(n),
     mpn,
     keywords: ["pluggable terminal block", "terminal header", "phoenix", "combicon", series.toLowerCase(), `${pitch}mm`],
-    body3d: { height: series === "MC" ? 6.6 : 9.2, color: "#2f7d4f" },
   })
 
 /** Vertical JST wire-to-board header. */
@@ -58,7 +55,6 @@ const jst = (series: "PH" | "XH", n: number): PartDef =>
     pins: numbered(n),
     mpn: series === "PH" ? `B${n}B-PH-K-S(LF)(SN)` : `B${n}B-XH-A(LF)(SN)`,
     keywords: ["jst", series.toLowerCase(), "wire to board", "battery", "lipo", "connector"],
-    body3d: { height: series === "PH" ? 6 : 7, color: "#efe8d7" },
   })
 
 export const CONNECTOR_PARTS: PartDef[] = [
@@ -87,7 +83,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     footprints: ["pinrow2_p5.08mm", "pinrow2_p5mm_id1.3mm_od2.6mm", "terminal_block_5mm_2"],
     defaultProps: {},
     keywords: ["terminal block", "power input", "wire"],
-    body3d: { height: 10, color: "#2f7d4f" },
   },
   {
     id: "screw_terminal_3",
@@ -106,7 +101,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     footprints: ["pinrow3_p5mm_id1.3mm_od2.6mm", "pinrow3_p5.08mm", "terminal_block_5mm_3"],
     defaultProps: {},
     keywords: ["terminal block", "sensor", "servo", "wire", "xy301v"],
-    body3d: { height: 10, color: "#2f7d4f" },
   },
   phoenixBlock("MKDS", 2, "5.08", "1715721", "terminal_block_5.08mm_2"),
   phoenixBlock("MKDS", 3, "5.08", "1715734", "terminal_block_5.08mm_3"),
@@ -142,7 +136,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     // Both mounting tabs are one pin, to tie to ground or leave unconnected.
     padAlias: { "6": "5" },
     keywords: ["qwiic", "stemma qt", "jst sh", "i2c", "sparkfun", "adafruit", "connector"],
-    body3d: { height: 2.9, color: "#efe8d7" },
   }),
   connector({
     id: "usb_c",
@@ -169,7 +162,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     mpn: "USB4105-GF-A",
     padAlias: { S2: "S1", S3: "S1", S4: "S1" },
     keywords: ["usb", "usb-c", "type-c", "usb c", "type c", "receptacle", "power input", "connector"],
-    body3d: { height: 3.2, color: "#c4c9cf" },
   }),
   connector({
     id: "micro_usb",
@@ -189,7 +181,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     mpn: "10118192-0001LF",
     padAlias: { S2: "S1", S3: "S1", S4: "S1", S5: "S1", S6: "S1" },
     keywords: ["usb", "micro usb", "micro-b", "microusb", "receptacle", "power input", "connector"],
-    body3d: { height: 2.6, color: "#c4c9cf" },
   }),
   connector({
     id: "barrel_jack",
@@ -203,7 +194,6 @@ export const CONNECTOR_PARTS: PartDef[] = [
     bottom: [["2", "-"]],
     mpn: "PJ-002AH",
     keywords: ["dc jack", "barrel jack", "power jack", "power input", "5.5mm", "2.1mm", "wall adapter", "connector"],
-    body3d: { height: 11, color: "#151517" },
   }),
   connector({
     id: "microsd",
@@ -226,6 +216,5 @@ export const CONNECTOR_PARTS: PartDef[] = [
     mpn: "DM3AT-SF-PEJM5",
     padAlias: { "12": "11", "13": "11", "14": "11" },
     keywords: ["sd card", "microsd", "tf card", "memory card", "spi", "socket", "connector"],
-    body3d: { height: 1.8, color: "#c4c9cf" },
   }),
 ]

@@ -187,7 +187,9 @@ describe("the part editor", () => {
     expect(text()).toMatch(/ldo\.step/)
     expect(text()).toMatch(/Every component of this part on sot23_5 is drawn with it/)
     click(byLabel("Remove 3D model"))
-    expect(text()).toMatch(/Generated body/)
+    // Without its own, the part on sot23_5 is drawn with KiCad's SOT-23-5, which can't be removed.
+    expect(text()).toMatch(/SOT-23-5KiCad library model, built in/)
+    expect(byLabel("Remove 3D model")).toBeFalsy()
     click(button("Save"))
     expect(live().models).toBeUndefined()
     expect(live().parts![0].id).toBe(ldo.id)

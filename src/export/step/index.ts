@@ -53,10 +53,7 @@ function listed(names: string[]): string {
 const are = (names: string[]) => (names.length === 1 ? "is" : "are")
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-/**
- * A model from meshes. Pieces that aren't closed are written as surfaces, without a note:
- * generated bodies have open ones on purpose (a pin 1 dot, a marking).
- */
+/** A model from meshes. Pieces that aren't closed are written as surfaces, without a note: model files have open ones often. */
 function meshModel(w: StepWriter, meshes: StepMesh[], model: StepModelInput): Shape | null {
   return writeMeshModel(w, meshes, model.name)?.shape ?? null
 }

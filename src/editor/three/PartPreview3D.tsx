@@ -4,7 +4,6 @@ import { pcbCourtyard } from "../../model/instances"
 import { findPart } from "../../model/library"
 import { createProject } from "../../model/ops"
 import type { BoardDef, ComponentInstance, Model3D, Project } from "../../model/types"
-import { useUi } from "../../store/uiStore"
 import { IconButton } from "../../ui/controls"
 import { backdropCss, BoardScene } from "./boardScene"
 
@@ -49,7 +48,6 @@ export function PartPreview3D({ partId, footprint, model, board }: { partId: str
   const hostRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<BoardScene | null>(null)
   const [failed, setFailed] = useState(false)
-  const realModels = useUi((s) => s.settings.realModels)
 
   useEffect(() => {
     const host = hostRef.current
@@ -68,7 +66,6 @@ export function PartPreview3D({ partId, footprint, model, board }: { partId: str
     }
   }, [])
 
-  useEffect(() => sceneRef.current?.setRealModels(realModels), [realModels])
   useEffect(() => {
     sceneRef.current?.setProject(previewProject(partId, footprint, model, board), [])
   }, [partId, footprint, model, board])

@@ -260,7 +260,7 @@ describe("the files a user hands over", () => {
     expect(edits).toBe(1)
     expect(outcome.names).toEqual(["AP2204K-1.5"])
     expect(project.parts?.map((p) => p.id)).toEqual(outcome.partIds)
-    // This editor has no model store: the part comes in on its generated body, and that is said.
+    // This editor has no model store: the part comes in without a model, and that is said.
     expect(outcome.problems).toEqual(["AP2204K-1.5 came in without its 3D model: model files can't be kept in this editor."])
     expect(modelAssignment(project, outcome.partIds[0], project.parts![0].footprint)).toBeNull()
   })

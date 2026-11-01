@@ -1,9 +1,9 @@
 import { drillsThrough } from "../model/stack"
 import * as THREE from "three"
-import { generatedModel, placedComponents } from "../editor/three/buildBoard"
+import { naturalCompare } from "../lib/natural"
+import { placedComponents } from "../editor/three/buildBoard"
 import { fetchModelBytes, modelLibrary } from "../editor/three/files/library"
 import { placementMatrix } from "../editor/three/files/placement"
-import { ModelMaterials } from "../editor/three/models"
 import { boardColors, mountingHoles } from "../model/board"
 import { pcbPads, slotEnds } from "../model/instances"
 import { holeCentre } from "../model/padDistance"
@@ -11,16 +11,16 @@ import { outlineGeometry, pointInRing, signedArea, type OutlineGeometry } from "
 import { reversePath } from "../model/outlineOps"
 import { arcCircle, flattenSeg, type ShapePath } from "../model/shapes"
 import { requireClosedOutline } from "./outlineGuard"
-import { findPart } from "../model/library"
 import { componentModel, modelFileKey } from "../model/models3d"
 import type { ComponentInstance, Model3D, Project, Vec2 } from "../model/types"
 import { writeStep, type StepContourSeg, type StepColor, type StepExportInput, type StepMesh, type StepModelInput, type StepPlacement } from "./step"
 
 // The board as a STEP assembly, for mechanical CAD: the board's exact solid with every hole, and
-// every part where it sits. A part with a STEP model (its supplier's, or a STEP file the user
-// added) goes in as that file, exact; one with a mesh file goes in as the mesh; any other part as
-// its generated body, faceted. Each distinct model is written once and placed per component,
-// named by designator.
+// every part that has a 3D model where it sits. A part with a STEP model (its supplier's, KiCad's,
+// or a STEP file the user added) goes in as that file, exact; one with a mesh file goes in as the
+// mesh. A part with no model is left out and named in the notes: a made-up body in a file someone
+// designs an enclosure around is worse than a gap. Each distinct model is written once and placed
+// per component, named by designator.
 //
 // STEP's frame: millimetres, x and y as the project's (y up), the board's bottom face at z = 0.
 
@@ -32,12 +32,8 @@ const srgb = (c: THREE.Color): StepColor => {
 
 const hexColor = (hex: string): StepColor => srgb(new THREE.Color(hex))
 
-/**
- * An object's triangles in one frame, by material colour. A generated body's printed markings are
- * textured decals and have no place in a solid model, so meshes with a texture are left out unless
- * `textured` keeps them: a model file's textures are its colours, and its meshes are the part.
- */
-export function meshesOf(object: THREE.Object3D, frame: THREE.Matrix4 = new THREE.Matrix4(), textured = false): StepMesh[] {
+/** A model file's triangles in one frame, by material colour: a textured mesh is its texture's part too. */
+export function meshesOf(object: THREE.Object3D, frame: THREE.Matrix4 = new THREE.Matrix4()): StepMesh[] {
   object.updateWorldMatrix(true, true)
   const root = object.matrixWorld.clone().invert()
   const out: StepMesh[] = []
@@ -56,7 +52,7 @@ export function meshesOf(object: THREE.Object3D, frame: THREE.Matrix4 = new THRE
     const groups = mesh.geometry.groups.length ? mesh.geometry.groups : [{ start: 0, count: total, materialIndex: 0 }]
     for (const g of groups) {
       const material = materials[g.materialIndex ?? 0] ?? materials[0]
-      if (!material || (material.map && !textured)) continue
+      if (!material) continue
       const end = Math.min(total, g.start + g.count)
       const positions = new Float32Array((end - g.start) * 3)
       for (let i = g.start, k = 0; i < end; i++, k += 3) {
@@ -69,13 +65,6 @@ export function meshesOf(object: THREE.Object3D, frame: THREE.Matrix4 = new THRE
     }
   })
   return out
-}
-
-/** What another program's tree calls a generated body: the part, its value and its package ("Resistor 10k 0603"). */
-function generatedName(c: ComponentInstance): string {
-  const part = findPart(c.partId)
-  const value = part?.valueProp ? c.props[part.valueProp] : undefined
-  return [part?.name ?? c.partId, value, c.footprint].filter(Boolean).join(" ")
 }
 
 /** A component's footprint frame in STEP's: moved and turned, and a bottom-side part flipped onto the bottom face. */
@@ -152,14 +141,15 @@ export function stepBoard(project: Project): StepExportInput["board"] {
   }
 }
 
-/** Designators named in the approximate-bodies note before it says how many more. */
-const APPROXIMATE_LISTED = 12
+/** Designators named in the left-out note before it says how many more. */
+const MISSING_LISTED = 12
 
-/** One line for every part written as its generated body, so no one takes one for the real part. */
-export function approximateNote(refs: string[]): string {
-  const listed = refs.slice(0, APPROXIMATE_LISTED).join(", ")
-  const more = refs.length > APPROXIMATE_LISTED ? ` and ${refs.length - APPROXIMATE_LISTED} more` : ""
-  const head = refs.length === 1 ? "1 part is an approximate body, not its real model" : `${refs.length} parts are approximate bodies, not their real models`
+/** One line for every part left out for having no 3D model, so no one takes the gap for an empty spot on the board. */
+export function missingNote(refs: string[]): string {
+  const sorted = [...refs].sort(naturalCompare)
+  const listed = sorted.slice(0, MISSING_LISTED).join(", ")
+  const more = sorted.length > MISSING_LISTED ? ` and ${sorted.length - MISSING_LISTED} more` : ""
+  const head = sorted.length === 1 ? "1 part has no 3D model and is left out" : `${sorted.length} parts have no 3D model and are left out`
   return `${head}: ${listed}${more}.`
 }
 
@@ -185,8 +175,8 @@ async function inBatches<T>(items: T[], run: (item: T) => Promise<void>) {
 
 /**
  * Write the project as a STEP file. Model files are fetched as needed (STEP, the exact copy, for a
- * supplier's model); one that can't be read is written as its generated body, and a STEP file that
- * can't be fetched as the mesh the 3D view draws. The notes say which.
+ * supplier's model); a part whose file can't be read is left out, and a STEP file that can't be
+ * fetched is written as the mesh the 3D view draws. The notes say which.
  */
 export async function stepFile(project: Project, options: { onProgress?: (p: StepProgress) => void; signal?: AbortSignal } = {}): Promise<{ text: string; notes: string[] }> {
   requireClosedOutline(project, "The STEP model")
@@ -230,63 +220,49 @@ export async function stepFile(project: Project, options: { onProgress?: (p: Ste
 
   const models = new Map<string, StepModelInput>()
   const placements: StepPlacement[] = []
-  const generated = new ModelMaterials()
   // Notes, by file: two models may share a name.
   const failed = new Map<string, { name: string; error: string; refs: string[] }>()
   const meshInstead = new Map<string, { name: string; error: string; refs: string[] }>()
-  // Parts written as their generated body: a likeness, not the part's own model.
-  const approximate: string[] = []
+  // Parts with no model at all, left out.
+  const missing: string[] = []
   const noteFor = (into: typeof failed, file: string, name: string, error: string, ref: string) => {
     const entry = into.get(file) ?? { name, error, refs: [] }
     entry.refs.push(ref)
     into.set(file, entry)
   }
-  try {
-    for (const { c, model } of plans) {
-      const at = componentMatrix(project, c)
-      const got = model ? read.get(JSON.stringify(model)) : undefined
-      if (model && got && "object" in got) {
-        const place = placementMatrix(model, got.object)
-        if (got.step) {
-          // The file goes in as it is, once however it is placed; where it sits is the instance's transform.
-          const key = `step:${modelFileKey(model)}`
-          if (!models.has(key)) models.set(key, { key, name: model.name, source: { kind: "step", text: got.step }, fallback: meshesOf(got.object, undefined, true) })
-          placements.push({ ref: c.ref, model: key, matrix: at.clone().multiply(place).elements })
-        } else {
-          // A mesh is written already placed on its footprint, so its scale needs no transform.
-          const key = `file:${JSON.stringify(model)}`
-          if (!models.has(key)) models.set(key, { key, name: model.name, source: { kind: "mesh", meshes: meshesOf(got.object, place, true) } })
-          placements.push({ ref: c.ref, model: key, matrix: at.elements })
-          if (got.stepError) noteFor(meshInstead, modelFileKey(model), model.name, got.stepError, c.ref)
-        }
-        continue
-      }
-      if (model && got && "error" in got) noteFor(failed, modelFileKey(model), model.name, got.error, c.ref)
-      const props = Object.keys(c.props)
-        .sort()
-        .map((k) => `${k}=${c.props[k]}`)
-        .join(",")
-      const key = `generated:${c.partId}|${c.footprint}|${props}`
-      if (!models.has(key)) {
-        const body = generatedModel(project, c, generated)
-        if (!body) continue
-        models.set(key, { key, name: generatedName(c), source: { kind: "mesh", meshes: meshesOf(body) } })
-        body.traverse((o) => (o as THREE.Mesh).geometry?.dispose())
-      }
-      placements.push({ ref: c.ref, model: key, matrix: at.elements })
-      approximate.push(c.ref)
+  for (const { c, model } of plans) {
+    if (!model) {
+      missing.push(c.ref)
+      continue
     }
-  } finally {
-    generated.dispose()
+    const at = componentMatrix(project, c)
+    const got = read.get(JSON.stringify(model))
+    if (!got || "error" in got) {
+      noteFor(failed, modelFileKey(model), model.name, got?.error ?? "not read", c.ref)
+      continue
+    }
+    const place = placementMatrix(model, got.object)
+    if (got.step) {
+      // The file goes in as it is, once however it is placed; where it sits is the instance's transform.
+      const key = `step:${modelFileKey(model)}`
+      if (!models.has(key)) models.set(key, { key, name: model.name, source: { kind: "step", text: got.step }, fallback: meshesOf(got.object) })
+      placements.push({ ref: c.ref, model: key, matrix: at.clone().multiply(place).elements })
+    } else {
+      // A mesh is written already placed on its footprint, so its scale needs no transform.
+      const key = `file:${JSON.stringify(model)}`
+      if (!models.has(key)) models.set(key, { key, name: model.name, source: { kind: "mesh", meshes: meshesOf(got.object, place) } })
+      placements.push({ ref: c.ref, model: key, matrix: at.elements })
+      if (got.stepError) noteFor(meshInstead, modelFileKey(model), model.name, got.stepError, c.ref)
+    }
   }
   for (const { name, error, refs } of failed.values()) {
-    notes.push(`${refs.join(", ")}: ${name} couldn't be read (${error}), so ${refs.length === 1 ? "it is" : "they are"} written as the generated body.`)
+    notes.push(`${refs.join(", ")}: ${name} couldn't be read (${error}), so ${refs.length === 1 ? "it is" : "they are"} left out.`)
   }
   for (const { name, error, refs } of meshInstead.values()) {
     notes.push(`${refs.join(", ")}: ${name}'s STEP file couldn't be fetched (${error}), so ${refs.length === 1 ? "it is" : "they are"} written as its mesh.`)
   }
 
-  if (approximate.length) notes.push(approximateNote(approximate))
+  if (missing.length) notes.push(missingNote(missing))
 
   const partial = project.vias.filter((v) => v.kind).length
   if (partial) notes.push(`${partial} blind, buried or micro via${partial === 1 ? " is" : "s are"} not drawn: the board solid has only the holes that go through it.`)

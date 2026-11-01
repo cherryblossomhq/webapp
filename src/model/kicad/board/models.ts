@@ -6,7 +6,7 @@ import type { KicadFootprint, KicadModel } from "./types"
 // land (`ModelAssignment`), and draws a STEP file of KiCad's stock library that its parts index
 // serves (`GET /api/v1/parts/models/kicad/<release>/<library>.3dshapes/<name>.step`, streamed from
 // KiCad's repository at that release's tag). Every other model of the file is named in the import
-// report with why it was left out, never dropped silently and never replaced by a generated body.
+// report with why it was left out, never dropped silently.
 
 /** The library release the parts index stores KiCad's 3D models at; a stock model's id is `<release>/<path>`. */
 export const KICAD_LIBRARY_RELEASE = STOCK_MODEL_RELEASE

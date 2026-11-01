@@ -89,7 +89,7 @@ function modelOf(part: PartIndexPart, chosen: { footprint: string; def: Footprin
  * The project with the part added, or what stops it. The land pattern is registered first, as
  * `create_part` does, because the part's own check needs to resolve it. A part already in the
  * project (the same drawing placed before) is reused rather than added twice, and its model is
- * left as it is: a part that has none there was taken back to its generated body on purpose.
+ * left as it is: a part that has none there had its model taken away on purpose.
  */
 export function addDraftToProject(project: Project, built: IndexDraft): { project: Project; spec: CustomPartSpec; added: boolean } | { error: string } {
   if (built.land) registerProjectFootprints({ footprints: [built.land] })

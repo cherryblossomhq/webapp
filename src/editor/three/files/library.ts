@@ -8,7 +8,7 @@ import { projectApi, useProjectStore } from "../../../store/projectStore"
 
 // The model files the 3D view has read, for the page: a file is fetched and read once however many
 // parts, boards and views use it, and every part is a cheap copy sharing its geometry. A part
-// whose file isn't read yet is drawn with its generated body, and redrawn when it is.
+// whose file isn't read yet shows only its pads, and is drawn when it is.
 
 /** The format the 3D view draws: a supplier model's mesh, since its STEP is the slow, exact copy. */
 export const drawnFormat = (m: Model3D): Model3DFormat => (m.source === "supplier" ? "obj" : m.format)
@@ -122,7 +122,7 @@ export class ModelLibrary {
 
   /**
    * The file's meshes, read now if they need to be. One that failed before is tried again: an
-   * export or a picture shouldn't settle for a generated body because the connection dropped once.
+   * export or a picture shouldn't leave a part out because the connection dropped once.
    */
   async load(m: Model3D): Promise<THREE.Group> {
     if (this.entries.get(this.key(m))?.state === "failed") this.entries.delete(this.key(m))

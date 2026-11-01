@@ -157,8 +157,8 @@ function withModel(project: Project, part: string, footprint: string, model: Mod
  * spec in the old one's place in the list, and every component placed from it switches over: to
  * its footprint too, unless it was given another, and to its parameters where it still has the
  * old ones (a value set on one component stays). Its 3D models follow it while the footprint
- * stays; `model`, when given, is the one it has on its footprint after the edit (null for the
- * generated body). Refused with the reasons when the spec can't be built, or when its pins would
+ * stays; `model`, when given, is the one it has on its footprint after the edit (null for none of
+ * its own). Refused with the reasons when the spec can't be built, or when its pins would
  * land on the wires of other nets on the sheet.
  */
 export function editPart(project: Project, id: string, draft: PartDraft, o: Guard & { model?: Model3D | null } = {}): PartEditResult {

@@ -472,7 +472,7 @@ export interface FootprintDef {
   noCourtyard?: true
   /**
    * The package's own name where a source gave one (KiCad's `SOIC-8_3.9x4.9mm_P1.27mm`, a
-   * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`). The 3D view reads the body's kind and size from it.
+   * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`), kept as it was given.
    */
   package?: string
 }
@@ -596,7 +596,6 @@ export interface PartDef {
   padAlias?: Record<string, string>
   /** Power ports name the net they belong to and have no PCB presence. */
   powerNet?: string
-  body3d?: { height: number; color: string }
   mpn?: string
   /** Made for one project (see CustomPartSpec) rather than shipped in the library. */
   custom?: boolean
@@ -790,9 +789,8 @@ export interface PartSource {
 export type Model3DFormat = "step" | "obj" | "wrl" | "stl" | "glb"
 
 /**
- * A real 3D model of a part: a file the 3D view draws in place of the generated body, and the
- * STEP export writes as it is. The generated body is what shows until the file has loaded, and
- * whenever it can't be.
+ * A part's 3D model: a file the 3D view draws and the STEP export writes as it is. Until the file
+ * has loaded, and whenever it can't be, the part shows only its pads.
  */
 export interface Model3D {
   /**
@@ -1921,7 +1919,10 @@ export interface Project {
    * in from elsewhere. Components and project parts name them like any other footprint.
    */
   footprints?: FootprintDef[]
-  /** Real 3D models, one per part and footprint; parts without one are drawn with a generated body. */
+  /**
+   * 3D models, one per part and footprint. A part without one is drawn with its built-in model
+   * (`libraryModels.ts`) if it has one, and otherwise shows only its pads.
+   */
   models?: ModelAssignment[]
   /** Free-form project properties such as revision, author or licence, in the order they were added. */
   properties?: { key: string; value: string }[]

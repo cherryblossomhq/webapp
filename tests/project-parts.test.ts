@@ -209,7 +209,7 @@ describe("editing a part", () => {
     const moved = editPart(only.project, ldo.id, edit(ldo, { footprint: "sot23_5_p0.95mm" }), { model: { ...step, rotation: { x: 0, y: 0, z: 90 } } })
     if (!moved.ok) throw new Error(moved.problems.join("; "))
     expect(moved.project.models).toEqual([{ part: moved.id, footprint: "sot23_5_p0.95mm", model: { ...step, rotation: { x: 0, y: 0, z: 90 } } }])
-    // Null is the generated body.
+    // Null is no model of its own.
     const plain = editPart(only.project, ldo.id, edit(ldo, { description: "Plain" }), { model: null })
     expect(plain.ok && plain.project.models).toBeUndefined()
   })

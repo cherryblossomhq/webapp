@@ -1,6 +1,8 @@
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
+import { pcbCourtyard } from "../../model/instances"
 import { componentModel } from "../../model/models3d"
+import { naturalCompare } from "../../lib/natural"
 import type { ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Model3D, Project } from "../../model/types"
 import {
@@ -9,28 +11,28 @@ import {
   createSharedMaterials,
   disposeGeometries,
   disposeSharedMaterials,
-  generatedModel,
+  partModel,
   placedComponents,
-  swapPartModel,
   type BoardBuild,
   type SharedMaterials,
 } from "./buildBoard"
 import { modelLibrary } from "./files/library"
 import { placeModel } from "./files/place"
-import { ModelMaterials } from "./models"
 import { StudioFloor } from "./studio"
 import { createStudioEnvironment } from "./studioEnvironment"
 import { ViewCube } from "./viewCube"
 
 export type CameraPreset = "home" | "top" | "bottom"
 
-/** How the parts' real model files are doing, for the 3D view's status line. */
+/** How the parts' model files are doing, for the 3D view's status line. */
 export interface ModelStatus {
   /** Model files the board uses. */
   total: number
   loading: number
-  /** Files that couldn't be drawn, by name, with why; their parts show their generated bodies. */
+  /** Files that couldn't be drawn, by name, with why; their parts show only their pads. */
   failed: { name: string; error: string }[]
+  /** Designators of the placed parts with no model at all, in order: only their pads are drawn. */
+  missing: string[]
 }
 
 const FOV = 30
@@ -62,7 +64,6 @@ export class BoardScene {
   private envTexture: THREE.Texture
   private key: THREE.DirectionalLight
   private shared: SharedMaterials = createSharedMaterials()
-  private models = new ModelMaterials()
   private content = new THREE.Group()
   private board: BoardBuild | null = null
   private parts: THREE.Group | null = null
@@ -71,7 +72,6 @@ export class BoardScene {
   private selectionBox: THREE.Box3Helper | null = null
   private selectedId: string | null = null
   private partsVisible = true
-  private realModels = true
   private modelsFrame = 0
   private stopModels: () => void
   private gridVisible = true
@@ -89,7 +89,7 @@ export class BoardScene {
 
   /** Called with a component id when a part is clicked, null for empty space. */
   onPickPart: ((id: string | null) => void) | null = null
-  /** Called whenever the real model files' progress changes. */
+  /** Called whenever the model files' progress changes. */
   onModelStatus: ((status: ModelStatus) => void) | null = null
 
   constructor(
@@ -221,19 +221,10 @@ export class BoardScene {
     return this.board?.placedCount ?? 0
   }
 
-  /** Draw parts' real model files (on), or only their generated bodies (off). */
-  setRealModels(on: boolean) {
-    if (on === this.realModels) return
-    this.realModels = on
-    if (!this.last) return
-    this.rebuildParts(this.last.project)
-    this.afterPartsChanged(this.last.project)
-  }
-
   /** Wait, at most `ms`, for the board's model files to be read, and draw them: for a picture taken at once. */
   async modelsReady(ms: number) {
     const project = this.last?.project
-    if (!project || !this.realModels) return
+    if (!project) return
     const models = new Map<string, Model3D>()
     for (const c of placedComponents(project)) {
       const m = componentModel(project, c)
@@ -255,9 +246,8 @@ export class BoardScene {
     this.afterPartsChanged(this.last.project)
   }
 
-  /** A component's real model, placed, when it has one and its file is read; asks for the file when it isn't. */
-  private realModel = (project: Project, c: ComponentInstance): THREE.Group | null => {
-    if (!this.realModels) return null
+  /** A component's model, placed, when it has one and its file is read; asks for the file when it isn't. */
+  private placedModel = (project: Project, c: ComponentInstance): THREE.Group | null => {
     const model = componentModel(project, c)
     if (!model) return null
     const object = modelLibrary.peek(model)
@@ -266,47 +256,37 @@ export class BoardScene {
     return null
   }
 
-  private realModelReady(project: Project, c: ComponentInstance): boolean {
+  private modelReady(project: Project, c: ComponentInstance): boolean {
     const model = componentModel(project, c)
     return !!model && !!modelLibrary.peek(model)
   }
 
   private rebuildParts(project: Project) {
     this.clearParts()
-    this.parts = buildParts(project, this.models, (c) => this.realModel(project, c))
+    this.parts = buildParts(project, (c) => this.placedModel(project, c))
     this.parts.visible = this.partsVisible
     this.content.add(this.parts)
     this.updateSelectionBox()
     this.reportModels(project)
   }
 
-  /** Swap in the real models whose files have been read since the parts were built. */
+  /** Add the models whose files have been read since the parts were built, and drop any forgotten (retried), without rebuilding the rest. */
   private refreshModels = () => {
     this.modelsFrame = 0
     const project = this.last?.project
     if (!project || !this.parts || this.disposed) return
-    const placed = placedComponents(project)
-    const byId = new Map(placed.map((c) => [c.id, c]))
-    // A part with no generated body has no holder to swap into: build the parts again once its file is read.
-    const held = new Set(this.parts.children.map((h) => h.userData.componentId as string))
-    if (this.realModels && placed.some((c) => !held.has(c.id) && this.realModelReady(project, c))) {
-      this.rebuildParts(project)
-      this.afterPartsChanged(project)
-      return
-    }
+    const held = new Map(this.parts.children.map((h) => [h.userData.componentId as string, h]))
     let changed = false
-    for (const holder of this.parts.children) {
-      const c = byId.get(holder.userData.componentId as string)
-      if (!c) continue
-      const real = this.realModel(project, c)
-      if (real) {
-        if (holder.userData.real) continue
-        swapPartModel(holder, real, true)
+    for (const c of placedComponents(project)) {
+      const holder = held.get(c.id)
+      if (holder && !this.modelReady(project, c)) {
+        this.parts.remove(holder)
+        disposeGeometries(holder)
         changed = true
-      } else if (holder.userData.real) {
-        // Its file was forgotten (retried): back to the generated body until it is read again.
-        const generated = generatedModel(project, c, this.models)
-        if (generated) swapPartModel(holder, generated, false)
+      } else if (!holder) {
+        const model = this.placedModel(project, c)
+        if (!model) continue
+        this.parts.add(partModel(project, c, model))
         changed = true
       }
     }
@@ -326,17 +306,17 @@ export class BoardScene {
   private reportModels(project: Project) {
     if (!this.onModelStatus) return
     const seen = new Map<string, Model3D>()
+    const missing: string[] = []
     for (const c of placedComponents(project)) {
       const m = componentModel(project, c)
       if (m) seen.set(`${m.source}:${m.id}`, m)
+      else missing.push(c.ref)
     }
-    const status: ModelStatus = { total: this.realModels ? seen.size : 0, loading: 0, failed: [] }
-    if (this.realModels) {
-      for (const m of seen.values()) {
-        const state = modelLibrary.state(m)
-        if (state === "loading" || state === "idle") status.loading++
-        else if (state === "failed") status.failed.push({ name: m.name, error: modelLibrary.error(m) ?? "" })
-      }
+    const status: ModelStatus = { total: seen.size, loading: 0, failed: [], missing: missing.sort(naturalCompare) }
+    for (const m of seen.values()) {
+      const state = modelLibrary.state(m)
+      if (state === "loading" || state === "idle") status.loading++
+      else if (state === "failed") status.failed.push({ name: m.name, error: modelLibrary.error(m) ?? "" })
     }
     this.onModelStatus(status)
   }
@@ -376,15 +356,24 @@ export class BoardScene {
     }
     if (!this.selectedId || !this.parts) return
     const holder = this.parts.children.find((c) => c.userData.componentId === this.selectedId)
-    if (!holder) return
-    const box = new THREE.Box3().setFromObject(holder)
-    if (box.isEmpty()) return
+    const box = holder ? new THREE.Box3().setFromObject(holder) : this.courtyardBox(this.selectedId)
+    if (!box || box.isEmpty()) return
     box.expandByScalar(0.25)
     this.selectionBox = new THREE.Box3Helper(box, new THREE.Color("#6f97ff"))
     ;(this.selectionBox.material as THREE.LineBasicMaterial).depthTest = false
     this.selectionBox.renderOrder = 10
     this.selectionBox.visible = this.partsVisible
     this.scene.add(this.selectionBox)
+  }
+
+  /** A part with no model is marked by its courtyard, flat on the side of the board it is on. */
+  private courtyardBox(componentId: string): THREE.Box3 | null {
+    const project = this.last?.project
+    const c = project && placedComponents(project).find((p) => p.id === componentId)
+    const b = c && pcbCourtyard(c)
+    if (!project || !c || !b) return null
+    const z = (c.pcb.side === "bottom" ? -1 : 1) * (project.board.thickness / 2)
+    return new THREE.Box3(new THREE.Vector3(b.minX, b.minY, z), new THREE.Vector3(b.maxX, b.maxY, z))
   }
 
   private clearBoard() {
@@ -651,7 +640,6 @@ export class BoardScene {
     }
     this.cube?.dispose()
     disposeSharedMaterials(this.shared)
-    this.models.dispose()
     this.envTexture.dispose()
     this.key.shadow.map?.dispose()
     this.renderer.dispose()

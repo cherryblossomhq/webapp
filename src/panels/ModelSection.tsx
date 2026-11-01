@@ -3,12 +3,12 @@ import { Box, FileUp, RotateCw, Search, Trash2 } from "lucide-react"
 import { useRef, useState } from "react"
 import { lookupFailure, supplierParts } from "../ai/supplierParts"
 import { modelLibrary, useModelState } from "../editor/three/files/library"
-import { componentModel, fileModel, MODEL_FILE_ACCEPT, modelFormatOf, modelOrigin, setModel } from "../model/models3d"
+import { libraryModel } from "../model/libraryModels"
+import { fileModel, MODEL_FILE_ACCEPT, modelAssignment, modelFormatOf, modelOrigin, setModel } from "../model/models3d"
 import { supplierModelOn } from "../model/supplier/model"
 import type { ComponentInstance, Model3D, PartDef, Project } from "../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFileId, modelFiles } from "../store/modelFiles"
 import { projectApi } from "../store/projectStore"
-import { useUi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, LengthInput, Section } from "../ui/form"
 import { Tooltip } from "../ui/Tooltip"
@@ -39,9 +39,9 @@ const num = (v: string) => {
 }
 
 /**
- * The real 3D model a part is drawn with on its footprint: a file the user adds, or the supplier's
- * model of the part. Every component of the part on that footprint shares it, as in KiCad a
- * footprint carries its model. Without one the part is drawn with its generated body.
+ * The 3D model a part is drawn with on its footprint: a file the user adds, the supplier's model of
+ * the part, or the KiCad model a built-in part comes with. Every component of the part on that
+ * footprint shares it, as in KiCad a footprint carries its model. Without one only its pads are drawn.
  */
 export function ModelSection({ c, part, project }: { c: ComponentInstance; part: PartDef; project: Project }) {
   const sharing = project.components.filter((x) => x.partId === c.partId && x.footprint === c.footprint).length
@@ -50,7 +50,14 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
   const assign = (next: Model3D | null) => projectApi().commit((p) => (p.id === project.id ? setModel(p, c.partId, c.footprint, next) : p))
   return (
     <Section title="3D model" id="inspector-3d-model">
-      <ModelControls model={componentModel(project, c)} footprint={c.footprint} lcsc={lcscOf(c, part, project)} searchText={searchFor(c, part)} onChange={assign} />
+      <ModelControls
+        model={modelAssignment(project, c.partId, c.footprint)}
+        builtIn={libraryModel(c.partId, c.footprint)}
+        footprint={c.footprint}
+        lcsc={lcscOf(c, part, project)}
+        searchText={searchFor(c, part)}
+        onChange={assign}
+      />
       {sharing > 1 && (
         <p className="text-[11.5px] text-ink-3">
           Every {part.name} on {c.footprint} uses it ({sharing} parts).
@@ -62,17 +69,21 @@ export function ModelSection({ c, part, project }: { c: ComponentInstance; part:
 
 /**
  * Choosing a part's model on one footprint and placing it: a file, the supplier's model of the
- * part, or the generated body. Shared by the Inspector, which commits each choice, and the part
- * editor, which keeps it in its draft until Save.
+ * part, the built-in model, or none. Shared by the Inspector, which commits each choice, and the
+ * part editor, which keeps it in its draft until Save.
  */
 export function ModelControls({
-  model,
+  model: assigned,
+  builtIn,
   footprint,
   lcsc,
   searchText,
   onChange,
 }: {
+  /** The project's model for the part on this footprint. */
   model: Model3D | null
+  /** The model the part has without one (`libraryModels.ts`). */
+  builtIn: Model3D | null
   footprint: string
   /** The LCSC number the part is sold under, when it says: its model is one click away. */
   lcsc: string | null
@@ -80,8 +91,8 @@ export function ModelControls({
   searchText: string
   onChange: (next: Model3D | null) => void
 }) {
+  const model = assigned ?? builtIn
   const { state, error } = useModelState(model)
-  const realModels = useUi((s) => s.settings.realModels)
   const fileInput = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
@@ -146,18 +157,18 @@ export function ModelControls({
         <Box size={15} className="mt-0.5 shrink-0 text-ink-3" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] text-ink" title={model?.name}>
-            {model ? model.name : "Generated body"}
+            {model ? model.name : "No 3D model"}
           </p>
           <p className="text-[11.5px] text-ink-3">
             {!model
-              ? "Drawn from the footprint. Add the part's model file for the real part."
+              ? "Only its pads are drawn in 3D, and the STEP export leaves it out. Add the part's model file."
               : state === "failed"
                 ? `Not drawn: ${error}`
                 : state === "loading"
                   ? "Loading..."
-                  : !realModels
-                    ? `${modelOrigin(model)}. The 3D view is drawing generated bodies only.`
-                    : modelOrigin(model)}
+                  : assigned
+                    ? modelOrigin(model)
+                    : `${modelOrigin(model)}, built in`}
           </p>
           {model?.attribution && <p className="mt-0.5 text-[11px] text-ink-3">{model.attribution}</p>}
         </div>
@@ -179,8 +190,8 @@ export function ModelControls({
             <Search size={14} /> Find
           </Button>
         )}
-        {model && (
-          <Tooltip label="Use the generated body">
+        {assigned && (
+          <Tooltip label={builtIn ? "Use the built-in model" : "Remove the 3D model"}>
             <Button variant="ghost" aria-label="Remove 3D model" onClick={() => onChange(null)} disabled={!!busy}>
               <Trash2 size={14} />
             </Button>

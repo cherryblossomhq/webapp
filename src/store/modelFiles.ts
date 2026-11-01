@@ -5,7 +5,7 @@
  *
  * A file is kept once per account however many projects use it, and never changes: its id is its
  * content. A project file downloaded and opened on another account names files that account
- * doesn't have, and those parts are drawn with their generated bodies until a file is added again.
+ * doesn't have, and those parts show only their pads until a file is added again.
  */
 export interface ModelFileStore {
   /** Keep a file. Resolves to its id, the SHA-256 of its bytes as lowercase hex. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { arcCircle, dashPattern, dashShape, flattenArc, flattenBezier, flattenEllipse, mapShape, pointInRings, shapeBox, shapePaths, shapeRings, shapeSvgPath } from "../src/model/shapes"
+import { arcCircle, dashPattern, dashShape, flattenArc, flattenBezier, flattenEllipse, mapShape, pointInRings, shapeBox, shapeCopper, shapePaths, shapeRings, shapeShapeDistance, shapeSvgPath, type ShapeCopper } from "../src/model/shapes"
 import { flipShapeLayer, isShapeLayer, shapeLayerInfo } from "../src/model/shapeLayers"
 import type { BoardShape } from "../src/model/types"
 
@@ -194,5 +194,39 @@ describe("the layers", () => {
     expect(flipShapeLayer("F.SilkS", 2)).toBe("B.SilkS")
     expect(flipShapeLayer("B.Cu", 2)).toBe("F.Cu")
     expect(flipShapeLayer("User.3", 2)).toBe("User.3")
+  })
+})
+
+describe("the distance between two drawings, with a limit", () => {
+  // Two combs of a thousand corners each, their teeth between each other's: what a flex sensor's copper drawings are, and what took Checks over a minute
+  // when every edge was measured against every other.
+  const comb = (x0: number, y0: number, teeth: number, up: boolean): ShapeCopper => {
+    const pts: { x: number; y: number }[] = []
+    for (let i = 0; i < teeth; i++) {
+      const x = x0 + i * 0.5
+      const tip = up ? y0 + 5 : y0 - 5
+      pts.push({ x, y: y0 }, { x, y: tip }, { x: x + 0.2, y: tip }, { x: x + 0.2, y: y0 })
+    }
+    return shapeCopper({ id: "c", type: "polygon", layer: "top", width: 0.02, fill: true, pts } as unknown as BoardShape)
+  }
+  const a = comb(0, 0, 250, true)
+  const b = comb(0.25, 5.4, 250, false)
+
+  it("is exact below the limit, the same as measuring every pair", () => {
+    const exact = shapeShapeDistance(a, b)
+    expect(exact).toBeGreaterThan(0)
+    expect(shapeShapeDistance(a, b, exact + 0.05)).toBeCloseTo(exact, 9)
+    expect(shapeShapeDistance(a, b, 10)).toBeCloseTo(exact, 9)
+  })
+
+  it("is at least the limit when nothing is nearer", () => {
+    const exact = shapeShapeDistance(a, b)
+    expect(shapeShapeDistance(a, b, exact / 2)).toBeGreaterThanOrEqual(exact / 2)
+    expect(shapeShapeDistance(comb(0, 0, 250, true), comb(500, 0, 250, true), 0.2)).toBeGreaterThanOrEqual(0.2)
+  })
+
+  it("is 0 where one lies inside the other, whatever the limit", () => {
+    const outer = shapeCopper({ id: "o", type: "polygon", layer: "top", width: 0, fill: true, pts: Array.from({ length: 400 }, (_, i) => ({ x: 50 * Math.cos(i / 63.66), y: 50 * Math.sin(i / 63.66) })) } as unknown as BoardShape)
+    expect(shapeShapeDistance(outer, comb(-10, -2, 40, true), 1e-3)).toBe(0)
   })
 })

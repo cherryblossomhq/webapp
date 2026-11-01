@@ -547,6 +547,8 @@ export interface KicadFontFile {
 export interface KicadBoard {
   /** The `(version N)` stamp; null when the file has none. */
   version: number | null
+  /** The layer names no KiCad layer is whose drawn items were moved to Cmts.User, as KiCad's rescue moves them, with how many items each had. */
+  rescuedLayers: { name: string; count: number }[]
   era: Era
   generator: string | null
   generatorVersion: string | null

@@ -202,12 +202,11 @@ describe("board text", () => {
     const r = imp(board({ version: 20200101, body: [gtext("%R/%V ~RST~", "1 1", "F.SilkS", fx())] }))
     expect(r.project.texts[0].text).toBe("${REFERENCE}/${VALUE} ~{RST}")
   })
-  it("reads a text on a layer of an old board by KiCad's own mapped name, and refuses a layer it does not know", () => {
+  it("reads a text on a layer of an old board by KiCad's own mapped name, and moves one on a layer it does not know to Cmts.User, as KiCad's rescue does", () => {
     const r = imp(board({ version: 20200101, body: [gtext("x", "1 1", "Serigrafia.Fronte", fx())] }))
     expect(r.project.texts[0].layer).toBe("F.SilkS")
-    const u = forced(board({ body: [gtext("x", "1 1", "Nowhere", fx())] }))
-    expect(u.lossy.join(" ")).toMatch(/Nowhere/)
-    expect(u.project.texts).toHaveLength(0)
+    const u = imp(board({ body: [gtext("x", "1 1", "Nowhere", fx())] }))
+    expect(u.project.texts.map((t) => t.layer)).toEqual(["Cmts.User"])
   })
   it("a text on Edge.Cuts is kept, and drawn in the outline file", () => {
     const r = imp(board({ body: [gtext("edge", "1 1", "Edge.Cuts", fx())] }))

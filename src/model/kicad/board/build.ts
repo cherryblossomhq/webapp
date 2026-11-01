@@ -714,6 +714,16 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   for (const what of zoneResult.lossy) lose(what)
 
   // ---------- drawings on the board ----------
+  if (board.rescuedLayers.length) {
+    const count = board.rescuedLayers.reduce((n, l) => n + l.count, 0)
+    report.entries.push({
+      code: "layer-rescued",
+      severity: "note",
+      object: `${count} item${count === 1 ? "" : "s"} on ${board.rescuedLayers.map((l) => `"${l.name}"`).join(", ")}, which no KiCad layer is`,
+      why: "KiCad moves items on a layer it does not know to Cmts.User when it opens the board, and so does the import. KiCad's EAGLE converter writes UNDEFINED for the EAGLE layers it cannot map (names, values, documentation).",
+      count,
+    })
+  }
   const edgeTargets: string[] = []
   const graphicsCx: GraphicsContext = { board, map: (p) => ({ x: p.x, y: -p.y }), layerOf: (l) => l, netName: (raw) => labelText.get(raw), lose, degenerate, badNets, edgeTargets, where: "the board" }
   const graphics: BoardGraphic[] = []

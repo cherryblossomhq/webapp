@@ -1,4 +1,5 @@
 import { legacyArc, rotK } from "./geometry"
+import { resolveLayer } from "./graphics"
 import { backdrillOf, generatorOf, netChainsOf, postMachiningOf, setupProtectionOf, viaProtectionOf } from "./drilling"
 import { decodeBase64, imageFacts } from "../../../lib/imageFacts"
 import { newReport, type ImportReport } from "./report"
@@ -366,6 +367,40 @@ export function padUnusedOf(pad: List): "remove" | "keepEnds" | undefined {
   return mode
 }
 
+/** The items whose `layer` or `layers` say where they are drawn: drawings, texts, fields, dimensions, zones and their fills, targets and pictures (not tracks, vias or pads, which are copper). */
+const DRAWN_ITEM = /^(?:gr_|fp_)|^(?:dimension|zone|filled_polygon|filled_segments|target|property|image|table|table_cell|barcode)$/
+
+/**
+ * Moves the drawn items on a layer no KiCad layer is to Cmts.User, as KiCad does: its reader puts them on its `Rescue` layer, and opening the board
+ * asks to move them to User.Comments (`parseBOARD_unchecked`, "Items found on undefined layers"). KiCad's EAGLE converter writes `UNDEFINED` for an
+ * EAGLE layer it cannot map. The tree is changed in place; the names and how many items were on each are returned for the report.
+ */
+function rescueUndefinedLayers(tree: List, copper: KicadBoard["copper"]): { name: string; count: number }[] {
+  const counts = new Map<string, number>()
+  const unknown = (name: string) => !/[*&]/.test(name) && resolveLayer({ copper }, name).kind === "unknown"
+  const walk = (node: List) => {
+    for (const c of node) {
+      if (!Array.isArray(c) || typeof c[0] !== "string" || c[0] === "setup" || c[0] === "layers") continue
+      if (DRAWN_ITEM.test(c[0])) {
+        let moved = false
+        for (const l of c) {
+          if (!Array.isArray(l) || (l[0] !== "layer" && l[0] !== "layers")) continue
+          for (let i = 1; i < (l[0] === "layer" ? Math.min(2, l.length) : l.length); i++) {
+            const name = l[i]
+            if (typeof name !== "string" || !unknown(name)) continue
+            l[i] = "Cmts.User"
+            if (!moved) counts.set(name, (counts.get(name) ?? 0) + 1)
+            moved = true
+          }
+        }
+      }
+      walk(c)
+    }
+  }
+  walk(tree)
+  return [...counts].map(([name, count]) => ({ name, count }))
+}
+
 function readBoard(tree: List, report: ImportReport): KicadBoard {
   const issues = new Issues()
   const versionNode = kid(tree, "version")
@@ -403,6 +438,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   const general = kid(tree, "general")
   const declared = copperNames.length || numAt(kid(general, "layers"), 1, 0)
   const copper = { names: copperNames, front: copperNames[0] ?? "F.Cu", back: copperNames[copperNames.length - 1] ?? "B.Cu" }
+  const rescuedLayers = rescueUndefinedLayers(tree, copper)
 
   // ---- nets (switches 13 and 19) ----
   const nets: KicadNet[] = []
@@ -1496,6 +1532,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     netChains: netChainsOf(tree),
     ...(setupProtectionOf(kid(tree, "setup")) ? { viaProtect: setupProtectionOf(kid(tree, "setup")) } : {}),
     images,
+    rescuedLayers,
     embeddedFonts: { board: strAt(kid(tree, "embedded_fonts"), 1) === "yes", files: fontFiles },
     others,
     tree,

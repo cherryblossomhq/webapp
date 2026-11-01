@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { schematic } from "./kicad-schematic-fixtures"
+import { LIB_R, schematic } from "./kicad-schematic-fixtures"
 
 // Words of KiCad schematics, from KiCad 6's nightlies to KiCad 9, that 1,146 open-source projects found the importer refusing.
+
+const R1 = "aaaaaaaa-0000-4000-8000-000000000001"
 
 const imp = (text: string) => {
   const r = importKicadSchematic(text)
@@ -17,5 +19,12 @@ describe("a hierarchical label's own fields (KiCad 9)", () => {
     const l = project.labels.find((x) => x.name === "IN")!
     expect(l.kind).toBe("hierarchical")
     expect(l.fields?.[0]).toMatchObject({ name: "Intersheetrefs", place: { hidden: true, h: "left" } })
+  })
+})
+
+describe("a sheet's page number and count (KiCad 6 nightlies, 2020)", () => {
+  it("is passed over: the export numbers the pages in tree order", () => {
+    const r = imp(schematic({ version: 20200828, head: "(page 2 20)", libs: [LIB_R], symbols: [{ lib: "Device:R", at: "50.8 50.8", ref: "R1", uuid: R1 }] }))
+    expect(r.project.components.map((c) => c.ref)).toEqual(["R1"])
   })
 })

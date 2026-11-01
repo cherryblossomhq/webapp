@@ -23,6 +23,7 @@ export const RULES_SCH = [
   rule("version|generator|generator_version", "native", "-", { effort: "S", note: "the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)" }),
   rule("uuid", "native", "-", { effort: "S", note: "the sheet's id, the first part of every instance path" }),
   rule("paper", "not-needed", "-", { note: "sheet size of KiCad's drawing frame" }),
+  rule("page", "not-needed", "-", { note: "a KiCad 6 nightly's page number and count of the sheet (2020): the export numbers the pages in tree order" }),
   rule("title_block(?:>.*)?", "native", "Project.properties", { effort: "S" }),
   rule("embedded_fonts", "extend", "-", { ext: "X19", note: "the fonts the schematic embeds" }),
   rule("embedded_files(?:>.*)?", "report", "-", { note: "founder decision: no files packed inside the KiCad file for now; each embedded datasheet or model is a report entry named per file" }),

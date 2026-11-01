@@ -44,8 +44,9 @@ const AREA: JsonSchema = {
 
 /**
  * The most get_wiring answers at once, in characters: about 10k tokens, where Claude Code starts
- * warning about a tool's output (it cuts one off at 25k by default). A whole sheet grows with the
- * board (a dense 41-part board's was 32k characters), and one block of it stays well under.
+ * warning about a tool's output (past 50,000 characters or 25k tokens it puts one in a file). A whole
+ * sheet grows with the board (a dense 41-part board's was 32k characters), and one block of it stays
+ * well under.
  */
 export const WIRING_BUDGET = 30_000
 

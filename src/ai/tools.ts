@@ -266,11 +266,26 @@ function pinHelp(project: Project, spec: string) {
 
 // ---------- Tools ----------
 
+/**
+ * The most get_design answers at once, in characters. It is what an assistant reads first, so it may
+ * go up to where Claude Code stops showing a tool's text and puts it in a file instead (50,000
+ * characters, or 25k tokens), less room for the notes the MCP server adds (`designNotes`). At about
+ * 430 characters a part, a design past about 100 parts answers with an overview instead.
+ */
+export const DESIGN_BUDGET = 45_000
+
 const getDesign: ToolSpec = {
   name: "get_design",
   description:
-    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels.",
-  input_schema: { type: "object", properties: { sheet: SHEET_PROPERTY } },
+    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels. block or refs reads only those parts, with the nets that touch them: a design too big for one answer lists its parts and nets by name only, to read again so.",
+  input_schema: {
+    type: "object",
+    properties: {
+      sheet: SHEET_PROPERTY,
+      block: { type: "string", description: "Only this block's parts" },
+      refs: { type: "array", items: { type: "string" }, description: "Only these parts, e.g. [\"U1\", \"C3\"]" },
+    },
+  },
   run: (project, input) => {
     // A project with sheets: the whole design, each part saying which sheet it is on, or one sheet's parts and the nets that touch them.
     const hier = isHierarchical(project)
@@ -282,6 +297,22 @@ const getDesign: ToolSpec = {
       if ("error" in r) return fail(project, r.error)
       only = hier ? r.use : undefined
     }
+    // Part of the design: a block's parts (with the power ports drawn for them), or parts by designator, and the nets that touch them.
+    const blockName = typeof input?.block === "string" ? input.block.trim() : ""
+    const refs = Array.isArray(input?.refs) ? input.refs.filter((r): r is string => typeof r === "string" && r.trim() !== "").map((r) => r.trim()) : []
+    if (blockName && refs.length) return fail(project, "Give block or refs, not both.")
+    let picked: Set<string> | undefined
+    let pickedBlock: SchematicBlock | undefined
+    if (blockName) {
+      pickedBlock = findBlock(project, blockName)
+      if (!pickedBlock) return fail(project, `No block ${blockName}. Blocks: ${blockNames(project)}`)
+      picked = new Set([...pickedBlock.components, ...contentsOf(project, [pickedBlock.id]).components])
+    } else if (refs.length) {
+      const found = componentsByRef(project, refs)
+      if (typeof found === "string") return fail(project, found)
+      picked = new Set(found.map((c) => c.id))
+    }
+    const shown = (c: ComponentInstance) => (!only || (c.inst ?? "") === only.path) && (!picked || picked.has(c.id))
     const useOfRef = new Map(project.components.map((c) => [c.ref, c.inst ?? ""]))
     const humanOf = (inst: string) => useAt(project, inst).human
     const netOf = pinNetNames(project)
@@ -293,7 +324,7 @@ const getDesign: ToolSpec = {
     const isSymbol = (c: ComponentInstance) => !!findPart(c.partId)?.powerNet
     // A unit of a part with several is listed with its part (`units_placed`), not as a component of its own.
     const unitSymbols = unitOwners(project.components)
-    const components = resolvedComponents(project).filter((c) => !isSymbol(c) && !unitSymbols.has(c.id) && (!only || (c.inst ?? "") === only.path)).map((c) => {
+    const components = resolvedComponents(project).filter((c) => !isSymbol(c) && !unitSymbols.has(c.id) && shown(c)).map((c) => {
       const part = findPart(c.partId)
       const base = {
         ref: c.ref,
@@ -328,7 +359,7 @@ const getDesign: ToolSpec = {
         }),
       }
     })
-    const powerSymbols = project.components.filter((c) => isSymbol(c) && (!only || (c.inst ?? "") === only.path)).map((c) => ({
+    const powerSymbols = project.components.filter((c) => isSymbol(c) && shown(c)).map((c) => ({
       ref: c.ref,
       net: powerNetName(c) ?? undefined,
       x: c.sch.x,
@@ -339,21 +370,25 @@ const getDesign: ToolSpec = {
     const nets = conn.nets
       .filter((n) => n.named || n.pins.length > 1)
       .filter((n) => !only || n.pins.some((p) => useOfRef.get(refOf.get(p.componentId) ?? "") === only!.path))
+      .filter((n) => !picked || n.pins.some((p) => picked!.has(p.componentId)))
       .map((n) => ({ name: n.name, pins: n.pins.map((p) => `${refOf.get(p.componentId)}.${p.pin}`) }))
     const erc = splitIgnored(getErc(project), project.ignoredChecks)
     const frames = new Map(blockFrames(project).map((f) => [f.id, f.box]))
     const info = project.blocks?.length ? netInfo(project) : null
     const order = info && readingOrder(project, info)
-    const blocks = (project.blocks ?? []).filter((b) => !only || (b.inst ?? "") === only.path).map((b) => {
-      const box = frames.get(b.id)
-      const ports = blockPorts(project, b.id, info!, order!)
-      return {
-        name: b.name,
-        parts: [...new Set(b.components.map((id) => refOf.get(id)))],
-        ...(box && { frame: { min_x: box.minX, min_y: box.minY, max_x: box.maxX, max_y: box.maxY } }),
-        ...(ports.length && { ports: ports.map((p) => ({ net: p.name, direction: p.direction, ...(p.group && { group: p.group }) })) }),
-      }
-    })
+    const blocks = (project.blocks ?? [])
+      .filter((b) => !only || (b.inst ?? "") === only.path)
+      .filter((b) => !picked || (pickedBlock ? b.id === pickedBlock.id : b.components.some((id) => picked!.has(id))))
+      .map((b) => {
+        const box = frames.get(b.id)
+        const ports = blockPorts(project, b.id, info!, order!)
+        return {
+          name: b.name,
+          parts: [...new Set(b.components.map((id) => refOf.get(id)))],
+          ...(box && { frame: { min_x: box.minX, min_y: box.minY, max_x: box.maxX, max_y: box.maxY } }),
+          ...(ports.length && { ports: ports.map((p) => ({ net: p.name, direction: p.direction, ...(p.group && { group: p.group }) })) }),
+        }
+      })
     const drawings = designDrawings(project)
     const boardDrawings = drawingsReport(project)
     const texts = textsReport(project)
@@ -392,7 +427,18 @@ const getDesign: ToolSpec = {
         unplaced_on_pcb: resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed).length,
       },
     }
-    return ok(project, JSON.stringify(design), `Read the design (${components.length} components, ${nets.length} nets)`)
+    const text = JSON.stringify(design)
+    if (text.length <= DESIGN_BUDGET) return ok(project, text, `Read the design (${components.length} components, ${nets.length} nets)`)
+    // Too much for one answer: every part and net by name, to read again a block or some parts at a time.
+    const { power_symbols: _symbols, ...rest } = design
+    const overview = {
+      too_big: `${plural(components.length, "component")} with their pins are too many for one answer, so this lists each as its designator, part id and value, and each net by name. Ask again with block or refs for their pins, places and nets.`,
+      ...rest,
+      components: components.map((c) => [c.ref, c.part, c.value, "sheet" in c && `on ${c.sheet}`].filter(Boolean).join(" ")),
+      nets: nets.map((n) => n.name),
+      ...(blocks.length ? { blocks: blocks.map(({ ports: _ports, ...b }) => b) } : {}),
+    }
+    return ok(project, JSON.stringify(overview), `Read the design's parts and nets by name (${components.length} components, ${nets.length} nets)`)
   },
 }
 

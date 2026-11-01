@@ -61,8 +61,8 @@ describe("get_wiring", () => {
     expect(runTool(example("blinker"), "get_wiring", { block: "NOPE" }).result).toMatch(/No block NOPE/)
   })
 
-  // Claude Code warns about a tool's output past 10k tokens and cuts it at 25k: a whole sheet grows
-  // with the board, so past the budget it answers with the frames, and every block fits.
+  // Claude Code warns about a tool's output past 10k tokens and puts one past 50,000 characters in a
+  // file: a whole sheet grows with the board, so past the budget it answers with the frames, and every block fits.
   const BLOG = readdirSync(new URL("./fixtures/blog-boards/", import.meta.url)).filter((f) => f.endsWith(".json"))
   const boards: [string, Project][] = [
     ...EXAMPLES.map((e): [string, Project] => [e.id, e.project]),

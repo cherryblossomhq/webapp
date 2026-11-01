@@ -48,6 +48,11 @@ const HAND_TOOLS_GROWTH = 2215
  * `arrange_blocks` (785), blocks in an order of its own; and get_design's pointer to get_wiring (64). The budget below was raised by exactly this.
  */
 const SCHEMATIC_DRAWING_GROWTH = 3528
+/**
+ * What get_design's `block` and `refs` added, in bytes (330): a design past the 45,000 characters an answer may hold lists its parts and nets by
+ * name, so a board of more than about 100 parts is read a block or some parts at a time. The budget below was raised by exactly this.
+ */
+const DESIGN_PARTS_GROWTH = 330
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -81,6 +86,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH).toBeLessThan(2100)
   })
 })

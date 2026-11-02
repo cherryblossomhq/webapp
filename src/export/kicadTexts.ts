@@ -17,6 +17,7 @@ import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 import { quoteTabs as quote } from "../lib/kicadQuote"
 import { stableUuid } from "./kicadUuid"
+import { FOOTPRINT_BLOCK, referenceOf } from "./kicadBlocks"
 
 // The texts of a board brought in from KiCad, written into the board file the converter made: board text as
 // `gr_text` and `gr_text_box`, and each part's reference, value and own text as the footprint's `property`
@@ -163,8 +164,8 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
 
   let text = pcb
   if (byRef.size) {
-    text = text.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-      const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    text = text.replace(FOOTPRINT_BLOCK, (block) => {
+      const ref = referenceOf(block)
       const items = ref === undefined ? undefined : byRef.get(ref)
       if (!items?.length) return block
       // The converter's own reference, value and text nodes go: this part's file says where they are.

@@ -8,6 +8,7 @@ import type { BoardShape, ComponentInstance, Project, ShapePoint, Vec2 } from ".
 import { fractureRings } from "./fracture"
 import { stableUuid } from "./kicadUuid"
 import { quoteFlat as quote } from "../lib/kicadQuote"
+import { FOOTPRINT_BLOCK, referenceOf } from "./kicadBlocks"
 
 // The board's drawings and each footprint's drawings, written into the board file the converter
 // made (`gr_line`, `gr_arc`, `gr_circle`, `gr_rect`, `gr_poly`, `gr_curve` on the board; `fp_*` inside
@@ -215,8 +216,8 @@ export function applyDrawings(pcb: string, project: Project): KicadDrawings {
 
   let text = pcb
   if (byRef.size) {
-    text = text.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-      const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    text = text.replace(FOOTPRINT_BLOCK, (block) => {
+      const ref = referenceOf(block)
       const items = ref === undefined ? undefined : byRef.get(ref)
       if (!items?.length) return block
       return block.replace(/\n {2}\)$/, () => `\n${items.join("\n")}\n  )`)

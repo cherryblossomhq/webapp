@@ -15,6 +15,7 @@ import { effects } from "./kicadTexts"
 import { stableUuid as uuidAt } from "./kicadUuid"
 import { quoteTabs as quote } from "../lib/kicadQuote"
 import { KICAD_PAGE_ORIGIN, userLayerNumber } from "./kicadShapes"
+import { FOOTPRINT_BLOCK, referenceOf } from "./kicadBlocks"
 
 // The dimensions, reference images and groups of a board brought in from KiCad, written into the board file the converter made, as KiCad 9 writes them (stamp 20241229):
 // a dimension with its points, height, format, style and text (the text it shows and where KiCad puts it, as KiCad saves a dimension), an image with its
@@ -106,9 +107,9 @@ const indent = (lines: string[], by: string) => lines.map((l) => `${by}${l}`).jo
 /** The footprints of the converter's file by reference: where each is in the text, and its id. */
 function footprintIds(pcb: string): Map<string, { uuid: string; pads: { number: string; uuid: string }[] }> {
   const out = new Map<string, { uuid: string; pads: { number: string; uuid: string }[] }>()
-  for (const m of pcb.matchAll(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g)) {
+  for (const m of pcb.matchAll(FOOTPRINT_BLOCK)) {
     const block = m[0]
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const ref = referenceOf(block)
     const uuid = block.match(/\n {4}\(uuid ([0-9a-f-]+)\)/)?.[1]
     if (ref === undefined || !uuid) continue
     const pads = [...block.matchAll(/\n {4}\(pad "((?:[^"\\]|\\.)*)"[\s\S]*?\n {6}\(uuid ([0-9a-f-]+)\)/g)].map((p) => ({ number: p[1], uuid: p[2] }))
@@ -253,8 +254,8 @@ export function applyBoardObjects(pcb: string, project: Project, drawings: Map<s
   }
   if (partLost > 0) notes.push(`${partLost} ${partLost === 1 ? "member" : "members"} of the groups inside parts could not be found in the file the converter wrote (a pad is found by its number, when the part has only one pad of it).`)
   if (partBlocks.size) {
-    text = text.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-      const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    text = text.replace(FOOTPRINT_BLOCK, (block) => {
+      const ref = referenceOf(block)
       const blocks = ref === undefined ? undefined : partBlocks.get(ref)
       return blocks?.length ? block.replace(/\n {2}\)$/, () => `\n${blocks.join("\n")}\n  )`) : block
     })

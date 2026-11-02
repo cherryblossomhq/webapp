@@ -68,6 +68,31 @@ describe("a net tie's bridge inside another part's pad of the tie's net", () => 
     expect(about(tie('(net_tie_pad_groups "1, 2")'))).toEqual([])
     expect(about(tie("")).length).toBeGreaterThan(0)
   })
+  it("and so is a tie pad's hole against the tie's drawing, which reaches into it (KiCad's IsNetTieExclusion at the hole's centre)", () => {
+    const held = (groups: string) =>
+      analysis(
+        imp(
+          board({
+            nets: NETS,
+            body: [
+              footprint({
+                ref: "NT2",
+                name: "NetTie:NetTie-2_THT_Pad1.0mm",
+                at: "10 5",
+                pads: [
+                  pad({ number: "1", type: "thru_hole", shape: "circle", at: "-1.27 0", size: "1 1", layers: '"*.Cu" "*.Mask"', net: net(1, "A"), extra: "(drill 0.6)" }),
+                  pad({ number: "2", type: "thru_hole", shape: "circle", at: "1.27 0", size: "1 1", layers: '"*.Cu" "*.Mask"', net: net(2, "B"), extra: "(drill 0.6)" }),
+                ],
+                extra: `${groups} (fp_line (start -1.27 0) (end 1.27 0) (stroke (width 0.5) (type solid)) (layer "F.Cu"))`,
+              }),
+            ],
+            outline: OUTLINE,
+          }),
+        ),
+      ).violations.filter((v) => /^Hole clearance .* the hole of NT2/.test(v.message))
+    expect(held('(net_tie_pad_groups "1, 2")')).toEqual([])
+    expect(held("").length).toBeGreaterThan(0)
+  })
 })
 
 describe("courtyards as the footprint draws them", () => {

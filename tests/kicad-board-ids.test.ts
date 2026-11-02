@@ -81,4 +81,20 @@ describe("a board from KiCad written whole", () => {
     expect(p.components[0].texts).toEqual(texts)
     expect(p.components[0].pcb).toMatchObject({ x: 12.806536, y: -5.000013 })
   })
+
+  it("keeps a uuid the file gives two footprints (a board copied into a panel) with the first, and the export gives the other a new one", async () => {
+    const panel = importKicadBoard(
+      board({
+        nets: ['(net 0 "")'],
+        body: ["R1", "R2"].map((ref, i) => footprint({ ref, at: `${5 + 5 * i} 5`, extra: `(uuid "${FP}")`, pads: [pad({ number: "1", at: "0 0", extra: `(uuid "${PAD1}")` })] })),
+      }),
+      { built: ALL },
+    )
+    if (panel.status !== "imported") throw new Error(panel.status)
+    const [r1, r2] = ["R1", "R2"].map((ref) => panel.project.components.find((c) => c.ref === ref)!)
+    expect([r1.fpUuid, r1.padUuids]).toEqual([FP, [PAD1]])
+    expect([r2.fpUuid, r2.padUuids]).toEqual([undefined, undefined])
+    const text = await pcbOf(panel.project)
+    for (const id of [FP, PAD1]) expect(text.split(`(uuid ${id})`).length - 1).toBe(1)
+  })
 })

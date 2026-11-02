@@ -391,6 +391,15 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     if (hex && /^[0-9a-f]{8}$/.test(hex)) return `00000000-0000-0000-0000-0000${hex}`
     return hex && /^[0-9a-f]{32}$/.test(hex) ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` : null
   }
+  // A uuid the file gives two footprints (a board copied into a panel) stays with the first: the export writes the other a new one, as it does a copy made here.
+  const idOwner = new Map<string, object>()
+  const ownId = (c: List, fp: object): string | null => {
+    const id = kicadId(c)
+    const owner = id ? idOwner.get(id) : undefined
+    if (!id || (owner && owner !== fp)) return null
+    idOwner.set(id, fp)
+    return id
+  }
   /** What each id of the file is in the project, for the groups to resolve their members by. */
   const boardRefs = new Map<string, string[]>()
   const addRef = (uuid: string | null, ...ids: string[]) => {
@@ -521,8 +530,11 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       sch: { x: 0, y: 0, rot: 0 },
       // To the nanometre the file gives, as KiCad keeps it: KiCad keys a check the user dismissed by where its marker is, which is often the footprint's place.
       pcb: { x: round(at.x, 6), y: round(at.y, 6), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
-      ...(kicadId(fp.node) ? { fpUuid: kicadId(fp.node)! } : {}),
-      ...(fp.pads.some((p) => kicadId(p.node)) ? { padUuids: fp.pads.map((p) => kicadId(p.node) ?? "") } : {}),
+      ...((() => {
+        const own = ownId(fp.node, fp)
+        const pads = fp.pads.map((p) => ownId(p.node, fp) ?? "")
+        return { ...(own ? { fpUuid: own } : {}), ...(pads.some(Boolean) ? { padUuids: pads } : {}) }
+      })()),
       ...(flags ? { flags } : {}),
       // The part's own text, as the file has it (none is a part with no designator); with it the editor places none.
       texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }, partTextOrigins),

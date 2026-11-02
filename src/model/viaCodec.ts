@@ -125,7 +125,10 @@ export function packVias(vias: Via[]): { vias: Via[]; vx?: { s: Spec; v: number[
   return { vias: stripped, vx: [...bySpec.values()] }
 }
 
-/** The raw vias of a stored project with the table `vx` put back on them: an entry that does not read, or names a via that is not there, is left out. */
+/**
+ * The raw vias of a stored project with the table `vx` they were written with before put back on them: an entry that does not read, or names a via that is not
+ * there, is left out, and a field a via has of its own (an edit since wrote it there) stands over the table's.
+ */
 export function unpackVias(raw: unknown, vx: unknown): unknown {
   if (!Array.isArray(raw) || !Array.isArray(vx)) return raw
   const out = raw.slice()
@@ -133,7 +136,7 @@ export function unpackVias(raw: unknown, vx: unknown): unknown {
     if (!isObject(entry) || !isObject(entry.s) || !Array.isArray(entry.v)) continue
     for (const i of entry.v) {
       if (!Number.isInteger(i) || i < 0 || i >= out.length || !isObject(out[i])) continue
-      out[i] = { ...(out[i] as Record<string, unknown>), ...entry.s }
+      out[i] = { ...entry.s, ...(out[i] as Record<string, unknown>) }
     }
   }
   return out

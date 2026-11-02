@@ -268,8 +268,7 @@ describe("the project file", () => {
   it("drops outlines that do not read, and keeps the font's name", () => {
     const p = imported(withText(text()))
     const file = JSON.parse(serializeProject(p))
-    const kt = file.project.kt[0]
-    kt[kt.length - 1][7] = "!!!"
+    file.project.texts[0].outline = "!!!"
     const back = parseProjectFile(file, { id: "x" })
     expect(back.texts[0].face).toBe("Ubuntu Sans")
     expect(back.texts[0].outline).toBeUndefined()

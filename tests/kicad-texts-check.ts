@@ -182,7 +182,7 @@ export function checkTexts(text: string, project: Project, opts: { font?: Oracle
   return result
 }
 
-/** The project through the stored form and back: the same texts on the board and on every part, to the last digit, and no text stored as a long object. */
+/** The project through the stored form and back: the same texts on the board and on every part, to the last digit. */
 export function textsRoundTripOk(project: Project): boolean {
   const kicad = project.texts?.some((t) => t.layer !== undefined)
   const parts = project.components.some((c) => c.texts)
@@ -192,5 +192,5 @@ export function textsRoundTripOk(project: Project): boolean {
   if (!isDeepStrictEqual(back.texts, project.texts)) return false
   const had = new Map(project.components.map((c) => [c.id, c.texts]))
   for (const c of back.components) if (!isDeepStrictEqual(c.texts, had.get(c.id))) return false
-  return !stored.includes('"kind":"reference"') && !stored.includes('"hj":') && !stored.includes('"textStyles":null')
+  return true
 }

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { isDeepStrictEqual } from "node:util"
 import { tidySchematic } from "../src/model/tidy"
@@ -265,9 +266,10 @@ describe("a text box", () => {
     const none = imp(board({ version: 20241229, body: [box("")] }))
     expect(none.project.texts[0].knockout).toBeUndefined()
   })
-  it("reads the box of KiCad's own API test board with its knockout", () => {
-    const path = "<corpus dir>/kicad-source/qa/data/pcbnew/api_kitchen_sink.kicad_pcb"
-    if (!existsSync(path)) return
+  // KiCad's own test board, in a local corpus (KICAD_CORPUS): skipped, not passed, without it.
+  const kitchenSink = join(process.env.KICAD_CORPUS ?? "", "kicad-source/qa/data/pcbnew/api_kitchen_sink.kicad_pcb")
+  it.skipIf(!process.env.KICAD_CORPUS || !existsSync(kitchenSink))("reads the box of KiCad's own API test board with its knockout", () => {
+    const path = kitchenSink
     const text = readFileSync(path, "utf8")
     const o = textOracle(text)
     const boxes = [...o.board, ...o.footprints.flatMap((f) => f.texts)].filter((t) => t.isBox)
@@ -426,21 +428,17 @@ describe("the stored form", () => {
     ]
     return imp(board({ body, outline: '(gr_rect (start 0 0) (end 140 20) (stroke (width 0.1) (type default)) (fill none) (layer "Edge.Cuts"))' })).project
   }
-  it("holds the texts compactly: a table of styles, a short array per text, and the same project in memory after a load", () => {
+  it("holds the texts as the objects the live sync edits, and the same project in memory after a load", () => {
     const p = sample()
     const stored = serializeProject(p)
     const doc = JSON.parse(stored).project
-    expect(doc.textStyles.length).toBeLessThan(8)
-    expect(doc.components[0].tx[0]).toHaveLength(5)
-    expect(doc.components[0]).not.toHaveProperty("texts")
-    expect(doc.kt).toHaveLength(1)
-    expect(stored).not.toContain('"kind":"reference"')
+    expect(doc.components[0].texts).toHaveLength(3)
+    expect(doc.texts).toHaveLength(1)
+    expect(doc).not.toHaveProperty("kt")
+    expect(doc).not.toHaveProperty("textStyles")
     const back = parseProjectFile(stored, { id: "x" })
     expect(back.texts).toEqual(p.texts)
     expect(isDeepStrictEqual(back.components.map((c) => c.texts), p.components.map((c) => c.texts))).toBe(true)
-    // about 25 bytes a text, where a text as an object is 150 to 250
-    const perText = (stored.length - serializeProject({ ...p, texts: [], components: p.components.map(({ texts: _t, ...c }) => c) }).length) / (p.components.length * 3 + 1)
-    expect(perText).toBeLessThan(60)
   })
 })
 
@@ -457,9 +455,8 @@ describe("the order of the board's texts through the stored form", () => {
       const back = parseProjectFile(serializeProject(p), { id: "x" })
       expect(back.texts.map((t) => t.id)).toEqual(order.map((t) => t.id))
     }
-    // KiCad's after the editor's own, which is how an imported board is, needs no extra field
-    expect(serializeProject({ ...base, texts: [own[0], own[1], k1, k2] })).not.toContain('"kp"')
-    expect(serializeProject({ ...base, texts: [own[0], k1, own[1], k2] })).toContain('"kp":[1,3]')
+    // The texts are one list in the stored file, in their order, which needs no field to say where KiCad's were.
+    expect(serializeProject({ ...base, texts: [own[0], k1, own[1], k2] })).not.toContain('"kp"')
   })
 })
 

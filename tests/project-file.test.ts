@@ -595,9 +595,9 @@ describe("polygon zones", () => {
     const read = parseProjectFile(doc, origin)
     expect(read.zones).toEqual(zones)
     const written = JSON.parse(serializeProject(read))
-    expect(written.project.zones[0].ol[0].slice(0, 3)).toEqual(["p", 0, 0])
-    expect(written.project.zones[1].ol[0][0]).toBe("c")
-    expect(written.project.zones[0]).not.toHaveProperty("outline")
+    expect(written.project.zones[0].outline[0].slice(0, 3)).toEqual(["p", 0, 0])
+    expect(written.project.zones[1].outline[0][0]).toBe("c")
+    expect(written.project.zones[0]).not.toHaveProperty("ol")
     expect(parseProjectFile(serializeProject(read), origin).zones).toEqual(zones)
   })
   it("a polygon of 2,000 corners with millimetre coordinates to a micron is about 16 bytes a corner", () => {

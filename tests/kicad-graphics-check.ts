@@ -141,7 +141,7 @@ export function checkGraphics(text: string, project: Project, lossy: string[]): 
   return { file: file.length, project: world.length, counts, wrong: skip ? 0 : wrong, layers, note: (!skip && wrong) || !counts ? firstWrong || `drawings: counts differ ${JSON.stringify(layers)} vs ${JSON.stringify(projCounts)}` : "" }
 }
 
-/** The project's drawings through the stored form and back: the same board drawings (ids included) and the same drawings in every land, to the last digit, and the stored text holds no drawing as an object. */
+/** The project's drawings through the stored form and back: the same board drawings (ids included) and the same drawings in every land, to the last digit. */
 export function roundTripOk(project: Project): boolean {
   if (!project.graphics?.length && !project.footprints?.length) return true
   const text = serializeProject(project)
@@ -151,5 +151,5 @@ export function roundTripOk(project: Project): boolean {
   const got = new Map((back.footprints ?? []).map((f) => [f.name, f.shapes]))
   if (had.size !== got.size) return false
   for (const [name, shapes] of had) if (!isDeepStrictEqual(got.get(name), shapes)) return false
-  return !text.includes('"type":"line"')
+  return true
 }

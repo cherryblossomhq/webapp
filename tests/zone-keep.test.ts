@@ -149,13 +149,14 @@ describe("a zone keeps KiCad's own fill", () => {
     const p = imported([zoneA(false), zoneB(false)])
     expect(p.zones.some((z) => z.kept)).toBe(false)
     expect(analyze(p).zoneFills.some((f) => f.fromFile)).toBe(false)
-    expect(serializeProject(p)).not.toContain('"ff"')
+    expect(JSON.parse(serializeProject(p)).project.zones.some((z: { kept?: unknown }) => z.kept)).toBe(false)
   })
 
   it("the stored project keeps the fill exactly and still sees it as valid after it is loaded", () => {
     const p = imported([zoneA(), zoneB()])
     const text = serializeProject(p)
-    expect(text).toContain('"ff"')
+    // Compact under the zone's own key, which a refill (an edit that takes it off) reaches.
+    expect(JSON.parse(text).project.zones[0].kept.g).toBe(p.zones[0].kept!.sig)
     const back = parseProjectFile(text, origin(p))
     expect(back.zones[0].kept).toEqual(p.zones[0].kept)
     expect(back.zones[1].kept).toEqual(p.zones[1].kept)

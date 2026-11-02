@@ -263,10 +263,11 @@ describe("dimensions, groups and images are stored compactly and read back as th
     p = { ...p, images: [{ id: "im1", x: 1, y: 2, layer: "Dwgs.User", scale: 1, file: "c".repeat(64), format: "png", px: 4, py: 4, ppi: 300 }] }
     const file = JSON.parse(serializeProject(p))
     expect(file.version).toBe(PROJECT_FILE_VERSION)
-    expect(file.project.dimensions).toBeUndefined()
-    expect(file.project.dm).toHaveLength(1)
-    expect(file.project.grp).toHaveLength(1)
-    expect(file.project.im).toHaveLength(1)
+    // As the lists of objects the live sync edits item by item (a compact form under another key lost those edits).
+    expect(file.project.dimensions).toHaveLength(1)
+    expect(file.project.groups).toHaveLength(1)
+    expect(file.project.images).toHaveLength(1)
+    expect(file.project.dm).toBeUndefined()
     const back = parseProjectFile(serializeProject(p), { id: p.id })
     expect(back.dimensions).toEqual(p.dimensions)
     expect(back.groups).toEqual(p.groups)

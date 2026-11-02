@@ -319,12 +319,13 @@ describe("storing an outline", () => {
     const p = addOutlineShape(plain(), { type: "circle", c: P(2, 2), r: 3 }).project
     const text = serializeProject(p)
     const doc = JSON.parse(text)
-    expect(doc.project.board.outline).toBeUndefined()
-    expect(Array.isArray(doc.project.board.ol)).toBe(true)
+    // As the object the live sync edits by its keys (`board.outline.paths`), not compact under `ol`.
+    expect(doc.project.board.outline.paths).toHaveLength(p.board.outline!.paths.length)
+    expect(doc.project.board.ol).toBeUndefined()
     const back = parseProjectFile(text, { id: "x" })
     expect(back.board).toEqual(p.board)
     expect(serializeProject(back)).toBe(text)
-    expect(JSON.parse(serializeProject(plain())).project.board.ol).toBeUndefined()
+    expect(JSON.parse(serializeProject(plain())).project.board.outline).toBeUndefined()
     // a missing outline is not a board with none
     const missing = { ...plain(), board: { ...plain().board, outline: { paths: [] } as BoardOutline } }
     expect(parseProjectFile(serializeProject(missing), { id: "x" }).board.outline).toEqual({ paths: [] })

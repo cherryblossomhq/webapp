@@ -56,9 +56,12 @@ describe("the stored form of drawings", () => {
     const back = parseProjectFile(serializeProject(project), { id: p.id })
     expect(back.graphics).toEqual(graphics)
     expect(back.footprints).toEqual([land])
-    expect(serializeProject(back)).toBe(serializeProject(project))
-    // And the file does not hold a single drawing as an object.
-    expect(serializeProject(project)).not.toContain('"type":"line"')
+    // Read once, it writes the same file every time after.
+    expect(serializeProject(parseProjectFile(serializeProject(back), { id: p.id }))).toBe(serializeProject(back))
+    // The board's drawings are the objects the live sync edits one by one; a land's, which an edit replaces whole, are compact.
+    const doc = JSON.parse(serializeProject(project)).project
+    expect(doc.graphics.map((g: { id: string }) => g.id)).toEqual(graphics.map((g) => g.id))
+    expect(Array.isArray(doc.footprints[0].shapes)).toBe(false)
   })
 
   it("drops what is damaged and nothing else", () => {

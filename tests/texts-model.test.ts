@@ -8,6 +8,7 @@ import { findPart } from "../src/model/library"
 import { updateComponent } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { placeDesignators } from "../src/model/silk"
+import { packTexts } from "../src/model/textCodec"
 import { addBoardText, addPartText, landAngle, landPoint, moveBoardTexts, movePartTexts, patchTexts, removeBoardTexts, removePartText, resetPartTexts, updateBoardTexts, updatePartText, withDesignatorText } from "../src/model/textOps"
 import { boardTextId, componentTexts, drawRotation, expandTextVars, hasExpression, parseTextId, partTextId, partTextWorld, shownOf, textInk, textShown, textVariables, worldTexts } from "../src/model/texts"
 import type { ComponentInstance, PartText, Project, Rotation } from "../src/model/types"
@@ -362,16 +363,23 @@ describe("the project file", () => {
     expect(read.texts.filter((t) => t.layer !== undefined).map((t) => t.id)).toEqual(["h1"])
     expect(read.texts.find((t) => t.id === "h1")).toMatchObject({ side: "bottom", mirror: true })
   })
-  it("damaged stored entries are dropped one by one, and a style that does not read takes its texts with it", () => {
+  it("damaged entries of the compact form of before are dropped one by one, and a style that does not read takes its texts with it", () => {
     let p = blinker()
     p = addBoardText(p, { layer: "F.SilkS", text: "keep", x: 1, y: 1, rot: 0, size: 1 }).project
     p = addBoardText(p, { layer: "F.Fab", text: "gone", x: 1, y: 1, rot: 0, size: 2 }).project
     const doc = JSON.parse(serializeProject(p))
+    // The file as it was written before November 2026: KiCad's texts compact, the editor's own as objects.
+    const packed = packTexts(p.texts, p.components)
+    Object.assign(doc.project, { texts: p.texts.filter((t) => t.layer === undefined), kt: packed.kt, textStyles: packed.textStyles })
     expect(doc.project.kt).toHaveLength(2)
     doc.project.textStyles[doc.project.kt[1][0]] = { l: "Nowhere", s: 2 }
     doc.project.kt.push([99, "T", 0, 0, 0, "orphan", 0], [0, "T", "x", 0, 0, "bad", 0], [0, "Q", 0, 0, 0, "kind", 0])
     const read = parseProjectFile(doc, { id: "x" })
     expect(read.texts.filter((t) => t.layer !== undefined).map((t) => t.text)).toEqual(["keep"])
+    // As written now, the objects: one that does not read is dropped, the rest kept.
+    const now = JSON.parse(serializeProject(p))
+    now.project.texts.push({ id: "bad", layer: "F.SilkS", text: 3, x: 0, y: 0, rot: 0 })
+    expect(parseProjectFile(now, { id: "x" }).texts.filter((t) => t.layer !== undefined).map((t) => t.text)).toEqual(["keep", "gone"])
   })
   it("a box and a bold, italic, mirrored, knockout text with its justification survive a save and a load exactly", () => {
     let p = blinker()

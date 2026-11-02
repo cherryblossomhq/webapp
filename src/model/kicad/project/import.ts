@@ -847,20 +847,25 @@ function mergeProjects(boardProject: Project, sch: SchematicBuild, link: LinkRes
   const blocks: SchematicBlock[] | undefined = sch.project.blocks
   const properties = [...(boardProject.properties ?? [])]
   for (const p of sch.project.properties ?? []) if (!properties.some((q) => q.key === p.key)) properties.push(p)
-  // A 3D model belongs to a part and a footprint: a linked part has a new id, so its model moves to it.
+  // A 3D model belongs to a part and a footprint: a linked part has a new id, so its model moves to it. One part of the board's (every 0603 resistor's land) is
+  // many of the schematic's (one for each value), and each of them gets the model.
   const models: NonNullable<Project["models"]> = []
-  const newPartOf = new Map<string, string>()
+  const newPartsOf = new Map<string, Set<string>>()
   for (const l of link.links) {
     if (!l.record) continue
     const owner = symbolFootprint.get(l.record)
     const old = componentOf.get(l.footprint)
     const next = sch.byRecord.get(l.record)
-    if (owner && old && next && owner.index === l.footprint) newPartOf.set(`${old.partId}|${old.footprint}`, next.partId)
+    if (!owner || !old || !next || owner.index !== l.footprint) continue
+    const key = `${old.partId}|${old.footprint}`
+    const parts = newPartsOf.get(key) ?? new Set<string>()
+    newPartsOf.set(key, parts.add(next.partId))
   }
   for (const m of boardProject.models ?? []) {
     if (placed.some((c) => c.partId === m.part && c.footprint === m.footprint)) models.push(m)
-    const moved = newPartOf.get(`${m.part}|${m.footprint}`)
-    if (moved && !models.some((x) => x.part === moved && x.footprint === m.footprint)) models.push({ ...m, part: moved })
+    for (const moved of newPartsOf.get(`${m.part}|${m.footprint}`) ?? []) {
+      if (!models.some((x) => x.part === moved && x.footprint === m.footprint)) models.push({ ...m, part: moved })
+    }
   }
   // A linked symbol is the schematic's part on the board's footprint: the footprint's own text and KiCad name come over, and its flags are joined with the symbol's
   // (the symbol wins only for the flags its file's KiCad copies to a footprint, see `joinFlags`). The flags are the part's, so every unit of a part carries them, as `setFlags` leaves them.

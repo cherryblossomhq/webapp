@@ -432,6 +432,48 @@ describe("the 3D board and the STEP solid", () => {
     expect(Math.abs(Math.abs(v) / (AREA * p.board.thickness) - 1)).toBeLessThan(0.002)
     expect(built.group.getObjectByName("mask-top")).toBeTruthy()
   })
+
+  it("builds a board of many drills from its rings, with the drills cut from its faces by a mask", () => {
+    // Up to 400 drills are cut from the slab and the faces as geometry; past that the triangulation of one shape with all of them grows with
+    // the square of the drills (CERN's Macbeth, about 8,000, ran for minutes and crashed the page).
+    const paths: string[] = []
+    vi.stubGlobal("document", {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => new Proxy({}, { get: (_t, prop) => (prop === "canvas" ? {} : () => void (prop === "closePath" && paths.push("drill"))), set: () => true }),
+      }),
+    })
+    const few = drawn()
+    const small = buildBoard(few, [], createSharedMaterials(), 1)
+    expect(((small.group.getObjectByName("mask-top") as THREE.Mesh).material as THREE.MeshPhysicalMaterial).alphaMap).toBeNull()
+    const one = addVia(few, P(1, 1), { locked: true }).project.vias.at(-1)!
+    const vias = Array.from({ length: 1500 }, (_, i) => ({ ...one, id: `v${i}`, x: 2 + (i % 50) * 0.7, y: 2 + Math.floor(i / 50) * 0.8 }))
+    const p = { ...few, vias }
+    const start = performance.now()
+    const built = buildBoard(p, [], createSharedMaterials(), 1)
+    expect(performance.now() - start).toBeLessThan(10_000)
+    const top = built.group.getObjectByName("mask-top") as THREE.Mesh
+    const face = top.material as THREE.MeshPhysicalMaterial
+    expect(face.alphaMap).toBeTruthy()
+    expect(face.alphaTest).toBe(0.5)
+    // The face is the outline alone, and each drill on the board is a hole in its mask.
+    expect(top.geometry.attributes.position.count).toBeLessThan(2000)
+    expect(paths.length).toBeGreaterThan(400)
+    // The slab is walls only, facing out of the board: none of its normals is up or down, and on the straight edge at x = 0 they point to -x.
+    const substrate = (built.group.getObjectByName("substrate") as THREE.Mesh).geometry
+    const n = substrate.attributes.normal
+    const pos = substrate.attributes.position
+    let edge = 0
+    for (let i = 0; i < n.count; i++) {
+      expect(Math.abs(n.getZ(i))).toBeLessThan(1e-6)
+      if (Math.abs(pos.getX(i)) < 1e-6 && Math.abs(n.getX(i)) > 0.5) {
+        expect(n.getX(i)).toBeLessThan(0)
+        edge++
+      }
+    }
+    expect(edge).toBeGreaterThan(0)
+  })
 })
 
 describe("Sakura draws the same board from scratch", () => {

@@ -9,13 +9,19 @@ import { outlineGeometry, pointInRing } from "../../model/outline"
 import { holeCentre } from "../../model/padDistance"
 import { polygonKit, withMaxError, type ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
-import { buildBoardTextures, type BoardTextureSet } from "./boardTextures"
+import { buildBoardTextures, texelsPerMm, type BoardTextureSet } from "./boardTextures"
 import { contactShadow, createContactShadowMaterial } from "./contactShadow"
 import { onBoard } from "../../model/partFlags"
 
 // Finished copper plus surface finish stands this far proud of the mask (mm).
 const PAD_DEPTH = 0.035
 const LIFT = 0.0015
+/**
+ * Up to this many drills are cut from the board's slab and faces as geometry. Past it the triangulation of one shape with every drill in it grows
+ * with the square of the drills (CERN's Macbeth, about 8,000, ran for minutes and crashed the page), so the walls are built straight from the rings
+ * and the faces take their holes from a mask texture.
+ */
+const DRILLS_IN_GEOMETRY = 400
 
 export interface SharedMaterials {
   edge: THREE.MeshStandardMaterial
@@ -192,6 +198,70 @@ function boardFace(outline: THREE.Shape | THREE.Shape[], z: number, down: boolea
   return g
 }
 
+/** Walls standing on a closed ring from z0 to z1, facing out of the material: out of an outer ring, into a hole or a cutout. */
+function ringWalls(ring: readonly Vec2[], z0: number, z1: number, hole: boolean): THREE.BufferGeometry {
+  const pts = ring.length > 2 && Math.hypot(ring[0].x - ring[ring.length - 1].x, ring[0].y - ring[ring.length - 1].y) < 1e-9 ? ring.slice(0, -1) : ring
+  let area = 0
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[(i + 1) % pts.length]
+    area += a.x * b.y - b.x * a.y
+  }
+  // A segment a to b of a counter-clockwise ring has (dy, -dx) pointing out of the ring; triangles (a0, b0, b1) face that way.
+  const out = area > 0 !== hole
+  const pos = new Float32Array(pts.length * 18)
+  const nor = new Float32Array(pts.length * 18)
+  for (let i = 0; i < pts.length; i++) {
+    const [p, q] = out ? [pts[i], pts[(i + 1) % pts.length]] : [pts[(i + 1) % pts.length], pts[i]]
+    const len = Math.hypot(q.x - p.x, q.y - p.y) || 1
+    const nx = (q.y - p.y) / len
+    const ny = -(q.x - p.x) / len
+    pos.set([p.x, p.y, z0, q.x, q.y, z0, q.x, q.y, z1, p.x, p.y, z0, q.x, q.y, z1, p.x, p.y, z1], i * 18)
+    for (let k = 0; k < 6; k++) nor.set([nx, ny, 0], i * 18 + k * 3)
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3))
+  g.setAttribute("normal", new THREE.BufferAttribute(nor, 3))
+  return g
+}
+
+/** The points round a drill: a circle, or a capsule for a slot. */
+function drillRing(h: { x: number; y: number; r: number; slot?: [Vec2, Vec2] }): Vec2[] {
+  if (h.slot) return capsule(h.slot[0], h.slot[1], h.r).getPoints(12)
+  const n = Math.max(16, Math.min(64, Math.round(h.r * 40)))
+  return Array.from({ length: n }, (_, i) => ({ x: h.x + h.r * Math.cos((2 * Math.PI * i) / n), y: h.y + h.r * Math.sin((2 * Math.PI * i) / n) }))
+}
+
+/** A mask of the drills for the board's faces (`alphaMap`, black where a drill is), in the frame the faces' UVs span. */
+function drillMask(b: Project["board"], drills: readonly { x: number; y: number; r: number; slot?: [Vec2, Vec2] }[]): THREE.CanvasTexture {
+  const ppm = texelsPerMm(b.width, b.height)
+  const w = Math.max(2, Math.round(b.width * ppm))
+  const h = Math.max(2, Math.round(b.height * ppm))
+  const canvas = document.createElement("canvas")
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext("2d")
+  if (!ctx) throw new Error("2D canvas unavailable")
+  ctx.fillStyle = "#fff"
+  ctx.fillRect(0, 0, w, h)
+  ctx.setTransform(w / b.width, 0, 0, -h / b.height, -(b.x - b.width / 2) * (w / b.width), (b.y + b.height / 2) * (h / b.height))
+  ctx.fillStyle = "#000"
+  ctx.beginPath()
+  for (const d of drills) {
+    const ring = drillRing(d)
+    ring.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)))
+    ctx.closePath()
+  }
+  ctx.fill()
+  const t = new THREE.CanvasTexture(canvas)
+  t.colorSpace = THREE.NoColorSpace
+  t.generateMipmaps = true
+  t.minFilter = THREE.LinearMipmapLinearFilter
+  t.magFilter = THREE.LinearFilter
+  t.needsUpdate = true
+  return t
+}
+
 // ---------- Board ----------
 
 export interface BoardBuild {
@@ -258,24 +328,64 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
   const accepted: typeof holes = []
   // A slot is tested as the circle round its whole length.
   const reach = (h: (typeof holes)[number]) => (h.slot ? h.r + Math.hypot(h.slot[1].x - h.x, h.slot[1].y - h.y) : h.r)
+  // Overlapping contours break triangulation; keep the first. The drills kept so far are found by a grid of 5 mm cells, not by trying each.
+  const CELL = 5
+  const grid = new Map<string, (typeof holes)[number][]>()
+  let widest = 0
   for (const h of holes) {
-    if (!insideBoard(h.x, h.y, reach(h))) continue
-    // Overlapping contours break triangulation; keep the first.
-    if (accepted.some((o) => Math.hypot(o.x - h.x, o.y - h.y) < reach(o) + reach(h) + 0.02)) continue
+    const rh = reach(h)
+    if (!insideBoard(h.x, h.y, rh)) continue
+    const span = Math.ceil((rh + widest + 0.02) / CELL)
+    const cx = Math.floor(h.x / CELL)
+    const cy = Math.floor(h.y / CELL)
+    let clash = false
+    for (let i = cx - span; i <= cx + span && !clash; i++) {
+      for (let j = cy - span; j <= cy + span && !clash; j++) clash = !!grid.get(`${i},${j}`)?.some((o) => Math.hypot(o.x - h.x, o.y - h.y) < reach(o) + rh + 0.02)
+    }
+    if (clash) continue
     accepted.push(h)
-    shapeOf(h.x, h.y).holes.push(h.slot ? capsule(h.slot[0], h.slot[1], h.r) : circlePath(h.x, h.y, h.r))
+    widest = Math.max(widest, rh)
+    const key = `${cx},${cy}`
+    grid.set(key, [...(grid.get(key) ?? []), h])
   }
+  const cutInGeometry = accepted.length <= DRILLS_IN_GEOMETRY
+  if (cutInGeometry) for (const h of accepted) shapeOf(h.x, h.y).holes.push(h.slot ? capsule(h.slot[0], h.slot[1], h.r) : circlePath(h.x, h.y, h.r))
+  const tented = new Set(project.vias.filter((v) => !v.kind && viaTentedOn(project.rules, v, "top") && viaTentedOn(project.rules, v, "bottom")).map((v) => `${v.x},${v.y}`))
 
-  // Walls (outline edge and hole walls) in FR4; caps replaced by textured faces.
-  const substrate = new THREE.ExtrudeGeometry(outline, { depth: t, bevelEnabled: false, curveSegments: 28 })
-  substrate.translate(0, 0, -t / 2)
+  // Walls (outline edge and hole walls) in FR4; caps replaced by textured faces. With many drills the walls are built from the rings: the outline's,
+  // and those of the drills whose wall shows (a bare one, or a tented via's under its plug; a plated barrel covers the rest).
+  let substrate: THREE.BufferGeometry
+  if (cutInGeometry) {
+    substrate = new THREE.ExtrudeGeometry(outline, { depth: t, bevelEnabled: false, curveSegments: 28 })
+    substrate.translate(0, 0, -t / 2)
+  } else {
+    const rings: THREE.BufferGeometry[] = []
+    for (const sh of outline) {
+      const { shape, holes: cut } = sh.extractPoints(28)
+      rings.push(ringWalls(shape, -t / 2, t / 2, false), ...cut.map((c) => ringWalls(c, -t / 2, t / 2, true)))
+    }
+    for (const h of accepted) if (h.bare || tented.has(`${h.x},${h.y}`)) rings.push(ringWalls(drillRing(h), -t / 2, t / 2, true))
+    substrate = mergeGeometries(rings, false) ?? new THREE.BufferGeometry()
+    for (const g of rings) g.dispose()
+    // The walls' material is the mesh's second, as the extruded slab's walls are.
+    substrate.clearGroups()
+    substrate.addGroup(0, substrate.attributes.position?.count ?? 0, 1)
+  }
   const walls = new THREE.Mesh(substrate, [shared.hidden, shared.edge])
   walls.name = "substrate"
   walls.castShadow = true
   walls.receiveShadow = true
   group.add(walls)
 
-  const textures = buildBoardTextures({ project, placed, padsByComponent, fills, anisotropy })
+  const painted = buildBoardTextures({ project, placed, padsByComponent, fills, anisotropy })
+  const drills = cutInGeometry ? null : drillMask(b, accepted)
+  const textures: BoardTextureSet = {
+    ...painted,
+    dispose: () => {
+      painted.dispose()
+      drills?.dispose()
+    },
+  }
   const bounds = { minX, minY, w: b.width, h: b.height }
   const faceMat = (side: "top" | "bottom") =>
     new THREE.MeshPhysicalMaterial({
@@ -292,6 +402,7 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
       // The clearcoat carries the gloss; a strong base lobe reads as a milky haze.
       specularIntensity: 0.06,
       envMapIntensity: 0.75,
+      ...(drills ? { alphaMap: drills, alphaTest: 0.5 } : {}),
     })
   const topMat = faceMat("top")
   const bottomMat = faceMat("bottom")
@@ -343,7 +454,7 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
 
   // Plated barrels for pad and mounting holes, and for vias unless they're tented: then mask
   // dips into the hole and closes it, so they read as small dimples rather than open holes.
-  const viaAt = new Set(project.vias.filter((v) => !v.kind && viaTentedOn(project.rules, v, "top") && viaTentedOn(project.rules, v, "bottom")).map((v) => `${v.x},${v.y}`))
+  const viaAt = tented
   const barrels: THREE.BufferGeometry[] = []
   const plugs: THREE.BufferGeometry[] = []
   for (const h of accepted) {

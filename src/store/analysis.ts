@@ -2,7 +2,7 @@ import { create } from "zustand"
 import { getConnectivity, getErc } from "../model/connectivityCache"
 import type { SchematicConnectivity } from "../model/connectivity"
 import type { ErcFinding } from "../model/erc"
-import { analyzePcb, followDrag, type PcbAnalysis } from "../model/pcb"
+import { analysisWithItems, analyzePcb, followEdit, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
@@ -105,7 +105,9 @@ function fillWorker(): Worker | null {
 function fillHere(job: Job) {
   if (inFlight !== job) return
   try {
-    analyzePcb(job.project, getConnectivity(job.project))
+    const value = analyzePcb(job.project, getConnectivity(job.project))
+    pcbCache.set(job.project, value)
+    noteCurrent(job.project, value)
   } finally {
     inFlight = null
     bump()
@@ -113,9 +115,118 @@ function fillHere(job: Job) {
   }
 }
 
-function finish(job: Job, fills: ZoneFill[]) {
+/** The worker's analysis, with the copper items made here. */
+function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>): PcbAnalysis {
+  const a = reply.analysis
+  return analysisWithItems(job.project, getConnectivity(job.project), {
+    island: new Map(a.island),
+    islandNet: new Map(a.islandNet),
+    traceNet: new Map(a.traceNet),
+    viaNet: new Map(a.viaNet),
+    ratsnest: a.ratsnest,
+    violations: a.violations,
+    zoneFills: reply.fills,
+    ...(reply.pending ? { zonesPending: reply.pending } : {}),
+  })
+}
+
+/** A project as the workers read it, written once for both. */
+const files = new WeakMap<Project, string>()
+function fileOf(p: Project): string {
+  let file = files.get(p)
+  if (file === undefined) files.set(p, (file = serializeProject(p)))
+  return file
+}
+
+// ---------- The checks of a big board, off the page's thread ----------
+//
+// After an edit of a big board the views are given the analysis shown last with the edited copper where it is (`followEdit`), and the board's checks
+// are made in a worker of their own with the last fills (it never fills a zone, so it answers in seconds); when an edit reached a pour, the fill
+// worker then fills it again and its analysis replaces them. One worker for both made an edit's checks wait for the last edit's refill, minutes on
+// a board of 47 pours.
+
+let checker: Worker | null = null
+let checkerOff = false
+let checkWanted: Project | null = null
+let checking: Project | null = null
+let checkDebounce: ReturnType<typeof setTimeout> | null = null
+
+function checksWorker(): Worker | null {
+  if (checker || checkerOff || typeof Worker !== "function") return checker
+  try {
+    checker = new Worker(new URL("./zoneFill.worker.ts", import.meta.url), { type: "module" })
+  } catch {
+    checkerOff = true
+    checker = null
+  }
+  return checker
+}
+
+/** Ask for the checks of a big board as it is now, once the edits settle. */
+function wantChecks(p: Project) {
+  checkWanted = p
+  if (checkDebounce !== null) clearTimeout(checkDebounce)
+  checkDebounce = setTimeout(() => {
+    checkDebounce = null
+    nextCheck()
+  }, FILL_DEBOUNCE_MS)
+}
+
+function nextCheck() {
+  if (checking || !checkWanted) return
+  const p = checkWanted
+  checkWanted = null
+  if (pcbCache.get(p) || useProjectStore.getState().project !== p) return
+  const w = checksWorker()
+  if (!w) return
+  checking = p
+  const done = () => {
+    checking = null
+    nextCheck()
+  }
+  w.onmessage = (e: MessageEvent<ZoneFillReply>) => {
+    if ("error" in e.data) {
+      if (checker) checker.terminate()
+      checker = null
+      checkerOff = true
+      wantFill(p, [])
+    } else if (!pcbCache.get(p)) {
+      const value = adopted({ project: p, groups: [] }, e.data)
+      if (!e.data.pending) {
+        // No pour was reached: these are the board's checks.
+        pcbCache.set(p, value)
+        noteCurrent(p, value)
+        liveCache.delete(p)
+      } else {
+        // The checks with the last fills of the pours the edit reached, which the fill worker fills again now.
+        liveCache.set(p, { value, tick: useFillTick.getState().tick + 1 })
+        wantFill(p, e.data.pending)
+      }
+      if (lastShown?.project.id === p.id) lastShown = { project: p, value }
+      bump()
+    }
+    done()
+  }
+  w.onerror = () => {
+    if (checker) checker.terminate()
+    checker = null
+    checkerOff = true
+    wantFill(p, [])
+    done()
+  }
+  w.postMessage({ file: fileOf(p), stale: lastGood.project === p.id ? lastGood.fills : [] } satisfies ZoneFillRequest)
+}
+
+function finish(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>) {
+  const fills = reply.fills
   // Each group's fills are kept under the key this thread made for it, which is what the next analysis looks up.
   seedZoneFills(job.groups.map((g) => ({ key: g.key, fills: fills.filter((f) => g.zones.includes(f.zoneId)) })))
+  // The worker's analysis is the board's, checks and all: the views take it (and `getPcbAnalysis` too), with the copper items made here.
+  const value = adopted(job, reply)
+  pcbCache.set(job.project, value)
+  noteCurrent(job.project, value)
+  liveCache.delete(job.project)
+  if (lastShown?.project.id === job.project.id) lastShown = { project: job.project, value }
   inFlight = null
   bump()
   next()
@@ -127,7 +238,7 @@ function start(job: Job) {
   let file: string | null = null
   if (w) {
     try {
-      file = serializeProject(job.project)
+      file = fileOf(job.project)
     } catch {
       file = null
     }
@@ -144,7 +255,7 @@ function start(job: Job) {
   w.onmessage = (e: MessageEvent<ZoneFillReply>) => {
     if (inFlight !== job) return
     if ("error" in e.data) fail()
-    else finish(job, e.data.fills)
+    else finish(job, e.data)
   }
   w.onerror = fail
   w.postMessage({ file } satisfies ZoneFillRequest)
@@ -181,6 +292,12 @@ export function stopZoneFills(): void {
   wanted = null
   inFlight = null
   dropWorker()
+  if (checkDebounce !== null) clearTimeout(checkDebounce)
+  checkDebounce = null
+  checkWanted = null
+  checking = null
+  if (checker) checker.terminate()
+  checker = null
 }
 
 /**
@@ -190,7 +307,7 @@ export function stopZoneFills(): void {
  */
 export function getLiveAnalysis(p: Project): PcbAnalysis {
   // While something is dragged on a big board the views are given the analysis the drag began with, its moved copper where it is now
-  // (`followDrag`): analysing the whole board for every frame of the drag took 18 s a frame on a board of 1,566 parts. A small board is analysed
+  // (`followEdit`): analysing the whole board for every frame of the drag took 18 s a frame on a board of 1,566 parts. A small board is analysed
   // whole, so its checks follow the drag.
   const base = useProjectStore.getState().transientBase
   if (base !== null && base !== p) {
@@ -199,10 +316,24 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   }
   if (!needsZoneEngine(p)) return getPcbAnalysis(p)
   const exact = pcbCache.get(p)
-  if (exact) return exact
+  if (exact) return shown(p, exact)
   const tick = useFillTick.getState().tick
   const hit = liveCache.get(p)
-  if (hit && hit.tick === tick) return hit.value
+  if (hit && hit.tick === tick) return shown(p, hit.value)
+  // A big board's checks are made off the page's thread, where its pours are filled (`zoneFill.worker.ts`): after an edit the views are given the
+  // analysis shown last with the edited copper where it is now (`followEdit`), and when the board opens its copper and connections without the
+  // checks (`connectionsOnly`); the worker's analysis replaces either when it comes. Analysing the board here took 14 s an edit, and 18 to 36 s on
+  // opening, on one of 1,566 parts.
+  if (bigBoard(p) && fillWorker() !== null) {
+    const from = lastShown
+    const value =
+      from && from.project.id === p.id && from.project !== p
+        ? { ...followEdit(from.value, from.project, p, getConnectivity(p)), checksPending: true }
+        : analyzePcb(p, getConnectivity(p), { reuseOnly: { stale: lastGood.project === p.id ? lastGood.fills : [] }, connectionsOnly: true })
+    liveCache.set(p, { value, tick })
+    wantChecks(p)
+    return shown(p, value)
+  }
   const value = analyzePcb(p, getConnectivity(p), { reuseOnly: { stale: lastGood.project === p.id ? lastGood.fills : [] } })
   if (value.zonesPending) {
     liveCache.set(p, { value, tick })
@@ -211,6 +342,17 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
     pcbCache.set(p, value)
     noteCurrent(p, value)
   }
+  return shown(p, value)
+}
+
+/** The parts, tracks and vias past which a board's checks are made off the page's thread (`getLiveAnalysis`). */
+const BACKGROUND_CHECKS_SIZE = 3000
+const bigBoard = (p: Project) => p.components.length + p.traces.length + p.vias.length > BACKGROUND_CHECKS_SIZE
+
+/** The analysis the views were given last, and the project it is of: an edit's analysis follows it until the worker's comes (`followEdit`). */
+let lastShown: { project: Project; value: PcbAnalysis } | null = null
+function shown(p: Project, value: PcbAnalysis): PcbAnalysis {
+  lastShown = { project: p, value }
   return value
 }
 
@@ -221,7 +363,7 @@ const dragFrames = new WeakMap<Project, PcbAnalysis>()
 
 function draggedAnalysis(p: Project, base: Project, start: PcbAnalysis): PcbAnalysis {
   let value = dragFrames.get(p)
-  if (!value) dragFrames.set(p, (value = followDrag(start, base, p, getConnectivity(base))))
+  if (!value) dragFrames.set(p, (value = followEdit(start, base, p, getConnectivity(base))))
   return value
 }
 

@@ -170,6 +170,11 @@ export interface PcbAnalysis {
   zoneFills: ZoneFill[]
   /** Set when some zones' fill is not current (the groups it lists): it is the earlier one, kept while the new one is made (`reuseOnly`). Every result in this analysis that depends on the copper of a pour is then of the earlier fill. */
   zonesPending?: PendingGroup[]
+  /**
+   * Set when the checks are not of this board yet: they are being made off the page's thread, and the ones here are of the board before the last edit,
+   * or there are none (`connectionsOnly`). The copper is where it is now (`followEdit`).
+   */
+  checksPending?: boolean
 }
 
 const segBox = (a: Vec2, b: Vec2, w: number): Box => ({
@@ -916,18 +921,25 @@ export function derivedCopperNets(project: Project, sch: SchematicConnectivity, 
 }
 
 /**
- * The analysis of a board while something on it is dragged: `from`, the analysis of `base` (the board as the drag began), with the copper of what
- * moved where it is now. Its connections, checks and pours stay those of the start (the drop analyses the board again, and refills its pours), and
- * an unrouted connection that ends on a pad that moved follows the pad. CERN's Macbeth (1,566 parts) took 18 s a frame to analyse whole.
+ * The analysis of a board as it is now from an earlier one: `from`, the analysis of `base`, with the copper of what has moved, changed or been added
+ * since where it is now, and without the copper of what has gone. Its connections, checks and pours stay those of `base` until the board is analysed
+ * again (after a drag's drop, or off the page's thread after an edit), and an unrouted connection that ends on a pad that moved follows the pad, one
+ * that ends on a pad that went goes. CERN's Macbeth (1,566 parts) took 18 s a frame of a drag, and 14 s an edit, to analyse whole.
  */
-export function followDrag(from: PcbAnalysis, base: Project, project: Project, sch: SchematicConnectivity): PcbAnalysis {
+export function followEdit(from: PcbAnalysis, base: Project, project: Project, sch: SchematicConnectivity): PcbAnalysis {
   const before = new Map(base.components.map((c) => [c.id, c]))
   const components = project.components.filter((c) => before.get(c.id) !== c)
   const traces = new Set(base.traces)
   const vias = new Set(base.vias)
   const movedTraces = project.traces.filter((t) => !traces.has(t))
   const movedVias = project.vias.filter((v) => !vias.has(v))
-  if (!components.length && !movedTraces.length && !movedVias.length) return from
+  const nowParts = new Set(project.components.map((c) => c.id))
+  const nowTraces = new Set(project.traces.map((t) => t.id))
+  const nowVias = new Set(project.vias.map((v) => v.id))
+  const goneParts = new Set(base.components.filter((c) => !nowParts.has(c.id)).map((c) => c.id))
+  const goneTraces = new Set(base.traces.filter((t) => !nowTraces.has(t.id)).map((t) => t.id))
+  const goneVias = new Set(base.vias.filter((v) => !nowVias.has(v.id)).map((v) => v.id))
+  if (!components.length && !movedTraces.length && !movedVias.length && !goneParts.size && !goneTraces.size && !goneVias.size) return from
   // The copper of what moved: its parts' pads, drawings and texts, its tracks and vias (not the board's own, which the build makes too).
   const parts = new Set(components.map((c) => c.id))
   const tracks = new Set(movedTraces.map((t) => t.id))
@@ -939,18 +951,43 @@ export function followDrag(from: PcbAnalysis, base: Project, project: Project, s
       .filter(ownMoved)
       .map((it) => [it.id, it]),
   )
-  // Where each pad that moved was, and is: an unrouted connection's end is a pad's centre (`itemPoint`).
+  // Where each pad that moved was, and is: an unrouted connection's end is a pad's centre (`itemPoint`). A pad of a part that went is no end any more.
   const moves = new Map<string, Vec2>()
-  const items = from.items.map((it) => {
+  const gone = new Set<string>()
+  const went = (it: CopperItem) =>
+    it.kind === "pad" ? goneParts.has(it.pad.componentId) : it.kind === "segment" ? goneTraces.has(it.traceId) : it.kind === "via" ? goneVias.has(it.viaId) : it.kind === "shape" ? goneParts.has(it.owner) : false
+  const items: CopperItem[] = []
+  for (const it of from.items) {
+    if (went(it)) {
+      if (it.kind === "pad") gone.add(`${it.pad.x},${it.pad.y}`)
+      continue
+    }
     const now = fresh.get(it.id)
-    if (!now) return it
+    if (!now) {
+      // The copper of a part that changed and has not this item any more (another land) goes with it.
+      if (!ownMoved(it)) items.push(it)
+      continue
+    }
     if (it.kind === "pad" && now.kind === "pad" && (it.pad.x !== now.pad.x || it.pad.y !== now.pad.y)) moves.set(`${it.pad.x},${it.pad.y}`, { x: now.pad.x, y: now.pad.y })
-    return now
-  })
+    items.push(now)
+  }
   const had = new Set(from.items.map((it) => it.id))
   for (const [id, it] of fresh) if (!had.has(id)) items.push(it)
   const follow = (q: Vec2) => moves.get(`${q.x},${q.y}`) ?? q
-  return { ...from, items, ratsnest: moves.size ? from.ratsnest.map((r) => ({ ...r, a: follow(r.a), b: follow(r.b) })) : from.ratsnest }
+  const ratsnest =
+    moves.size || gone.size
+      ? from.ratsnest.filter((r) => !gone.has(`${r.a.x},${r.a.y}`) && !gone.has(`${r.b.x},${r.b.y}`)).map((r) => ({ ...r, a: follow(r.a), b: follow(r.b) }))
+      : from.ratsnest
+  return { ...from, items, ratsnest }
+}
+
+/** What an analysis made elsewhere (the checks worker, `store/analysis.ts`) sends back: everything but the copper items, which are made here. */
+export type AnalysisResults = Omit<PcbAnalysis, "items">
+
+/** An analysis made elsewhere, with the board's copper items made here as `analyzePcb` makes them: by their ids, its islands and nets are theirs. */
+export function analysisWithItems(project: Project, sch: SchematicConnectivity, made: AnalysisResults): PcbAnalysis {
+  const copper = buildCopperItems(withPartZones(project), sch)
+  return { ...made, items: made.zoneFills.length ? [...copper, ...zoneItems(made.zoneFills)] : copper }
 }
 
 /** The net id of each copper item (by index) as the copper alone connects it, which is what a pour is filled against (and what a kept fill's signature reads, `zoneKeep.ts`). */
@@ -1035,6 +1072,8 @@ export function analyzePcb(
     carve?: { fills: ZoneFill[]; known: ReadonlySet<string> }
     /** Stop at the fills: the rest of the analysis (islands, ratsnest, checks) is empty (`zoneFillsOf`). */
     fillsOnly?: boolean
+    /** Stop before the checks: the copper, how it connects and the ratsnest, with the unrouted connections; `checksPending` says the rest is to come. */
+    connectionsOnly?: boolean
   } = {},
 ): PcbAnalysis {
   // X30: the zones of the parts are zones of the board here (a keepout of a part keeps out, a pour of a part is filled).
@@ -1169,6 +1208,8 @@ export function analyzePcb(
       }
     }
   }
+
+  if (opts.connectionsOnly) return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}), checksPending: true }
 
   // Clearance between copper on different nets (or unassigned copper vs a net).
   // Two nets are checked at the larger of their classes' clearances (a board with no classes: the rules' one), so the search looks as far as the largest.

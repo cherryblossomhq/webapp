@@ -428,6 +428,13 @@ describe("Gerber: the fracture of a ring with holes", () => {
     const ring = fractureRings(outer, holes)
     expect(Math.abs(area(ring))).toBeCloseTo(400 - 16 - 16.5 - 21, 9)
   })
+
+  it("takes a hole of more points than a call takes arguments", () => {
+    const outer = [{ x: -20, y: -20 }, { x: 20, y: -20 }, { x: 20, y: 20 }, { x: -20, y: 20 }]
+    const n = 300_000
+    const hole = Array.from({ length: n }, (_, i) => ({ x: 10 * Math.cos((2 * Math.PI * i) / n), y: 10 * Math.sin((2 * Math.PI * i) / n) }))
+    expect(fractureRings(outer, [hole]).length).toBe(4 + n + 2)
+  })
 })
 
 // ---------- parts with drawings of their own ----------

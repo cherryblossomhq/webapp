@@ -196,8 +196,8 @@ export function excellonBackdrill(project: Project, set: BackdrillSet, tag = fal
   ]
   for (const [size, t] of tool) {
     const stubs = sorted.filter((h) => mm(h.size) === size).map((h) => h.stub)
-    const least = Math.min(...stubs)
-    const most = Math.max(...stubs)
+    const least = stubs.reduce((m, s) => Math.min(m, s), Infinity)
+    const most = stubs.reduce((m, s) => Math.max(m, s), -Infinity)
     lines.push("; #@! TA.AperFunction,NonPlated,BackDrill", `T${t}C${size}`, `; Backdrill stub ${stubText(least)}${mm(most) !== mm(least) ? ` to ${stubText(most)}` : ""}, post-machining`)
   }
   lines.push("%", "G90", "G05")

@@ -76,7 +76,11 @@ export function fractureRings(outer: Vec2[], holes: Vec2[][]): Vec2[] {
       })
     }
     const around = [...hole.slice(mi), ...hole.slice(0, mi)]
-    ring.splice(target + 1, 0, ...around, around[0], ring[target])
+    // Point by point, not spread into one splice: a hole of a big pour can have more points than a call takes arguments.
+    const tail = ring.splice(target + 1)
+    for (const p of around) ring.push(p)
+    ring.push(around[0], ring[target])
+    for (const p of tail) ring.push(p)
   }
   return ring
 }

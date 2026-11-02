@@ -71,15 +71,16 @@ export function splitZoneLayers(board: KicadBoard, names: readonly string[]): Zo
 /** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points, each point through `map` (the file's frame is y down, the editor's y up). */
 /** The box of a zone's outline (its corners and arcs' middles) as a rectangle in clipper units (`zoneGeom.ts`), which is what the size of a hatch grid is judged by. */
 function boxOf(segs: KicadZoneSeg[]): Paths64 {
-  const xs: number[] = []
-  const ys: number[] = []
+  // Folded point by point: an outline can have more points than a spread call takes.
+  let [a, b, c, d] = [Infinity, -Infinity, Infinity, -Infinity]
   for (const s of segs) {
     for (const p of s.kind === "xy" ? [s.at] : [s.start, s.mid, s.end]) {
-      xs.push(p.x)
-      ys.push(p.y)
+      a = Math.min(a, p.x)
+      b = Math.max(b, p.x)
+      c = Math.min(c, p.y)
+      d = Math.max(d, p.y)
     }
   }
-  const [a, b, c, d] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
   return [[pt(a, c), pt(b, c), pt(b, d), pt(a, d)]]
 }
 

@@ -65,9 +65,6 @@ const liveCache = new WeakMap<Project, { value: PcbAnalysis; tick: number }>()
 
 /** How long after the last edit a refill starts: edits in a run (typing a value, nudging) make one refill. */
 export const FILL_DEBOUNCE_MS = 250
-/** A refill in the worker that takes longer than this is made here instead. */
-export const FILL_WORKER_TIMEOUT_MS = 120_000
-
 interface Job {
   project: Project
   groups: PendingGroup[]
@@ -78,11 +75,8 @@ let workerOff = false
 let wanted: Job | null = null
 let inFlight: Job | null = null
 let debounce: ReturnType<typeof setTimeout> | null = null
-let deadline: ReturnType<typeof setTimeout> | null = null
 
 function dropWorker() {
-  if (deadline !== null) clearTimeout(deadline)
-  deadline = null
   if (worker) {
     worker.onmessage = null
     worker.onerror = null
@@ -103,7 +97,11 @@ function fillWorker(): Worker | null {
   return worker
 }
 
-/** Make the fill here, on the page's thread (no workers, or the worker failed): what the zones keep serves the views after. */
+/**
+ * Make the fill here, on the page's thread, where there is no worker or it failed: what the zones keep serves the views after. A fill that is only
+ * slow stays in the worker, however long it takes: CERN's Macbeth fills its 47 zones in about three minutes, and a two-minute limit that moved the
+ * fill here froze the page for four more.
+ */
 function fillHere(job: Job) {
   if (inFlight !== job) return
   try {
@@ -144,14 +142,11 @@ function start(job: Job) {
     setTimeout(() => fillHere(job), 0)
   }
   w.onmessage = (e: MessageEvent<ZoneFillReply>) => {
-    if (deadline !== null) clearTimeout(deadline)
-    deadline = null
     if (inFlight !== job) return
     if ("error" in e.data) fail()
     else finish(job, e.data.fills)
   }
   w.onerror = fail
-  deadline = setTimeout(fail, FILL_WORKER_TIMEOUT_MS)
   w.postMessage({ file } satisfies ZoneFillRequest)
 }
 

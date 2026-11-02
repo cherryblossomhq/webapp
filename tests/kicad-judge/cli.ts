@@ -4,7 +4,8 @@ import { join } from "node:path"
 
 // KiCad's own command line, the judge of the KiCad-judged audit (`../kicad-judge-corpus.test.ts`). Every call runs on a file and reads what KiCad wrote.
 
-export const KICAD_CLI = process.env.KICAD_CLI ?? "kicad-cli"
+/** `KICAD_CLI`, else where KiCad 10's installer puts it for one user on Windows. */
+export const KICAD_CLI = process.env.KICAD_CLI ?? join(process.env.LOCALAPPDATA ?? "", "Programs/KiCad/10.0/bin/kicad-cli.exe")
 
 export const kicadCliAvailable = () => existsSync(KICAD_CLI)
 

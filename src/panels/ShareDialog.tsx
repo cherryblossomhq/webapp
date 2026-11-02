@@ -443,7 +443,7 @@ function MemberRow({ member, state, onRole, onRemove }: { member: ShareMember; s
       avatar={<Avatar person={member} size="sm" />}
       title={
         <>
-          {member.name || member.email}
+          {member.name || member.email || "Someone"}
           {isYou && <span className="font-[400] text-ink-2"> (you)</span>}
         </>
       }

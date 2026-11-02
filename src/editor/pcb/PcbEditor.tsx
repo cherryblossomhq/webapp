@@ -224,6 +224,27 @@ const lockedShapeNote = (n: number) => `${n > 1 ? `${n} drawings are` : "A drawi
 /** The active layer as the board has it: the stored one can name a layer the board no longer has. */
 const activeLayerNow = () => clampLayer(projectApi().project!.board, uiApi().activeLayer)
 
+/** Elements kept with the values they were made from (`keepDrawing`). */
+interface KeptDrawing {
+  key: unknown[]
+  el: ReactNode
+}
+
+/** The elements kept under `name` while each of `key` is the same value, else `make`'s, kept for next time. */
+function keepDrawing(kept: Map<string, KeptDrawing>, name: string, key: unknown[], make: () => ReactNode): ReactNode {
+  const was = kept.get(name)
+  if (was && was.key.length === key.length && was.key.every((k, i) => k === key[i])) return was.el
+  const el = make()
+  kept.set(name, { key, el })
+  return el
+}
+
+/** The pixel size the kept drawing is made at: the view's, to the nearest step of a factor of the square root of two, so a zoom draws again once a step. */
+const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale) / Math.log(Math.SQRT2))
+
+/** How long a zoom has to stop before the kept drawings are made again at its step. */
+const ZOOM_SETTLE_MS = 250
+
 export function PcbEditor() {
   const project = useProjectStore((s) => s.project)!
   const selection = useUi((s) => s.selection)
@@ -240,6 +261,30 @@ export function PcbEditor() {
   const highlightNet = useUi((s) => s.highlightNet)
   const focusRequest = useUi((s) => s.focusRequest)
   const vpRef = useRef<ViewportHandle>(null)
+  const drawings = useRef(new Map<string, KeptDrawing>())
+  // The zoom step the kept drawings are made at (`drawingPx`). It follows the view a moment after a zoom stops: while one goes on, the drawings are
+  // those of the step it started at, scaled by the view's transform, so a turn of the wheel draws nothing again.
+  const drawStep = useRef<number | null>(null)
+  const stepTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [, redrawAtStep] = useState(0)
+  useEffect(() => () => {
+    if (stepTimer.current) clearTimeout(stepTimer.current)
+  }, [])
+  const stepFor = (scale: number) => {
+    const want = drawingPx(scale)
+    if (drawStep.current === null) drawStep.current = want
+    if (want !== drawStep.current) {
+      if (stepTimer.current) clearTimeout(stepTimer.current)
+      stepTimer.current = setTimeout(() => {
+        stepTimer.current = null
+        const now = vpRef.current?.transform().scale
+        if (now === undefined) return
+        drawStep.current = drawingPx(now)
+        redrawAtStep((n) => n + 1)
+      }, ZOOM_SETTLE_MS)
+    }
+    return drawStep.current
+  }
   const [mode, setMode] = useState<Mode>({ kind: "idle" })
   const modeRef = useRef(mode)
   modeRef.current = mode
@@ -308,6 +353,14 @@ export function PcbEditor() {
     if (ts.length === 1) return pcb.traceNet.get(ts[0]) ?? null
     return null
   }, [highlightNet, mode, hover, pcb, selection])
+  // The net the kept drawing holds lit (`boardDrawing`): the one Checks or the selection lights. One lit only by the pointer or the route being drawn
+  // is drawn over it (`passingHighlight`), so moving the pointer from one net to the next does not draw the board again.
+  const heldNet = useMemo(() => {
+    if (highlightNet) return highlightNet
+    const ts = selectionIds(selection, "t")
+    return ts.length === 1 ? (pcb.traceNet.get(ts[0]) ?? null) : null
+  }, [highlightNet, pcb, selection])
+  const passingNet = activeNet !== heldNet ? activeNet : null
 
   /** Snap to pad centres / via centres when hovering copper, otherwise to the grid. */
   const snapTarget = useCallback(
@@ -1045,6 +1098,289 @@ export function PcbEditor() {
   const shownTexts = visibleTexts(project, vis)
   const markers = pcb.violations.filter((v) => v.severity === "error")
 
+  // The board as drawn (its copper, holes, drawings, texts and silkscreen) and the marks on it (courtyards, ratsnest, errors), made again only when
+  // what they show changes, at the zoom step of `drawingPx`: a pan, a zoom within a step and a move of the pointer give React the same elements, so
+  // it compares nothing of a board of 100,000 of them (CERN's Macbeth took 1.5 s for each step of a pan, and for each move of the pointer).
+  const boardDrawing = (px: number): ReactNode =>
+    keepDrawing(drawings.current, "board", [project, pcb, selection, heldNet, highlightNet, layer, layers, hiddenCopper, hiddenShapeLayers, px], () => {
+      const netOf = (it: CopperItem) => (it.kind === "pad" ? it.netId : null)
+      const dim = (net: string | null | undefined) => (dimOthers && net !== highlightNet ? 0.3 : 1)
+      return (
+        <g>
+          {layers.board && outlinePaths?.length ? (
+            <OutlineDraw paths={outlinePaths} selected={selectedOutline} px={px} />
+          ) : layers.board ? (
+            <rect x={bb.minX} y={bb.minY} width={bb.maxX - bb.minX} height={bb.maxY - bb.minY} rx={r} fill={PCB.board} stroke={PCB.edge} strokeWidth={Math.max(0.15, 2 * px)} />
+          ) : null}
+
+          {/* Reference images, under everything else, as KiCad draws a bitmap */}
+          {(project.images ?? []).filter((m) => imageShown(m, vis)).map((m) => (
+            <ReferenceImageDraw key={m.id} image={m} px={px} selected={selected.has(`i:${m.id}`)} />
+          ))}
+
+          {layerOrder.map((l) =>
+            copperOn(l) ? (
+              <g key={l}>
+                {pours
+                  .filter((f) => f.layer === l)
+                  .map((f) => (
+                    <path
+                      key={f.zoneId}
+                      d={f.d}
+                      fill={pourColor(l)}
+                      fillRule="evenodd"
+                      opacity={dim(f.netId)}
+                    />
+                  ))}
+                {project.traces
+                  .filter((tr) => tr.layer === l)
+                  .map((tr) => {
+                    const net = pcb.traceNet.get(tr.id) ?? null
+                    const isSel = selected.has(`t:${tr.id}`)
+                    const hi = !!heldNet && net === heldNet
+                    const d = traceD(tr)
+                    return (
+                      <g key={tr.id} opacity={dim(net)}>
+                        {(hi || isSel) && <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={isSel ? 0.95 : 0.6} />}
+                        <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
+                      </g>
+                    )
+                  })}
+                {shown
+                  .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
+                  .map((s) => (
+                    <g key={s.id} opacity={shapeDim(s.shape.net)}>
+                      <ShapeDraw shape={s.shape} color={copperColor(l)} px={px} selected={selected.has(s.select ?? s.id)} />
+                    </g>
+                  ))}
+                {shownTexts
+                  .filter((tx) => textLayerKind(tx.layer) === "copper" && layerOfKicadName(tx.layer) === l)
+                  .map((tx) => (
+                    <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} />
+                  ))}
+                {pcb.items.map((it) =>
+                  it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l ? (
+                    <g key={it.id} opacity={dim(netOf(it))}>
+                      <PadShape pad={it.pad} color={l === front ? PCB.pad : PCB.padBack} highlight={!!heldNet && it.netId === heldNet} px={px} />
+                    </g>
+                  ) : null,
+                )}
+              </g>
+            ) : null,
+          )}
+
+          {/* Through-hole pads, mounting holes and vias span the layers they have copper on (every one for a through-hole pad and a through via) */}
+          {stack.some((l) => copperOn(l)) && (
+            <>
+              {pcb.items.map((it) =>
+                it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? (
+                  <g key={it.id} opacity={dim(netOf(it))}>
+                    <PadShape pad={it.pad} color={PCB.pad} highlight={!!heldNet && it.netId === heldNet} px={px} />
+                  </g>
+                ) : null,
+              )}
+              {project.vias.map((v) => {
+                const net = pcb.viaNet.get(v.id) ?? null
+                const isSel = selected.has(`v:${v.id}`)
+                const span = viaLayers(project.board, v)
+                if (!span.some((l) => copperOn(l))) return null
+                // A via that does not run the whole stack (X5) is drawn in the colour of the layer it starts on, with a dashed ring: blind and buried, and a micro via a ring of its own.
+                const partial = v.kind !== undefined
+                return (
+                  <g key={v.id} opacity={dim(net)}>
+                    <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={isSel ? PCB.select : partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via} stroke={heldNet && net === heldNet ? "#fff" : partial ? PCB.hole : "none"} strokeWidth={1.4 * px} strokeDasharray={partial ? `${3 * px} ${2 * px}` : undefined} />
+                    <circle cx={v.x} cy={v.y} r={v.drill / 2} fill={PCB.hole} />
+                    {v.kind === "micro" && <circle cx={v.x} cy={v.y} r={v.diameter / 2 - 1.2 * px} fill="none" stroke={PCB.hole} strokeWidth={1 * px} />}
+                  </g>
+                )
+              })}
+            </>
+          )}
+
+          {/* Drawings on mask, paste, fabrication, courtyard, adhesive and user layers: thin and muted, under the silkscreen */}
+          {shown
+            .filter((s) => {
+              const k = shapeKindOf(s.shape.layer)
+              return k !== "copper" && k !== "silk"
+            })
+            .map((s) => (
+              <g key={s.id} opacity={shapeDim(s.shape.net) * sideOpacity(s.shape.layer) * 0.85}>
+                <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={selected.has(s.select ?? s.id)} />
+              </g>
+            ))}
+
+          <OtherZoneFills fills={otherFills} silk={false} shown={otherShown} opacityOf={(name) => sideOpacity(name) * 0.85} />
+
+          {/* Text on mask, paste, fabrication, courtyard, adhesive, user and edge layers: muted, under the silkscreen */}
+          {shownTexts
+            .filter((tx) => {
+              const k = textLayerKind(tx.layer)
+              return k !== "copper" && k !== "silk"
+            })
+            .map((tx) => (
+              <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85} />
+            ))}
+
+          {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
+          {worldPoints(project, placed)
+            .filter((pt) => otherShown(pt.layer))
+            .map((pt, i) => (
+              <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
+                <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
+              </g>
+            ))}
+
+          {/* Silkscreen: part outlines, designators and free text */}
+          {layers.silk && (
+            <>
+              {shownTexts
+                .filter((tx) => textLayerKind(tx.layer) === "silk")
+                .map((tx) => (
+                  <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={textSide(tx.layer) !== front ? 0.55 : 1} />
+                ))}
+              <OtherZoneFills fills={otherFills} silk shown={otherShown} opacityOf={sideOpacity} />
+              {shown
+                .filter((s) => shapeKindOf(s.shape.layer) === "silk")
+                .map((s) => (
+                  <g key={s.id} opacity={sideOpacity(s.shape.layer)}>
+                    <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={selected.has(s.select ?? s.id)} />
+                  </g>
+                ))}
+              {placed.map((c) => (
+                <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : 0.55}>
+                  {pcbSilk(c).map((path, i) => (
+                    <polyline
+                      key={i}
+                      points={path.map((p) => `${p.x},${p.y}`).join(" ")}
+                      fill="none"
+                      stroke={c.pcb.side === "top" ? PCB.silk : PCB.silkBottom}
+                      strokeWidth={SILK_WIDTH}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ))}
+                  {designators.get(c.id) && <DesignatorText d={designators.get(c.id)!} />}
+                </g>
+              ))}
+              {ownTexts(project).map((tx) => (
+                <g key={tx.id} opacity={tx.side === front ? 1 : 0.55}>
+                  {boardTextStrokes(tx).map((path, i) => (
+                    <polyline
+                      key={i}
+                      points={path.map((p) => `${p.x},${p.y}`).join(" ")}
+                      fill="none"
+                      stroke={tx.side === "top" ? PCB.silk : PCB.silkBottom}
+                      strokeWidth={boardTextStrokeWidth(tx)}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ))}
+                </g>
+              ))}
+            </>
+          )}
+        </g>
+      )
+    })
+  const passingHighlight = (px: number): ReactNode =>
+    keepDrawing(drawings.current, "passing", [project, pcb, passingNet, layer, layers, hiddenCopper, px], () => {
+      if (!passingNet) return null
+      return (
+        <g>
+          {layerOrder.map((l) =>
+            copperOn(l) ? (
+              <g key={l}>
+                {project.traces
+                  .filter((tr) => tr.layer === l && pcb.traceNet.get(tr.id) === passingNet)
+                  .map((tr) => {
+                    const d = traceD(tr)
+                    return (
+                      <g key={tr.id}>
+                        <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />
+                        <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
+                      </g>
+                    )
+                  })}
+                {pcb.items.map((it) =>
+                  it.kind === "pad" && it.netId === passingNet && it.layers.length === 1 && it.layers[0] === l ? (
+                    <PadShape key={it.id} pad={it.pad} color={l === front ? PCB.pad : PCB.padBack} highlight px={px} />
+                  ) : null,
+                )}
+              </g>
+            ) : null,
+          )}
+          {pcb.items.map((it) =>
+            it.kind === "pad" && it.netId === passingNet && it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? <PadShape key={it.id} pad={it.pad} color={PCB.pad} highlight px={px} /> : null,
+          )}
+          {project.vias
+            .filter((v) => pcb.viaNet.get(v.id) === passingNet && viaLayers(project.board, v).some((l) => copperOn(l)))
+            .map((v) => (
+              <g key={v.id}>
+                <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={PCB.via} stroke="#fff" strokeWidth={1.4 * px} />
+                <circle cx={v.x} cy={v.y} r={v.drill / 2} fill={PCB.hole} />
+              </g>
+            ))}
+          {layers.ratsnest &&
+            pcb.ratsnest
+              .filter((rl) => rl.netId === passingNet)
+              .map((rl, i) => <line key={`r${i}`} x1={rl.a.x} y1={rl.a.y} x2={rl.b.x} y2={rl.b.y} stroke="#ffffff" strokeWidth={1.6 * px} strokeDasharray={`${5 * px} ${3 * px}`} />)}
+        </g>
+      )
+    })
+  const hoveredPart = hover?.type === "component" ? hover.id : null
+  const boardMarks = (px: number): ReactNode =>
+    keepDrawing(drawings.current, "marks", [project, pcb, selection, heldNet, hoveredPart, layers, px], () => (
+      <g>
+        {/* Courtyards / selection */}
+        {placed.map((c) => {
+          const cy = pcbCourtyard(c)
+          if (!cy) return null
+          const isSel = selected.has(`c:${c.id}`)
+          const isHover = hover?.type === "component" && hover.id === c.id
+          // A part marked do not populate keeps a dashed courtyard, so it reads as fitted on the board but not on the build.
+          const dnp = !!c.flags?.dnp
+          if (!isSel && !isHover && !layers.courtyard && !dnp) return null
+          return (
+            <rect
+              key={`cy${c.id}`}
+              x={cy.minX}
+              y={cy.minY}
+              width={cy.maxX - cy.minX}
+              height={cy.maxY - cy.minY}
+              fill={isSel ? PCB.selectSoft : "none"}
+              stroke={isSel || isHover ? PCB.select : PCB.courtyard}
+              strokeOpacity={isSel ? 1 : isHover ? 0.7 : 1}
+              strokeWidth={(isSel ? 1.6 : 1.2) * px}
+              strokeDasharray={dnp ? `${5 * px} ${3 * px}` : undefined}
+            />
+          )
+        })}
+
+        {/* Ratsnest */}
+        {layers.ratsnest &&
+          pcb.ratsnest.map((rl, i) => (
+            <line
+              key={`r${i}`}
+              x1={rl.a.x}
+              y1={rl.a.y}
+              x2={rl.b.x}
+              y2={rl.b.y}
+              stroke={heldNet === rl.netId ? "#ffffff" : PCB.ratsnest}
+              strokeWidth={(heldNet === rl.netId ? 1.6 : 1) * px}
+              strokeDasharray={`${5 * px} ${3 * px}`}
+            />
+          ))}
+
+        {/* DRC markers */}
+        {markers.map((v) => (
+          <g key={v.id}>
+            <circle cx={v.at.x} cy={v.at.y} r={Math.max(0.35, 7 * px)} fill="none" stroke={PCB.danger} strokeWidth={1.6 * px} />
+            <circle cx={v.at.x} cy={v.at.y} r={Math.max(0.08, 1.6 * px)} fill={PCB.danger} />
+          </g>
+        ))}
+      </g>
+    ))
+
   return (
     <div className="absolute inset-0">
       <Viewport
@@ -1094,182 +1430,11 @@ export function PcbEditor() {
         {(t) => {
           const px = 1 / t.scale
           const view = visibleBox(t, vpRef.current?.element())
-          const netOf = (it: CopperItem) => (it.kind === "pad" ? it.netId : null)
-          const dim = (net: string | null | undefined) => (dimOthers && net !== highlightNet ? 0.3 : 1)
+          const step = stepFor(t.scale)
           return (
             <>
-              {layers.board && outlinePaths?.length ? (
-                <OutlineDraw paths={outlinePaths} selected={selectedOutline} px={px} />
-              ) : layers.board ? (
-                <rect x={bb.minX} y={bb.minY} width={bb.maxX - bb.minX} height={bb.maxY - bb.minY} rx={r} fill={PCB.board} stroke={PCB.edge} strokeWidth={Math.max(0.15, 2 * px)} />
-              ) : null}
-
-              {/* Reference images, under everything else, as KiCad draws a bitmap */}
-              {(project.images ?? []).filter((m) => imageShown(m, vis)).map((m) => (
-                <ReferenceImageDraw key={m.id} image={m} px={px} selected={selected.has(`i:${m.id}`)} />
-              ))}
-
-              {layerOrder.map((l) =>
-                copperOn(l) ? (
-                  <g key={l}>
-                    {pours
-                      .filter((f) => f.layer === l)
-                      .map((f) => (
-                        <path
-                          key={f.zoneId}
-                          d={f.d}
-                          fill={pourColor(l)}
-                          fillRule="evenodd"
-                          opacity={dim(f.netId)}
-                        />
-                      ))}
-                    {project.traces
-                      .filter((tr) => tr.layer === l)
-                      .map((tr) => {
-                        const net = pcb.traceNet.get(tr.id) ?? null
-                        const isSel = selected.has(`t:${tr.id}`)
-                        const hi = !!activeNet && net === activeNet
-                        const d = traceD(tr)
-                        return (
-                          <g key={tr.id} opacity={dim(net)}>
-                            {(hi || isSel) && <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={isSel ? 0.95 : 0.6} />}
-                            <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
-                          </g>
-                        )
-                      })}
-                    {shown
-                      .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
-                      .map((s) => (
-                        <g key={s.id} opacity={shapeDim(s.shape.net)}>
-                          <ShapeDraw shape={s.shape} color={copperColor(l)} px={px} selected={selected.has(s.select ?? s.id)} />
-                        </g>
-                      ))}
-                    {shownTexts
-                      .filter((tx) => textLayerKind(tx.layer) === "copper" && layerOfKicadName(tx.layer) === l)
-                      .map((tx) => (
-                        <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} />
-                      ))}
-                    {pcb.items.map((it) =>
-                      it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l ? (
-                        <g key={it.id} opacity={dim(netOf(it))}>
-                          <PadShape pad={it.pad} color={l === front ? PCB.pad : PCB.padBack} highlight={!!activeNet && it.netId === activeNet} px={px} />
-                        </g>
-                      ) : null,
-                    )}
-                  </g>
-                ) : null,
-              )}
-
-              {/* Through-hole pads, mounting holes and vias span the layers they have copper on (every one for a through-hole pad and a through via) */}
-              {stack.some((l) => copperOn(l)) && (
-                <>
-                  {pcb.items.map((it) =>
-                    it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? (
-                      <g key={it.id} opacity={dim(netOf(it))}>
-                        <PadShape pad={it.pad} color={PCB.pad} highlight={!!activeNet && it.netId === activeNet} px={px} />
-                      </g>
-                    ) : null,
-                  )}
-                  {project.vias.map((v) => {
-                    const net = pcb.viaNet.get(v.id) ?? null
-                    const isSel = selected.has(`v:${v.id}`)
-                    const span = viaLayers(project.board, v)
-                    if (!span.some((l) => copperOn(l))) return null
-                    // A via that does not run the whole stack (X5) is drawn in the colour of the layer it starts on, with a dashed ring: blind and buried, and a micro via a ring of its own.
-                    const partial = v.kind !== undefined
-                    return (
-                      <g key={v.id} opacity={dim(net)}>
-                        <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={isSel ? PCB.select : partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via} stroke={activeNet && net === activeNet ? "#fff" : partial ? PCB.hole : "none"} strokeWidth={1.4 * px} strokeDasharray={partial ? `${3 * px} ${2 * px}` : undefined} />
-                        <circle cx={v.x} cy={v.y} r={v.drill / 2} fill={PCB.hole} />
-                        {v.kind === "micro" && <circle cx={v.x} cy={v.y} r={v.diameter / 2 - 1.2 * px} fill="none" stroke={PCB.hole} strokeWidth={1 * px} />}
-                      </g>
-                    )
-                  })}
-                </>
-              )}
-
-              {/* Drawings on mask, paste, fabrication, courtyard, adhesive and user layers: thin and muted, under the silkscreen */}
-              {shown
-                .filter((s) => {
-                  const k = shapeKindOf(s.shape.layer)
-                  return k !== "copper" && k !== "silk"
-                })
-                .map((s) => (
-                  <g key={s.id} opacity={shapeDim(s.shape.net) * sideOpacity(s.shape.layer) * 0.85}>
-                    <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={selected.has(s.select ?? s.id)} />
-                  </g>
-                ))}
-
-              <OtherZoneFills fills={otherFills} silk={false} shown={otherShown} opacityOf={(name) => sideOpacity(name) * 0.85} />
-
-              {/* Text on mask, paste, fabrication, courtyard, adhesive, user and edge layers: muted, under the silkscreen */}
-              {shownTexts
-                .filter((tx) => {
-                  const k = textLayerKind(tx.layer)
-                  return k !== "copper" && k !== "silk"
-                })
-                .map((tx) => (
-                  <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85} />
-                ))}
-
-              {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
-              {worldPoints(project, placed)
-                .filter((pt) => otherShown(pt.layer))
-                .map((pt, i) => (
-                  <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
-                    <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
-                  </g>
-                ))}
-
-              {/* Silkscreen: part outlines, designators and free text */}
-              {layers.silk && (
-                <>
-                  {shownTexts
-                    .filter((tx) => textLayerKind(tx.layer) === "silk")
-                    .map((tx) => (
-                      <TextDraw key={tx.id} t={tx} project={project} px={px} selected={selected.has(tx.id)} opacity={textSide(tx.layer) !== front ? 0.55 : 1} />
-                    ))}
-                  <OtherZoneFills fills={otherFills} silk shown={otherShown} opacityOf={sideOpacity} />
-                  {shown
-                    .filter((s) => shapeKindOf(s.shape.layer) === "silk")
-                    .map((s) => (
-                      <g key={s.id} opacity={sideOpacity(s.shape.layer)}>
-                        <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={selected.has(s.select ?? s.id)} />
-                      </g>
-                    ))}
-                  {placed.map((c) => (
-                    <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : 0.55}>
-                      {pcbSilk(c).map((path, i) => (
-                        <polyline
-                          key={i}
-                          points={path.map((p) => `${p.x},${p.y}`).join(" ")}
-                          fill="none"
-                          stroke={c.pcb.side === "top" ? PCB.silk : PCB.silkBottom}
-                          strokeWidth={SILK_WIDTH}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ))}
-                      {designators.get(c.id) && <DesignatorText d={designators.get(c.id)!} />}
-                    </g>
-                  ))}
-                  {ownTexts(project).map((tx) => (
-                    <g key={tx.id} opacity={tx.side === front ? 1 : 0.55}>
-                      {boardTextStrokes(tx).map((path, i) => (
-                        <polyline
-                          key={i}
-                          points={path.map((p) => `${p.x},${p.y}`).join(" ")}
-                          fill="none"
-                          stroke={tx.side === "top" ? PCB.silk : PCB.silkBottom}
-                          strokeWidth={boardTextStrokeWidth(tx)}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ))}
-                    </g>
-                  ))}
-                </>
-              )}
+              {boardDrawing(step)}
+              {passingHighlight(step)}
 
               {/* Pin names on pads and net names along traces once there is room to read them */}
               {layers.labels && (layers.top || layers.bottom) && (
@@ -1279,53 +1444,7 @@ export function PcbEditor() {
                 </>
               )}
 
-              {/* Courtyards / selection */}
-              {placed.map((c) => {
-                const cy = pcbCourtyard(c)
-                if (!cy) return null
-                const isSel = selected.has(`c:${c.id}`)
-                const isHover = hover?.type === "component" && hover.id === c.id
-                // A part marked do not populate keeps a dashed courtyard, so it reads as fitted on the board but not on the build.
-                const dnp = !!c.flags?.dnp
-                if (!isSel && !isHover && !layers.courtyard && !dnp) return null
-                return (
-                  <rect
-                    key={`cy${c.id}`}
-                    x={cy.minX}
-                    y={cy.minY}
-                    width={cy.maxX - cy.minX}
-                    height={cy.maxY - cy.minY}
-                    fill={isSel ? PCB.selectSoft : "none"}
-                    stroke={isSel || isHover ? PCB.select : PCB.courtyard}
-                    strokeOpacity={isSel ? 1 : isHover ? 0.7 : 1}
-                    strokeWidth={(isSel ? 1.6 : 1.2) * px}
-                    strokeDasharray={dnp ? `${5 * px} ${3 * px}` : undefined}
-                  />
-                )
-              })}
-
-              {/* Ratsnest */}
-              {layers.ratsnest &&
-                pcb.ratsnest.map((rl, i) => (
-                  <line
-                    key={`r${i}`}
-                    x1={rl.a.x}
-                    y1={rl.a.y}
-                    x2={rl.b.x}
-                    y2={rl.b.y}
-                    stroke={activeNet === rl.netId ? "#ffffff" : PCB.ratsnest}
-                    strokeWidth={(activeNet === rl.netId ? 1.6 : 1) * px}
-                    strokeDasharray={`${5 * px} ${3 * px}`}
-                  />
-                ))}
-
-              {/* DRC markers */}
-              {markers.map((v) => (
-                <g key={v.id}>
-                  <circle cx={v.at.x} cy={v.at.y} r={Math.max(0.35, 7 * px)} fill="none" stroke={PCB.danger} strokeWidth={1.6 * px} />
-                  <circle cx={v.at.x} cy={v.at.y} r={Math.max(0.08, 1.6 * px)} fill={PCB.danger} />
-                </g>
-              ))}
+              {boardMarks(step)}
 
               {/* The outlines of the zones, and the corners of the selected ones */}
               {tool !== "route" && <ZoneOutlines project={project} selected={selected} px={px} active={layer} />}

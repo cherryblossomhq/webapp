@@ -94,8 +94,7 @@ export function supplierFootprint(part: LandedPart): FootprintDef | null {
   const courtyard = land.courtyard ?? { minX: round(b.minX - 0.25), minY: round(b.minY - 0.25), maxX: round(b.maxX + 0.25), maxY: round(b.maxY + 0.25) }
   const body = { pads, silk, courtyard }
   const name = `${packageFamily(part.package)}_${part.lcsc.toLowerCase()}-${digest(JSON.stringify(body))}`
-  // The package's own name travels with the land: the 3D view draws the body it names.
-  return { name, ...body, ...(part.package?.trim() ? { package: part.package.trim() } : {}) }
+  return { name, ...body }
 }
 
 /**

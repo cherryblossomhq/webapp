@@ -238,7 +238,6 @@ export function drawnLand(input: DrawnLandInput, partName: string): { land: Foot
     land: {
       name: `${packageFamily(pkg)}_${slug(partName)}-${digest(JSON.stringify(body))}`,
       ...body,
-      ...(pkg ? { package: pkg } : {}),
     },
   }
 }

@@ -3,18 +3,17 @@ import type { PartsIndexSource, SupplierPartsSource } from "../ai/supplierParts"
 import { registerProjectFootprints } from "./footprints"
 import { modelAssignment, setModel } from "./models3d"
 import { supplierModelOnLand } from "./supplier/model"
-import type { ComponentInstance, FootprintDef, Project } from "./types"
+import type { ComponentInstance, Project } from "./types"
 
 // Real parts for the parts of a board that came from KiCad. A part that carries an LCSC number (the field KiCad boards use for the
 // JLCPCB assembly service: "LCSC", "LCSC Part", "JLCPCB Part #" and the like) is looked up in the parts database and the supplier's
-// records, and what they know is attached to the part: its manufacturer, part number and datasheet where the file has none, its
-// package, and the supplier's 3D model placed on the pads the file's footprint has.
+// records, and what they know is attached to the part: its manufacturer, part number and datasheet where the file has none, and the
+// supplier's 3D model placed on the pads the file's footprint has.
 //
 // One rule holds throughout: the file's footprint is never changed. The traces were routed to its pads, so its pads, drawings and
-// place stay exactly as the file has them. The record's land is only compared with them: if it has the same pads (the same count and
-// numbers, each place within 0.01 mm) the land is that package, and says so (`FootprintDef.package`, which the 3D view reads the body
-// from); if it has them in another place or turned a quarter, the 3D model is moved onto the file's pads; if it is another land, only
-// the part's data is attached and the report says that the land differs. The symbol is never replaced: the wires meet its pins.
+// place stay exactly as the file has them. The record's land is only compared with them: if it has the same pads, in their place or
+// moved or turned a quarter, the 3D model is put onto the file's pads; if it is another land, only the part's data is attached and the
+// report says that the land differs. The symbol is never replaced: the wires meet its pins.
 //
 // The lookup is the host's (a network call), so it is this module's argument, never something the importer does itself.
 
@@ -93,11 +92,10 @@ export interface LcscStats {
   matched: number
   noMatch: number
   failed: number
-  /** What was attached: parts that got data they lacked, lands that are the record's package, parts that got the supplier's 3D model. */
+  /** What was attached: parts that got data they lacked, parts that got the supplier's 3D model. */
   metadata: number
-  packages: number
   models: number
-  /** Parts whose land is not the record's, so the 3D model and package were left alone. */
+  /** Parts whose land is not the record's, so the 3D model was left alone. */
   landDiffers: number
 }
 
@@ -109,18 +107,6 @@ export interface LcscOutcome {
 
 /** How many different numbers one board may look up: a big board has a few hundred, and each is a request. The rest are reported, not looked up. */
 export const MAX_LOOKUPS = 150
-
-/** Whether two lands have the same pads: the same count, each of the file's pads with a record pad of its number within 0.01 mm. */
-export function sameLand(pads: FootprintDef["pads"], land: SupplierLand): boolean {
-  if (!pads.length || pads.length !== land.pads.length) return false
-  const used = new Set<number>()
-  for (const p of pads) {
-    const i = land.pads.findIndex((q, k) => !used.has(k) && (q.number || "") === (p.pin ?? "") && Math.abs(q.x - p.x) <= 0.01 && Math.abs(q.y - p.y) <= 0.01)
-    if (i < 0) return false
-    used.add(i)
-  }
-  return true
-}
 
 const refs = (list: string[]) => `${list.slice(0, 6).join(", ")}${list.length > 6 ? `, and ${list.length - 6} more` : ""}`
 
@@ -149,14 +135,13 @@ export async function matchLcsc(project: Project, lookup: LcscLookup, options: {
 /** What the records say, attached to the project (pure: the lookups are done). A number with no record in the map was not looked up. */
 export function applyRecords(project: Project, records: ReadonlyMap<string, LcscRecord | null | Error>, skipped = 0): LcscOutcome {
   registerProjectFootprints(project)
-  const stats: LcscStats = { withNumber: 0, numbers: 0, matched: 0, noMatch: 0, failed: 0, metadata: 0, packages: 0, models: 0, landDiffers: 0 }
+  const stats: LcscStats = { withNumber: 0, numbers: 0, matched: 0, noMatch: 0, failed: 0, metadata: 0, models: 0, landDiffers: 0 }
   const noMatch = new Map<string, string[]>()
   const failed = new Map<string, string[]>()
   const differs: string[] = []
   const notLooked: string[] = []
   const matchedRefs: string[] = []
   const seen = new Set<string>()
-  const packaged = new Map<string, string>()
   let next = project
 
   const components = project.components.map((c) => {
@@ -201,16 +186,10 @@ export function applyRecords(project: Project, records: ReadonlyMap<string, Lcsc
     give("datasheet", record.datasheet, "datasheet")
     if (added) stats.metadata++
 
-    // Its land: the same pads are the record's package; the same pads moved or turned carry the model onto them; any other land is left alone.
+    // Its land: the same pads, in place or moved or turned, carry the model onto them; any other land is left alone.
     const def = project.footprints?.find((f) => f.name === c.footprint) ?? null
     const land = record.land
     if (def && land) {
-      if (sameLand(def.pads, land)) {
-        if (record.package && !def.package && !packaged.has(def.name)) {
-          packaged.set(def.name, record.package)
-          stats.packages++
-        }
-      }
       if (record.model3d && !modelAssignment(next, c.partId, c.footprint)) {
         const model = supplierModelOnLand(record.model3d, land, record.attribution, c.footprint)
         if (model) {
@@ -225,13 +204,11 @@ export function applyRecords(project: Project, records: ReadonlyMap<string, Lcsc
     return added ? { ...c, props } : c
   })
 
-  const footprints = project.footprints?.map((f) => (packaged.has(f.name) ? { ...f, package: packaged.get(f.name)!.slice(0, 120) } : f))
-  next = { ...next, components, ...(footprints ? { footprints } : {}) }
-  if (packaged.size) registerProjectFootprints(next)
+  next = { ...next, components }
 
   const entries: LcscEntry[] = []
   if (matchedRefs.length) {
-    const bits = [stats.metadata ? `data the file lacked on ${stats.metadata}` : "", stats.packages ? `the package of ${stats.packages} land${stats.packages > 1 ? "s" : ""}` : "", stats.models ? `${stats.models} 3D model${stats.models > 1 ? "s" : ""}` : ""].filter(Boolean)
+    const bits = [stats.metadata ? `data the file lacked on ${stats.metadata}` : "", stats.models ? `${stats.models} 3D model${stats.models > 1 ? "s" : ""}` : ""].filter(Boolean)
     entries.push({ code: "lcsc-matched", object: `${matchedRefs.length} part${matchedRefs.length > 1 ? "s" : ""} with an LCSC number (${refs(matchedRefs)})`, why: `Found in the parts database or at the supplier${bits.length ? `, and attached: ${bits.join(", ")}` : ""}. The footprints, their pads and the symbols are exactly as the file has them.`, count: matchedRefs.length })
   }
   for (const [number, list] of noMatch) entries.push({ code: "lcsc-no-match", object: `no LCSC match for ${number} (${refs(list)})`, why: "Neither the parts database nor the supplier has a part of this number, so the part stays as the file has it.", count: list.length })

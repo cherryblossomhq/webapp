@@ -58,9 +58,8 @@ describe("pairing a symbol with its footprint", () => {
     expect(part.draft).toMatchObject({ name: "AP2204K-1.5", category: "Power", refPrefix: "U", props: { mpn: "AP2204K-1.5" } })
     expect(part.draft.pins.map((p) => `${p.number}:${p.name}`).sort()).toEqual(["1:VIN", "2:GND", "3:EN", "4:NC", "5:VOUT"])
     expect(part.draft.source).toEqual({ pins: "file", land: "file", file: { symbol: "Regulator_Linear:AP2204K-1.5", footprint: "SOT-23-5" } })
-    // The user's own land, named for its package family so the 3D view draws a SOT-23 body.
+    // The user's own land, named for its package family.
     expect(part.land?.name).toMatch(/^sot23_5_file_sot_23_5-[0-9a-z]{6}$/)
-    expect(part.land?.package).toBe("SOT-23-5")
     expect(part.draft.footprint).toBe(part.land?.name)
   })
 

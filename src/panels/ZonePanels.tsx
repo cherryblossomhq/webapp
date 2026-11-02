@@ -211,7 +211,11 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
                 <LengthInput min={0.01} value={zone.hatch.gap} ariaLabel="Hatch hole size" onCommit={(v) => v !== null && patch({ hatch: { ...zone.hatch!, gap: v } })} />
               </Field>
               <Field label="Angle">
-                <input type="number" step={1} className="field h-8" aria-label="Hatch angle" key={zone.hatch.angle ?? 0} defaultValue={zone.hatch.angle ?? 0} onBlur={(e) => patch({ hatch: { ...zone.hatch!, angle: Number(e.target.value) || undefined } })} />
+                <input type="number" step={1} className="field h-8" aria-label="Hatch angle" key={zone.hatch.angle ?? 0} defaultValue={zone.hatch.angle ?? 0} onBlur={(e) => {
+                    const angle = Number(e.target.value) || undefined
+                    // Only a changed angle is an edit: leaving the field as it was adds no undo step.
+                    if (angle !== zone.hatch!.angle) patch({ hatch: { ...zone.hatch!, angle } })
+                  }} />
               </Field>
             </div>
           )}

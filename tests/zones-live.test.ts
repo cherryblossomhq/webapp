@@ -91,9 +91,15 @@ describe("getLiveAnalysis", () => {
 })
 
 describe("getPreviewFills", () => {
-  it("fills no polygon zone on the page, and draws the fill once one is made", () => {
-    // A projects page draws every project's preview: a big board's zones took minutes to fill there.
+  it("fills a small board's polygon zones, as the editor does", () => {
     const p = withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })
+    expect(getPreviewFills(p).length).toBeGreaterThan(0)
+  })
+
+  it("fills no polygon zone of a big board on the page, and draws the fill once one is made", () => {
+    // A projects page draws every project's preview: a big board's zones took minutes to fill there.
+    const small = withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })
+    const p = { ...small, vias: Array.from({ length: 3001 }, (_, i) => ({ id: `v${i}`, x: 40 + (i % 60), y: 40 + Math.floor(i / 60), diameter: 0.6, drill: 0.3 })) }
     expect(getPreviewFills(p)).toEqual([])
     const made = getPcbAnalysis(p).zoneFills
     expect(made.length).toBeGreaterThan(0)

@@ -31,5 +31,16 @@ export async function attachLcsc(outcome: ImportOutcome, lookup: LcscLookup | nu
     return { outcome: { ...outcome, summary: { ...summary, notes: [...summary.notes, ...entries.map(line)] } }, stats: null }
   }
   const matched = await matchLcsc(project, lookup, options)
-  return { outcome: { ...outcome, project: matched.project, summary: { ...summary, notes: [...summary.notes, ...matched.entries.map(line)] } }, stats: matched.stats }
+  return { outcome: { ...outcome, project: await rehashed(matched.project), summary: { ...summary, notes: [...summary.notes, ...matched.entries.map(line)] } }, stats: matched.stats }
+}
+
+/**
+ * What the lookup attached is part of the project as imported: the hash the export compares with (`kicad.original.content`) is taken again, or the first export
+ * of a board with an LCSC part would find the project changed and write the user's files again instead of giving them back as they were.
+ */
+async function rehashed(project: Project): Promise<Project> {
+  const original = project.kicad?.original
+  if (!original) return project
+  const { contentHash } = await import("../export/keep/pack")
+  return { ...project, kicad: { ...project.kicad, original: { ...original, content: await contentHash(project) } } }
 }

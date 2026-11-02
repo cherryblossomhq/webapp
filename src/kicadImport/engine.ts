@@ -207,6 +207,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: [...projectBytes, ...extras] }) : null
     const summary = summarize(result, context)
     if (kept) summary.notes.push(kept.note)
+    else if (result.status === "imported" && files.board && bytes) summary.notes.push({ code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: "They are larger than a project keeps beside it, so an export writes every file from the project." })
     const project = result.status === "imported" ? (kept ? kept.project : result.project) : null
     // Only the model files a part holds go to the file store, once each.
     const held = new Set(project?.models?.flatMap((m) => (m.model.source === "file" ? [m.model.id] : [])) ?? [])
@@ -223,10 +224,6 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
   }
 }
 
-/**
- * The files the import was given, kept as one zip beside the project: the project's record of them, the file to put in the host's file store,
- * and the line for the report. Nothing is kept when the zip would be larger than the store takes (the project is imported all the same).
- */
 /** What the kept files beside the KiCad ones may weigh, unpacked: half of what the kept zip holds, so the KiCad files always fit. */
 const EXTRAS_BYTES = 18 * 1024 * 1024
 /** Files the importer reads, or would choose among: one the import did not read stays out, so reading the kept files again picks the same ones. */
@@ -260,6 +257,10 @@ async function folderExtras(all: InputFile[], boardPath: string, taken: string[]
   return out
 }
 
+/**
+ * The files the import was given, kept as one zip beside the project: the project's record of them, the file to put in the host's file store,
+ * and the line for the report. Nothing is kept when the zip would be larger than the store takes (the project is imported all the same, and the report says so).
+ */
 async function keepOriginals(
   result: Extract<ImportResult, { status: "imported" }>,
   importOptions: ImportOptions,

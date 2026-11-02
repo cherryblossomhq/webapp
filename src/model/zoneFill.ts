@@ -2,12 +2,13 @@ import { Clipper, Clipper64, ClipType, FillRule, JoinType, PointInPolygonResult,
 import type { SchematicConnectivity } from "./connectivity"
 import { classIndex, type ClassIndex } from "./netClasses"
 import { scoped } from "./scope"
-import { isNpth, type WorldPad } from "./instances"
+import { isNpth, npthFlashes, type WorldPad } from "./instances"
 import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
 import type { FillPolygon, PourInput, ZoneFill } from "./pour"
 import { regionTester } from "./regionTester"
 import {
+  ARC_MM,
   areaMm2,
   boardArea,
   boardLoops,
@@ -50,6 +51,12 @@ import type { CopperLayer, Project, Vec2, Zone } from "./types"
 
 /** The extra margin KiCad adds to every clearance so a rounded edge never leaves less than asked (`m_ExtraClearance`, 0.0005 mm). */
 const EXTRA = 0.0005
+/**
+ * How far inside the curve it stands for a round cut can come: the chords of a stroke's or an offset's round ends (`ARC_MM`), and of a rounded or oval pad's own
+ * corners under that (`ARC_MM` more). KiCad draws every clearance with its error outside (`ERROR_OUTSIDE`), so a cut here is grown by this as well and never leaves
+ * less than the clearance (a board's pours, filled again after an edit, were 0.5068 mm from its tracks under a 0.508 mm zone clearance: 200 errors in KiCad's DRC).
+ */
+const ROUND = 2 * ARC_MM
 /** What a minimum width is trimmed by when shrinking and growing, so a feature exactly that wide survives. */
 const EPSILON_MM = 0.001
 /** How far from the pad KiCad tests whether a spoke reaches copper (its maximum error). */
@@ -623,10 +630,10 @@ export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: C
       const b = it.box
       const gap = gapOf(net)
       if (!overlaps({ minX: b.minX * U, maxX: b.maxX * U, minY: b.minY * U, maxY: b.maxY * U }, box, gap * U)) continue
-      if (it.kind === "segment") holes.push(...stroke(trackPoints(it), it.width / 2 + gap))
+      if (it.kind === "segment") holes.push(...stroke(trackPoints(it), it.width / 2 + gap + ROUND))
       else if (it.kind === "via") holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap))
-      else if (it.kind === "pad") holes.push(...padObstacle(it.pad, it.pad.clearance ? Math.max(gap, it.pad.clearance + EXTRA) : gap))
-      else if (it.kind === "shape") holes.push(...shapeObstacle(it, gap))
+      else if (it.kind === "pad") holes.push(...padObstacle(it.pad, (it.pad.clearance ? Math.max(gap, it.pad.clearance + EXTRA) : gap) + ROUND))
+      else if (it.kind === "shape") holes.push(...shapeObstacle(it, gap + ROUND))
     }
     if (!holes.length) return f
     return { ...f, polygons: groupsOf(difference(paths, union(holes))).map((g) => g.paths.map(toVec)) }
@@ -733,7 +740,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
       if (!on) {
         // A pad that has no copper here but a hole through the board still keeps the pour back from its hole.
         const h = holeShape(pad)
-        if (h && !isNpth(pad)) holes.push(...inflate(h, holeGap + EXTRA))
+        if (h && !isNpth(pad)) holes.push(...inflate(h, holeGap + EXTRA + ROUND))
         continue
       }
       // X22: where a backdrill or post-machining cuts the pad's copper, the pour does not join it and keeps out of the hole that is cut (`zone_filler.cpp` 10.0 `:2190` and `:2507`).
@@ -759,18 +766,21 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         continue
       }
       if (isNpth(pad)) {
+        // One with copper of its own keeps the pour the clearance from that copper, as any pad of another net; its hole keeps only the hole's (`knockoutPadClearance`,
+        // zone_filler.cpp 9.0: "NPTH do not need copper clearance gaps to their holes").
+        if (npthFlashes(pad)) holes.push(...padObstacle(pad, (pad.clearance ? Math.max(gapTo(null), pad.clearance) : gapTo(null)) + EXTRA + ROUND))
         const h = holeShape(pad) ?? padShape(pad)
-        holes.push(...inflate(h, holeGap + EXTRA))
+        holes.push(...inflate(h, holeGap + EXTRA + ROUND))
         continue
       }
       // A pad with a clearance of its own (X7) is kept that far from at least, as KiCad max's a local clearance with the class's (and the zone's, which `gapTo` has).
       const padGap = pad.clearance ? Math.max(gapTo(net), pad.clearance) : gapTo(net)
-      holes.push(...padObstacle(pad, padGap + EXTRA))
+      holes.push(...padObstacle(pad, padGap + EXTRA + ROUND))
       const h = holeShape(pad)
-      if (h) holes.push(...inflate(h, Math.max(padGap, holeGap) + EXTRA))
+      if (h) holes.push(...inflate(h, Math.max(padGap, holeGap) + EXTRA + ROUND))
     } else if (it.kind === "segment") {
       if (!on || same) continue
-      holes.push(...stroke(trackPoints(it), it.width / 2 + gapTo(net) + EXTRA))
+      holes.push(...stroke(trackPoints(it), it.width / 2 + gapTo(net) + EXTRA + ROUND))
     } else if (it.kind === "via") {
       // X22: a backdrill or post-machining that cuts the via here keeps the pour from joining it and out of the hole it cuts (`zone_filler.cpp` 10.0 `:2345` and `:2609`).
       const cut = it.cut?.[layer] ?? 0
@@ -793,7 +803,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
     } else if (it.kind === "shape") {
       if (!on) continue
       if (same && !it.what) continue
-      holes.push(...shapeObstacle(it, gapTo(net) + EXTRA))
+      holes.push(...shapeObstacle(it, gapTo(net) + EXTRA + ROUND))
     }
   }
 
@@ -811,7 +821,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         // pour is not grown whole for each small zone it outranks (a keyboard's 150 row zones under one ground pour took most of a minute). The cut's own
         // edges grow by one gap, which stays outside this fill. The cut is a boolean, not `crop`: Clipper's rectangle clip gets some unions' paths wrong.
         const near = intersect(theirs, [boxPath(pad0(box, 2 * g * U))])
-        if (near.length) zoneHoles.push(...inflate(near, g))
+        if (near.length) zoneHoles.push(...inflate(near, g + ROUND))
       }
     }
   }

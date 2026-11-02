@@ -235,6 +235,19 @@ export const pasteSides = (pad: Pick<WorldPad, "paste" | "layers" | "holeDiamete
 /** True for a non-plated (NPTH) hole, which has no copper on any layer. */
 export const isNpth = (pad: { plated?: false }) => pad.plated === false
 
+/**
+ * Whether a non-plated pad has copper round its hole, as KiCad decides (`PAD::FlashLayer`, pad.cpp 9.0): a round pad no bigger than its round hole, and an oval one
+ * no bigger than its oval hole, with the hole at its centre, are a bare drill; any other has copper, and so has a round oval on a round drill, which the import keeps
+ * a stadium of equal sides (`kicad/board/pads.ts`).
+ */
+export function npthFlashes(pad: Pick<WorldPad, "shape" | "x" | "y" | "width" | "height" | "holeDiameter" | "slotLength" | "hole">): boolean {
+  const d = pad.holeDiameter ?? 0
+  if (d <= 0 || (pad.hole && (Math.abs(pad.hole.x - pad.x) > 1e-6 || Math.abs(pad.hole.y - pad.y) > 1e-6))) return true
+  if (pad.shape === "circle") return pad.width > d + 1e-6
+  if (pad.shape === "pill" && pad.slotLength !== undefined) return Math.min(pad.width, pad.height) > d + 1e-6 || Math.max(pad.width, pad.height) > pad.slotLength + 1e-6
+  return true
+}
+
 /** A part drawn from a KiCad symbol may have several units: symbols that share one designator, each drawing some of the part's pins. */
 export const hasUnits = (part: PartDef | undefined): part is PartDef => !!part && (unitCount(part) > 1 || !!part.unitOf)
 

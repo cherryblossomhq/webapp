@@ -552,6 +552,40 @@ function copperMeetsFill(c: ShapeCopper, box: Box, polygon: FillPolygon, contain
 
 type FillEdge = readonly [Vec2, Vec2]
 
+/**
+ * The items whose boxes reach a box, by the 2 mm cells of a grid: `boxGrid(entries)(box)` lists each entry (once) whose box shares a cell with it, a
+ * superset of those it overlaps. An item whose box covers more cells than `FILL_EDGE_MAX_CELLS` is one every query lists.
+ */
+function boxGrid(entries: readonly (readonly [number, Box])[]): (box: Box) => number[] {
+  const cells = new Map<number, number[]>()
+  const long: number[] = []
+  for (const [id, b] of entries) {
+    const x0 = Math.floor(b.minX / FILL_EDGE_CELL)
+    const x1 = Math.floor(b.maxX / FILL_EDGE_CELL)
+    const y0 = Math.floor(b.minY / FILL_EDGE_CELL)
+    const y1 = Math.floor(b.maxY / FILL_EDGE_CELL)
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > FILL_EDGE_MAX_CELLS) {
+      long.push(id)
+      continue
+    }
+    for (let ix = x0; ix <= x1; ix++) {
+      for (let iy = y0; iy <= y1; iy++) {
+        const key = cellKey(ix, iy)
+        const cell = cells.get(key)
+        if (cell) cell.push(id)
+        else cells.set(key, [id])
+      }
+    }
+  }
+  return (box) => {
+    const out = new Set(long)
+    for (let ix = Math.floor(box.minX / FILL_EDGE_CELL); ix <= Math.floor(box.maxX / FILL_EDGE_CELL); ix++) {
+      for (let iy = Math.floor(box.minY / FILL_EDGE_CELL); iy <= Math.floor(box.maxY / FILL_EDGE_CELL); iy++) for (const id of cells.get(cellKey(ix, iy)) ?? []) out.add(id)
+    }
+    return [...out]
+  }
+}
+
 /** The cells of the grid a fill's edges are kept by (mm), and the most cells an edge is kept in before it is one every query asks. */
 const FILL_EDGE_CELL = 2
 const FILL_EDGE_MAX_CELLS = 64
@@ -1399,12 +1433,18 @@ function holeClearanceViolations(
   }
   const reported = new Set<string>()
   const order = items.map((_, i) => i).filter((i) => items[i].kind !== "zone").sort((a, b) => items[a].box.minX - items[b].box.minX)
+  // The items near a hole, found by the cells of a grid their boxes reach and taken in the order above: each hole went through every item to its
+  // left, 1.9 s of the checks of a board of 8,000 holes.
+  const rank = new Int32Array(items.length)
+  order.forEach((j, k) => (rank[j] = k))
+  const near = boxGrid(order.map((j) => [j, items[j].box] as const))
   for (const h of holes) {
     const hole = items[h.item]
     const own = netOf(h.item)
-    for (const j of order) {
+    const reach = { minX: h.box.minX - need, minY: h.box.minY - need, maxX: h.box.maxX + need, maxY: h.box.maxY + need }
+    for (const j of near(reach).sort((a, b) => rank[a] - rank[b])) {
       const it = items[j]
-      if (it.box.minX > h.box.maxX + need) break
+      if (it.box.minX > h.box.maxX + need) continue
       if (j === h.item || it.box.maxX < h.box.minX - need || it.box.maxY < h.box.minY - need || it.box.minY > h.box.maxY + need) continue
       if (!it.layers.some((l) => h.layers.includes(l))) continue
       // Its own copper: the pad itself (and a pad stack's other layers), the via's other items, the pads of its number on its part.

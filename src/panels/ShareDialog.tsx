@@ -4,6 +4,7 @@ import { goHome, projectLink } from "../App"
 import { isTyping } from "../editor/viewport"
 import { projectStorage, useProjectStore } from "../store/projectStore"
 import type { MemberRole, ShareInvite, ShareMember, SharingSource, SharingState } from "../store/sharing"
+import { useUi, type View } from "../store/uiStore"
 import { Avatar } from "../ui/Avatar"
 import { Button, IconButton } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
@@ -49,6 +50,28 @@ function RoleSelect({ value, onChange, disabled, label }: { value: MemberRole; o
       <option value="editor">Can edit</option>
       <option value="viewer">Can view</option>
     </select>
+  )
+}
+
+const VIEW_LABEL: Record<View, string> = { schematic: "Schematic", pcb: "PCB", "3d": "3D" }
+
+/** Which view the project's link opens on. */
+function ViewSelect({ value, onChange }: { value: View; onChange: (view: View) => void }) {
+  return (
+    <Tooltip label="Where the link opens">
+      <select
+        aria-label="Where the link opens"
+        value={value}
+        onChange={(e) => onChange(e.target.value as View)}
+        className="h-8 shrink-0 cursor-pointer rounded-[var(--radius-ctl)] border border-line bg-field pl-2 pr-1 text-[12.5px] text-ink outline-none hover:bg-hover focus:border-select"
+      >
+        {(Object.keys(VIEW_LABEL) as View[]).map((v) => (
+          <option key={v} value={v}>
+            {VIEW_LABEL[v]}
+          </option>
+        ))}
+      </select>
+    </Tooltip>
   )
 }
 
@@ -473,12 +496,14 @@ function MemberRow({ member, state, onRole, onRemove }: { member: ShareMember; s
 /**
  * Who can open the project besides the people listed: only them, or anyone who has its link, as
  * viewers or editors (signed out, only viewers). The owner chooses. The link is the project's own
- * address, so everyone with access can copy it: while the link is off it opens only for them.
+ * address, so everyone with access can copy it: while the link is off it opens only for them. It
+ * opens on the view chosen beside it, the one shown to begin with.
  */
 function GeneralAccess({ state, source, projectId, onError }: { state: SharingState; source: SharingSource; projectId: string; onError: (text: string) => void }) {
   const [busy, setBusy] = useState(false)
+  const [opensOn, setOpensOn] = useState(() => useUi.getState().view)
   const { link } = state
-  const url = projectLink(projectId)
+  const url = projectLink(projectId, opensOn)
   const set = (role: MemberRole | null) => {
     if (busy) return
     setBusy(true)
@@ -533,6 +558,7 @@ function GeneralAccess({ state, source, projectId, onError }: { state: SharingSt
           onFocus={(e) => e.currentTarget.select()}
           className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-line bg-field px-2.5 text-[12.5px] text-ink-2 outline-none focus:border-select"
         />
+        <ViewSelect value={opensOn} onChange={setOpensOn} />
         <CopyProjectLink url={url} />
       </div>
     </>

@@ -12,7 +12,7 @@ import { browserPresence } from "./store/presence"
 import { localSharing } from "./store/sharing"
 import { connectProjectStorage, settleSaves, useProjectStore } from "./store/projectStore"
 import { browserProjectStorage, movedProjectId, moveBrowserProjects, openStoredProject, projectRecord, type ProjectStorage } from "./store/storage"
-import { useUi } from "./store/uiStore"
+import { useUi, type View } from "./store/uiStore"
 
 /** Where the host mounts the editor (`AppProps.basePath`). */
 let basePath = ""
@@ -38,9 +38,26 @@ const navigate = (path: string, { replace = false } = {}) => {
 }
 const projectPath = (id: string) => `${basePath}/p/${id}`
 
+/**
+ * The view a project's address opens on, `?view=pcb` or `?view=3d`. The schematic needs none: a
+ * project opens on it anyway, so its address is the bare one.
+ */
+const VIEWS: readonly View[] = ["schematic", "pcb", "3d"]
+const viewInAddress = (): View | undefined => {
+  const asked = new URLSearchParams(window.location.search).get("view")
+  return VIEWS.find((v) => v === asked)
+}
+const viewQuery = (search: string, view: View) => {
+  const query = new URLSearchParams(search)
+  if (view === "schematic") query.delete("view")
+  else query.set("view", view)
+  const text = query.toString()
+  return text ? `?${text}` : ""
+}
+
 export const openProjectRoute = (id: string) => navigate(projectPath(id))
-/** A project's address in full: its link, to copy and send. */
-export const projectLink = (id: string) => `${window.location.origin}${projectPath(id)}`
+/** A project's address in full: its link, to copy and send, opening on `view`. */
+export const projectLink = (id: string, view: View = "schematic") => `${window.location.origin}${projectPath(id)}${viewQuery("", view)}`
 /** The host's projects page, when it has one (`AppProps.account`); the editor's own dashboard otherwise. */
 let projectsUrl: string | undefined
 
@@ -150,6 +167,8 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
   const [handingOff, setHandingOff] = useState(() => !!initialPrompt?.trim() && !promptHandled)
   const project = useProjectStore((s) => s.project)
   const [load, setLoad] = useState<Load>({ state: "loading" })
+  const view = useUi((s) => s.view)
+  const shown = route.page === "editor" && load.state === "ready" && project?.id === route.id
 
   useEffect(() => {
     const follow = () => setRoute(followRoute)
@@ -214,6 +233,8 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
         if (moved) return navigate(projectPath(moved), { replace: true })
         if (!stored) return setLoad({ state: "missing" })
         useProjectStore.getState().open(openStoredProject(stored), { revision: stored.revision, formatVersion: stored.formatVersion, role: stored.role })
+        const asked = viewInAddress()
+        if (asked) useUi.getState().setView(asked)
         setLoad({ state: "ready" })
       })
       .catch((error: unknown) => {
@@ -226,6 +247,14 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
       current = false
     }
   }, [route, storage])
+
+  // The address follows the view shown, so it links to what is on screen, as the Share dialog's
+  // link does. Only once the project is open: until then the address still says what to open on.
+  useEffect(() => {
+    if (!shown || (viewInAddress() ?? "schematic") === view) return
+    const { pathname, search, hash } = window.location
+    window.history.replaceState(null, "", `${pathname}${viewQuery(search, view)}${hash}`)
+  }, [shown, view])
 
   return <AccountContext.Provider value={account}>{content()}</AccountContext.Provider>
 

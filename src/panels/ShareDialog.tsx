@@ -360,7 +360,11 @@ function ShareBody({ source, projectId, projectName, onClose }: { source: Sharin
                 You have this project through its link, so you can {VERB[state.role === "viewer" ? "viewer" : "editor"]} it. Copy the link below to bring others in.
               </p>
             ) : (
-              <p className="rounded-[8px] bg-chrome px-3 py-2 text-[12.5px] text-ink-2">You can view this project. Its owner and editors can invite people.</p>
+              <p className="rounded-[8px] bg-chrome px-3 py-2 text-[12.5px] text-ink-2">
+                {state.role === "editor"
+                  ? "You can edit this project while its link lets anyone edit it. Its owner and invited editors can invite people."
+                  : "You can view this project. Its owner and editors can invite people."}
+              </p>
             )}
             {sent && (
               <p role="status" className={`mt-2.5 text-[12.5px] ${sent.tone === "ok" ? "text-ok" : "text-danger"}`}>

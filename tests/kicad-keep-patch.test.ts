@@ -164,6 +164,9 @@ describe("patching the user's file with what changed", () => {
     expect(r.ok).toBe(true)
     expect(r.text).toContain('(net 2 "VCC")')
     expect(r.text.indexOf('(net 2 "VCC")')).toBeGreaterThan(r.text.indexOf('(net 1 "GND")'))
+    // A name with a quote or a backslash is written as KiCad escapes it, once.
+    const odd = patchFile("board", original, written({}), after.replace('"VCC"', String.raw`"V\"C\\C"`))
+    expect(odd.text).toContain(String.raw`(net 2 "V\"C\\C")`)
   })
 
   it("refuses when a deleted item is not in the original, so the caller writes the whole file", () => {

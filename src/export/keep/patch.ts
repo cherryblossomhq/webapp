@@ -491,15 +491,16 @@ class Patcher {
     return made
   }
 
+  /** A net by its name as the files spell it: escaped as KiCad escapes it, so it goes between quotes as it is. */
   private netRef(name: string, withName: boolean): string {
     const numeric = this.oDoc.nets.size > 0
-    if (!numeric) return `(net ${JSON.stringify(name)})`
+    if (!numeric) return `(net "${name}")`
     let n = this.oNetByName.get(name) ?? this.newNets.get(name)
     if (n === undefined) {
       n = this.nextNet++
       this.newNets.set(name, n)
     }
-    return withName ? `(net ${n} ${JSON.stringify(name)})` : `(net ${n})`
+    return withName ? `(net ${n} "${name}")` : `(net ${n})`
   }
 
   /** A member of a changed group: the uuid of the original's item that stands for it. */
@@ -628,7 +629,7 @@ class Patcher {
       const last = rows[rows.length - 1]
       if (!last) throw new Unpatchable("the original has no net table to add to")
       const base = lineIndent(this.O, last.start)
-      this.edit(last.end, last.end, [...this.newNets].map(([name, n]) => `\n${base}(net ${n} ${JSON.stringify(name)})`).join(""))
+      this.edit(last.end, last.end, [...this.newNets].map(([name, n]) => `\n${base}(net ${n} "${name}")`).join(""))
     }
     const sorted = [...this.edits].sort((a, b) => a.start - b.start || a.seq - b.seq)
     let out = ""

@@ -533,16 +533,64 @@ interface Islands {
  */
 function copperMeetsFill(c: ShapeCopper, box: Box, polygon: FillPolygon, contains: (p: Vec2) => boolean): boolean {
   for (const [a] of c.edges) if (contains(a)) return true
-  for (const ring of polygon) {
-    for (let k = 0; k < ring.length; k++) {
-      const p = ring[k]
-      const q = ring[(k + 1) % ring.length]
-      if (Math.max(p.x, q.x) < box.minX || Math.min(p.x, q.x) > box.maxX || Math.max(p.y, q.y) < box.minY || Math.min(p.y, q.y) > box.maxY) continue
-      if (c.fill.length && pointInRings(p, c.fill)) return true
-      for (const [a, b] of c.edges) if (segmentSegmentDistance(p, q, a, b) <= c.half + 1e-9) return true
+  const meets = ([p, q]: FillEdge) => {
+    if (Math.max(p.x, q.x) < box.minX || Math.min(p.x, q.x) > box.maxX || Math.max(p.y, q.y) < box.minY || Math.min(p.y, q.y) > box.maxY) return false
+    if (c.fill.length && pointInRings(p, c.fill)) return true
+    for (const [a, b] of c.edges) if (segmentSegmentDistance(p, q, a, b) <= c.half + 1e-9) return true
+    return false
+  }
+  const grid = fillEdgeGrid(polygon)
+  if (grid.long.some(meets)) return true
+  for (let ix = Math.floor(box.minX / FILL_EDGE_CELL); ix <= Math.floor(box.maxX / FILL_EDGE_CELL); ix++) {
+    for (let iy = Math.floor(box.minY / FILL_EDGE_CELL); iy <= Math.floor(box.maxY / FILL_EDGE_CELL); iy++) {
+      const edges = grid.cells.get(cellKey(ix, iy))
+      if (edges?.some(meets)) return true
     }
   }
   return false
+}
+
+type FillEdge = readonly [Vec2, Vec2]
+
+/** The cells of the grid a fill's edges are kept by (mm), and the most cells an edge is kept in before it is one every query asks. */
+const FILL_EDGE_CELL = 2
+const FILL_EDGE_MAX_CELLS = 64
+const cellKey = (ix: number, iy: number) => (ix + 32768) * 65536 + (iy + 32768)
+
+/**
+ * A fill's edges by the cells of a grid their boxes reach, made once for each fill: a pad or via asks only the edges near it (`copperMeetsFill`), where
+ * it went through every edge of the fill. A ground pour of tens of thousands of edges, for each of the thousands of pads and vias of its net, was 6.5 s
+ * of the checks of a board of 1,566 parts.
+ */
+const fillEdgeGrids = new WeakMap<FillPolygon, { cells: Map<number, FillEdge[]>; long: FillEdge[] }>()
+function fillEdgeGrid(polygon: FillPolygon) {
+  let grid = fillEdgeGrids.get(polygon)
+  if (grid) return grid
+  grid = { cells: new Map(), long: [] }
+  for (const ring of polygon) {
+    for (let k = 0; k < ring.length; k++) {
+      const edge: FillEdge = [ring[k], ring[(k + 1) % ring.length]]
+      const [p, q] = edge
+      const x0 = Math.floor(Math.min(p.x, q.x) / FILL_EDGE_CELL)
+      const x1 = Math.floor(Math.max(p.x, q.x) / FILL_EDGE_CELL)
+      const y0 = Math.floor(Math.min(p.y, q.y) / FILL_EDGE_CELL)
+      const y1 = Math.floor(Math.max(p.y, q.y) / FILL_EDGE_CELL)
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) > FILL_EDGE_MAX_CELLS) {
+        grid.long.push(edge)
+        continue
+      }
+      for (let ix = x0; ix <= x1; ix++) {
+        for (let iy = y0; iy <= y1; iy++) {
+          const key = cellKey(ix, iy)
+          const cell = grid.cells.get(key)
+          if (cell) cell.push(edge)
+          else grid.cells.set(key, [edge])
+        }
+      }
+    }
+  }
+  fillEdgeGrids.set(polygon, grid)
+  return grid
 }
 
 /** Whether two fills overlap: a corner of either outline inside the other (KiCad's `CN_VISITOR::checkZoneZoneConnection`). */

@@ -4,6 +4,7 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
 import { importKicadProject } from "../src/model/kicad/project"
 import { partFindings } from "../src/model/partChecks"
+import { ruleLength } from "../src/model/courtyardRules"
 import { analyzePcb } from "../src/model/pcb"
 import type { ZoneFill } from "../src/model/pour"
 import type { Project } from "../src/model/types"
@@ -204,5 +205,59 @@ describe("the project file's severities", () => {
     const set = run({ clearance: "warning", courtyards_overlap: "ignore" })
     expect(set.filter((v) => v.kind === "clearance").map((v) => v.severity)).toEqual(["warning"])
     expect(set.filter((v) => v.kind === "overlap")).toEqual([])
+  })
+})
+
+describe("custom rules that let courtyards overlap near a part", () => {
+  // A module over other parts (CERN's Macbeth: "Allow Overlap J20" for the parts under its Kria module): KiCad reports no overlap such a rule applies to.
+  const rect = (a: number, b: number, layer = "F.CrtYd") => `(fp_rect (start ${-a} ${-b}) (end ${a} ${b}) (stroke (width 0.05) (type solid)) (fill none) (layer "${layer}"))`
+  const base = () =>
+    imp(
+      board({
+        nets: NETS,
+        body: [
+          footprint({ ref: "M1", at: "20 10", pads: [pad({ at: "4 4", size: "1 1" })], extra: rect(5, 5) }),
+          footprint({ ref: "C1", at: "21 10", pads: [pad({ at: "0 0", size: "0.5 0.5" })], extra: rect(0.6, 0.6) }),
+        ],
+        outline: OUTLINE,
+      }),
+    )
+  const rule = (body: string) => `(version 1)
+# a comment KiCad skips
+(rule "Allow Overlap"
+  ${body}
+)
+`
+  const withRules = (dru: string, layers?: NonNullable<Project["kicad"]>["layers"]): Project => {
+    const p = base()
+    return { ...p, kicad: { ...p.kicad, dru, ...(layers ? { layers } : {}) } }
+  }
+  const overlaps = (p: Project) => kinds(p, "overlap").map((v) => v.message)
+
+  it("reports the overlap with no rule, and none where a rule lets the part's courtyard be overlapped", () => {
+    expect(overlaps(base())).toHaveLength(1)
+    expect(overlaps(withRules(rule(`(layer "F.Cu") (constraint courtyard_clearance (min -1mm)) (condition "A.insideCourtyard('M1')")`)))).toEqual([])
+    expect(overlaps(withRules(rule(`(constraint courtyard_clearance (min -0.5)) (condition "B.intersectsFrontCourtyard('M*')")`)))).toEqual([])
+  })
+
+  it("reads a layer as the board's layer table names it", () => {
+    const layers = [{ n: 0, name: "F.Cu", type: "signal", user: "L1_TOP.Cu" }, { n: 31, name: "B.Cu", type: "signal", user: "L6_BOT.Cu" }]
+    expect(overlaps(withRules(rule(`(layer "L1_TOP.Cu") (constraint courtyard_clearance (min -1mm)) (condition "A.insideCourtyard('M1')")`), layers))).toEqual([])
+    expect(overlaps(withRules(rule(`(layer "L6_BOT.Cu") (constraint courtyard_clearance (min -1mm)) (condition "A.insideCourtyard('M1')")`), layers))).toHaveLength(1)
+  })
+
+  it("keeps the overlap for a rule on the other side, a clearance of zero or more, another part, or a condition it does not read", () => {
+    for (const body of [
+      `(layer "B.Cu") (constraint courtyard_clearance (min -1mm)) (condition "A.insideCourtyard('M1')")`,
+      `(constraint courtyard_clearance (min 0.2mm)) (condition "A.insideCourtyard('M1')")`,
+      `(constraint courtyard_clearance (min -1mm)) (condition "A.insideCourtyard('M2')")`,
+      `(constraint courtyard_clearance (min -1mm)) (condition "A.insideBackCourtyard('M1')")`,
+      `(constraint courtyard_clearance (min -1mm)) (condition "A.Reference == 'C1'")`,
+    ])
+      expect(overlaps(withRules(rule(body))), body).toHaveLength(1)
+  })
+
+  it("reads a rule's lengths in KiCad's units", () => {
+    expect([ruleLength("-1mm"), ruleLength("0.5"), ruleLength("-.5 mm"), ruleLength("10mil"), ruleLength("1in"), ruleLength("abc")]).toEqual([-1, 0.5, -0.5, 0.254, 25.4, null])
   })
 })

@@ -88,8 +88,11 @@ export const ERC_RULE: Readonly<Record<string, string>> = {
   "net-names": "multiple_net_names",
 }
 
-/** The editor's own checks KiCad has no rule for, left out on a project from KiCad: a via in an SMD pad, a part's courtyard past the outline, a decoupling capacitor's distance. */
-export const EDITOR_ONLY_DRC: ReadonlySet<string> = new Set(["via-in-pad", "outside-board", "decoupling"])
+/**
+ * The editor's own checks KiCad has no rule for, left out on a project from KiCad: a via in an SMD pad, a part's courtyard past the outline, a decoupling
+ * capacitor's distance, and a tuning pattern's net off its target length (KiCad's `length_out_of_range` comes from a rule's `length` constraint only).
+ */
+export const EDITOR_ONLY_DRC: ReadonlySet<string> = new Set(["via-in-pad", "outside-board", "decoupling", "tuning"])
 /** An LED with no resistor and a two-pin part with both pins on one net: KiCad's ERC has neither. */
 export const EDITOR_ONLY_ERC: ReadonlySet<string> = new Set(["bare-led", "shorted"])
 

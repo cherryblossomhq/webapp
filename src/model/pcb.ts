@@ -127,7 +127,7 @@ export interface DrcViolation {
     | "via-in-pad"
     | "mask-bridge"
     | "floating-copper"
-    | "length"
+    | "tuning"
     | "decoupling"
     | "keepout"
   message: string
@@ -1029,10 +1029,12 @@ export function analyzePcb(
     })
   }
 
-  // X21: a tuning pattern whose net is no longer the length it was tuned to.
+  // X21: a tuning pattern whose net is no longer the length it was tuned to. The editor's own check: KiCad's DRC judges a length only by a rule's
+  // `length` constraint, never by a tuning pattern's target (CERN's Macbeth has 21 such nets, some with the 1,000,000 mm placeholder, and kicad-cli
+  // reports none), so a project from KiCad does not have it.
   if (project.groups?.some((g) => g.gen?.kind === "tuning_pattern")) {
     for (const f of lengthFindings(project, sch, traceNet, viaNet)) {
-      push({ severity: "warning", kind: "length", message: `Net ${f.net} is ${f.total.toFixed(3)} mm (${f.detail}); its tuning pattern wants ${f.min.toFixed(3)} to ${f.max.toFixed(3)} mm`, at: f.at })
+      push({ severity: "warning", kind: "tuning", message: `Net ${f.net} is ${f.total.toFixed(3)} mm (${f.detail}); its tuning pattern wants ${f.min.toFixed(3)} to ${f.max.toFixed(3)} mm`, at: f.at })
     }
   }
 

@@ -1,7 +1,7 @@
 import type { KeptFile } from "../model/kicad/board/images"
 import type { Project } from "../model/types"
 import type { BoardChoice } from "./pick"
-import type { ImportSummary } from "./summary"
+import type { EntryLine, ImportSummary } from "./summary"
 
 // The messages between the page and the import's worker. One job at a time: the page starts a job
 // with `start`, the worker answers with `progress` events and ends it with one `choose` or `done`.
@@ -25,7 +25,16 @@ export interface StartRequest {
 export type Phase = "reading" | "building"
 
 /** What an import hands back: the summary, the project, and the files the project names that the host keeps (a board's reference images), by the SHA-256 the project holds them by. */
-export type ImportOutcome = { summary: ImportSummary; project: Project | null; files?: KeptFile[] }
+export type ImportOutcome = {
+  summary: ImportSummary
+  project: Project | null
+  files?: KeptFile[]
+  /**
+   * What a board the export writes whole (KiCad 9's file) leaves out of this project, set aside from the report because the user's own files are kept and the export patches them,
+   * which loses none of it. The save puts it back in the report when the files cannot be kept after all.
+   */
+  wholeBoard?: EntryLine[]
+}
 
 export type WorkerEvent =
   | { type: "progress"; id: number; phase: Phase }

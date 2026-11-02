@@ -63,6 +63,8 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
     } catch (e) {
       // The user's own KiCad files are a kindness, not what the project is: an account that cannot hold them (its files are full) still gets the project, which then exports as it always did.
       if (isOriginal && project) {
+        // The export will write the board whole after all: what a KiCad 9 file cannot say, set aside while the files were to be kept, is said again.
+        summary.changed = [...summary.changed, ...(outcome.wholeBoard ?? [])]
         const { original: _dropped, ...rest } = project.kicad!
         project = { ...project, kicad: Object.keys(rest).length ? rest : undefined }
         summary.notes = [...summary.notes.filter((n) => n.code !== "originals-kept"), { code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The project is saved, and export writes every file from it.` }]

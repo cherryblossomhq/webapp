@@ -138,6 +138,24 @@ describe("the user's own files go with the project", () => {
     }
   })
 
+  it("says what a board written whole as KiCad 9 leaves out only when the user's own files cannot be kept", async () => {
+    // A KiCad 10 board with a capped via: KiCad 9's file has no word for it, but the user's own file, patched by the export, keeps it.
+    const v10 = board({ version: 20260206, nets: ['(net 0 "")', '(net 1 "A")'], body: ['(via (at 5 5) (size 0.8) (drill 0.4) (capping yes) (filling no) (layers "F.Cu" "B.Cu") (net 1))'] })
+    const events: WorkerEvent[] = []
+    await runImport({ type: "start", id: 1, files: [entry("v10.kicad_pcb", v10)] }, (e) => events.push(e))
+    const done = events.find((e) => e.type === "done")
+    if (!done || done.type !== "done") throw new Error("the import did not finish")
+    const { outcome } = done
+    expect(outcome.project?.kicad?.original).toBeDefined()
+    expect(outcome.summary.changed.map((l) => l.code)).not.toContain("via-machining-not-exported")
+    // An account that cannot keep the files: the export will write the board whole, and the report says what that leaves out.
+    connectModelFiles({ put: async () => Promise.reject(new Error("The account's files are full.")), get: async () => null })
+    const { storage } = fakeStorage()
+    await saveImported(storage, outcome)
+    expect(outcome.summary.notes.some((n) => n.code === "originals-not-kept")).toBe(true)
+    expect(outcome.summary.changed.filter((l) => l.code === "via-machining-not-exported")).toHaveLength(1)
+  })
+
   it("a project made in the editor has no original and exports as before", async () => {
     const outcome = await imported()
     const own = { ...outcome.project!, kicad: { ...outcome.project!.kicad, original: undefined } }

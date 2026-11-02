@@ -206,6 +206,9 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     const extras = files.board ? await folderExtras(expanded.files, files.board.path, [files.board.path, ...projectBytes.map((p) => p.path)]) : []
     const kept = result.status === "imported" && files.board && bytes ? await keepOriginals(result, importOptions, { board: { path: files.board.path, data: bytes }, beside: [...projectBytes, ...extras] }) : null
     const summary = summarize(result, context)
+    // With the user's own files kept, the export patches them and nothing of KiCad 10's is lost: the lines that say a board written whole leaves it out (`exportLimits.ts`) are set aside.
+    const wholeBoard = kept ? summary.changed.filter((l) => l.code.endsWith("-not-exported")) : []
+    if (kept) summary.changed = summary.changed.filter((l) => !wholeBoard.includes(l))
     if (kept) summary.notes.push(kept.note)
     else if (result.status === "imported" && files.board && bytes) summary.notes.push({ code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: "They are larger than a project keeps beside it, so an export writes every file from the project." })
     const project = result.status === "imported" ? (kept ? kept.project : result.project) : null
@@ -213,7 +216,7 @@ export async function runImport(req: StartRequest, post: (e: WorkerEvent) => voi
     const held = new Set(project?.models?.flatMap((m) => (m.model.source === "file" ? [m.model.id] : [])) ?? [])
     const modelFiles = (models?.files ?? []).filter((f) => held.delete(f.id)).map((f) => ({ id: f.id, name: f.name, bytes: f.data }))
     const saved = result.status === "imported" ? [...(result.files ?? []), ...(kept ? [kept.file] : []), ...modelFiles] : []
-    done({ summary, project, ...(saved.length ? { files: saved } : {}) })
+    done({ summary, project, ...(saved.length ? { files: saved } : {}), ...(wholeBoard.length ? { wholeBoard } : {}) })
   } catch (e) {
     // A file that unpacks past the limit (its size field said less, or nothing) is said in plain words.
     if (e instanceof ImportInputError) return done({ project: null, summary: stoppedSummary("bad-input", e.message) })

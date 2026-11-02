@@ -1,9 +1,11 @@
 import type { Project } from "../../types"
 import type { ImportReport } from "./report"
 
-// What the project holds from a KiCad board that the KiCad 9 file the export writes cannot say: KiCad 10's (and 11's) words, which the 9.0 parser refuses, so they stay in the project and are not in the
-// exported board. Each kind is one entry of the import report with its count, so a KiCad 10 user is told before anything is written, not by what is missing from KiCad afterwards. (The export says the same
-// in its notes; `tests/kicad-judge-corpus.test.ts` checks both against what KiCad reads back.)
+// What the project holds from a KiCad board that the KiCad 9 file the export writes cannot say: KiCad 10's (and 11's) words, which the 9.0 parser refuses, so they stay in the project and are not in a
+// board the export writes whole. Each kind is one entry of the import report with its count, so a KiCad 10 user is told before anything is written, not by what is missing from KiCad afterwards. (The export
+// says the same in its notes; `tests/kicad-judge-corpus.test.ts` checks both against what KiCad reads back.) When the import keeps the user's own files, the export patches them, which keeps every word it
+// does not write itself, so these are not lost: the import sets them aside (`ImportOutcome.wholeBoard`, by their codes, which all end in `-not-exported`) and the save puts them back in
+// the report when the files cannot be kept after all (`save.ts`).
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 

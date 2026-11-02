@@ -125,7 +125,7 @@ export function ModelControls({
       // Read it before keeping it: a file that doesn't read is neither stored nor assigned. The
       // reader may take its bytes (a STEP file goes to a worker), so it gets a copy.
       const object = await modelLibrary.prime(drafted, bytes.slice(0))
-      await store.put({ name: file.name, bytes })
+      await store.put({ name: file.name, bytes }, undefined, projectApi().project?.id)
       const { fitToFootprint } = await import("../editor/three/files/fit")
       onChange(fitToFootprint(drafted, object, footprint))
     })

@@ -53,11 +53,14 @@ export function loadImage(id: string): Promise<void> {
   return run
 }
 
-/** Keeps a file with the host, and the bytes for this page. Resolves to the file's id, which is the SHA-256 of its bytes. */
-export async function putImageFile(name: string, bytes: ArrayBuffer): Promise<string> {
+/**
+ * Keeps a file with the host, and the bytes for this page. Resolves to the file's id, which is the SHA-256 of its bytes.
+ * `projectId` is the project it is added on, which the host keeps it with; none for a project not saved yet.
+ */
+export async function putImageFile(name: string, bytes: ArrayBuffer, projectId?: string): Promise<string> {
   const store = modelFiles()
   if (!store) throw new Error("Files aren't available here.")
-  const id = await store.put({ name, bytes })
+  const id = await store.put({ name, bytes }, undefined, projectId)
   rememberImage(id, bytes)
   return id
 }

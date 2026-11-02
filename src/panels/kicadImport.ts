@@ -75,7 +75,7 @@ export interface ImportOutcome {
  * A model file given for a part, kept and placed: read first, so a file that doesn't read is neither
  * stored nor assigned (as in the Inspector), then fitted to the part's land.
  */
-async function keepModel(file: GivenFile, part: KicadImportPart): Promise<Model3D> {
+async function keepModel(file: GivenFile, part: KicadImportPart, projectId: string): Promise<Model3D> {
   const format = modelFormatOf(file.name)
   const name = baseName(file.name)
   if (!format) throw new Error(`${name} isn't a model file this editor reads.`)
@@ -86,7 +86,7 @@ async function keepModel(file: GivenFile, part: KicadImportPart): Promise<Model3
   const drafted: Model3D = { ...fileModel(await modelFileId(file.bytes), name, format), ...placed }
   const { modelLibrary } = await import("../editor/three/files/library")
   const object = await modelLibrary.prime(drafted, file.bytes.slice(0))
-  await store.put({ name, bytes: file.bytes })
+  await store.put({ name, bytes: file.bytes }, undefined, projectId)
   const { fitToFootprint } = await import("../editor/three/files/fit")
   return fitToFootprint(drafted, object, part.draft.footprint)
 }
@@ -126,7 +126,7 @@ export async function importKicadPart(given: File[], projectId: string, commit: 
     }
     // One file shared by several parts on one footprint is read and kept once.
     const key = `${file.name}|${part.draft.footprint}`
-    if (!kept.has(key)) kept.set(key, keepModel(file, part))
+    if (!kept.has(key)) kept.set(key, keepModel(file, part, projectId))
     try {
       built.push({ ...part, model: await kept.get(key)! })
     } catch (e) {

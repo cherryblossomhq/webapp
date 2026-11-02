@@ -8,11 +8,15 @@
  * doesn't have, and those parts show only their pads until a file is added again.
  */
 export interface ModelFileStore {
-  /** Keep a file. Resolves to its id, the SHA-256 of its bytes as lowercase hex. */
-  put(file: { name: string; bytes: ArrayBuffer }, signal?: AbortSignal): Promise<string>
+  /**
+   * Keep a file. Resolves to its id, the SHA-256 of its bytes as lowercase hex. `projectId` is the
+   * project it is added on: the website keeps it in that project owner's account, so it stays drawn
+   * for everyone on the project whoever added it.
+   */
+  put(file: { name: string; bytes: ArrayBuffer }, signal?: AbortSignal, projectId?: string): Promise<string>
   /**
    * A kept file's bytes, or null when there is none with that id here. `projectId` is the project
-   * that names it: on a shared project the file is often a collaborator's, kept in their account.
+   * that names it: on a shared project the file is often kept in another account than the user's.
    */
   get(id: string, signal?: AbortSignal, projectId?: string): Promise<ArrayBuffer | null>
 }

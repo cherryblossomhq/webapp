@@ -348,7 +348,7 @@ export async function addReferenceImage(file: File): Promise<string | null> {
   if (!facts.format) return "A reference image has to be a PNG or a JPEG."
   let id: string
   try {
-    id = await putImageFile(file.name, bytes)
+    id = await putImageFile(file.name, bytes, projectApi().project?.id)
   } catch (e) {
     return e instanceof Error ? e.message : "The picture could not be kept."
   }

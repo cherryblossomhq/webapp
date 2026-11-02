@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { clearZoneFillCache } from "../src/model/zoneFill"
 import type { Project } from "../src/model/types"
-import { FILL_DEBOUNCE_MS, getLiveAnalysis, getPcbAnalysis, stopZoneFills, useFillTick } from "../src/store/analysis"
+import { FILL_DEBOUNCE_MS, getLiveAnalysis, getPcbAnalysis, getPreviewFills, stopZoneFills, useFillTick } from "../src/store/analysis"
 import { useProjectStore } from "../src/store/projectStore"
 import { rectangle, twoResistors, withZone } from "./zones-fixtures"
 
@@ -87,5 +87,21 @@ describe("getLiveAnalysis", () => {
     expect(getLiveAnalysis(dropped).zonesPending).toBeDefined()
     await sleep(FILL_DEBOUNCE_MS + 1500)
     expect(getLiveAnalysis(dropped).zonesPending).toBeUndefined()
+  })
+})
+
+describe("getPreviewFills", () => {
+  it("fills no polygon zone on the page, and draws the fill once one is made", () => {
+    // A projects page draws every project's preview: a big board's zones took minutes to fill there.
+    const p = withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })
+    expect(getPreviewFills(p)).toEqual([])
+    const made = getPcbAnalysis(p).zoneFills
+    expect(made.length).toBeGreaterThan(0)
+    expect(getPreviewFills(p)).toBe(made)
+  })
+
+  it("fills a project of whole-board pours as the analysis does", () => {
+    const whole = { ...twoResistors(), zones: [{ id: "pour", net: "GND", layer: "bottom" as const }] }
+    expect(getPreviewFills(whole)).toEqual(getPcbAnalysis(whole).zoneFills)
   })
 })

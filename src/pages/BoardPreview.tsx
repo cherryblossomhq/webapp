@@ -5,7 +5,7 @@ import { isNpth, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from 
 import { onBoard } from "../model/partFlags"
 import { pathsSvgPath } from "../model/shapes"
 import type { Project } from "../model/types"
-import { getZoneFills } from "../store/analysis"
+import { getPreviewFills } from "../store/analysis"
 
 /** Mix two hex colours; t = 0 gives a, 1 gives b. */
 function mix(a: string, b: string, t: number): string {
@@ -33,7 +33,7 @@ export function BoardPreview({ project }: { project: Project }) {
     const { mask, silk } = boardColors(b)
     const metal = { gold: "#e1bd62", tin: "#cfd2d6", copper: "#d99a6c" }[finishMetal(boardFinish(b))]
     const copperTone = mix(mask, "#e8b04a", 0.22)
-    const fills = getZoneFills(project).filter((f) => f.layer === "top")
+    const fills = getPreviewFills(project).filter((f) => f.layer === "top")
     const parts = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
     const topPads = parts.flatMap((c) => pcbPads(c).filter((p) => p.layers.includes("top")))
     const pourD = fills

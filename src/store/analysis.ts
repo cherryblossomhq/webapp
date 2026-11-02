@@ -220,6 +220,17 @@ export function getZoneFills(p: Project): ZoneFill[] {
   return getPcbAnalysis(p).zoneFills
 }
 
+/**
+ * The fills a board's preview draws: the analysis's when it is made, else the fills kept already (KiCad's own, or ones this page made), filling no zone
+ * that has none (a project of whole-board pours only is filled as before). A projects page draws a preview of every project on the page itself, and
+ * filling the 47 zones of a 2,970-part board there held it for minutes; the editor fills them in its worker once the project is open.
+ */
+export function getPreviewFills(p: Project): ZoneFill[] {
+  const made = pcbCache.get(p)
+  if (made) return made.zoneFills
+  return analyzePcb(p, getConnectivity(p), { reuseOnly: { stale: [] }, fillsOnly: true }).zoneFills
+}
+
 export function useConnectivity(): SchematicConnectivity | null {
   const p = useProjectStore((s) => s.project)
   return p ? getConnectivity(p) : null

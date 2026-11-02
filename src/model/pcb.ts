@@ -846,7 +846,17 @@ export function followDrag(from: PcbAnalysis, base: Project, project: Project, s
   const movedTraces = project.traces.filter((t) => !traces.has(t))
   const movedVias = project.vias.filter((v) => !vias.has(v))
   if (!components.length && !movedTraces.length && !movedVias.length) return from
-  const fresh = new Map(buildCopperItems({ ...project, components, traces: movedTraces, vias: movedVias }, sch).map((it) => [it.id, it]))
+  // The copper of what moved: its parts' pads, drawings and texts, its tracks and vias (not the board's own, which the build makes too).
+  const parts = new Set(components.map((c) => c.id))
+  const tracks = new Set(movedTraces.map((t) => t.id))
+  const drilled = new Set(movedVias.map((v) => v.id))
+  const ownMoved = (it: CopperItem) =>
+    it.kind === "pad" ? parts.has(it.pad.componentId) : it.kind === "segment" ? tracks.has(it.traceId) : it.kind === "via" ? drilled.has(it.viaId) : it.kind === "shape" ? parts.has(it.owner) : false
+  const fresh = new Map(
+    buildCopperItems({ ...project, components, traces: movedTraces, vias: movedVias }, sch)
+      .filter(ownMoved)
+      .map((it) => [it.id, it]),
+  )
   // Where each pad that moved was, and is: an unrouted connection's end is a pad's centre (`itemPoint`).
   const moves = new Map<string, Vec2>()
   const items = from.items.map((it) => {

@@ -19,11 +19,11 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
   const out: Omit<DrcViolation, "id">[] = []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const seen = new Set<string>()
-  const say = (zoneId: string, key: string, message: string, at: Vec2) => {
+  const say = (zoneId: string, key: string, message: string, at: Vec2, items: string[] = []) => {
     const k = `${zoneId}:${key}`
     if (seen.has(k)) return
     seen.add(k)
-    out.push({ severity: "error", kind: "keepout", message, at })
+    out.push({ severity: "error", kind: "keepout", message, at, items: [...items, `z:${zoneId}`] })
   }
   for (const z of areas) {
     const area = zoneArea(z)!
@@ -37,7 +37,7 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
       } else if (it.kind === "pad" && z.keepout!.pads && it.layers.some((l) => layers.includes(l)) && it.pad.componentId !== "#board" && it.pad.componentId !== z.part) {
         // A part's own keepout keeps out other parts' pads, never its own (the same `intersectsArea` rule as for parts, below).
         const pts = it.pad.points?.length ? it.pad.points : boxRing(it.box)
-        if (areaTouches(area, pts, 0, true)) say(z.id, `p:${it.id}`, `${refOf.get(it.pad.componentId) ?? "A part"}.${it.pad.padNumber ?? it.pad.pin ?? "pad"} is inside ${name} that keeps pads out`, { x: it.pad.x, y: it.pad.y })
+        if (areaTouches(area, pts, 0, true)) say(z.id, `p:${it.id}`, `${refOf.get(it.pad.componentId) ?? "A part"}.${it.pad.padNumber ?? it.pad.pin ?? "pad"} is inside ${name} that keeps pads out`, { x: it.pad.x, y: it.pad.y }, [it.id.split("@")[0]])
       }
     }
     if (z.keepout!.footprints) {
@@ -45,7 +45,7 @@ export function keepoutViolations(project: Project, items: CopperItem[]): Omit<D
         // The part a keepout belongs to is not kept out of its own keepout (KiCad's `intersectsArea` skips the area's parent, pcbexpr_functions.cpp).
         if (!c.pcb.placed || !hasCourtyard(c) || !layers.includes(c.pcb.side) || z.part === c.id) continue
         const ring = pcbCourtyardRing(c) ?? (pcbCourtyard(c) ? boxRing(pcbCourtyard(c)!) : null)
-        if (ring && areaTouches(area, ring, 0, true)) say(z.id, `f:${c.id}`, `${c.ref} is inside ${name} that keeps parts out`, { x: c.pcb.x, y: c.pcb.y })
+        if (ring && areaTouches(area, ring, 0, true)) say(z.id, `f:${c.id}`, `${c.ref} is inside ${name} that keeps parts out`, { x: c.pcb.x, y: c.pcb.y }, [`c:${c.id}`])
       }
     }
   }

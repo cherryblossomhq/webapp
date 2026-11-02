@@ -436,6 +436,16 @@ export function diffProjects(first: Project, second: Project, limit = 200): Diff
       delete o.kept.sig
     }
   })
+  // A footprint's and its pads' KiCad uuids (`ComponentInstance.fpUuid`, `padUuids`): the second import reads the ones the export wrote where the first had none
+  // (a part drawn here, a file that gave none); where the first had them they are compared, and must have come back as they were.
+  const partsA = (a as any).components as any[] | undefined
+  const partsB = (b as any).components as any[] | undefined
+  partsA?.forEach((c, i) => {
+    const o = partsB?.[i]
+    if (!o) return
+    if (c.fpUuid === undefined) delete o.fpUuid
+    if (c.padUuids === undefined) delete o.padUuids
+  })
   const oa = a.board?.outlineDrawn
   const ob = b.board?.outlineDrawn
   if (oa && ob && JSON.stringify(oa) !== JSON.stringify(ob) && oa.length === ob.length) {

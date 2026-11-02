@@ -1,4 +1,4 @@
-import type { KicadChecks, KicadSeverity, Project } from "./types"
+import type { KicadChecks, KicadSeverity, Project, Vec2 } from "./types"
 
 export type { KicadChecks, KicadSeverity }
 
@@ -198,12 +198,57 @@ export function kicadChecksOf(json: Record<string, unknown>): KicadChecks | null
       ["min_through_hole_diameter", "minDrill"],
     ] as const
   ).flatMap(([key, field]) => (rules[key] === 0 ? [field] : []))
+  // The checks the user dismissed in KiCad, a key each (KiCad 9 writes `[key, comment]` for one the user gave a comment).
+  const dismissed = obj(obj(json.board).design_settings).drc_exclusions
+  const drcExcluded = Array.isArray(dismissed) ? dismissed.map((e) => (Array.isArray(e) ? e[0] : e)).filter((e): e is string => typeof e === "string" && /^[a-z_]+\|-?\d+\|-?\d+\|/.test(e)) : []
   const out: KicadChecks = {
     ...(Object.keys(drc).length ? { drc } : {}),
     ...(Object.keys(erc).length ? { erc } : {}),
     ...(pinMap ? { pinMap } : {}),
     ...(holeClearance !== undefined ? { holeClearance } : {}),
     ...(noMinimum.length ? { noMinimum } : {}),
+    ...(drcExcluded.length ? { drcExcluded } : {}),
   }
   return Object.keys(out).length ? out : null
+}
+
+const uuidHex = (u: string) => u.toLowerCase().replace(/[^0-9a-f]/g, "").padStart(32, "0")
+const NO_ITEM = "0".repeat(32)
+const dismissedOf = new WeakMap<object, { rule: string; at: Vec2; items: string[] }[]>()
+
+/**
+ * The board checks the user dismissed in KiCad (`KicadChecks.drcExcluded`), each with the items its uuids name in the project's terms (`DrcViolation.items`):
+ * a footprint `c:<part>` by `ComponentInstance.fpUuid`, a pad `pad:<part>:<index>` by `padUuids`, a zone `z:<zone>` by `Zone.uuid`. One whose uuid names
+ * nothing of the project's (an item the editor does not keep the uuid of) is left out: the check is reported.
+ */
+function dismissedChecks(p: Pick<Project, "kicad" | "components" | "zones">): { rule: string; at: Vec2; items: string[] }[] {
+  const keys = p.kicad?.checks?.drcExcluded
+  if (!keys?.length) return []
+  let made = dismissedOf.get(p)
+  if (made) return made
+  const named = new Map<string, string>()
+  for (const c of p.components) {
+    if (c.fpUuid) named.set(uuidHex(c.fpUuid), `c:${c.id}`)
+    c.padUuids?.forEach((u, i) => u && named.set(uuidHex(u), `pad:${c.id}:${i}`))
+  }
+  for (const z of p.zones) if (z.uuid) named.set(uuidHex(z.uuid), `z:${z.id}`)
+  made = keys.flatMap((key) => {
+    const [rule, x, y, ...ids] = key.split("|")
+    const items = ids.map(uuidHex).filter((u) => u !== NO_ITEM).map((u) => named.get(u))
+    if (!items.length || items.some((k) => k === undefined)) return []
+    // KiCad's nanometres in its frame, y down: the project's millimetres, y up.
+    return [{ rule, at: { x: Number(x) / 1e6, y: -Number(y) / 1e6 }, items: items as string[] }]
+  })
+  dismissedOf.set(p, made)
+  return made
+}
+
+/**
+ * Whether the user dismissed this check in KiCad: KiCad keys a dismissed check by its rule, where its marker is and the items it is about, so one of the
+ * editor's with the same rule, at the same place to the micrometre, about those items (and perhaps more) is that one. `rule` is KiCad's rule where it is not the kind's.
+ */
+export function boardCheckDismissed(p: Pick<Project, "kicad" | "components" | "zones">, kind: string, at: Vec2, items: string[], rule?: string): boolean {
+  const name = rule ?? DRC_RULE[kind]
+  if (!name) return false
+  return dismissedChecks(p).some((d) => d.rule === name && Math.abs(d.at.x - at.x) < 1e-3 && Math.abs(d.at.y - at.y) < 1e-3 && d.items.every((k) => items.includes(k)))
 }

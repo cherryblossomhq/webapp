@@ -349,9 +349,12 @@ export function pasteItems(project: Project, clip: Clipboard, offset: Vec2, what
     const ref = (unitsRef && unitRefs.get(unitsRef)) || nextRef(next, part.refPrefix)
     if (unitsRef) unitRefs.set(unitsRef, ref)
     // S9: a copy is a new symbol, not another use of one: it keeps none of the variants the copied one had on its use, nor the copy key it was kept alike by.
-    const { variants: _variants, tpl: _tpl, ...kept } = c
+    // A copy is another footprint to KiCad: it does not take the original's uuids.
+    const { variants: _variants, tpl: _tpl, fpUuid: _fpUuid, padUuids: _padUuids, ...kept } = c
     void _variants
     void _tpl
+    void _fpUuid
+    void _padUuids
     const copy = {
       ...kept,
       id: uid("c"),

@@ -209,6 +209,37 @@ describe("pads of one number", () => {
   })
 })
 
+describe("a check the user dismissed in KiCad", () => {
+  // A mounting hole's pad inside a keepout that keeps pads out, which the user dismissed in KiCad: KiCad keys it by the rule, the marker's place (nm, y down)
+  // and the uuids of the items, here the pad's.
+  const PAD = "66aa93c9-52ed-4c16-b909-0a437fb42a55"
+  const pcb = board({
+    nets: NETS,
+    body: [
+      footprint({ name: "MountingHole:Hole", ref: "H3", at: "12.5 5", extra: '(uuid "38c68c5f-5977-448e-8ed0-d70962d9710a")', pads: [pad({ number: "1", at: "0 0", size: "2 2", extra: `(uuid "${PAD}")` })] }),
+      '(zone (net 0) (net_name "") (layer "F.Cu") (uuid "a1b2c3d4-0000-4000-8000-000000000077") (name "Isolation") (hatch edge 0.5) (connect_pads (clearance 0)) (min_thickness 0.25) (keepout (tracks not_allowed) (vias not_allowed) (pads not_allowed) (copperpour not_allowed) (footprints allowed)) (fill (thermal_gap 0.5) (thermal_bridge_width 0.5)) (polygon (pts (xy 10 2) (xy 15 2) (xy 15 8) (xy 10 8))))',
+    ],
+    outline: OUTLINE,
+  })
+  const keepouts = (exclusions: unknown[]) => {
+    const pro = JSON.stringify({ meta: { filename: "demo.kicad_pro", version: 1 }, board: { design_settings: { drc_exclusions: exclusions } } })
+    const r = importKicadProject([{ path: "demo.kicad_pcb", data: pcb }, { path: "demo.kicad_pro", data: pro }], { built: ALL })
+    if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
+    return analysis(r.project).violations.filter((v) => v.kind === "keepout")
+  }
+  const key = (x: number, y: number, uuid = PAD) => `items_not_allowed|${x}|${y}|${uuid}|00000000-0000-0000-0000-000000000000`
+  it("is not reported: same rule, same place, same pad, as a string or with KiCad 9's comment", () => {
+    expect(keepouts([])).toHaveLength(1)
+    expect(keepouts([key(12500000, 5000000)])).toEqual([])
+    expect(keepouts([[key(12500000, 5000000), "the hole is isolated on purpose"]])).toEqual([])
+  })
+  it("but one at another place, of another rule or about another item is", () => {
+    expect(keepouts([key(12600000, 5000000)])).toHaveLength(1)
+    expect(keepouts([key(12500000, 5000000).replace("items_not_allowed", "clearance")])).toHaveLength(1)
+    expect(keepouts([key(12500000, 5000000, "11111111-2222-4333-8444-555555555555")])).toHaveLength(1)
+  })
+})
+
 describe("the project file's severities", () => {
   const pro = (settings: Record<string, unknown>) => ({ board: { design_settings: { rule_severities: settings.drc ?? {}, rules: settings.rules ?? {} } }, erc: { rule_severities: settings.erc ?? {}, ...(settings.pinMap ? { pin_map: settings.pinMap } : {}) } })
   it("are kept for the rules the editor maps, KiCad 7's name of hole_to_hole included, and the pin table only when it is not KiCad's", () => {

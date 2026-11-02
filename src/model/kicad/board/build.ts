@@ -512,7 +512,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       ...(fp.classes.length ? { classes: fp.classes } : {}),
       ...(fp.sheetname ? { sheetPath: fp.sheetname } : {}),
       sch: { x: 0, y: 0, rot: 0 },
-      pcb: { x: round(at.x), y: round(at.y), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
+      // To the nanometre the file gives, as KiCad keeps it: KiCad keys a check the user dismissed by where its marker is, which is often the footprint's place.
+      pcb: { x: round(at.x, 6), y: round(at.y, 6), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
+      ...(uuidOf(fp.node) ? { fpUuid: uuidOf(fp.node)! } : {}),
+      ...(fp.pads.some((p) => uuidOf(p.node)) ? { padUuids: fp.pads.map((p) => uuidOf(p.node) ?? "") } : {}),
       ...(flags ? { flags } : {}),
       // The part's own text, as the file has it (none is a part with no designator); with it the editor places none.
       texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }, partTextOrigins),

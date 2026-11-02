@@ -1,4 +1,4 @@
-import { round } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { labelJustify } from "../model/labelShapes"
 import { SCH_LIGHT } from "../editor/theme"
 import { textFrame, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
@@ -13,7 +13,6 @@ import { escapeNetName, quote } from "../lib/kicadQuote"
 // KiCad's page in millimetres (y down).
 
 const MM = 12.7
-const mm6 = (n: number) => String(round(n, 6) || 0)
 /** A length in editor units as millimetres, to a tenth of a micrometre. */
 const L = (units: number) => String(round(units * MM, 4) || 0)
 

@@ -1,4 +1,4 @@
-import { round } from "../lib/geometry"
+import { mm6 } from "../lib/geometry"
 import { flattenPath, type PathSeg } from "../model/shapes"
 import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN } from "./kicadShapes"
@@ -10,7 +10,6 @@ import { stableUuid } from "./kicadUuid"
 // arcs, so its own Edge.Cuts items are taken out and these put in. A board with no outline of its own is not touched, unless its corners are rounded: the converter
 // writes each corner as a short run of lines, and the board is written with a true arc at each.
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const toBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
 const xy = (p: Vec2) => {
   const q = toBoard(p)

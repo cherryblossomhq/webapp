@@ -7,7 +7,7 @@
 // should have received a copy of the GNU General Public License along with this program; if not, see
 // <https://www.gnu.org/licenses/>.
 
-import { round } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { kiRound, mmToIu } from "../lib/kicadText"
 import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
@@ -33,7 +33,6 @@ import { stableUuid } from "./kicadUuid"
 // The file is KiCad 9's (stamp 20241229), where a bold text's stored thickness is the one it is drawn with, so a bold
 // text's is written multiplied by 1.6 (`BOLD_STROKE_MULTIPLIER`).
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 
 /** KiCad's numbers for the user layers it has to be told about (`kicadShapes.ts`). */

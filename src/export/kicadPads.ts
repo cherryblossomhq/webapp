@@ -1,4 +1,4 @@
-import { normalizeAngle, round } from "../lib/geometry"
+import { normalizeAngle, mm6 } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { componentFootprint, padLayerDef, pcbPads, type WorldPad } from "../model/instances"
@@ -28,7 +28,6 @@ import { stableUuid } from "./kicadUuid"
 //
 // The tokens are the ones KiCad 9's parser reads in a pad (`parsePAD`, pcb_io_kicad_sexpr_parser.cpp 9.0.0 `:5100-5480`).
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 
 /** KiCad's rotation of a vector (counter-clockwise on screen, y down). */

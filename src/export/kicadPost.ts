@@ -1,5 +1,5 @@
 import type { AnyCircuitElement } from "circuit-json"
-import { round } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { mountingHoles } from "../model/board"
 import { FOOTPRINT_LIBRARY } from "../model/footprints"
 import { MOUNTING_HOLE_MARK } from "../model/kicad/mountingHoles"
@@ -19,7 +19,6 @@ import { isObject } from "../lib/guards"
 // converter's files are KiCad's own S-expressions, so each piece here finds the one block it
 // changes by the layout the converter prints (two spaces a level) and leaves the rest alone.
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 
 // ---------- No-connect flags ----------
 

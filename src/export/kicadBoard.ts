@@ -1,4 +1,4 @@
-import { normalizeAngle, round } from "../lib/geometry"
+import { normalizeAngle, round, mm6 } from "../lib/geometry"
 import { boardTextStrokeWidth, ownTexts } from "../model/board"
 import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
@@ -42,7 +42,6 @@ import type { CopperLayer, StackRow } from "../model/types"
 // rectangle as a polygon with arc corners, a filled polygon with holes as one outline joined to its holes, a trapezoid pad as a custom pad
 // of its polygon).
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 /** The file's frame: y down, no offset. */
 const toFile = (p: Vec2): Vec2 => ({ x: p.x, y: 0 - p.y })

@@ -14,7 +14,6 @@ import { neutralText, patchFile, type Kind } from "./patch"
 // again by the importer), and the difference between the two is carried into the user's file (`patch.ts`). Nothing changed: the
 // original, byte for byte. A file the patch cannot be made for is written as before, and said.
 
-export { MAX_ORIGINAL_BYTES, contentHash, packOriginal, unpackOriginal, type OriginalFile } from "./pack"
 
 // ---------- the export ----------
 

@@ -1,4 +1,4 @@
-import { round } from "../lib/geometry"
+import { mm6 } from "../lib/geometry"
 import type { ZoneFill } from "../model/pour"
 import { flattenPath, type PathSeg, type ShapePath } from "../model/shapes"
 import { nonCopperFills } from "../model/nonCopperFill"
@@ -15,7 +15,6 @@ import { quoteFlat as quote } from "../lib/kicadQuote"
 // on each layer. A project with a polygon zone has every zone written here (the converter's own pours are taken out of the file first), so
 // the file has one writer for its zones; a project of whole-board pours alone still goes through the converter, as it always did.
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 /** Where the converter puts the editor's origin on KiCad's page (`CircuitJsonToKicadPcbConverter`); the native writer's frame has none. */
 const PAGE_ORIGIN = 100
 export type ToFile = (p: Vec2) => Vec2

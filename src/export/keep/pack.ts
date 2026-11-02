@@ -22,8 +22,7 @@ export async function packOriginal(files: OriginalFile[]): Promise<{ id: string;
   const zip = new JSZip()
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) zip.file(f.path, f.data, { date: new Date(0), createFolders: false, binary: true })
   const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } })
-  const id = hex(await crypto.subtle.digest("SHA-256", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer))
-  return { id, bytes }
+  return { id: await sha256Hex(bytes), bytes }
 }
 
 export async function unpackOriginal(bytes: ArrayBuffer | Uint8Array): Promise<OriginalFile[]> {

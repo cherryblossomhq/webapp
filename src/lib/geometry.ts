@@ -270,3 +270,6 @@ export function chamferedElbow(a: Vec2, b: Vec2, diagonalFirst: boolean): Vec2[]
   if (diagonalFirst) return [a, add(a, diagVec), b]
   return [a, sub(b, diagVec), b]
 }
+
+/** A length as KiCad's files write it: to a nanometre (six places), never `-0`. */
+export const mm6 = (n: number) => String(round(n, 6) || 0)

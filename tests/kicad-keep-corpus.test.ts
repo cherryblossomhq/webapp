@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from 
 import { basename, dirname, join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
-import { contentHash, packOriginal } from "../src/export/keep/original"
+import { contentHash, packOriginal } from "../src/export/keep/pack"
 import { loadKicadFont } from "../src/lib/kicadFont/load"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
 import type { Project } from "../src/model/types"

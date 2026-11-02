@@ -1,4 +1,4 @@
-import { cosSin, round } from "../lib/geometry"
+import { cosSin, round, mm6 } from "../lib/geometry"
 import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
 import { shapeLayerInfo } from "../model/shapeLayers"
@@ -25,7 +25,6 @@ export const KICAD_PAGE_ORIGIN = 100
 
 const FLATTEN = 0.0005
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 
 const STROKE_TYPE = { dash: "dash", dot: "dot", dash_dot: "dash_dot", dash_dot_dot: "dash_dot_dot" } as const

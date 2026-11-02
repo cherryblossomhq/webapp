@@ -1,10 +1,11 @@
-import { round } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { ROOT_SHEET, copyKey, sheetsOf, sheetUses, symbolsOnSheet, useAt, useOf, usesOfSheet, type SheetUse } from "../model/sheets"
 import { activeVariant, variantSheetFlags } from "../model/variants"
 import { colorNode } from "./kicadSheet"
 import type { ExtraUnit } from "./circuitJson"
 import type { ComponentInstance, FieldPlace, Project, SheetPin, SheetSymbol, TextLook, Vec2 } from "../model/types"
 import { escapeNetName, quote } from "../lib/kicadQuote"
+import { uuidFrom } from "./kicadUuid"
 
 // S1 in the KiCad files: a project with sheets is written as a root schematic, a file for each other sheet (drawn once, whatever the
 // number of its uses), a `(sheet ...)` on the sheet each symbol is drawn on, the pages, and for every symbol the reference it has in
@@ -13,25 +14,7 @@ import { escapeNetName, quote } from "../lib/kicadQuote"
 // what it wrote.
 
 const MM = 12.7
-const mm6 = (n: number) => String(round(n, 6) || 0)
 
-/** A uuid made from a text, the same every time: the ids of a project's sheets are short, KiCad's are uuids. */
-export function uuidFrom(text: string): string {
-  let a = 0x811c9dc5
-  let b = 0x01000193
-  let c = 0x9747b28c
-  let d = 0x85ebca6b
-  for (let i = 0; i < text.length; i++) {
-    const k = text.charCodeAt(i)
-    a = Math.imul(a ^ k, 0x01000193) >>> 0
-    b = Math.imul(b ^ (k + i), 0x85ebca6b) >>> 0
-    c = Math.imul(c ^ (k << 1), 0xc2b2ae35) >>> 0
-    d = Math.imul(d + k, 0x27d4eb2f) >>> 0
-  }
-  const hex = (n: number) => n.toString(16).padStart(8, "0")
-  const h = hex(a) + hex(b) + hex(c) + hex(d)
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`
-}
 
 /** The uuid of the file a sheet is, and of a sheet symbol: made from their ids, so a project exported twice says the same. */
 export const sheetUuid = (project: Project, sheet: string) => uuidFrom(`sheet:${project.id}:${sheet}`)

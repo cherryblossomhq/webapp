@@ -6,7 +6,7 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of
 // the GNU General Public License along with this program; if not, see <https://www.gnu.org/licenses/>.
 
-import { round } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { encodeBase64, imageFacts } from "../lib/imageFacts"
 import { dimensionDrawing } from "../model/dimensions"
 import { dimensionWorldText } from "../model/texts"
@@ -23,7 +23,6 @@ import { KICAD_PAGE_ORIGIN, userLayerNumber } from "./kicadShapes"
 // place. The file KiCad 9 reads has no node for a group's design block (KiCad 10) or for a custom property, so those are left out and a note says so.
 // A board with none of these is written byte for byte as before.
 
-const mm6 = (n: number) => String(round(n, 6) || 0)
 const xy = (p: Vec2) => `${mm6(p.x)} ${mm6(p.y)}`
 const pageToBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
 const toBoard = pageToBoard

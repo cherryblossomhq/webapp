@@ -46,7 +46,6 @@ const STANDARD_USER_NAMES: Record<string, string> = {
   Margin: "Margin",
 }
 
-/** KiCad's fixed layers that the board's layer table does not list (an old board lists only the layers it uses): the export lists them all, so they are on. */
 /** The line widths the board's outline is drawn with, and how many shapes have each. */
 export function edgeWidths(board: KicadBoard): Map<number, number> {
   const widths = new Map<number, number>()
@@ -57,6 +56,7 @@ export function edgeWidths(board: KicadBoard): Map<number, number> {
   return widths
 }
 
+/** KiCad's fixed layers that the board's layer table does not list (an old board lists only the layers it uses): the export lists them all, so they are on. */
 export function unlistedStandardLayers(board: KicadBoard): string[] {
   if (!board.layers.length) return []
   const listed = new Set(board.layers.map((l) => TRANSLATED_LAYER_NAMES[l.name] ?? l.name))
@@ -102,12 +102,7 @@ export function boardCarry(board: KicadBoard): KicadCarry | undefined {
   for (const [name, count] of seen) if (name.includes("/") && count === 1) names[name] = spelled.find((raw) => decodeNetName(raw) === name)!
   if (Object.keys(names).length) carry.netNames = names
   // The width the outline was drawn with: the one most of the Edge.Cuts lines have.
-  const widths = new Map<number, number>()
-  for (const s of board.shapes) {
-    if (s.layer !== "Edge.Cuts" && TRANSLATED_LAYER_NAMES[s.layer] !== "Edge.Cuts") continue
-    if (s.width > 0 && !s.filled) widths.set(s.width, (widths.get(s.width) ?? 0) + 1)
-  }
-  const common = [...widths].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0]
+  const common = [...edgeWidths(board)].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0]
   if (common !== undefined && Math.abs(common - 0.05) > 1e-9) carry.edgeWidth = common
   // The layer table is kept when it says more than the writer's own: a name a person gave, or a layer the writer has no row for (`User.1`...).
   const copperName = (name: string) => /^(F|B|In\d+)\.Cu$/.test(name)

@@ -120,7 +120,6 @@ function boundsOf(paths: Path64[]): Bounds {
 
 const overlaps = (a: Bounds, b: Bounds, pad = 0) => a.minX <= b.maxX + pad && b.minX <= a.maxX + pad && a.minY <= b.maxY + pad && b.minY <= a.maxY + pad
 
-/** Whether a point is inside a group (its outline, and not inside one of its holes); a point on the edge counts as inside. */
 const groupTesters = new WeakMap<Group, (q: { x: number; y: number }) => boolean>()
 
 /** Whether a point is in a group's copper (on its outline counts): its outline and holes asked through their boxes (`regionTester`), made once per group. */

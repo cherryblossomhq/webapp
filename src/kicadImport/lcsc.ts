@@ -12,7 +12,7 @@ export const hasLcscNumbers = (project: Project | null | undefined) => !!project
 
 const line = (e: LcscEntry): EntryLine => ({ code: e.code, object: e.object, why: e.why, count: e.count })
 
-export interface LcscResult {
+interface LcscResult {
   outcome: ImportOutcome
   /** Null when no lookup ran (no source, or nothing to look up). */
   stats: LcscStats | null
@@ -22,7 +22,7 @@ export interface LcscResult {
  * The outcome with the LCSC parts attached and the report saying what was found. With no `lookup` (a host without a parts source) the parts are left as they are and the
  * report says they were not looked up.
  */
-export async function attachLcsc(outcome: ImportOutcome, lookup: LcscLookup | null, options: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void } = {}): Promise<LcscResult> {
+export async function attachLcsc(outcome: ImportOutcome, lookup: LcscLookup | null, options: { signal?: AbortSignal } = {}): Promise<LcscResult> {
   const { project, summary } = outcome
   if (!project || summary.status !== "imported" || !hasLcscNumbers(project)) return { outcome, stats: null }
   if (!lookup) {

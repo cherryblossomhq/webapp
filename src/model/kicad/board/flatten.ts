@@ -11,14 +11,14 @@ import type { KicadShape, Pt } from "./types"
 // borders and separators (`PCB_TABLE::DrawBorders`, pcbnew/pcb_table.cpp) and the cells, each of which is a text box. The editor has no table: an imported one is these plain drawings
 // (X25), in the table's own frame (the board's, or the footprint's for a table inside one), as the file gives it (y down).
 
-export interface TableLine {
+interface TableLine {
   a: Pt
   b: Pt
   width: number
   dash: string | null
 }
 
-export interface TableParts {
+interface TableParts {
   layer: string
   lines: TableLine[]
   /** The `table_cell` nodes KiCad draws, in the file's order: the cells a merged cell covers (`span 0 0`) are not drawn. */
@@ -153,7 +153,7 @@ function fillShape(layer: string, pts: Pt[], node: List): KicadShape {
   return { kind: "poly", layer, layers: [layer], pts, width: 0, filled: true, hatched: false, dash: null, locked: false, net: null, netRaw: null, radius: 0, node }
 }
 
-export interface BarcodeParts {
+interface BarcodeParts {
   /** The symbol as one filled polygon, in the file's frame (y down). */
   shapes: KicadShape[]
   /** Why a symbol is not drawn: its text is empty (KiCad draws nothing for it), or its kind, length or text is beyond this importer. */
@@ -185,8 +185,9 @@ function chain(rings: Pt[][]): Pt[] {
 /** A barcode's layer is one of the back side's, so that KiCad draws its symbol mirrored (`BOARD_ITEM::IsSideSpecific` and `BOARD::IsBackLayer`). */
 const BACK_LAYER = /^B\.(Cu|SilkS|Mask|Paste|Adhes|CrtYd|Fab)$/
 
-/** The size a text starts with in KiCad: 60 mils. */
-// Unverified: KiCad takes a barcode's text height from the board's own default text size (`StyleFromSettings`) when the file has no `text_height`, and the file does not say what that is; 1.524 mm (60 mil) is the usual one. The pen is `GetPenSizeForNormal` of the height, taken as height / 8 (not checked digit for digit).
+/**
+ * The size a text starts with in KiCad: 60 mils. Unverified: KiCad takes a barcode's text height from the board's own default text size (`StyleFromSettings`) when the file has no `text_height`, and the file does not say what that is; 1.524 mm (60 mil) is the usual one. The pen is `GetPenSizeForNormal` of the height, taken as height / 8 (not checked digit for digit).
+ */
 const DEFAULT_TEXT_HEIGHT = 1.524
 
 /**

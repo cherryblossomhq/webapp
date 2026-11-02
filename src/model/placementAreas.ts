@@ -20,7 +20,7 @@ import type { ComponentInstance, PcbSide, Project, Vec2, Zone, ZonePlacement } f
 // - A switched off area (`placement.off`) or one with no target name picks nothing.
 
 /** How far (mm) a part may stick out of its area and still sit in it: positions are written to 0.01 mm, which a boundary flush part is rounded across. */
-export const AREA_TOLERANCE = 0.01
+const AREA_TOLERANCE = 0.01
 
 /** The colour of a placement rule area on the board and in the pictures Sakura is given: not the keepout's red, not a layer's copper. */
 export const PLACEMENT_COLOR = "#4aa8ff"
@@ -32,7 +32,7 @@ export const PLACEMENT_BY: { value: ZonePlacement["by"]; label: string }[] = [
 ]
 
 /** Whether the zone is a rule area with a target that is switched on. */
-export const placesParts = (z: Zone): boolean => !!z.keepout && !!z.placement && !z.placement.off && z.placement.name !== ""
+const placesParts = (z: Zone): boolean => !!z.keepout && !!z.placement && !z.placement.off && z.placement.name !== ""
 
 /** What an area holds, in words: `the parts of sheet /Power/`. */
 export function placementWords(p: ZonePlacement): string {
@@ -125,7 +125,7 @@ export function areasOfPart(project: Project, c: ComponentInstance, areas: Zone[
 // ---------- where a part is ----------
 
 /** The ring the part occupies: its courtyard as placed. */
-export const partRing = (c: ComponentInstance): Vec2[] | null => pcbCourtyardRing(c)
+const partRing = (c: ComponentInstance): Vec2[] | null => pcbCourtyardRing(c)
 
 const centroid = (pts: Vec2[]): Vec2 => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length })
 
@@ -202,7 +202,7 @@ export function partInAreas(c: ComponentInstance, areas: Zone[], pose?: Partial<
 
 // ---------- the check ----------
 
-export interface PlacementProblem {
+interface PlacementProblem {
   component: ComponentInstance
   /** The areas that pick it, none of which it sits in. */
   areas: Zone[]
@@ -251,7 +251,7 @@ export function areaReport(project: Project, z: Zone): { picked: number; outside
 }
 
 /** How the areas are named in a message: by name where it has one, else by its target. */
-export function areaName(z: Zone): string {
+function areaName(z: Zone): string {
   const target = z.placement ? placementWords(z.placement) : "parts"
   return z.name ? `placement area ${z.name} (${target})` : `a placement area for ${target}`
 }

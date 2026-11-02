@@ -18,7 +18,7 @@ export function endingStyle(end: LineEnd | undefined): EndingStyle | null {
 }
 
 /** The size an ending is drawn at (`GetEffectiveSize`): length along the line and width across it, an unset one the other's, both unset five line widths. */
-export function endingSize(end: LineEnd, lineWidth: number): { length: number; width: number } {
+function endingSize(end: LineEnd, lineWidth: number): { length: number; width: number } {
   const auto = lineWidth * AUTO_RATIO
   const length = end.length && end.length > 0 ? end.length : end.width && end.width > 0 ? end.width : auto
   const width = end.width && end.width > 0 ? end.width : end.length && end.length > 0 ? end.length : auto
@@ -26,7 +26,7 @@ export function endingSize(end: LineEnd, lineWidth: number): { length: number; w
 }
 
 /** How far the line stops short of the end (`GetShortenDepth`): an arrow's length, half a circle's or a square's, nothing for an open arrow, less half the outline's width where it has one. */
-export function shortenDepth(end: LineEnd | undefined, lineWidth: number): number {
+function shortenDepth(end: LineEnd | undefined, lineWidth: number): number {
   const style = endingStyle(end)
   if (!end || !style) return 0
   const { length } = endingSize(end, lineWidth)
@@ -35,7 +35,7 @@ export function shortenDepth(end: LineEnd | undefined, lineWidth: number): numbe
 }
 
 /** How far along a curve to look to turn an ending to it (`GetCurveOrientationDepth`): an open arrow's whole length, though it does not shorten the line. */
-export function orientationDepth(end: LineEnd, lineWidth: number): number {
+function orientationDepth(end: LineEnd, lineWidth: number): number {
   return endingStyle(end) === "arrow_open" ? endingSize(end, lineWidth).length : shortenDepth(end, lineWidth)
 }
 

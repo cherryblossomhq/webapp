@@ -1,6 +1,5 @@
 import { KICAD_MODEL_PATH } from "../../supplier/kicadModel"
-import type { GivenModel, GivenModels } from "../givenModels"
-import { givenModelFor } from "../givenModels"
+import { givenModelFor, type GivenModel, type GivenModels } from "../givenModels"
 import { STOCK_MODEL_RELEASE, stockModelExists } from "./stockModels"
 import type { KicadFootprint, KicadModel } from "./types"
 

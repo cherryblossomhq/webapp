@@ -7,7 +7,7 @@ import type { GenValue, PcbGenerator, PcbGroup, Project, Vec2 } from "./types"
 const r6 = (n: number) => Math.round(n * 1e6) / 1e6 || 0
 
 /** A generator with every point it holds mapped by `f`. The same object when it holds none. */
-export function mapGenerator(gen: PcbGenerator, f: (p: Vec2) => Vec2): PcbGenerator {
+function mapGenerator(gen: PcbGenerator, f: (p: Vec2) => Vec2): PcbGenerator {
   let changed = false
   const props: Record<string, GenValue> = {}
   for (const [k, v] of Object.entries(gen.props)) {

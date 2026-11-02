@@ -110,7 +110,7 @@ export function kicadModel(m: PartIndexKicadModel): Model3D | null {
 }
 
 /** KiCad's scale of a model as a `stretch`: undefined for none (1, 1, 1), null for one that cannot be drawn (zero or less on an axis). */
-export function kicadStretch(s: { x: number; y: number; z: number }): Model3D["stretch"] | null {
+function kicadStretch(s: { x: number; y: number; z: number }): Model3D["stretch"] | null {
   if (!(s.x > 0 && s.y > 0 && s.z > 0)) return null
   return s.x === 1 && s.y === 1 && s.z === 1 ? undefined : { x: s.x, y: s.y, z: s.z }
 }

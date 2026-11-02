@@ -30,7 +30,7 @@ const norm360 = (a: number) => ((a % 360) + 360) % 360
 export const KICAD_FONT_NAME = "KiCad Font"
 
 /** The font a text names that is not KiCad's own, or null for a text in KiCad's stroke font. A cache with no face is a font the file does not name. */
-export function faceOf(t: KicadText): string | null {
+function faceOf(t: KicadText): string | null {
   if (t.face !== null && !t.face.startsWith(KICAD_FONT_NAME)) return t.face
   return t.renderCache && t.face === null ? UNNAMED_FONT : null
 }

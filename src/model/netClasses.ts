@@ -475,7 +475,7 @@ export interface MappedNetClasses {
   problems: string[]
   /** What is held as KiCad holds it but not as the file writes it (a class the file names and does not define, a combined class), for the report. */
   notes: string[]
-  /** Nets that two classes claim (KiCad 9 combines these by priority; see the head of this file). */
+  /** Nets that two classes claim, as the notes count them: each of them in a KiCad 9 file (which combines their classes by priority; see the head of this file), and in a KiCad 8 file those KiCad 8 puts in another class than the editor would. */
   overlapping: string[]
 }
 

@@ -35,7 +35,7 @@ export function zoneOnlyCopper(z: KicadZone, board: KicadBoard): boolean {
 }
 
 /** What a zone's layer names stand for: the board's copper layers, the layers that are not copper (wildcards like `*.Mask` made into both sides), and names that are none of KiCad's. */
-export interface ZoneLayerSplit {
+interface ZoneLayerSplit {
   copper: CopperLayer[]
   other: string[]
   unknown: string[]
@@ -46,7 +46,7 @@ const PLOTTED_LAYERS = /^[FB]\.(Mask|Paste|SilkS)$|^Edge\.Cuts$/
 
 const SIDED_WILDCARD = /^\*\.(Adhes|Paste|SilkS|Mask|CrtYd|Fab)$/
 
-export function splitZoneLayers(board: KicadBoard, names: readonly string[]): ZoneLayerSplit {
+function splitZoneLayers(board: KicadBoard, names: readonly string[]): ZoneLayerSplit {
   const map = layerMapOf(board)
   const copperNames: string[] = []
   const other = new Set<string>()
@@ -68,7 +68,6 @@ export function splitZoneLayers(board: KicadBoard, names: readonly string[]): Zo
   return { copper: layersOfNames(map, copperNames), other: orderedOtherLayers([...other]), unknown }
 }
 
-/** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points, each point through `map` (the file's frame is y down, the editor's y up). */
 /** The box of a zone's outline (its corners and arcs' middles) as a rectangle in clipper units (`zoneGeom.ts`), which is what the size of a hatch grid is judged by. */
 function boxOf(segs: KicadZoneSeg[]): Paths64 {
   // Folded point by point: an outline can have more points than a spread call takes.
@@ -84,6 +83,7 @@ function boxOf(segs: KicadZoneSeg[]): Paths64 {
   return [[pt(a, c), pt(b, c), pt(b, d), pt(a, d)]]
 }
 
+/** One ring of a zone as a closed path of the editor's: corners as lines, arcs through their three points, each point through `map` (the file's frame is y down, the editor's y up). */
 function ringPath(segs: KicadZoneSeg[], map: (p: Pt) => Vec2 = flip): ShapePath | null {
   const out: PathSeg[] = []
   const at: { cur: Vec2 | null; first: Vec2 | null } = { cur: null, first: null }
@@ -314,7 +314,7 @@ export function convertZones(cx: ZoneContext): ZoneResult {
   return r
 }
 
-export interface PartZones {
+interface PartZones {
   /** The zones of the part, in the land's frame, with ids that name their place in the land (`z0`, `z1`...). */
   zones: Zone[]
   lossy: string[]

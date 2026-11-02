@@ -56,7 +56,7 @@ export const MAPPED_DRC_RULES = Object.keys(DRC_DEFAULT)
 export const MAPPED_ERC_RULES = Object.keys(ERC_DEFAULT)
 
 /** KiCad's rule for each of the editor's board checks it has one for. A check with none on a KiCad project is run only if it is not one of `EDITOR_ONLY_DRC`. */
-export const DRC_RULE: Readonly<Record<string, string>> = {
+const DRC_RULE: Readonly<Record<string, string>> = {
   short: "shorting_items",
   clearance: "clearance",
   unrouted: "unconnected_items",
@@ -75,7 +75,7 @@ export const DRC_RULE: Readonly<Record<string, string>> = {
 }
 
 /** KiCad's rule for each electrical check it has one for; `unconnected-pin` is the connectivity's own list of pins left open. */
-export const ERC_RULE: Readonly<Record<string, string>> = {
+const ERC_RULE: Readonly<Record<string, string>> = {
   "unconnected-pin": "pin_not_connected",
   "sheet-pin-unconnected": "pin_not_connected",
   "lone-label": "isolated_pin_label",
@@ -92,9 +92,9 @@ export const ERC_RULE: Readonly<Record<string, string>> = {
  * The editor's own checks KiCad has no rule for, left out on a project from KiCad: a via in an SMD pad, a part's courtyard past the outline, a decoupling
  * capacitor's distance, and a tuning pattern's net off its target length (KiCad's `length_out_of_range` comes from a rule's `length` constraint only).
  */
-export const EDITOR_ONLY_DRC: ReadonlySet<string> = new Set(["via-in-pad", "outside-board", "decoupling", "tuning"])
+const EDITOR_ONLY_DRC: ReadonlySet<string> = new Set(["via-in-pad", "outside-board", "decoupling", "tuning"])
 /** An LED with no resistor and a two-pin part with both pins on one net: KiCad's ERC has neither. */
-export const EDITOR_ONLY_ERC: ReadonlySet<string> = new Set(["bare-led", "shorted"])
+const EDITOR_ONLY_ERC: ReadonlySet<string> = new Set(["bare-led", "shorted"])
 
 const SEVERITIES = new Set<string>(["error", "warning", "ignore"])
 const rowOk = (r: unknown) => typeof r === "string" && /^[012]{12}$/.test(r)
@@ -116,9 +116,9 @@ function kept(p: Pick<Project, "kicad">): KicadChecks {
 }
 
 /** The severity a KiCad project gives one of KiCad's DRC rules: the file's, else KiCad's default. */
-export const drcSeverity = (p: Pick<Project, "kicad">, rule: string): KicadSeverity => kept(p).drc?.[rule] ?? DRC_DEFAULT[rule] ?? "error"
+const drcSeverity = (p: Pick<Project, "kicad">, rule: string): KicadSeverity => kept(p).drc?.[rule] ?? DRC_DEFAULT[rule] ?? "error"
 /** The severity a KiCad project gives one of KiCad's ERC rules: the file's, else KiCad's default. */
-export const ercSeverity = (p: Pick<Project, "kicad">, rule: string): KicadSeverity => kept(p).erc?.[rule] ?? ERC_DEFAULT[rule] ?? "error"
+const ercSeverity = (p: Pick<Project, "kicad">, rule: string): KicadSeverity => kept(p).erc?.[rule] ?? ERC_DEFAULT[rule] ?? "error"
 
 /**
  * How severe a board check is on this project, or null when it is not reported: the editor's own severity on a project drawn here;

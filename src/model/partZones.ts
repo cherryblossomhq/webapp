@@ -14,7 +14,7 @@ import { hasPartZones } from "./zones"
 // nothing here.
 
 /** The id of a zone of a part on the board: the part's id and the zone's place in its land. */
-export const partZoneId = (componentId: string, zone: Zone) => `${componentId}~${zone.id}`
+const partZoneId = (componentId: string, zone: Zone) => `${componentId}~${zone.id}`
 
 export { hasPartZones }
 
@@ -34,7 +34,7 @@ const mapSeg = (s: PathSeg, f: (p: Vec2) => Vec2): PathSeg => {
 const mapPath = (p: ShapePath, f: (v: Vec2) => Vec2): ShapePath => ({ ...p, segs: p.segs.map((s) => mapSeg(s, f)) })
 
 /** A zone of a land as the board has it for a part: placed, turned and mirrored as the part is, on the layers the part's side puts it on. */
-export function placedZone(c: ComponentInstance, zone: Zone, copper: number): Zone {
+function placedZone(c: ComponentInstance, zone: Zone, copper: number): Zone {
   const mirror = c.pcb.side === "bottom"
   const f = (p: Vec2) => transformPoint(p, c.pcb, c.pcb.rot, mirror)
   const own = zone.layers ?? [zone.layer]

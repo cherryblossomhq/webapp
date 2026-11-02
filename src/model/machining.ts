@@ -10,7 +10,7 @@ import type { Backdrill, BoardDef, CopperLayer, DesignRules, PostMachining, Proj
 // (drill_enumerator.cpp, padstack.cpp and pcb_track.cpp of the 10.0 line, commit de08734). The outputs (`export/excellon.ts`, `export/notes.ts`) and Checks read it here.
 
 /** What a via has, its own settings over the board's: each part is on or off. Tenting is X5's (`viaTentedOn`). */
-export interface ViaProtectionState {
+interface ViaProtectionState {
   cap: boolean
   fill: boolean
   coverFront: boolean
@@ -58,7 +58,7 @@ export function protectionWords(p: ViaProtectionState): string[] {
 // ---------- layers by KiCad's ids ----------
 
 /** KiCad's number for a copper layer: `F.Cu` 0, `B.Cu` 2, `In1.Cu` 4 and so on by twos. Backdrill spans and the drill depth are ordered by it. */
-export const kicadId = (l: CopperLayer): number => (l === "top" ? 0 : l === "bottom" ? 2 : 2 + 2 * Number(l.slice(2)))
+const kicadId = (l: CopperLayer): number => (l === "top" ? 0 : l === "bottom" ? 2 : 2 + 2 * Number(l.slice(2)))
 
 /** A layer's place in the file names of KiCad's drill files, from 1 at the front (`layerIndex` of `getDrillFileName`). */
 export const fileIndex = (board: Pick<BoardDef, "stack">, l: CopperLayer) => copperLayers(board).indexOf(l) + 1
@@ -152,12 +152,12 @@ export function postMachiningComment(side: "front" | "back", p: PostMachining): 
 }
 
 /** The largest hole a via or pad has on any of its layers (`PADSTACK::GetMaxHoleSize`): its drill, the size of a post-machining and of a backdrill. */
-export function maxHoleSize(drill: number, o: { backdrill?: Backdrill; tertiary?: Backdrill; post?: { front?: PostMachining; back?: PostMachining } }): number {
+function maxHoleSize(drill: number, o: { backdrill?: Backdrill; tertiary?: Backdrill; post?: { front?: PostMachining; back?: PostMachining } }): number {
   return Math.max(drill, o.backdrill?.size ?? 0, o.tertiary?.size ?? 0, o.post?.front?.size ?? 0, o.post?.back?.size ?? 0)
 }
 
 /** Whether a drill removes the copper of `layer`: `layer` lies between its two ends, both included (`LAYER_RANGE::Contains`). */
-export const drillCovers = (board: Pick<BoardDef, "stack">, d: Pick<Backdrill, "from" | "to">, layer: CopperLayer): boolean => {
+const drillCovers = (board: Pick<BoardDef, "stack">, d: Pick<Backdrill, "from" | "to">, layer: CopperLayer): boolean => {
   const all = copperLayers(board)
   const a = all.indexOf(d.from)
   const b = all.indexOf(d.to)
@@ -219,7 +219,7 @@ export function postKnockout(board: Pick<BoardDef, "stack" | "thickness">, post:
 }
 
 /** Whether the copper of `layer` is cut round the hole of a via or pad: a backdrill (or tertiary drill) runs through it, or a post-machining reaches it (`IsBackdrilledOrPostMachined`). */
-export function isBackdrilledOrPostMachined(board: Pick<BoardDef, "stack" | "thickness">, o: { backdrill?: Backdrill; tertiary?: Backdrill; post?: { front?: PostMachining; back?: PostMachining } }, layer: CopperLayer): boolean {
+function isBackdrilledOrPostMachined(board: Pick<BoardDef, "stack" | "thickness">, o: { backdrill?: Backdrill; tertiary?: Backdrill; post?: { front?: PostMachining; back?: PostMachining } }, layer: CopperLayer): boolean {
   for (const d of [o.backdrill, o.tertiary]) if (d && d.size > 0 && drillCovers(board, d, layer)) return true
   return postKnockout(board, o.post, layer) > 0
 }

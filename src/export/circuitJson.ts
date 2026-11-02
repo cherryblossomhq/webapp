@@ -683,8 +683,7 @@ function drawingElements2(item: SchematicDrawing, ids: Ids, drawn: SchematicUse,
 /**
  * Project to Circuit JSON, with notes on what it could not carry. A project with sheets is flattened first (`flatten.ts`): Circuit
  * JSON has no sheets, and says so in the notes. A view of one sheet is exported as the sheet it is.
- */
-/**
+ *
  * `copper: false` leaves the board's copper (traces, vias, pours) out, and with it the analysis of the board it is read from: the KiCad export writes the
  * board of a project from KiCad's files itself, and a sheet's schematic, so it has no use for the converter's copper (a 19-sheet KiCad 5 board spent a
  * minute of its export analysing copies of its board for it).

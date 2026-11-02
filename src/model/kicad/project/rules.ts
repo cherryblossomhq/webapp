@@ -17,7 +17,7 @@ import type { KicadPro } from "./pro"
 //                                    top of design_settings; our own exporter and some writers put them under `defaults`)
 //
 // What the project file says that the editor has no field for (`min_hole_clearance`, the silk and text minimums, ...) is listed in one
-// note by `lostDesignSettings`, not dropped quietly. `.kicad_dru` custom rules are not applied (the editor has no rule language): the
+// note by `lostRuleSettings`, not dropped quietly. `.kicad_dru` custom rules are not applied (the editor has no rule language): the
 // project import says so in a note of their own.
 
 /** The keys of `board.design_settings.rules` that are carried into `DesignRules` (the rows of `PRO_RULES` that say "used" name the same). */
@@ -27,7 +27,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0
 const nonNegative = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0
 
-export interface ProRulesResult {
+interface ProRulesResult {
   project: Project
   /** What the project file says that could not be kept exactly (a class two others share a net with, a pattern naming a class the file lacks); empty when nothing was lost. */
   problems: string[]
@@ -158,8 +158,6 @@ export function lostRuleSettings(pro: KicadPro): string[] {
     min_connection: 0,
     min_groove_width: 0,
     min_hole_clearance: 0.25,
-    min_microvia_diameter: 0.2,
-    min_microvia_drill: 0.1,
     min_resolved_spokes: 2,
     min_silk_clearance: 0,
     min_text_height: 0.8,

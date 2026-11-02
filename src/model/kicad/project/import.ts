@@ -255,7 +255,7 @@ function compareNets(project: Project, pairs: { fp: KicadFootprint; components: 
 }
 
 /** The report's one line for nets the board and the schematic name differently with the same pins on each, every net in `items`. */
-export function netNamesEntry(renamed: NetDifference[]): ReportEntry {
+function netNamesEntry(renamed: NetDifference[]): ReportEntry {
   const nets = new Map<string, { board: string; schematic: string; pins: string[] }>()
   for (const d of renamed) {
     const k = `${d.board}\u0001${d.schematic}`

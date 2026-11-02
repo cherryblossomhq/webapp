@@ -64,7 +64,7 @@ export type Place = (q: { x: number; y: number }) => PointInPolygonResult
  * round its pads) is held with its edges sorted into bands of y, so a point is tested against the edges of its band and not all of them,
  * and with the box of the ring, so a point that is far from it costs nothing. The sums are exact (whole micrometres).
  */
-export function ringTester(path: Path64): Place {
+function ringTester(path: Path64): Place {
   const n = path.length
   let minX = Infinity
   let minY = Infinity

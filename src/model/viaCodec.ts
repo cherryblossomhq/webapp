@@ -13,7 +13,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 
 /** The X22 fields of a via, which the stored form keeps apart from the via. */
-export const VIA_X22_KEYS = ["protect", "backdrill", "tertiary", "post"] as const
+const VIA_X22_KEYS = ["protect", "backdrill", "tertiary", "post"] as const
 
 /** A via protection as it reads: each part a boolean where it says one; null when it is not an object of that shape, `undefined` when it says nothing at all. */
 export function readProtection(raw: unknown): ViaProtection | undefined | null {
@@ -64,7 +64,7 @@ export function readBackdrill(raw: unknown, known: (l: unknown) => boolean = isC
 }
 
 /** A counterbore or countersink as it reads. Null when it does not. */
-export function readPostMachining(raw: unknown): PostMachining | undefined | null {
+function readPostMachining(raw: unknown): PostMachining | undefined | null {
   if (raw === undefined) return undefined
   if (!isObject(raw) || (raw.mode !== "counterbore" && raw.mode !== "countersink")) return null
   const out: PostMachining = { mode: raw.mode }
@@ -90,7 +90,7 @@ export function readPost(raw: unknown): { front?: PostMachining; back?: PostMach
 }
 
 /** The X22 fields of a stored via, each repaired or left out when it does not read, so a via is never half of a backdrill. */
-export function readViaX22(item: Record<string, unknown>, known?: (l: unknown) => boolean): Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> {
+function readViaX22(item: Record<string, unknown>, known?: (l: unknown) => boolean): Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> {
   const out: Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> = {}
   const protect = readProtection(item.protect)
   if (protect) out.protect = protect

@@ -354,9 +354,9 @@ export interface KicadZone {
   thermalBridge: number | null
   smoothing: "none" | "chamfer" | "fillet"
   radius: number
-  /** `island_removal_mode`: 0 always (the default), 1 never, 2 below an area. */
   /** The zone outline's display in KiCad (`hatch edge 0.508`): none, the edge, or the whole; null when the file has none. */
   outlineHatch: { style: "none" | "edge" | "full"; pitch: number } | null
+  /** `island_removal_mode`: 0 always (the default), 1 never, 2 below an area. */
   islandMode: number
   /** `island_area_min`, mm^2, null when the file gives none. */
   islandArea: number | null

@@ -79,7 +79,7 @@ function conditionOf(c: Condition): ((p: ComponentInstance) => boolean) | null |
   }
 }
 
-export interface ClassRulesResult {
+interface ClassRulesResult {
   components: ComponentInstance[]
   entries: ReportEntry[]
 }

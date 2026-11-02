@@ -100,7 +100,7 @@ const contextOf = (project: Project): OtherZones => {
 }
 
 /** The zone's smoothed outline on a layer: what its fill starts from, and what the solder mask is built from when the board has a minimum web (`TransformSmoothedOutlineToPolygon`). */
-export function smoothedOtherOutline(project: Project, zone: Zone, layer: string): Paths64 {
+function smoothedOtherOutline(project: Project, zone: Zone, layer: string): Paths64 {
   const ctx = contextOf(project)
   const own = ctx.outline(zone)
   const flat = own.paths
@@ -135,7 +135,7 @@ function fillOne(project: Project, zone: Zone, layer: string): Paths64 {
 }
 
 /** Whether the project has a zone that is filled on a layer that is not copper. */
-export const hasOtherZones = (project: Pick<Project, "zones">): boolean => project.zones.some((z) => isOtherZone(z) && !isRuleArea(z))
+const hasOtherZones = (project: Pick<Project, "zones">): boolean => project.zones.some((z) => isOtherZone(z) && !isRuleArea(z))
 
 const cache = new WeakMap<readonly Zone[], WeakMap<Project["board"], WeakMap<Project["rules"], OtherFill[]>>>()
 const NONE: OtherFill[] = []

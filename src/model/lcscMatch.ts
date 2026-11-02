@@ -111,11 +111,10 @@ export const MAX_LOOKUPS = 150
 const refs = (list: string[]) => `${list.slice(0, 6).join(", ")}${list.length > 6 ? `, and ${list.length - 6} more` : ""}`
 
 /** Looks every LCSC number of the project up (a few at a time) and attaches what is found. Never throws: a lookup that fails is a line of the report. */
-export async function matchLcsc(project: Project, lookup: LcscLookup, options: { signal?: AbortSignal; concurrency?: number; onProgress?: (done: number, total: number) => void } = {}): Promise<LcscOutcome> {
+export async function matchLcsc(project: Project, lookup: LcscLookup, options: { signal?: AbortSignal; concurrency?: number } = {}): Promise<LcscOutcome> {
   const numbers = [...new Set(project.components.map((c) => lcscNumberOf(c)).filter((n): n is string => !!n))]
   const records = new Map<string, LcscRecord | null | Error>()
   const wanted = numbers.slice(0, MAX_LOOKUPS)
-  let done = 0
   let next = 0
   const worker = async () => {
     while (next < wanted.length && !options.signal?.aborted) {
@@ -125,7 +124,6 @@ export async function matchLcsc(project: Project, lookup: LcscLookup, options: {
       } catch (e) {
         records.set(number, e instanceof Error ? e : new Error(String(e)))
       }
-      options.onProgress?.(++done, wanted.length)
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency ?? 4, wanted.length)) }, worker))

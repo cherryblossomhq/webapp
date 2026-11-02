@@ -136,7 +136,7 @@ export function unpackRings(packed: string): Polygon[] | null {
 const cache = new WeakMap<TextOutline, { polygons: Polygon[] | null }>()
 
 /** The polygons of an outline as stored, unpacked once. */
-export function storedRings(o: TextOutline): Polygon[] {
+function storedRings(o: TextOutline): Polygon[] {
   let hit = cache.get(o)
   if (!hit) {
     hit = { polygons: unpackRings(o.rings) }

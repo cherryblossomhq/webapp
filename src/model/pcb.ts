@@ -1324,9 +1324,24 @@ export function analyzePcb(
     })
     .filter((x): x is { c: (typeof project.components)[number]; box: Box; drawn: { top: Vec2[][]; bottom: Vec2[][] } | null } => !!x)
   // A custom rule of a project from KiCad may let courtyards overlap near a part (a module over other parts, `courtyardRules.ts`).
-  const allowed = kicad ? courtyardAllowance(project, placed.map((x) => x.c), (c) => placed.find((x) => x.c === c)?.drawn ?? null, copperCount) : null
-  for (let i = 0; i < placed.length; i++) {
-    for (let j = i + 1; j < placed.length; j++) {
+  const drawnOf = new Map(placed.map((x) => [x.c, x.drawn]))
+  const allowed = kicad ? courtyardAllowance(project, placed.map((x) => x.c), (c) => drawnOf.get(c) ?? null, copperCount) : null
+  // The pairs whose courtyards can meet are those whose boxes (the courtyard's, and every outline it draws) overlap, found by a sweep over x and taken
+  // in the order of the parts: every pair of 1,566 parts was 1.2 million tests.
+  const outer = placed.map((x) => [x.box, ...(x.drawn ? [...x.drawn.top, ...x.drawn.bottom].map(ringBox) : [])].reduce((a, b) => ({ minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) })))
+  const byX = placed.map((_, i) => i).sort((a, b) => outer[a].minX - outer[b].minX)
+  const pairs: [number, number][] = []
+  for (let a = 0; a < byX.length; a++) {
+    for (let b = a + 1; b < byX.length; b++) {
+      const [i, j] = [byX[a], byX[b]]
+      if (outer[j].minX > outer[i].maxX) break
+      if (outer[j].maxY < outer[i].minY || outer[j].minY > outer[i].maxY) continue
+      pairs.push(i < j ? [i, j] : [j, i])
+    }
+  }
+  pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1])
+  for (const [i, j] of pairs) {
+    {
       const p = placed[i]
       const q = placed[j]
       if (p.drawn || q.drawn) {
@@ -1531,7 +1546,13 @@ function drawnCourtyards(c: ComponentInstance, copperCount: number): { top: Vec2
   return out
 }
 
-const ringBox = (r: Vec2[]): Box => ({ minX: Math.min(...r.map((p) => p.x)), minY: Math.min(...r.map((p) => p.y)), maxX: Math.max(...r.map((p) => p.x)), maxY: Math.max(...r.map((p) => p.y)) })
+/** A ring's box, kept for the ring: the courtyard test asks it of every pair it is given. */
+const ringBoxes = new WeakMap<Vec2[], Box>()
+const ringBox = (r: Vec2[]): Box => {
+  let box = ringBoxes.get(r)
+  if (!box) ringBoxes.set(r, (box = { minX: Math.min(...r.map((p) => p.x)), minY: Math.min(...r.map((p) => p.y)), maxX: Math.max(...r.map((p) => p.x)), maxY: Math.max(...r.map((p) => p.y)) }))
+  return box
+}
 
 /** Whether two segments cross at a point inside both, not where one only ends on or runs along the other. */
 function segmentsCross(a: Vec2, b: Vec2, c: Vec2, d: Vec2): boolean {

@@ -1987,6 +1987,11 @@ export interface DesignRules {
   netClasses?: NetClass[]
   /** What the Default class has that the rules above do not: a name and description of its own, micro via sizes, a differential pair. */
   defaultClass?: DefaultNetClass
+  /**
+   * Clearances that replace the classes' for one pair of nets, or for one part's pads against copper of every other net, smaller or
+   * larger (KiCad's custom clearance rules); never below `minClearance`. Absent or empty: none (`model/netClasses.ts`).
+   */
+  clearanceRules?: ClearanceRule[]
   /** Via sizes offered while routing, besides the rule's own (KiCad's `user_via`). */
   viaSizes?: ViaSize[]
   /** Differential pair sizes offered while routing (KiCad's `user_diff_pair`). */
@@ -2026,6 +2031,16 @@ export interface DiffPairSize {
   width: number
   gap: number
   viaGap?: number
+}
+
+/**
+ * A clearance of its own, for one pair of nets (`nets`, by name) or for one part's pads (`component`, by id) against copper of any
+ * other net; exactly one of the two is set. Where several apply to two pieces of copper, the largest does.
+ */
+export interface ClearanceRule {
+  nets?: [string, string]
+  component?: string
+  clearance: number
 }
 
 /**

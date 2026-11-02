@@ -616,8 +616,9 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
   const unmatched: string[] = []
   const notes: string[] = []
   const classed = hasNetClasses(rules)
-  // The board's smallest clearance is the lowest any class asks for (KiCad raises every pair to it), or the one the project set; a board with no classes has the rules' own.
-  const minClearance = rules.minClearance ?? (classed ? Math.min(rules.clearance, ...(rules.netClasses ?? []).map((c) => c.clearance ?? rules.clearance)) : rules.clearance)
+  // The board's smallest clearance is the lowest any class or clearance rule asks for (KiCad raises every pair to it), or the one the project set; a board with neither has the rules' own.
+  const lowest = [...(rules.netClasses ?? []).map((c) => c.clearance ?? rules.clearance), ...(rules.clearanceRules ?? []).map((r) => r.clearance)]
+  const minClearance = rules.minClearance ?? Math.min(rules.clearance, ...lowest)
 
   const design = object(object(json, "board"), "design_settings")
   // A rule the editor took from the original project file and that has not been edited since is written as the file had it.
@@ -728,6 +729,37 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
     if (name && value) variables[name] = value
   }
   return { text: `${JSON.stringify(json, null, 2)}\n`, unmatched, notes }
+}
+
+/**
+ * The project's clearance rules as KiCad custom rules (a `.kicad_dru`), or null when it has none. KiCad lets the last rule that applies
+ * win, so they are written smallest first, which gives the largest where several apply, as the editor does; each condition is written
+ * both ways round. A net name with a quote in it can't be written in a condition, and is left out with a note.
+ */
+export function kicadCustomRules(project: Project): { text: string; notes: string[] } | null {
+  const list = project.rules.clearanceRules ?? []
+  if (!list.length) return null
+  const notes: string[] = []
+  const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  const quoted = (name: string) => `'${name}'`
+  const rows: { name: string; clearance: number; condition: string }[] = []
+  for (const r of [...list].sort((a, b) => a.clearance - b.clearance)) {
+    if (r.nets) {
+      const [a, b] = r.nets
+      if (/['"\\]/.test(a + b)) {
+        notes.push(`The clearance rule for ${a} and ${b} is left out of the KiCad rules: KiCad can't name a net with a quote or backslash in a rule's condition.`)
+        continue
+      }
+      rows.push({ name: `${a} to ${b}`, clearance: r.clearance, condition: `(A.NetName == ${quoted(a)} && B.NetName == ${quoted(b)}) || (A.NetName == ${quoted(b)} && B.NetName == ${quoted(a)})` })
+    } else {
+      const ref = refOf.get(r.component!)
+      if (!ref || /['"\\]/.test(ref)) continue
+      rows.push({ name: `${ref} pads`, clearance: r.clearance, condition: `(A.Type == 'Pad' && A.memberOfFootprint(${quoted(ref)})) || (B.Type == 'Pad' && B.memberOfFootprint(${quoted(ref)}))` })
+    }
+  }
+  if (!rows.length) return null
+  const body = rows.map((r) => `(rule "Clearance ${r.name}"\n\t(constraint clearance (min ${round(r.clearance, 6)}mm))\n\t(condition "${r.condition}"))`).join("\n\n")
+  return { text: `(version 1)\n\n${body}\n`, notes }
 }
 
 /** The fields only the Default class has, in KiCad's names. */

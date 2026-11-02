@@ -59,10 +59,10 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
   const index = classIndex(base.rules)
   const clearance = index.clearanceOf(net)
   const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
-  const gapTo = (netId: string | null | undefined) => index.pair(net, netId ? (netNames.get(netId) ?? null) : null)
+  const gapTo = (netId: string | null | undefined, part: string | null = null) => index.pair(net, netId ? (netNames.get(netId) ?? null) : null, null, part)
   const r = viaDiameter / 2
   const ring = r + RING
-  const pads = pcb.items.flatMap((it) => (it.kind === "pad" ? [{ pad: it.pad, keep: r + gapTo(it.netId) }] : []))
+  const pads = pcb.items.flatMap((it) => (it.kind === "pad" ? [{ pad: it.pad, keep: r + gapTo(it.netId, it.pad.componentId) }] : []))
   const segments = pcb.items.flatMap((it) => (it.kind === "segment" ? [{ ...it, keep: r + gapTo(pcb.islandNet.get(pcb.island.get(it.id)!)) }] : []))
   // The grid stays off part bodies; no via goes through designators, board text or part
   // outlines, so the silkscreen is not broken up by drill holes.

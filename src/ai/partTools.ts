@@ -8,14 +8,14 @@ import {
   DEFAULT_REF_PREFIX,
 } from "../model/customParts"
 import { drawnLand, type DrawnLandInput } from "../model/drawnLand"
-import { registerProjectFootprints } from "../model/footprints"
-import { draftFromIndexPart } from "../model/indexPart"
+import { getFootprint, registerProjectFootprints } from "../model/footprints"
+import { draftFromIndexPart, indexLandKey } from "../model/indexPart"
 import { kicadFootprintLand } from "../model/kicadImport"
 import { registerPart } from "../model/library"
 import { pinsCutOff, schematicEditProblems } from "../model/merges"
 import { pinsLeft, switchPart } from "../model/ops"
 import { setModel, modelAssignment } from "../model/models3d"
-import { landForSupplierPart, landPads, supplierLandPads, supplierPins } from "../model/supplier/build"
+import { landForSupplierPart, landPads, supplierLandPads, supplierPins, type LandedPart } from "../model/supplier/build"
 import { supplierModelOn } from "../model/supplier/model"
 import { DRAWN_LAND_ADVICE, footprintNameProblem, footprintOptionProblem } from "../model/supplier/footprintGuard"
 import { describeLand, summarizeLand } from "../model/supplier/land"
@@ -173,6 +173,41 @@ async function fetchStored(id: string, ctx: ToolContext): Promise<{ stored: Part
   }
 }
 
+const mm = (v: number) => String(Math.round(v * 100) / 100)
+
+/** The body a 3D model's or package's name gives: EasyEDA's `..._L10.0-W10.0-H4.5-...`, KiCad's `..._3.9x4.9mm_...`. */
+function bodyFromModelName(name: string): string | null {
+  const easy = name.match(/(?:^|[_-])L(\d+(?:\.\d+)?)-W(\d+(?:\.\d+)?)(?:-H(\d+(?:\.\d+)?))?/)
+  const kicad = easy ? null : name.match(/(?:^|_)(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(?:x(\d+(?:\.\d+)?))?mm/)
+  const m = easy ?? kicad
+  return m ? `${m[1]} x ${m[2]} mm${m[3] ? `, ${m[3]} mm high` : ""}` : null
+}
+
+/**
+ * How much board the part takes, from the land create_part builds it on: the courtyard placement and Checks keep apart (the source's
+ * own, else the copper and silkscreen and 0.25 mm), where its middle is from the pads' origin, the silkscreen's outline, and the body
+ * its 3D model's name gives. An assistant had to place a part to learn its courtyard.
+ */
+function sizeText(part: LandedPart, modelName: string | null | undefined): string | null {
+  const chosen = landForSupplierPart(part)
+  if (!chosen) return null
+  const def = chosen.def ?? getFootprint(chosen.footprint)
+  const c = def.courtyard
+  const cx = (c.minX + c.maxX) / 2
+  const cy = (c.minY + c.maxY) / 2
+  const off = Math.abs(cx) > 0.005 || Math.abs(cy) > 0.005 ? `, its middle at (${mm(cx)}, ${mm(cy)}) from the land's origin` : ""
+  const whose = chosen.def ? (part.land?.courtyard ? "the source's own" : "the copper and silkscreen and 0.25 mm") : `the ${chosen.footprint} footprint's`
+  const silk = def.silk.flat()
+  const silkBox = silk.length
+    ? ` Silkscreen outline ${mm(Math.max(...silk.map((q) => q.x)) - Math.min(...silk.map((q) => q.x)))} x ${mm(Math.max(...silk.map((q) => q.y)) - Math.min(...silk.map((q) => q.y)))} mm.`
+    : ""
+  // The model's name says the height too; the supplier's package name (`DFN-8_L2.5-W2.5-P0.50`) the outline.
+  const fromModel = modelName ? bodyFromModelName(modelName) : null
+  const fromPackage = !fromModel && part.package ? bodyFromModelName(part.package) : null
+  const body = fromModel ? ` Body ${fromModel}, by its 3D model's name (${modelName}).` : fromPackage ? ` Body ${fromPackage}, by its package's name.` : ""
+  return `Size: courtyard ${mm(c.maxX - c.minX)} x ${mm(c.maxY - c.minY)} mm (${whose}${off}), what placement keeps clear.${silkBox}${body}`
+}
+
 /** A stored part's pins and land in the words get_part_data uses for a supplier's. */
 function storedPartText(part: PartIndexPart): string {
   const land = describeLand(summarizeLand(supplierLandPads(part)))
@@ -185,6 +220,7 @@ function storedPartText(part: PartIndexPart): string {
     `${part.lcsc ? `LCSC ${part.lcsc}. ` : ""}${part.datasheet ? `Datasheet: ${part.datasheet}` : ""}`.trim(),
     `Pins (${part.pins.length}): ${pinMapText(part.pins)}`,
     `Land (from ${part.land.from}): ${land}.`,
+    sizeText({ land: part.land, package: part.package, lcsc: indexLandKey(part) }, part.model3d?.source === "kicad" ? part.model3d.name : part.model3d?.model.title),
     part.provenance.attribution,
   ]
     .filter(Boolean)
@@ -217,7 +253,7 @@ const partialNote = (part: SupplierPart) => (part.provenance.partial ? " Other s
 export const getPartDataTool: ToolSpec<PartPrepared> = {
   name: "get_part_data",
   description:
-    "Read one supplier part by LCSC number, or one stored part by database_id (from find_part's parts database list): its pins (number, name, and whether each is a supply, ground, exposed pad or not connected), package, land pattern in millimetres, datasheet link, and for a supplier part its stock and how many supplier drawings agree on the pins.",
+    "Read one supplier part by LCSC number, or one stored part by database_id (from find_part's parts database list): its pins (number, name, and whether each is a supply, ground, exposed pad or not connected), package, land pattern in millimetres, its size on the board (courtyard, silkscreen, and the body its 3D model's name gives), datasheet link, and for a supplier part its stock and how many supplier drawings agree on the pins.",
   input_schema: {
     type: "object",
     properties: {
@@ -250,8 +286,9 @@ export const getPartDataTool: ToolSpec<PartPrepared> = {
         ? `Pins (${part.pins.length}, ${confidenceText(part)}): ${pinMapText(part.pins)}${partialNote(part)}`
         : "The supplier's symbol numbers its pins without naming them: there is no pinout to use.",
       land ? `Land (from ${part.land!.from}): ${land}.` : "No land pattern: create_part needs a footprint for this one.",
+      land ? sizeText(part, part.model3d?.title) : null,
       part.provenance.attribution,
-    ]
+    ].filter(Boolean)
     return ok(project, `${lines.join("\n")}${upload}`, `Read ${part.lcsc} (${part.mpn})`)
   },
 }
@@ -722,6 +759,11 @@ From memory (no supplier record):
     const problems = customPartProblems({ ...draft, id: "" })
     if (problems.length) return fail(project, `Can't make ${name || "the part"}: ${problems.join("; ")}`)
 
+    // Checked before the part is registered: a refused call must leave no part behind that add_component could place.
+    const replaces = typeof input.replaces === "string" ? input.replaces.trim() : ""
+    if (replaces && !project.parts?.some((s) => s.id === replaces)) {
+      return fail(project, `No part ${replaces} was made in this project; only parts from create_part can be replaced`)
+    }
     const spec: CustomPartSpec = { id: customPartId(draft), ...draft }
     const part = buildCustomPart(spec)
     registerPart(part)
@@ -730,16 +772,14 @@ From memory (no supplier record):
     // A part made now gets its model; one the project already has keeps what the user chose for it,
     // no model included, unless it was a memory part that only now has a record behind it.
     const withModel = (p: Project) => (model3d && !modelAssignment(p, spec.id, spec.footprint) ? setModel(p, spec.id, spec.footprint, model3d) : p)
-    const replaces = typeof input.replaces === "string" ? input.replaces.trim() : ""
-    if (replaces && !project.parts?.some((s) => s.id === replaces)) {
-      return fail(project, `No part ${replaces} was made in this project; only parts from create_part can be replaced`)
-    }
     const footprints = land && !project.footprints?.some((f) => f.name === land!.name) ? [...(project.footprints ?? []), land] : project.footprints
     const origin = describeSource(spec)
     const usage = `Pins: ${pinList(part.pins)}`
     const tail = notes.length ? ` ${notes.join(" ")}` : ""
     const existing = project.parts?.find((s) => s.id === spec.id)
-    if (existing) {
+    // The same definition again, with another part to replace, is the switch to it: the part is kept and that one's components move over.
+    const switching = !!replaces && replaces !== spec.id
+    if (existing && !switching) {
       // The same drawing, now verified: keep the part, take the better provenance.
       // A stored part compared now keeps the verdict, as the result says: a real comparison (agrees,
       // renamed, contradicted) replaces whatever the part held, anything else fills only an empty or pending one.
@@ -755,7 +795,18 @@ From memory (no supplier record):
       }
       return ok(project, `${name} already exists in this project as part_id "${spec.id}" (${origin}). ${usage}.${tail}`, `${name} already exists`)
     }
-    const parts = [...(project.parts ?? []).filter((s) => s.id !== replaces), spec]
+    const recheck = source.check?.verdict === "pending" ? " A re-check is pending: call verify_parts when the supplier lookup is back, and tell the user it is unverified until then." : ""
+    const memory =
+      source.pins === "memory"
+        ? ` Its pinout and footprint are UNVERIFIED (${source.note ?? "made from memory"}): tell the user to check them against the datasheet.${recheck}`
+        : source.pins === "database" && recheck
+          ? " Its comparison with the supplier is pending: call verify_parts when the supplier lookup is back."
+          : ""
+    const made = existing
+      ? `${name} already exists in this project as part_id "${spec.id}" (${origin}, footprint ${spec.footprint}).`
+      : `Created part_id "${spec.id}" (${name}, ${origin}, footprint ${spec.footprint}).`
+    const withNew = existing ? project.parts! : [...(project.parts ?? []), spec]
+    const parts = withNew.filter((s) => s.id !== replaces)
     let next = withModel({ ...project, parts, footprints, updatedAt: Date.now() })
     const olds = replaces ? project.components.filter((c) => c.partId === replaces) : []
     // The new symbol may draw its pins elsewhere: the wiring follows each pin by its number.
@@ -766,9 +817,12 @@ From memory (no supplier record):
       const after = getConnectivity(next)
       const joined = schematicEditProblems(project, next, before, after, new Set())
       if (joined.length) {
-        return fail(
-          project,
-          `Not switched: with its wiring moved to its pins by number, ${name} would still be wrong: ${joined.join("; ")}. Nothing was changed. Remove the ${olds.length} component(s) made from ${replaces} and add the new part with add_component part_id "${spec.id}" instead.`,
+        // The part is made all the same, beside the one it was to replace, so the way out the reply gives (place it by hand) works.
+        const kept = withModel({ ...project, parts: withNew, footprints, updatedAt: Date.now() })
+        return ok(
+          kept,
+          `${made}${memory} Not switched: with their wiring moved to its pins by number, ${replaces}'s ${olds.length} component(s) would still be wrong: ${joined.join("; ")}. They are as they were, still made from ${replaces}. ${usage}.${tail} To use the new part, remove them with remove_component and add it with add_component part_id "${spec.id}", then wire it.`,
+          `${existing ? "Kept" : "Created"} part ${name}; ${replaces} not switched`,
         )
       }
       const left = olds.flatMap((c) => pinsLeft(c, next.components.find((x) => x.id === c.id)!, before).map((n) => `${c.ref}.${n}`))
@@ -781,16 +835,9 @@ From memory (no supplier record):
     const after = replaces
       ? ` It replaces ${replaces}: ${olds.length} component(s) switched over, their wiring kept on each pin by number.${rewired}`
       : ` Add it with add_component part_id "${spec.id}".`
-    const recheck = source.check?.verdict === "pending" ? " A re-check is pending: call verify_parts when the supplier lookup is back, and tell the user it is unverified until then." : ""
-    const memory =
-      source.pins === "memory"
-        ? ` Its pinout and footprint are UNVERIFIED (${source.note ?? "made from memory"}): tell the user to check them against the datasheet.${recheck}`
-        : source.pins === "database" && recheck
-          ? " Its comparison with the supplier is pending: call verify_parts when the supplier lookup is back."
-          : ""
     return ok(
       next,
-      `Created part_id "${spec.id}" (${name}, ${origin}, footprint ${spec.footprint}).${memory} ${usage}.${tail}${after}`,
+      `${made}${memory} ${usage}.${tail}${after}`,
       source.pins === "memory"
         ? `Created part ${name} from memory (unverified)`
         : source.database

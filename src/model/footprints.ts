@@ -2,7 +2,7 @@ import { fp } from "@tscircuit/footprinter"
 import { emptyBox, expandBox, round } from "../lib/geometry"
 import { LIBRARY_FOOTPRINTS, libraryFootprint } from "./footprintLibrary"
 import { scoped } from "./scope"
-import type { FootprintDef, PadDef, Project, Vec2 } from "./types"
+import type { FootprintDef, PadDef, PartDef, Project, Vec2 } from "./types"
 
 /**
  * What the library and the footprinter draw for a name: the same for every project, so kept for the
@@ -297,4 +297,38 @@ export function isValidFootprint(name: string): boolean {
   } catch {
     return false
   }
+}
+
+/** A part's pins a footprint has no pad for, and its numbered pads that carry no pin (an exposed pad may carry none), matched by number through the part's `padAlias`. */
+function pinPadMismatch(part: Pick<PartDef, "pins" | "padAlias">, footprint: string): { padless: string[]; orphans: string[]; pads: string[] } {
+  const numbered = getFootprint(footprint).pads.flatMap((p) => (p.pin ? [{ number: p.pin, exposed: !!p.exposed }] : []))
+  const numbers = new Set(part.pins.map((p) => p.number))
+  const covered = new Set<string>()
+  const orphans: string[] = []
+  for (const pad of numbered) {
+    const pin = part.padAlias?.[pad.number] ?? pad.number
+    if (numbers.has(pin)) covered.add(pin)
+    else if (!pad.exposed && !orphans.includes(pad.number)) orphans.push(pad.number)
+  }
+  return { padless: [...numbers].filter((n) => !covered.has(n)), orphans, pads: [...new Set(numbered.map((p) => p.number))] }
+}
+
+/**
+ * Why a footprint can't carry a part's pins, or null when it can: every pin needs a pad numbered like it, and every numbered pad
+ * a pin (an exposed pad may have none). What the part's own first footprint already leaves unmatched is not held against another
+ * (a KiCad symbol and its footprint need not match), so only what this footprint breaks is said.
+ */
+export function footprintPinProblem(part: Pick<PartDef, "name" | "pins" | "padAlias" | "footprints">, footprint: string): string | null {
+  if (!isValidFootprint(footprint) || part.footprints.includes(footprint)) return null
+  const own: { padless: string[]; orphans: string[] } = part.footprints[0] && isValidFootprint(part.footprints[0]) ? pinPadMismatch(part, part.footprints[0]) : { padless: [], orphans: [] }
+  const got = pinPadMismatch(part, footprint)
+  const padless = got.padless.filter((n) => !own.padless.includes(n))
+  const orphans = got.orphans.filter((n) => !own.orphans.includes(n))
+  if (!padless.length && !orphans.length) return null
+  const list = (xs: string[]) => (xs.length > 12 ? `${xs.slice(0, 12).join(", ")} and ${xs.length - 12} more` : xs.join(", "))
+  const said = [
+    padless.length && `pin(s) ${list(padless)} have no pad on it`,
+    orphans.length && `its pad(s) ${list(orphans)} have no pin, so they would be on no net`,
+  ].filter(Boolean)
+  return `${footprint} doesn't fit ${part.name}: ${said.join(", and ")} (${part.name} has ${part.pins.length} pin(s), ${list(part.pins.map((p) => p.number))}; ${footprint} has pads ${list(got.pads) || "none"}). A footprint needs a pad numbered like each pin.`
 }

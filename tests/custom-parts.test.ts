@@ -131,6 +131,50 @@ describe("create_part", () => {
     expect(runTool(p, "create_part", { ...ldo, replaces: "resistor" }).isError).toBe(true)
   })
 
+  it("makes the part when the switch is refused, so the way out it gives works", () => {
+    // Pins 1 and 3 drawn on the left, then on top: the wiring moved with them would join two nets.
+    const sideOf = (top: boolean) => (x: (typeof ldo.pins)[number]) => ({ ...x, side: x.number === "1" || x.number === "5" ? (top ? "top" : "left") : top ? "bottom" : "right" })
+    const first = create(createProject("fix"), { ...ldo, pins: ldo.pins.map((x) => ({ ...x, side: x.number === "1" || x.number === "3" ? "left" : "right" })) })
+    let p = runTool(first.project, "add_component", { part_id: first.id, x: 0, y: 0 }).project
+    p = runTool(p, "add_component", { part_id: "resistor", ref: "R1", x: -6, y: 0 }).project
+    p = runTool(p, "add_component", { part_id: "resistor", ref: "R2", x: 6, y: 0 }).project
+    p = runTool(p, "connect", { pins: ["U1.1", "R1.1"], net_name: "A" }).project
+    p = runTool(p, "connect", { pins: ["U1.3", "R2.1"], net_name: "B" }).project
+    p = runTool(p, "connect", { pins: ["U1.5", "R2.2"], net_name: "C" }).project
+    p = runTool(p, "connect", { pins: ["U1.2", "R1.2"], net_name: "D" }).project
+    const refused = create(p, { ...ldo, pins: ldo.pins.map(sideOf(true)), replaces: first.id })
+    expect(refused.isError).toBe(false)
+    expect(refused.result).toContain("Not switched")
+    expect(refused.result).toContain(`add_component part_id "${refused.id}"`)
+    // The new part is stored beside the old one, which its component still uses.
+    expect(refused.project.parts?.map((s) => s.id)).toEqual([first.id, refused.id])
+    expect(refused.project.components.find((c) => c.ref === "U1")!.partId).toBe(first.id)
+    expect(refused.project.wires).toEqual(p.wires)
+    // search_parts finds it, add_component places it, and replaces accepts it.
+    expect(runTool(refused.project, "search_parts", { query: "tps7a0233" }).result).toContain(`"part_id":"${refused.id}"`)
+    expect(runTool(refused.project, "add_component", { part_id: refused.id }).isError).toBe(false)
+    expect(runTool(refused.project, "create_part", { ...ldo, replaces: refused.id }).result).not.toContain("was made in this project")
+    // A part that is refused outright leaves nothing behind to place.
+    const unknown = create(p, { ...ldo, name: "TPS7A0250", replaces: "nope-1" })
+    expect(unknown.isError).toBe(true)
+    expect(unknown.result).not.toContain("add_component")
+  })
+
+  it("switches to a part the project already has when it is made again with replaces", () => {
+    const first = create(createProject("fix"), { ...ldo, pins: ldo.pins.map((x) => (x.number === "3" ? { ...x, name: "SHDN" } : x)) })
+    let p = runTool(first.project, "add_component", { part_id: first.id }).project
+    const second = create(p, ldo)
+    p = second.project
+    expect(p.parts?.map((s) => s.id)).toEqual([first.id, second.id])
+    const again = create(p, { ...ldo, replaces: first.id })
+    expect(again.isError).toBe(false)
+    expect(again.id).toBe(second.id)
+    expect(again.result).toContain("already exists")
+    expect(again.result).toContain(`It replaces ${first.id}`)
+    expect(again.project.parts?.map((s) => s.id)).toEqual([second.id])
+    expect(again.project.components[0].partId).toBe(second.id)
+  })
+
   it("keeps the wiring on each pin by number when the new definition draws its pins elsewhere", () => {
     // Drawn first with its pins on the wrong sides, then corrected: the same numbers and footprint, another symbol.
     const sides: Record<string, string> = { "1": "left", "2": "left", "3": "right", "4": "right", "5": "left" }

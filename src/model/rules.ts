@@ -1,4 +1,4 @@
-import { normalizeDefaultClass, normalizeNetClasses } from "./netClasses"
+import { normalizeClearanceRules, normalizeDefaultClass, normalizeNetClasses } from "./netClasses"
 import { defaultStackup } from "./stack"
 import { boardProtection, readProtection } from "./viaCodec"
 import type { BoardDef, DesignRules, DiffPairSize, Project, StackRow, ThermalRelief, ViaSize } from "./types"
@@ -110,6 +110,9 @@ function normalizeNetClassRules(rules: DesignRules) {
   const def = normalizeDefaultClass(rules.defaultClass)
   if (def) rules.defaultClass = def
   else delete rules.defaultClass
+  const ruled = normalizeClearanceRules(rules.clearanceRules)
+  if (ruled.length) rules.clearanceRules = ruled
+  else delete rules.clearanceRules
   const sizes: ViaSize[] = []
   if (Array.isArray(rules.viaSizes)) {
     for (const v of rules.viaSizes as Partial<ViaSize>[]) {

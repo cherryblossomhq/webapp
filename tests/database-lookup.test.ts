@@ -409,6 +409,7 @@ describe("find_part and get_part_data with the parts database", () => {
     expect(out.result).toContain("database_id 7: AMS1117-3.3, SOT-223-3_TabPin2, from the KiCad library part Regulator_Linear:AMS1117-3.3 (release 10.0.7).")
     expect(out.result).toContain("Pins (3):")
     expect(out.result).toContain("Land (from Package_TO_SOT_SMD:SOT-223-3_TabPin2)")
+    expect(out.result).toMatch(/Size: courtyard [\d.]+ x [\d.]+ mm/)
     const none = await executeTool(project, () => project, "get_part_data", {}, { parts })
     expect(none.isError).toBe(true)
   })

@@ -8,7 +8,21 @@ import { pinKey } from "../model/connectivity"
 import { padGap } from "../model/decoupling"
 import { isPhysical, pcbCourtyard, pcbPads, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
-import { addNetClass, assignNet, classIndex, classValuesOfClass, DEFAULT_CLASS_NAME, defaultClassName, removeNetClass, setClassField, setClassPatterns, type ClassField } from "../model/netClasses"
+import {
+  addNetClass,
+  assignNet,
+  classIndex,
+  classValuesOfClass,
+  DEFAULT_CLASS_NAME,
+  defaultClassName,
+  findClearanceRule,
+  removeClearanceRule,
+  removeNetClass,
+  setClassField,
+  setClassPatterns,
+  setClearanceRule,
+  type ClassField,
+} from "../model/netClasses"
 import { addTrace, addVia, netTraceWidth, resolvePinSpec, updateComponent } from "../model/ops"
 import { pourMissNote } from "../model/pourReach"
 import { copperLayers } from "../model/stack"
@@ -20,7 +34,7 @@ import { pointPadDistance, segmentPadDistance } from "../model/pcb"
 import { areaNames, areasOfPart, nearestInAreas, partInAreas } from "../model/placementAreas"
 import { findNearSpot, inflateBox, type NearAnchor } from "../model/placeNear"
 import { matchCapability } from "../model/rules"
-import type { ComponentInstance, CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
+import type { ClearanceRule, ComponentInstance, CopperLayer, PcbSide, Project, Vec2 } from "../model/types"
 import { getConnectivity, getPcbAnalysis } from "../store/analysis"
 import type { JsonSchema, ToolOutcome } from "./tools"
 import { onBoard } from "../model/partFlags"
@@ -68,10 +82,10 @@ const DEFAULT_MAX_GAP = 1
 function conflictingCopper(before: Project, now: Project, refs: string[]) {
   const sch = getConnectivity(now)
   const analysis = getPcbAnalysis(before)
-  // two nets keep the larger of their classes' clearances (a board with no classes: the rules' one)
+  // two nets keep the larger of their classes' clearances (a board with no classes: the rules' one), or a clearance rule's for them or the pad's part
   const classes = classIndex(now.rules)
   const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
-  const clearanceBetween = (a: string | null, b: string | null) => classes.pair(a ? (netNames.get(a) ?? null) : null, b ? (netNames.get(b) ?? null) : null)
+  const clearanceBetween = (a: string | null, b: string | null, part: string) => classes.pair(a ? (netNames.get(a) ?? null) : null, b ? (netNames.get(b) ?? null) : null, null, part)
   const parts = now.components.filter((c) => refs.includes(c.ref) && c.pcb.placed)
   const pads = parts.flatMap((c) => pcbPads(c).map((pad) => ({ pad, net: pad.pin ? sch.pinNet.get(pinKey(c.id, pad.pin)) ?? null : null })))
   const traces = new Set<string>()
@@ -81,7 +95,7 @@ function conflictingCopper(before: Project, now: Project, refs: string[]) {
     const net = analysis.traceNet.get(t.id) ?? null
     for (const { pad, net: padNet } of pads) {
       if (!pad.layers.includes(t.layer) || (net !== null && net === padNet)) continue
-      const clearance = clearanceBetween(net, padNet)
+      const clearance = clearanceBetween(net, padNet, pad.componentId)
       if (t.points.slice(1).some((p, i) => segmentPadDistance(t.points[i], p, pad) - t.width / 2 < clearance - 1e-6)) traces.add(t.id)
     }
   }
@@ -90,7 +104,7 @@ function conflictingCopper(before: Project, now: Project, refs: string[]) {
     const net = analysis.viaNet.get(v.id) ?? null
     for (const { pad, net: padNet } of pads) {
       const d = pointPadDistance(v, pad) - v.diameter / 2
-      const clearance = clearanceBetween(net, padNet)
+      const clearance = clearanceBetween(net, padNet, pad.componentId)
       if (d < -1e-6 || (d < clearance - 1e-6 && (net === null || net !== padNet))) vias.add(v.id)
     }
   }
@@ -712,6 +726,89 @@ const setNetClassTool: PcbToolSpec = {
   },
 }
 
+// ---------- set_clearance_rule ----------
+
+/** The project's clearance rules as the model reads them: by net names, or by the part's designator. */
+export function clearanceRuleRows(project: Project): Record<string, unknown>[] {
+  const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  return (project.rules.clearanceRules ?? []).map((r) =>
+    r.nets ? { nets: r.nets, clearance: r.clearance } : { ref: refOf.get(r.component!) ?? "a part no longer in the design", clearance: r.clearance },
+  )
+}
+
+/** A clearance rule in words: "L and N at 1.5 mm", "K1's pads at 1 mm". */
+const ruleWords = (project: Project, r: ClearanceRule) =>
+  r.nets ? `${r.nets[0]} and ${r.nets[1]} at ${len(r.clearance)} mm` : `${project.components.find((c) => c.id === r.component)?.ref ?? "a removed part"}'s pads at ${len(r.clearance)} mm`
+
+/** The finest clearance a rule may set: the board's minimum when it has one, else what the finest fab class makes (or the rules' own clearance, if that is finer). */
+const ruleFloor = (project: Project) => project.rules.minClearance ?? Math.min(0.1, project.rules.clearance)
+
+const setClearanceRuleTool: PcbToolSpec = {
+  name: "set_clearance_rule",
+  description:
+    "Give one pair of nets (nets: two names), or one part's pads against copper of every other net (ref), a clearance of their own that replaces what the net classes and the board give, smaller or larger, as KiCad's custom rules do: a relay, fuse holder or connector whose own pins sit closer than a Mains class or the board's clearance allows, or two nets to keep further apart than their classes say. Where several rules apply to two pieces of copper, the largest does; never below the board's minimum clearance. Routing, pours and checks follow it: clear_routing and route_pcb the nets after a change. remove takes a rule away; with neither nets nor ref it lists the rules.",
+  input_schema: {
+    type: "object",
+    properties: {
+      nets: { type: "array", items: { type: "string" }, minItems: 2, description: "The two nets, e.g. [\"L\", \"N\"]" },
+      ref: { type: "string", description: "A part whose pads keep this clearance from every other net, e.g. K1" },
+      clearance: { type: "number", description: "mm" },
+      remove: { type: "boolean" },
+    },
+  },
+  run: (project, input) => {
+    const list = (q: Project = project) => {
+      const rows = (q.rules.clearanceRules ?? []).map((r) => ruleWords(q, r))
+      return rows.length ? `Clearance rules: ${rows.join("; ")}.` : "There are no clearance rules: every pair of nets keeps the larger of their classes' clearances."
+    }
+    const netsIn = Array.isArray(input.nets) ? (input.nets as string[]).map((n) => String(n).trim()).filter(Boolean) : null
+    const ref = typeof input.ref === "string" ? input.ref.trim() : ""
+    if (!netsIn && !ref) return ok(project, list(), "Listed clearance rules")
+    if (netsIn && ref) return fail(project, "Give nets or ref, not both: a rule is for one pair of nets or for one part's pads")
+    let target: Pick<ClearanceRule, "nets" | "component">
+    let what: string
+    if (netsIn) {
+      if (netsIn.length !== 2) return fail(project, `nets is two net names, not ${netsIn.length}`)
+      if (netsIn[0] === netsIn[1]) return fail(project, `${netsIn[0]} twice: a rule is between two different nets`)
+      const { has, hint } = netNames(project)
+      const unknown = netsIn.filter((n) => !has(n))
+      if (unknown.length) return fail(project, `Nothing was changed. ${unknown.map((n) => `No net named ${n}.${hint(n)}`).join(" ")}`)
+      target = { nets: [netsIn[0], netsIn[1]] }
+      what = `${netsIn[0]} and ${netsIn[1]}`
+    } else {
+      const c = project.components.find((x) => x.ref === ref && onBoard(x) && isPhysical(findPart(x.partId))) ?? project.components.find((x) => x.ref === ref)
+      if (!c) return fail(project, `No part ${ref}`)
+      target = { component: c.id }
+      what = `${ref}'s pads`
+    }
+    if (input.remove === true) {
+      if (!findClearanceRule(project.rules.clearanceRules, target)) return fail(project, `There is no clearance rule for ${what}. ${list()}`)
+      const next = { ...project, updatedAt: Date.now(), rules: removeClearanceRule(project.rules, target) }
+      return ok(next, `Removed the clearance rule for ${what}: their classes' clearances apply again. clear_routing and route_pcb what was routed by it. ${list(next)}`, `Removed the clearance rule for ${what}`)
+    }
+    const clearance = Number(input.clearance)
+    if (input.clearance === undefined || !Number.isFinite(clearance)) return fail(project, "Give clearance in mm, or remove true")
+    const floor = ruleFloor(project)
+    if (clearance < floor - 1e-9 || clearance > 20) {
+      return fail(
+        project,
+        `Nothing was changed. ${len(clearance)} mm is ${clearance > 20 ? "more than 20 mm" : `below the ${len(floor)} mm ${project.rules.minClearance !== undefined ? "minimum clearance of the board" : "the finest fab class makes"}`}.`,
+      )
+    }
+    const was = classIndex(removeClearanceRule(project.rules, target))
+    const classGives = target.nets ? ` (their classes give ${len(was.pair(target.nets[0], target.nets[1]))} mm)` : ""
+    const next = { ...project, updatedAt: Date.now(), rules: setClearanceRule(project.rules, { ...target, clearance: round(clearance, 4) }) }
+    const analysis = getPcbAnalysis(next)
+    const errors = analysis.violations.filter((x) => x.severity === "error" && x.kind !== "unrouted").length
+    const missed = [...new Set(next.zones.filter((z) => z.net && !z.keepout).map((z) => z.net))].map((net) => pourMissNote(next, analysis, net)).join("")
+    return ok(
+      next,
+      `Clearance rule: ${what} at ${len(clearance)} mm${classGives}${target.component ? `, from copper of every other net, in place of the classes'` : ""}. Copper already down keeps its place: clear_routing the nets near it and route_pcb.${errors ? ` The board has ${errors} check error(s); run_checks lists them.` : ""}${missed} ${list(next)}`,
+      `Clearance rule for ${what}: ${len(clearance)} mm`,
+    )
+  },
+}
+
 // ---------- draw_trace ----------
 
 const drawTraceTool: PcbToolSpec = {
@@ -828,7 +925,7 @@ const pcbTextTool: PcbToolSpec = {
   },
 }
 
-export const pcbToolSpecs: PcbToolSpec[] = [placePartsTool, setNetWidthTool, setNetClassTool, clearRoutingTool, drawTraceTool, pcbTextTool]
+export const pcbToolSpecs: PcbToolSpec[] = [placePartsTool, setNetWidthTool, setNetClassTool, setClearanceRuleTool, clearRoutingTool, drawTraceTool, pcbTextTool]
 
 /** Activity labels of these tools, for the transcript. */
 export function pcbToolLabel(name: string, input: Record<string, unknown>): string | null {
@@ -843,6 +940,10 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       return "Clearing routing"
     case "set_net_class":
       return `${input.remove === true ? "Removing" : "Setting"} the net class ${String(input.name ?? "")}`.trim()
+    case "set_clearance_rule": {
+      const what = Array.isArray(input.nets) ? (input.nets as unknown[]).map(String).join(" and ") : typeof input.ref === "string" ? `${input.ref}'s pads` : ""
+      return what ? `${input.remove === true ? "Removing" : "Setting"} the clearance between ${what}` : "Reading the clearance rules"
+    }
     case "draw_trace":
       return `Drawing a trace of ${String(input.net ?? "a net")}`
     case "pcb_text":

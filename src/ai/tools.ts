@@ -3,7 +3,7 @@ import { setCopperLayerCount } from "../model/layerOps"
 import { boxesOverlap, round, samePoint, snap } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { pinKey } from "../model/connectivity"
-import { isValidFootprint } from "../model/footprints"
+import { footprintPinProblem, isValidFootprint } from "../model/footprints"
 import { footprintOptionProblem } from "../model/supplier/footprintGuard"
 import { labelTextFor } from "../model/netNames"
 import { componentFootprint, hasUnits, isPhysical, isSchematicPart, powerNetName, schematicBounds, schematicPins, unitGroup, unitOwners, valueText } from "../model/instances"
@@ -15,7 +15,7 @@ import { blockPorts, readingOrder } from "../model/blockPorts"
 import { netInfo } from "../model/tidy/nets"
 import { tidySchematic } from "../model/tidy"
 import { decouplingSummary } from "../model/decoupling"
-import { pcbToolLabel, pcbToolSpecs } from "./pcbTools"
+import { clearanceRuleRows, pcbToolLabel, pcbToolSpecs } from "./pcbTools"
 import { dimensionsReport, drawingsReport, groupsReport, imagesReport, textsReport } from "./shapeReport"
 import { padMachining, protectionWords, viaProtection } from "../model/machining"
 import { padDieTimes, tuningPatterns } from "../model/netLengths"
@@ -414,7 +414,7 @@ const getDesign: ToolSpec = {
       project: project.name,
       ...(hier ? { sheets: sheetUses(project).map((u) => ({ path: u.human, ...(u.symbol ? { box: { x: u.symbol.x, y: u.symbol.y, w: u.symbol.w, h: u.symbol.h }, ...(u.symbol.pins.length ? { pins: u.symbol.pins.map((p) => `${p.name} (${p.shape})`) } : {}) } : {}) })), ...(only ? { showing_sheet: only.human } : {}) } : {}),
       board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y, ...outlineReport(project.board), ...layersReport(project) },
-      design_rules_mm: ruleSummary(project.rules),
+      design_rules_mm: ruleSummary(project.rules, project),
       components,
       power_symbols: powerSymbols,
       nets,
@@ -636,6 +636,9 @@ const searchPartsTool: ToolSpec = {
   },
 }
 
+/** What to do about a footprint whose pads aren't numbered like a part's pins. */
+const MISFIT_ADVICE = "Pick one whose pads are numbered like the part's pins, or make the part again on that land with create_part (footprint or land, pad_alias for pads that share a pin) and replaces, which maps each pin to its pad."
+
 /** What to do about a footprint string whose options the footprinter ignores, where the part is already made. */
 const OWN_LAND_ADVICE = "Use only the options it takes; for a land no footprint string draws, make the part with create_part and land, pad by pad."
 
@@ -704,6 +707,8 @@ const addComponentTool: ToolSpec = {
     }
     const ignored = footprint && !part.footprints.includes(footprint) && footprintOptionProblem(footprint)
     if (ignored) return fail(project, `${ignored} ${OWN_LAND_ADVICE}`)
+    const misfit = footprint && footprintPinProblem(part, footprint)
+    if (misfit) return fail(project, `${misfit} ${MISFIT_ADVICE}`)
     const units = unitCount(part)
     const unit = typeof input.unit === "number" ? input.unit : 1
     if (unit < 1 || unit > units) return fail(project, `${part.name} has ${units} unit${units === 1 ? "" : "s"}, so there is no unit ${unit}`)
@@ -886,6 +891,8 @@ const updateComponentTool: ToolSpec = {
       }
       const ignored = !part?.footprints.includes(fp) && footprintOptionProblem(fp)
       if (ignored) return fail(project, `${ignored} ${OWN_LAND_ADVICE}`)
+      const misfit = part && footprintPinProblem(part, fp)
+      if (misfit) return fail(project, `Nothing was changed. ${misfit} ${MISFIT_ADVICE}`)
       patch.footprint = fp
       changes.push(`footprint ${fp}`)
     }
@@ -1654,7 +1661,7 @@ const setBoardTool: ToolSpec = {
 }
 
 /** The rules a model reads back, in millimetres with the tool's own names. */
-function ruleSummary(r: DesignRules) {
+function ruleSummary(r: DesignRules, project?: Project) {
   return {
     fab_capability: matchCapability(r)?.id ?? "custom",
     trace_width: r.traceWidth,
@@ -1675,6 +1682,7 @@ function ruleSummary(r: DesignRules) {
     ...(r.thermalGap !== undefined ? { thermal_gap: r.thermalGap } : {}),
     net_widths: r.netWidths,
     ...netClassSummary(r),
+    ...(project && r.clearanceRules?.length ? { clearance_rules: clearanceRuleRows(project) } : {}),
   }
 }
 
@@ -1826,12 +1834,12 @@ export function unroutedAdvice(res: AutorouteResult): string {
       // The retry did not run: the pads leave no room for even a minimum-width trace at these rules, or time ran out.
       parts.push(
         `${where} The fine-pitch retry (escape stubs and thinner traces) did not run to the end: at this clearance and minimum trace width a trace cannot leave those pads, or the time ran out. This is not a shortage of room, so spreading the parts out or enlarging the board will not fix it.` +
-          " To go on: set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, or use place_parts to turn the part so its pads face open board.",
+          " To go on: set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, set_clearance_rule with ref for that part alone when its own land puts its pads closer than the board's clearance, or use place_parts to turn the part so its pads face open board.",
       )
     } else {
       parts.push(
         `${where} The router already tried short escape stubs from those pads and traces thinner than the default, down to ${res.finePitchTried} mm, the board's minimum trace width (supply nets and nets with a width set keep theirs away from the pads), escaping in alternate directions, and one rip-up of the copper beside them. This is not a shortage of room, so spreading the parts out or enlarging the board will not fix it.` +
-          " To go on: use place_parts to move or turn the fine-pitch part so its pads face open board, set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, or, if neither fits, tell the user to route those connections by hand.",
+          " To go on: use place_parts to move or turn the fine-pitch part so its pads face open board, set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, set_clearance_rule with ref for that part alone when its own land puts its pads closer than the board's clearance, or, if none fits, tell the user to route those connections by hand.",
       )
     }
   }
@@ -2429,6 +2437,7 @@ export function toolPhase(name: string): string {
     case "clear_routing":
     case "set_net_width":
     case "set_net_class":
+    case "set_clearance_rule":
     case "draw_trace":
       return "Routing"
     default:

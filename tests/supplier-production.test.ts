@@ -98,6 +98,17 @@ describe("the 13 production parts, against the supplier", () => {
     expect(out.result).toContain("from LCSC C919459")
   })
 
+  it("says how much board a part takes when it is read, so it needn't be placed to find out", async () => {
+    const project = createProject("p")
+    const read = (lcsc: string) => executeTool(project, () => project, "get_part_data", { lcsc }, { parts: recordedSource() })
+    const tps = await read("C919459")
+    expect(tps.result).toContain("Size: courtyard 2.6 x 2.28 mm (the copper and silkscreen and 0.25 mm, its middle at (0, -0.1) from the land's origin)")
+    expect(tps.result).toContain("Body 1.6 x 1.2 mm, 0.6 mm high, by its 3D model's name")
+    // With no model, the supplier's package name gives the outline; a chip part on the footprinter's land has that land's courtyard.
+    expect((await read("C453460")).result).toContain("Body 2.5 x 2.5 mm, by its package's name.")
+    expect((await read("C80165")).result).toContain("(the 0603 footprint's)")
+  })
+
   it("keeps the TP4056's exposed pad, which production dropped", async () => {
     const tp = PRODUCTION_PARTS.find((p) => p.name === "TP4056")!
     const out = await create(createProject("charger"), { name: "TP4056", category: "Power", pins: tp.pins })

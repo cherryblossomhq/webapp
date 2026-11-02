@@ -95,6 +95,7 @@ export function fabricationNotes(project: Project, files: string[], items: Coppe
     ...ruleNotes(project),
     "",
     ...netClassNotes(project),
+    ...clearanceRuleNotes(project),
     "STACKUP",
     ...boardStackup(b).map((l) => `  ${l.name.padEnd(20)}${l.material.padEnd(16)}${l.thickness === null ? "" : mm(l.thickness)}`),
     "",
@@ -152,6 +153,15 @@ function netClassNotes(project: Project): string[] {
     `  Tightest space    ${mm(Math.min(...all.map((v) => v.clearance)))}: two nets are checked at the larger of their classes' spaces`,
     "",
   ]
+}
+
+/** The clearance rules of a board that has any: a pair of nets or a part's pads, each with the space it is held to in place of the classes'. */
+function clearanceRuleNotes(project: Project): string[] {
+  const list = project.rules.clearanceRules ?? []
+  if (!list.length) return []
+  const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  const rows = list.map((r) => `  ${(r.nets ? `${r.nets[0]} to ${r.nets[1]}` : `${refOf.get(r.component!) ?? "?"} pads`).slice(0, 18).padEnd(18)}${mm(r.clearance)} space${r.nets ? "" : " to every other net"}`)
+  return ["CLEARANCE RULES", ...rows, `  Tightest space    ${mm(Math.min(...list.map((r) => r.clearance)))}: these replace the classes' spaces where they apply`, ""]
 }
 
 /** Where the drawings on the board and in its parts went, and which were not plotted: only for a board that has any. */

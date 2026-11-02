@@ -1,4 +1,4 @@
-import type { DefaultNetClass, DesignRules, NetClass } from "./types"
+import type { ClearanceRule, DefaultNetClass, DesignRules, NetClass } from "./types"
 
 // Net classes (X10): which class a net is in, what the class sets, and the clearance two nets are
 // checked at. The rules are KiCad's:
@@ -22,8 +22,14 @@ import type { DefaultNetClass, DesignRules, NetClass } from "./types"
 //  - A class's width and via size are what new copper on its nets starts with, never a constraint: KiCad
 //    checks no trace against its class's width, only against the board's minimum.
 //
-// A board with no classes behaves exactly as before: every function here returns the rules' own
-// numbers when `netClasses` is absent or empty.
+//  - A clearance rule (`DesignRules.clearanceRules`, KiCad's custom rules for it) replaces the classes' clearance for the copper it
+//    names: one pair of nets, or one part's pads against copper of any other net. It may be smaller than the classes give (a relay
+//    whose contacts sit closer than a Mains class allows) or larger. Where several apply, the largest does; the board minimum still
+//    holds. KiCad: a custom rule wins over the implicit rules its classes make, and the result is raised to the board minimum as
+//    above.
+//
+// A board with no classes and no clearance rules behaves exactly as before: every function here returns the rules' own
+// numbers when `netClasses` and `clearanceRules` are absent or empty.
 
 /** KiCad's name for the class every net is in unless it is put in another. */
 export const DEFAULT_CLASS_NAME = "Default"
@@ -152,8 +158,17 @@ export interface ClassIndex {
   values(net: string | null | undefined): ClassValues
   /** The clearance a net's class asks for. */
   clearanceOf(net: string | null | undefined): number
-  /** The clearance two nets are checked at: the larger of their classes', never below the board minimum. */
-  pair(a: string | null | undefined, b: string | null | undefined): number
+  /**
+   * The clearance two pieces of copper are checked at, by their nets and, for a pad, the part it is on: a clearance rule's when one
+   * applies, else the larger of their classes'; never below the board minimum.
+   */
+  pair(a: string | null | undefined, b: string | null | undefined, partA?: string | null, partB?: string | null): number
+  /** The clearance the rules set for that copper (the largest of those that apply), or undefined when none does; not held to the board minimum. */
+  ruled(a: string | null | undefined, b: string | null | undefined, partA?: string | null, partB?: string | null): number | undefined
+  /** Whether there are clearance rules at all. */
+  ruledAny: boolean
+  /** The nets a rule for a pair names. */
+  ruledNets: ReadonlySet<string>
   /** The largest clearance anything is checked at, for how far to look for neighbours. */
   worst: number
   /** The Default class's values. */
@@ -172,13 +187,58 @@ export function classIndex(rules: DesignRules): ClassIndex {
   return index
 }
 
+const pairKey = (a: string, b: string) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`)
+
+/** The clearance rules as lookups: by the pair of nets, and by the part. */
+function ruleLookup(list: readonly ClearanceRule[]) {
+  const byPair = new Map<string, number>()
+  const byPart = new Map<string, number>()
+  const nets = new Set<string>()
+  for (const r of list) {
+    if (r.nets) {
+      const key = pairKey(r.nets[0], r.nets[1])
+      byPair.set(key, Math.max(byPair.get(key) ?? 0, r.clearance))
+      nets.add(r.nets[0]).add(r.nets[1])
+    } else if (r.component) byPart.set(r.component, Math.max(byPart.get(r.component) ?? 0, r.clearance))
+  }
+  const ruled = (a: string | null | undefined, b: string | null | undefined, partA?: string | null, partB?: string | null): number | undefined => {
+    let v: number | undefined
+    const take = (x: number | undefined) => {
+      if (x !== undefined) v = v === undefined ? x : Math.max(v, x)
+    }
+    if (a && b && byPair.size) take(byPair.get(pairKey(a, b)))
+    if (byPart.size) {
+      if (partA) take(byPart.get(partA))
+      if (partB && partB !== partA) take(byPart.get(partB))
+    }
+    return v
+  }
+  return { ruled, nets, largest: Math.max(0, ...byPair.values(), ...byPart.values()), any: byPair.size + byPart.size > 0 }
+}
+
 function buildIndex(rules: DesignRules): ClassIndex {
   const base = defaultValues(rules)
   const floor = rules.minClearance !== undefined && rules.minClearance > 0 ? rules.minClearance : 0
   const classes = rules.netClasses ?? []
+  const lookup = ruleLookup(rules.clearanceRules ?? [])
+  const withRules = (index: Omit<ClassIndex, "ruled" | "ruledAny" | "ruledNets">): ClassIndex => {
+    if (!lookup.any) return { ...index, ruled: () => undefined, ruledAny: false, ruledNets: lookup.nets }
+    const classPair = index.pair
+    return {
+      ...index,
+      pair: (a, b, partA, partB) => {
+        const x = lookup.ruled(a, b, partA, partB)
+        return x === undefined ? classPair(a, b) : Math.max(x, floor)
+      },
+      ruled: lookup.ruled,
+      ruledAny: true,
+      ruledNets: lookup.nets,
+      worst: Math.max(index.worst, lookup.largest),
+    }
+  }
   if (!classes.length) {
     const clearance = Math.max(rules.clearance, floor)
-    return { classOf: () => null, values: () => base, clearanceOf: () => rules.clearance, pair: () => clearance, worst: clearance, base }
+    return withRules({ classOf: () => null, values: () => base, clearanceOf: () => rules.clearance, pair: () => clearance, worst: clearance, base })
   }
   const byNet = new Map<string, NetClass>()
   for (const c of classes) for (const n of c.nets) if (!byNet.has(n)) byNet.set(n, c)
@@ -204,7 +264,7 @@ function buildIndex(rules: DesignRules): ClassIndex {
     return c ? (values.get(c) as ClassValues).clearance : base.clearance
   }
   const worst = Math.max(base.clearance, floor, ...[...values.values()].map((v) => v.clearance))
-  return {
+  return withRules({
     classOf,
     values: (net) => {
       const c = classOf(net)
@@ -214,8 +274,10 @@ function buildIndex(rules: DesignRules): ClassIndex {
     pair: (a, b) => Math.max(clearanceOf(a), clearanceOf(b), floor),
     worst,
     base,
-  }
+  })
 }
+
+export const hasClearanceRules = (rules: DesignRules): boolean => !!rules.clearanceRules?.length
 
 /** A class's values by its name (Default's for a name no class has). */
 export function classValuesOfClass(rules: DesignRules, name: string): ClassValues {
@@ -225,7 +287,8 @@ export function classValuesOfClass(rules: DesignRules, name: string): ClassValue
 }
 
 /** The clearance two nets are checked at (`ClassIndex.pair`, for one call). */
-export const pairClearance = (rules: DesignRules, a: string | null | undefined, b: string | null | undefined): number => classIndex(rules).pair(a, b)
+export const pairClearance = (rules: DesignRules, a: string | null | undefined, b: string | null | undefined, partA?: string | null, partB?: string | null): number =>
+  classIndex(rules).pair(a, b, partA, partB)
 
 /** The sizes a net's new copper starts with. */
 export const classValues = (rules: DesignRules, net: string | null | undefined): ClassValues => classIndex(rules).values(net)
@@ -236,9 +299,12 @@ export const classValues = (rules: DesignRules, net: string | null | undefined):
  * over classes, and with none the larger of the two classes' applies), and the Default class's, which
  * is the rules' own, does not: the pour has `pourClearance` for that.
  */
-export function classPourClearance(rules: DesignRules, zoneNet: string | null | undefined, otherNet: string | null | undefined): number {
-  if (!hasNetClasses(rules)) return 0
+export function classPourClearance(rules: DesignRules, zoneNet: string | null | undefined, otherNet: string | null | undefined, otherPart?: string | null): number {
+  if (!hasNetClasses(rules) && !hasClearanceRules(rules)) return 0
   const index = classIndex(rules)
+  // A clearance rule replaces the classes' here too, held to the board minimum (the zone's own clearance is max'ed with it by the caller).
+  const ruled = index.ruled(zoneNet, otherNet, null, otherPart)
+  if (ruled !== undefined) return Math.max(ruled, rules.minClearance ?? 0)
   const own = (net: string | null | undefined) => {
     const c = index.classOf(net)
     return c && c.clearance !== undefined ? c.clearance : 0
@@ -387,17 +453,76 @@ export function classNameOf(rules: DesignRules, net: string | null | undefined):
   return classIndex(rules).classOf(net)?.name ?? defaultClassName(rules)
 }
 
-/** Follow nets that were renamed: a class lists the new name where it listed the old one. Absent rules or no class: the very same object. */
+/** Follow nets that were renamed: a class, and a clearance rule for a pair, lists the new name where it listed the old one. Nothing renamed: the very same object. */
 export function renameClassNets(rules: DesignRules, renamed: Record<string, string>): DesignRules {
+  const moved = (n: string) => renamed[n] !== undefined && renamed[n] !== n
+  let next = rules
   const classes = rules.netClasses
-  if (!classes?.length) return rules
-  let changed = false
-  const next = classes.map((c) => {
-    if (!c.nets.some((n) => renamed[n] !== undefined && renamed[n] !== n)) return c
-    changed = true
-    return { ...c, nets: [...new Set(c.nets.map((n) => renamed[n] ?? n))] }
-  })
-  return changed ? { ...rules, netClasses: next } : rules
+  if (classes?.some((c) => c.nets.some(moved))) {
+    next = { ...next, netClasses: classes.map((c) => (c.nets.some(moved) ? { ...c, nets: [...new Set(c.nets.map((n) => renamed[n] ?? n))] } : c)) }
+  }
+  const list = rules.clearanceRules
+  if (list?.some((r) => r.nets?.some(moved))) {
+    // Two rules that now name the same pair are one, at the larger clearance; one whose nets became one net is gone.
+    let out: ClearanceRule[] = []
+    for (const r of list) {
+      if (!r.nets) out.push(r)
+      else {
+        const [a, b] = r.nets.map((n) => renamed[n] ?? n)
+        if (a !== b) out = withClearanceRule(out, { nets: [a, b], clearance: Math.max(r.clearance, findClearanceRule(out, { nets: [a, b] })?.clearance ?? 0) })
+      }
+    }
+    next = withRuleList(next, out)
+  }
+  return next
+}
+
+// ---------- Clearance rules ----------
+
+/** Whether a rule is the one for these nets (either way round) or this part. */
+const sameTarget = (r: ClearanceRule, target: Pick<ClearanceRule, "nets" | "component">) =>
+  target.nets ? !!r.nets && pairKey(r.nets[0], r.nets[1]) === pairKey(target.nets[0], target.nets[1]) : !!target.component && r.component === target.component
+
+export const findClearanceRule = (list: readonly ClearanceRule[] | undefined, target: Pick<ClearanceRule, "nets" | "component">): ClearanceRule | undefined =>
+  list?.find((r) => sameTarget(r, target))
+
+const withClearanceRule = (list: ClearanceRule[], rule: ClearanceRule): ClearanceRule[] => {
+  const at = list.findIndex((r) => sameTarget(r, rule))
+  return at < 0 ? [...list, rule] : list.map((r, i) => (i === at ? rule : r))
+}
+
+const withRuleList = (rules: DesignRules, list: ClearanceRule[]): DesignRules => {
+  if (list.length) return { ...rules, clearanceRules: list }
+  const { clearanceRules: _gone, ...rest } = rules
+  return rest
+}
+
+/** Set the clearance rule for a pair of nets or a part, replacing the one it had. A clearance that is not a finite number of 0 or more changes nothing. */
+export function setClearanceRule(rules: DesignRules, rule: ClearanceRule): DesignRules {
+  if (!(clean(rule.clearance) && rule.clearance >= 0) || (!rule.nets === !rule.component) || (rule.nets && rule.nets[0] === rule.nets[1])) return rules
+  const own: ClearanceRule = rule.nets ? { nets: [rule.nets[0], rule.nets[1]], clearance: rule.clearance } : { component: rule.component, clearance: rule.clearance }
+  return withRuleList(rules, withClearanceRule(rules.clearanceRules ?? [], own))
+}
+
+/** Remove the clearance rule for a pair of nets or a part; none: the very same object. */
+export function removeClearanceRule(rules: DesignRules, target: Pick<ClearanceRule, "nets" | "component">): DesignRules {
+  if (!findClearanceRule(rules.clearanceRules, target)) return rules
+  return withRuleList(rules, rules.clearanceRules!.filter((r) => !sameTarget(r, target)))
+}
+
+/** Clearance rules from a stored project, each valid: one pair of two different non-empty net names or one component id, and a finite clearance of 0 or more; a repeat keeps the first. */
+export function normalizeClearanceRules(raw: unknown): ClearanceRule[] {
+  if (!Array.isArray(raw)) return []
+  let out: ClearanceRule[] = []
+  for (const r of raw as Partial<ClearanceRule>[]) {
+    if (!r || typeof r !== "object" || !(clean(r.clearance) && r.clearance >= 0)) continue
+    const nets = Array.isArray(r.nets) && r.nets.length === 2 && r.nets.every((n) => typeof n === "string" && n.trim()) && r.nets[0] !== r.nets[1] ? ([r.nets[0], r.nets[1]] as [string, string]) : null
+    const component = typeof r.component === "string" && r.component ? r.component : null
+    if (!nets === !component) continue
+    const rule: ClearanceRule = nets ? { nets, clearance: r.clearance } : { component: component!, clearance: r.clearance }
+    if (!findClearanceRule(out, rule)) out = withClearanceRule(out, rule)
+  }
+  return out
 }
 
 // ---------- Reading a file ----------

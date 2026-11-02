@@ -83,6 +83,27 @@ describe("footprint strings with options the footprinter ignores", () => {
     p = runTool(p, "update_component", { ref: "R1", footprint: "0603" }).project
     expect(p.components[0].footprint).toBe("0603")
   })
+
+  it("refuses a footprint whose pads aren't numbered like the part's pins, on add_component and update_component", () => {
+    let p = runTool(createProject("p"), "add_component", { part_id: "resistor", footprint: "0805" }).project
+    // Another part's land: an 8-pad SOIC on a two-pin resistor.
+    const updated = runTool(p, "update_component", { ref: "R1", footprint: "soic8" })
+    expect(updated.isError).toBe(true)
+    expect(updated.result).toContain("soic8 doesn't fit")
+    expect(updated.result).toContain("pad(s) 3, 4, 5, 6, 7, 8 have no pin")
+    expect(updated.project).toBe(p)
+    // A land with too few pads leaves a pin with none.
+    const made = runTool(p, "create_part", phoenix({ land: PHOENIX_LAND }))
+    const land = made.project.parts![0].footprint
+    p = runTool(made.project, "add_component", { part_id: "header_1x4", ref: "J5" }).project
+    const short = runTool(p, "update_component", { ref: "J5", footprint: land })
+    expect(short.isError).toBe(true)
+    expect(short.result).toContain("pin(s) 4 have no pad on it")
+    expect(runTool(p, "add_component", { part_id: "header_1x4", footprint: land }).result).toContain("pin(s) 4 have no pad on it")
+    // One that fits by number is taken.
+    const fits = runTool(p, "add_component", { part_id: "header_1x3", ref: "J6" })
+    expect(runTool(fits.project, "update_component", { ref: "J6", footprint: land }).isError).toBe(false)
+  })
 })
 
 describe("create_part with a land drawn pad by pad", () => {

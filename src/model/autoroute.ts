@@ -10,7 +10,7 @@ import { areaDistance, needsZoneEngine, zoneArea, zoneLayers } from "./zones"
 import { withPartZones } from "./partZones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
 import { fillTester, type ZoneFill } from "./pour"
-import { classIndex, hasNetClasses, type ClassIndex } from "./netClasses"
+import { classIndex, hasClearanceRules, hasNetClasses, type ClassIndex } from "./netClasses"
 import { copperLayers } from "./stack"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
 
@@ -201,12 +201,16 @@ interface NetRule {
   clearance: number
   viaDiameter: number
   viaDrill: number
+  /** The net, by name, when a clearance rule names it with another: its keepouts are its own then, not its class's. */
+  own?: string
 }
 
 /** A trace width with the clearance of the class whose net it is for: the keepout cells around other copper depend on both. */
 interface Profile {
   width: number
   clearance: number
+  /** As `NetRule.own`. */
+  own?: string
 }
 
 /** A via size with the clearance of its class, for the cells where one of that size may be centred. */
@@ -234,7 +238,8 @@ class RouteRules {
     project: Project,
     private netNames: Map<string, string>,
   ) {
-    this.classed = hasNetClasses(project.rules)
+    // Clearance rules go through the same per-net lookups as classes: a board with neither is routed as it always was.
+    this.classed = hasNetClasses(project.rules) || hasClearanceRules(project.rules)
     this.index = classIndex(project.rules)
     const { clearance, viaDiameter, viaDrill, minClearance } = project.rules
     this.floor = minClearance !== undefined && minClearance > 0 ? minClearance : 0
@@ -246,8 +251,9 @@ class RouteRules {
     const key = netId ?? null
     let r = this.cache.get(key)
     if (!r) {
-      const v = this.index.values(key ? (this.netNames.get(key) ?? null) : null)
-      r = { clearance: v.clearance, viaDiameter: v.viaDiameter, viaDrill: v.viaDrill }
+      const name = key ? (this.netNames.get(key) ?? null) : null
+      const v = this.index.values(name)
+      r = { clearance: v.clearance, viaDiameter: v.viaDiameter, viaDrill: v.viaDrill, ...(name && this.index.ruledNets.has(name) && { own: name }) }
       this.cache.set(key, r)
     }
     return r
@@ -256,6 +262,19 @@ class RouteRules {
   /** The clearance between copper of a net whose class asks for `own` and copper of `other`. */
   pairWith(own: number, other: string | null | undefined): number {
     return this.classed || this.floor ? Math.max(own, this.of(other).clearance, this.floor) : own
+  }
+
+  /**
+   * The clearance a trace or via of the net `rule` is for keeps from copper of `other`: a clearance rule's for that net and `other`,
+   * or for the part a pad `shape` is on, when one applies (held to the board minimum), else `pairWith`.
+   */
+  gap(rule: { clearance: number; own?: string }, other: string | null | undefined, shape?: Shape): number {
+    if (this.index.ruledAny) {
+      const part = shape?.kind === "pad" ? shape.pad.componentId : null
+      const x = this.index.ruled(rule.own ?? null, other ? (this.netNames.get(other) ?? null) : null, null, part)
+      if (x !== undefined) return Math.max(x, this.floor)
+    }
+    return this.pairWith(rule.clearance, other)
   }
 }
 
@@ -330,7 +349,7 @@ class Router {
     this.ny = Math.ceil(b.height / this.g) + 1
     const n = this.nx * this.ny
     for (const pr of profiles) {
-      const key = this.profileKey(pr.width, pr.clearance)
+      const key = this.profileKey(pr.width, pr)
       if (!this.owners.has(key)) this.owners.set(key, { profile: pr, arr: [new Int32Array(n).fill(FREE), new Int32Array(n).fill(FREE)] })
     }
     for (const net of viaNets) {
@@ -401,12 +420,12 @@ class Router {
     }
   }
 
-  private profileKey = (width: number, clearance: number) => `${width}|${clearance}`
-  private viaKey = (v: NetRule) => `${v.viaDiameter}|${v.viaDrill}|${v.clearance}`
+  private profileKey = (width: number, rule: { clearance: number; own?: string }) => `${width}|${rule.clearance}${rule.own !== undefined ? `|${rule.own}` : ""}`
+  private viaKey = (v: NetRule) => `${v.viaDiameter}|${v.viaDrill}|${v.clearance}${v.own !== undefined ? `|${v.own}` : ""}`
 
-  /** The keepout cells for a trace of `width` on `net`, which depend on its class's clearance. */
+  /** The keepout cells for a trace of `width` on `net`, which depend on its class's clearance (and on the net, when a clearance rule names it). */
   private ownersFor(width: number, net: string | null) {
-    return this.owners.get(this.profileKey(width, this.rr.of(net).clearance))
+    return this.owners.get(this.profileKey(width, this.rr.of(net)))
   }
 
   /** The via keepouts for a via of `net`'s class. */
@@ -524,13 +543,14 @@ class Router {
     const box = shapeBox(s)
     // Keepouts are the larger of the routing net's class clearance and this copper's (its net's class; no net is Default).
     // A pad with a clearance of its own (X7, KiCad's local clearance) keeps that when it is the larger, as KiCad max's it with the classes' (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063).
+    // A clearance rule for the routing net and this copper's, or for the part a pad is on, replaces the classes' (`RouteRules.gap`).
     const own = s.kind === "pad" && s.pad.clearance ? s.pad.clearance : 0
     for (const layer of s.layers) {
       const at = outerIndex(layer)
       // Copper on an inner layer keeps vias away (a via has copper there too) and keeps no track, which never goes there.
-      if (at >= 0) for (const { profile, arr } of this.owners.values()) this.markArea(arr[at], box, Math.max(own, this.rr.pairWith(profile.clearance, netName)) + profile.width / 2 + this.margin, s, net)
+      if (at >= 0) for (const { profile, arr } of this.owners.values()) this.markArea(arr[at], box, Math.max(own, this.rr.gap(profile, netName, s)) + profile.width / 2 + this.margin, s, net)
       for (const vp of this.viaProfiles.values()) {
-        const reach = Math.max(own, this.rr.pairWith(vp.clearance, netName)) + vp.viaDiameter / 2 + this.margin
+        const reach = Math.max(own, this.rr.gap(vp, netName, s)) + vp.viaDiameter / 2 + this.margin
         for (const li of at >= 0 ? [at] : [0, 1]) this.markArea(vp.owner[li], box, reach, s, s.kind === "pad" ? BLOCKED : net)
       }
     }
@@ -948,8 +968,8 @@ function escapeStub(
   ladder: number[],
   narrow: boolean,
   inward: boolean,
-  /** The clearance to copper of another net: the larger of the stub's class and that net's. */
-  clearanceTo: (other: string | null) => number,
+  /** The clearance to copper of another net: the larger of the stub's class and that net's, or a clearance rule's. */
+  clearanceTo: (other: string | null, shape: Shape) => number,
 ): Omit<Trace, "id"> | null {
   const p = pad.pad
   const layer = pad.layers[0]
@@ -968,7 +988,7 @@ function escapeStub(
     const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.02))
     for (const o of obstacles) {
       if (o.net === netId || !o.shape.layers.includes(layer)) continue
-      const clearance = clearanceTo(o.net)
+      const clearance = clearanceTo(o.net, o.shape)
       const reach = clearance + w / 2
       const bx = shapeBox(o.shape)
       if (bx.maxX < Math.min(a.x, b.x) - reach || bx.minX > Math.max(a.x, b.x) + reach || bx.maxY < Math.min(a.y, b.y) - reach || bx.minY > Math.max(a.y, b.y) + reach) continue
@@ -1137,7 +1157,7 @@ function fineReport(project: Project, sch: SchematicConnectivity): { report: Fin
         const dx = Math.max(Math.abs(o.pad.x - it.pad.x) - (o.pad.width + it.pad.width) / 2, 0)
         const dy = Math.max(Math.abs(o.pad.y - it.pad.y) - (o.pad.height + it.pad.height) / 2, 0)
         gap = Math.min(gap, Math.hypot(dx, dy))
-        if (rr.classed) slack = Math.min(slack, Math.hypot(dx, dy) - rr.pairWith(rr.of(it.netId).clearance, o.netId))
+        if (rr.classed) slack = Math.min(slack, Math.hypot(dx, dy) - rr.gap(rr.of(it.netId), o.netId, { kind: "pad", pad: o.pad, layers: o.layers }))
       }
       const room = (Math.min(it.pad.width, it.pad.height) - minTraceWidth) / 2
       if (rr.classed ? slack + room >= -1e-6 : gap + room >= clearance - 1e-6) feasible = true
@@ -1318,7 +1338,10 @@ function attempt(
     if (!rr.classed) return { profiles: ws.map((width) => ({ width, clearance: rr.of(null).clearance })), viaNets: [null] }
     const list = [...nets]
     const profiles = new Map<string, Profile>()
-    for (const n of list) for (const width of widthsFor(n)) profiles.set(`${width}|${rr.of(n).clearance}`, { width, clearance: rr.of(n).clearance })
+    for (const n of list) {
+      const rule = rr.of(n)
+      for (const width of widthsFor(n)) profiles.set(`${width}|${rule.clearance}|${rule.own ?? ""}`, { width, clearance: rule.clearance, ...(rule.own !== undefined && { own: rule.own }) })
+    }
     // pads and drawings with no net keep the Default class's clearance from every trace, whatever its own
     return { profiles: [...profiles.values()], viaNets: list }
   }
@@ -1488,7 +1511,7 @@ function attempt(
       if (!wantsStub(it)) continue
       const net = it.netId!
       const mates = pads.filter((o) => o.pad.componentId === it.pad.componentId && o.layers[0] === it.layers[0])
-      const stub = escapeStub(router, obstacles, it, mates, net, Math.min(widthsFor(net)[0] ?? signalW, signalW), ladder, mode.narrow, mode.stagger && turn.get(it.id)! % 2 === 1, (other) => rr.pairWith(rr.of(net).clearance, other))
+      const stub = escapeStub(router, obstacles, it, mates, net, Math.min(widthsFor(net)[0] ?? signalW, signalW), ladder, mode.narrow, mode.stagger && turn.get(it.id)! % 2 === 1, (other, shape) => rr.gap(rr.of(net), other, shape))
       if (!stub) continue
       stubs.push(stub)
       fineNets.add(net)

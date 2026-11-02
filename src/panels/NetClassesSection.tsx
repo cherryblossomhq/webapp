@@ -1,4 +1,8 @@
 import { Plus, Trash2, X } from "lucide-react"
+import { useState } from "react"
+import { isPhysical } from "../model/instances"
+import { findPart } from "../model/library"
+import { onBoard } from "../model/partFlags"
 import {
   addNetClass,
   assignNet,
@@ -6,17 +10,19 @@ import {
   classNameOf,
   classNameProblem,
   defaultClassName,
+  removeClearanceRule,
   removeNetClass,
   renameNetClass,
   setClassDescription,
   setClassField,
   setClassPatterns,
+  setClearanceRule,
   setDefaultClassField,
   splitPatterns,
   type ClassField,
 } from "../model/netClasses"
 import { formatLength } from "../model/rules"
-import type { DesignRules, NetClass, Project } from "../model/types"
+import type { ClearanceRule, DesignRules, NetClass, Project } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { projectApi } from "../store/projectStore"
 import { Button, Field, IconButton } from "../ui/controls"
@@ -57,6 +63,92 @@ export function NetClassesSection({ project }: { project: Project }) {
         <ClassCard key={c.name} cls={c} rules={rules} nets={names} />
       ))}
       {(classes.length > 0 || rules.defaultClass) && <DefaultClassCard rules={rules} />}
+    </Section>
+  )
+}
+
+/**
+ * Clearance rules: a clearance of its own for one pair of nets, or for one part's pads against every other net, that replaces the
+ * classes'. Sakura and an assistant over MCP set them with `set_clearance_rule`; here they are seen, changed and removed, and made.
+ */
+export function ClearanceRulesSection({ project }: { project: Project }) {
+  const rules = project.rules
+  const list = rules.clearanceRules ?? []
+  const names = netNames(project)
+  const parts = project.components.filter((c) => onBoard(c) && isPhysical(findPart(c.partId))).map((c) => ({ id: c.id, ref: c.ref }))
+  const [a, setA] = useState("")
+  const [b, setB] = useState("")
+  const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
+  const label = (r: ClearanceRule) => (r.nets ? `${r.nets[0]} and ${r.nets[1]}` : `${refOf.get(r.component!) ?? "a removed part"}'s pads`)
+  const target = (r: ClearanceRule): Pick<ClearanceRule, "nets" | "component"> => (r.nets ? { nets: r.nets } : { component: r.component })
+  const start = rules.clearance
+  return (
+    <Section title="Clearance rules" id="clearance-rules">
+      <p className="text-[11.5px] text-ink-3">
+        A clearance for two nets, or for one part&apos;s pads against every other net, in place of the classes&apos;, smaller or larger. Where several apply, the largest does; never below the board&apos;s minimum.
+      </p>
+      {list.map((r) => (
+        <RuleRow key={label(r)} label={label(r)} hint={r.nets ? "Copper of one net to copper of the other" : "This part's pads to copper of any other net"}>
+          <div className="flex items-center gap-1">
+            <LengthInput ariaLabel={`Clearance of ${label(r)}`} min={0} value={r.clearance} onCommit={(v) => v !== null && commitRules((x) => setClearanceRule(x, { ...target(r), clearance: v }))} />
+            <IconButton label={`Remove the clearance rule for ${label(r)}`} onClick={() => commitRules((x) => removeClearanceRule(x, target(r)))}>
+              <Trash2 size={14} />
+            </IconButton>
+          </div>
+        </RuleRow>
+      ))}
+      <div className="mt-1 flex items-center gap-1">
+        <select className="field h-8 min-w-0 flex-1" aria-label="First net of a new clearance rule" value={a} onChange={(e) => setA(e.target.value)}>
+          <option value="">Net...</option>
+          {names.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <select className="field h-8 min-w-0 flex-1" aria-label="Second net of a new clearance rule" value={b} onChange={(e) => setB(e.target.value)}>
+          <option value="">and net...</option>
+          {names
+            .filter((n) => n !== a)
+            .map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+        </select>
+        <Button
+          className="px-2"
+          aria-label="Add a clearance rule for the two nets"
+          disabled={!a || !b || a === b}
+          onClick={() => {
+            commitRules((x) => setClearanceRule(x, { nets: [a, b], clearance: start }))
+            setA("")
+            setB("")
+          }}
+        >
+          <Plus size={14} />
+        </Button>
+      </div>
+      {parts.length > 0 && (
+        <select
+          className="field mt-1 h-8 w-full"
+          aria-label="Add a clearance rule for a part's pads"
+          value=""
+          onChange={(e) => {
+            const id = e.target.value
+            if (id) commitRules((x) => setClearanceRule(x, { component: id, clearance: start }))
+          }}
+        >
+          <option value="">Add one for a part&apos;s pads...</option>
+          {parts
+            .filter((c) => !list.some((r) => r.component === c.id))
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.ref}
+              </option>
+            ))}
+        </select>
+      )}
     </Section>
   )
 }

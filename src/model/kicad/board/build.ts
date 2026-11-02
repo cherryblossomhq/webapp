@@ -385,6 +385,12 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const textCx = (where: string): TextConversion => ({ board, lose, where })
   /** The id a node of the file has (`uuid`, or `tstamp` before KiCad 7). */
   const uuidOf = (c: List): string | null => strAt(kid(c, "uuid"), 1) ?? strAt(kid(c, "tstamp"), 1) ?? null
+  /** An item's id in the shape KiCad 9 writes and keys it by, lowercase: a `tstamp` of KiCad 5 (8 digits) is KiCad's legacy id, its digits at the end. */
+  const kicadId = (c: List): string | null => {
+    const hex = uuidOf(c)?.toLowerCase().replace(/-/g, "")
+    if (hex && /^[0-9a-f]{8}$/.test(hex)) return `00000000-0000-0000-0000-0000${hex}`
+    return hex && /^[0-9a-f]{32}$/.test(hex) ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` : null
+  }
   /** What each id of the file is in the project, for the groups to resolve their members by. */
   const boardRefs = new Map<string, string[]>()
   const addRef = (uuid: string | null, ...ids: string[]) => {
@@ -445,7 +451,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const partTextOrigins: number[] = []
     const drawnCourtyard = courtyardBox(drawn.shapes)
     // A footprint of text only (a logo's name) has no pad and no drawing: its box, for selecting it, is where its texts are.
-    const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x), y: round(frameTop(fp.at).y), rot, bottom, at: fp.at, angle: fp.angle })
+    // The part's place as the component keeps it (to the nanometre, below): its texts are kept in its frame, from this place.
+    const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x, 6), y: round(frameTop(fp.at).y, 6), rot, bottom, at: fp.at, angle: fp.angle })
     const textBox = !pads.length && !drawn.shapes.length ? landTextBox(convertPartTexts(fp.texts, fp.ref, placeOf(), { board, lose: () => {}, where: "" }, { ref: fp.ref })) : null
     const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? textBox ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
     const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(inside?.zones.length ? { zones: inside.zones } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
@@ -514,8 +521,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       sch: { x: 0, y: 0, rot: 0 },
       // To the nanometre the file gives, as KiCad keeps it: KiCad keys a check the user dismissed by where its marker is, which is often the footprint's place.
       pcb: { x: round(at.x, 6), y: round(at.y, 6), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
-      ...(uuidOf(fp.node) ? { fpUuid: uuidOf(fp.node)! } : {}),
-      ...(fp.pads.some((p) => uuidOf(p.node)) ? { padUuids: fp.pads.map((p) => uuidOf(p.node) ?? "") } : {}),
+      ...(kicadId(fp.node) ? { fpUuid: kicadId(fp.node)! } : {}),
+      ...(fp.pads.some((p) => kicadId(p.node)) ? { padUuids: fp.pads.map((p) => kicadId(p.node) ?? "") } : {}),
       ...(flags ? { flags } : {}),
       // The part's own text, as the file has it (none is a part with no designator); with it the editor places none.
       texts: convertPartTexts(fp.texts, ref, placeOf(), textCx(`${ref}`), { ref }, partTextOrigins),

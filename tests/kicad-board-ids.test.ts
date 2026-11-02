@@ -57,4 +57,28 @@ describe("a board from KiCad written whole", () => {
     const text = await pcbOf(twice)
     for (const id of [FP, PAD1, PAD2]) expect(text.split(`(uuid ${id})`).length - 1).toBe(1)
   })
+
+  it("keeps a KiCad 5 tstamp as KiCad's legacy id, the shape a KiCad 9 file writes it in, and a uuid a footprint's own pads repeat as the file had it", async () => {
+    const legacy = importKicadBoard(board({ version: 20171130, nets: ['(net 0 "")'], body: [footprint({ token: "module", ref: "R1", at: "5 5", extra: "(tstamp 5EF57B96)", pads: [pad({ number: "1", at: "0 0" })] })] }), { built: ALL })
+    if (legacy.status !== "imported") throw new Error(legacy.status)
+    expect(legacy.project.components[0].fpUuid).toBe("00000000-0000-0000-0000-00005ef57b96")
+    const twice = importKicadBoard(
+      board({ nets: ['(net 0 "")'], body: [footprint({ ref: "J1", at: "5 5", pads: [pad({ number: "1", at: "0 0", extra: `(uuid "${PAD1}")` }), pad({ number: "2", at: "2 0", extra: `(uuid "${PAD1}")` })] })] }),
+      { built: ALL },
+    )
+    if (twice.status !== "imported") throw new Error(twice.status)
+    expect((await pcbOf(twice.project)).split(`(uuid ${PAD1})`).length - 1).toBe(2)
+  })
+
+  it("brings a part's texts back where they were, again and again, wherever the part is to the nanometre", async () => {
+    let p = project()
+    const texts = p.components[0].texts
+    for (let n = 0; n < 3; n++) {
+      const again = importKicadBoard(await pcbOf(p), { built: ALL })
+      if (again.status !== "imported") throw new Error(again.status)
+      p = again.project
+    }
+    expect(p.components[0].texts).toEqual(texts)
+    expect(p.components[0].pcb).toMatchObject({ x: 12.806536, y: -5.000013 })
+  })
 })

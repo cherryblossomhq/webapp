@@ -22,7 +22,8 @@ if (process.env.NODE_ENV === "development") {
     import("./model/instances"),
     import("./ai/managedAi"),
     import("./ai/supplierParts"),
-  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts]) => {
+    import("./store/accountStore"),
+  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, accountStore]) => {
     Object.assign(window, {
       __cherryblossom: {
         projectApi: projectStore.projectApi,
@@ -33,8 +34,13 @@ if (process.env.NODE_ENV === "development") {
         getPcbAnalysis: analysis.getPcbAnalysis,
         schematicPins: instances.schematicPins,
         pcbPads: instances.pcbPads,
-        // Lets a browser test stand in for the host's session against a mocked /api/v1.
-        connectManagedAi: managedAi.connectManagedAi,
+        // Lets a browser test stand in for the host's session against a mocked /api/v1. This hook comes after the page has loaded, often after Sakura's
+        // panel asked for the account with no session and was told to sign in, so the account is asked again with the session, as a host's would be.
+        connectManagedAi: (host: Parameters<typeof managedAi.connectManagedAi>[0]) => {
+          managedAi.connectManagedAi(host)
+          const account = accountStore.useAccount.getState()
+          void account.load().then(() => (accountStore.useAccount.getState().status === "ready" ? null : account.load(true)))
+        },
         // And for its supplier part data.
         connectSupplierParts: supplierParts.connectSupplierParts,
       },

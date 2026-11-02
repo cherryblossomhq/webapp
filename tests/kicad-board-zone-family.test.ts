@@ -101,10 +101,12 @@ describe("X29 is built, and the gate says so", () => {
     }
   })
 
-  it("a layer that is none of KiCad's is refused as inexact, naming it", () => {
+  it("a zone on a layer that is none of KiCad's is on Cmts.User, as KiCad's rescue moves it, and the report names the layer", () => {
     const r = importKicadBoard(board({ nets, body: [part, zone('(layer "Foo.Bar")')] }))
-    expect(r.status).toBe("refused")
-    if (r.status === "refused") expect(r.message).toMatch(/Foo\.Bar/)
+    expect(r.status).toBe("imported")
+    if (r.status !== "imported") return
+    expect(r.project.zones[0].other).toEqual(["Cmts.User"])
+    expect(r.report.entries.find((e) => e.code === "layer-rescued")?.object).toMatch(/Foo\.Bar/)
   })
 
   it("a zone on a copper layer is what it was", () => {
@@ -135,6 +137,26 @@ describe("the fill of a zone that is not on copper", () => {
     const plain = twoResistors()
     expect(nonCopperFills(plain)).toBe(nonCopperFills(plain))
     expect(nonCopperFills(plain)).toHaveLength(0)
+  })
+
+  it("joins a zone only with the zones its box meets, so a layer of a thousand zones fills in seconds", () => {
+    // A board converted from EAGLE had 8,827 zones on its solder mask: each zone's fill went over every other zone's outline, and its Gerbers took 11 minutes.
+    const cells: string[] = []
+    for (let i = 0; i < 1000; i++) {
+      const x = 0.2 + (i % 40) * 0.48
+      const y = 0.2 + Math.floor(i / 40) * 0.38
+      cells.push(zone('(layer "F.Mask")', fill, `(polygon (pts (xy ${x} ${y}) (xy ${x + 0.3} ${y}) (xy ${x + 0.3} ${y + 0.3}) (xy ${x} ${y + 0.3})))`))
+    }
+    const p = proj(...cells)
+    const started = performance.now()
+    const fills = otherFillsOn(p, "F.Mask")
+    expect(performance.now() - started).toBeLessThan(15_000)
+    expect(fills).toHaveLength(1000)
+    // Each cell keeps its own 0.3 by 0.3 mm, its corners rounded by the 0.254 mm minimum width.
+    for (const f of [fills[0], fills[500], fills[999]]) {
+      expect(areaMm2OfZone(f.polygons)).toBeGreaterThan(0.07)
+      expect(areaMm2OfZone(f.polygons)).toBeLessThan(0.08)
+    }
   })
 
   it("is kept inside the board's outline", () => {
@@ -272,7 +294,7 @@ describe("the project file", () => {
     const r = imp([zone('(layers "B.SilkS" "B.Paste")'), zone('(layer "B.SilkS")', KEEPOUT(true), square)])
     const raw = JSON.parse(serializeProject(r.project)).project
     expect(raw.zones[0]).toMatchObject({ layers: [], other: ["B.SilkS", "B.Paste"], layer: "bottom" })
-    expect(raw.zones[0].ol[0][0]).toBe("p")
+    expect(raw.zones[0].outline[0][0]).toBe("p")
     const back = parseProjectFile(serializeProject(r.project), { id: "p1", createdAt: 1, updatedAt: 1 })
     expect(back.zones).toEqual(r.project.zones)
     // a second save and load changes nothing
@@ -674,8 +696,8 @@ describe("the project file", () => {
   it("stores the zones on the land, compactly and exactly, and reads them back the same", () => {
     const r = imported([part([zoneIn(SQUARE), zoneIn([[8, 7], [12, 7], [12, 8]], '(layer "F.Cu")', `${KEEPOUT()} ${FILL}`)])])
     const raw = JSON.parse(serializeProject(r.project)).project
-    expect(raw.footprints[0].zones[0].ol[0][0]).toBe("p")
-    expect(raw.footprints[0].zones[0].outline).toBeUndefined()
+    expect(raw.footprints[0].zones[0].outline[0][0]).toBe("p")
+    expect(raw.footprints[0].zones[0].ol).toBeUndefined()
     const back = parseProjectFile(serializeProject(r.project), { id: "p", createdAt: 1, updatedAt: 1 })
     expect(back.footprints![0].zones).toEqual(r.project.footprints![0].zones)
     expect(back.zones).toEqual([])

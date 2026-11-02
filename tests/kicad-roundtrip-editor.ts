@@ -8,8 +8,6 @@ import { pcbPads, powerNetName, schematicBounds, schematicPins, valueText } from
 import type { ComponentInstance, DrawingText, Project } from "../src/model/types"
 import { registerProjectParts } from "../src/model/customParts"
 import { matchLcsc, type LcscLookup, type LcscStats } from "../src/model/lcscMatch"
-import { generatedModelContext } from "../src/editor/three/buildBoard"
-import { ModelMaterials, pickModel } from "../src/editor/three/models"
 
 // A project made in the editor, written by the KiCad export and read again by the KiCad import, compared field by field. The schematic is judged by what is
 // drawn on the sheet (every text, symbol and label, in sheet coordinates), the board by what a footprint is (its pads, its 3D model, the part's data).
@@ -102,30 +100,6 @@ export function sheetTexts(p: Project): SheetText[] {
 
 function drawingText(d: DrawingText): SheetText {
   return { key: "text", text: d.text, x: d.x, y: d.y, ex: d.align === "center" ? 0 : d.align === "right" ? -1 : 1, ey: 0, vertical: d.rot === 90 || d.rot === 270, size: d.size, hidden: !!d.hidden }
-}
-
-// ---------- the generated 3D body ----------
-
-export interface Body {
-  /** How the body was chosen: by the package's name, or by the footprint's rules (a generic box when no rule knew it). */
-  source: string
-  family: string | null
-  /** The materials of its parts, sorted: `epoxy` and the like are the dark plastics. */
-  materials: string[]
-  dark: boolean
-}
-
-const DARK = /^(epoxy|gloss:#(?:0|1)[0-9a-f]{5}.*)$/i
-
-/** The body the 3D view draws for a component that has no model file: the same choice `generatedModel` makes. */
-export function bodyOf(project: Project, c: ComponentInstance): Body | null {
-  const ctx = generatedModelContext(project, c, new ModelMaterials())
-  if (!ctx) return null
-  const picked = pickModel(ctx)
-  const spec = picked.builder.build()
-  const materials = [...spec.geoms.keys()].sort()
-  const bodyKeys = materials.filter((k) => k !== "tin" && k !== "copper" && k !== "solder")
-  return { source: picked.source, family: picked.family, materials, dark: bodyKeys.length > 0 && bodyKeys.every((k) => DARK.test(k)) }
 }
 
 // ---------- the comparison ----------
@@ -251,13 +225,6 @@ export function compareTrip(t: Trip, tol = 0.02): Compare {
       const mb = componentModel(before, c)
       const ma = componentModel(after, a)
       if (mb && !ma) add("3D model lost", refKey(c))
-      else if (!mb && !ma && c.footprint && a.footprint) {
-        const bb = bodyOf(before, c)
-        const ba = bodyOf(after, a)
-        count("3D body")
-        if (bb && ba && !bb.dark && ba.dark) add("3D body turned black", `${refKey(c)} ${bb.family ?? bb.source}:${bb.materials.join("+")} -> ${ba.family ?? ba.source}:${ba.materials.join("+")}`)
-        else if (bb && ba && bb.materials.join() !== ba.materials.join()) add("3D body changed", `${refKey(c)} ${bb.family ?? bb.source}:${bb.materials.join("+")} -> ${ba.family ?? ba.source}:${ba.materials.join("+")}`)
-      }
       // the pads: where each is on the board, in the board's frame
       const padsA = pcbPads(a)
       const padsB = pcbPads(c)

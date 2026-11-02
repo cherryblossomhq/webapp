@@ -3,9 +3,11 @@ import { boardTextStrokeWidth, ownTexts } from "../model/board"
 import { resolvedComponents } from "../model/ruleAreas"
 import { computeConnectivity, pinKey } from "../model/connectivity"
 import { componentFootprint } from "../model/instances"
+import { componentModel } from "../model/models3d"
 import { findPart } from "../model/library"
 import { kicadAttributes, onBoard } from "../model/partFlags"
 import { derivedCopperNets } from "../model/pcb"
+import { kicadNetName } from "../model/netNames"
 import type { ZoneFill } from "../model/pour"
 import { flipShapeLayer } from "../model/shapeLayers"
 import { BOARD_SHAPE_OWNER } from "../model/shapeItems"
@@ -13,15 +15,20 @@ import { flattenPath, mapShape, type PathSeg, type ShapePath } from "../model/sh
 import { componentTexts, shownOf, textBoxCorners, worldTexts, isDimensionText, type WorldText } from "../model/texts"
 import type { BoardDimension, BoardShape, ComponentInstance, FootprintDef, PadDef, PartText, PcbGroup, PinDef, Project, Vec2 } from "../model/types"
 import type { Model3D } from "../model/types"
-import { drawing, type Out } from "./kicadShapes"
+import { drawing, LINE_END_NOTE, type Out } from "./kicadShapes"
 import { effects } from "./kicadTexts"
 import { stableUuid } from "./kicadUuid"
+import { encodeBase64 } from "../lib/imageFacts"
 import { quoteTabs as quote } from "../lib/kicadQuote"
+import type { EmbeddedFont } from "../model/types"
 import { trapezoidOf, writePad } from "./kicadPads"
 import { dimensionBlock, generatorBlock, groupBlock, imageBlock } from "./kicadObjects"
 import { zoneText } from "./kicadZones"
 import { isWholeBoardPour, zoneLayers } from "../model/zones"
 import { worldPartZones } from "../model/partZones"
+import { UNPLACED_PROPERTY_UUID_PREFIX } from "../model/unplacedProperty"
+import { partSheet } from "../model/placementAreas"
+import { isHierarchical } from "../model/sheets"
 import { rotate90 } from "../lib/geometry"
 import { copperLayers, kicadLayerName, viaLayers } from "../model/stack"
 import { isArcTrace } from "../model/arcTracks"
@@ -48,6 +55,10 @@ const toFile = (p: Vec2): Vec2 => ({ x: p.x, y: 0 - p.y })
 const indent = (lines: string[], by: string) => lines.map((l) => `${by}${l}`)
 /** A pad block comes indented for a footprint at two spaces; here the footprint's own lines start at the margin. */
 const dedent = (block: string) => block.replace(/^ {2}/gm, "")
+/** `lines.push(...more)` for any length: one footprint's drawing can be hundreds of thousands of lines (a TRS-80 board's), past what a spread passes. */
+const pushAll = (lines: string[], more: readonly string[]) => {
+  for (const l of more) lines.push(l)
+}
 
 /** KiCad 9's numbers for the user layers: `User.1` is 39, `User.2` 41, and so on by twos. */
 const userLayerNumber9 = (name: string): number | null => {
@@ -100,8 +111,39 @@ export interface KicadBoardFile {
 export interface KicadBoardOptions {
   /** The editor's fill of each zone, written as the zone's `filled_polygon`; none writes the zones unfilled. */
   fills?: ZoneFill[]
-  /** The bytes of each reference image by the id the project holds it by. */
+  /** The bytes of each reference image, and of each embedded font file (X19), by the id the project holds it by. */
   pictures?: Map<string, Uint8Array>
+}
+
+/**
+ * The font files a board or a footprint embeds, as KiCad writes them (`embedded_files`, then `embedded_fonts`): each file's bytes are written as the file stored
+ * them (zstd compressed, base64 between two bars, 76 characters to a line) with the checksum it had. A file whose bytes this account does not hold is left out, and counted.
+ */
+function embeddedFontLines(files: EmbeddedFont[], allowed: boolean, bytes: Map<string, Uint8Array> | undefined, by: string, missing: { n: number }): string[] {
+  const out: string[] = []
+  const written = files.flatMap((f) => {
+    const data = bytes?.get(f.file)
+    if (!data) {
+      missing.n++
+      return []
+    }
+    return [{ f, data }]
+  })
+  if (written.length) {
+    out.push(`${by}(embedded_files`)
+    for (const { f, data } of written) {
+      const b64 = encodeBase64(data)
+      const rows = b64.match(/.{1,76}/g) ?? []
+      out.push(`${by}  (file`, `${by}    (name ${quote(f.name)})`, `${by}    (type font)`)
+      out.push(`${by}    (data |${rows[0] ?? ""}`, ...rows.slice(1).map((r) => `${by}      ${r}`))
+      out[out.length - 1] += "|)"
+      if (f.checksum) out.push(`${by}    (checksum ${quote(f.checksum)})`)
+      out.push(`${by}  )`)
+    }
+    out.push(`${by})`)
+  }
+  if (allowed) out.push(`${by}(embedded_fonts yes)`)
+  return out
 }
 
 /** The pin type KiCad names for a part's pin role. */
@@ -110,10 +152,42 @@ const PIN_TYPE: Record<NonNullable<PinDef["kind"]>, string> = { input: "input", 
 /** A uuid in KiCad's shape, numbered so the same project writes the same file. */
 const uuidAt = (n: number) => stableUuid("8000", n)
 
+/**
+ * A model of KiCad's 3D library as a footprint's `(model ...)` lines: the path the file named it by (else the library's own), the offset as KiCad writes it, and the
+ * angles turned back, since the import negates them (KiCad turns a model clockwise by the written angles). The board writer and the converter's board both write it.
+ */
+export function kicadModelLines(model: Model3D): string[] {
+  const [, ...path] = model.id.split("/")
+  const flip = (v: number) => (v === 0 ? 0 : -v)
+  return [
+    `(model ${quote(model.named ?? `\${KICAD9_3DMODEL_DIR}/${path.join("/")}`)}`,
+    `  (offset (xyz ${mm6(model.offset.x)} ${mm6(model.offset.y)} ${mm6(model.offset.z)}))`,
+    `  (scale (xyz ${model.stretch ? `${mm6(model.stretch.x)} ${mm6(model.stretch.y)} ${mm6(model.stretch.z)}` : "1 1 1"}))`,
+    `  (rotate (xyz ${mm6(flip(model.rotation.x))} ${mm6(flip(model.rotation.y))} ${mm6(flip(model.rotation.z))}))`,
+    ")",
+  ]
+}
+
 export function writeKicadBoard(project: Project, options: KicadBoardOptions = {}): KicadBoardFile {
   const notes = new Set<string>()
+  const missingFonts = { n: 0 }
   let serial = 0
   const newUuid = () => uuidAt(++serial)
+  /** The uuids each part was written with, by part: one another part took already is not written again. */
+  const uuidOwner = new Map<string, string>()
+  /**
+   * The uuid KiCad gave a footprint or pad of `part` (`ComponentInstance.fpUuid`, `padUuids`), in KiCad 9's shape (a `tstamp` of KiCad 5 is KiCad's legacy id, its
+   * 8 digits at the end), so what KiCad keys by it still finds it; a new one where there is none, or where another part has it (a copy that kept it). One a
+   * footprint's own pads repeat is written as the file had it.
+   */
+  const ownUuid = (given: string | undefined, part: string) => {
+    const hex = given?.toLowerCase().replace(/-/g, "")
+    const id = hex && /^[0-9a-f]{8}$/.test(hex) ? `00000000-0000-0000-0000-0000${hex}` : hex && /^[0-9a-f]{32}$/.test(hex) ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` : null
+    const owner = id ? uuidOwner.get(id) : undefined
+    if (!id || (owner !== undefined && owner !== part)) return newUuid()
+    uuidOwner.set(id, part)
+    return id
+  }
   /** The ids handed out since the counter stood at `from`. */
   const issuedSince = (from: number) => Array.from({ length: serial - from }, (_, i) => uuidAt(from + i + 1))
   const layers = new Set<string>()
@@ -121,10 +195,15 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const sch = computeConnectivity(project)
   // The net's own name, with its sheet's path (`/A/NAME`): the schematic export writes the same name (a local power symbol is local in the file, so its net has its sheet's path too).
   const netNameOf = new Map(sch.nets.map((n) => [n.id, n.name]))
+  // The names as KiCad writes them: a `/` in a label's own text is `{slash}`, which the editor holds as a plain `/`.
+  const fileName = new Map(sch.nets.map((n) => [n.name, kicadNetName(n, !project.netNames)]))
+  const keptNames = project.kicad?.netNames
+  const inFile = (name: string) => keptNames?.[name] ?? fileName.get(name) ?? name
   // ---------- nets: numbered in the order they are met ----------
   const netCodes = new Map<string, number>()
-  const netCode = (name: string): number => {
-    if (!name) return 0
+  const netCode = (given: string): number => {
+    if (!given) return 0
+    const name = inFile(given)
     let n = netCodes.get(name)
     if (n === undefined) {
       n = netCodes.size + 1
@@ -137,16 +216,25 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const items: string[] = []
   const push = (lines: string[]) => items.push(lines.join("\n"))
   /** What each project id is in the file (the uuids it was written with), for the groups to list. */
+  let propCount = 0
   const members = new Map<string, string[]>()
 
   // ---------- footprints ----------
-  const modelOf = new Map<string, Model3D>()
-  for (const m of project.models ?? []) modelOf.set(`${m.part}\n${m.footprint}`, m.model)
   const wanted = resolvedComponents(project).filter((c) => onBoard(c) && c.pcb.placed && componentFootprint(c))
   for (const c of wanted) push(indent(footprintBlock(c), "  "))
   const unplaced = resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed && componentFootprint(c)).length
   if (unplaced) notes.add(`${unplaced} ${unplaced === 1 ? "part is" : "parts are"} not placed on the board yet, so ${unplaced === 1 ? "it is" : "they are"} not in the board file.`)
   if (project.texts.some((t) => t.href) || project.components.some((c) => c.texts?.some((t) => t.href))) notes.add("A text's hyperlink is KiCad 10's: a KiCad 9 file cannot hold it, so it stays in the project and is not written.")
+  // X23: board variants, footprint units and PCB points are KiCad 10's words, which the 9.0 parser refuses: they stay in the project, and each footprint is written as the variant shown makes it.
+  if (project.components.some((c) => c.variants)) notes.add("A footprint's variants are KiCad 10's: a KiCad 9 file cannot hold them, so each footprint is written as the variant shown makes it and the variants stay in the project.")
+  if (project.components.some((c) => c.units?.length)) notes.add("A footprint's units are KiCad 10's: a KiCad 9 file cannot hold them, so they stay in the project and are not written.")
+  if (project.points?.length || project.components.some((c) => c.points?.length)) notes.add("PCB points are KiCad 10's: a KiCad 9 file cannot hold them, so they stay in the project and are not written.")
+  // X21/X22: via protection, backdrills, tertiary drills and post-machining, a pad's die delay and net chains are KiCad 10's words, which the 9.0 parser refuses: they stay in the project.
+  const holePads = wanted.flatMap((c) => componentFootprint(c)?.pads ?? [])
+  if (project.vias.some((v) => v.protect || v.backdrill || v.tertiary || v.post) || project.rules.viaProtect || holePads.some((p) => p.backdrill || p.tertiary || p.post)) notes.add("Via protection, backdrills, tertiary drills and post-machining are KiCad 10's: a KiCad 9 file cannot hold them, so they stay in the project and are not written to the .kicad_pcb. A via's are in the drill files and the fabrication notes; a pad's are in the fabrication notes only.")
+  if (holePads.some((p) => p.dieDelay !== undefined)) notes.add("A pad's die delay is KiCad 10's: a KiCad 9 file cannot hold it, so it stays in the project and is not written.")
+  if (project.netChains?.length) notes.add("Net chains are KiCad 10's: a KiCad 9 file cannot hold them, so they stay in the project and are not written.")
+  if (project.zones.some((z) => z.placement?.by === "group")) notes.add("A placement area for a group is KiCad 10's: the 9.0 file has no such source, so it stays in the project and is written switched off.")
   if (project.zones.some((z) => z.unordered || z.edgeGap !== undefined || z.holeGap !== undefined)) notes.add("A pour from a board of KiCad 5 or of KiCad 6's first files is written with its fill, but KiCad 9 refills it by its own rules: its distance to the board edge and to a hole is the project's design rule and KiCad 9's own (0.5 and 0.25 mm unless set), not the original board's, and zones of equal priority are ordered by their uuid, which this file gives them.")
   if (project.board.mountingHoles) notes.add("The board's corner mounting holes are not written to the KiCad board.")
 
@@ -156,7 +244,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const bottom = c.pcb.side === "bottom"
     const fa = normalizeAngle(bottom ? c.pcb.rot - 180 : c.pcb.rot)
     const at = toFile(c.pcb)
-    const id = newUuid()
+    const id = ownUuid(c.fpUuid, c.id)
     members.set(c.id, [id])
     const spec = project.parts?.find((s) => s.id === c.partId)
     // A part that came from a KiCad board has the footprint's name as the file gave it (none, for a footprint with no name), its drawings only where the file drew them, and the attributes it listed.
@@ -165,8 +253,13 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const lines: string[] = [`(footprint ${quote(c.fpid ?? (fromFile ? "" : c.footprint))}`, `  (layer ${quote(bottom ? "B.Cu" : "F.Cu")})`]
     if (c.pcb.locked) lines.push("  (locked yes)")
     lines.push(`  (uuid ${id})`, `  (at ${mm6(at.x)} ${mm6(at.y)}${fa ? ` ${mm6(fa)}` : ""})`)
-    if (spec && spec.description && spec.description !== "From a KiCad board") lines.push(`  (descr ${quote(spec.description)})`)
-    if (spec?.keywords?.length) lines.push(`  (tags ${quote(spec.keywords.join(" "))})`)
+    // What the footprint said of itself, as typed; a part the editor made has its part's description and keywords.
+    const descr = land.descr ?? (!fromFile && spec && spec.description && spec.description !== "From a KiCad board" && spec.description !== "From a KiCad schematic" ? spec.description : undefined)
+    const tags = land.tags ?? (!fromFile && spec?.keywords?.length ? spec.keywords.join(" ") : undefined)
+    if (descr) lines.push(`  (descr ${quote(descr)})`)
+    if (tags) lines.push(`  (tags ${quote(tags)})`)
+    // (A property with no place is a hidden field of the footprint, as KiCad reads one from an older file; written with no word of that it would be a visible text.)
+    for (const p of c.fpProps ?? []) lines.push(`  (property ${quote(p.name)} ${quote(p.value)}`, `    (at 0 0 0)`, `    (layer ${quote(`${bottom ? "B" : "F"}.Fab`)})`, `    (hide yes)`, `    (uuid ${UNPLACED_PROPERTY_UUID_PREFIX}${(++propCount).toString(16).padStart(12, "0")})`, `    (effects (font (size 1 1) (thickness 0.15)))`, "  )")
 
     // Texts: where the part has put them; a part with none (drawn in the editor) gets its reference and value as KiCad's own two.
     const textLines: string[] = []
@@ -176,7 +269,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     if (own) {
       c.texts!.forEach((t, i) => {
         const wt = wts[i]
-        const block = partTextBlock(c, t, wt, bottom)
+        const block = partTextBlock(c, t, wt, bottom, i)
         textLines.push(...indent(block.lines, "  "))
         textIds.push(block.ids)
       })
@@ -190,7 +283,12 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       useLayer(`${side}.SilkS`)
       useLayer(`${side}.Fab`)
     }
-    lines.push(...textLines)
+    pushAll(lines, textLines)
+    // X20: the part's component classes, and the sheet its footprint is from (a part of a hierarchical schematic is on the sheet its symbol is on).
+    if (c.classes?.length) lines.push(`  (component_classes${c.classes.map((n) => ` (class ${quote(n)})`).join("")})`)
+    if (fromFile ? c.sheetPath !== undefined : c.inst !== undefined || isHierarchical(project) || c.sheetPath !== undefined) lines.push(`  (sheetname ${quote(partSheet(project, c))})`)
+    // The file a footprint of a KiCad board named is kept as it said it (a file may name a sheet other than the one its symbol is on); the link step only adds a name where there is none.
+    if (fromFile && c.sheetFile !== undefined) lines.push(`  (sheetfile ${quote(c.sheetFile)})`)
 
     const flags = c.flags
     const words = kicadAttributes(flags)
@@ -215,7 +313,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
         const mapped = mapShape(s, map)
         const shape: BoardShape = { ...mapped, layer: bottom ? flipShapeLayer(s.layer, copperLayers(project.board).length) : s.layer }
         useLayer(shape.layer)
-        for (const b of drawing(shape, true, out)) lines.push(...indent(b, "  "))
+        for (const b of drawing(shape, true, out)) pushAll(lines, indent(b, "  "))
         shapeIds.push(issuedSince(from))
       }
     } else if (!fromFile) {
@@ -236,17 +334,18 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     }
     const padIds: string[] = []
     const pins = new Map((spec?.pins ?? part?.pins ?? []).map((p) => [p.number, p]))
-    land.pads.forEach((def) => {
+    land.pads.forEach((def, i) => {
       const net = def.pin ? sch.pinNet.get(pinKey(c.id, def.pin)) : undefined
-      const name = net ? netNameOf.get(net) : undefined
-      const uuid = newUuid()
+      // A pad that is alone on its net in the project keeps the net the board gave it (`unconnected-(R1-Pad2)`).
+      const name = net ? netNameOf.get(net) : def.pin ? c.loneNets?.[def.pin] : undefined
+      const uuid = ownUuid(c.padUuids?.[i], c.id)
       padIds.push(uuid)
       const pin = def.pin ? pins.get(def.pin) : undefined
       const fn = pin && pin.name !== pin.number ? pin.name : undefined
       const type = pin?.kind ? PIN_TYPE[pin.kind] : undefined
       // A polygon pad of four corners that is KiCad's trapezoid is written as one.
       const trapezoid = def.shape === "polygon" && !def.custom && def.points ? (trapezoidPad(def, bottom) ?? undefined) : undefined
-      lines.push(...dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: fn, pintype: type, trapezoid, copperCount: copperLayers(project.board).length })).split(String.fromCharCode(10)))
+      pushAll(lines, dedent(writePad(def, null, c, () => ({ x: 0, y: 0 }), c.pcb.rot, name ? { code: netCode(name), name: inFile(name) } : null, uuid, { exact: true, at: padAt(def, bottom), pinfunction: def.pinFunction ?? fn, pintype: def.pinType ?? type, trapezoid, copperCount: copperLayers(project.board).length })).split(String.fromCharCode(10)))
       for (const o of def.layers?.other ?? []) useLayer(bottom ? flipShapeLayer(o, copperLayers(project.board).length) : o)
       if (def.shape === "polygon" && !def.custom && !trapezoid) notes.add("A polygon pad that is not one of KiCad's trapezoids is written as a custom pad of the same polygon, which KiCad draws and plots the same.")
     })
@@ -256,7 +355,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       if (z.part !== c.id) continue
       for (const l of zoneLayers(z)) useLayer(kicadLayerName(l))
       for (const n of z.other ?? []) useLayer(n)
-      lines.push(...zoneText(project, z, options.fills ?? [], netCode, null, newUuid, toFile).split(String.fromCharCode(10)))
+      pushAll(lines, zoneText(project, z, options.fills ?? [], netCode, null, newUuid, toFile, inFile).split(String.fromCharCode(10)))
     }
 
     // The part's own groups, by place in the land.
@@ -271,15 +370,16 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
         if (m[0] === "g") return k !== gi && groupIds[k] ? [groupIds[k]] : []
         return []
       })
-      if (ids.length) lines.push(...indent(groupBlock(g, groupIds[gi], ids), "  "))
+      if (ids.length) pushAll(lines, indent(groupBlock(g, groupIds[gi], ids), "  "))
     })
 
-    const model = modelOf.get(`${c.partId}\n${c.footprint}`)
-    if (model?.source === "kicad") {
-      const [, ...path] = model.id.split("/")
-      const flip = (v: number) => (v === 0 ? 0 : -v)
-      lines.push(`  (model ${quote(`\${KICAD9_3DMODEL_DIR}/${path.join("/")}`)}`, `    (offset (xyz ${mm6(model.offset.x)} ${mm6(model.offset.y)} ${mm6(model.offset.z)}))`, "    (scale (xyz 1 1 1))", `    (rotate (xyz ${mm6(flip(model.rotation.x))} ${mm6(flip(model.rotation.y))} ${mm6(flip(model.rotation.z))}))`, "  )")
-    } else if (model) notes.add("A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written.")
+    // The project's model of the part, else a built-in part's own (a resistor added on 0603).
+    const model = componentModel(project, c)
+    if (model?.source === "kicad") lines.push(...kicadModelLines(model).map((l) => `  ${l}`))
+    else if (model && !c.modelRefs?.length) notes.add("A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written.")
+    // The models the project does not show are written back as the file had them.
+    for (const ref of c.modelRefs ?? []) lines.push(`  ${ref}`)
+    pushAll(lines, embeddedFontLines(project.fonts?.files.filter((f) => f.owner === c.id) ?? [], project.fonts?.parts?.includes(c.id) === true, options.pictures, "  ", missingFonts))
     lines.push(")")
     return lines
   }
@@ -290,7 +390,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   }
 
   /** The block of one of a part's texts, in the footprint's file frame, and the ids it was written with. */
-  function partTextBlock(c: ComponentInstance, t: PartText, wt: WorldText, bottom: boolean): { lines: string[]; ids: string[] } {
+  function partTextBlock(c: ComponentInstance, t: PartText, wt: WorldText, bottom: boolean, index: number): { lines: string[]; ids: string[] } {
     const layer = bottom ? flipShapeLayer(t.layer, copperLayers(project.board).length) : t.layer
     useLayer(layer)
     const sgn = bottom ? 1 : -1
@@ -300,8 +400,40 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     const content = t.kind === "user" ? (t.text ?? "") : t.kind === "reference" ? (t.text ?? c.ref) : shownOf(project, wt)
     const id = newUuid()
     const at = `(at ${xy(local)}${angle ? ` ${mm6(angle)}` : ""})`
-    const head = t.kind === "reference" ? `(property "Reference" ${quote(content)}` : t.kind === "value" ? `(property "Value" ${quote(content)}` : `(fp_text user ${quote(content)}`
-    const lines = [head, `  ${at}`, ...(t.upright === false ? ["  (unlocked yes)"] : []), `  (layer ${quote(layer)}${t.knockout ? " knockout" : ""})`, ...(t.hide ? ["  (hide yes)"] : []), ...(t.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, mirror, false).map((l) => `  ${l}`), ")"]
+    // KiCad turns `%R` and `%V` into `${REFERENCE}` and `${VALUE}` in a text but not in a field's, so a text that has one (it came from a field) is written as a field of its own, named `Text N`: the project does not keep a field's name, and the notes say so.
+    const field = t.kind === "user" && !t.box && /%[RV]/.test(content)
+    if (field) notes.add("A field's text with %R or %V in it is written as a field named Text N (the project does not keep a field's name), because KiCad would turn the %R or %V of a plain text into the reference or value.")
+    const head = t.kind === "reference" ? `(property "Reference" ${quote(content)}` : t.kind === "value" ? `(property "Value" ${quote(content)}` : t.name && !t.box ? `(property ${quote(t.name)} ${quote(content)}` : field ? `(property ${quote(`Text ${index + 1}`)} ${quote(content)}` : `(fp_text user ${quote(content)}`
+    // X25: a part's text box (`fp_text_box`) is the rectangle as drawn in the part's own frame (the corners of its four sides for any turn that is not a quarter), as KiCad 9 stores it.
+    if (t.box) {
+      const b = t.box
+      const turn = ((t.rot % 360) + 360) % 360
+      const quarter = turn % 90 === 0
+      const swap = turn === 90 || turn === 270
+      const [w, h] = swap ? [b.h, b.w] : [b.w, b.h]
+      const a = (turn * Math.PI) / 180
+      const corner = (x: number, y: number) => ({ x: local.x + x * Math.cos(a) + y * Math.sin(a), y: local.y - x * Math.sin(a) + y * Math.cos(a) })
+      const geometry = quarter
+        ? [`  (start ${xy({ x: local.x - w / 2, y: local.y - h / 2 })})`, `  (end ${xy({ x: local.x + w / 2, y: local.y + h / 2 })})`]
+        : [`  (pts ${[corner(-b.w / 2, -b.h / 2), corner(b.w / 2, -b.h / 2), corner(b.w / 2, b.h / 2), corner(-b.w / 2, b.h / 2)].map((p) => `(xy ${xy(p)})`).join(" ")})`]
+      const boxLines = [
+        `(fp_text_box ${quote(content)}`,
+        ...geometry,
+        `  (angle ${mm6(angle)})`,
+        "  (stroke",
+        `    (width ${mm6(b.border ?? 0)})`,
+        "    (type solid)",
+        "  )",
+        `  (border ${b.border !== undefined ? "yes" : "no"})`,
+        `  (margins ${b.margins.map(mm6).join(" ")})`,
+        `  (layer ${quote(layer)})`,
+        `  (uuid ${id})`,
+        ...effects(wt, mirror, false, undefined, { project, to: toFile }).map((l) => `  ${l}`),
+        ")",
+      ]
+      return { lines: boxLines, ids: [id] }
+    }
+    const lines = [head, `  ${at}`, ...(t.upright === false ? ["  (unlocked yes)"] : []), `  (layer ${quote(layer)}${t.knockout ? " knockout" : ""})`, ...(t.hide ? ["  (hide yes)"] : []), ...(t.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, mirror, false, undefined, { project, to: toFile }).map((l) => `  ${l}`), ")"]
     return { lines, ids: [id] }
   }
 
@@ -340,7 +472,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
 
   // ---------- the board's outline ----------
   const edge: string[] = []
-  const edgeTail = () => ["  (stroke", "    (width 0.05)", "    (type solid)", "  )", `  (layer "Edge.Cuts")`, `  (uuid ${newUuid()})`]
+  const edgeTail = () => ["  (stroke", `    (width ${mm6(project.kicad?.edgeWidth ?? 0.05)})`, "    (type solid)", "  )", `  (layer "Edge.Cuts")`, `  (uuid ${newUuid()})`]
   const edgeBlock = (name: string, body: string[]) => [`(${name}`, ...body.map((l) => `  ${l}`), ...edgeTail(), ")"]
   let flattenedOutline = false
   const outlineSeg = (s: PathSeg): string[][] => {
@@ -359,7 +491,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     }
   }
   const paths = outlinePaths(project)
-  for (const path of paths) for (const s of path.segs) for (const b of outlineSeg(s)) edge.push(...indent(b, "  "))
+  for (const path of paths) for (const s of path.segs) for (const b of outlineSeg(s)) pushAll(edge, indent(b, "  "))
   if (paths.length) useLayer("Edge.Cuts")
   if (flattenedOutline) notes.add("KiCad 9 has no ellipse: an elliptical piece of the outline is written as lines within 0.5 micrometre of the true curve.")
   const edgeLines = edge.length ? [edge.join("\n")] : []
@@ -373,6 +505,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     members.set(g.id, issuedSince(from))
     if (g.type === "ellipse") out.flattened.add("ellipse")
   }
+  if (out.flattened.has("ends")) notes.add(LINE_END_NOTE)
   if (out.flattened.has("ellipse")) notes.add("KiCad 9 has no ellipse: ellipses and elliptical arcs are written as polygons and lines within 0.5 micrometre of the true curve.")
   if (out.flattened.has("hole")) notes.add("KiCad 9's polygon has no holes: a filled polygon with holes is written as one outline joined to its holes by zero-width bridges, with its edges drawn on top.")
   if ((project.graphics ?? []).some((g) => g.type === "rect" && g.radius)) notes.add("KiCad 9's rectangle has no corner radius: a rounded one is written as a polygon with arc corners.")
@@ -396,14 +529,14 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
       if (wt.knockout) notes.add("KiCad 9 has no knockout for a text box (its parser has no such node), so a box with knockout is written without it.")
       boardItems.push(
         indent(
-          [`(gr_text_box ${quote(content)}`, ...geometry, ...(angle ? [`  (angle ${mm6(angle)})`] : []), "  (stroke", `    (width ${mm6(b.border ?? 0)})`, "    (type solid)", "  )", `  (border ${b.border !== undefined ? "yes" : "no"})`, `  (margins ${b.margins.map(mm6).join(" ")})`, `  (layer ${quote(wt.layer)})`, ...(wt.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, wt.mirror, false).map((l) => `  ${l}`), ")"],
+          [`(gr_text_box ${quote(content)}`, ...geometry, ...(angle ? [`  (angle ${mm6(angle)})`] : []), "  (stroke", `    (width ${mm6(b.border ?? 0)})`, "    (type solid)", "  )", `  (border ${b.border !== undefined ? "yes" : "no"})`, `  (margins ${b.margins.map(mm6).join(" ")})`, `  (layer ${quote(wt.layer)})`, ...(wt.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, wt.mirror, false, undefined, { project, to: toFile }).map((l) => `  ${l}`), ")"],
           "  ",
         ).join("\n"),
       )
     } else {
       const at = toFile({ x: wt.x, y: wt.y })
       const rot = normalizeAngle(wt.rot)
-      boardItems.push(indent([`(gr_text ${quote(content)}`, `  (at ${xy(at)}${rot ? ` ${mm6(rot)}` : ""})`, `  ${layer}`, ...(wt.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, wt.mirror, false).map((l) => `  ${l}`), ")"], "  ").join("\n"))
+      boardItems.push(indent([`(gr_text ${quote(content)}`, `  (at ${xy(at)}${rot ? ` ${mm6(rot)}` : ""})`, `  ${layer}`, ...(wt.locked ? ["  (locked yes)"] : []), `  (uuid ${id})`, ...effects(wt, wt.mirror, false, undefined, { project, to: toFile }).map((l) => `  ${l}`), ")"], "  ").join("\n"))
     }
     members.set(t.id, [id])
   }
@@ -442,23 +575,25 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   // ---------- copper ----------
   const copperItems: string[] = []
   // Copper the file gave no net (added in the editor, or netless in the file) is on the net it touches.
-  const lacking = project.traces.some((t) => t.net === undefined) || project.vias.some((v) => v.routedNet === undefined && v.net === undefined)
+  const lacking = project.traces.some((t) => t.net === undefined && !t.noNet) || project.vias.some((v) => v.routedNet === undefined && v.net === undefined && !v.noNet)
   const derived = lacking ? derivedCopperNets(project, sch) : null
   const nameOfNet = (id: string | null | undefined) => (id && id !== "short" ? (netNameOf.get(id) ?? "") : "")
   for (const t of project.traces) {
     const layer = kicadLayerName(t.layer)
-    const net = netCode(t.net ?? (derived ? nameOfNet(derived.traceNet.get(t.id)) : ""))
+    const net = netCode(t.net ?? (t.noNet ? "" : derived ? nameOfNet(derived.traceNet.get(t.id)) : ""))
     const ids: string[] = []
+    // X24: a track open through the mask names the mask of its own side beside its copper layer, and may have its own margin for the opening.
+    const layerNode = t.bare ? `(layers ${quote(layer)} ${quote(t.layer === "top" ? "F.Mask" : "B.Mask")})${t.bare.margin !== undefined ? `\n    (solder_mask_margin ${mm6(t.bare.margin)})` : ""}` : `(layer ${quote(layer)})`
     if (isArcTrace(t)) {
       // X4: an arc track is KiCad's `arc`: the three points as the project has them.
       const id = newUuid()
       ids.push(id)
-      copperItems.push(`  (arc\n    (start ${xy(toFile(t.points[0]))})\n    (mid ${xy(toFile(t.points[1]))})\n    (end ${xy(toFile(t.points[2]))})\n    (width ${mm6(t.width)})${t.locked ? "\n    (locked yes)" : ""}\n    (layer ${quote(layer)})\n    (net ${net})\n    (uuid ${id})\n  )`)
+      copperItems.push(`  (arc\n    (start ${xy(toFile(t.points[0]))})\n    (mid ${xy(toFile(t.points[1]))})\n    (end ${xy(toFile(t.points[2]))})\n    (width ${mm6(t.width)})${t.locked ? "\n    (locked yes)" : ""}\n    ${layerNode}\n    (net ${net})\n    (uuid ${id})\n  )`)
     } else {
       for (let i = 1; i < t.points.length; i++) {
         const id = newUuid()
         ids.push(id)
-        copperItems.push(`  (segment\n    (start ${xy(toFile(t.points[i - 1]))})\n    (end ${xy(toFile(t.points[i]))})\n    (width ${mm6(t.width)})\n    (layer ${quote(layer)})${t.locked ? "\n    (locked yes)" : ""}\n    (net ${net})\n    (uuid ${id})\n  )`)
+        copperItems.push(`  (segment\n    (start ${xy(toFile(t.points[i - 1]))})\n    (end ${xy(toFile(t.points[i]))})\n    (width ${mm6(t.width)})\n    ${layerNode}${t.locked ? "\n    (locked yes)" : ""}\n    (net ${net})\n    (uuid ${id})\n  )`)
       }
     }
     members.set(t.id, ids)
@@ -466,7 +601,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const stackCount = copperLayers(project.board).length
   for (const v of project.vias) {
     const id = newUuid()
-    const net = netCode(v.routedNet ?? v.net ?? (derived ? nameOfNet(derived.viaNet.get(v.id)) : ""))
+    const net = netCode(v.routedNet ?? v.net ?? (v.noNet ? "" : derived ? nameOfNet(derived.viaNet.get(v.id)) : ""))
     members.set(v.id, [id])
     const span = viaLayers(project.board, v)
     const ends = v.kind ? [span[0], span[span.length - 1]] : (["top", "bottom"] as CopperLayer[])
@@ -518,9 +653,10 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     return [{ closed: true, segs: p.map((a, i) => ({ kind: "line" as const, a, b: p[(i + 1) % 4] })) }] as ShapePath[]
   })()
   for (const z of project.zones) {
-    zoneItems.push(zoneText(project, z, options.fills ?? [], netCode, boardRings, newUuid, toFile))
+    zoneItems.push(zoneText(project, z, options.fills ?? [], netCode, boardRings, newUuid, toFile, inFile))
     if (isWholeBoardPour(z)) notes.add("A pour that covers the whole board is written as a polygon of the board's box, which is what it is.")
   }
+  if ([...project.zones, ...(project.footprints ?? []).flatMap((f) => f.zones ?? [])].some((z) => z.hatchAt)) notes.add("KiCad 9 has no hatch position (KiCad 10's `property` of a zone): it stays in the project and is not written, so KiCad 9 starts the hatch grid at the board's origin.")
 
   // ---------- groups ----------
   const groupItems: string[] = []
@@ -550,8 +686,13 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const tentFront = rules.tentSides ? rules.tentSides.front : rules.tentVias
   const tentBack = rules.tentSides ? rules.tentSides.back : rules.tentVias
   setup.push(`    (tenting${tentFront ? " front" : ""}${tentBack ? " back" : ""}${!tentFront && !tentBack ? " none" : ""})`)
+  const carry = project.kicad
   if (stack?.rows?.length || stack?.finish !== undefined || stack?.edgePlating !== undefined || stack?.dielectricConstraints !== undefined || stack?.edgeConnector) setup.push(...stackupText(stack!))
   if (rules.minMicroVia || rules.microVia || rules.microViasAllowed !== undefined || rules.blindBuriedViasAllowed !== undefined) notes.add("The sizes and permissions KiCad 5 kept for micro, blind and buried vias are not in a KiCad 9 board file: the smallest micro via is in the project file, and the rest stay in the project.")
+  // The origins of the position and drill files and of the grid, and the plot dialog's settings, as the file had them.
+  if (carry?.auxOrigin) setup.push(`    (aux_axis_origin ${mm6(carry.auxOrigin.x)} ${mm6(carry.auxOrigin.y)})`)
+  if (carry?.gridOrigin) setup.push(`    (grid_origin ${mm6(carry.gridOrigin.x)} ${mm6(carry.gridOrigin.y)})`)
+  if (carry?.plot) setup.push(`    ${carry.plot}`)
   const kept = (project.properties ?? []).filter((p) => !PROVENANCE_PROPERTIES.has(p.key))
   // (The board's title block comments are `Comment 1` and the schematic's are `Comment1`: a project from both has the second as well, and neither is a board property.)
   const isTitleBlock = (key: string) => /^(Title|Date|Rev|Company|Comment ?\d+)$/.test(key)
@@ -570,19 +711,38 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
   const boardProps = kept.filter((p) => !isTitleBlock(p.key))
 
   // The copper layers from the front to the back as the project has them (X1), numbered as KiCad 9 numbers them (`F.Cu` 0, `B.Cu` 2, `In1.Cu` 4 and by twos), then the fixed layers.
+  // What the file called its layers and which it hid (`KicadCarry.layers`), by name, and for the copper layers by place (KiCad 5 named them in the table's second word).
+  const carried = project.kicad?.layers ?? []
+  const carriedBy = new Map(carried.map((r) => [r.name, r]))
+  const carriedCopper = carried.filter((r) => ["signal", "power", "mixed", "jumper"].includes(r.type))
   const copperRows = copperLayers(project.board).map((l, i) => {
     const n = l === "top" ? 0 : l === "bottom" ? 2 : 2 + 2 * Number(l.slice(2))
     const row = stack?.copper[i]
-    return `    (${n} ${quote(kicadLayerName(l))} ${row?.type ?? "signal"}${row?.label ? ` ${quote(row.label)}` : ""})`
+    const own = carriedCopper[i]
+    const kicadName = kicadLayerName(l)
+    const user = row?.label ?? own?.user ?? (own && own.name !== kicadName ? own.name : undefined)
+    return `    (${n} ${quote(kicadName)} ${row?.type ?? "signal"}${user ? ` ${quote(user)}` : ""})`
   })
-  const layerRows: string[] = [...copperRows, ...LAYER_TABLE.filter(([, name]) => name !== "F.Cu" && name !== "B.Cu").map(([n, name, type, user]) => `    (${n} ${quote(name)} ${type}${user ? ` ${quote(user)}` : ""})`)]
+  const fixedRows = LAYER_TABLE.filter(([, name]) => name !== "F.Cu" && name !== "B.Cu").map(([n, name, type, std]) => {
+    const row = carriedBy.get(name)
+    // The name the file gave the layer, or KiCad's own name for it.
+    const user = row?.user ?? std
+    return `    (${n} ${quote(name)} ${type}${user ? ` ${quote(user)}` : ""})`
+  })
+  const layerRows: string[] = [...copperRows, ...fixedRows]
   const extra = [...layers]
     .flatMap((name) => {
       const n = userLayerNumber9(name)
       return n === null ? [] : [{ n, name }]
     })
     .sort((a, b) => a.n - b.n)
-  for (const e of extra) layerRows.push(`    (${e.n} ${quote(e.name)} user)`)
+  const written = new Set(extra.map((e) => e.name))
+  for (const e of extra) layerRows.push(`    (${e.n} ${quote(e.name)} user${carriedBy.get(e.name)?.user ? ` ${quote(carriedBy.get(e.name)!.user!)}` : ""})`)
+  // A layer the file switched on that has nothing drawn on it (`User.1`) stays on.
+  for (const r of carried) {
+    const n = userLayerNumber9(r.name)
+    if (n !== null && !written.has(r.name)) layerRows.push(`    (${n} ${quote(r.name)} user${r.user ? ` ${quote(r.user)}` : ""})`)
+  }
 
   const netRows = [`  (net 0 "")`, ...[...netCodes].map(([name, n]) => `  (net ${n} ${quote(name)})`)]
   const body = [
@@ -594,7 +754,7 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     `    (thickness ${mm6(project.board.thickness)})`,
     "    (legacy_teardrops no)",
     "  )",
-    '  (paper "A4")',
+    `  (paper ${project.kicad?.paper ?? '"A4"'})`,
     ...(title.length ? ["  (title_block", ...title, "  )"] : []),
     "  (layers",
     ...layerRows,
@@ -610,9 +770,13 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
     ...copperItems,
     ...zoneItems,
     ...groupItems,
+    ...embeddedFontLines(project.fonts?.files.filter((f) => f.owner === undefined) ?? [], project.fonts?.board === true, options.pictures, "  ", missingFonts),
     ")",
     "",
   ]
+  if (missingFonts.n) notes.add(`${missingFonts.n} embedded font file${missingFonts.n === 1 ? " was" : "s were"} left out: the bytes are not in this account's files, so there is nothing to write. The text that names ${missingFonts.n === 1 ? "it keeps" : "them keeps"} its font's name and its outlines, and KiCad finds the font on its own computer.`)
+  if (project.fonts?.files.length) notes.add("Fonts the board embeds are written back as the file stored them.")
+  if (project.texts.some((t) => t.outline) || project.components.some((c) => c.texts?.some((t) => t.outline))) notes.add("Text in a TrueType font keeps the outlines KiCad drew it with (`render_cache`) while it keeps its content, size, weight, slant, justification and font; a text edited in one of those has none, and KiCad draws it again from the font.")
   notes.add("The board is written natively in KiCad 9's format: footprints with their pads, drawings, text, groups and 3D models of KiCad's stock library, the outline, tracks, vias, zones, dimensions and reference images, each as KiCad has them. The design rules and net classes are in the project file.")
   return { text: body.join("\n"), notes: [...notes] }
 }

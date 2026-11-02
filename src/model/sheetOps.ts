@@ -1,3 +1,4 @@
+import { followSheetNames } from "./placementAreas"
 import { round } from "../lib/geometry"
 import { schematicBounds } from "./instances"
 import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
@@ -273,7 +274,9 @@ export function setSheetSymbol(project: Project, id: string, patch: { name?: str
   else if (patch.fill) next.fill = patch.fill
   if (patch.stroke === null) delete next.stroke
   else if (patch.stroke) next.stroke = patch.stroke
-  return touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
+  const changed = touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === id ? next : s)) })
+  // X20: a placement area names its sheet by path, which a new name changes.
+  return patch.name !== undefined ? followSheetNames(project, changed) : changed
 }
 
 /**

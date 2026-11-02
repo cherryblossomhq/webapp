@@ -7,7 +7,7 @@ import { loadKicadFont } from "../src/lib/kicadFont/load"
 import { importKicadProject, type ProjectFile } from "../src/model/kicad/project"
 import type { Project } from "../src/model/types"
 import { rememberImage } from "../src/store/imageFiles"
-import { sampleOf } from "./kicad-corpus-shared"
+import { sampleOf } from "./corpus/shared"
 
 // A KiCad project kept as the user's own files (`export/keep/`): over a local corpus (not in the repo), for every board that imports,
 //  1. nothing changed: the export is the original files, byte for byte;

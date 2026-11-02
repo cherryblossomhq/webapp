@@ -404,8 +404,8 @@ describe("S1 nodes are held", () => {
     expect(sym.stroke).toMatchObject({ dash: "dash", color: "#ff0000" })
     expect(mm(sym.stroke!.width!)).toBeCloseTo(0.254, 3)
     expect(sym.fill).toEqual({ kind: "color", color: "#ffffc2" })
-    // KiCad's own id is not kept: the export makes one from the editor's id
-    expect(sym).not.toHaveProperty("uuid")
+    // KiCad's own id is kept (a footprint's path on the board ends with the ids of the sheet symbols above it)
+    expect(sym.uuid).toBe(SHEET)
   })
 
   it("keeps every field with its place and look, relative to the symbol", () => {

@@ -3,8 +3,9 @@ import { isObject } from "../lib/guards"
 import { cleanBlockName } from "./blocks"
 import { clean, DEFAULT_TEXT_SIZE, isDrawingColor, isLineDash, isLineWeight } from "./drawings"
 import { normalizeNetChains } from "./netChains"
-import { hasViaX22, normalizeVia, packVias, unpackVias } from "./viaCodec"
-import { packDimensions, packGroups, packImages, defaultPartGroupId, sharedGeneratorProps, unpackDimensions, unpackGroups, unpackImages, type DimensionStyleDef } from "./dimCodec"
+import { normalizePoints, normalizeUnits } from "./pcbPoints"
+import { normalizeVia, unpackVias } from "./viaCodec"
+import { packDimensions, packGroups, packImages, defaultPartGroupId, unpackDimensions, unpackGroups, unpackImages, type DimensionStyleDef } from "./dimCodec"
 import { buildCustomPart, customPartProblems, registerProjectParts } from "./customParts"
 import { registerProjectFootprints } from "./footprints"
 import { findPart } from "./library"
@@ -14,13 +15,13 @@ import { schematicUnits } from "./migrations/schematicUnits"
 import { sheetsRoot } from "./migrations/sheetsRoot"
 import { normalizeModels } from "./models3d"
 import { needsPadPacking, normalizePad, packPad } from "./padCodec"
-import { normalizeOutline, packOutline, unpackOutline } from "./outlineCodec"
+import { normalizeOutline, unpackOutline } from "./outlineCodec"
 import { syncOutlineBox } from "./outlineOps"
 import { cleanFlags } from "./partFlags"
 import { normalizeRules } from "./rules"
 import { normalizeZones, packZones } from "./zoneCodec"
 import { isShapeLayer } from "./shapeLayers"
-import { isCompactShapes, packGraphics, packShapes, unpackGraphics, unpackShapes } from "./shapeCodec"
+import { isCompactShapes, packShapes, unpackGraphics, unpackShapes } from "./shapeCodec"
 import { ROOT_SHEET } from "./sheets"
 import { normalizeExact, normalizeKicadOnly, normalizeLabel, normalizeLook, normalizeRuleArea, normalizeStroke } from "./sheetItems"
 import { normalizeShape } from "./shapes"
@@ -28,9 +29,9 @@ import { readDrawing } from "./symbolDrawing"
 import { normalizeOverrides, normalizeProjectVariants, normalizeSheetOverrides } from "./variants"
 import { normalizeStack } from "./stackCodec"
 import { copperLayers } from "./stack"
-import { normalizeBoardTextObjects, normalizePartTexts, packTexts, unpackBoardTexts, unpackPartTexts, type TextStyleDef } from "./textCodec"
+import { normalizeBoardTextObjects, normalizePartTexts, unpackBoardTexts, unpackPartTexts, type TextStyleDef } from "./textCodec"
 import { repairUnits } from "./units"
-import type { LabelShape, Rotation, BoardGraphic, BoardShape, BoardText, ComponentInstance, CustomPartSpec, DrawingBox, DrawingLine, DrawingText, FieldPlace, FootprintDef, PadDef, PartDatabaseSource, PartSource, GenValue, Project, SchematicBlock, SchematicDrawing, SymbolDrawing, Trace, Vec2, Via, Wire } from "./types"
+import type { LabelShape, Rotation, BoardDimension, BoardGraphic, PcbGroup, ReferenceImage, BoardShape, BoardText, ComponentInstance, CustomPartSpec, DrawingBox, DrawingLine, DrawingText, FieldPlace, FootprintDef, PadDef, PartDatabaseSource, PartSource, GenValue, Project, SchematicBlock, SchematicDrawing, SymbolDrawing, Trace, Vec2, Via, Wire } from "./types"
 
 /**
  * The project file: how a project is written down wherever it is kept. One format for an
@@ -157,9 +158,9 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * The bump is what keeps a version 2 reader, which would drop them and save the loss back, from opening one.
  *
  * - Boards: footprint flags and net ties (`flags`), a trace's net (`net`), a via's (`routedNet`), board and land
- *   drawings (`graphics`, `shapes`, `noCourtyard`), board and part text (`texts` with a `layer`, `tx`, `kt`, `textStyles`),
- *   any angle (`pcb.rot`) and any outline (`board.outline`, `ol`), net classes and the rules with them (`netClasses`,
- *   `viaSizes`, ...), dimensions, groups and reference images (`dm`, `grp`, `im`), zones as any polygon with their own settings (`ol`),
+ *   drawings (`graphics`, `shapes`, `noCourtyard`), board and part text (`texts` with a `layer`, a part's `texts`),
+ *   any angle (`pcb.rot`) and any outline (`board.outline`), net classes and the rules with them (`netClasses`,
+ *   `viaSizes`, ...), dimensions, groups and reference images, zones as any polygon with their own settings,
  *   the pad model (`PadDef`: `rot`, `round`, `chamfer`, `custom`, `holeOffset`, `layers`, margins, ...), copper layers and the stackup
  *   (`board.stack`), arc tracks (`arc`) and via kinds (`kind`, `from`, `to`, ...).
  * - Schematics: a symbol's unit, body style, mirror, fields and pin alternates, the symbol drawings parts are drawn from
@@ -169,6 +170,9 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * - `schematicUnits` rewrites two shapes only a development build of the schematic track wrote: a symbol's flags
  *   (`inBom: false`, ...) become the one `PartFlags` set, and a sheet's `items` become `drawings`. A document with neither comes out as it went in.
  * - `sheetsRoot` lists a one-sheet project's sheet as the root (`sheets: [{ id: "root" }]`).
+ *
+ * The extras of the KiCad import (zones on layers that are not copper, zones in parts, a pad's pour layers, placement rule areas, component classes, tuning patterns, via protection,
+ * backdrills, net chains, TrueType text and embedded fonts, board variants on a part, a footprint's units and PCB points) are fields of version 3 too: all optional, absent means none.
  *
  * Version 4 took the chips and modules out of the built-in library: a project that placed one has
  * it as a part of its own, drawn as the library drew it (`migrations/libraryParts.ts`).
@@ -208,41 +212,74 @@ function orderTexts(own: BoardText[], kicad: BoardText[], kp: unknown, objects: 
   return out as BoardText[]
 }
 
-/** A component as it is stored: its text and groups in their compact forms (`tx`, `gr`). */
-function storedComponent(c: ComponentInstance, tx: unknown): unknown {
-  const { texts, groups, ...rest } = c
-  return { ...rest, ...(texts ? { tx } : {}), ...(groups?.length ? { gr: packGroups(groups, defaultPartGroupId) } : {}) }
+/**
+ * The board's texts: the list as it is written, the editor's own silkscreen text as it was and each of KiCad's read as a text. A file written before keeps KiCad's
+ * compact (`kt`, placed among the editor's by `kp`); one an edit since put in the list as an object stands for the stored one of its id.
+ */
+function boardTexts(raw: Json, styles: TextStyleDef[]): BoardText[] {
+  const rawTexts = list<Record<string, unknown>>(raw.texts)
+  const kt = (raw as { kt?: unknown }).kt
+  if (kt === undefined) {
+    const taken = new Set<string>()
+    return rawTexts.flatMap((t) => (isObject(t) && t.layer !== undefined ? normalizeBoardTextObjects([t], taken) : [t as unknown as BoardText]))
+  }
+  const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
+  const objects = normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set())
+  const edited = new Set(objects.map((t) => t.id))
+  const kicadTexts = [...objects, ...unpackBoardTexts(kt, styles).filter((t) => !edited.has(t.id))]
+  return orderTexts(ownTexts as unknown as BoardText[], kicadTexts, (raw as { kp?: unknown }).kp, rawTexts.length - ownTexts.length)
+}
+
+/** The items of a stored list written as objects, each read by `read` (which may throw on one that is not one), with an id once. */
+function plainItems<T extends { id: string }>(raw: unknown, read: (item: Record<string, unknown>) => T | null | undefined): T[] {
+  const out: T[] = []
+  const seen = new Set<string>()
+  for (const item of list<unknown>(raw)) {
+    if (!isObject(item) || typeof item.id !== "string" || !item.id || seen.has(item.id)) continue
+    let made: T | null | undefined
+    try {
+      made = read(item)
+    } catch {
+      made = null
+    }
+    if (!made || made.id !== item.id) continue
+    seen.add(made.id)
+    out.push(made)
+  }
+  return out
+}
+
+/** Groups written as objects, read as the compact entries are (`unpackGroups`). */
+function plainGroups(raw: unknown, defaultId?: (place: number) => string): PcbGroup[] {
+  return plainItems(raw, (g) => unpackGroups(packGroups([g as unknown as PcbGroup], defaultId), defaultId)?.[0])
+}
+
+/** The items of a list as written before (`stored`) with the objects an edit since wrote (`edited`) over them by id, and after them where they are new. */
+function byId<T extends { id: string }>(stored: T[], edited: T[]): T[] {
+  if (!stored.length) return edited
+  const fresh = new Map(edited.map((x) => [x.id, x]))
+  const had = new Set(stored.map((x) => x.id))
+  return [...stored.map((x) => fresh.get(x.id) ?? x), ...edited.filter((x) => !had.has(x.id))]
+}
+
+/** A component as it is stored: a footprint's units as lists of a name and the pad numbers in one string (a board has one for every part). */
+function storedComponent(c: ComponentInstance): unknown {
+  const { units, ...rest } = c
+  return { ...rest, ...(units ? { units: units.map((u) => [u.name, u.pins.some((n) => /\s/.test(n) || n === "") ? u.pins : u.pins.join(" ")]) } : {}) }
 }
 
 export function serializeProject(project: Project, { pretty = false } = {}): string {
   const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, scope: _scope, ...plain } = project
-  // Drawings are written compactly (`model/shapeCodec.ts`); in memory they are objects.
-  // Text objects are written compactly too (`model/textCodec.ts`): the styles in a table, each text a short array, a part's on its component.
-  const packed = packTexts(plain.texts ?? [], plain.components)
-  // Dimensions, groups and reference images are written compactly too (`model/dimCodec.ts`).
-  const dims = packDimensions(plain.dimensions ?? [])
-  const { dimensions: _dimensions, groups: _groups, images: _images, ...rest } = plain
-  const shared = sharedGeneratorProps(plain.groups ?? [])
+  // Storage applies an edit to the stored file by the paths the live sync names (`store/changes.ts`): a list edited item by item, an item's value by its key. So every such
+  // list is written as the list of its items, and every value under the key the model gives it: an edit made to one written in another shape or under another key was lost
+  // once the project was read again. Only a value an edit always replaces whole is written compactly, under its own key: a part's units, a land's drawings, pads and zones
+  // (`packShapes`, `packPad`, `packZones`), and a zone's polygon and kept fill. The compact forms written before (`tx`, `gr`, `kt`, `kp`, `textStyles`, `dm`, `dimStyles`, `grp`, `gd`,
+  // `vx`, `im`, an outline's `ol`, a zone's `ff`, the board's drawings in runs) are still read.
   const document = {
-    ...rest,
-    ...(plain.texts?.some((t) => t.layer !== undefined) ? { texts: plain.texts.filter((t) => t.layer === undefined) } : {}),
-    ...(plain.components.some((c) => c.texts || c.groups) ? { components: plain.components.map((c) => (c.texts || c.groups ? storedComponent(c, packed.tx?.[c.id]) : c)) } : {}),
-    ...(dims.dimStyles ? { dimStyles: dims.dimStyles } : {}),
-    ...(dims.dm ? { dm: dims.dm } : {}),
-    // X21: a generated item's members by place among the stored tracks and vias, and what the items of a kind share, once (`gd`).
-    ...(plain.groups?.length ? { grp: packGroups(plain.groups, undefined, { ids: [...plain.traces, ...plain.vias].map((t) => t.id), shared }) } : {}),
-    ...(Object.keys(shared).length ? { gd: shared } : {}),
-    // X22 on vias is stored once per setting (`model/viaCodec.ts`).
-    ...(hasViaX22(plain.vias) ? (({ vias, vx }) => ({ vias, vx }))(packVias(plain.vias)) : {}),
-    ...(plain.images?.length ? { im: packImages(plain.images) } : {}),
-    ...(packed.textStyles ? { textStyles: packed.textStyles } : {}),
-    ...(packed.kt ? { kt: packed.kt } : {}),
-    ...(packed.kp ? { kp: packed.kp } : {}),
-    // The board's outline is written compactly (`model/outlineCodec.ts`) as `ol` inside the board.
-    ...(plain.board.outline ? { board: (({ outline, ...rest }) => ({ ...rest, ol: packOutline(outline!) }))(plain.board) } : {}),
-    ...(plain.graphics?.length ? { graphics: packGraphics(plain.graphics) } : {}),
-    ...(plain.zones.some((z) => z.outline) ? { zones: packZones(plain.zones) } : {}),
-    ...(plain.footprints?.some((f) => f.shapes?.length || needsPadPacking(f.pads)) ? { footprints: plain.footprints.map((f) => (f.shapes?.length || needsPadPacking(f.pads) ? { ...f, ...(f.shapes?.length ? { shapes: packShapes(f.shapes) } : {}), ...(needsPadPacking(f.pads) ? { pads: f.pads.map(packPad) } : {}) } : f)) } : {}),
+    ...plain,
+    ...(plain.components.some((c) => c.units) ? { components: plain.components.map((c) => (c.units ? storedComponent(c) : c)) } : {}),
+    ...(plain.zones.some((z) => z.outline || z.kept) ? { zones: packZones(plain.zones) } : {}),
+    ...(plain.footprints?.some((f) => f.shapes?.length || f.zones?.length || needsPadPacking(f.pads)) ? { footprints: plain.footprints.map((f) => (f.shapes?.length || f.zones?.length || needsPadPacking(f.pads) ? { ...f, ...(f.zones?.length ? { zones: packZones(f.zones) } : {}), ...(f.shapes?.length ? { shapes: packShapes(f.shapes) } : {}), ...(needsPadPacking(f.pads) ? { pads: f.pads.map(packPad) } : {}) } : f)) } : {}),
   } as unknown as ProjectDocument
   const file: ProjectFile = { format: PROJECT_FILE_FORMAT, version: PROJECT_FILE_VERSION, project: document }
   return pretty ? JSON.stringify(file, null, 2) : JSON.stringify(file)
@@ -350,7 +387,8 @@ function normalizeBoard(raw: unknown): Project["board"] {
   const { ol, outline: plain, stack: rawStack, ...rest } = (isObject(raw) ? raw : {}) as Json & { ol?: unknown; outline?: unknown; stack?: unknown }
   const stack = normalizeStack(rawStack)
   const merged = { width: 50, height: 40, x: 0, y: 0, thickness: 1.6, cornerRadius: 1, ...rest, ...(stack ? { stack } : {}) } as Project["board"]
-  const outline = ol !== undefined ? unpackOutline(ol) : plain !== undefined ? normalizeOutline(plain) : null
+  // The outline as an object; or compact (`ol`), as it was written before, which an edit since (as an object) replaces.
+  const outline = plain !== undefined ? normalizeOutline(plain) : ol !== undefined ? unpackOutline(ol) : null
   return outline ? syncOutlineBox({ ...merged, outline }) : merged
 }
 
@@ -362,14 +400,22 @@ function pcbOf(raw: Partial<ComponentInstance["pcb"]> | undefined): ComponentIns
 
 function normalizeComponent(c: Partial<ComponentInstance> & Pick<ComponentInstance, "id" | "partId">, styles: TextStyleDef[]): ComponentInstance {
   const part = findPart(c.partId)
-  const { unit, bodyStyle, fields, pinAlt, fieldsAutoplaced, flags: rawFlags, variants, texts: rawTexts, tx, gr, groups: _groups, ...rest } = c as typeof c & { tx?: unknown; gr?: unknown }
+  const { unit, bodyStyle, fields, pinAlt, fieldsAutoplaced, flags: rawFlags, variants, texts: rawTexts, tx, gr, groups: rawGroups, classes: rawClasses, sheetPath: rawSheetPath, units: rawUnits, points: rawPoints, ...rest } = c as typeof c & { tx?: unknown; gr?: unknown }
   const flags = cleanFlags(rawFlags)
-  // A part's own text: the stored entries (`tx`), or objects in a hand-written file; absent for a part drawn in the editor.
-  const texts = tx !== undefined ? unpackPartTexts(tx, styles) : normalizePartTexts(rawTexts)
-  // Its groups, from the stored entries; a part drawn in the editor has none.
-  const groups = unpackGroups(gr, defaultPartGroupId)
+  // A part's own text and its groups: objects, or the compact entries written before (`tx`, `gr`), which an edit since (as objects) replaces. A part drawn in the editor has neither.
+  const texts = rawTexts !== undefined ? normalizePartTexts(rawTexts) : tx !== undefined ? unpackPartTexts(tx, styles) : undefined
+  const groups = rawGroups !== undefined ? plainGroups(rawGroups, defaultPartGroupId) : unpackGroups(gr, defaultPartGroupId)
+  // X20: its component classes, each name once and none empty; the sheet path its footprint says.
+  const classes = Array.isArray(rawClasses) ? [...new Set(rawClasses.filter((n): n is string => typeof n === "string" && n !== ""))] : []
+  // X23: its footprint's units and PCB points.
+  const units = normalizeUnits(rawUnits)
+  const points = normalizePoints(rawPoints)
   const out: ComponentInstance = {
     ...rest,
+    ...(classes.length ? { classes } : {}),
+    ...(units ? { units } : {}),
+    ...(points ? { points } : {}),
+    ...(typeof rawSheetPath === "string" && rawSheetPath ? { sheetPath: rawSheetPath } : {}),
     ...(flags ? { flags } : {}),
     ...(texts ? { texts } : {}),
     ...(groups?.length ? { groups } : {}),
@@ -549,15 +595,20 @@ function normalizeFootprints(raw: unknown): FootprintDef[] {
     const c = item.courtyard
     if (!isObject(c) || !finite(c.minX, c.minY, c.maxX, c.maxY)) continue
     const silk = list<unknown>(item.silk).filter((path): path is Vec2[] => Array.isArray(path) && path.every(isPoint))
-    const { package: pkg, shapes: rawShapes, noCourtyard, ...rest } = item
+    // `package`, `like` and `noBody` were for the generated 3D bodies, gone since November 2026: a file written before holds them, and they are dropped.
+    const { package: _package, like: _like, noBody: _noBody, shapes: rawShapes, zones: rawZones, noCourtyard, descr, tags, ...rest } = item
+    const landZones = normalizeZones(rawZones).filter((z) => z.outline?.length).map((z, i) => ({ ...z, id: `z${i}` }))
     const shapes = isCompactShapes(rawShapes) ? (unpackShapes(rawShapes) ?? []) : list<unknown>(rawShapes).flatMap((x) => normalizeShape(x, isShapeLayer) ?? [])
     out.push({
       ...rest,
       pads: pads as PadDef[],
       silk,
       ...(shapes.length ? { shapes } : {}),
+      // X30: the zones drawn inside the footprint, read as a board's are and with the same repairs; their ids name their place in the land and are made unique here.
+      ...(landZones.length ? { zones: landZones } : {}),
       ...(noCourtyard === true ? { noCourtyard: true } : {}),
-      ...(typeof pkg === "string" && pkg.trim() ? { package: pkg.trim().slice(0, 120) } : {}),
+      ...(typeof descr === "string" && descr ? { descr: descr.slice(0, 2000) } : {}),
+      ...(typeof tags === "string" && tags ? { tags: tags.slice(0, 2000) } : {}),
     } as FootprintDef)
   }
   return out
@@ -863,6 +914,7 @@ function normalizeSheetSymbol(raw: Record<string, unknown>): NonNullable<Project
   }
   const out: NonNullable<Project["sheetSymbols"]>[number] = {
     id: raw.id as string,
+    ...(typeof raw.uuid === "string" && /^[0-9a-fA-F-]{36}$/.test(raw.uuid) ? { uuid: raw.uuid } : {}),
     sheet: raw.sheet as string,
     child: raw.child as string,
     x: raw.x as number,
@@ -888,7 +940,7 @@ function normalizeSheetSymbol(raw: Record<string, unknown>): NonNullable<Project
     for (const k of FLAG_KEYS) if ((raw.flags as Record<string, unknown>)[k] === true) flags[k] = true
     if (Object.keys(flags).length) out.flags = flags
   }
-  // A sheet symbol saved with `pages`, `uuid` or a pin's `uuid` has them read past: the export numbers pages in tree order and makes uuids from ids.
+  // A sheet symbol saved with `pages` or a pin's `uuid` has them read past: the export numbers pages in tree order and makes pins' uuids from ids; the sheet symbol's own uuid is kept (a footprint's path passes through it).
   if (raw.fieldsAutoplaced === true) out.fieldsAutoplaced = true
   const variants = normalizeSheetOverrides(raw.variants)
   if (variants) out.variants = variants
@@ -964,17 +1016,18 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
       .filter((c): c is Partial<ComponentInstance> & Pick<ComponentInstance, "id" | "partId"> => isObject(c) && typeof c.id === "string" && typeof c.partId === "string")
       .map((c) => normalizeComponent(c, textStyles)),
   )
-  // Board text: the editor's own silkscreen text as it was, then KiCad's, from objects of a hand-written file and from the stored entries.
-  const rawTexts = list<Record<string, unknown>>(raw.texts)
-  const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
-  const kicadTexts = [...normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set()), ...unpackBoardTexts((raw as { kt?: unknown }).kt, textStyles)]
+  const texts = boardTexts(raw, textStyles)
   const models = normalizeModels(raw.models)
-  const { textStyles: _textStyles, kt: _kt, kp, dimStyles: _dimStyles, dm, grp, gd, im, vx, fonts: _fonts, ...stored } = raw as typeof raw & { fonts?: unknown; textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; gd?: unknown; im?: unknown; vx?: unknown }
-  const dimensions = unpackDimensions(dm, dimStyles)
+  const { textStyles: _textStyles, kt: _kt, kp: _kp, dimStyles: _dimStyles, dm, grp, gd, im, vx, fonts: _fonts, ...stored } = raw as typeof raw & { fonts?: unknown; textStyles?: unknown; kt?: unknown; kp?: unknown; dimStyles?: unknown; dm?: unknown; grp?: unknown; gd?: unknown; im?: unknown; vx?: unknown }
+  // Dimensions, groups and images as objects, and those of the compact entries written before (`dm`, `grp`, `im`) that an edit since did not put among the objects.
+  const dimensions = byId(unpackDimensions(dm, dimStyles), plainItems(raw.dimensions, (d) => {
+    const one = packDimensions([d as unknown as BoardDimension])
+    return unpackDimensions(one.dm, one.dimStyles ?? [])[0]
+  }))
   const storedVias = unpackVias(raw.vias, vx)
   const ids = [...list<unknown>(raw.traces), ...list<unknown>(storedVias)].map((t) => (isObject(t) && typeof t.id === "string" ? t.id : ""))
-  const groups = unpackGroups(grp, undefined, { ids, shared: isObject(gd) ? (gd as Record<string, Record<string, GenValue>>) : undefined }) ?? []
-  const images = unpackImages(im) ?? []
+  const groups = byId(unpackGroups(grp, undefined, { ids, shared: isObject(gd) ? (gd as Record<string, Record<string, GenValue>>) : undefined }) ?? [], plainGroups(raw.groups))
+  const images = byId(unpackImages(im) ?? [], plainItems(raw.images, (m) => unpackImages(packImages([m as unknown as ReferenceImage]))?.[0]))
   const board = normalizeBoard(raw.board)
   const copper = fitCopperToStack(normalizeCopper<Trace>(raw.traces, "net"), normalizeCopper<Via>(storedVias, "routedNet"), board)
   return {
@@ -989,13 +1042,14 @@ export function normalizeProject(raw: Partial<Project> & { id: string }): Projec
     traces: copper.traces,
     vias: copper.vias,
     zones: normalizeZones(raw.zones),
-    texts: orderTexts(ownTexts as unknown as BoardText[], kicadTexts, kp, rawTexts.length - ownTexts.length) as Project["texts"],
+    texts: texts as Project["texts"],
     graphics: normalizeGraphics(raw.graphics),
     dimensions: dimensions.length ? dimensions : undefined,
     groups: groups.length ? groups : undefined,
     images: images.length ? images : undefined,
     fonts: normalizeFonts((raw as { fonts?: unknown }).fonts, components),
     netChains: normalizeNetChains((raw as { netChains?: unknown }).netChains),
+    points: normalizePoints((raw as { points?: unknown }).points),
     board,
     rules: normalizeRules(raw.rules),
     blocks: normalizeBlocks(raw.blocks, components),

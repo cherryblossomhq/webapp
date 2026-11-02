@@ -3,13 +3,12 @@ import { landPad } from "./build"
 import { netClassIsPlain, settledFor, settledSetup } from "./carried"
 import { quarterTurns } from "./geometry"
 import { zoneOnlyCopper } from "./zones"
-import { NEGLIGIBLE_WIDTH } from "./graphics"
-import { KICAD_FONT_NAME } from "./texts"
-import { hasExpression, textVariables, UNSUPPORTED_VARIABLES } from "../../texts"
+import { NEGLIGIBLE_WIDTH, TRANSLATED_LAYER_NAMES } from "./graphics"
+import { unresolvableTexts } from "./texts"
 import { numAt, type List } from "./sexpr"
 import { ZERO_MEANS_INHERIT_UNTIL } from "./read"
 import type { OutlineResult } from "./outline"
-import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
+import type { KicadBoard, KicadFootprint, KicadPad, KicadZone } from "./types"
 
 // What a board needs from the editor's model that the model does not have, extension by
 // extension (X1 to X23 of docs/kicad-import.md). A board that needs an extension that is not built
@@ -17,8 +16,8 @@ import type { KicadBoard, KicadFootprint, KicadPad } from "./types"
 // The rules are the ones of `tests/kicad-census/slices.mjs`, which the census judged the plan by,
 // with the differences named in `Need.source`.
 
-/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects), the board objects slice X11 (dimensions), X12 (groups) and X14 (reference images), the zones slice X3, slice X7 the pad model, X29 (zones on layers that are not copper), X30 (zones inside parts) and X31 (the layers a pour joins a pad on). */
-export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15", "X29", "X30", "X31"])
+/** The extensions the editor has built. Each slice adds its own: 1a built none, 1b-i built X13 (nets on tracks and vias) and X15 (part flags and net ties), 1b-ii X8 (board and footprint drawings), 1b-iii X9 (text objects), the board objects slice X11 (dimensions), X12 (groups) and X14 (reference images), the zones slice X3, slice X7 the pad model, X29 (zones on layers that are not copper), X30 (zones inside parts) and X31 (the layers a pour joins a pad on), X20 (placement rule areas and component classes), X19 (text outlines and embedded fonts), the extras slice X21 (tuning patterns, pad lengths, net chains) and X22 (via protection, backdrill, post-machining), X23 (board variants, footprint units and PCB points), X24 (hatched pours, tracks open through the mask, line ends and colours of drawings kept), X25 (tables, barcodes, drill charts and unresolvable text drawn as plain drawings and text) and X27 (a part's dimensions drawn as the board's). */
+export const BUILT_EXTENSIONS: ReadonlySet<string> = new Set(["X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15", "X19", "X20", "X29", "X30", "X31", "X21", "X22", "X23", "X24", "X25", "X27"])
 
 /** What each extension is, for the sentence "This board uses ..., which is not supported yet." */
 export const EXTENSION_NAMES: Record<string, string> = {
@@ -40,17 +39,20 @@ export const EXTENSION_NAMES: Record<string, string> = {
   X13: "nets on tracks and vias",
   X14: "reference images",
   X15: "part flags and net ties",
-  X19: "text in a font other than KiCad's own, text outlines or embedded fonts",
   X20: "placement rule areas or component classes",
-  X21: "tuning patterns or pad lengths",
+  X21: "tuning patterns, pad lengths or net chains",
   X22: "via protection, backdrill or post-machining",
   X23: "variants, units or points",
+  X23X: "custom properties (KiCad 11 development files)",
   X25: "tables, barcodes, drill charts, text boxes inside footprints, text with expressions or variables the editor cannot resolve",
   X26: "a creepage rule (KiCad 10's minimum creepage distance), which Checks cannot test yet",
   X27: "dimensions inside footprints",
   X28: "reference images in a format other than PNG or JPEG",
   X24: "hatched fills, line end shapes, colours on drawings, filled drawings with a negative width, or tracks exposed through the solder mask",
 }
+
+/** The order extensions are named in: by number, with X23X (custom properties) after X23. */
+const extNumber = (ext: string) => (ext === "X23X" ? 23.5 : Number(ext.slice(1)))
 
 export interface Need {
   ext: string
@@ -105,7 +107,9 @@ export function padLayers(pad: KicadPad, board: KicadBoard): PadLayers {
     set.add("F")
     set.add("B")
   }
-  for (const n of pad.layers) {
+  for (const named of pad.layers) {
+    // an old board's layers in Italian, Polish or French are KiCad's own (`Maski_Dolna` is `B.Mask`)
+    const n = TRANSLATED_LAYER_NAMES[named] ?? named
     if (n === board.copper.front || n === "F.Cu") out.copper.add("F")
     else if (n === board.copper.back || n === "B.Cu") out.copper.add("B")
     else if (n === "*.Cu" || n === "F&B.Cu") both(out.copper)
@@ -225,31 +229,6 @@ function sharedNumberNeeds(fp: KicadFootprint, why: Map<string, string>) {
   }
 }
 
-/** The first text of the board that is an expression, or uses a variable KiCad resolves from somewhere a board file is not (the clock, the footprint's library entry, the nets), as words; null when none does. */
-function textNeedsX25(board: KicadBoard): string | null {
-  const fieldNames = (fp: KicadFootprint) => new Set(fp.props.map((p) => p.key))
-  const check = (text: string, fp: KicadFootprint | null): string | null => {
-    if (hasExpression(text)) return `text with an expression @{...} (${JSON.stringify(text.slice(0, 40))})`
-    for (const token of textVariables(text)) {
-      if (UNSUPPORTED_VARIABLES.test(token)) return `text that uses the variable \${${token}}, which KiCad resolves from the footprint's library entry, the nets or the clock`
-      // A footprint's own field (Datasheet, a user field) that is not the reference or the value
-      if (fp && token !== "REFERENCE" && token !== "VALUE" && fieldNames(fp).has(token)) return `text that uses the part's field \${${token}}`
-    }
-    return null
-  }
-  for (const t of board.texts) {
-    const why = check(t.text, null)
-    if (why) return why
-  }
-  for (const fp of board.footprints) {
-    for (const t of fp.texts) {
-      const why = check(t.text, fp)
-      if (why) return `${why} (${fp.ref || fp.name})`
-    }
-  }
-  return null
-}
-
 /** Every extension this board needs that the model does not have, with the reason. Order is by extension number. */
 export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string, number> }, outline: OutlineResult, opts: NeedsOptions = {}): Need[] {
   const out = new Map<string, Need>()
@@ -293,8 +272,8 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   const zoneCount = board.zones.length + board.footprints.reduce((n, f) => n + f.zones.length, 0)
   if (zoneCount > 0) need("X3", "copper zones, keepouts or rule areas")
   if (board.zones.some((z) => z.kind === "teardrop")) need("X3", "teardrops")
-  if (board.zones.some((z) => z.kind !== "placement" && z.fillMode !== "polygon")) need("X24", "a zone filled with a hatch or a thieving pattern", "importer")
-  if (board.zones.some((z) => z.kind !== "placement" && !zoneOnlyCopper(z, board))) need("X29", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
+  if ([...board.zones, ...board.footprints.flatMap((f) => f.zones)].some((z) => z.fillMode !== "polygon")) need("X24", "a zone filled with a hatch or a thieving pattern", "importer")
+  if (board.zones.some((z) => !zoneOnlyCopper(z, board))) need("X29", "a zone on a layer that is not copper (mask, paste, silkscreen or a user layer)", "importer")
   if (board.footprints.some((f) => f.zones.length)) need("X30", "a zone that belongs to a part (a keepout or pour drawn inside a footprint)", "importer")
   if (board.arcTracks.length > 0) need("X4", "arc tracks")
   const frontBack = (layers: string[]) => layers.includes(board.copper.front) && layers.includes(board.copper.back)
@@ -342,23 +321,22 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
   if (board.segments.length + board.vias.length > 0) need("X13", "tracks and vias that carry a net in the file")
   if (has(/^image$/)) need("X14", "a reference image")
   if (board.footprints.some((f) => f.attr.some((a) => !["smd", "through_hole"].includes(a))) || has(/^footprint>(net_tie_pad_groups|jumper_pad_groups|duplicate_pad_numbers_are_jumpers)/) || board.footprints.some((f) => f.netTies.length)) need("X15", "part flags (virtual, board only, not in the BOM or position files, do not populate) or net ties")
-  if (has(/render_cache$/) || has(/^(footprint>)?embedded_fonts$/)) need("X19", "text outlines or embedded fonts")
-  // Text in a font of the user's computer (`face`) is drawn by that font, which the editor does not have: X19, named.
-  const outlineFonts = [...new Set([...board.texts, ...board.footprints.flatMap((f) => f.texts)].filter((t) => t.face !== null && !t.face.startsWith(KICAD_FONT_NAME)).map((t) => t.face!))]
-  if (outlineFonts.length) need("X19", `text in the font${outlineFonts.length > 1 ? "s" : ""} ${outlineFonts.slice(0, 3).join(", ")}${outlineFonts.length > 3 ? " and more" : ""}, not KiCad's stroke font`, "importer")
+  // X19 (text outlines, embedded fonts, text in a font of the user's computer) is built: a text keeps the outlines KiCad drew it with and its font's name, a board keeps its embedded fonts, and none of it is a reason to refuse a board.
   // X25: what X9 does not build, named. Tables, barcodes and drill charts, a text box inside a footprint, a box that is an outline of points, text that is an expression, and variables KiCad resolves from places a board file does not have.
   if (has(/^(footprint>)?(table|barcode|drill_chart|drill_map)(>|$)/)) need("X25", "tables, barcodes or drill charts")
   else if (has(/^footprint>fp_text_box(>|$)/)) need("X25", "a text box inside a footprint", "importer")
   else if (has(/^gr_text_box>pts(>|$)/)) need("X25", "a text box that is an outline of points", "importer")
   else {
-    const hard = textNeedsX25(board)
+    const hard = unresolvableTexts(board)[0]
     if (hard) need("X25", hard, "importer")
   }
-  // A rule area whose placement is switched off (what KiCad 9 writes on every keepout) places nothing; one that is on is X20.
-  if (board.zones.some((z) => z.kind === "placement") || board.footprints.some((f) => f.zones.some((z) => z.kind === "placement")) || has(/^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
-  if (has(/^generated$/) || has(/^footprint>pad>(die_length|die_delay)$/)) need("X21", "tuning patterns or pad lengths")
-  if (has(/^via>(capping|covering|plugging|filling|backdrill|tertiary_drill)/) || has(/^footprint>pad>(backdrill|tertiary_drill|front_post_machining|back_post_machining)/)) need("X22", "via protection or backdrill")
-  if (has(/^(variants|footprint>variant|footprint>units|footprint>point)/)) need("X23", "variants, units or points")
+  // X20 (placement rule areas and component classes) is built: a rule area that names a sheet, a component class or a group, and the classes of a part, are written into the project.
+  // A rule area whose placement is switched off and names nothing (what KiCad 9 writes on every keepout) holds nothing.
+  const placing = (z: KicadZone) => !!z.placement && (z.placement.enabled || z.placement.by !== "sheet" || z.placement.name !== "")
+  if (board.zones.some(placing) || board.footprints.some((f) => f.zones.some(placing)) || has(/^footprint>component_classes$/)) need("X20", "placement rule areas or component classes")
+  if (has(/^generated$/) || has(/^net_chains$/) || has(/^footprint>pad>(die_length|die_delay)$/)) need("X21", "tuning patterns, pad lengths or net chains")
+  if (has(/^via>(capping|covering|plugging|filling|backdrill|tertiary_drill|front_post_machining|back_post_machining)/) || has(/^footprint>pad>(backdrill|tertiary_drill|front_post_machining|back_post_machining)/)) need("X22", "via protection, backdrill or post-machining")
+  if (has(/^(variants|point|footprint>variant|footprint>units|footprint>point)/)) need("X23", "variants, units or points")
 
   // The importer's own addition: a pad that carries a net but has no number has no pin to carry it on.
   if (board.footprints.some((f) => f.pads.some((p) => (p.number === "" || p.type === "np_thru_hole") && p.net !== null))) need("X7", "an unnumbered pad that carries a net", "importer")
@@ -375,7 +353,7 @@ export function needsOf(board: KicadBoard, account: { paths: ReadonlyMap<string,
     if (top && setupOk.has(top)) continue
     need(rule.ext, `the node "${path}"`, "importer")
   }
-  return [...out.values()].sort((a, b) => Number(a.ext.slice(1)) - Number(b.ext.slice(1)))
+  return [...out.values()].sort((a, b) => extNumber(a.ext) - extNumber(b.ext))
 }
 
 /** The extensions a board needs that are not built. */

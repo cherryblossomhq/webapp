@@ -3,7 +3,7 @@ import * as THREE from "three"
 import { naturalCompare } from "../lib/natural"
 import { placedComponents } from "../editor/three/buildBoard"
 import { fetchModelBytes, modelLibrary } from "../editor/three/files/library"
-import { placementMatrix } from "../editor/three/files/placement"
+import { isStretched, placementMatrix } from "../editor/three/files/placement"
 import { boardColors, mountingHoles } from "../model/board"
 import { pcbPads, slotEnds } from "../model/instances"
 import { holeCentre } from "../model/padDistance"
@@ -242,7 +242,8 @@ export async function stepFile(project: Project, options: { onProgress?: (p: Ste
       continue
     }
     const place = placementMatrix(model, got.object)
-    if (got.step) {
+    // A model KiCad stretches cannot be placed by a STEP assembly's rigid transform, so it is written as its mesh, stretched.
+    if (got.step && !isStretched(model)) {
       // The file goes in as it is, once however it is placed; where it sits is the instance's transform.
       const key = `step:${modelFileKey(model)}`
       if (!models.has(key)) models.set(key, { key, name: model.name, source: { kind: "step", text: got.step }, fallback: meshesOf(got.object) })

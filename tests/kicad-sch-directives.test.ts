@@ -4,7 +4,7 @@ import { kicadFiles } from "../src/export/kicad"
 import { pnpCsv } from "../src/export/pnp"
 import { computeConnectivity } from "../src/model/connectivity"
 import { hitDrawing, moveDrawing, removeDrawings, updateDrawings } from "../src/model/drawings"
-import { isDirective, labelNetClasses, newDirective, setDirectiveClass, settleLabelNetClasses, withLabelNetClasses } from "../src/model/directives"
+import { isDirective, labelClassConflicts, labelNetClasses, newDirective, setDirectiveClass, settleLabelNetClasses, withLabelNetClasses } from "../src/model/directives"
 import { classNameOf, classValues } from "../src/model/netClasses"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
@@ -180,6 +180,16 @@ describe("S8: directive labels", () => {
     // Both units inside, or neither: the units agree and nothing is said.
     expect(report(two(AREA("(dnp yes)", "(xy 30 35) (xy 70 35) (xy 70 135) (xy 30 135)"))).entries.find((e) => e.code === "rule-area-units")).toBeUndefined()
     expect(report(two(AREA("(dnp yes)", "(xy 130 35) (xy 170 35) (xy 170 65) (xy 130 65)"))).entries.find((e) => e.code === "rule-area-units")).toBeUndefined()
+  })
+
+  it("in a KiCad 8 project, a label's class wins over a pattern, as KiCad 8 has it; two labels of two classes, or a label against the file's assignment, still conflict", () => {
+    // moteus x1: GHA's label says Gate, and HV's pattern in the project file matches it too
+    const project = { rules: { netClasses: [{ name: "Gate", nets: [] }, { name: "HV", nets: [], patterns: ["/Gate Driver/GHA"] }, { name: "CAN", nets: ["/CAN_P"] }] } } as unknown as Project
+    const claims = new Map([["/Gate Driver/GHA", ["Gate"]]])
+    expect(labelClassConflicts(project, claims, true)).toEqual(["/Gate Driver/GHA"])
+    expect(labelClassConflicts(project, claims, false)).toEqual([])
+    expect(labelClassConflicts(project, new Map([["/Gate Driver/GHA", ["Gate", "HV"]]]), false)).toEqual(["/Gate Driver/GHA"])
+    expect(labelClassConflicts(project, new Map([["/CAN_P", ["Gate"]]]), false)).toEqual(["/CAN_P"])
   })
 
   it("refuses a net two classes claim, and a directive turned a quarter turn off", () => {

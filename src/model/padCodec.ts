@@ -2,6 +2,7 @@ import { isShapeLayer } from "./shapeLayers"
 import { isCompactShapes, packShapes, unpackShapes } from "./shapeCodec"
 import { normalizeShape } from "./shapes"
 import { isCopperLayerId } from "./stack"
+import { readBackdrill, readPost } from "./viaCodec"
 import type { BoardShape, CopperLayer, PadDef, PadLayers, PadLayerShape, PadSides, PadStack, Vec2 } from "./types"
 import { isObject } from "../lib/guards"
 
@@ -17,7 +18,7 @@ const SIDES = new Set<string>(["top", "bottom", "both", "none"])
 const ZONE = new Set<string>(["none", "thermal", "solid", "tht"])
 const PROPS = new Set<string>(["bga", "fiducial_glob", "fiducial_loc", "testpoint", "castellated", "heatsink", "mechanical", "pressfit"])
 const SHAPES = new Set(["rect", "circle", "pill", "polygon"])
-const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property", "stack", "zoneLayers"] as const
+const X7_KEYS = ["number", "rot", "round", "chamfer", "custom", "holeOffset", "holeAxis", "layers", "maskMargin", "pasteMargin", "pasteRatio", "clearance", "zoneConnect", "thermalGap", "thermalWidth", "thermalAngle", "property", "stack", "zoneLayers", "backdrill", "tertiary", "post", "dieLength", "dieDelay", "connector"] as const
 
 function packCustom(custom: NonNullable<PadDef["custom"]>): unknown {
   const { shapes, proxy, ...rest } = custom
@@ -93,7 +94,18 @@ export function normalizePad(raw: unknown): PadDef | null {
     if (!isObject(c) || !finite(c.ratio, c.corners) || !Number.isInteger(c.corners) || (c.corners as number) < 0 || (c.corners as number) > 15 || (c.ratio as number) < 0) return null
   }
   if (raw.holeOffset !== undefined && !isPoint(raw.holeOffset)) return null
+  // X22 and X21: a backdrill needs layers of the pad's stack, a post-machining its mode; a length or delay is a number above zero.
+  for (const k of ["dieLength", "dieDelay"] as const) if (raw[k] !== undefined && !(finite(raw[k]) && (raw[k] as number) > 0)) return null
+  for (const k of ["backdrill", "tertiary"] as const) {
+    const b = readBackdrill(raw[k])
+    if (b === null) return null
+    if (b) out[k] = b
+  }
+  const post = readPost(raw.post)
+  if (post === null) return null
+  if (post) out.post = post
   if (raw.zoneConnect !== undefined && !(typeof raw.zoneConnect === "string" && ZONE.has(raw.zoneConnect))) return null
+  if (raw.connector !== undefined && raw.connector !== true) return null
   if (raw.property !== undefined && !(typeof raw.property === "string" && PROPS.has(raw.property))) return null
   // X31: a list of copper layers, each once; the empty list is a setting too.
   if (raw.zoneLayers !== undefined && !(Array.isArray(raw.zoneLayers) && raw.zoneLayers.every(isCopperLayerId) && new Set(raw.zoneLayers).size === raw.zoneLayers.length)) return null

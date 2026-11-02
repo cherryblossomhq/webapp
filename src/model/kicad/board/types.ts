@@ -97,6 +97,12 @@ export interface KicadPad {
   keepEnds?: boolean
   /** `(zone_layer_connections L1 L2 ...)` of a pad: the copper layers a pour joins it on when its unused layers are removed (KiCad 9 and 10 write what the last fill found); the layer names as written, `[]` for the node with none, null when the pad has no such node (X31). */
   zoneLayers: string[] | null
+  /** X22: the pad's backdrill and tertiary drill, and its post-machining at the front and back of the board. X21: `die_length` (mm) and `die_delay` (ps). */
+  backdrill?: KicadBackdrill
+  tertiary?: KicadBackdrill
+  post?: KicadPost
+  dieLength?: number
+  dieDelay?: number
   /** A `tenting` that says yes or no for a side (`none` is no setting). */
   tented: boolean
   node: List
@@ -497,10 +503,72 @@ export interface KicadVia {
   tenting?: { front?: boolean; back?: boolean }
   /** `(padstack (mode ...) (layer "Inner" (size d)) ...)`: the via's diameter per layer. Absent for a via with one diameter. */
   stack?: { mode: "front_inner_back" | "custom"; sizes: { name: string; size: number }[] }
+  /** X22: the via's own `capping`, `covering`, `plugging` and `filling`, each a choice where the file makes one (KiCad 10). */
+  protect?: KicadProtection
+  /** X22: `(backdrill (size d) (layers A B))` and `(tertiary_drill ...)`, and the two post-machinings. */
+  backdrill?: KicadBackdrill
+  tertiary?: KicadBackdrill
+  post?: KicadPost
   net: string | null
   netRaw: string | null
   badNet?: string
   locked: boolean
+  node: List
+}
+
+/** X22: via protection by part, true or false where the file chooses. */
+export interface KicadProtection {
+  cap?: boolean
+  fill?: boolean
+  cover?: { front?: boolean; back?: boolean }
+  plug?: { front?: boolean; back?: boolean }
+}
+
+/** X22: a backdrill as the file writes it: the bit's size and the two layers it runs between, by name. */
+export interface KicadBackdrill {
+  size: number
+  start: string
+  end: string
+}
+
+export interface KicadPostMachining {
+  mode: "counterbore" | "countersink"
+  size?: number
+  depth?: number
+  /** In degrees, to a tenth (KiCad keeps tenths). */
+  angle?: number
+}
+
+export interface KicadPost {
+  front?: KicadPostMachining
+  back?: KicadPostMachining
+}
+
+/** X21: a generated item's property: a number, yes or no, a string, a point, a list of points, or a list of cells, as KiCad writes them. */
+export type KicadGenValue = number | boolean | string | { xy: [number, number] } | { pts: [number, number][] } | { cells: [number, number][] }
+
+/** X21: a `generated` node: a tuning pattern, via stack or via stitching, with the ids of the tracks and vias it made. */
+export interface KicadGenerator {
+  uuid: string | null
+  kind: string
+  name: string
+  layer: string
+  locked: boolean
+  /** In file order; KiCad writes them by name. */
+  props: [string, KicadGenValue][]
+  /** The templates' vias, by name. */
+  templates: { name: string; via: KicadVia }[]
+  members: string[]
+  /** Properties whose value KiCad reads and this reader cannot hold (an arc among the points of a line). */
+  unreadable?: string[]
+  node: List
+}
+
+/** X21: a net chain as the file has it: its nets by name (or number) and its terminal pads' ids. */
+export interface KicadNetChain {
+  name: string
+  nets: string[]
+  terminals: string[]
   node: List
 }
 
@@ -591,6 +659,12 @@ export interface KicadBoard {
   texts: KicadText[]
   dimensions: KicadDimension[]
   groups: KicadGroup[]
+  /** X21: the `generated` items. */
+  generators: KicadGenerator[]
+  /** X21: the net chains (KiCad 11). */
+  netChains: KicadNetChain[]
+  /** X22: what the board's `setup` does to a via that does not say; absent when nothing is switched on. */
+  viaProtect?: KicadProtection
   images: KicadImage[]
   /** `(embedded_fonts yes)` of the board and the font files the board and its footprints embed (X19), their bytes as the file stores them. */
   embeddedFonts: { board: boolean; files: KicadFontFile[] }

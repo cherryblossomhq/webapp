@@ -1,11 +1,10 @@
 import { isCopperLayerId } from "./stack"
 import type { GenValue, PcbGenerator, Via } from "./types"
 import { normalizeVia } from "./viaCodec"
+import { finite, isObject } from "../lib/guards"
 
 // X21: a generated item as it is stored (the object after a group's flags, see `dimCodec.ts`) and as it reads back: every property valid or the whole item gone, since a pattern with a property missing would be tuned wrong.
 
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
-const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const pair = (p: unknown): p is [number, number] => Array.isArray(p) && p.length === 2 && finite(p[0]) && finite(p[1])
 
 function readValue(v: unknown): GenValue | null {

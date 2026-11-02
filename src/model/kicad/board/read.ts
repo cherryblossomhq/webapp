@@ -2,6 +2,10 @@ import { legacyArc, rotK } from "./geometry"
 import { resolveLayer } from "./graphics"
 import { backdrillOf, generatorOf, netChainsOf, postMachiningOf, setupProtectionOf, viaProtectionOf } from "./drilling"
 import { decodeBase64, imageFacts } from "../../../lib/imageFacts"
+import type { LineEnd } from "../../types"
+import { barcodeParts, lineShape, tableParts } from "./flatten"
+import { TITLE_BLOCK } from "../../texts"
+import { isShapeLayer } from "../../shapeLayers"
 import { newReport, type ImportReport } from "./report"
 import { atomsOf, decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "./sexpr"
 import type {
@@ -41,6 +45,16 @@ import type {
 // token and the layer table wherever KiCad's own parser does, and by the version stamp only where
 // the file format really changed with it. The numbered switches are the rows of section 3.3 of
 // docs/kicad-import.md, each with its test in tests/kicad-board-read.test.ts.
+
+import { UNPLACED_PROPERTY_UUID_PREFIX } from "../../unplacedProperty"
+
+/**
+ * The hidden field the export writes for a footprint property that had no place (`kicadBoard.ts`: at the origin, on the fabrication layer, hidden). KiCad needs those words to read it as a hidden
+ * field and not a visible text, so the import knows it by its uuid's start and reads it back as the same place-less property; a hidden field of a file that merely sits at the origin is a text, as it was.
+ */
+function isWrittenUnplacedProperty(c: List): boolean {
+  return (strAt(kid(c, "uuid"), 1) ?? "").startsWith(UNPLACED_PROPERTY_UUID_PREFIX)
+}
 
 /** The newest stamp in the KiCad source this reader was written against (pcb_io_kicad_sexpr.h, line 225). */
 export const NEWEST_KNOWN_STAMP = 20261018
@@ -149,6 +163,29 @@ export interface ReadResult {
 
 const COPPER_TYPES = new Set(["signal", "power", "mixed", "jumper"])
 const SHAPE_KINDS = new Set<string>(["line", "arc", "circle", "rect", "poly", "curve", "bbox", "ellipse", "ellipse_arc"])
+
+/** What flattening tables, drill charts and barcodes did, in words for the report (X25). */
+function reportFlattened(n: { tables: number; drillCharts: number; barcodes: number; emptyBarcodes: number; lines: number; cells: number; unsupported: string[] }, report: ImportReport) {
+  const word = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`
+  if (n.tables + n.drillCharts) {
+    report.entries.push({
+      code: "tables-flattened",
+      severity: "changed",
+      object: `${word(n.tables + n.drillCharts, "table")}${n.drillCharts ? ` (${word(n.drillCharts, "drill chart")})` : ""}`,
+      why: `The editor has no table. Each is drawn as the ${word(n.lines, "line")} KiCad draws for its border and separators and a text box for each of its ${word(n.cells, "cell")}, in the same place and layer, so it looks as it did; it no longer lays itself out again when a cell changes.${n.drillCharts ? " A drill chart (KiCad 11 development) is a table KiCad fills from the board's drill data: it is the table as the file has it, with the numbers as of KiCad's last update and no symbols in its first column (KiCad draws those from the drill data)." : ""}`,
+      count: n.tables + n.drillCharts,
+    })
+  }
+  if (n.barcodes) {
+    report.entries.push({ code: "barcodes-flattened", severity: "changed", object: word(n.barcodes, "barcode"), why: "The editor has no barcode. Each is the QR code of its text, made as KiCad's own encoder makes it, as one filled shape in the barcode's place and layer, with its text under it where KiCad draws that and the variables of the text filled in. It no longer changes when its text does.", count: n.barcodes })
+  }
+  if (n.emptyBarcodes) {
+    report.entries.push({ code: "barcodes-empty", severity: "not-brought", object: word(n.emptyBarcodes, "barcode with no text"), why: "KiCad draws nothing for a barcode whose text is empty, so none was drawn.", count: n.emptyBarcodes })
+  }
+  for (const what of new Set(n.unsupported)) {
+    report.entries.push({ code: "barcode-unsupported", severity: "refused", object: what, why: `The board has ${what}, which the editor cannot draw yet, and a board is not imported with something missing.` })
+  }
+}
 
 /** Everything the reader types; any other root list goes to `others` by its token. */
 const TYPED_ROOT = new Set(["version", "generator", "generator_version", "host", "general", "layers", "setup", "net", "net_class", "footprint", "module", "segment", "arc", "via", "zone", "gr_text", "gr_text_box", "target", "title_block", "property", "paper", "page", "dimension", "group", "image", "generated", "net_chains", "variants", "point"])
@@ -574,6 +611,27 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     }
     return out
   }
+  /** The shape KiCad 11 development draws at an end of a line: `(start_shape arrow (length 3) (width 3) (stroke (width 0.6) (type default)))`, the style word first or in a `style` node. */
+  const lineEndOf = (node: List | undefined): LineEnd | undefined => {
+    if (!node) return undefined
+    const style = typeof node[1] === "string" ? node[1] : strAt(kid(node, "style"), 1)
+    if (!style) return undefined
+    const stroke = kid(node, "stroke")
+    const dash = stroke ? strAt(kid(stroke, "type"), 1) : undefined
+    return {
+      style,
+      ...(kid(node, "length") ? { length: numAt(kid(node, "length"), 1, 0) } : {}),
+      ...(kid(node, "width") ? { width: numAt(kid(node, "width"), 1, 0) } : {}),
+      ...(stroke ? { stroke: { width: numAt(kid(stroke, "width"), 1, 0), ...(dash === "dash" || dash === "dot" || dash === "dash_dot" || dash === "dash_dot_dot" ? { dash } : {}) } } : {}),
+    }
+  }
+  const lineEndsOf = (c: List): KicadShape["ends"] => {
+    const start = lineEndOf(kid(c, "start_shape"))
+    const end = lineEndOf(kid(c, "end_shape"))
+    return start || end ? { ...(start ? { start } : {}), ...(end ? { end } : {}) } : undefined
+  }
+  /** A drawing's `(color r g b a)`: red, green and blue as 0 to 255, then opacity. */
+  const colorOf = (node: List): [number, number, number, number] => [numAt(node, 1, 0), numAt(node, 2, 0), numAt(node, 3, 0), numAt(node, 4, 1)]
 
   // ---- shapes (graphics) ----
   const shapeOf = (c: List, kind: ShapeKind): KicadShape => {
@@ -608,8 +666,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       ...(badNet.length ? { badNet: badNet[0] } : {}),
       radius: numAt(kid(c, "radius"), 1, 0),
       ...(mask ? { maskMargin: numAt(mask, 1, 0) } : {}),
-      ending: !!(kid(c, "start_shape") || kid(c, "end_shape")),
-      colored: !!(stroke && kid(stroke, "color")),
+      ...((ends) => (ends ? { ends } : {}))(lineEndsOf(c)),
+      ...(stroke && kid(stroke, "color") ? { color: colorOf(kid(stroke, "color") as List) } : {}),
       node: c,
     }
     const where = `a ${kind} on ${layer || "no layer"}`
@@ -701,7 +759,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     // `(fp_text reference R1 (at ..))` has the kind first and the text second; `(property "Reference" "R1")` and `(gr_text "x")` the text first.
     const head = c[0]
     const isFpText = head === "fp_text"
-    const isBox = head === "gr_text_box" || head === "fp_text_box"
+    const isBox = head === "gr_text_box" || head === "fp_text_box" || head === "table_cell"
     const first = c[1] === "locked" ? 2 : 1
     const raw = isFpText ? (strAt(c, 2) ?? "") : head === "property" ? (strAt(c, 2) ?? "") : (strAt(c, first) ?? "")
     const text = overbar(head === "property" || isBox ? raw : legacyVars(raw))
@@ -722,8 +780,9 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
           start: start ? pt(start, `the text box "${text}"`) : { x: 0, y: 0 },
           end: end ? pt(end, `the text box "${text}"`) : { x: 0, y: 0 },
           hasOutline: !!kid(c, "pts"),
+          corners: points(kid(c, "pts"), `the text box "${text}"`),
           // From stamp 20230825 the border is its own flag, on unless the file says no (the text box starts with it on, pcb_textbox.cpp:53 of 10.0.0); before, it is there when the stroke has a width (10.0.0 parser line 4250, master 5019).
-          border: kid(c, "border") ? flagOrYes(kid(c, "border")!) : stampBefore(20230825) ? !!stroke && kid(stroke, "width") !== undefined && numAt(kid(stroke, "width"), 1, 0) >= 0 : true,
+          border: head === "table_cell" ? false : kid(c, "border") ? flagOrYes(kid(c, "border")!) : stampBefore(20230825) ? !!stroke && kid(stroke, "width") !== undefined && numAt(kid(stroke, "width"), 1, 0) >= 0 : true,
           strokeWidth: stroke && kid(stroke, "width") ? numAt(kid(stroke, "width"), 1, 0) : null,
           margins: marginsNode ? [numAt(marginsNode, 1), numAt(marginsNode, 2), numAt(marginsNode, 3), numAt(marginsNode, 4)] : null,
         }
@@ -758,6 +817,23 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       box,
       node: c,
     }
+  }
+
+  // ---- X25: tables, drill charts and barcodes as the plain drawings they are drawn as ----
+  const flattened = { tables: 0, drillCharts: 0, barcodes: 0, emptyBarcodes: 0, lines: 0, cells: 0, unsupported: [] as string[] }
+  /** A table or a drill chart as drawings (`flatten.ts`): its border and separators as lines and each cell as a text box, in the table's own frame. A part's table is in the part's frame, and the angle a cell's file gives is relative to the part's: KiCad's parser turns it by the part's own (`parseTextBoxContent`). */
+  const tableObjects = (node: List, fp: { angle: number } | null): { shapes: KicadShape[]; texts: KicadText[] } => {
+    const parts = tableParts(node)
+    const shapes = parts.lines.map((l) => lineShape(parts.layer, l.a, l.b, l, node))
+    const texts = parts.cells.map((cell) => {
+      const t = textOf(cell, fp ? "user" : "board", { layer: parts.layer })
+      return fp ? { ...t, angle: t.angle + fp.angle } : t
+    })
+    if (node[0] === "drill_chart") flattened.drillCharts++
+    else flattened.tables++
+    flattened.lines += shapes.length
+    flattened.cells += texts.length
+    return { shapes, texts }
   }
 
   const zoneOf = (z: List, fp: { at: Pt; angle: number } | null): KicadZone => {
@@ -848,8 +924,26 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       islandMode: numAt(kid(fillNode, "island_removal_mode"), 1, 0),
       islandArea: kid(fillNode, "island_area_min") ? numAt(kid(fillNode, "island_area_min"), 1, 0) : null,
       fillMode: modeWord === "hatch" ? "hatch" : modeWord === "thieving" ? "thieving" : "polygon",
+      hatch:
+        modeWord === "hatch"
+          ? {
+              thickness: kid(fillNode, "hatch_thickness") ? numAt(kid(fillNode, "hatch_thickness"), 1, 0) : null,
+              gap: kid(fillNode, "hatch_gap") ? numAt(kid(fillNode, "hatch_gap"), 1, 0) : null,
+              angle: numAt(kid(fillNode, "hatch_orientation"), 1, 0),
+              minHole: kid(fillNode, "hatch_min_hole_area") ? numAt(kid(fillNode, "hatch_min_hole_area"), 1, 0) : null,
+              thinBorder: strAt(kid(fillNode, "hatch_border_algorithm"), 1) === "min_thickness",
+              smoothLevel: numAt(kid(fillNode, "hatch_smoothing_level"), 1, 0),
+              smoothValue: kid(fillNode, "hatch_smoothing_value") ? numAt(kid(fillNode, "hatch_smoothing_value"), 1, 0) : null,
+            }
+          : null,
+      properties: kids(z, "property").map((p) => ({
+        layer: strAt(kid(p, "layer"), 1) ?? "",
+        at: kid(p, "hatch_position") ? pt(kid(kid(p, "hatch_position"), "xy"), "a zone's hatch position") : null,
+        other: (p.slice(1).find((c): c is List => Array.isArray(c) && typeof c[0] === "string" && c[0] !== "layer" && c[0] !== "hatch_position")?.[0] as string | undefined) ?? null,
+      })),
       teardrop: teardropType === "padvia" || teardropType === "track_end" ? teardropType : null,
-      strokedFill: !["no", "false"].includes(strAt(kid(z, "filled_areas_thickness"), 1) ?? ""),
+      // A file before KiCad 6 has no such node (KiCad 6 to 9 write it and KiCad 10 stopped writing it again, with the stroked fill long gone), so only a file that old with none is stroked.
+      strokedFill: kid(z, "filled_areas_thickness") ? !["no", "false"].includes(strAt(kid(z, "filled_areas_thickness"), 1) ?? "") : stampBefore(20250210),
       locked: flagOf(z, "locked"),
       inFootprint: fp !== null,
       node: z,
@@ -1136,7 +1230,8 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const layerName = strAt(kid(fp, "layer"), 1) ?? ""
     const pads: KicadPad[] = []
     const texts: KicadText[] = []
-    const props: { key: string; value: string }[] = []
+    const tableShapes: KicadShape[] = []
+    const props: { key: string; value: string; placed?: boolean }[] = []
     let ref = ""
     let value = ""
     for (const c of fp) {
@@ -1151,14 +1246,21 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
         else if (kind === "value") value = t.text
       } else if (head === "fp_text_box") {
         texts.push(textOf(c, "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
+      } else if (head === "table") {
+        const made = tableObjects(c, { angle })
+        tableShapes.push(...made.shapes)
+        texts.push(...made.texts)
+      } else if (head === "barcode" || head === "drill_chart" || head === "drill_map") {
+        flattened.unsupported.push(`a ${head.replace("_", " ")} inside a footprint`)
       } else if (head === "property") {
         const key = strAt(c, 1) ?? ""
         const val = overbar(strAt(c, 2) ?? "")
-        props.push({ key, value: val })
+        const placed = !!(kid(c, "at") || kid(c, "layer") || kid(c, "effects")) && !isWrittenUnplacedProperty(c)
+        props.push({ key, value: val, placed })
         if (key === "Reference") ref = val
         else if (key === "Value") value = val
         // A property that says where it is is a text (the reference, the value and every field KiCad draws or hides); one with no place is only a property.
-        if (kid(c, "at") || kid(c, "layer") || kid(c, "effects")) texts.push(textOf(c, key === "Reference" ? "reference" : key === "Value" ? "value" : "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
+        if (placed) texts.push(textOf(c, key === "Reference" ? "reference" : key === "Value" ? "value" : "user", { layer: isBack(layerName) ? "B.SilkS" : "F.SilkS" }))
       }
     }
     function padStackOf(node: List, number: string): KicadPadStack {
@@ -1338,6 +1440,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       const kind = c[0].slice(3)
       if (SHAPE_KINDS.has(kind)) shapes.push(shapeOf(c, kind as ShapeKind))
     }
+    shapes.push(...tableShapes)
     footprints.push({
       name: strAt(fp, 1) ?? "",
       ref,
@@ -1368,6 +1471,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
       texts,
       shapes,
       zones: kids(fp, "zone").map((z) => zoneOf(z, place)),
+      dimensions: kids(fp, "dimension").map(dimensionOf),
       groups: kids(fp, "group").map(groupOf),
       privateLayers: atomsOf(kid(fp, "private_layers")),
       netTies,
@@ -1392,21 +1496,30 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     const net = netOf(c, bad)
     return { net: net?.name ?? null, netRaw: net?.raw ?? null, ...(bad.length ? { badNet: bad[0] } : {}) }
   }
-  const segments: KicadSegment[] = kids(tree, "segment").map((c) => ({
+  /** A track's copper layer, and the mask layers it names (KiCad 9: `(layers "F.Cu" "F.Mask")` is a track whose copper is open through the mask) with its own margin for the opening. */
+  const trackLayers = (c: List) => {
+    const named = kid(c, "layers") ? atomsOf(kid(c, "layers")) : []
+    return { layer: strAt(kid(c, "layer"), 1) ?? named.find((n) => !/\.Mask$/.test(n)) ?? "", mask: named.filter((n) => /\.Mask$/.test(n)), maskMargin: kid(c, "solder_mask_margin") ? numAt(kid(c, "solder_mask_margin"), 1, 0) : null }
+  }
+  const allSegments: KicadSegment[] = kids(tree, "segment").map((c) => ({
     start: ptOf(c, "start", "a track segment") ?? { x: 0, y: 0 },
     end: ptOf(c, "end", "a track segment") ?? { x: 0, y: 0 },
     width: numAt(kid(c, "width"), 1, 0),
-    layer: strAt(kid(c, "layer"), 1) ?? "",
+    ...trackLayers(c),
     ...copperNet(c),
     locked: flagOf(c, "locked") || lockedBit(c),
     node: c,
   }))
+  // A `segment` on a layer that is not copper (a KiCad 4 file's line on Dwgs.User or F.SilkS, written as a track) and on no net is a line KiCad draws and plots on that layer, so it is read as the `gr_line` it
+  // looks like. One with a net or an opening through the mask is left a track, and refused as inexact by the builder.
+  const drawnSegment = (s: KicadSegment) => !s.netRaw && !s.mask.length && s.maskMargin === null && !/\.Cu$/.test(s.layer) && s.layer !== "Edge.Cuts" && isShapeLayer(s.layer)
+  const segments = allSegments.filter((s) => !drawnSegment(s))
   const arcTracks: KicadArcTrack[] = kids(tree, "arc").map((c) => ({
     start: ptOf(c, "start", "an arc track") ?? { x: 0, y: 0 },
     mid: ptOf(c, "mid", "an arc track") ?? { x: 0, y: 0 },
     end: ptOf(c, "end", "an arc track") ?? { x: 0, y: 0 },
     width: numAt(kid(c, "width"), 1, 0),
-    layer: strAt(kid(c, "layer"), 1) ?? "",
+    ...trackLayers(c),
     ...copperNet(c),
     locked: flagOf(c, "locked") || lockedBit(c),
     node: c,
@@ -1449,6 +1562,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
   // A footprint's pictures are written at their place on the board, not in the footprint's frame (KiCad's parser adds them as they are).
   const images: KicadImage[] = footprints.flatMap((f) => kids(f.node, "image").map((c) => ({ ...imageOf(c), footprint: f.ref })))
   const others: Record<string, List[]> = {}
+  for (const s of allSegments) if (drawnSegment(s)) shapes.push({ ...lineShape(s.layer, s.start, s.end, { width: s.width, dash: null }, s.node), locked: s.locked })
   for (const c of tree) {
     if (!Array.isArray(c) || typeof c[0] !== "string") continue
     const head = c[0]
@@ -1460,6 +1574,32 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     else if (head === "image") images.push(imageOf(c))
     else if (!TYPED_ROOT.has(head)) (others[head] ??= []).push(c)
   }
+
+  // ---- X25: the board's tables, drill charts and barcodes are drawn as plain lines, text boxes and filled squares ----
+  for (const c of [...(others.table ?? []), ...(others.drill_chart ?? [])]) {
+    const made = tableObjects(c, null)
+    shapes.push(...made.shapes)
+    texts.push(...made.texts)
+  }
+  /** What a `${...}` of a barcode's text shows (`BOARD::ResolveTextVar`): the layer, the title block (empty when unset) and the board's own properties; null for a name this editor has no value for. */
+  const barcodeVariable = (token: string, layer: string): string | null => {
+    const comment = /^COMMENT([1-9])$/.exec(token)
+    if (token === "LAYER") return layer
+    if (TITLE_BLOCK[token] || comment) return properties.find((p) => p.key === (comment ? `Comment ${comment[1]}` : TITLE_BLOCK[token]))?.value ?? ""
+    const own = kids(tree, "property").find((p) => strAt(p, 1) === token)
+    return own ? (strAt(own, 2) ?? "") : null
+  }
+  for (const c of others.barcode ?? []) {
+    const layer = strAt(kid(c, "layer"), 1) ?? ""
+    const made = barcodeParts(c, layer, (token) => barcodeVariable(token, layer))
+    if (made.skipped === "empty") flattened.emptyBarcodes++
+    else if (made.skipped) flattened.unsupported.push(made.skipped.unsupported)
+    else {
+      flattened.barcodes++
+      shapes.push(...made.shapes)
+    }
+  }
+  reportFlattened(flattened, report)
 
   // ---- embedded files: a font is kept (X19), and every other file is named, one report entry each (founder decision: no models packed in the file for now) ----
   const embedded: { file: string; owner: string; what: string }[] = []
@@ -1530,7 +1670,7 @@ function readBoard(tree: List, report: ImportReport): KicadBoard {
     groups,
     generators,
     netChains: netChainsOf(tree),
-    ...(setupProtectionOf(kid(tree, "setup")) ? { viaProtect: setupProtectionOf(kid(tree, "setup")) } : {}),
+    ...((viaProtect) => (viaProtect ? { viaProtect } : {}))(setupProtectionOf(kid(tree, "setup"))),
     images,
     rescuedLayers,
     embeddedFonts: { board: strAt(kid(tree, "embedded_fonts"), 1) === "yes", files: fontFiles },

@@ -4,8 +4,9 @@ import { mountingHoles } from "../model/board"
 import { FOOTPRINT_LIBRARY } from "../model/footprints"
 import { MOUNTING_HOLE_MARK } from "../model/kicad/mountingHoles"
 import { findPart } from "../model/library"
+import { componentModel } from "../model/models3d"
 import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
-import { kicadAttributes } from "../model/partFlags"
+import { kicadAttributes, onBoard } from "../model/partFlags"
 import { partSheet } from "../model/placementAreas"
 import { isHierarchical } from "../model/sheets"
 import { zoneClearance } from "../model/rules"
@@ -13,6 +14,8 @@ import type { ComponentInstance, PinType, Project } from "../model/types"
 import { quoteFlat as quote } from "../lib/kicadQuote"
 import { stableUuid } from "./kicadUuid"
 import { isObject } from "../lib/guards"
+import { kicadModelLines } from "./kicadBoard"
+import { FOOTPRINT_BLOCK, referenceOf } from "./kicadBlocks"
 
 // What `circuit-json-to-kicad` leaves out, put into the files it wrote: no-connect flags, the bill
 // of materials fields on each symbol, the board's design rules and the pours' settings. The
@@ -103,7 +106,7 @@ export function boardFootprintIds(pcb: string): Map<string, string> {
   const ids = new Map<string, string>()
   for (const block of pcb.split(/\r?\n {2}\(footprint\b/).slice(1)) {
     const id = block.match(/^\s*"([^"]+)"/)?.[1]
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const ref = referenceOf(block)
     if (id && ref) ids.set(ref, id)
   }
   return ids
@@ -129,7 +132,7 @@ function hiddenProperty(key: string, value: string, id: number, x: string, y: st
 /** Fill in the fields of each placed symbol, found by its reference, and add the ones the converter has no place for. */
 export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>): string {
   return sch.replace(SYMBOL_BLOCK, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const ref = referenceOf(block)
     const f = ref === undefined ? undefined : fields.get(ref)
     if (!f) return block
     let out = block
@@ -162,8 +165,8 @@ export function addSymbolFields(sch: string, fields: Map<string, SymbolFields>):
  */
 export function applyFootprintNames(pcb: string, project: Project): string {
   const names = new Map(project.components.filter((c) => c.footprint).map((c) => [c.ref, c.footprint]))
-  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+  return pcb.replace(FOOTPRINT_BLOCK, (block) => {
+    const ref = referenceOf(block)
     const name = ref === undefined ? undefined : names.get(ref)
     return name ? block.replace(/^(\n {2}\(footprint\s+)"[^"]*"/, (_m, head: string) => `${head}${quote(`${FOOTPRINT_LIBRARY}:${name}`)}`) : block
   })
@@ -198,8 +201,8 @@ export function applyMountingHoleMarks(pcb: string, project: Project): string {
 export function applyFootprintFlags(pcb: string, project: Project): string {
   const flagged = new Map(project.components.filter((c) => c.flags).map((c) => [c.ref, c.flags!]))
   if (!flagged.size) return pcb
-  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+  return pcb.replace(FOOTPRINT_BLOCK, (block) => {
+    const ref = referenceOf(block)
     const flags = ref === undefined ? undefined : flagged.get(ref)
     if (!flags) return block
     // The converter's own words stay (it writes smd or through_hole from the pads, which a part drawn in the editor has no flag for); the flags add to them, and a mounting the flags name replaces the converter's.
@@ -218,6 +221,28 @@ export function applyFootprintFlags(pcb: string, project: Project): string {
 }
 
 /**
+ * Each footprint's 3D model where its part has one of KiCad's 3D library (a built-in part's own, `libraryModels.ts`, or one the project gave it), found by reference and written
+ * last, as KiCad writes it. The converter writes none, so KiCad drew the board without bodies and a board read back drew only pads. A model of another kind (a supplier's, a
+ * file the user added) has no path KiCad can name, and the export notes it.
+ */
+export function applyFootprintModels(pcb: string, project: Project): { text: string; notes: string[] } {
+  const models = new Map(project.components.flatMap((c) => (c.footprint && c.pcb.placed && onBoard(c) ? [[c.ref, componentModel(project, c)] as const] : [])))
+  let other = 0
+  const text = pcb.replace(FOOTPRINT_BLOCK, (block) => {
+    const ref = referenceOf(block)
+    const model = ref === undefined ? undefined : models.get(ref)
+    if (!model) return block
+    if (model.source !== "kicad") {
+      other++
+      return block
+    }
+    const end = block.lastIndexOf("\n  )")
+    return `${block.slice(0, end)}${kicadModelLines(model).map((l) => `\n    ${l}`).join("")}${block.slice(end)}`
+  })
+  return { text, notes: other ? ["A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written."] : [] }
+}
+
+/**
  * X20: the converter's footprints get the component classes of their parts and, in a hierarchical project, the sheet each is from, found by reference: KiCad's
  * `(component_classes (class ...))` and `(sheetname ...)`, which come before the footprint's attributes. Parts with neither are left as the converter wrote them.
  */
@@ -225,8 +250,8 @@ export function applyComponentClasses(pcb: string, project: Project): string {
   const hierarchical = isHierarchical(project)
   const wanted = new Map(project.components.filter((c) => c.classes?.length || hierarchical || c.sheetPath !== undefined).map((c) => [c.ref, c]))
   if (!wanted.size) return pcb
-  return pcb.replace(/\n {2}\(footprint\b[\s\S]*?(?=\n {2}\(|\n\)\s*$)/g, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+  return pcb.replace(FOOTPRINT_BLOCK, (block) => {
+    const ref = referenceOf(block)
     const c = ref === undefined ? undefined : wanted.get(ref)
     if (!c) return block
     const lines: string[] = []
@@ -299,7 +324,7 @@ export function applyPowerTexts(sch: string, texts: { id: string; field: PlacedF
   if (!texts.length) return sch
   const by = new Map(texts.map((t) => [`#PWR${t.id}`, t.field]))
   return sch.replace(SYMBOL_BLOCK, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const ref = referenceOf(block)
     const f = ref === undefined ? undefined : by.get(ref)
     return f ? block.replace(/\n {4}\(property "Value"[\s\S]*?\n {4}\)(?=\n)/, () => `\n${propertyBlock("Value", f.text, f)}`) : block
   })

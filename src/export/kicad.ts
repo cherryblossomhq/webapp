@@ -4,27 +4,30 @@ import { applyToPoint } from "transformation-matrix"
 import { computeConnectivity } from "../model/connectivity"
 import { findPart } from "../model/library"
 import { powerNetName } from "../model/instances"
-import { analyzePcb } from "../model/pcb"
+import { useFillsOf, zoneFillsOf } from "../model/pcb"
 import { ownFlagComponents, withRuleAreaFlags, withRuleAreaFlagsOnly } from "../model/ruleAreas"
-import { needsZoneEngine } from "../model/zones"
-import type { ComponentInstance, Project } from "../model/types"
+import { hasPartZones, kicadWritesZones } from "../model/zones"
+import type { ComponentInstance, Project, SymbolDrawing } from "../model/types"
 import { applyZones } from "./kicadZones"
 import { slugify } from "./bundle"
 import { projectToCircuitJson, type PlacedText } from "./circuitJson"
-import { imageBytes, preloadImages } from "../store/imageFiles"
-import { keepOriginal, type KeptExport } from "./keep/original"
+import { imageBytes, pictureFiles, preloadImages } from "../store/imageFiles"
+import { keepOriginal, unchangedExport, warmBefore, type KeptExport } from "./keep/original"
 import { applyOutline } from "./kicadOutline"
+import { applyFootprintLinks, applySymbolUuids } from "./kicadLinks"
+import { applyLibraryIdentity } from "./kicadLibNames"
 import { applyPads } from "./kicadPads"
 import { applyBoardObjects } from "./kicadObjects"
 import { applyDrawings } from "./kicadShapes"
 import { applyTexts } from "./kicadTexts"
 import { isKicadBoardProject, writeKicadBoard } from "./kicadBoard"
 import { rootFileStem, sheetTitleBlock, sheetFileNames, sheetSymbolNode, retarget, sheetUuid, sharedSheetNotes, spreadInstances, symbolUuid, symbolsOf, sheetFlagsWritten, writeVariants, unitsOfOtherUses, VARIANT_FILE_VERSION } from "./kicadSheets"
+import { uuidFrom } from "./kicadUuid"
 import { ROOT_SHEET, isHierarchical, sheetsOf, sheetView, useAt, usesOfSheet } from "../model/sheets"
 import { mayHaveBuses } from "../model/busConnectivity"
 import { variantExportNotes, variantNames } from "../model/variants"
-import { addBusItems, addSheetItems, localizePower, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
-import { addNoConnects, addSymbolFields, finishPower, applyBoardSettings, applyFootprintFlags, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
+import { addBlockGroups, addBusItems, addSheetItems, localizePower, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
+import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
 // the user asks for them: it and the packages it needs (the KiCad file writer and tscircuit's
@@ -101,13 +104,15 @@ interface BoardText {
   native: boolean
 }
 
-/** The bytes of a project's reference images by file, loaded if they are not already. */
+/** The bytes of the project's reference images and embedded fonts that the page has, by the id the project names them by. */
 async function loadPictures(project: Project): Promise<Map<string, Uint8Array>> {
-  if (project.images?.length) await preloadImages(project)
   const pictures = new Map<string, Uint8Array>()
-  for (const m of project.images ?? []) {
-    const bytes = imageBytes(m.file)
-    if (bytes) pictures.set(m.file, new Uint8Array(bytes))
+  // A schematic's pictures in the file store are read here too: the sheet writer takes their bytes from the page (`kicadSheet.ts`).
+  if (!project.images?.length && !project.fonts?.files.length && !pictureFiles(project).length) return pictures
+  await preloadImages(project)
+  for (const id of [...(project.images ?? []).map((m) => m.file), ...(project.fonts?.files ?? []).map((f) => f.file)]) {
+    const bytes = imageBytes(id)
+    if (bytes) pictures.set(id, new Uint8Array(bytes))
   }
   return pictures
 }
@@ -115,18 +120,18 @@ async function loadPictures(project: Project): Promise<Map<string, Uint8Array>> 
 /** The board of a project that came from KiCad: the native writer, with the editor's fill of each zone and the pictures of the reference images. */
 async function nativeBoard(project: Project): Promise<BoardText> {
   const pictures = await loadPictures(project)
-  const fills = project.zones.length ? analyzePcb(project, computeConnectivity(project)).zoneFills : []
+  const fills = project.zones.length || hasPartZones(project) ? zoneFillsOf(project, () => computeConnectivity(project)) : []
   const board = writeKicadBoard(project, { fills, pictures })
-  const zoneNotes = project.zones.length ? ["Zones are written with their outlines, layers, nets, priorities and settings, filled as the editor filled them; press B in KiCad to refill them by its own rules. KiCad's thermal reliefs have four spokes; the pour's own spoke count and angle rules do not exist there."] : []
+  const zoneNotes = project.zones.length || hasPartZones(project) ? ["Zones are written with their outlines, layers, nets, priorities and settings, filled as the editor filled them; press B in KiCad to refill them by its own rules. KiCad's thermal reliefs have four spokes; the pour's own spoke count and angle rules do not exist there."] : []
   return { text: board.text, notes: [...board.notes, ...zoneNotes], afterNotes: [], native: true }
 }
 
 /** The board of a project drawn in the editor: the converter's file with what it has no place for written into it. */
 async function converterBoard(project: Project, converted: string): Promise<BoardText> {
   // What the converter has no place for: put into the files it wrote.
-  const flagged = applyFootprintFlags(applyBoardSettings(converted, project), project)
+  const flagged = applyComponentClasses(applyFootprintFlags(applyBoardSettings(applyMountingHoleMarks(applyFootprintNames(converted, project), project), project), project), project)
   // Zones with a polygon, rule areas and zone settings of their own are written by the editor (`kicadZones.ts`); whole-board pours go through the converter as they did.
-  const zones = needsZoneEngine(project) ? applyZones(flagged, project, analyzePcb(project, computeConnectivity(project)).zoneFills) : { text: flagged, notes: [] as string[] }
+  const zones = kicadWritesZones(project) ? applyZones(flagged, project, zoneFillsOf(project, () => computeConnectivity(project))) : { text: flagged, notes: [] as string[] }
   // The pads of a part that has X7 features, as KiCad has them (the converter writes every pad as a rectangle, circle or oval).
   const padded = applyPads(zones.text, project)
   const drawings = applyDrawings(padded.text, project)
@@ -135,13 +140,18 @@ async function converterBoard(project: Project, converted: string): Promise<Boar
   // Dimensions, reference images and groups come last, naming the items the writers above made (a board with none is written as it was).
   const pictures = await loadPictures(project)
   const objects = applyBoardObjects(texts.text, project, drawings.uuids, texts.uuids, pictures)
-  return { text: objects.text, notes: [...zones.notes, ...padded.notes, ...drawings.notes, ...outline.notes, ...texts.notes], afterNotes: objects.notes, native: false }
+  // The parts' 3D models of KiCad's library, last in each footprint.
+  const models = applyFootprintModels(objects.text, project)
+  return { text: models.text, notes: [...zones.notes, ...padded.notes, ...drawings.notes, ...outline.notes, ...texts.notes, ...models.notes], afterNotes: objects.notes, native: false }
 }
+
+/** Whether the project was made from KiCad's files (the import marks it with the file version of what it read). */
+const fromKicadFiles = (p: Pick<Project, "properties">) => !!p.properties?.some((x) => x.key === "KiCad file version")
 
 /** One sheet's schematic text from what the converter wrote, with what it has no place for put in (the post-processing every sheet gets). */
 function schematicText(
   view: Project,
-  data: { symbols: ReturnType<typeof projectToCircuitJson>["symbols"] },
+  data: Pick<ReturnType<typeof projectToCircuitJson>, "symbols" | "powerTexts">,
   circuit: AnyCircuitElement[],
   sch: { getOutputString(): string; ctx: { c2kMatSch?: Parameters<typeof applyToPoint>[0] } },
   footprintIds: Parameters<typeof symbolFields>[1],
@@ -149,7 +159,8 @@ function schematicText(
   symbolFlags: ReadonlyMap<string, ComponentInstance>,
   libOf?: Map<string, string>,
 ): string {
-  const fields = new Map(view.components.map((c) => [c.ref, symbolFields(c, footprintIds)]))
+  const fromKicad = fromKicadFiles(view)
+  const fields = new Map(view.components.map((c) => [c.ref, symbolFields(c, footprintIds, fromKicad)]))
   const busy = mayHaveBuses(view)
   const page = sch.ctx.c2kMatSch
   const flags = page ? noConnectPins(circuit).map((p) => applyToPoint(page, p)) : []
@@ -159,11 +170,14 @@ function schematicText(
     const at = applyToPoint(page, { x: t.x * SCHEMATIC_SCALE, y: t.y * SCHEMATIC_SCALE })
     return { text: t.text, x: at.x, y: at.y, angle: t.angle, size: t.size * EDITOR_MM_PER_UNIT, h: t.h, v: t.v }
   }
-  const links = data.symbols.map((l) => ({ id: l.id, owner: l.owner, unit: l.unit, virtual: l.virtual, part: l.part, reference: field(l.reference), value: field(l.value), pins: l.pins }))
-  let schText = writeSymbolLinks(addNoConnects(addSymbolFields(sch.getOutputString(), fields), flags), links, libOf)
+  const links = data.symbols.map((l) => ({ id: l.id, owner: l.owner, unit: l.unit, virtual: l.virtual, part: l.part, reference: field(l.reference), value: field(l.value), texts: l.texts?.map((t) => field(t)!), refPrefix: l.refPrefix, pins: l.pins }))
+  let schText = applyPowerTexts(writeSymbolLinks(addNoConnects(addSymbolFields(sch.getOutputString(), fields), flags), links, libOf), data.powerTexts.map((t) => ({ id: t.id, field: field(t.text)! })))
   // Flags of symbols, and what only a project named as KiCad names its nets has: labels as they were drawn, wire strokes, and the drawings of the sheet.
   // A symbol says its own flags (`symbolFlags`), never those a sheet symbol above it gives: the file is every use of the sheet's.
   schText = applySymbolFlags(schText, new Map(view.components.map((c) => [c.ref, { flags: symbolFlags.get(c.id)?.flags, fieldsAutoplaced: c.fieldsAutoplaced }] as const).filter(([, c]) => c.flags || c.fieldsAutoplaced)))
+  // The symbols' uuids (before the groups, which name their members by them): the ones they had, else made from the part's id.
+  const symbolUuids = new Map(view.components.map((c) => [`${c.ref}|${c.unit ?? 1}`, c.uuid ?? uuidFrom(`symbol:${c.id}`)]))
+  schText = applySymbolUuids(schText, (ref, unit) => symbolUuids.get(`${ref}|${unit}`))
   if (page) {
     const toPage = (p: { x: number; y: number }) => applyToPoint(page, { x: p.x * SCHEMATIC_SCALE, y: p.y * SCHEMATIC_SCALE })
     // A hierarchy has its labels as drawn whoever named its nets: a sheet pin joins a hierarchical label only, and a local label is not global.
@@ -186,8 +200,11 @@ function schematicText(
     schText = localizePower(schText, new Set(view.components.flatMap((c) => (findPart(c.partId)?.powerLocal ? [powerNetName(c) ?? ""] : []))))
     schText = addSheetItems(schText, view.drawings ?? [], toPage)
     schText = addBusItems(schText, busLabels, (view.busAliases ?? []).filter((a) => view.scope === undefined || (a.sheet ?? ROOT_SHEET) === useAt(view, view.scope).sheet), toPage)
+    // The titled blocks are groups of their symbols in the file, which the import reads back as blocks.
+    schText = addBlockGroups(schText, view.blocks ?? [], new Map(view.components.map((c) => [c.id, c.ref])))
   }
-  return schText
+  // KiCad writes a `/` in a label's text as `{slash}` (a net's name has the sheet's path in front of it, so a slash in the text must not read as part of the path).
+  return schText.replace(/(\n {2}\((?:label|global_label|hierarchical_label) )"((?:[^"\\]|\\.)*)"/g, (_m, head: string, text: string) => `${head}"${text.replace(/\//g, "{slash}")}"`)
 }
 
 export interface KicadExport {
@@ -205,10 +222,15 @@ export interface KicadExport {
  * change is the user's own file, byte for byte, and what changed is written into it.
  */
 export async function kicadFiles(source: Project): Promise<KicadExport> {
-  const fresh = await writtenKicadFiles(source)
-  if (!source.kicad?.original) return fresh
-  return keepOriginal(source, fresh, writtenKicadFiles)
+  if (!source.kicad?.original) return writtenKicadFiles(source)
+  // A project nobody changed is its files as they were: neither it nor the files it was imported from are written.
+  const unchanged = await unchangedExport(source)
+  if (unchanged) return unchanged
+  return keepOriginal(source, await writtenKicadFiles(source), writtenKicadFiles)
 }
+
+/** Write what the export of a project from KiCad files compares with, ahead of the export (`keep/original.ts`). */
+export const prepareKicadExport = (source: Project) => warmBefore(source, writtenKicadFiles)
 
 /** The schematic, board and project files of a KiCad 9 project, all written from the project. */
 async function writtenKicadFiles(source: Project): Promise<KicadExport> {
@@ -218,9 +240,15 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   // files instead, with every symbol as it is by itself (the areas' flags are written on the symbols all the same).
   const asKicad10 = variantNames(source).length > 0 && source.components.some((c) => findPart(c.partId)?.powerLocal)
   const project = asKicad10 ? withRuleAreaFlagsOnly(source) : withRuleAreaFlags(source)
+  // The board written is the project's, so its pours are the project's fills (its kept fills, or the editor's), not filled again for this copy.
+  if (project !== source && (source.zones.length || hasPartZones(source))) useFillsOf(project, zoneFillsOf(source, () => computeConnectivity(source)))
+  // A project from a KiCad board writes its board natively (`kicadBoard.ts`), so the converter is given no copper; a sheet's view never is.
+  const native = isKicadBoardProject(project)
+  // The sheets' pictures in the file store are written from their bytes, read before any sheet is written.
+  if (pictureFiles(project).length) await preloadImages(project)
   // What each symbol says of itself in its file: the variant's and the areas' flags, not the flags of a sheet symbol above it (those are written on the sheet symbol).
   const symbolFlags = new Map((asKicad10 ? project.components : ownFlagComponents(source)).map((c) => [c.id, c]))
-  const { elements, notes, symbols } = projectToCircuitJson(project, { nameAllNets: true, forKicad: true, keepVariants: asKicad10 })
+  const { elements, notes, symbols, powerTexts } = projectToCircuitJson(project, { nameAllNets: true, forKicad: true, keepVariants: asKicad10, copper: !native })
   const circuit = scaleSchematic(elements)
   const { CircuitJsonToKicadSchConverter, CircuitJsonToKicadPcbConverter, CircuitJsonToKicadProConverter } = await import("circuit-json-to-kicad")
   // An imported project keeps its root schematic's name, and the board and project file take it too (KiCad pairs the three by name).
@@ -233,15 +261,15 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   const converters = new Map<string, { sch: InstanceType<typeof CircuitJsonToKicadSchConverter>; view: Project; data: ReturnType<typeof projectToCircuitJson>; circuit: AnyCircuitElement[] }>()
   for (const id of sheetIds) {
     const view = viewOf(id)
-    const data = hierarchical ? projectToCircuitJson(view, { nameAllNets: true, forKicad: true, keepVariants: asKicad10, extraUnits: unitsOfOtherUses(project, id) }) : { elements, notes, symbols }
+    const data = hierarchical ? projectToCircuitJson(view, { nameAllNets: true, forKicad: true, keepVariants: asKicad10, extraUnits: unitsOfOtherUses(project, id), copper: false }) : { elements, notes, symbols, powerTexts }
     const scaled = hierarchical ? scaleSchematic(data.elements) : circuit
-    const conv = new CircuitJsonToKicadSchConverter(scaled, { titleBlock: (hierarchical && id !== ROOT_SHEET ? sheetTitleBlock(project, id) : null) ?? titleBlock(project) })
+    // A project that came from KiCad files keeps its sheets where they were: the page's own origin is the editor's, so every item is at the millimetre it had, on KiCad's grid, not moved to the middle of a page.
+    const conv = new CircuitJsonToKicadSchConverter(scaled, { titleBlock: (hierarchical && id !== ROOT_SHEET ? sheetTitleBlock(project, id) : null) ?? titleBlock(project), ...(fromKicadFiles(project) ? { schematicSheets: [{ circuitOrigin: { x: 0, y: 0 } }] } : {}) })
     conv.runUntilFinished()
     converters.set(id, { sch: conv, view, data, circuit: scaled })
   }
   const sch = converters.get(ROOT_SHEET)!.sch
   // A project that came from a KiCad board writes its board natively, so the converter's board is not made (it stops with "Max iterations reached" on a board of thousands of footprints, and is not used).
-  const native = isKicadBoardProject(project)
   const pcb = new CircuitJsonToKicadPcbConverter(circuit)
   if (!native) pcb.runUntilFinished()
   const pro = new CircuitJsonToKicadProConverter(circuit, { projectName: base, schematicFilename: `${base}.kicad_sch`, pcbFilename: `${base}.kicad_pcb`, schematicSheetPlan: sch.schematicSheetPlan })
@@ -260,7 +288,17 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
     const made = converters.get(id)!
     return schematicText(made.view, made.data, made.circuit, made.sch, footprintIds, sheetNotes, symbolFlags, libOfs[i])
   })
-  const sharedTexts = hierarchical ? shareUnitSymbols(drawnTexts, libOfs) : drawnTexts
+  const sharedTexts0 = hierarchical ? shareUnitSymbols(drawnTexts, libOfs) : drawnTexts
+  // A symbol that came from a KiCad schematic keeps its library name and what its library entry said of itself.
+  const drawingByRef = new Map<string, SymbolDrawing>()
+  if (fromKicadFiles(project)) {
+    for (const c of project.components) {
+      const spec = project.parts?.find((p) => p.id === c.partId)
+      const drawing = spec?.drawing ? project.symbols?.[spec.drawing] : undefined
+      if (drawing && !drawingByRef.has(c.ref)) drawingByRef.set(c.ref, drawing)
+    }
+  }
+  const sharedTexts = drawingByRef.size ? sharedTexts0.map((t) => applyLibraryIdentity(t, (ref) => drawingByRef.get(ref))) : sharedTexts0
   for (const [i, id] of sheetIds.entries()) {
     const made = converters.get(id)!
     const text = sharedTexts[i]
@@ -290,6 +328,8 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   const schText = sheetTexts.get(ROOT_SHEET)!
   if (project.drawings?.some((d) => d.type === "rect" && d.radius && d.radius > 0)) sheetNotes.push("KiCad 9 has no rounded rectangle, so each one is four lines and four arcs with the rectangle's stroke." + (project.drawings.some(roundedFill) ? " A filled one has its fill as a polygon behind them that follows the corners in short steps (within 0.004 mm at a 2.54 mm radius); a dashed one has its gaps drawn solid by it." : ""))
   if (project.drawings?.some((d) => d.type === "image")) sheetNotes.push("Pictures are written as KiCad's own image nodes.")
+  const unread = pictureFiles(project).filter((f) => !imageBytes(f)).length
+  if (unread) sheetNotes.push(`${unread} picture${unread > 1 ? "s are" : " is"} left out: ${unread > 1 ? "their files are" : "its file is"} not in this account, or in the account of anyone this project is shared with.`)
   if (project.drawings?.some((d) => d.type === "busentry" && d.toBus)) sheetNotes.push("KiCad 6 and later have one kind of bus entry in the file, from a wire to a bus; a bus-to-bus entry (KiCad 5's) is written as a short bus segment, which joins the same two buses.")
   if (project.drawings?.some((d) => d.type === "line" && d.arrows && !d.closed)) sheetNotes.push("KiCad's lines have no arrowheads, so each one is a small filled triangle drawn at the end.")
   if (project.drawings?.some((d) => d.type === "text" && d.mono && d.valign === undefined)) sheetNotes.push("The monospace face of a text has no setting in KiCad; the text is written in KiCad's own.")
@@ -311,23 +351,34 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
       [`${base}.kicad_pro`]: settings.text,
       [`${base}.kicad_sch`]: tidyNumbers(schText),
       ...Object.fromEntries(sheetIds.filter((id) => id !== ROOT_SHEET).map((id) => [files.get(id)!, tidyNumbers(sheetTexts.get(id)!)])),
-      [`${base}.kicad_pcb`]: tidyNumbers(boardText),
+      [`${base}.kicad_pcb`]: tidyNumbers(applyFootprintLinks(boardText, [...sheetTexts].map(([id, text]) => ({ file: id === ROOT_SHEET ? `${base}.kicad_sch` : (files.get(id) ?? `${base}.kicad_sch`), text })), (ref) => !fromKicadFiles(project) || project.components.some((c) => c.ref === ref && c.sheetFile !== undefined))),
+      // The custom design rules the project was imported with, written back as they were.
+      ...(project.kicad?.dru ? { [`${base}.kicad_dru`]: project.kicad.dru } : {}),
     },
     notes: [
       ...notes,
       ...board.notes,
       ...sheetNotes,
-      ...(symbols.length ? kicadSymbolNotes(elements) : []),
+      ...(symbols.length && project.components.some((c) => findPart(c.partId)?.jumpers) ? kicadSymbolNotes(elements) : []),
       ...board.afterNotes,
       "KiCad names every net, so nets the schematic leaves unnamed are called Net-(REF-PIN), as KiCad would.",
-      ...(board.native ? [] : ["Parts keep our schematic symbols and land patterns; they are stored in the files, not in a KiCad library, and have no 3D models."]),
+      ...(board.native
+      ? []
+      : [
+          "Parts keep our schematic symbols and land patterns; they are stored in the files, not in a KiCad library, and carry the 3D model of KiCad's library the part is drawn with, where it has one. The footprints are named CherryBlossom:<name> (CherryBlossom:0603, CherryBlossom:soic8), which is how Cherry Blossom finds them, and their bodies, again when it reads the board back.",
+          ...(symbols.some((l) => l.reference || l.value || l.texts) ? ["Each part's designator and value are fields shown where the sheet draws them, and the names and numbers of its pins are texts inside its symbol, where the sheet draws them, so the sheet reads the same in KiCad (KiCad lays pin names out by its own rules where it draws them itself)."] : []),
+          ...((project.blocks ?? []).length ? ["Each titled block of the sheet is a group of its symbols, named as the block is."] : []),
+        ]),
       board.native ? "Symbols carry the footprint, part number, LCSC number, manufacturer and every other part property as hidden fields." : "Symbols carry the footprint, part number, LCSC number, manufacturer and every other part property as hidden fields; the board's footprints carry only the part and LCSC numbers.",
-      ...(project.zones.length && !board.native && !needsZoneEngine(project) ? ["Pours arrive filled as Cherry Blossom filled them, with its clearance, thinnest neck and thermal settings; press B in KiCad to refill them. KiCad's thermal spokes are always four, at its own angle."] : []),
+      ...(project.zones.length && !board.native && !kicadWritesZones(project) ? ["Pours arrive filled as Cherry Blossom filled them, with its clearance, thinnest neck and thermal settings; press B in KiCad to refill them. KiCad's thermal spokes are always four, at its own angle."] : []),
       "The design rules are in the KiCad project: clearance, trace width, via and drill sizes, annular ring, hole to hole, copper to the board edge, mask and paste openings, and trace widths by net as net classes. Vias in pads and via tenting have no setting there.",
       ...(project.rules.netClasses?.length ? ["Net classes are in the KiCad project (net settings): each class's clearance, trace width, via, micro via and differential pair sizes, with its nets as patterns that match them exactly. A width given to one net is a class of its own that sets only the width."] : []),
       ...settings.notes,
       ...(settings.unmatched.length ? [`Trace widths for nets with * or ? in the name were left out, since KiCad reads those as wildcards: ${settings.unmatched.join(", ")}.`] : []),
       "The project's name, revision, company, description and other properties are in the schematic's title block and the project's text variables.",
+      ...(project.kicad?.pro ? ["The project file keeps what the KiCad project it came from said that the editor has no setting for (the severity of each check, the sizes offered while routing, the text sizes of new items, the BOM and ERC settings, the colours of net classes), written back as it was."] : []),
+      ...(project.kicad?.dru ? ["The custom design rules file is written back as it was."] : []),
+      ...(project.kicad && (project.kicad.paper || project.kicad.auxOrigin || project.kicad.gridOrigin || project.kicad.plot || project.kicad.layers) ? ["The board's page size, drill and place file origin, grid origin, plot settings and layer names are written back as the KiCad board had them."] : []),
       ...(project.components.some((c) => c.flags) ? ["Part flags (surface mount or through-hole, not in the BOM or position file, board only, do not populate, allowed missing courtyard and mask bridges) and net ties are written as each footprint's attributes and pad groups."] : []),
     ],
   }

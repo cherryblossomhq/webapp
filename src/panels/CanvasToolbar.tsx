@@ -1,4 +1,4 @@
-import { Ban, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
+import { Ban, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { imageFacts } from "../lib/imageFacts"
 import { addImage } from "../model/boardObjects"
@@ -23,7 +23,7 @@ import { PCB } from "../editor/theme"
 import { shapeLayerColor } from "../editor/pcb/ShapeGraphics"
 import { defaultDrawWidth, EDGE_CUTS_LAYER, DRAW_TOOL_KEYS, DRAW_TOOL_NAMES, drawLayerChoices, usedShapeLayers, type DrawTool } from "../editor/pcb/shapeEditing"
 import { TEXT_TOOL_KEY } from "../editor/pcb/textEditing"
-import { KEEPOUT_TOOL_KEY, ZONE_TOOL_KEY } from "../editor/pcb/zoneEditing"
+import { KEEPOUT_TOOL_KEY, PLACEMENT_TOOL_KEY, ZONE_TOOL_KEY } from "../editor/pcb/zoneEditing"
 import { isWholeBoardPour } from "../model/zones"
 import { IconButton, Segmented } from "../ui/controls"
 import { ToolGroup, type ToolChoice } from "../ui/ToolGroup"
@@ -183,10 +183,11 @@ function repack(): string {
 const DRAW_ICONS: Record<DrawTool, typeof Slash> = { line: Slash, arc: Spline, circle: Circle, rect: Square, polygon: Pentagon }
 const DRAW_ORDER: DrawTool[] = ["line", "arc", "circle", "rect", "polygon"]
 
-// The board's tools by what they make, a menu each: copper areas, shapes (a slot is a shape cut through the board), and notes on it.
+// The board's tools by what they make, a menu each: areas (copper, keepouts, placement), shapes (a slot is a shape cut through the board), and notes on it.
 const PCB_ZONE_TOOLS: ToolChoice<PcbTool>[] = [
   { value: "zone", label: "Draw a copper zone", shortcut: ZONE_TOOL_KEY, hint: "Click the corners of a polygon on the layer shown, Enter to finish: copper poured there, in its own net, with its own settings", icon: <Hexagon size={16} /> },
   { value: "keepout", label: "Draw a keepout", shortcut: KEEPOUT_TOOL_KEY, hint: "Click the corners of an area that keeps tracks, vias and pours out; the Inspector says what it keeps out", icon: <Ban size={16} /> },
+  { value: "placement", label: "Draw a placement area", shortcut: PLACEMENT_TOOL_KEY, hint: "Click the corners of an area where the parts of a sheet, a class or a group have to sit; the Inspector says whose", icon: <BoxSelect size={16} /> },
 ]
 const PCB_DRAW_TOOLS: ToolChoice<PcbTool>[] = [
   ...DRAW_ORDER.map((t) => {

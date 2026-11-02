@@ -5,29 +5,31 @@ import { customPartId, customPartProblems, digest, registerProjectParts } from "
 import { runErc } from "../../erc"
 import { labelBox } from "../../labels"
 import { cleanFlags } from "../../partFlags"
+import { normalizeOverrides, normalizeProjectVariants } from "../../variants"
 import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
 import { SCH_GRID } from "../../symbols"
 import { pathsBox } from "../../shapes"
-import type { BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire, Zone } from "../../types"
-import { kicadModel } from "../../models3d"
+import type { EmbeddedFont, ProjectFonts, BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PcbPoint, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire, Zone } from "../../types"
+import { givenFileModel, kicadModel } from "../../models3d"
 import { pinRole } from "../../supplier/roles"
 import { cleanPinName } from "../symbol"
 import { padRings } from "../../padGeom"
 import { landPad, type PadIds } from "./pads"
 import { defaultGraphicId } from "../../shapeCodec"
 import { convertShape, convertTarget, courtyardBox, drawingBox, landShapes, type GraphicsContext } from "./graphics"
-import { convertBoardText, convertPartTexts, landTextBox, type PartPlacement, type TextConversion } from "./texts"
+import { convertBoardText, convertPartTexts, landTextBox, unresolvableTexts, type PartPlacement, type TextConversion } from "./texts"
 import { convertDimension } from "./dimensions"
 import { groupParents, newGroupStats, resolveGroups, type RawGroup } from "./groups"
 import { convertGenerator, convertNetChains, viaDrilling } from "./build22"
 import { convertImage, type KeptFile } from "./images"
 import { defaultDimensionId, defaultGroupId, defaultImageId, defaultPartGroupId } from "../../dimCodec"
 import { defaultTextId } from "../../textCodec"
-import { textShown } from "../../texts"
+import { DIMENSION_TEXT_OWNER, expandTextVars, textFontState, textShown, worldTexts, type WorldText } from "../../texts"
+import { sha256Hex } from "../../../lib/imageFacts"
 import { flipShapeLayer } from "../../shapeLayers"
-import { modelKey, planModels } from "./models"
+import { modelKey, planModels, type GivenModels } from "./models"
 import type { OutlineResult } from "./outline"
 import type { ImportReport } from "./report"
 import { decodeNetName, eraOf } from "./read"
@@ -35,7 +37,10 @@ import { importRulesX10 } from "./netClassImport"
 import { convertPartZones, convertZones, reportPartZones, reportZones } from "./zones"
 import { buildStack, layerMapOf, layersOfNames } from "./layers"
 import { copperLayers, viaBetween } from "../../stack"
-import type { KicadBoard, KicadFootprint, KicadVia } from "./types"
+import type { KicadBoard, KicadFontFile, KicadFootprint, KicadPoint, KicadVia } from "./types"
+import { rejectEmbeddedFont } from "./account"
+import { boardCarry, edgeWidths, nodeText, unlistedStandardLayers, WRITTEN_LAYER_NUMBERING } from "./carry"
+import { reportExportLimits } from "./exportLimits"
 import type { List } from "./sexpr"
 import { kid, kids, strAt } from "./sexpr"
 
@@ -58,6 +63,8 @@ export interface BuildOptions {
    * hold. For measurement and tests only: the importer never imports such a board.
    */
   allowLossy?: boolean
+  /** The 3D model files given with the board, which its footprints' models may name (`${KIPRJMOD}/3d models/...`). */
+  models?: GivenModels
 }
 
 export interface BuildResult {
@@ -214,6 +221,20 @@ export function flagsOf(fp: KicadFootprint): PartFlags | undefined {
   })
 }
 
+/** X23: what each board variant changes on a footprint, in the editor's own flags and field names. */
+function variantsOf(fp: KicadFootprint): ComponentInstance["variants"] {
+  return normalizeOverrides(Object.fromEntries(fp.variants.map((v) => [v.name, { dnp: v.dnp, excludeFromBom: v.excludeFromBom, excludeFromPos: v.excludeFromPos, excludeFromSim: v.excludeFromSim, fields: Object.fromEntries(v.fields.map((f) => [f.name, f.value])) }])))
+}
+
+/**
+ * X23: a PCB point of the board in the board's frame (y up), or (`part`) of a footprint in its own frame as a pad is: the file's, which a part on the bottom has flipped
+ * about its x axis, laid out as for a part on the top, on the layer it has there.
+ */
+const pointOf = (k: KicadPoint, part: { bottom: boolean; copper: number } | null): PcbPoint =>
+  part
+    ? { x: round(k.at.x), y: round(part.bottom ? k.at.y : -k.at.y), size: k.size, layer: part.bottom ? flipShapeLayer(k.layer, part.copper) : k.layer }
+    : { x: round(k.at.x), y: round(-k.at.y), size: k.size, layer: k.layer }
+
 /** The part's pins, and the notes about them. */
 interface PinFacts {
   name: string
@@ -337,7 +358,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
   set("pourClearance", board.setup.zone_clearance, true)
   set("edgeClearance", board.setup.edge_clearance, true)
-  if (board.setup.pad_to_mask_clearance !== undefined) rules.maskExpansion = board.setup.pad_to_mask_clearance
+  // A board that states no mask margin has none: KiCad's default is 0 (the editor's own boards start at 0.05).
+  rules.maskExpansion = board.setup.pad_to_mask_clearance ?? 0
   if (board.setup.pad_to_paste_clearance !== undefined) rules.pasteExpansion = board.setup.pad_to_paste_clearance
   if (board.userTraceWidths.length) rules.preferredWidths = [...new Set([rules.traceWidth, ...board.userTraceWidths])].sort((a, b) => a - b)
   project.rules = rules
@@ -361,6 +383,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   /** Per component: every numbered pad with the file's raw net name (null for none), for the check at the end, which compares pads, not pins. */
   const padFacts = new Map<string, { number: string; net: string | null }[]>()
   const modelDropped = new Map<string, { path: string; why: string; refs: string[] }>()
+  const modelNearest = new Map<string, { nearest: string; refs: string[] }>()
   /** What KiCad does to a pad that the project shows differently (a hole of a nanometre), by words, with the parts it is on. */
   const padNotes = new Map<string, string[]>()
   const counters = new Map<string, number>()
@@ -378,7 +401,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   const degenerate: string[] = []
   const badNets: string[] = []
   /** The zones inside parts, for the report. */
-  const partZones: { parts: number; zones: Zone[]; degenerate: number } = { parts: 0, zones: [], degenerate: 0 }
+  const partZones: { parts: number; zones: Zone[]; degenerate: number; placements: number } = { parts: 0, zones: [], degenerate: 0, placements: 0 }
   let privateShapes = 0
   /** Text objects brought in, for the report; and the conversion context a text is built with. */
   let textCount = 0
@@ -445,7 +468,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     })
 
     // The model the part holds, and the land it is held with: footprints with the same pads and model share a land.
-    const modelPlan = planModels(fp)
+    const modelPlan = planModels(fp, options.models)
+    const writtenBack = fp.models.filter((m) => !(modelPlan.kept && !modelPlan.kept.file && m === modelPlan.kept.model))
     // The drawings of the footprint on its land, in the land's frame; the courtyard is the one the file draws, else the pads' box and a quarter millimetre, else (a logo) the box of what is drawn, which the checks leave out.
     const drawn = landShapes(fp, board, bottom, (raw) => labelText.get(raw), lose, degenerate, badNets)
     privateShapes += drawn.privateCount
@@ -456,6 +480,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       partZones.parts += inside.zones.length ? 1 : 0
       partZones.zones.push(...inside.zones)
       partZones.degenerate += inside.degenerate
+      partZones.placements += inside.placements
     }
     const partTextOrigins: number[] = []
     const drawnCourtyard = courtyardBox(drawn.shapes)
@@ -464,8 +489,8 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     const placeOf = (): PartPlacement => ({ x: round(frameTop(fp.at).x, 6), y: round(frameTop(fp.at).y, 6), rot, bottom, at: fp.at, angle: fp.angle })
     const textBox = !pads.length && !drawn.shapes.length ? landTextBox(convertPartTexts(fp.texts, fp.ref, placeOf(), { board, lose: () => {}, where: "" }, { ref: fp.ref })) : null
     const courtyard = drawnCourtyard ?? (pads.length ? padBounds(pads, 0.25) : (drawingBox(drawn.shapes) ?? textBox ?? { minX: -0.5, minY: -0.5, maxX: 0.5, maxY: 0.5 }))
-    const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(inside?.zones.length ? { zones: inside.zones } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}) }
     const nameBase = fp.name.includes(":") ? fp.name.slice(fp.name.indexOf(":") + 1) : fp.name
+    const land = { pads, silk: [] as Vec2[][], courtyard, ...(drawn.shapes.length ? { shapes: drawn.shapes } : {}), ...(inside?.zones.length ? { zones: inside.zones } : {}), ...(!drawnCourtyard && !pads.length ? { noCourtyard: true as const } : {}), ...(fp.descr ? { descr: fp.descr } : {}), ...(fp.tags ? { tags: fp.tags } : {}) }
     const landName = `${slug(nameBase || fp.ref)}-${digest(JSON.stringify(land) + modelKey(modelPlan))}`
     if (!lands.has(landName)) lands.set(landName, { name: landName, ...land })
 
@@ -517,6 +542,7 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
 
     const at = frameTop(fp.at)
     const flags = flagsOf(fp)
+    const variants = variantsOf(fp)
     const component: ComponentInstance = {
       id: uid("c"),
       partId,
@@ -527,6 +553,15 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       // X20: the part's component classes, and the sheet its footprint says it is from.
       ...(fp.classes.length ? { classes: fp.classes } : {}),
       ...(fp.sheetname ? { sheetPath: fp.sheetname } : {}),
+      ...(fp.sheetfile ? { sheetFile: fp.sheetfile } : {}),
+      // X23: what each variant changes on the footprint, its units, and its PCB points.
+      ...(fp.units.length ? { units: fp.units } : {}),
+      ...(fp.points.length ? { points: fp.points.map((k) => pointOf(k, { bottom, copper: board.copper.names.length || 2 })) } : {}),
+      ...(variants ? { variants } : {}),
+      // The properties of the footprint that have no place (`(property "LCSC" "C15850")`), as the file has them.
+      ...(fp.props.some((p) => !p.placed && p.key !== "Reference" && p.key !== "Value") ? { fpProps: fp.props.filter((p) => !p.placed && p.key !== "Reference" && p.key !== "Value").map((p) => ({ name: p.key, value: p.value })) } : {}),
+      // The model lines the export writes back as the file had them: all but a stock model, which the export names itself. A file given with the board is shown and its line kept too, since only the user's own path names it.
+      ...(writtenBack.length ? { modelRefs: writtenBack.map((m) => nodeText(m.node)) } : {}),
       sch: { x: 0, y: 0, rot: 0 },
       // To the nanometre the file gives, as KiCad keeps it: KiCad keys a check the user dismissed by where its marker is, which is often the footprint's place.
       pcb: { x: round(at.x, 6), y: round(at.y, 6), rot, side: bottom ? "bottom" : "top", placed: true, ...(fp.locked ? { locked: true } : {}) },
@@ -559,9 +594,16 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     // (the same offset and rotation on the bottom: the half turn of the placement is what KiCad's flip adds, see `landPad`).
     // Every other model is named in the report with its reason.
     if (modelPlan.kept && !models.some((a) => a.part === partId && a.footprint === landName)) {
-      const { model, id } = modelPlan.kept
-      const held = kicadModel({ source: "kicad", id, name: id.slice(id.lastIndexOf("/") + 1).replace(/\.[^.]+$/, ""), offset: model.offset, rotate: model.rotate, scale: model.scale })
+      const { model, id, file, nearest } = modelPlan.kept
+      const stock = file ? null : kicadModel({ source: "kicad", id, name: id.slice(id.lastIndexOf("/") + 1).replace(/\.[^.]+$/, ""), offset: model.offset, rotate: model.rotate, scale: model.scale })
+      // A stock model of a nearby name is written back under the name the file gave it.
+      const held = file ? givenFileModel(file, model) : stock && nearest ? { ...stock, named: model.path } : stock
       if (held) models.push({ part: partId, footprint: landName, model: held })
+      if (held && nearest) {
+        const had = modelNearest.get(model.path)
+        if (had) had.refs.push(ref)
+        else modelNearest.set(model.path, { nearest, refs: [ref] })
+      }
     }
     for (const d of modelPlan.dropped) {
       const key = `${d.model.path}\n${d.why}`
@@ -570,12 +612,21 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       else modelDropped.set(key, { path: d.model.path, why: d.why, refs: [ref] })
     }
   }
+  for (const [path, d] of modelNearest) {
+    report.entries.push({
+      code: "model-nearest",
+      severity: "changed",
+      object: `3D model ${path} of ${d.refs.length === 1 ? d.refs[0] : `${d.refs.length} parts (${d.refs.slice(0, 3).join(", ")}${d.refs.length > 3 ? ", ..." : ""})`}`,
+      why: `KiCad's 3D library no longer has a file of this name, so the editor draws ${d.nearest}, the same package's model under a shorter name. The export names the model as the file did.`,
+      count: d.refs.length,
+    })
+  }
   for (const d of modelDropped.values()) {
     report.entries.push({
       code: "model-not-brought",
       severity: "not-brought",
       object: `3D model ${d.path || "(no file name)"} of ${d.refs.length === 1 ? d.refs[0] : `${d.refs.length} parts (${d.refs.slice(0, 3).join(", ")}${d.refs.length > 3 ? ", ..." : ""})`}`,
-      why: d.why,
+      why: `${d.why} The model's line is kept, and the export writes it back as it was, so the part keeps its link to the file; the editor does not show it.`,
       count: d.refs.length,
     })
   }
@@ -668,13 +719,14 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     // An arc is held to the nanometre (the file's own unit), not the tenth of a micrometre of a polyline: its circle follows from the three points.
     const pts = [a.start, a.mid, a.end].map((p) => ({ x: round(p.x, 6), y: round(-p.y, 6) }))
     // Three points on a line are KiCad's own straight track (a degenerate arc); it is held as the arc it is, exactly.
-    const t: Trace = { id: uid("t"), layer, width: a.width, points: pts, arc: true, ...(a.locked ? { locked: true } : {}), ...(net ? { net } : {}) }
+    const bare = bareOf(layer, a, lose)
+    const t: Trace = { id: uid("t"), layer, width: a.width, points: pts, arc: true, ...(a.locked ? { locked: true } : {}), ...(net ? { net } : { noNet: true as const }), ...(bare ? { bare } : {}) }
     traces.push(t)
     addRef(uuidOf(a.node), t.id)
   }
   const convertVia = (v: KicadVia): Via => {
     const net = v.netRaw ? labelText.get(v.netRaw) : undefined
-    const via: Via = { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : {}) }
+    const via: Via = { id: uid("v"), x: round(v.at.x), y: round(-v.at.y), diameter: v.size || rules.viaDiameter, drill: v.drill || rules.viaDrill, ...(v.locked ? { locked: true } : {}), ...(net ? { routedNet: net } : { noNet: true as const }) }
     // X5: a via that is not a through via says which layers it joins. KiCad sorts the pair front to back and calls a `blind` between two inner layers buried.
     if (v.kind !== "through") {
       const a = v.layers[0] ? layerOf(v.layers[0]) : null
@@ -713,6 +765,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   }
   const vias: Via[] = board.vias.map(convertVia)
   board.vias.forEach((v, i) => addRef(uuidOf(v.node), vias[i].id))
+  const drillless = board.vias.filter((v) => !v.drill).length
+  if (drillless) {
+    report.entries.push({ code: "via-default-drill", severity: "changed", object: `${drillless} via${drillless > 1 ? "s" : ""} with no drill in the file`, why: `A via with no drill takes the board's default via drill (${rules.viaDrill} mm here) and the export writes that drill. KiCad 10 reads such a via from an old file with a drill of its own choice, so its drill file may differ for these vias.`, count: drillless })
+  }
   // Things a group cannot hold (zones: the project holds them since X3, but a group's members are parts, tracks, vias, drawings, texts, dimensions and images; tables, barcodes and the rest) are known to the file: a group that lists one says so, not that it names nothing.
   for (const z of board.zones) addRef(uuidOf(z.node))
   for (const list of Object.values(board.others)) for (const n of list) addRef(uuidOf(n))
@@ -782,8 +838,11 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
       items: badNets,
     })
   }
-  if (privateShapes) {
-    report.entries.push({ code: "private-layer-drawings", severity: "not-brought", object: `${privateShapes} drawing${privateShapes > 1 ? "s" : ""} on a footprint's private layers`, why: "KiCad shows and plots nothing on a footprint's private layers, so these drawings were not brought in.", count: privateShapes })
+  // X27: a dimension of a footprint on one of its private layers is a drawing on it too
+  const privateDimensions = board.footprints.reduce((n, f) => n + f.dimensions.filter((d) => f.privateLayers.includes(d.layer)).length, 0)
+  if (privateShapes + privateDimensions) {
+    const all = privateShapes + privateDimensions
+    report.entries.push({ code: "private-layer-drawings", severity: "not-brought", object: `${all} drawing${all > 1 ? "s" : ""} on a footprint's private layers`, why: "KiCad shows and plots nothing on a footprint's private layers, so these drawings were not brought in.", count: all })
   }
 
   // ---------- text on the board ----------
@@ -797,12 +856,48 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
 
   // ---------- dimensions, reference images and groups ----------
   const dimensions: BoardDimension[] = []
+  const dimensionFonts = new Set<string>()
   for (const k of board.dimensions) {
-    const made = convertDimension(k, { board, lose }, defaultDimensionId(dimensions.length))
+    const made = convertDimension(k, { board, lose, fontOf: (face) => dimensionFonts.add(face) }, defaultDimensionId(dimensions.length))
     if (made) dimensions.push(made)
     addRef(k.uuid, ...(made ? [made.id] : []))
   }
+  // X27: a dimension drawn inside a footprint is a board dimension. KiCad's `PCB_DIMENSION_BASE::GetStart` and `SetStart` apply the footprint's transform (pcb_dimension.cpp, master), and the writer writes the board's
+  // points, so a file keeps them in the board's frame whatever the part's place and stamp: it is the dimension the file says, and it no longer moves with the part. A text in it that names the part's reference, value or fields is filled in from the part.
+  const flattenedDimensions: string[] = []
+  const leftVariables = new Set<string>()
+  const partDimensions = board.footprints.flatMap((f) => f.dimensions.filter((d) => !f.privateLayers.includes(d.layer)).map((d) => ({ d, f, part: compOf.get(f)?.ref || f.ref || f.name })))
+  for (const { d, f, part } of partDimensions) {
+    const colon = f.name.indexOf(":")
+    const fill = (text: string) =>
+      expandTextVars(text, (token) => {
+        const own: Record<string, string> = { REFERENCE: part, VALUE: f.value, FOOTPRINT_LIBRARY: colon < 0 ? "" : f.name.slice(0, colon), FOOTPRINT_NAME: f.name.slice(colon + 1) }
+        const value = Object.hasOwn(own, token) ? own[token] : (f.props.find((p) => p.key === token)?.value ?? null)
+        if (value === null) leftVariables.add(token)
+        return value
+      })
+    const filled = { ...d, prefix: fill(d.prefix), suffix: fill(d.suffix), override: d.override === null ? null : fill(d.override) }
+    const made = convertDimension(filled, { board, lose, fontOf: (face) => dimensionFonts.add(face) }, defaultDimensionId(dimensions.length))
+    if (made) {
+      dimensions.push(made)
+      flattenedDimensions.push(`${part}: ${made.kind}`)
+    }
+  }
+  if (flattenedDimensions.length) {
+    report.entries.push({
+      code: "dimensions-flattened",
+      severity: "changed",
+      object: `${flattenedDimensions.length} dimension${flattenedDimensions.length === 1 ? "" : "s"} drawn inside a part (${flattenedDimensions.slice(0, 3).join("; ")}${flattenedDimensions.length > 3 ? "; ..." : ""})`,
+      why: "The editor has no dimension that belongs to a part: KiCad moves, turns and flips one with its part by rules of its own for the part, which a dimension of the board does not follow. Each is the board dimension it is drawn as, in the place and shape the file gives it, so it stays put when the part is moved." + (leftVariables.size ? ` The text of some uses ${[...leftVariables].slice(0, 3).map((v) => "${" + v + "}").join(", ")}${leftVariables.size > 3 ? ", ..." : ""}, which the editor cannot fill in, so it stays as typed.` : ""),
+      count: flattenedDimensions.length,
+      items: flattenedDimensions,
+    })
+  }
   const keptFiles = new Map<string, KeptFile>()
+  // The fonts the board and its footprints embed (X19): the file store keeps their bytes, the project the names and the flags.
+  const droppedFonts = new Set<KicadFontFile>()
+  const fonts = convertFonts(board, compOf, keptFiles, droppedFonts)
+  if (report.account) for (const file of droppedFonts) rejectEmbeddedFont(report.account, file)
   const images: ReferenceImage[] = []
   for (const k of board.images) {
     const made = convertImage(k, { board, lose }, defaultImageId(images.length))
@@ -900,8 +995,10 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     { key: "KiCad file version", value: version },
     ...board.properties.filter((p) => !(titleIsName && p.key === "Title")),
   ]
+  const variants = normalizeProjectVariants({ list: board.variants }, components, undefined)
   project = {
     ...project,
+    ...(variants ? { variants } : {}),
     board: {
       ...project.board,
       width: round(width),
@@ -923,12 +1020,41 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
     ...(dimensions.length ? { dimensions } : {}),
     ...(boardGroups.length ? { groups: boardGroups } : {}),
     ...(netChains.length ? { netChains } : {}),
+    ...(board.points.length ? { points: board.points.map((k) => pointOf(k, null)) } : {}),
     ...(images.length ? { images } : {}),
+    ...(fonts ? { fonts } : {}),
+    ...((kicad) => (kicad ? { kicad } : {}))(boardCarry(board)),
     properties,
   }
   reportTexts(project, textCount, report)
+  const asTyped = unresolvableTexts(board)
+  if (asTyped.length) {
+    report.entries.push({
+      code: "text-as-typed",
+      severity: "changed",
+      object: `${asTyped.length} text${asTyped.length === 1 ? "" : "s"} that KiCad works out when it draws them (an expression, a variable from the nets, the clock or the part's library entry, or a field of the part)`,
+      why: "The board file does not hold what these show, so each is kept as it is typed, and shown, plotted and written back so. KiCad shows the value it works out in its place.",
+      count: asTyped.length,
+      items: asTyped,
+    })
+  }
+  reportFonts(project, board, dimensionFonts, droppedFonts, report)
   reportDimensionsGroupsImages(board, dimensions, groupStats, report)
   reportX21X22(boardGroups, droppedGenerators, x22Notes, report)
+  reportX24(project, report)
+  reportExportLimits(project, report)
+  const edgeLines = edgeWidths(board)
+  if (edgeLines.size > 1) {
+    const sorted = [...edgeLines].sort((a, b) => b[1] - a[1])
+    report.entries.push({ code: "outline-widths", severity: "changed", object: `the board outline, drawn with ${edgeLines.size} line widths (${sorted.slice(0, 4).map(([w, n]) => `${w} mm on ${n}`).join(", ")})`, why: `The editor's outline is one line of one width: the export writes all of it with ${sorted[0][0]} mm, the width most of it has. A line that was drawn wider (a wide circle for a hole's edge) is drawn with the one width in the gerber of Edge.Cuts, so run the edge clearance check again.`, count: edgeLines.size })
+  }
+  const unlisted = unlistedStandardLayers(board)
+  if (unlisted.length) {
+    report.entries.push({ code: "layers-switched-on", severity: "note", object: `${unlisted.length} layer${unlisted.length > 1 ? "s" : ""} the board's layer table does not list (${unlisted.slice(0, 5).join(", ")}${unlisted.length > 5 ? ", ..." : ""})`, why: "The board file lists only the layers it uses. The export lists every one of KiCad's fixed layers, so these are on: a through-hole pad's mask opening on the back, for one, is then plotted.", count: unlisted.length })
+  }
+  if ((board.version === null || board.version < WRITTEN_LAYER_NUMBERING) && kid(kid(board.tree, "setup"), "pcbplotparams")?.some((n) => Array.isArray(n) && n[0] === "layerselection")) {
+    report.entries.push({ code: "plot-layers-not-carried", severity: "changed", object: "the layers the board was set to plot", why: "The plot settings of a board saved before KiCad 9 number the layers the old way, so the choice of layers to plot is not carried; the other plot settings are. KiCad plots the usual layers until you choose again.", count: 1 })
+  }
 
   // ---------- every pad on the net the file gives it ----------
   const checked = verifyNets(project, padFacts, labelText, report)
@@ -937,6 +1063,15 @@ export function buildKicadProject(board: KicadBoard, outline: OutlineResult, rep
   reportPartZones(partZones, report)
   const copperNetMismatches = compareCopperNets(project, checked.conn, board, report)
   project = acceptLoneLabels(project, checked.conn, report)
+  // A pad alone on a net of the file (`unconnected-(R1-Pad2)`) is on no net of the project: it keeps its net's name for the export.
+  const lone = new Map<string, Record<string, string>>()
+  for (const c of components) {
+    for (const [pin, raw] of padNets.get(c.id) ?? []) {
+      if (checked.conn.pinNet.has(pinKey(c.id, pin))) continue
+      ;(lone.get(c.id) ?? lone.set(c.id, {}).get(c.id)!)[pin] = raw
+    }
+  }
+  if (lone.size) project = { ...project, components: project.components.map((c) => (lone.has(c.id) ? { ...c, loneNets: lone.get(c.id) } : c)) }
   // The pins marked no connect are the importer's, recorded so they can be handed back to Checks in one action.
   const noConnect = Object.fromEntries(components.flatMap((c) => (c.nc ? [[c.id, c.nc]] : [])))
   if (Object.keys(noConnect).length) project = { ...project, importMarks: { ...project.importMarks, noConnect } }
@@ -966,6 +1101,38 @@ function reportX21X22(groups: PcbGroup[], dropped: string[], notes: ReadonlySet<
   for (const n of notes) report.entries.push({ code: "drill-ignored", severity: "note", object: n, why: "KiCad's own reader keeps it but it drills nothing, so the project does not hold it." })
 }
 
+/** X24: what the project holds of KiCad's hatched pours, tracks open through the mask, and line ends and colours of drawings. */
+function reportX24(project: Project, report: ImportReport) {
+  const word = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+  const zones = [...project.zones, ...(project.footprints ?? []).flatMap((f) => f.zones ?? [])]
+  const hatched = zones.filter((z) => z.hatch)
+  if (hatched.length) {
+    report.entries.push({
+      code: "zones-hatched",
+      severity: "note",
+      object: word(hatched.length, "hatched pour"),
+      why: "Kept hatched, with the grid's line width, hole size, angle, smoothing and border: the editor lays the grid out and cuts it into the copper by KiCad's own code for the file's release (`zone_filler.cpp`: from the corner of the copper up to KiCad 9, with an apron round every via and pad of the net; from the origin or the zone's hatch position in KiCad 10, with a ring round every thermal relief). Measured on the corpus' hatched boards against the copper their files store, the two copper areas differ by 0.05 to 0.12 percent when the project file's own clearances to the board edge and to holes are the ones used, and by up to 5 percent on two boards whose copper reaches a rounded board corner 0.04 mm further than a uniform clearance does (KiCad 9.0's own reach, which moves the grid by that). The editor does not read those clearances from the project file (it uses KiCad's defaults, 0.5 mm and 0.25 mm), so a board with others has its edge, and with it the grid of a KiCad 9 file, off by the difference. A KiCad 9 file has no hatch position, so it is not written there.",
+      count: hatched.length,
+    })
+  }
+  const bare = project.traces.filter((t) => t.bare)
+  if (bare.length) {
+    report.entries.push({ code: "tracks-bare", severity: "note", object: word(bare.length, "track") + " open through the solder mask", why: "Kept: the copper of each is bare along its length, with an opening in the mask of its own side wider than the track by its own margin (or the board's mask expansion), plotted in the mask file and written back.", count: bare.length })
+  }
+  const drawings = [...(project.graphics ?? []), ...(project.footprints ?? []).flatMap((f) => f.shapes ?? [])]
+  const ends = drawings.filter((g) => g.ends).length
+  const colours = drawings.filter((g) => g.color).length
+  if (ends || colours) {
+    report.entries.push({
+      code: "drawing-extras-kept",
+      severity: "note",
+      object: [ends ? word(ends, "drawing") + " with a shape at a line end" : "", colours ? word(colours, "drawing") + " with a colour of its own" : ""].filter(Boolean).join(" and "),
+      why: "KiCad 11 development draws an arrowhead or another shape at the ends of a line, an arc or a curve, and a drawing can have a colour of its own. The editor draws the ends as KiCad does (the line stops short under a closed one), plots them in the Gerber of the drawing's layer and keeps a pour clear of them; it keeps the colour and writes it back (KiCad 9 reads it). KiCad 9's file has no place for the ends, so they stay in the project and are not written. The colour is not drawn.",
+      count: ends + colours,
+    })
+  }
+}
+
 // ---------- dimensions, groups and images ----------
 
 /** What the report says of the dimensions, groups and reference images that came in, and of what KiCad's own resolution did with the groups' members. */
@@ -986,9 +1153,9 @@ function reportDimensionsGroupsImages(board: KicadBoard, dimensions: BoardDimens
   if (legacy) {
     report.entries.push({
       code: "dimensions-redrawn",
-      severity: "note",
+      severity: "changed",
       object: word(legacy, "KiCad 5 dimension"),
-      why: "KiCad 6 and later do not read a KiCad 5 dimension's arrows, feature lines or text position: they keep its two points, how far its crossbar is and its text's size, and draw the rest themselves, with the units its text names and four digits. So do these, which is what KiCad now shows for the file.",
+      why: "KiCad 6 and later do not read a KiCad 5 dimension's arrows, feature lines or text position: they keep its two points, how far its crossbar is and its text's size, and draw the rest themselves, with four digits. So do these. KiCad 10.0 draws such a dimension in inches whatever unit its text names (a dimension of \"14,000 mm\" becomes \"0.5512 in\"); these keep the unit the text names, as KiCad 5 showed it, so KiCad 10 shows them in that unit after the export, not in inches.",
       count: legacy,
     })
   }
@@ -997,7 +1164,7 @@ function reportDimensionsGroupsImages(board: KicadBoard, dimensions: BoardDimens
     report.entries.push({ code: "group-member-unresolved", severity: "note", object: word(stats.unresolved, "group member"), why: "These members name nothing in the file (or, in a part, nothing of that part). KiCad skips them as well.", count: stats.unresolved })
   }
   if (stats.notBrought) {
-    report.entries.push({ code: "group-member-not-brought", severity: "not-brought", object: word(stats.notBrought, "group member"), why: "These members are zones (a group cannot hold a zone yet: the zone is in the board, but moving, turning and locking a group leaves it where it is), arc tracks or tables, so they are not in their group.", count: stats.notBrought })
+    report.entries.push({ code: "group-member-not-brought", severity: "not-brought", object: word(stats.notBrought, "group member"), why: "These members are zones (a group cannot hold a zone yet: the zone is in the board, but moving, turning and locking a group leaves it where it is), the dimensions of a part (the board's now, which a part's group does not hold), arc tracks or tables, so they are not in their group.", count: stats.notBrought })
   }
   if (moved) {
     report.entries.push({ code: "group-member-moved", severity: "note", object: word(moved, "group member"), why: "An item is in one group, so a group that lists an item another group holds takes it, and a group is never put into itself or into a group it holds, as KiCad does when it loads the file.", count: moved })
@@ -1008,6 +1175,62 @@ function reportDimensionsGroupsImages(board: KicadBoard, dimensions: BoardDimens
 }
 
 // ---------- text ----------
+
+/** The fonts a board embeds, as the project holds them: each file by the hash of its bytes (the host's file store keeps the bytes), and the flags. */
+function convertFonts(board: KicadBoard, compOf: Map<KicadFootprint, ComponentInstance>, kept: Map<string, KeptFile>, dropped: Set<KicadFontFile>): ProjectFonts | null {
+  const f = board.embeddedFonts
+  const parts = board.footprints.flatMap((fp) => (fp.embedFonts && compOf.get(fp) ? [compOf.get(fp)!.id] : []))
+  if (!f.board && !parts.length && !f.files.length) return null
+  const files: EmbeddedFont[] = []
+  for (const file of f.files) {
+    const owner = file.owner ? compOf.get(file.owner)?.id : undefined
+    if (file.owner && !owner) {
+      dropped.add(file)
+      continue
+    }
+    const id = sha256Hex(file.bytes)
+    kept.set(id, { id, name: file.name, bytes: file.bytes })
+    files.push({ name: file.name, file: id, size: file.bytes.length, ...(file.checksum ? { checksum: file.checksum } : {}), ...(owner ? { owner } : {}) })
+  }
+  return { ...(f.board ? { board: true as const } : {}), ...(parts.length ? { parts } : {}), files }
+}
+
+/**
+ * The report for X19. A text in a font of the user's computer is drawn as KiCad drew it when the file has its outlines (`render_cache`); with none, or with outlines
+ * drawn for other text, it is drawn in the stroke font, which is said here by the font's name, because the Gerber then differs from what KiCad plots. A dimension's text
+ * does not keep its outlines (its place is worked out by KiCad's rules from the dimension).
+ */
+function reportFonts(project: Project, board: KicadBoard, dimensionFonts: Set<string>, dropped: Set<KicadFontFile>, report: ImportReport) {
+  const uncached = new Map<string, number>()
+  const stale = new Map<string, number>()
+  let cached = 0
+  const note = (wt: WorldText) => {
+    const state = textFontState(project, wt)
+    if (state === null) return
+    if (state === "outline") cached++
+    else (state === "edited" ? stale : uncached).set(wt.face!, ((state === "edited" ? stale : uncached).get(wt.face!) ?? 0) + 1)
+  }
+  for (const wt of worldTexts(project)) if (wt.owner !== DIMENSION_TEXT_OWNER) note(wt)
+  const list = (m: Map<string, number>) => [...m].map(([face, n]) => `${face} (${n})`)
+  if (cached) report.entries.push({ code: "text-outlines", severity: "note", object: `${cached} text${cached > 1 ? "s" : ""} in a TrueType font`, why: "KiCad stored the outlines it drew these texts with, and they are kept and plotted as they are. While a text keeps its content, size, weight, slant, justification and font, moving and turning it moves the outlines with it; any other edit draws that text in the stroke font and the board says so.", count: cached })
+  if (uncached.size) {
+    const n = [...uncached.values()].reduce((a, b) => a + b, 0)
+    report.entries.push({ code: "text-font-uncached", severity: "changed", object: `text in ${uncached.size > 1 ? "the fonts" : "the font"} ${[...uncached.keys()].slice(0, 4).join(", ")}${uncached.size > 4 ? " and more" : ""}`, why: "The file names the font but has no outlines for the text, so the editor draws it in KiCad's stroke font and plots it that way. KiCad draws it in the font if its computer has it, so the silkscreen in the Gerber is not the same shape. The font's name is kept and written back.", count: n, items: list(uncached) })
+  }
+  if (stale.size) {
+    const n = [...stale.values()].reduce((a, b) => a + b, 0)
+    report.entries.push({ code: "text-outlines-stale", severity: "changed", object: `text in ${stale.size > 1 ? "the fonts" : "the font"} ${[...stale.keys()].slice(0, 4).join(", ")}${stale.size > 4 ? " and more" : ""}`, why: "The outlines the file keeps for these texts were drawn for other text than the text shows now (KiCad itself draws such a text again from the font), so the editor draws them in KiCad's stroke font and plots them that way. The font's name is kept and written back.", count: n, items: list(stale) })
+  }
+  if (dimensionFonts.size) report.entries.push({ code: "dimension-font", severity: "changed", object: `a dimension's text in ${[...dimensionFonts].slice(0, 4).join(", ")}`, why: "A dimension's text is placed by KiCad's rules from the dimension, so its outlines are not kept: the editor draws and writes it in KiCad's stroke font." })
+  const f = board.embeddedFonts
+  for (const file of f.files) {
+    if (dropped.has(file)) {
+      report.entries.push({ code: "embedded-font", severity: "not-brought", object: `${file.name} (in ${file.owner!.ref || file.owner!.name})`, why: "The font is embedded in a footprint that is not a part of the project, so it was not brought in.", count: 1 })
+      continue
+    }
+    report.entries.push({ code: "embedded-font", severity: "note", object: `${file.name} (in ${file.owner ? file.owner.ref || file.owner.name : "the board"})`, why: `The font embedded in the KiCad file (${Math.round(file.bytes.length / 1024)} KB as the file stores it) is kept with the project's files and written back into the board when it is exported.`, count: 1 })
+  }
+}
 
 /** The report entry for the variables the texts use that the board file cannot resolve. */
 function reportTexts(project: Project, count: number, report: ImportReport) {
@@ -1228,11 +1451,21 @@ function acceptLoneLabels(project: Project, conn: SchematicConnectivity, report:
 
 // ---------- tracks ----------
 
+/** X24: a track whose copper is open through the mask (`(layers "F.Cu" "F.Mask")`) says so with its own side's mask layer; any other mask layer is not held (said through `lose`). A mask margin on a track with no mask layer does nothing in KiCad, and is not held either. */
+function bareOf(layer: CopperLayer, t: { mask: string[]; maskMargin: number | null }, lose: (what: string) => void): Trace["bare"] | undefined {
+  if (!t.mask.length) return undefined
+  if (t.mask.length > 1 || t.mask[0] !== (layer === "top" ? "F.Mask" : "B.Mask")) {
+    lose(`a track open through ${t.mask.join(" and ")}, which is not the mask of its own side`)
+    return undefined
+  }
+  return t.maskMargin === null ? {} : { margin: round(t.maskMargin, 6) }
+}
+
 /** Segments of one net, layer, width, lock and group that meet end to end, as polylines; `of` says which polyline each segment is in. */
 function joinSegments(board: KicadBoard, layerOf: (name: string) => CopperLayer | null, lose: (what: string) => void, labelText: Map<string, string>, groupOf: (s: KicadBoard["segments"][number]) => number): { traces: Trace[]; of: Map<KicadBoard["segments"][number], string> } {
   const traces: Trace[] = []
   const of = new Map<KicadBoard["segments"][number], string>()
-  const groups = new Map<string, { layer: CopperLayer; width: number; locked: boolean; netRaw: string | null; segs: typeof board.segments }>()
+  const groups = new Map<string, { layer: CopperLayer; width: number; locked: boolean; netRaw: string | null; bare: Trace["bare"]; segs: typeof board.segments }>()
   for (const s of board.segments) {
     const layer = layerOf(s.layer)
     if (!layer) {
@@ -1241,15 +1474,16 @@ function joinSegments(board: KicadBoard, layerOf: (name: string) => CopperLayer 
     }
     // Segments are joined only within one net, layer, width, lock and group; the raw name is the net's identity (`/A/B` and `/A{slash}B` are two nets).
     const group = groupOf(s)
-    const key = JSON.stringify(group < 0 ? [layer, s.width, s.locked, s.netRaw] : [layer, s.width, s.locked, s.netRaw, group])
+    const bare = bareOf(layer, s, lose)
+    const key = JSON.stringify(group < 0 ? [layer, s.width, s.locked, s.netRaw, bare] : [layer, s.width, s.locked, s.netRaw, bare, group])
     const g = groups.get(key)
     if (g) g.segs.push(s)
-    else groups.set(key, { layer, width: s.width, locked: s.locked, netRaw: s.netRaw, segs: [s] })
+    else groups.set(key, { layer, width: s.width, locked: s.locked, netRaw: s.netRaw, bare, segs: [s] })
   }
   const k = (p: { x: number; y: number }) => `${Math.round(p.x * 1e4)},${Math.round(p.y * 1e4)}`
-  for (const { layer, width, locked, netRaw, segs } of groups.values()) {
+  for (const { layer, width, locked, netRaw, bare, segs } of groups.values()) {
     const net = netRaw ? labelText.get(netRaw) : undefined
-    const trace = (pts: { x: number; y: number }[]): Trace => ({ id: uid("t"), layer, width, points: pts.map((p) => ({ x: round(p.x), y: round(-p.y) })), ...(locked ? { locked: true } : {}), ...(net ? { net } : {}) })
+    const trace = (pts: { x: number; y: number }[]): Trace => ({ id: uid("t"), layer, width, points: pts.map((p) => ({ x: round(p.x), y: round(-p.y) })), ...(locked ? { locked: true } : {}), ...(net ? { net } : { noNet: true as const }), ...(bare ? { bare } : {}) })
     const at = new Map<string, number[]>()
     segs.forEach((s, i) => {
       for (const p of [s.start, s.end]) {

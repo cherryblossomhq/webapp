@@ -1,6 +1,7 @@
 import { isTextLayer } from "./texts"
-import type { BoardText, ComponentInstance, PartText, TextAttrs } from "./types"
 import { finite as num } from "../lib/guards"
+import { unpackRings } from "./textOutlines"
+import type { BoardText, ComponentInstance, PartText, TextAttrs, TextOutline } from "./types"
 
 // How text objects are written in a stored project. A KiCad board has up to tens of thousands of them (every
 // part has a reference and a value, most have more), and as objects each costs 150 to 250 bytes. Stored, the
@@ -15,7 +16,8 @@ import { finite as num } from "../lib/guards"
 // own at the top of the project (`kt`, beside `texts`, which keeps the editor's own silkscreen text as objects).
 // The kind letter: R reference, V value, U text of its own, T board text; a lowercase R or V carries the text it
 // shows when that is not the part's reference or value; a `+` after it says a text box follows the rest
-// (width, height, border width or -1, margins left, top, right and bottom). A board text ends with its id, 0 when it
+// (width, height, border width or -1, margins left, top, right and bottom); a `~` after that says the text's cached
+// outlines (X19) are the last item: [text, angle, signature, x, y, turn, mirrored, rings]. A board text ends with its id, 0 when it
 // is `kt<place + 1>`. Nothing is rounded here: every number is as the model has it, and reading gives back what was written.
 // Only the stored form is compact; in memory a text is the object the editor and the outputs use.
 
@@ -35,9 +37,12 @@ export interface TextStyleDef {
   d?: 1
   c?: 1
   hr?: string
+  f?: string
+  /** A part's field name (KiCad's `property` name). */
+  n?: string
 }
 
-type Entry = (string | number)[]
+type Entry = (string | number | Entry)[]
 
 type Styled = TextAttrs & { layer: string; size: number }
 
@@ -57,6 +62,8 @@ const styleOf = (t: Styled): TextStyleDef => ({
   ...(t.hide ? { d: 1 as const } : {}),
   ...(t.locked ? { c: 1 as const } : {}),
   ...(t.href !== undefined ? { hr: t.href } : {}),
+  ...(t.face !== undefined ? { f: t.face } : {}),
+  ...(t.name !== undefined ? { n: t.name } : {}),
 })
 
 
@@ -81,7 +88,29 @@ function readStyle(raw: unknown): (TextAttrs & { layer: string; size: number }) 
     ...(d.d === 1 ? { hide: true as const } : {}),
     ...(d.c === 1 ? { locked: true as const } : {}),
     ...(typeof d.hr === "string" ? { href: d.hr } : {}),
+    ...(typeof d.f === "string" && d.f ? { face: d.f } : {}),
+    ...(typeof d.n === "string" && d.n ? { name: d.n } : {}),
   }
+}
+
+const outlineTail = (t: TextAttrs): Entry[] => {
+  const o = t.outline
+  return o ? [[o.text, o.angle, o.sig, o.at.x, o.at.y, o.at.rot, o.at.mirror ? 1 : 0, o.rings] as unknown as Entry] : []
+}
+
+/** The outlines of a stored entry's last item, or null when it does not read. */
+function readOutline(raw: unknown): TextOutline | null {
+  if (!Array.isArray(raw) || raw.length !== 8) return null
+  const [text, angle, sig, x, y, rot, mirror, rings] = raw
+  if (typeof text !== "string" || !num(angle) || typeof sig !== "string" || !num(x) || !num(y) || !num(rot) || (mirror !== 0 && mirror !== 1) || typeof rings !== "string" || !unpackRings(rings)) return null
+  return { text, angle, sig, at: { x, y, rot, ...(mirror === 1 ? { mirror: true as const } : {}) }, rings }
+}
+
+/** The outlines of a text written as an object (a hand-written file). */
+function readOutlineObject(raw: unknown): TextOutline | null {
+  if (!raw || typeof raw !== "object") return null
+  const o = raw as { text?: unknown; angle?: unknown; sig?: unknown; at?: { x?: unknown; y?: unknown; rot?: unknown; mirror?: unknown }; rings?: unknown }
+  return readOutline([o.text, o.angle, o.sig, o.at?.x, o.at?.y, o.at?.rot, o.at?.mirror ? 1 : 0, o.rings])
 }
 
 /** Builds the style table as texts are packed: one entry per distinct style, in the order first met. */
@@ -101,19 +130,19 @@ class Styles {
   }
 }
 
-const boxTail = (t: TextAttrs): (string | number)[] => (t.box ? [t.box.w, t.box.h, t.box.border ?? -1, ...t.box.margins] : [])
+const boxTail = (t: TextAttrs): Entry => (t.box ? [t.box.w, t.box.h, t.box.border ?? -1, ...t.box.margins] : [])
 
 function partEntry(styles: Styles, t: PartText): Entry {
   const style = styles.of(t)
-  const plus = t.box ? "+" : ""
-  const tail = boxTail(t)
+  const plus = `${t.box ? "+" : ""}${t.outline ? "~" : ""}`
+  const tail = [...boxTail(t), ...outlineTail(t)]
   if (t.kind === "user") return [style, `U${plus}`, t.x, t.y, t.rot, t.text ?? "", ...tail]
   const letter = t.kind === "reference" ? "R" : "V"
   return t.text !== undefined ? [style, `${letter.toLowerCase()}${plus}`, t.x, t.y, t.rot, t.text, ...tail] : [style, `${letter}${plus}`, t.x, t.y, t.rot, ...tail]
 }
 
 function boardEntry(styles: Styles, t: BoardText & { layer: string }, place: number): Entry {
-  return [styles.of(t), `T${t.box ? "+" : ""}`, t.x, t.y, t.rot, t.text, t.id === defaultTextId(place) ? 0 : t.id, ...boxTail(t)]
+  return [styles.of(t), `T${t.box ? "+" : ""}${t.outline ? "~" : ""}`, t.x, t.y, t.rot, t.text, t.id === defaultTextId(place) ? 0 : t.id, ...boxTail(t), ...outlineTail(t)]
 }
 
 /** The id a board text has when none is stored. */
@@ -162,14 +191,15 @@ function readPartEntry(styles: (ReturnType<typeof readStyle>)[], e: unknown): Pa
   if (!Array.isArray(e) || typeof e[1] !== "string") return null
   const style = num(e[0]) ? styles[e[0]] : null
   const letter = e[1][0]
-  const plus = e[1].endsWith("+")
+  const plus = e[1].includes("+")
   if (!style || !"RVrvU".includes(letter) || !num(e[2]) || !num(e[3]) || !num(e[4])) return null
   const hasText = letter === "r" || letter === "v" || letter === "U"
   if (hasText && typeof e[5] !== "string") return null
   const box = plus ? readBox(e, hasText ? 6 : 5) : undefined
   if (box === null) return null
+  const outline = e[1].endsWith("~") ? readOutline(e[e.length - 1]) : null
   const kind = letter === "U" ? "user" : letter.toUpperCase() === "R" ? "reference" : "value"
-  return { ...style, kind, ...(hasText ? { text: e[5] as string } : {}), x: e[2], y: e[3], rot: e[4], ...(box ? { box } : {}) }
+  return { ...style, ...(outline && style.face !== undefined ? { outline } : {}), kind, ...(hasText ? { text: e[5] as string } : {}), x: e[2], y: e[3], rot: e[4], ...(box ? { box } : {}) }
 }
 
 /** The texts of a part from the stored entries; one that does not read is dropped. Undefined when the field is not a list. */
@@ -187,12 +217,13 @@ export function normalizePartTexts(raw: unknown): PartText[] | undefined {
     if (!item || typeof item !== "object") continue
     const t = item as Record<string, unknown>
     if (!["reference", "value", "user"].includes(t.kind as string) || !num(t.x) || !num(t.y) || !num(t.rot) || (t.text !== undefined && typeof t.text !== "string")) continue
-    const style = readStyle({ l: t.layer, s: t.size, w: t.w, t: t.thickness, b: t.bold ? 1 : 0, i: t.italic ? 1 : 0, m: t.mirror ? 1 : 0, k: t.knockout ? 1 : 0, h: t.hj === "left" ? "l" : t.hj === "right" ? "r" : undefined, v: t.vj === "top" ? "t" : t.vj === "bottom" ? "b" : undefined, sp: t.spacing, u: t.upright === false ? 0 : undefined, d: t.hide ? 1 : 0, c: t.locked ? 1 : 0, hr: t.href })
+    const style = readStyle({ l: t.layer, s: t.size, w: t.w, t: t.thickness, b: t.bold ? 1 : 0, i: t.italic ? 1 : 0, m: t.mirror ? 1 : 0, k: t.knockout ? 1 : 0, h: t.hj === "left" ? "l" : t.hj === "right" ? "r" : undefined, v: t.vj === "top" ? "t" : t.vj === "bottom" ? "b" : undefined, sp: t.spacing, u: t.upright === false ? 0 : undefined, d: t.hide ? 1 : 0, c: t.locked ? 1 : 0, hr: t.href, f: t.face, n: t.name })
     if (!style) continue
     const b = t.box as { w?: unknown; h?: unknown; border?: unknown; margins?: unknown } | undefined
     const box = b ? readBox(["", "", b.w as number, b.h as number, num(b.border) ? b.border : -1, ...((Array.isArray(b.margins) ? b.margins : []) as number[])].slice(2) as Entry, 0) : undefined
     if (b && !box) continue
-    out.push({ ...style, kind: t.kind as PartText["kind"], ...(t.text !== undefined ? { text: t.text as string } : {}), x: t.x, y: t.y, rot: t.rot, ...(box ? { box } : {}) })
+    const outline = style.face !== undefined ? readOutlineObject(t.outline) : null
+    out.push({ ...style, ...(outline ? { outline } : {}), kind: t.kind as PartText["kind"], ...(t.text !== undefined ? { text: t.text as string } : {}), x: t.x, y: t.y, rot: t.rot, ...(box ? { box } : {}) })
   }
   return out
 }
@@ -206,14 +237,15 @@ export function unpackBoardTexts(raw: unknown, styles: TextStyleDef[]): BoardTex
   raw.forEach((e, place) => {
     if (!Array.isArray(e) || typeof e[1] !== "string") return
     const style = num(e[0]) ? read[e[0]] : null
-    const plus = e[1].endsWith("+")
+    const plus = e[1].includes("+")
     if (!style || e[1][0] !== "T" || !num(e[2]) || !num(e[3]) || !num(e[4]) || typeof e[5] !== "string") return
     const box = plus ? readBox(e, 7) : undefined
     if (box === null) return
+    const outline = e[1].endsWith("~") ? readOutline(e[e.length - 1]) : null
     const id = typeof e[6] === "string" && e[6] ? e[6] : defaultTextId(place)
     if (seen.has(id)) return
     seen.add(id)
-    out.push({ ...style, id, text: e[5], x: e[2], y: e[3], rot: e[4], side: sideOfLayer(style.layer), ...(box ? { box } : {}) })
+    out.push({ ...style, ...(outline && style.face !== undefined ? { outline } : {}), id, text: e[5], x: e[2], y: e[3], rot: e[4], side: sideOfLayer(style.layer), ...(box ? { box } : {}) })
   })
   return out
 }

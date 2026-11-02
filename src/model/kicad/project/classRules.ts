@@ -1,6 +1,7 @@
 import type { ComponentInstance } from "../../types"
 import type { ReportEntry } from "../board/report"
 import type { KicadPro } from "./pro"
+import { isObject } from "../../../lib/guards"
 
 // X20: the component class assignment rules of a project file (`component_class_settings` of the `.kicad_pro`). KiCad turns each into a DRC condition
 // (`COMPONENT_CLASS_ASSIGNMENT_DATA::GetAssignmentInDRCLanguage`, common/project/component_class_settings.cpp of 10.0.0) and gives every footprint it holds the class,
@@ -23,7 +24,6 @@ interface Assignment {
   conditions: Condition[]
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
 /** The assignment rules of the project file, as it lists them (`assignments`), and whether it asks for a class for every sheet. */
 export function readClassRules(pro: Pick<KicadPro, "json"> | null): { rules: Assignment[]; sheetClasses: boolean } {

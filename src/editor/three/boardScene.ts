@@ -19,6 +19,7 @@ import {
 import { partBox, setContactShadowBoard } from "./contactShadow"
 import { modelLibrary } from "./files/library"
 import { placeModel } from "./files/place"
+import { frameBox } from "./framing"
 import { StudioFloor } from "./studio"
 import { createStudioEnvironment } from "./studioEnvironment"
 import { ViewCube } from "./viewCube"
@@ -395,14 +396,7 @@ export class BoardScene {
   }
 
   private updateBounds() {
-    const box = new THREE.Box3()
-    if (this.board) box.expandByObject(this.board.group)
-    if (this.parts && this.partsVisible) box.expandByObject(this.parts)
-    if (box.isEmpty()) {
-      const { x, y, width, height } = this.boardRect
-      box.set(new THREE.Vector3(x - width / 2, y - height / 2, -1), new THREE.Vector3(x + width / 2, y + height / 2, 1))
-    }
-    this.bounds = box
+    this.bounds = frameBox(this.board?.group ?? null, this.parts && this.partsVisible ? this.parts : null, this.boardRect)
   }
 
   private updateFloor(project: Project) {

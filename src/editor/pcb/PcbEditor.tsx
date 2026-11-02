@@ -73,7 +73,8 @@ import { copperColor, PCB, pourColor } from "../theme"
 import { addZone, deleteZoneCorner, insertZoneCorner, makeZone, moveZone, removeZones, setZoneCorner } from "../../model/zoneOps"
 import { OtherZoneFills, ZoneOutlines, ZonePreview } from "./ZoneDraw"
 import { nonCopperFills } from "../../model/nonCopperFill"
-import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, selectedZoneIds, zoneHit, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
+import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, PLACEMENT_TOOL_KEY, selectedZoneIds, zoneHit, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
+import { defaultPlacement } from "../../model/placementAreas"
 import { Tooltip } from "../../ui/Tooltip"
 import { isTyping, toWorld, Viewport, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
 import { onBoard } from "../../model/partFlags"
@@ -109,7 +110,7 @@ type Mode =
   /** Dragging a corner (`vertex`, `index` the corner), an arc's middle (`mid`, `index` the piece) or a whole shape of the outline (`move`). */
   | { kind: "outline"; what: "vertex" | "mid" | "move"; path: number; index: number; start: Vec2; moved: boolean }
   /** The zone or keepout tool part way through: the corners so far. */
-  | { kind: "zone"; keepout: boolean; points: Vec2[] }
+  | { kind: "zone"; keepout: boolean; /** X20: a placement area: a rule area that keeps no one out and holds the parts of a sheet. */ placing?: boolean; points: Vec2[] }
   /** Dragging a corner of a zone (`vertex`), or the whole zone (`move`). */
   | { kind: "zoneEdit"; what: "vertex" | "move"; id: string; ring: number; index: number; start: Vec2; moved: boolean }
   /** The slot tool, one end placed. */
@@ -366,7 +367,9 @@ export function PcbEditor() {
     const nets = getConnectivity(p).nets.filter((n) => n.pins.length > 0 && !n.name.startsWith("Net-"))
     // A pour starts on ground when the board has it, or else on the net of the pour it follows: the Inspector changes it.
     const net = m.keepout ? "" : (nets.find((n) => n.name === "GND")?.name ?? nets[0]?.name ?? "")
-    const zone = makeZone(m.points, { layers: [activeLayerNow()], net, keepout: m.keepout ? { tracks: true, vias: true, pour: true } : undefined })
+    // A placement area is a rule area that keeps nothing out, on the outer layers (both sides, as KiCad's own are), for the sheet of the selected part or the next sheet that has no area yet.
+    const made = makeZone(m.points, { layers: m.placing ? ["top", "bottom"] : [activeLayerNow()], net, keepout: m.placing ? {} : m.keepout ? { tracks: true, vias: true, pour: true } : undefined })
+    const zone = made && m.placing ? { ...made, placement: defaultPlacement(p, selectionIds(uiApi().selection, "c")) } : made
     if (!zone) {
       setNote("A zone needs three corners that do not lie on a line")
       return
@@ -497,12 +500,13 @@ export function PcbEditor() {
       return
     }
 
-    if (tool === "zone" || tool === "keepout") {
+    if (tool === "zone" || tool === "keepout" || tool === "placement") {
       const points = m.kind === "zone" ? m.points : []
+      const kind = { keepout: tool === "keepout", ...(tool === "placement" ? { placing: true } : {}) }
       if (closesPolygon(points, at, tol() * 1.3)) {
-        commitZone({ kind: "zone", keepout: tool === "keepout", points })
+        commitZone({ kind: "zone", ...kind, points })
         setMode({ kind: "idle" })
-      } else setMode({ kind: "zone", keepout: tool === "keepout", points: [...points, at] })
+      } else setMode({ kind: "zone", ...kind, points: [...points, at] })
       return
     }
 
@@ -886,6 +890,7 @@ export function PcbEditor() {
       }
       if (!viewer && key === ZONE_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "zone" ? "select" : "zone")
       else if (!viewer && key === KEEPOUT_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "keepout" ? "select" : "keepout")
+      else if (!viewer && key === PLACEMENT_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "placement" ? "select" : "placement")
       else if (!viewer && key === "o" && !e.altKey) uiApi().setPcbTool(tool === "slot" ? "select" : "slot")
       else if (!viewer && key === DIMENSION_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "dimension" ? "select" : "dimension")
       else if (!viewer && key === TEXT_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "text" ? "select" : "text")
@@ -993,7 +998,7 @@ export function PcbEditor() {
   const selectedOutline = selection.map(parseOutlineSelectionId).find((x) => x !== null) ?? null
   const selectedArcs = selectionIds(selection, "t").length === 1 ? project.traces.filter((t) => selected.has(`t:${t.id}`) && isArcTrace(t)) : []
   const r = Math.min(project.board.cornerRadius, project.board.width / 2, project.board.height / 2)
-  const cursorCss = tool === "route" || mode.kind === "route" || isDrawTool(tool) || tool === "text" || tool === "dimension" || tool === "zone" || tool === "keepout" ? "crosshair" : tool === "via" ? "cell" : hover?.type === "boardHandle" ? "nwse-resize" : "default"
+  const cursorCss = tool === "route" || mode.kind === "route" || isDrawTool(tool) || tool === "text" || tool === "dimension" || tool === "zone" || tool === "keepout" || tool === "placement" ? "crosshair" : tool === "via" ? "cell" : hover?.type === "boardHandle" ? "nwse-resize" : "default"
   const placed = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
   // Every copper layer is opaque; the active one is in front, so gaps in its pour show the others, which lie in stack order (the back first) behind it.
   const stack = copperLayers(project.board)
@@ -1322,11 +1327,12 @@ export function PcbEditor() {
 
               {/* The outlines of the zones, and the corners of the selected ones */}
               {tool !== "route" && <ZoneOutlines project={project} selected={selected} px={px} active={layer} />}
-              {(tool === "zone" || tool === "keepout") && (
+              {(tool === "zone" || tool === "keepout" || tool === "placement") && (
                 <ZonePreview
                   points={mode.kind === "zone" ? mode.points : []}
                   cursor={cursor}
                   keepout={tool === "keepout"}
+                  placing={tool === "placement"}
                   px={px}
                   closes={mode.kind === "zone" && !!cursor && closesPolygon(mode.points, cursor, 1.3 * tol())}
                 />
@@ -1459,13 +1465,13 @@ export function PcbEditor() {
         <CanvasHint dark items={[["Outline", info]]} />
       ) : tool === "slot" ? (
         <CanvasHint dark items={[["Click", mode.kind === "slot" ? "the other end of the slot" : "one end of the slot"], ["Esc", "cancel"]]} />
-      ) : tool === "zone" || tool === "keepout" ? (
+      ) : tool === "zone" || tool === "keepout" || tool === "placement" ? (
         <CanvasHint
           dark
           items={
             mode.kind === "zone" && mode.points.length
               ? [["Click", "add a corner"], ["Enter", "finish"], ["Backspace", "undo a corner"], ["Esc", "cancel"], ["Alt", "off the grid"]]
-              : [["Click", `the first corner of the ${tool === "keepout" ? "keepout" : "zone"} on the ${layer} layer`], ["Alt", "off the grid"]]
+              : [["Click", tool === "placement" ? "the first corner of the placement area: the Inspector says whose parts it holds" : `the first corner of the ${tool === "keepout" ? "keepout" : "zone"} on the ${layer} layer`], ["Alt", "off the grid"]]
           }
         />
       ) : isDrawTool(tool) ? (

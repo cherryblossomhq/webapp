@@ -5,6 +5,15 @@ import { textFrame, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
 import { isExact, lookOfText } from "../model/sheetItems"
 import type { ComponentInstance, DrawingColor, LabelField, NetLabel, SchematicDrawing, SheetFill, SheetStroke, TextLook, Vec2 } from "../model/types"
 import { escapeNetName, quote } from "../lib/kicadQuote"
+import { encodeBase64 } from "../lib/imageFacts"
+import { imageBytes } from "../store/imageFiles"
+import { referenceOf } from "./kicadBlocks"
+
+/** A picture's PNG as base64, from the file store's bytes on this page; null when they are not here. */
+const pictureBase64 = (file: string): string | null => {
+  const bytes = imageBytes(file)
+  return bytes ? encodeBase64(new Uint8Array(bytes)) : null
+}
 
 // S2 and S4 in the KiCad schematic: labels with their kind, shape and style, the drawings of the sheet (texts, text
 // boxes, lines, shapes, pictures, tables, junction dots and flags), and the flags of a symbol. The converter
@@ -237,7 +246,10 @@ export function itemNode(item: SchematicDrawing, toPage: ToPage, n: number): str
     case "bezier":
       return `  (bezier\n    (pts ${item.points.map(xy).join(" ")})\n    ${strokeNode(item.stroke)}\n    ${fillOf(item)}\n    ${uuid}\n  )`
     case "image": {
-      const data = item.data.match(/.{1,76}/g) ?? [item.data]
+      // A picture in the file store is written from its bytes, which the export loaded first (`preloadImages`); one whose file is not here is left out.
+      const base64 = item.data ?? (item.file ? pictureBase64(item.file) : null)
+      if (!base64) return ""
+      const data = base64.match(/.{1,76}/g) ?? [base64]
       return `  (image\n    (at ${at(item)})${item.scale !== 1 ? `\n    (scale ${mm6(item.scale)})` : ""}\n    ${uuid}\n    (data ${data.map((d) => `"${d}"`).join("\n      ")})\n  )`
     }
     case "junction": {
@@ -298,6 +310,30 @@ export function addSheetItems(sch: string, drawings: SchematicDrawing[], toPage:
 }
 
 /**
+ * The titled blocks of the sheet as KiCad's groups: `(group "NAME" (uuid ...) (members ...))`, the members the uuids of the symbols the block holds (a part of several units is in the block
+ * with all of its symbols). The import reads a group back as a block, so a sheet keeps its titled frames. A block with no symbol in the file is left out.
+ */
+export function addBlockGroups(sch: string, blocks: readonly { id: string; name: string; components: string[]; locked?: true }[], refOf: ReadonlyMap<string, string>): string {
+  if (!blocks.length) return sch
+  const uuids = new Map<string, string[]>()
+  for (const m of sch.matchAll(/\n {2}\(symbol\n {4}\(lib_id [^\n]*\n[\s\S]*?\n {2}\)(?=\n)/g)) {
+    const raw = m[0].match(/\(property "Reference" "((?:[^"\\]|\\.)*)"/)?.[1]
+    const uuid = m[0].match(/\n {4}\(uuid ("?)([0-9a-fA-F-]+)\1\)/)?.[2]
+    if (raw === undefined || !uuid) continue
+    const ref = raw.replace(/\\(.)/g, "$1")
+    uuids.set(ref, [...(uuids.get(ref) ?? []), uuid])
+  }
+  const groups = blocks.flatMap((b, i) => {
+    const members = [...new Set(b.components.flatMap((id) => uuids.get(refOf.get(id) ?? "") ?? []))]
+    if (!members.length) return []
+    return [["  (group " + quote(b.name), `    (uuid ${quote(uuidIn(4, i))})`, ...(b.locked ? ["    (locked yes)"] : []), `    (members ${members.map(quote).join(" ")})`, "  )"].join("\n")]
+  })
+  if (!groups.length) return sch
+  const end = sch.lastIndexOf("\n)")
+  return end < 0 ? sch : `${sch.slice(0, end + 1)}${groups.join("\n")}\n${sch.slice(end + 1)}`
+}
+
+/**
  * S3: the labels that name a bus, which the converter does not write (it writes a label for each net a label names, and a bus is no net), and
  * the bus aliases of the sheet (`(bus_alias "NAME" (members "A" "B"))`, what KiCad 9's `saveBusAlias` writes), before the closing bracket.
  */
@@ -343,7 +379,7 @@ export function flagLines(c: Pick<ComponentInstance, "flags" | "fieldsAutoplaced
 export function applySymbolFlags(sch: string, byRef: Map<string, Pick<ComponentInstance, "flags" | "fieldsAutoplaced">>): string {
   if (!byRef.size) return sch
   return sch.replace(/\n {2}\(symbol\n {4}\(lib_id [^\n]*\n[\s\S]*?\n {2}\)(?=\n)/g, (block) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1]
+    const ref = referenceOf(block)
     const c = ref === undefined ? undefined : byRef.get(ref)
     if (!c) return block
     const l = flagLines(c)
@@ -367,7 +403,7 @@ export function localizePower(sch: string, texts: Set<string>): string {
   if (!texts.size) return sch
   const used = new Set<string>()
   let out = sch.replace(/\n {2}\(symbol\n {4}\(lib_id "(Custom:[^"]+)"\)[\s\S]*?\n {2}\)(?=\n)/g, (block, lib: string) => {
-    const ref = block.match(/\(property "Reference" "([^"]*)"/)?.[1] ?? ""
+    const ref = referenceOf(block) ?? ""
     const value = block.match(/\(property "Value" "([^"]*)"/)?.[1]
     if (!ref.startsWith("#PWR") || value === undefined || !texts.has(value)) return block
     used.add(lib)

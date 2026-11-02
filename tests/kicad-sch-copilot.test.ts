@@ -29,6 +29,9 @@ const BOARD_LANES_GROWTH = 1373
  * on, not only read. The budget below was raised by exactly this and no more.
  */
 const SHEET_TOOLS_GROWTH = 5373
+
+/** What X20 added, in bytes (432): `set_pour` takes `places` (a sheet, a class or a group a rule area holds), `update_component` takes `classes`, and `place_parts` says it keeps a part inside its area. No tool was added. */
+const PLACEMENT_GROWTH = 432
 /**
  * What `create_part`'s `land` added, in bytes: a land pad by pad (number, place, shape, size, drill, slot, paste and mask) or a KiCad
  * footprint's text, for a package no footprint string draws, which an assistant over MCP had no way to describe (a Phoenix 1777558's
@@ -86,6 +89,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH).toBeLessThan(2100)
   })
 })

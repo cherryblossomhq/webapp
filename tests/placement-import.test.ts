@@ -92,14 +92,14 @@ describe("importing placement areas", () => {
 })
 
 describe("the stored file", () => {
-  it("saves and loads areas and classes exactly, in version 3", () => {
+  it("saves and loads areas and classes exactly, in version 5 (the extras have no version of their own)", () => {
     const r = imported([
       part("R1", "5 5", '(component_classes (class "Power")) (sheetname "/Power/")'),
       rule("sheet area", '(placement (enabled yes) (sheetname "/Power/"))', left),
       rule("off", '(placement (enabled no) (component_class "X"))', right),
     ])
     const text = serializeProject(r.project)
-    expect(JSON.parse(text).version).toBe(3)
+    expect(JSON.parse(text).version).toBe(5)
     const back = parseProjectFile(text, { id: r.project.id })
     expect(back.zones.map((z) => z.placement)).toEqual(r.project.zones.map((z) => z.placement))
     expect(back.components.map((c) => [c.classes, c.sheetPath])).toEqual(r.project.components.map((c) => [c.classes, c.sheetPath]))

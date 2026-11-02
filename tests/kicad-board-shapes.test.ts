@@ -115,6 +115,16 @@ describe("KiCad's rules for a drawing", () => {
     expect(g[3]).toMatchObject({ type: "circle", r: 3 })
     expect(g[4]).toMatchObject({ type: "line", a: { x: 17, y: -7 }, b: { x: 23, y: -13 } })
   })
+
+  it("keeps a target on Edge.Cuts beside the outline, on Dwgs.User, and says where: KiCad leaves it out of the outline", () => {
+    const r = imp(board({ body: ['(target plus (at 30 5) (size 3) (width 0.1) (layer "Edge.Cuts"))'] }))
+    const g = r.project.graphics!
+    expect(g.map((s) => [s.type, s.layer])).toEqual([["circle", "Dwgs.User"], ["line", "Dwgs.User"], ["line", "Dwgs.User"]])
+    // The outline is the 20 by 10 rectangle alone.
+    expect(r.project.board).toMatchObject({ width: 20, height: 10 })
+    expect(r.project.board.outline?.paths.length ?? 1).toBe(1)
+    expect(r.report.entries.find((e) => e.code === "target-off-edge")).toMatchObject({ severity: "note", object: "1 alignment mark on Edge.Cuts (at (30, 5))" })
+  })
 })
 
 describe("ellipses (KiCad's parametric definition, turned by its rotation in the file's frame)", () => {
@@ -175,10 +185,10 @@ describe("layers", () => {
     expect(imp(text).project.graphics!.map((s) => s.layer)).toEqual(["F.Cu", "B.Cu"])
   })
 
-  it("refuses a layer that is none of KiCad's, naming it, and keeps a drawing on an inner copper layer the board has", () => {
+  it("moves a drawing on a layer that is none of KiCad's to Cmts.User, as KiCad's rescue does, naming it, and keeps a drawing on an inner copper layer the board has", () => {
     const r = importKicadBoard(board({ body: [gr("line", "(start 0 0) (end 1 0)", "Weird.Layer")] }), { built: ALL })
-    expect(r.status).toBe("refused")
-    if (r.status === "refused") expect(r.message).toMatch(/Weird\.Layer/)
+    expect(r.status === "imported" && r.project.graphics?.[0].layer).toBe("Cmts.User")
+    expect(r.report.entries.find((e) => e.code === "layer-rescued")?.object).toMatch(/Weird\.Layer/)
     const inner = importKicadBoard(board({ layers: '(layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))', body: [gr("line", "(start 0 0) (end 1 0)", "In1.Cu")] }))
     // the board has the layer, so the drawing is on it (X1)
     expect(inner.status === "imported" && inner.project.graphics?.[0].layer).toBe("In1.Cu")
@@ -526,8 +536,11 @@ describe("a part with no courtyard of its own", () => {
     expect(kinds(imp(text([part(""), logo])), "overlap")).toEqual([])
     const outside = footprint({ ref: "G1", name: "Symbol:Logo", at: "-1 10", pads: [], extra: `(fp_line (start -4 0) (end 4 0) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))` })
     expect(kinds(imp(text([outside])), "outside-board")).toEqual([])
-    const twin = footprint({ ref: "R2", at: "21 10", pads: [pad({ number: "1", at: "-1 0" }), pad({ number: "2", at: "1 0" })] })
-    expect(kinds(imp(text([part(""), twin])), "overlap").length).toBeGreaterThan(0)
+    // A courtyard the land draws is checked; a land that draws none has none, as in KiCad (where `missing_courtyard` is a rule of its own).
+    const yard = `(fp_rect (start -1.5 -0.8) (end 1.5 0.8) (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd"))`
+    const twin = (extra: string) => footprint({ ref: "R2", at: "21 10", pads: [pad({ number: "1", at: "-1 0" }), pad({ number: "2", at: "1 0" })], extra })
+    expect(kinds(imp(text([part(yard), twin(yard)])), "overlap").length).toBeGreaterThan(0)
+    expect(kinds(imp(text([part(""), twin("")])), "overlap")).toEqual([])
   })
 })
 }

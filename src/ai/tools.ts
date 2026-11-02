@@ -23,6 +23,8 @@ import { stageGaps } from "../model/powerStage"
 import { projectPartDefs } from "../model/customParts"
 import { findPart } from "../model/library"
 import { flagWords, onBoard, setFlags } from "../model/partFlags"
+import { activeVariant, variantNames, variantWords } from "../model/variants"
+import { unconnectedPinSeverity } from "../model/checkRules"
 import { partFindings } from "../model/partChecks"
 import { addToBlock, blockFrames, blockOf, cleanBlockName, contentsOf, createBlock, deleteBlocks, findBlock, removeFromBlocks, renameBlock } from "../model/blocks"
 import { planConnect, type ConnectPlan } from "../model/attach"
@@ -59,7 +61,8 @@ import { applyCapability, BOARD_THICKNESSES, FAB_CAPABILITIES, matchCapability, 
 import { addZone, makeZone, outlinePoints, removeZones, updateZone } from "../model/zoneOps"
 import { withPartZones } from "../model/partZones"
 import { hasPartZones, isWholeBoardPour, keepoutFlags, zoneLayers } from "../model/zones"
-import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish } from "../model/types"
+import { areaReport, partSheet, placementAreas, placementProblems, placementWords } from "../model/placementAreas"
+import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish, ZonePlacement } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
 import { SHEET_ARG, SHEET_PROPERTY, onSheet, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
 import { isHierarchical, sheetUses, sheetView, syncEdited, useAt, type SheetUse } from "../model/sheets"
@@ -280,7 +283,7 @@ export const DESIGN_BUDGET = 45_000
 const getDesign: ToolSpec = {
   name: "get_design",
   description:
-    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels. block or refs reads only those parts, with the nets that touch them: a design too big for one answer lists its parts and nets by name only, to read again so.",
+    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary, and the variants (the one shown and what each changes on which parts) when the project has any. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels. block or refs reads only those parts, with the nets that touch them: a design too big for one answer lists its parts and nets by name only, to read again so.",
   input_schema: {
     type: "object",
     properties: {
@@ -318,6 +321,8 @@ const getDesign: ToolSpec = {
     const shown = (c: ComponentInstance) => (!only || (c.inst ?? "") === only.path) && (!picked || picked.has(c.id))
     const useOfRef = new Map(project.components.map((c) => [c.ref, c.inst ?? ""]))
     const humanOf = (inst: string) => useAt(project, inst).human
+    // A design with a placement area for a sheet says which sheet each part is on, as a design with sheets does.
+    const sheetAreas = placementAreas(project).some((z) => z.placement?.by === "sheet")
     const netOf = pinNetNames(project)
     const conn = getConnectivity(project)
     const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
@@ -331,7 +336,8 @@ const getDesign: ToolSpec = {
       const part = findPart(c.partId)
       const base = {
         ref: c.ref,
-        ...(hier ? { sheet: humanOf(c.inst ?? "") } : {}),
+        ...(hier ? { sheet: humanOf(c.inst ?? "") } : sheetAreas ? { sheet: partSheet(project, c) } : {}),
+        ...(c.classes?.length ? { classes: c.classes } : {}),
         part: c.partId,
         name: part?.name ?? c.partId,
         value: valueText(c, part) || undefined,
@@ -399,6 +405,7 @@ const getDesign: ToolSpec = {
     const groups = groupsReport(project)
     const images = imagesReport(project)
     const zones = zonesReport(project)
+    const variants = variantsReport(project)
     // Drawing that reaches no part makes a sheet with no parts look empty in this list when it isn't.
     const sheetsOnce = hier ? [...new Map(sheetUses(project).map((u) => [u.sheet, u.path])).values()].map((path) => sheetView(project, path)) : [project]
     const loose = sheetsOnce.flatMap(looseIslands)
@@ -422,8 +429,9 @@ const getDesign: ToolSpec = {
       ...machiningReport(project),
       ...(images ? { images } : {}),
       ...(zones ? { zones } : {}),
+      ...(variants ? { variants } : {}),
       checks: {
-        unconnected_pins: conn.unconnectedPins.length,
+        unconnected_pins: unconnectedPinSeverity(project) ? conn.unconnectedPins.length : 0,
         electrical_warnings: erc.active.length,
         electrical_ignored_by_user: erc.ignored.length,
         pcb_errors: pcb.violations.filter((v) => v.severity === "error").length,
@@ -800,6 +808,7 @@ const updateComponentTool: ToolSpec = {
       in_pos_files: { type: "boolean" },
       board_only: { type: "boolean" },
       virtual: { type: "boolean" },
+      classes: { type: "array", items: { type: "string" }, description: "Component classes (placement areas pick parts by them)" },
       pin_function: { type: "object", properties: { pin: { type: "string" }, function: { type: "string" } }, required: ["pin", "function"] },
       fields: {
         type: "array",
@@ -879,6 +888,12 @@ const updateComponentTool: ToolSpec = {
       if (ignored) return fail(project, `${ignored} ${OWN_LAND_ADVICE}`)
       patch.footprint = fp
       changes.push(`footprint ${fp}`)
+    }
+    if (input.classes !== undefined) {
+      if (!Array.isArray(input.classes) || !input.classes.every((n) => typeof n === "string")) return fail(project, "classes must be a list of names")
+      const names = [...new Set((input.classes as string[]).map((n) => n.trim()).filter(Boolean))]
+      patch.classes = names.length ? names : undefined
+      changes.push(names.length ? `classes ${names.join(", ")}` : "no classes")
     }
     // Every unit of a part has its designator.
     const severalUnits = !!part && unitCount(part) > 1
@@ -1358,17 +1373,25 @@ const runChecksTool: ToolSpec = {
     const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
     const unplaced = resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed)
     const lines: string[] = []
-    if (conn.unconnectedPins.length) {
+    // A project from KiCad that ignores KiCad's pin_not_connected rule is not told of open pins, as its Checks panel is not.
+    const openPins = unconnectedPinSeverity(project) ? conn.unconnectedPins : []
+    if (openPins.length) {
       lines.push(
-        `Unconnected pins (${conn.unconnectedPins.length}): ${conn.unconnectedPins
+        `Unconnected pins (${openPins.length}): ${openPins
           .slice(0, 40)
           .map((p) => `${refOf.get(p.componentId)}.${p.name === p.pin ? p.pin : `${p.pin}/${p.name}`}`)
           .join(", ")}`,
       )
     }
     if (erc.active.length) {
-      lines.push(`Electrical (${erc.active.length} warning(s); they don't block fabrication, but each is likely a mistake):`)
-      for (const f of erc.active.slice(0, 25)) lines.push(`- ${f.message}`)
+      // A project from KiCad gives each finding the severity its project file sets for KiCad's rule; a project drawn here has warnings only.
+      if (erc.active.some((f) => f.severity)) {
+        lines.push(`Electrical (${erc.active.length}, at the severities the KiCad project sets):`)
+        for (const f of erc.active.slice(0, 25)) lines.push(`- ${f.severity ?? "warning"}: ${f.message}`)
+      } else {
+        lines.push(`Electrical (${erc.active.length} warning(s); they don't block fabrication, but each is likely a mistake):`)
+        for (const f of erc.active.slice(0, 25)) lines.push(`- ${f.message}`)
+      }
     }
     // Said even when everything else passes, so the model doesn't go looking for them.
     const ignoredNote = erc.ignored.length
@@ -1392,7 +1415,7 @@ const runChecksTool: ToolSpec = {
     return ok(
       project,
       lines.join("\n"),
-      `Checks: ${conn.unconnectedPins.length} unconnected pin(s), ${errors} PCB error(s)${erc.active.length ? `, ${erc.active.length} electrical warning(s)` : ""}${parts.length ? `, ${parts.length} part warning(s)${partErrors ? ` (${partErrors} pinout error(s))` : ""}` : ""}`,
+      `Checks: ${openPins.length} unconnected pin(s), ${errors} PCB error(s)${erc.active.length ? `, ${erc.active.length} electrical warning(s)` : ""}${parts.length ? `, ${parts.length} part warning(s)${partErrors ? ` (${partErrors} pinout error(s))` : ""}` : ""}`,
     )
   },
 }
@@ -1439,6 +1462,9 @@ const layoutPcbTool: ToolSpec = {
     const b = next.board
     const outside = getPcbAnalysis(next).violations.filter((v) => v.kind === "outside-board").length
     const hint = outside ? ` ${outside} part(s) did not fit on the ${b.width}x${b.height} mm board; enlarge it with set_board.` : ""
+    // X20: parts that do not sit in the placement area that holds them (an area too small for them, or a part locked outside it).
+    const out = placementProblems(next).map((p) => p.component.ref)
+    const areaHint = out.length ? ` ${out.length} part(s) are outside their placement area (${out.slice(0, 8).join(", ")}${out.length > 8 ? " and more" : ""}): make it bigger with set_pour and its id, or unlock them.` : ""
     const caps = decouplingSummary(next, moved)
     const capNote = caps.total ? ` ${caps.near} of ${caps.total} decoupling capacitor(s) placed within 2 mm of their chip's supply pin.` : ""
     const stages = stageGaps(next)
@@ -1448,7 +1474,7 @@ const layoutPcbTool: ToolSpec = {
     const copper = repackCopper(project, next)
     const clearNote = copper.traces || copper.vias ? " Unlocked traces and vias were cleared; route again with route_pcb." : ""
     const stitchNote = copper.stitchedBefore || copper.stitchedAfter ? ` Pour stitching vias were placed again on the new layout (${copper.stitchedBefore} before, ${copper.stitchedAfter} now).` : ""
-    return ok(next, `Placed ${moved.size} part(s) on the ${b.width}x${b.height} mm board.${capNote}${stageNote}${hint}${clearNote}${stitchNote}`, `Placed ${moved.size} part(s) on the PCB`)
+    return ok(next, `Placed ${moved.size} part(s) on the ${b.width}x${b.height} mm board.${capNote}${stageNote}${hint}${areaHint}${clearNote}${stitchNote}`, `Placed ${moved.size} part(s) on the PCB`)
   },
 }
 
@@ -1846,7 +1872,7 @@ const routePcbTool: ToolSpec = {
 const pourTool: ToolSpec = {
   name: "set_pour",
   description:
-    "Add or remove a copper pour (filled zone) for a net on a copper layer, usually GND on both layers. Pours connect same-net pads and keep clearance from other nets. With stitch, also tie the top and bottom pours of the net together with a grid of vias; do that after routing so the vias do not block traces. With polygon, the pour covers only that shape; with keepout, the shape keeps those things out and has no net. get_design lists zones by id.",
+    "Add or remove a copper pour (filled zone) for a net on a copper layer, usually GND on both layers. Pours connect same-net pads and keep clearance from other nets. With stitch, also tie the top and bottom pours of the net together with a grid of vias; do that after routing so the vias do not block traces. With polygon, the pour covers only that shape; with keepout, the shape keeps those things out and has no net. With places the shape is a placement area: those parts must sit inside it, and layout_pcb and place_parts keep them there. get_design lists zones by id.",
   input_schema: {
     type: "object",
     properties: {
@@ -1857,12 +1883,13 @@ const pourTool: ToolSpec = {
       polygon: { type: "array", items: { type: "number" }, description: "Corners x1, y1, x2, y2, ... in mm, three or more" },
       keepout: { type: "array", items: { type: "string", enum: ["tracks", "vias", "pads", "pour", "parts"] } },
       priority: { type: "integer", description: "Higher wins where polygons overlap" },
+      places: { type: "string", description: "sheet:/Power/, class:NAME or group:NAME; empty removes" },
       id: { type: "string", description: "Change or remove the zone with this id" },
     },
     required: ["layer"],
   },
   run: (project, input) => {
-    if (input.polygon !== undefined || input.id !== undefined || input.keepout !== undefined) return polygonZone(project, input)
+    if (input.polygon !== undefined || input.id !== undefined || input.keepout !== undefined || input.places !== undefined) return polygonZone(project, input)
     if (typeof input.net !== "string" || !input.net.trim()) return fail(project, "Say which net to pour")
     const net = String(input.net).trim()
     const stackIds = copperLayers(project.board) as string[]
@@ -1905,6 +1932,9 @@ function polygonZone(project: Project, input: Record<string, unknown>): ToolOutc
   const keepout = flags ? Object.fromEntries(flags.map((f) => [f === "parts" ? "footprints" : f, true])) : undefined
   const priority = typeof input.priority === "number" ? Math.max(0, Math.round(input.priority)) : undefined
   const net = typeof input.net === "string" ? input.net.trim() : ""
+  // X20: a placement area holds the parts of a sheet, a class or a group; an empty target takes the placement off.
+  const where = input.places === undefined ? undefined : parsePlaces(project, input.places)
+  if (typeof where === "string") return fail(project, where)
   if (typeof input.id === "string") {
     const z = project.zones.find((x) => x.id === input.id)
     if (!z) return fail(project, `There is no zone with id ${input.id}`)
@@ -1918,17 +1948,68 @@ function polygonZone(project: Project, input: Record<string, unknown>): ToolOutc
       next = { ...next, zones: next.zones.map((x) => (x.id === z.id ? { ...x, outline: made.outline } : x)) }
     }
     if (net && !z.keepout && !getConnectivity(next).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
-    next = updateZone(next, z.id, { ...(net && !z.keepout ? { net } : {}), layers, ...(priority !== undefined ? { priority: priority || undefined } : {}) })
+    if (where !== undefined && !z.keepout) return fail(project, "Only a keepout or placement area holds parts: add a new polygon with places")
+    next = updateZone(next, z.id, { ...(net && !z.keepout ? { net } : {}), layers, ...(priority !== undefined ? { priority: priority || undefined } : {}), ...(where !== undefined ? { placement: where ?? undefined } : {}) })
     const changedNet = next.zones.find((x) => x.id === z.id)?.net
-    return ok(next, `Changed the zone.${changedNet && !z.keepout ? pourMissNote(next, getPcbAnalysis(next), changedNet) : ""}`, "Changed zone")
+    const missed = changedNet && !z.keepout ? pourMissNote(next, getPcbAnalysis(next), changedNet) : ""
+    return ok(next, `Changed the zone.${where ? placementTail(next, z.id) : ""}${missed}`, where ? "Changed placement area" : "Changed zone")
   }
   if (!points) return fail(project, "Give the polygon's corners")
-  if (!keepout && !getConnectivity(project).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
-  const zone = makeZone(points, { layers, net, priority, keepout })
-  if (!zone) return fail(project, "That polygon has no area")
+  const rule = keepout ?? (where ? {} : undefined)
+  if (!rule && !getConnectivity(project).nets.some((n) => n.name === net && n.pins.length > 0)) return fail(project, `No pins are on a net named ${net}`)
+  const made = makeZone(points, { layers, net, priority, keepout: rule })
+  if (!made) return fail(project, "That polygon has no area")
+  const zone = where ? { ...made, placement: where } : made
   const next = addZone(project, zone)
-  const missed = keepout ? "" : pourMissNote(next, getPcbAnalysis(next), net)
-  return ok(next, `${keepout ? "Added a keepout" : `Poured ${net}`} in a polygon of ${points.length} corners (id ${zone.id}).${missed}`, keepout ? "Added keepout" : `Poured ${net} in a polygon`)
+  const missed = rule ? "" : pourMissNote(next, getPcbAnalysis(next), net)
+  const what = where ? `a placement area for ${placementWords(where)}` : keepout ? "a keepout" : `Poured ${net}`
+  return ok(next, `${where || keepout ? `Added ${what}` : what} in a polygon of ${points.length} corners (id ${zone.id}).${where ? placementTail(next, zone.id) : ""}${missed}`, where ? "Added placement area" : keepout ? "Added keepout" : `Poured ${net} in a polygon`)
+}
+
+/** `sheet:/Power/`, `class:Power` or `group:Front end` as a placement; null for an empty one (it takes the placement off); the sentence that says why it cannot be one. */
+function parsePlaces(project: Project, raw: unknown): ZonePlacement | null | string {
+  if (typeof raw !== "string") return "places must be text: sheet:/Power/, class:NAME or group:NAME"
+  const text = raw.trim()
+  if (text === "" || text.toLowerCase() === "none") return null
+  const m = /^(sheet|class|group)\s*:\s*(.*)$/i.exec(text)
+  if (!m || m[2].trim() === "") return "places is sheet:/Power/, class:NAME or group:NAME"
+  const by = m[1].toLowerCase() as ZonePlacement["by"]
+  const name = m[2].trim()
+  if (by === "sheet") {
+    const r = resolveSheet(project, name)
+    if ("use" in r) return { by, name: r.use.human }
+    // A board brought in with no schematic names the sheet of each part; that is the only sheet it knows.
+    if (project.components.some((c) => c.sheetPath === name)) return { by, name }
+    return r.error
+  }
+  return { by, name }
+}
+
+/** What a new or changed placement area does: how many parts it picks and which sit outside, and how to bring them in. */
+function placementTail(project: Project, id: string): string {
+  const z = project.zones.find((x) => x.id === id)
+  if (!z?.placement || z.placement.off) return ""
+  const r = areaReport(project, z)
+  if (!r.picked) return ` No placed part is picked yet${z.placement.by === "class" ? " (give parts the class with update_component classes)" : ""}.`
+  return ` It picks ${r.picked} placed part${r.picked === 1 ? "" : "s"}${r.outside.length ? `; outside it: ${r.outside.slice(0, 12).join(", ")}${r.outside.length > 12 ? " and more" : ""}. Move them in with place_parts (it keeps them inside) or layout_pcb with relayout_all` : ", all inside"}.`
+}
+
+/**
+ * What get_design says of the variants (KiCad 10's, on a schematic or a board), only for a project that has any: the one shown (every flag and value above is as it makes it) and, for each,
+ * what it changes on which parts.
+ */
+function variantsReport(project: Project) {
+  const names = variantNames(project)
+  if (!names.length) return undefined
+  const shown = activeVariant(project)
+  return {
+    shown: shown ?? "none: the parts as they are",
+    list: names.map((name) => {
+      const description = project.variants?.list.find((v) => v.name === name)?.description
+      const parts = project.components.flatMap((c) => (c.variants?.[name] ? [{ ref: c.ref, changes: variantWords(c.variants[name]) }] : []))
+      return { name, ...(description ? { description } : {}), parts }
+    }),
+  }
 }
 
 /** What get_design says of the zones, only for a project that has a polygon or a keepout: nothing for the editor's own pours alone. */
@@ -1936,15 +2017,20 @@ function zonesReport(project: Project) {
   if (!project.zones.some((z) => z.outline) && !hasPartZones(project)) return undefined
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   // The zones inside parts come last, each with the part it belongs to.
-  return withPartZones(project).zones.map((z) => ({
-    id: z.id,
-    ...(z.part ? { part: refOf.get(z.part) } : {}),
-    ...(z.net ? { net: z.net } : {}),
-    layers: [...zoneLayers(z), ...(z.other ?? [])].join("+"),
-    ...(z.keepout ? { keepout: keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join("+") || "rules only" } : {}),
-    ...(z.priority ? { priority: z.priority } : {}),
-    ...(z.outline ? { polygon: outlinePoints(z).slice(0, 40).flatMap((p) => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]) } : { whole_board: true }),
-  }))
+  return withPartZones(project).zones.map((z) => {
+    const area = z.placement ? areaReport(project, z) : null
+    return {
+      id: z.id,
+      ...(z.part ? { part: refOf.get(z.part) } : {}),
+      ...(z.net ? { net: z.net } : {}),
+      layers: [...zoneLayers(z), ...(z.other ?? [])].join("+"),
+      ...(z.keepout && !(z.placement && keepoutFlags(z).length === 0) ? { keepout: keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join("+") || "rules only" } : {}),
+      // X20: whose parts a placement area holds (what places takes), and which of them sit outside it.
+      ...(z.placement ? { places: `${z.placement.by}:${z.placement.name}${z.placement.off ? " (off)" : ""}`, ...(area!.outside.length ? { parts_outside: area!.outside } : {}) } : {}),
+      ...(z.priority ? { priority: z.priority } : {}),
+      ...(z.outline ? { polygon: outlinePoints(z).slice(0, 40).flatMap((p) => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]) } : { whole_board: true }),
+    }
+  })
 }
 
 /**

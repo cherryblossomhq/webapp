@@ -312,7 +312,7 @@ describe("S3: the project file", () => {
     expect(read.busAliases).toBeUndefined()
     expect(read.drawings).toBeUndefined()
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(3)
+    expect(PROJECT_FILE_VERSION).toBe(5)
   })
 
   it("keeps a bus, an entry and an alias through a save and a load, and drops a malformed one without losing the rest", () => {
@@ -344,7 +344,7 @@ describe("S3: the project file", () => {
     const doc = JSON.parse(serializeProject(createProject("n")))
     expect(doc.version).toBe(PROJECT_FILE_VERSION)
     expect(() => parseProjectFile({ ...doc, version: 3 }, { id: "x" })).not.toThrow()
-    expect(() => parseProjectFile({ ...doc, version: 4 }, { id: "x" })).toThrow()
+    expect(() => parseProjectFile({ ...doc, version: PROJECT_FILE_VERSION + 1 }, { id: "x" })).toThrow()
   })
 })
 

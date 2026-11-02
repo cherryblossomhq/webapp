@@ -1,5 +1,6 @@
 import { isCopperLayerId } from "./stack"
 import type { Backdrill, PostMachining, Via, ViaProtection } from "./types"
+import { finite, isObject } from "../lib/guards"
 
 // X22 in the stored project: via protection, backdrills and post-machining, on vias and on pads. A KiCad 10 board that sets them lists the same few values on
 // hundreds of vias (every via of a board saved by KiCad 10 with its protection dialog open says `capping no`, `covering`, `plugging`, `filling no`), so a via
@@ -9,8 +10,6 @@ import type { Backdrill, PostMachining, Via, ViaProtection } from "./types"
 //
 // and read back onto the vias before they are checked. Nothing is rounded: reading gives what was written. A project with no such via has no `vx`.
 
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
-const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 
 /** The X22 fields of a via, which the stored form keeps apart from the via. */
 const VIA_X22_KEYS = ["protect", "backdrill", "tertiary", "post"] as const

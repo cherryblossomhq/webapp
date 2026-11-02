@@ -1,6 +1,9 @@
 import { newAccount } from "../schematic/account"
 import type { ImportReport, NodeAccount } from "../board/report"
 import { decodeBytes } from "../board/sexpr"
+import { isObject } from "../../../lib/guards"
+import { CARRIED_RULE_KEYS } from "./rules"
+import { MAPPED_DRC_RULES, MAPPED_ERC_RULES } from "../../checkRules"
 
 // The project file (`.kicad_pro`, JSON, KiCad 6 and later): the net classes and their assignments,
 // the design rules, the text variables and the many settings KiCad keeps beside a design. It is read
@@ -45,7 +48,6 @@ export interface ProReadResult {
   notes: string[]
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 
 /** Reads a `.kicad_pro`, as text or bytes. Throws `KicadProjectFileError` for a file that is not JSON or not an object. */
 export function readKicadPro(input: string | Uint8Array): ProReadResult {
@@ -110,18 +112,24 @@ export const PRO_RULES: ProRule[] = [
   rule("net_settings>last_net_id", "not-needed", "the last number KiCad gave a net"),
   // The objects that hold the settings below: each key under them has a row of its own.
   rule("board|board>design_settings|net_settings|schematic", "not-needed", "a group of settings, each of which is accounted for below it"),
-  // ---- net classes, rules and what hangs on them: X10 ----
-  rule(`net_settings>classes${SUB}`, "pending", "net classes: clearance, track and via sizes, differential pair sizes", "X10"),
-  rule(`net_settings>(?:netclass_assignments|netclass_patterns)${SUB}`, "pending", "which nets are in which net class", "X10"),
+  // ---- net classes, rules and what hangs on them: board slice 1d ----
+  // X10 is built for a KiCad 6 and later project file: `rules.ts` writes the classes, their nets and patterns, and the board's rules into the project.
+  rule(`net_settings>classes${SUB}`, "used", "net classes: clearance, track and via sizes, differential pair sizes (brought into the project's rules)"),
+  rule(`net_settings>(?:netclass_assignments|netclass_patterns)${SUB}`, "used", "which nets are in which net class (brought into the project's net classes)"),
   rule(`net_settings>(?:net_chain_classes|net_chain_netclasses)${SUB}`, "pending", "net chains and their classes (KiCad 11 development)", "X21"),
   rule(`net_settings>(?:net_colors|hidden_nets)${SUB}`, "not-needed", "how KiCad colours and hides nets on screen"),
   rule(`net_colors${SUB}`, "not-needed", "how KiCad colours nets on screen, where a KiCad 6 nightly kept it (beside net_settings)"),
   rule(`net_settings>meta${SUB}`, "not-needed", "the section's version"),
-  rule(`board>design_settings>(?:rules|defaults|track_widths|via_dimensions|diff_pair_dimensions|via_stack_presets)${SUB}`, "pending", "design rules, the sizes new items get, and the track and via sizes KiCad offers", "X10"),
+  rule(`board>design_settings>rules>(?:${CARRIED_RULE_KEYS.join("|")})`, "used", "the board's smallest clearance, track, drill, via, annular ring, hole to hole and edge distances (brought into the project's rules)"),
+  rule(`board>design_settings>(?:defaults>)?(?:track_widths|via_dimensions|diff_pair_dimensions)${SUB}`, "used", "the track, via and differential pair sizes KiCad offers while routing (brought into the project's rules)"),
+  rule(`board>design_settings>(?:rules|defaults|track_widths|via_dimensions|diff_pair_dimensions|via_stack_presets)${SUB}`, "pending", "design rules the editor has no setting for, and the sizes new items get", "X10"),
   rule(`board>design_settings>(?:teardrop_options|teardrop_parameters|zones_allow_external_fillets|zones_use_no_outline)${SUB}`, "pending", "teardrop and copper zone settings", "X3"),
-  rule(`board>design_settings>tuning_pattern_settings${SUB}`, "pending", "length tuning patterns", "X21"),
-  rule(`board>design_settings>(?:rule_severities|rule_severitieslegacy_[a-z_]+)${SUB}`, "not-needed", "how severe KiCad's own design rule checks are: the editor's checks have their own"),
-  rule(`board>design_settings>drc_exclusions${SUB}`, "not-needed", "design rule check markers the user dismissed in KiCad"),
+  // `meander_settings` is the name KiCad 8's development builds gave the same settings.
+  rule(`board>design_settings>(?:tuning_pattern_settings|meander_settings)${SUB}`, "pending", "length tuning patterns", "X21"),
+  // The severities of the rules the editor has a check for are kept, and its checks of the project follow them (`model/checkRules.ts`).
+  rule(`board>design_settings>rule_severities>(?:${[...MAPPED_DRC_RULES, "hole_near_hole"].join("|")})`, "used", "how severe KiCad's checks are that the editor has too (kept: the editor's checks of the project follow them)"),
+  rule(`board>design_settings>(?:rule_severities|rule_severitieslegacy_[a-z_]+)${SUB}`, "not-needed", "how severe KiCad's own design rule checks are that the editor has no check for"),
+  rule(`board>design_settings>drc_exclusions${SUB}`, "used", "design rule check markers the user dismissed in KiCad (kept: the editor does not report a check KiCad keys the same, and the export keeps the uuids they name)"),
   rule(`board>design_settings>(?:meta|bom_[a-z_]+)${SUB}`, "not-needed", "a version and bill of materials presets"),
   // X20 is built: the assignment rules are worked out for the footprints, and each one that is not is a report entry (`classRules.ts`).
   rule(`component_class_settings${SUB}`, "used", "the component class rules: worked out for the footprints, or reported when they cannot be"),
@@ -138,7 +146,8 @@ export const PRO_RULES: ProRule[] = [
   rule(`schematic>(?:ngspice|spice_[a-z_]+)${SUB}`, "not-needed", "KiCad's simulator settings"),
   rule(`schematic>(?:compare_symbols|connection_grid_size|space_save_all_events|net_format_name|page_layout_descr_file|plot_directory|legacy_lib_dir|legacy_lib_list|meta)${SUB}`, "not-needed", "editing, plotting and legacy library settings of KiCad's schematic editor"),
   // ---- erc, libraries, caches and view state ----
-  rule(`erc${SUB}`, "not-needed", "KiCad's electrical rule check settings and dismissed markers: the editor has its own checks"),
+  rule(`erc>(?:rule_severities>(?:${MAPPED_ERC_RULES.join("|")})|pin_map${SUB})`, "used", "how severe KiCad's electrical checks are that the editor has too, and which pin types may share a net (kept: the editor's checks of the project follow them)"),
+  rule(`erc${SUB}`, "not-needed", "KiCad's electrical rule check settings the editor has no check for, and dismissed markers"),
   rule(`libraries${SUB}`, "not-needed", "the libraries the user pinned in KiCad"),
   rule(`cvpcb${SUB}`, "not-needed", "the footprint assignment tool's equivalence files"),
   rule(`legacy${SUB}`, "not-needed", "settings of KiCad 5 files"),

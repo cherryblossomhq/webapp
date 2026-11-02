@@ -1,13 +1,10 @@
 import * as THREE from "three"
 import { describe, expect, it } from "vitest"
-import { generatedModelContext, partHolder } from "../src/editor/three/buildBoard"
+import { partHolder } from "../src/editor/three/buildBoard"
 import { placementMatrix, rotationScale } from "../src/editor/three/files/placement"
 import { kicadFiles } from "../src/export/kicad"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
-import { registerProjectParts } from "../src/model/customParts"
-import { registerProjectFootprints } from "../src/model/footprints"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { componentTexts } from "../src/model/texts"
 import { buildKicadProject, importKicadBoard, outlineOf, readKicadBoard, type ImportReport } from "../src/model/kicad/board"
 import { accountNodes, countPaths, scanAtoms } from "../src/model/kicad/board/account"
@@ -582,23 +579,6 @@ describe("B6: every model is kept or named, never dropped", () => {
     expect(r.report.entries.filter((x) => x.code === "model-not-brought").map((x) => x.object)).toEqual(["3D model ${KICAD6_3DMODEL_DIR}/Diode_SMD.3dshapes/D_0402_1005Metric.wrl of D5"])
     const { files } = await kicadFiles(r.project)
     expect(Object.values(files).find((t) => t.includes("QFN-24"))).toContain(`(model "${old}"`)
-  })
-  it("a footprint the file shows no model for has no body in the 3D view, as in KiCad; one whose model is only missing keeps its generated body", () => {
-    const r = importKicadBoard(
-      board({ body: [fp("H1", [], "moteus:M2.5_MOUNT"), fp("J5", [m(SMA, "hide")], "Lib:Header"), fp("D1", [m(SMA)]), fp("U4", [m("${KIPRJMOD}/3d/missing.step")], "Lib:Module")] }),
-      { built: ALL },
-    )
-    if (r.status !== "imported") throw new Error(r.message)
-    const land = (ref: string) => r.project.footprints!.find((f) => f.name === r.project.components.find((c) => c.ref === ref)!.footprint)!
-    expect([land("H1").noBody, land("J5").noBody, land("D1").noBody, land("U4").noBody]).toEqual([true, true, undefined, undefined])
-    registerProjectFootprints(r.project)
-    registerProjectParts(r.project)
-    const ctx = (ref: string) => generatedModelContext(r.project, r.project.components.find((c) => c.ref === ref)!, {} as never)
-    expect(ctx("H1")).toBeNull()
-    expect(ctx("U4")).not.toBeNull()
-    // it survives a save
-    const again = parseProjectFile(serializeProject(r.project), { id: "p", createdAt: 0, updatedAt: 0 })
-    expect(again.footprints!.filter((f) => f.noBody).length).toBe(2)
   })
   it("the nodes of a model that is not held are not counted as imported", () => {
     const r = importKicadBoard(board({ body: [fp("D1", [m(SMA), m(SMB)])] }), { built: ALL })

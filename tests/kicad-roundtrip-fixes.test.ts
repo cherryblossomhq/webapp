@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { KicadImportController } from "../src/kicadImport/controller"
 import { attachLcsc } from "../src/kicadImport/lcsc"
-import { bodyOf, compareTrip, exportAndImport, sheetTexts } from "./kicad-roundtrip-editor"
+import { contentHash } from "../src/export/keep/pack"
+import { compareTrip, exportAndImport, sheetTexts } from "./kicad-roundtrip-editor"
 import { cases } from "./kicad-roundtrip-cases"
-import { getFootprint, likeFootprint, registerProjectFootprints } from "../src/model/footprints"
-import { applyRecords, lcscNumberOf, lookupFromSource, matchLcsc, recordOfSupplierPart, sameLand, type LcscLookup } from "../src/model/lcscMatch"
+import { getFootprint, registerProjectFootprints } from "../src/model/footprints"
+import { applyRecords, lcscNumberOf, lookupFromSource, matchLcsc, recordOfSupplierPart, type LcscLookup } from "../src/model/lcscMatch"
 import { modelAssignment } from "../src/model/models3d"
 import { findPart } from "../src/model/library"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile } from "../src/model/projectFile"
 import { importKicadProject } from "../src/model/kicad/project"
 import { MOUNTING_HOLE_MARK } from "../src/model/kicad/mountingHoles"
 import { pinKindOfType, pinTypeOfKind } from "../src/model/pinKinds"
@@ -147,21 +148,8 @@ describe("a mounting hole that is not the board's corner hole stays a part", () 
   }, 120_000)
 })
 
-describe("the 3D body of a part read back from the editor's own board", () => {
-  it("is the body of the editor's footprint of that name, not a black block", async () => {
-    const trip = await exportAndImport(byId("blinker").project)
-    for (const ref of ["R1", "C2", "U1", "D1", "J1"]) {
-      const a = trip.after.components.find((c) => c.ref === ref)!
-      const b = trip.before.components.find((c) => c.ref === ref)!
-      expect(getFootprint(a.footprint).like, ref).toBe(b.footprint)
-      expect(bodyOf(trip.after, a)!.materials, ref).toEqual(bodyOf(trip.before, b)!.materials)
-      expect(bodyOf(trip.after, a)!.dark === bodyOf(trip.before, b)!.dark).toBe(true)
-    }
-    // an LED valued as a colour is an LED, a resistor is a resistor
-    expect(bodyOf(trip.after, trip.after.components.find((c) => c.ref === "D1")!)!.materials.some((m) => m.startsWith("glow:"))).toBe(true)
-  }, 120_000)
-
-  it("keeps the file's own footprint: the pads are the file's, only the body comes from the library", async () => {
+describe("a part read back from the editor's own board", () => {
+  it("keeps the file's own footprint: the pads are the file's", async () => {
     const trip = await exportAndImport(byId("blinker").project)
     const a = trip.after.components.find((c) => c.ref === "R1")!
     const land = getFootprint(a.footprint)
@@ -169,19 +157,6 @@ describe("the 3D body of a part read back from the editor's own board", () => {
     expect(land.pads.map((p) => p.pin)).toEqual(getFootprint("0603").pads.map((p) => p.pin))
   }, 120_000)
 
-  it("is only claimed for a footprint the editor wrote, under its own library, and only when the pads are the same", () => {
-    const pads = getFootprint("soic8").pads
-    expect(likeFootprint("soic8", pads)).toBe("soic8")
-    expect(likeFootprint("soic8", pads.map((p, i) => (i === 0 ? { ...p, x: p.x + 0.05 } : p)))).toBeUndefined()
-    expect(likeFootprint("soic8", pads.slice(1))).toBeUndefined()
-    expect(likeFootprint("not_a_footprint", pads)).toBeUndefined()
-  })
-
-  it("survives the project file", () => {
-    const project: Project = { ...byId("blinker").project, footprints: [{ name: "x-abc123", pads: getFootprint("0603").pads, silk: [], courtyard: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, like: "0603" }] }
-    const back = parseProjectFile(serializeProject(project), { id: "x" })
-    expect(back.footprints?.[0].like).toBe("0603")
-  })
 })
 
 // ---------- the LCSC step ----------
@@ -217,9 +192,6 @@ describe("LCSC numbers", () => {
     const tps = found.project.components.find((x) => lcscNumberOf(x) === "C919459")!
     expect(modelAssignment(found.project, tps.partId, tps.footprint)?.source).toBe("supplier")
     expect(found.stats.models).toBe(1)
-    // the package of a land that is the record's: the 3D view reads the body from it
-    const ldo = found.project.components.find((x) => lcscNumberOf(x) === "C22365427")!
-    expect(getFootprint(ldo.footprint).package).toMatch(/^SOT-23-5/)
     // and the footprints are exactly the file's
     expect(padsOf(found.project)).toEqual(before)
     expect(found.entries.find((e) => e.code === "lcsc-matched")?.why).toMatch(/exactly as the file has them/)
@@ -284,16 +256,6 @@ describe("LCSC numbers", () => {
     expect(padsOf(found.project)).toEqual(before)
   }, 120_000)
 
-  it("name a land the record's only when every pad is in the record's place within 0.01 mm", async () => {
-    const project = await lcscBoard()
-    const ldo = project.components.find((x) => lcscNumberOf(x) === "C22365427")!
-    const def = getFootprint(ldo.footprint)
-    const record = recordOfSupplierPart(recordedPart("C22365427"))
-    expect(sameLand(def.pads, record.land!)).toBe(true)
-    expect(sameLand(def.pads.map((p, i) => (i === 0 ? { ...p, x: p.x + 0.02 } : p)), record.land!)).toBe(false)
-    expect(sameLand(def.pads.slice(1), record.land!)).toBe(false)
-  }, 120_000)
-
   it("look every number up once, however many parts carry it", async () => {
     const project = await lcscBoard()
     const twin = project.components.find((x) => lcscNumberOf(x) === "C908680")!
@@ -356,10 +318,9 @@ describe("the import's LCSC step, between reading the files and saving the proje
     expect(phases.indexOf("matching")).toBeLessThan(phases.indexOf("saving"))
     expect(lookups.sort()).toEqual(["C138706", "C22365427", "C80165", "C908680", "C919459"])
     expect(created).toHaveLength(1)
-    // the project that was saved has the supplier's model of the TPS61023 and the package of the LDO's land
+    // the project that was saved has the supplier's model of the TPS61023
     const saved = parseProjectFile(created[0].content, { id: "x" })
     expect((saved.models ?? []).some((m) => m.model.source === "supplier")).toBe(true)
-    expect((saved.footprints ?? []).some((f) => /^SOT-23-5/.test(f.package ?? ""))).toBe(true)
     expect(c.state.step === "report" && c.state.summary.notes.some((n) => n.code === "lcsc-matched")).toBe(true)
   }, 120_000)
 
@@ -406,5 +367,15 @@ describe("the import's LCSC step, between reading the files and saving the proje
     expect(result.stats?.matched).toBe(5)
     expect(result.outcome.project).not.toBe(trip.after)
     expect(findPart(trip.after.components[0].partId)).toBeTruthy()
+  }, 120_000)
+
+  it("takes the hash the export compares with again, so a project whose parts it filled in still exports as the user's own files", async () => {
+    const trip = await exportAndImport(byId("lcsc:ldo-and-friends").project)
+    const imported: Project = { ...trip.after, kicad: { ...trip.after.kicad, original: { file: "zip", size: 1, content: await contentHash(trip.after) } } }
+    const outcome = { project: imported, summary: { status: "imported", notes: [], changed: [], notBrought: [], refusals: [] } as never }
+    const after = (await attachLcsc(outcome, stubbed)).outcome.project!
+    expect(after.kicad!.original!.content).not.toBe(imported.kicad!.original!.content)
+    expect(after.kicad!.original!.content).toBe(await contentHash(after))
+    expect(after.kicad!.original!.file).toBe("zip")
   }, 120_000)
 })

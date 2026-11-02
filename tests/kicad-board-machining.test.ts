@@ -111,17 +111,16 @@ describe("X22 reader", () => {
 })
 
 describe("X22 stored form", () => {
-  it("survives a save and a load exactly, and the vias that share a setting are written once", () => {
+  it("survives a save and a load exactly, each via with its own setting, which the live sync edits by its key", () => {
     const vias = Array.from({ length: 40 }, (_, i) => via(`${i} 5`, "(capping no) (filling no) (covering (front no) (back no)) (plugging (front no) (back no))"))
     const p = imported(four([...vias, via("60 5", '(backdrill (size 0.33) (layers "F.Cu" "In1.Cu"))')]))
     const text = serializeProject(p)
     const back = parseProjectFile(text, { id: "x", createdAt: 0, updatedAt: 0 })
     expect(back.vias.map((v) => [v.protect, v.backdrill, v.tertiary, v.post])).toEqual(p.vias.map((v) => [v.protect, v.backdrill, v.tertiary, v.post]))
     const doc = JSON.parse(text).project
-    expect(doc.vx).toHaveLength(2)
-    expect(doc.vias.every((v: Record<string, unknown>) => v.protect === undefined && v.backdrill === undefined)).toBe(true)
-    // forty vias with the same four-part setting cost the setting once and their places
-    expect(text.length).toBeLessThan(serializeProject({ ...p, vias: p.vias.map((v) => ({ ...v, protect: { ...v.protect!, cover: { front: false, back: false } } })) }).length + 400)
+    expect(doc.vx).toBeUndefined()
+    expect(doc.vias.filter((v: Record<string, unknown>) => v.protect !== undefined)).toHaveLength(40)
+    expect(doc.vias[40].backdrill).toEqual(p.vias[40].backdrill)
   })
 
   it("a project with none of it has no `vx`, and a via with a malformed field loses that field and keeps the via", () => {

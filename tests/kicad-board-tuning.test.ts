@@ -5,7 +5,7 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { ungroup } from "../src/model/boardObjects"
 import { moveObjects, rotateObjects } from "../src/model/groupMoves"
 import { BUILT_EXTENSIONS, importKicadBoard } from "../src/model/kicad/board"
-import { netLengths, padDieTimes, tuningPatterns } from "../src/model/netLengths"
+import { lengthFindings, netLengths, padDieTimes, tuningPatterns } from "../src/model/netLengths"
 import { pruneNetChains, renameChainNets } from "../src/model/netChains"
 import { analyzePcb } from "../src/model/pcb"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
@@ -174,12 +174,12 @@ describe("X21 stored form", () => {
     expect(unpackGroups([[0, "P", 4, { kind: "tuning_pattern", layer: "top", props: {} }, 9]], undefined, { ids })).toEqual([])
   })
 
-  it("tuning patterns are written small enough that a board with sixty of them fits", () => {
+  it("sixty tuning patterns are written as the groups they are, about a kilobyte each, and read back the same", () => {
     const p = imported(withPattern())
     const gens = Array.from({ length: 60 }, (_, i) => ({ id: `gp${i + 1}`, name: "Tuning Pattern", members: [p.traces[0].id], gen: { ...p.groups![0].gen!, props: { ...p.groups![0].gen!.props, target_length: 10 + i } } }))
     const big = { ...p, groups: gens }
     const text = serializeProject(big)
-    expect(text.match(/corner_radius_percent/g)?.length).toBe(1)
+    expect((text.length - serializeProject({ ...p, groups: [] }).length) / 60).toBeLessThan(1500)
     expect(parseProjectFile(text, { id: "x", createdAt: 0, updatedAt: 0 }).groups).toEqual(gens)
   })
 
@@ -193,8 +193,7 @@ describe("X21 stored form", () => {
 
   it("a generator that does not read takes its group with it, and the tracks stay", () => {
     const doc = JSON.parse(serializeProject(imported(withPattern())))
-    const entry = doc.project.grp[0]
-    entry[3] = { kind: "tuning_pattern", layer: "top", props: { origin: { xy: ["x", 1] } } }
+    doc.project.groups[0].gen = { kind: "tuning_pattern", layer: "top", props: { origin: { xy: ["x", 1] } } }
     const back = parseProjectFile(doc, { id: "x", createdAt: 0, updatedAt: 0 })
     expect(back.groups).toBeUndefined()
     expect(back.traces).toHaveLength(1)
@@ -304,16 +303,23 @@ describe("X21 lengths", () => {
     expect(a).toMatchObject({ net: "A", tracks: 20, package: 3, packageDelay: 10, total: 23, pads: 2, simple: true })
   })
 
-  it("Checks says when a tuning pattern's net is no longer the length it was tuned to, counting the package", () => {
+  it("finds a tuning pattern's net no longer the length it was tuned to, counting the package, which Checks keeps out of a project from KiCad", () => {
     const pattern = (min: number, max: number) => `(generated (uuid "${ID(900)}") (type tuning_pattern) (name "Tuning Pattern") (layer "F.Cu") (origin (xy 5 5)) (target_length ${max}) (target_length_max ${max}) (target_length_min ${min}) (is_time_domain no) (members "${ID(1)}"))`
     // 20 mm of track and 3 mm of package is 23 mm: inside 22.9 to 23.1
+    const findings = (p: Project) => {
+      const sch = computeConnectivity(p)
+      const pcb = analyzePcb(p, sch)
+      return lengthFindings(p, sch, pcb.traceNet, pcb.viaNet)
+    }
     const ok = imported(text(pattern(22.9, 23.1)))
-    expect(analyzePcb(ok, computeConnectivity(ok)).violations.filter((v) => v.kind === "length")).toEqual([])
+    expect(findings(ok)).toEqual([])
     // without the package it would be 20 mm; with it the net is over a pattern tuned to 19.9 to 20.1
     const over = imported(text(pattern(19.9, 20.1)))
-    const found = analyzePcb(over, computeConnectivity(over)).violations.filter((v) => v.kind === "length")
+    const found = findings(over)
     expect(found).toHaveLength(1)
-    expect(found[0].message).toMatch(/Net A is 23\.000 mm \(tracks 20\.000 mm, packages 3\.000 mm\); its tuning pattern wants 19\.900 to 20\.100 mm/)
+    expect(found[0]).toMatchObject({ net: "A", total: 23, min: 19.9, max: 20.1, detail: "tracks 20.000 mm, packages 3.000 mm" })
+    // KiCad's DRC judges a length by a rule's `length` constraint only, never by a tuning pattern's target: Checks of a project from KiCad say nothing.
+    expect(analyzePcb(over, computeConnectivity(over)).violations.filter((v) => v.kind === "tuning")).toEqual([])
     expect(tuningPatterns(over)).toHaveLength(1)
   })
 

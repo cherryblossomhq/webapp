@@ -2,8 +2,9 @@ import type { OtherFill } from "../../model/nonCopperFill"
 import { withPartZones } from "../../model/partZones"
 import { pathsSvgPath } from "../../model/shapes"
 import { otherLayerKind } from "../../model/zoneLayers"
-import { zoneLayers } from "../../model/zones"
 import { zoneCorners } from "../../model/zoneOps"
+import { PLACEMENT_COLOR, placementLabel } from "../../model/placementAreas"
+import { zoneBox, zoneLayers } from "../../model/zones"
 import type { CopperLayer, Project, Vec2 } from "../../model/types"
 import { copperColor, PCB } from "../theme"
 import { shapeLayerColor } from "./ShapeGraphics"
@@ -46,12 +47,23 @@ export function ZoneOutlines({ project, selected, px, active }: { project: Proje
         const copper = zoneLayers(z)
         // A zone that is on layers that are not copper is drawn in the colour of the first of them, at full strength (it is not on any copper layer to be dimmed on).
         const here = copper.includes(active) || (copper.length === 0 && (z.other?.length ?? 0) > 0)
-        const color = z.keepout ? "#ff5470" : copper.length === 0 && z.other?.length ? shapeLayerColor(z.other[0]) : copperColor(here ? active : copper[0] ?? z.layer)
+        // X20: a rule area with a target is a placement area: drawn in its own colour, dashed, with its target written in a corner. One that also keeps things out keeps its hatch.
+        const places = !!z.keepout && !!z.placement
+        const keeps = !!z.keepout && (!places || Object.keys(z.keepout).length > 0)
+        const color = places ? PLACEMENT_COLOR : z.keepout ? "#ff5470" : copperColor(here ? active : zoneLayers(z)[0] ?? z.layer)
+        const box = places ? zoneBox(z) : null
         return (
           <g key={z.id} opacity={here ? 1 : 0.45}>
-            {z.keepout && <path d={d} fill="url(#keepout-hatch)" fillOpacity={0.5} fillRule="evenodd" />}
-            {z.keepout && <path d={d} fill="#ff5470" fillOpacity={0.08} fillRule="evenodd" />}
-            <path d={d} fill="none" stroke={sel ? PCB.select : color} strokeWidth={(sel ? 2 : 1.2) * px} strokeDasharray={z.keepout ? undefined : `${6 * px} ${4 * px}`} />
+            {keeps && <path d={d} fill="url(#keepout-hatch)" fillOpacity={0.5} fillRule="evenodd" />}
+            {z.keepout && <path d={d} fill={color} fillOpacity={places ? 0.07 : 0.08} fillRule="evenodd" />}
+            <path d={d} fill="none" stroke={sel ? PCB.select : color} strokeWidth={(sel ? 2 : 1.2) * px} strokeDasharray={z.keepout && !places ? undefined : `${6 * px} ${4 * px}`} />
+            {box && z.placement && (
+              <g transform={`translate(${box.minX + 4 * px} ${box.maxY - 4 * px}) scale(1 -1)`} opacity={z.placement.off ? 0.55 : 1} pointerEvents="none">
+                <text x={0} y={0} fontSize={Math.max(0.8, 11 * px)} fill={color} fontFamily="ui-monospace, monospace">
+                  {`${placementLabel(z.placement)}${z.placement.off ? " (off)" : ""}`}
+                </text>
+              </g>
+            )}
           </g>
         )
       })}
@@ -72,8 +84,8 @@ export function ZoneOutlines({ project, selected, px, active }: { project: Proje
 }
 
 /** The polygon being drawn with the zone tool: the corners so far, a line to the cursor, and a ring on the first corner when the next click closes it. */
-export function ZonePreview({ points, cursor, keepout, px, closes }: { points: Vec2[]; cursor: Vec2 | null; keepout: boolean; px: number; closes: boolean }) {
-  const color = keepout ? "#ff5470" : PCB.select
+export function ZonePreview({ points, cursor, keepout, placing, px, closes }: { points: Vec2[]; cursor: Vec2 | null; keepout: boolean; placing?: boolean; px: number; closes: boolean }) {
+  const color = placing ? PLACEMENT_COLOR : keepout ? "#ff5470" : PCB.select
   const all = cursor ? [...points, cursor] : points
   return (
     <g>

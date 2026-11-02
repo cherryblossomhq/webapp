@@ -36,6 +36,8 @@ export const PROJECT_SHAPE: DocumentShape = {
     groups: "id",
     images: "id",
     properties: "key",
+    // X21: KiCad's net chains, each named. (`points` and `fonts` have no ids: each is one value, the later edit wins.)
+    netChains: "name",
     // A list inside an object: the schematic variants (`variants.active` is a value beside it).
     "variants.list": "name",
   },

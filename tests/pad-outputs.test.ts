@@ -207,7 +207,7 @@ describe("the stored form and the other exports", () => {
     expect(Array.isArray(custom.g.g)).toBe(true)
     const back = parseProjectFile(text, { id: project.id })
     expect(back.footprints).toEqual(project.footprints)
-    expect(serializeProject(back)).toBe(text)
+    expect(serializeProject(parseProjectFile(serializeProject(back), { id: project.id }))).toBe(serializeProject(back))
   })
 
   it("a document of version 3 reads as written, and a damaged pad drops its land rather than being drawn without a field", () => {

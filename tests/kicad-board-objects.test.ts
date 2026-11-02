@@ -96,9 +96,9 @@ describe("a dimension of the typed format", () => {
     expect(d).toMatchObject({ units: 0, format: 2, precision: 7 })
     expect(dimensionDrawing(d).text!.content).toBe("0.394 (in)")
   })
-  it("refuses a dimension on a layer that is not KiCad's, and on an inner copper layer, by name", () => {
+  it("moves a dimension on a layer that is not KiCad's to Cmts.User, as KiCad's rescue does, and refuses one on an inner copper layer the board lacks", () => {
     const odd = importKicadBoard(board({ body: [aligned().replace(/"Dwgs.User"/g, '"Nonsense"')] }))
-    expect(odd.status === "refused" && odd.message).toMatch(/dimension on the layer "Nonsense"/)
+    expect(odd.status === "imported" && odd.project.dimensions?.[0].layer).toBe("Cmts.User")
     const inner = importKicadBoard(board({ body: [aligned().replace(/"Dwgs.User"/g, '"In1.Cu"')] }))
     expect(inner.status).toBe("refused")
   })
@@ -117,6 +117,22 @@ describe("a dimension of the typed format", () => {
     // a file of stamp 20260616 keeps a part's other drawings in the part's frame, but a dimension's points are the board's all the same (X27)
     const lib = importKicadBoard(board({ version: 20260616, body: [fp] }))
     expect(lib.status === "imported" && lib.project.dimensions).toEqual(r.project.dimensions)
+  })
+})
+
+describe("a dimension's format as KiCad 6 and 7 write it", () => {
+  // `suppress_zeroes` bare, as `keep_text_aligned` is in the style: the flag set (KiCad's `parseMaybeAbsentBool`)
+  const kicad6 = `(dimension (type aligned) (layer "Dwgs.User") (tstamp ${U(7)}) (pts (xy 2 2) (xy 12 2)) (height 3) (gr_text "10 mm" (at 7 4.15 0) (layer "Dwgs.User") (tstamp ${U(8)}) (effects (font (size 1 1) (thickness 0.15)))) (format (units 3) (units_format 1) (precision 4) suppress_zeroes) (style (thickness 0.1) (arrow_length 1.27) (text_position_mode 0) (extension_height 0.58642) (extension_offset 0.5) keep_text_aligned))`
+
+  it("imports, with trailing zeros left off", () => {
+    const r = imported(board({ version: 20211014, body: [kicad6] }))
+    expect(r.project.dimensions).toHaveLength(1)
+    expect(r.project.dimensions![0].zeros).toBe(true)
+  })
+
+  it("without the word keeps the zeros", () => {
+    const r = imported(board({ version: 20211014, body: [kicad6.replace(" suppress_zeroes)", ")")] }))
+    expect(r.project.dimensions![0].zeros).toBeUndefined()
   })
 })
 
@@ -152,7 +168,7 @@ describe("a dimension of KiCad 5", () => {
   })
   it("says in the report that KiCad redraws it", () => {
     const r = imported(board({ version: 20171130, body: [legacy("10 mm")] }))
-    expect(r.report.entries.find((e) => e.code === "dimensions-redrawn")).toMatchObject({ severity: "note", count: 1 })
+    expect(r.report.entries.find((e) => e.code === "dimensions-redrawn")).toMatchObject({ severity: "changed", count: 1 })
     // its arrows are accounted for as derived, not carried
     expect(r.report.account!.unknownPaths.size).toBe(0)
     expect([...r.report.account!.notNeeded.keys()].some((k) => /KiCad does not read them and draws its own/.test(k))).toBe(true)
@@ -262,10 +278,10 @@ describe("groups", () => {
       { id: "g0", name: "pads", members: ["p0", "p1"] },
       { id: "g1", name: "all", members: ["g0", "s0", "t2"] },
     ])
-    // the stored form is short, and exact
+    // stored as the groups they are (the compact `gr` of before is still read), and exact
     const stored = JSON.parse(serializeProject(project)).project
-    expect(stored.components[0].groups).toBeUndefined()
-    expect(stored.components[0].gr).toEqual([[0, "pads", 0, "p0", "p1"], [0, "all", 0, "g0", "s0", "t2"]])
+    expect(stored.components[0].groups).toEqual(c.groups)
+    expect(stored.components[0].gr).toBeUndefined()
     expect(parseProjectFile(serializeProject(project), { id: "x" }).components[0].groups).toEqual(c.groups)
   })
 })
@@ -304,6 +320,14 @@ describe("reference images", () => {
     expect(r.status === "refused" && r.message).toMatch(/PNG or JPEG/)
     const bad = importKicadBoard(board({ body: ['(image (at 0 0) (layer "F.Cu") (data "***"))'] }))
     expect(bad.status).toBe("refused")
+  })
+  it("a footprint's picture (KiCad 8 and later) is kept on the board where KiCad draws it, its place written in the board's frame, and the report says so", () => {
+    const bytes = png(4, 4, 3780)
+    const fp = footprint({ ref: "SW2", at: "141 124 -90", pads: [pad({ at: "0 0" })], extra: image(bytes, '(at 143.57 124.17) (layer "F.SilkS")') })
+    const r = imported(board({ version: 20241229, body: [fp] }))
+    expect(r.project.images).toHaveLength(1)
+    expect(r.project.images![0]).toMatchObject({ x: 143.57, y: -124.17, layer: "F.SilkS" })
+    expect(r.report.entries.find((e) => e.code === "footprint-image-on-board")?.object).toBe("1 reference image inside footprints (SW2)")
   })
   it("two boards with the same picture keep one file, and a project saved and loaded is the same", () => {
     const bytes = png(8, 8, 3780)

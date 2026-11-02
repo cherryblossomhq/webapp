@@ -1,7 +1,7 @@
 import { isTextLayer } from "./texts"
-import { readGenerator } from "./generatorCodec"
-import type { BoardDimension, DimensionKind, PcbGroup, ReferenceImage } from "./types"
 import { finite as num } from "../lib/guards"
+import { readGenerator } from "./generatorCodec"
+import type { BoardDimension, DimensionKind, GenValue, PcbGenerator, PcbGroup, ReferenceImage } from "./types"
 
 // How dimensions, groups and reference images are written in a stored project. A KiCad board has up to hundreds of dimensions and groups with
 // hundreds of members, and as objects each costs far more than it needs to. Stored, what dimensions share (layer, line width, arrow, units, digits and
@@ -16,7 +16,7 @@ import { finite as num } from "../lib/guards"
 // `[id, x, y, layer, scale, file, format, px, py, ppi, locked]` (id 0 for `im<place + 1>`). Nothing is rounded here: every number is as the model has it, and reading gives back what was written.
 // Only the stored form is compact; in memory they are the objects the editor and the outputs use.
 
-type Entry = (string | number)[]
+type Entry = (string | number | PcbGenerator)[]
 
 export interface DimensionStyleDef {
   l: string
@@ -194,13 +194,62 @@ export function unpackDimensions(raw: unknown, styles: DimensionStyleDef[]): Boa
 export const defaultGroupId = (place: number) => `gp${place + 1}`
 export const defaultPartGroupId = (place: number) => `g${place}`
 
-export function packGroups(groups: PcbGroup[], defaultId: (place: number) => string = defaultGroupId): Entry[] {
+/**
+ * What a generated item (X21) needs from the rest of the project to be stored small. A board with sixty tuning patterns has the same dozen settings on most of them and a few thousand
+ * members, so a pattern's members are written as their place in `ids` (the stored tracks then the stored vias) and the properties the patterns of a kind all share are written once (`shared`).
+ */
+export interface GroupContext {
+  /** The ids of the stored tracks, then of the stored vias, in the order they are stored. */
+  ids?: readonly string[]
+  /** By kind, the properties every generated item of that kind has with the same value (`sharedGeneratorProps`). */
+  shared?: Record<string, Record<string, GenValue>>
+}
+
+/** The properties that at least two generated items of a kind share with one value, and that every item of the kind has; written once, then left out of each item. */
+export function sharedGeneratorProps(groups: readonly PcbGroup[]): Record<string, Record<string, GenValue>> {
+  const byKind = new Map<string, PcbGenerator[]>()
+  for (const g of groups) if (g.gen) byKind.set(g.gen.kind, [...(byKind.get(g.gen.kind) ?? []), g.gen])
+  const out: Record<string, Record<string, GenValue>> = {}
+  for (const [kind, gens] of byKind) {
+    if (gens.length < 2) continue
+    const shared: Record<string, GenValue> = {}
+    for (const key of Object.keys(gens[0].props)) {
+      if (!gens.every((g) => key in g.props)) continue
+      const counts = new Map<string, number>()
+      for (const g of gens) counts.set(JSON.stringify(g.props[key]), (counts.get(JSON.stringify(g.props[key])) ?? 0) + 1)
+      const [value, count] = [...counts].sort((a, b) => b[1] - a[1])[0]
+      if (count >= 2) shared[key] = JSON.parse(value) as GenValue
+    }
+    if (Object.keys(shared).length) out[kind] = shared
+  }
+  return out
+}
+
+function packGenerator(gen: PcbGenerator, shared: GroupContext["shared"]): PcbGenerator {
+  const common = shared?.[gen.kind]
+  if (!common) return gen
+  const props: Record<string, GenValue> = {}
+  for (const [k, v] of Object.entries(gen.props)) if (!(k in common) || JSON.stringify(common[k]) !== JSON.stringify(v)) props[k] = v
+  return { ...gen, props }
+}
+
+export function packGroups(groups: PcbGroup[], defaultId: (place: number) => string = defaultGroupId, ctx: GroupContext = {}): Entry[] {
+  const place = new Map<string, number>()
+  ctx.ids?.forEach((id, i) => place.has(id) || place.set(id, i))
   // Flag 4: a generated item (X21); its kind, layer, properties and templates follow the design block's id, as one object, before the members.
-  return groups.map((g, place): Entry => [g.id === defaultId(place) ? 0 : g.id, g.name, (g.locked ? 1 : 0) | (g.lib !== undefined ? 2 : 0) | (g.gen ? 4 : 0), ...(g.lib !== undefined ? [g.lib] : []), ...(g.gen ? [g.gen as unknown as string] : []), ...g.members])
+  return groups.map((g, at): Entry => [
+    g.id === defaultId(at) ? 0 : g.id,
+    g.name,
+    (g.locked ? 1 : 0) | (g.lib !== undefined ? 2 : 0) | (g.gen ? 4 : 0),
+    ...(g.lib !== undefined ? [g.lib] : []),
+    ...(g.gen ? [packGenerator(g.gen, ctx.shared)] : []),
+    // A generated item's members that are stored tracks and vias are written by place; a plain group's stay as they are.
+    ...(g.gen ? g.members.map((m) => place.get(m) ?? m) : g.members),
+  ])
 }
 
 /** Groups from stored entries; one that does not read, or whose id is taken, is dropped. */
-export function unpackGroups(raw: unknown, defaultId: (place: number) => string = defaultGroupId): PcbGroup[] | undefined {
+export function unpackGroups(raw: unknown, defaultId: (place: number) => string = defaultGroupId, ctx: GroupContext = {}): PcbGroup[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const seen = new Set<string>()
   const out: PcbGroup[] = []
@@ -210,9 +259,11 @@ export function unpackGroups(raw: unknown, defaultId: (place: number) => string 
     const lib = flags & 2 ? e[3] : undefined
     if (flags & 2 && typeof lib !== "string") return
     const genAt = flags & 2 ? 4 : 3
-    const gen = flags & 4 ? readGenerator(e[genAt]) : undefined
+    const gen = flags & 4 ? readGenerator(withShared(e[genAt], ctx.shared)) : undefined
     if (flags & 4 && !gen) return
-    const members = e.slice(genAt + (flags & 4 ? 1 : 0))
+    const stored = e.slice(genAt + (flags & 4 ? 1 : 0))
+    // Only a generated item's members are written by place.
+    const members = gen ? stored.map((m) => (num(m) ? ctx.ids?.[m] : m)) : stored
     if (!members.every((m): m is string => typeof m === "string" && m !== "")) return
     const id = typeof e[0] === "string" && e[0] ? e[0] : defaultId(place)
     if (seen.has(id)) return
@@ -220,6 +271,15 @@ export function unpackGroups(raw: unknown, defaultId: (place: number) => string 
     out.push({ id, name: e[1], members: members as string[], ...(flags & 1 ? { locked: true as const } : {}), ...(lib !== undefined ? { lib: lib as string } : {}), ...(gen ? { gen } : {}) })
   })
   return out
+}
+
+/** A stored generated item with the properties it shares with the others of its kind put back. */
+function withShared(raw: unknown, shared: GroupContext["shared"]): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw
+  const g = raw as { kind?: unknown; props?: unknown }
+  const common = typeof g.kind === "string" ? shared?.[g.kind] : undefined
+  if (!common || !g.props || typeof g.props !== "object" || Array.isArray(g.props)) return raw
+  return { ...g, props: { ...common, ...g.props } }
 }
 
 // ---------- reference images ----------

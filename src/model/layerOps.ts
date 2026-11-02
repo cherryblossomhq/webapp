@@ -2,8 +2,8 @@ import { uid } from "../lib/id"
 import { round } from "../lib/geometry"
 import { classValues } from "./netClasses"
 import { anchorSide } from "./zoneLayers"
-import { copperLayers, defaultStackup, flipLayer, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, spanKind, viaBetween, withCopperCount } from "./stack"
-import type { BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind, Zone } from "./types"
+import { copperLayers, defaultStackup, flipLayer, isInner, kicadLayerName, layerIndex, layerOfKicadName, MAX_COPPER_LAYERS, viaBetween, withCopperCount } from "./stack"
+import type { Backdrill, BoardStack, CopperLayer, CopperLayerType, PadDef, Project, StackRow, Trace, Vec2, Via, ViaKind, Zone } from "./types"
 
 // X1, X4 and X5 as the editor edits them: pure functions that return a new project (or the same one when nothing changes), so each is one undo step and
 // the PCB view, the Inspector and Sakura's tools share one set of rules.
@@ -84,9 +84,6 @@ export function nextCopperLayer(project: Pick<Project, "board">, layer: CopperLa
   return all[(((i < 0 ? 0 : i) + step) % all.length + all.length) % all.length]
 }
 
-/** Which sort of via a via is, in words: through, blind, buried or micro. */
-export const viaKindName = (v: Pick<Via, "kind">): string => v.kind ?? "through"
-
 // ---------- tracks ----------
 
 /** An arc track (X4): a trace of three points on a layer. Null when the points lie on a line. */
@@ -160,8 +157,6 @@ export function layerContent(project: Project, layer: CopperLayer): LayerContent
   }
 }
 
-export const isEmptyContent = (c: LayerContent) => Object.values(c).every((n) => n === 0)
-
 const without = <T extends object>(o: T, ...keys: string[]): T => {
   const out = { ...o } as Record<string, unknown>
   for (const k of keys) delete out[k]
@@ -196,7 +191,7 @@ export function setCopperLayerCount(project: Project, count: number): { project:
   const footprints = project.footprints?.map((f) => {
     // X30: the zones inside a part lose the layer too.
     const zonesGo = f.zones?.some((z) => (z.layers ?? [z.layer]).some((l) => !alive(l)))
-    if (!zonesGo && !f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || p.zoneLayers?.some((l) => !alive(l)) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
+    if (!zonesGo && !f.pads.some((p) => p.layers?.inner?.some((l) => !alive(l)) || p.zoneLayers?.some((l) => !alive(l)) || deadDrill(p.backdrill, alive) || deadDrill(p.tertiary, alive) || (p.stack && Object.keys(p.stack.layers).some((k) => k !== "inner" && !alive(k as CopperLayer))))) return f
     const kept = zonesGo ? f.zones!.flatMap((z) => keptZone(z, alive)) : f.zones
     const { zones: _zones, ...rest } = f
     return { ...rest, pads: f.pads.map((p) => cleanPad(p, alive)), ...(kept?.length ? { zones: kept } : {}) }
@@ -205,7 +200,7 @@ export function setCopperLayerCount(project: Project, count: number): { project:
     ...project,
     board,
     traces: project.traces.filter((t) => alive(t.layer)),
-    vias: project.vias.filter((v) => v.kind === undefined || (alive(v.from!) && alive(v.to!))).map((v) => (v.zoneLayers?.some((l) => !alive(l)) ? { ...v, zoneLayers: v.zoneLayers.filter(alive) } : v)),
+    vias: project.vias.filter((v) => v.kind === undefined || (alive(v.from!) && alive(v.to!))).map((v) => cleanViaDrills(v.zoneLayers?.some((l) => !alive(l)) ? { ...v, zoneLayers: v.zoneLayers.filter(alive) } : v, alive)),
     zones,
     ...(project.graphics ? { graphics: project.graphics.filter((g) => !alsoNames.has(g.layer)) } : {}),
     texts: project.texts.filter((t) => t.layer === undefined || !alsoNames.has(t.layer)),
@@ -286,6 +281,10 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
         if (p.layers?.inner) out = { ...out, layers: { ...out.layers, inner: p.layers.inner.map(id) } }
         if (p.layers?.other) out = { ...out, layers: { ...out.layers, other: p.layers.other.map(mapShapeLayer) } }
         if (p.zoneLayers) out = { ...out, zoneLayers: p.zoneLayers.map((l) => (l === "top" || l === "bottom" ? l : id(l))) }
+        for (const k of ["backdrill", "tertiary"] as const) {
+          const b = p[k]
+          if (b) out = { ...out, [k]: { ...b, from: isInner(b.from) ? id(b.from) : b.from, to: isInner(b.to) ? id(b.to) : b.to } }
+        }
         if (p.stack) {
           const layers = Object.fromEntries(Object.entries(p.stack.layers).map(([k, v]) => [k === "inner" || k === "top" || k === "bottom" ? k : id(k as CopperLayer), v]))
           out = { ...out, stack: { ...p.stack, layers: layers as NonNullable<PadDef["stack"]>["layers"] } }
@@ -301,8 +300,18 @@ function keepBottomPartLayers(project: Project, from: number, to: number): Proje
   return { ...project, components, ...(footprints ? { footprints } : {}) }
 }
 
+/** X22: a backdrill that ends on a layer that is gone has nothing to drill between. */
+const deadDrill = (b: Backdrill | undefined, alive: (l: CopperLayer) => boolean) => b !== undefined && !(alive(b.from) && alive(b.to))
+
+function cleanViaDrills(v: Via, alive: (l: CopperLayer) => boolean): Via {
+  if (!deadDrill(v.backdrill, alive) && !deadDrill(v.tertiary, alive)) return v
+  return without(v, ...(deadDrill(v.backdrill, alive) ? ["backdrill"] : []), ...(deadDrill(v.tertiary, alive) ? ["tertiary"] : []))
+}
+
 function cleanPad(p: PadDef, alive: (l: CopperLayer) => boolean): PadDef {
   let out = p
+  if (deadDrill(p.backdrill, alive)) out = without(out, "backdrill")
+  if (deadDrill(p.tertiary, alive)) out = without(out, "tertiary")
   if (p.layers?.inner?.some((l) => !alive(l))) out = { ...out, layers: { ...out.layers, inner: out.layers!.inner!.filter(alive) } }
   if (p.zoneLayers?.some((l) => !alive(l))) out = { ...out, zoneLayers: p.zoneLayers.filter(alive) }
   if (p.stack) {
@@ -390,8 +399,5 @@ export function setStackSettings(project: Project, patch: Partial<Pick<BoardStac
   for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k]
   return touch({ ...project, board: normalizeStackOf({ ...project.board, stack: merged as unknown as BoardStack }) })
 }
-
-/** A via's kind in words for the Inspector: what its layers make it, whatever it says. */
-export const viaSpanKind = (project: Pick<Project, "board">, v: Pick<Via, "kind" | "from" | "to">): "through" | "blind" | "buried" => (v.from && v.to ? spanKind(project.board, v.from, v.to) : "through")
 
 export { defaultStackup, isInner }

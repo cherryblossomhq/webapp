@@ -3,7 +3,7 @@ import { runTool } from "../src/ai/tools"
 import { pcbToolSpecs } from "../src/ai/pcbTools"
 import { excellonDrill } from "../src/export/excellon"
 import { gerberLayers, gerberMask, gerberPaste, offsetConvexRing } from "../src/export/gerber"
-import { OutlineNotClosedError, requireClosedOutline } from "../src/export/outlineGuard"
+import { OutlineNotClosedError, outlineWarning, requireClosedOutline } from "../src/export/outlineGuard"
 import { projectToCircuitJson } from "../src/export/circuitJson"
 import { mountingHoles } from "../src/model/board"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -140,7 +140,7 @@ describe("an outline that crosses itself or another loop", () => {
     expect(slot.crossing).toBeTruthy()
   })
 
-  it("is an outline error in the checks and stops the exports with a sentence", () => {
+  it("is an outline error in the checks, stops the STEP model with a sentence, and the Gerbers plot it as drawn with a warning", () => {
     const fine = setOutlinePaths(createProject("sq"), [polyPath([[0, 0], [10, 0], [10, 10], [0, 10]])])
     expect(drc(fine).filter((v) => v.kind === "outline")).toEqual([])
     const errs = drc(bowTie()).filter((v) => v.kind === "outline")
@@ -149,7 +149,8 @@ describe("an outline that crosses itself or another loop", () => {
     expect(errs[0].message).toMatch(/crosses itself/)
     expect(() => requireClosedOutline(bowTie(), "The Gerber and drill files")).toThrow(OutlineNotClosedError)
     expect(() => requireClosedOutline(bowTie(), "The Gerber and drill files")).toThrow(/The Gerber and drill files cannot be made: the board outline crosses itself/)
-    expect(() => gerberLayers(bowTie())).toThrow(/crosses itself/)
+    expect(() => gerberLayers(bowTie())).not.toThrow()
+    expect(outlineWarning(bowTie())).toMatch(/^The board outline has edges that cross, so a fab cannot cut it as it is drawn\. .*crosses itself/)
   })
 
   it("imports from KiCad as drawn, with the checks' error and a report note, not a refusal", () => {

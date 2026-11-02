@@ -1,7 +1,7 @@
 import { isShapeLayer } from "./shapeLayers"
 import { normalizeShape } from "./shapes"
-import type { BoardGraphic, BoardShape, ShapeDash, ShapePoint } from "./types"
 import { finite as num } from "../lib/guards"
+import type { BoardGraphic, BoardShape, ShapeDash, ShapePoint, ShapeStyle } from "./types"
 
 // How drawings are written in a stored project. A board can have a million of them, and as objects
 // (`{"type":"line","a":{"x":..,"y":..},"b":{...},"layer":..}`) each costs 150 to 300 bytes. Stored, they
@@ -29,6 +29,9 @@ export interface ShapeGroup {
   f?: 1
   n?: string
   k?: 1
+  /** The line's ends and its colour (X24). */
+  x?: ShapeStyle["ends"]
+  c?: ShapeStyle["color"]
   s: (string | number)[]
 }
 
@@ -71,7 +74,7 @@ function tokens(s: BoardShape): (string | number)[] {
   }
 }
 
-const styleKey = (s: BoardShape) => `${s.layer}|${s.width}|${s.dash ?? ""}|${s.fill ? 1 : 0}|${s.net ?? ""}|${s.locked ? 1 : 0}`
+const styleKey = (s: BoardShape) => `${s.layer}|${s.width}|${s.dash ?? ""}|${s.fill ? 1 : 0}|${s.net ?? ""}|${s.locked ? 1 : 0}|${s.ends ? JSON.stringify(s.ends) : ""}|${s.color?.join(",") ?? ""}`
 
 function pack(shapes: BoardShape[], ids?: (place: number) => string | undefined): CompactShapes {
   const groups = new Map<string, { index: number; group: ShapeGroup }>()
@@ -80,7 +83,7 @@ function pack(shapes: BoardShape[], ids?: (place: number) => string | undefined)
     const key = styleKey(s)
     let g = groups.get(key)
     if (!g) {
-      g = { index: groups.size, group: { l: s.layer, w: s.width, ...(s.dash ? { d: s.dash } : {}), ...(s.fill ? { f: 1 as const } : {}), ...(s.net ? { n: s.net } : {}), ...(s.locked ? { k: 1 as const } : {}), s: [] } }
+      g = { index: groups.size, group: { l: s.layer, w: s.width, ...(s.dash ? { d: s.dash } : {}), ...(s.fill ? { f: 1 as const } : {}), ...(s.net ? { n: s.net } : {}), ...(s.locked ? { k: 1 as const } : {}), ...(s.ends ? { x: s.ends } : {}), ...(s.color ? { c: s.color } : {}), s: [] } }
       groups.set(key, g)
     }
     order.push(g.index)
@@ -194,7 +197,7 @@ function unpack(raw: unknown, withIds: boolean): (BoardShape & { id?: string })[
   const lists: BoardShape[][] = c.g.map((g) => {
     const out: BoardShape[] = []
     if (!g || typeof g !== "object" || typeof g.l !== "string" || !Array.isArray(g.s)) return out
-    const style = { layer: g.l, width: g.w, ...(g.d ? { dash: g.d } : {}), ...(g.f === 1 ? { fill: true } : {}), ...(typeof g.n === "string" && g.n ? { net: g.n } : {}), ...(g.k === 1 ? { locked: true } : {}) }
+    const style = { layer: g.l, width: g.w, ...(g.d ? { dash: g.d } : {}), ...(g.f === 1 ? { fill: true } : {}), ...(typeof g.n === "string" && g.n ? { net: g.n } : {}), ...(g.k === 1 ? { locked: true } : {}), ...(g.x ? { ends: g.x } : {}), ...(g.c ? { color: g.c } : {}) }
     let at = 0
     while (at < g.s.length) {
       const r = read(g.s, at)

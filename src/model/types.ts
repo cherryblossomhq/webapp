@@ -249,6 +249,8 @@ export interface PadDef {
   thermalAngle?: number
   /** KiCad's fabrication property (`bga`, `fiducial_glob`, `fiducial_loc`, `testpoint`, `castellated`, `heatsink`, `mechanical`, `pressfit`). */
   property?: PadProperty
+  /** KiCad's `connect` pad type (an edge-connector pad): copper on the surface like an `smd` pad, written back as the type it was. */
+  connector?: true
   /**
    * X1, a pad stack (KiCad 9's `padstack`): the copper shape of a layer that is not the pad's own. The fields above are the part's own side
    * (KiCad's front layer); `stack` says what the other layers have where it differs, in the pad's frame about its place. The hole is the
@@ -275,6 +277,9 @@ export interface PadDef {
   /** X21: the length of wire inside the package from the pad to the die, in mm, and the time a signal takes (KiCad 10's `die_delay`), in picoseconds: a net's length report adds them. */
   dieLength?: number
   dieDelay?: number
+  /** What a KiCad board says of the pad's pin (`pinfunction` and `pintype`: the name and electrical type the schematic gave it when the board was last updated from it): written back as it was. */
+  pinFunction?: string
+  pinType?: string
 }
 
 /** What one layer of a pad stack has where it is not the pad's own: its shape and size and the pour settings that go with them. */
@@ -502,6 +507,27 @@ export interface ReferenceImage {
   locked?: true
 }
 
+/** A font file embedded in a KiCad board or footprint (`embedded_files`, `type font`): its bytes are kept by the host, as a reference image's are. */
+export interface EmbeddedFont {
+  /** The file's name in the board (`Roboto-Regular.ttf`). */
+  name: string
+  /** The SHA-256 of the bytes as the board stores them (KiCad compresses them with zstd), lowercase hex: the model file store's id. */
+  file: string
+  /** The size of those bytes. */
+  size: number
+  /** KiCad's checksum of the file (an MD5 of the uncompressed font), written back as it was. */
+  checksum?: string
+  /** The id of the part whose footprint embeds it; absent when the board does. */
+  owner?: string
+}
+
+/** What a KiCad board says about embedded fonts: whether it (`board`) and which footprints (`parts`, by id) allow them (`embedded_fonts yes`), and the font files it holds. */
+export interface ProjectFonts {
+  board?: true
+  parts?: string[]
+  files: EmbeddedFont[]
+}
+
 export interface FootprintDef {
   name: string
   pads: PadDef[]
@@ -520,25 +546,13 @@ export interface FootprintDef {
    */
   noCourtyard?: true
   /**
-   * A KiCad footprint the file gives no 3D model it shows (none, or only hidden ones: mounting hardware, a net tie, a debug header kept off the 3D view): the 3D view
-   * and the STEP export draw no body for it, as KiCad draws none, rather than a body guessed from its pads.
-   */
-  noBody?: true
-  /**
    * X30: the zones drawn inside the footprint (keepouts, and pours on no net), in the land's frame, which is the part's own side's: they move, turn and flip with every part that has the land
    * (`partZones.ts` puts them on the board). Their ids (`z0`, `z1`...) name their place in the land; none has a net, a uuid or a priority tie to break against the board's zones.
    */
   zones?: Zone[]
-  /**
-   * The package's own name where a source gave one (KiCad's `SOIC-8_3.9x4.9mm_P1.27mm`, a
-   * supplier's `SOIC-8_L4.9-W3.9-P1.27-LS6.0-BL`), kept as it was given.
-   */
-  package?: string
-  /**
-   * The footprint the editor ships (its library's, or a footprinter string) that this land has the same pads as, pad for pad (`likeFootprint`): a board the editor wrote names its footprints
-   * that way, and the land read back is then known to be that one. The 3D view draws the body that footprint has. Absent: the land is its own.
-   */
-  like?: string
+  /** What a KiCad board's footprint says of itself (`descr` and `tags`), as typed: the export writes them back. Absent: none, or a land from a library. */
+  descr?: string
+  tags?: string
 }
 
 // ---------- Symbol drawings (S10) ----------
@@ -629,6 +643,8 @@ export interface SymbolDrawing {
   jumpers?: { duplicates?: true; groups?: string[][] }
   /** The fields of the symbol and where each sits, in the symbol's frame. */
   fields: { name: string; value: string; place: FieldPlace }[]
+  /** What the library entry says of itself that is no field: `ki_keywords`, `ki_fp_filters`, `ki_description`..., as the file has them. */
+  ki?: { name: string; value: string }[]
 }
 
 export type PartCategory =
@@ -795,7 +811,8 @@ export interface PartSource {
   /**
    * `import`: the part came from a KiCad schematic the user brought in, drawn and wired as that file
    * has it, so there is nothing to check against a supplier. `file` is the schematic's file name and
-   * `libId` the symbol's `Library:Name` there.
+   * `libId` the symbol's `Library:Name` there; for a part only the board has (a mounting hole), the
+   * board's file and the footprint's `Library:Name`.
    */
   imported?: { file: string; libId: string }
   /** The parts index part it was made from, when it was. */
@@ -1011,8 +1028,27 @@ export interface ComponentInstance {
   sheetPath?: string
   /** X23: the footprint's units (KiCad 10's `units`): which of its pads belong to which unit of its symbol, by the pad numbers the file gives. Absent: none. */
   units?: PartUnit[]
+  /** The uuid the KiCad symbol had (a footprint's `path` ends with it), written back so the board and the schematic stay linked as they were. Absent: made from the part's id. */
+  uuid?: string
+  /**
+   * The KiCad footprint's own uuid (`tstamp` before KiCad 7), and each of its pads', in the order of the land's pads (`""` for a pad the file gave none): written
+   * back so what KiCad keeps by them still names this footprint and its pads (the checks the user dismissed, `KicadChecks.drcExcluded`). Absent: made anew.
+   */
+  fpUuid?: string
+  padUuids?: string[]
   /** X23: the footprint's PCB points (KiCad 10), in the footprint's own frame as a pad is. Absent: none. */
   points?: PcbPoint[]
+  /**
+   * The net a KiCad board gave a pad that no other pad shares (`unconnected-(R1-Pad2)`, or any name), by the pad's pin: such a net has one pin, so it is no net of the project's, and the export writes
+   * the name back on the pad as the board had it. A pin that has a net of the project's is on that net.
+   */
+  loneNets?: Record<string, string>
+  /** The 3D models of the KiCad footprint that the project does not show (a model of the project's own folder, a scaled or hidden one, a second one), as the file wrote them (`(model "path" (offset ...) ...)`): written back unchanged. */
+  modelRefs?: string[]
+  /** The properties of a KiCad footprint that no text shows (`ki_fp_filters`, `LCSC`...), as the file has them: the export writes them back. */
+  fpProps?: { name: string; value: string }[]
+  /** The sheet file the KiCad board's footprint said it is from (`sheetfile`): the export writes the word only for a footprint that had it, since KiCad 10 shows one it is given as a text. */
+  sheetFile?: string
 }
 
 /** X23: one unit of a footprint, as KiCad 10 lists it: its name (`A`) and the numbers of its pads. */
@@ -1150,6 +1186,8 @@ export interface Trace {
    * counts as copper of that net even where it touches nothing, and touching another net is a short.
    */
   net?: string
+  /** A board brought in from KiCad says this trace is on no net: the export writes it so, and does not give it the net it touches. */
+  noNet?: true
   /** X24: the track's copper is open through the solder mask along its length, on its own side (KiCad's `(layers "F.Cu" "F.Mask")`). The opening is wider than the track by `margin` on each side; absent is the board's mask expansion. */
   bare?: { margin?: number }
   /**
@@ -1174,6 +1212,8 @@ export interface Via {
    * is for a trace). Not `net`, which makes the via a stitching via that the stitcher owns.
    */
   routedNet?: string
+  /** A board brought in from KiCad says this via is on no net: the export writes it so. */
+  noNet?: true
   /**
    * X5: a via that does not run the board's whole stack. A blind via joins an outer layer to an inner one, a buried via two inner
    * layers, a micro via is a short blind via between neighbouring layers (KiCad's `blind`, `buried` and `micro`). Absent is a through
@@ -1433,6 +1473,8 @@ export interface Zone {
   uuid?: string
   /** From a board of KiCad 5 or earlier, whose fill cut a zone only out of zones of strictly higher priority (`zone_filler.cpp` of 5.1): two such zones of equal priority cut neither, and overlap. */
   unordered?: true
+  /** How KiCad draws the zone's outline (`hatch edge 0.508`): not at all, along its edge, or hatched all over, with the pitch of the hatching. Absent is the edge with 0.5 mm, which is what the export writes. */
+  outlineHatch?: { style: "none" | "edge" | "full"; pitch: number }
   /** Which of two overlapping zones wins: the higher one is filled first and the lower keeps out of it. Absent is 0. */
   priority?: number
   /** The thinnest copper the fill keeps (mm); necks and slivers under it are removed. Defaults to the pour minimum width rule. */
@@ -1515,8 +1557,33 @@ export interface TextAttrs {
   locked?: true
   /** A hyperlink KiCad keeps with the text; it has no other use here. */
   href?: string
+  /** A part's text that is one of its fields (a KiCad `property`: `Datasheet`, `LCSC Part`...): the field's name, which the export writes back. */
+  name?: string
   /** A text box: the text is wrapped inside a rectangle centred on (x, y) and turned with the text, with an optional border. */
   box?: TextBox
+  /** The TrueType font the text names (KiCad's `face`: a font of the computer the board was drawn on, or one the board embeds). Absent is KiCad's own stroke font. */
+  face?: string
+  /** The outlines KiCad drew the text with in that font (`render_cache`), kept so the text is drawn and plotted as KiCad drew it (X19). */
+  outline?: TextOutline
+}
+
+/**
+ * What KiCad cached of a text drawn in a TrueType font: the polygons of its letters, exactly as the file gives them, with what they were drawn
+ * for. They are the text's shape for as long as the text still is what they were drawn for (its content as shown, its size, width, weight, slant,
+ * justification, line spacing and face): a move, a turn, a flip or a mirror carries them along, and any other edit leaves the text to be drawn in the
+ * editor's stroke font, which is said on the board (`model/textOutlines.ts`). KiCad throws its cache away on the same edits.
+ */
+export interface TextOutline {
+  /** The text KiCad drew the polygons for, as its file says (`render_cache "text"`): what KiCad compares with the text it shows. */
+  text: string
+  /** The angle the file gives the cache. */
+  angle: number
+  /** What the polygons were drawn for besides the text (`textOutlineSignature`). */
+  sig: string
+  /** Where the text was when they were drawn, in the board's frame: its anchor (mm, y up), the angle it was drawn at and whether it was mirrored. */
+  at: { x: number; y: number; rot: number; mirror?: true }
+  /** The polygons' rings in the board's frame in whole nanometres (x, then y up), packed (`packRings` in `model/textOutlines.ts`). */
+  rings: string
 }
 
 /** A text box (KiCad's `gr_text_box`): the rectangle's size, the border's width when it has one, and the margins (left, top, right, bottom) the text keeps from the edge. */
@@ -2046,6 +2113,8 @@ export interface SheetPin {
  */
 export interface SheetSymbol {
   id: string
+  /** The uuid the sheet symbol had in the KiCad file (the footprints' paths pass through it); absent: made from the id. */
+  uuid?: string
   /** The sheet it is drawn on. */
   sheet: string
   /** The sheet it stands for. */
@@ -2071,6 +2140,82 @@ export interface SheetSymbol {
   fieldsAutoplaced?: true
 }
 
+/**
+ * What a KiCad import keeps for the export that nothing in the editor edits: the board's and the project's own settings, as the files had them (the page, the
+ * origins of the position and drill files, the plot settings, the layers' names, the project file and the custom rules file). The export writes them back; what the
+ * editor models (design rules, net classes, text variables, the stackup) is written from the project and wins over what is kept here.
+ */
+export interface KicadCarry {
+  /** The board's `paper` node: the words after the head, as text (`"A4"`, or `"User" 297 210`). */
+  paper?: string
+  /** `aux_axis_origin` (the position and drill files' origin) and `grid_origin`, in the file's frame (y down). */
+  auxOrigin?: Vec2
+  gridOrigin?: Vec2
+  /** The `(pcbplotparams ...)` node of the board's setup, as text. */
+  plot?: string
+  /** The names the file gave nets that have a slash in them, as the file wrote them (`/Sub/NAME`, `VPP{slash}MCLR`), by the name as the editor holds it: the export writes them back exactly. */
+  netNames?: Record<string, string>
+  /** The width the board's edge lines were drawn with (the one most of them have), which the export draws the outline with; absent is 0.05 mm. */
+  edgeWidth?: number
+  /** The layer table's rows as the file has them: the number, KiCad's name, the type and the name the user gave (4th word). A layer's visibility is not in a KiCad 6 or later board file. */
+  layers?: { n: number; name: string; type: string; user?: string }[]
+  /** The project file (`.kicad_pro`) as JSON text, and the custom rules file (`.kicad_dru`) as text. */
+  pro?: string
+  dru?: string
+  /**
+   * The design rules the editor took from that project file (`rules.minTraceWidth`...), as they stood when the import ended: a rule the project still has at that value was not edited, and the export
+   * writes the file's own number for it (which may be one the editor cannot hold, such as 0 for "no minimum"); one that was edited is written as it is now.
+   */
+  proRules?: Record<string, number | null>
+  /** The files the project was imported from, kept so the export can write back only what the user changed (`export/keep/`). Absent: none were kept. */
+  original?: KicadOriginal
+  /** The id of the import's report, a zip of one `report.json` in the host's file store (`kicadImport/reportStore.ts`), so the report is there on any computer. Absent: none was kept. */
+  report?: string
+  /** What the project file sets for KiCad's checks that the editor's checks follow (`model/checkRules.ts`). Absent: the file set none (or there was none), and KiCad's defaults stand. */
+  checks?: KicadChecks
+}
+
+export type KicadSeverity = "error" | "warning" | "ignore"
+
+/**
+ * What a KiCad import keeps of the project file's check settings: the severity it sets for each of KiCad's rules the editor has a
+ * check for (`board.design_settings.rule_severities` and `erc.rule_severities`, by KiCad's names), and its table of the pin types
+ * that may share a net (`erc.pin_map`) as 12 rows of 12 digits, 0 fine, 1 a warning, 2 an error, in KiCad's order of pin types,
+ * when it is not KiCad's default.
+ */
+export interface KicadChecks {
+  drc?: Record<string, KicadSeverity>
+  erc?: Record<string, KicadSeverity>
+  pinMap?: string[]
+  /** The board's least distance from a hole to copper of another net (`board.design_settings.rules.min_hole_clearance`), when the file sets one; KiCad's default is 0.25 mm. */
+  holeClearance?: number
+  /**
+   * The minimums the file sets to 0, which in KiCad is no minimum at all and which the editor's rules cannot hold (they keep the editor's own), by the rule's
+   * name in `DesignRules`: `minTraceWidth` (`min_track_width`), `minDrill` (`min_through_hole_diameter`). Checked against only while the rule is still what the import left.
+   */
+  noMinimum?: ("minTraceWidth" | "minDrill")[]
+  /**
+   * The board checks the user dismissed in KiCad (`board.design_settings.drc_exclusions`), as KiCad keys each one: `rule|x|y|uuid|uuid`, the rule's name, where
+   * its marker was (nm, the file's frame) and the uuids of the one or two items it is about. A check of the editor's that KiCad would key the same is not reported.
+   */
+  drcExcluded?: string[]
+}
+
+/**
+ * The KiCad files a project was imported from, as one zip in the host's file store (the same one reference images and 3D models are in, once per account),
+ * named by the SHA-256 of its bytes. The project holds only this record: the files are megabytes, and one file used by ten boards is kept once.
+ */
+export interface KicadOriginal {
+  /** The id (SHA-256, lowercase hex) of the zip. */
+  file: string
+  /** The zip's size in bytes. */
+  size: number
+  /** SHA-256 of the project as imported, as `serializeProject` writes it without this record (`contentHash`): an export of a project that still hashes to it is the files as they were. Absent: always compared. */
+  content?: string
+  /** What the importer was given as the project's name and source, so the export reads the files again the way the import did. */
+  name?: string
+  source?: string
+}
 /** How a net is drawn on the schematic when Tidy draws it: net labels, or power and ground ports. */
 export type NetStyle = "label" | "port"
 
@@ -2109,8 +2254,12 @@ export interface Project {
   images?: ReferenceImage[]
   /** X23: the board's own PCB points (KiCad 10), in the board's frame. Absent: none. */
   points?: PcbPoint[]
+  /** What a KiCad import keeps for the export and the editor does not edit (`KicadCarry`). Absent: none. */
+  kicad?: KicadCarry
   /** X21: KiCad's net chains (a run of nets through series parts, tuned as one): by name, in file order. */
   netChains?: NetChain[]
+  /** X19: the fonts a KiCad board embeds, whose bytes the host's model file store keeps (the project names them by hash). Absent: none. */
+  fonts?: ProjectFonts
   board: BoardDef
   rules: DesignRules
   /** Functional blocks of the schematic, each drawn as a titled frame around its parts. */

@@ -18,16 +18,11 @@ const imported = (body: string[], version?: number, extra: object = {}) => {
   if (r.status !== "imported") throw new Error(`${r.status}: ${r.message}`)
   return r
 }
-const refused = (body: string[], version?: number) => {
-  const r = importKicadBoard(board({ nets, body: [part, ...body], version }))
-  expect(r.status).toBe("refused")
-  return r.status === "refused" ? r : null
-}
 
 describe("the gate", () => {
-  it("builds X3, and its extensions are named when a zone needs what is not built", () => {
+  it("builds X3 and X24 (hatched pours), and the extension is named when a zone uses it", () => {
     expect(BUILT_EXTENSIONS.has("X3")).toBe(true)
-    expect(BUILT_EXTENSIONS.has("X24")).toBe(false)
+    expect(BUILT_EXTENSIONS.has("X24")).toBe(true)
   })
 })
 
@@ -86,15 +81,15 @@ describe("importing a zone", () => {
     expect(r.report.entries.some((e) => e.code === "rule-areas")).toBe(true)
   })
 
-  it("keeps a placement rule area and a hatched fill out, each by its extension", () => {
-    const placement = refused([zone(`(keepout (tracks allowed) (vias allowed) (pads allowed) (copperpour allowed) (footprints allowed)) (placement (enabled yes) (sheetname "/")) ${modernFill}`, square, '(layer "F.Cu")', '(net 0) (net_name "")')])
-    expect(placement?.needs.map((n) => n.ext)).toEqual(["X20"])
-    const hatch = refused([zone("(connect_pads (clearance 0.4)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (mode hatch) (thermal_gap 0.5) (thermal_bridge_width 0.5) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0))")])
-    expect(hatch?.needs.map((n) => n.ext)).toEqual(["X24"])
-    // a zone on a layer that is not copper is imported (X29, kicad-board-x29.test.ts)
+  it("brings in a placement rule area (X20), and a hatched fill with its grid (X24)", () => {
+    const placement = imported([zone(`(keepout (tracks allowed) (vias allowed) (pads allowed) (copperpour allowed) (footprints allowed)) (placement (enabled yes) (sheetname "/")) ${modernFill}`, square, '(layer "F.Cu")', '(net 0) (net_name "")')])
+    expect(placement.project.zones[0]).toMatchObject({ keepout: {}, placement: { by: "sheet", name: "/" } })
+    const hatch = imported([zone("(connect_pads (clearance 0.4)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (mode hatch) (thermal_gap 0.5) (thermal_bridge_width 0.5) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0))")])
+    expect(hatch.project.zones[0].hatch).toMatchObject({ thickness: 0.5, gap: 1 })
+    // a zone on a layer that is not copper is imported (X29, kicad-board-zone-family.test.ts)
     const mask = imported([zone(modernFill, square, '(layer "F.Mask")', '(net 0) (net_name "")')])
     expect(mask.project.zones[0].other).toEqual(["F.Mask"])
-    // a zone inside a part is imported too (X30, kicad-board-x30.test.ts)
+    // a zone inside a part is imported too (X30, kicad-board-zone-family.test.ts)
     const inPart = imported([footprint({ pads: [pad({ at: "0 0" })], extra: `(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (keepout (tracks not_allowed) (vias not_allowed) (pads allowed) (copperpour not_allowed) (footprints allowed)) (polygon (pts (xy -1 -1) (xy 1 -1) (xy 1 1))))` })])
     expect(inPart.project.footprints!.some((f) => f.zones?.length === 1)).toBe(true)
     // a zone on an inner layer of a board that has one is imported (X1); one on a layer the board lacks is not brought in, and the report says so

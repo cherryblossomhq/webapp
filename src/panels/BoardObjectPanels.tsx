@@ -10,6 +10,7 @@ import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, LayerSelect, LengthInput, Row, Section, switchRow, useLengthUnit } from "../ui/form"
+import { GeneratorBlock } from "./GeneratorPanels"
 import { layerGroups } from "./shapeInspector"
 
 const MIXED = "\u0000mixed"
@@ -236,6 +237,9 @@ export function GroupSection({ project }: { project: Project }) {
   if (!groups.length && selection.length < 2 && !groupable) return null
   const locked = groups.length > 0 && groups.every((g) => g.locked)
   const one = groups.length === 1 ? groups[0] : null
+  // A generated item (a tuning pattern, a via stack, via stitching) is taken apart rather than ungrouped.
+  const generated = groups.length > 0 && groups.every((g) => g.gen)
+  const keeps = groups.every((g) => g.gen?.kind === "tuning_pattern") ? "tracks" : groups.some((g) => g.gen?.kind === "tuning_pattern") ? "tracks and vias" : "vias"
   return (
     <div className="space-y-2.5 border-t border-line pt-2.5">
       <div className="text-[12px] font-medium uppercase tracking-wide text-ink-3">{groups.length ? (groups.length > 1 ? `${groups.length} groups` : "Group") : "Grouping"}</div>
@@ -245,6 +249,7 @@ export function GroupSection({ project }: { project: Project }) {
             <CommitInput value={one.name} placeholder="No name" onCommit={(v) => projectApi().commit((p) => renameGroup(p, one.id, v))} />
           </Field>
           <Row label="Holds" value={`${leafMembers(project, one).length} objects`} />
+          {one.gen && <GeneratorBlock group={one} project={project} />}
         </>
       )}
       <div className="flex flex-wrap gap-1.5">
@@ -254,8 +259,8 @@ export function GroupSection({ project }: { project: Project }) {
           </Button>
         )}
         {groups.length > 0 && (
-          <Button onClick={() => ungroupSelected()} title="Take the group apart; what was in it stays (Ctrl or Cmd Shift G)">
-            <Ungroup size={14} /> Ungroup
+          <Button onClick={() => ungroupSelected()} title={generated ? `The ${keeps} stay as plain ${keeps}` : "Take the group apart; what was in it stays (Ctrl or Cmd Shift G)"}>
+            <Ungroup size={14} /> {generated ? "Take apart" : "Ungroup"}
           </Button>
         )}
         {groups.length > 0 && (
@@ -264,6 +269,7 @@ export function GroupSection({ project }: { project: Project }) {
           </Button>
         )}
       </div>
+      {generated && <p className="text-[12px] text-ink-2">{`The ${keeps} stay as plain ${keeps}`}</p>}
       {groups.length > 0 && <p className="text-[12px] text-ink-2">A click picks the whole group. Ctrl or Cmd click picks one thing in it.</p>}
     </div>
   )

@@ -360,7 +360,8 @@ describe("X13: the file's net against what the editor derives, reported by item"
     expect(e.severity).toBe("changed")
     expect(e.count).toBe(1)
     expect(e.items).toEqual(["trace on F.Cu from (7, 5) to (10, 5) (1 segment): the file puts it on net GND, the editor derives net A"])
-    expect(analysis(r.project).violations.filter((v) => v.kind === "short").map((v) => v.message)).toEqual(["Short between A, GND"])
+    // As KiCad counts them: each pad of A the trace touches is one short.
+    expect(analysis(r.project).violations.filter((v) => v.kind === "short").map((v) => v.message)).toEqual(["Short between A, GND (R1.2 touches a trace)", "Short between A, GND (R2.1 touches a trace)"])
   })
   it("a trace on A that touches nothing is reported, and the editor keeps it as copper of A: unrouted, floating", () => {
     const r = imported(twoParts([seg("7 5", "10 5", "(net 1)"), seg("20 15", "25 15", "(net 1)")]))
@@ -610,7 +611,9 @@ describe("X15: a net tie is not a short", () => {
   })
   it("a short that the tie does not explain is still one: a third net on the pad", () => {
     const three = imported(tie('(net_tie_pad_groups "1, 2")', [seg("4 5", "11 5", "(net 1)"), seg("10.4 5", "10.4 8", "(net 3)"), footprint({ ref: "R3", at: "10 12", pads: [pad({ number: "1", at: "0.4 -4", net: net(3, "C") }), pad({ number: "2", at: "5 0", net: net(3, "C") })] })], net(3, "C"))).project
-    expect(analysis(three).violations.filter((v) => v.kind === "short")).toHaveLength(1)
+    // KiCad counts each two items that touch: the trace of A on the tie's pad of B, the trace of C on that pad and on the trace of A.
+    const s = analysis(three).violations.filter((v) => v.kind === "short")
+    expect(s.map((v) => v.message)).toEqual(["Short between A, B (NT1.2 touches a trace)", "Short between A, C (a trace touches a trace)", "Short between B, C (NT1.2 touches a trace)"])
   })
   it("copper of B that comes within the clearance of the tie's other pad is no clearance error; without the tie it is", () => {
     const text = (flags: string) => tie(flags, [seg("4 5", "9.6 5", "(net 1)"), seg("11 5", "17 5", "(net 2)")])
@@ -784,8 +787,9 @@ describe("M1: copper nets follow a net the schematic renames", () => {
   const base = imported(text).project
   const swapped = swapLabels(base, "A", "GND")
   const shorts = (p: Project) => analysis(p).violations.filter((v) => v.kind === "short")
-  it("swapping the names of two nets is two false shorts without the follow, none with it", () => {
-    expect(shorts(swapped)).toHaveLength(2)
+  it("swapping the names of two nets is three false shorts without the follow, none with it", () => {
+    // Each pad a trace of the other net touches is one, as KiCad counts them: the trace of A on two pads now GND, the trace of GND on one now A.
+    expect(shorts(swapped)).toHaveLength(3)
     const followed = followNetRenames(base, swapped)
     expect(shorts(followed)).toEqual([])
     expect(followed.traces.map((t) => t.net).sort()).toEqual(["A", "GND"])

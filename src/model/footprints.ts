@@ -144,6 +144,14 @@ export function getFootprint(name: string): FootprintDef {
   if (own) return own
   const hit = drawn.get(name)
   if (hit) return hit
+  return footprinterFootprint(name)
+}
+
+/** The library the footprints of a project drawn in the editor are written under in a KiCad board (`CherryBlossom:0603`). */
+export const FOOTPRINT_LIBRARY = "CherryBlossom"
+
+/** A footprint made by the footprinter from its string; one with no pad when the string is not a footprint. */
+function footprinterFootprint(name: string): FootprintDef {
   let elements: CjElement[] = []
   try {
     elements = fp.string(name).circuitJson() as unknown as CjElement[]

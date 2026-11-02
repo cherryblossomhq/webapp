@@ -44,7 +44,7 @@ describe("plain names for the extensions", () => {
     X13: [/tracks and vias that carry a net/],
     X14: [/images/],
     X15: [/flags/, /net ties/],
-    X19: [/text outlines/, /fonts/],
+    X19: [/fonts/, /schematic/],
     X20: [/placement rule areas/, /component classes/],
     X21: [/tuning/, /pad lengths/],
     X22: [/via protection/, /backdrill/],
@@ -136,10 +136,8 @@ describe("the summary of a real result", () => {
 
 describe("every need shows what in the board raised it", () => {
   const boards: Record<string, string> = {
-    "text in a font of the computer": board({ body: [footprint({ pads: [pad({ at: "-1 0" }), pad({ number: "2", at: "1 0" })] }), '(gr_text "x" (at 3 3) (layer "F.SilkS") (effects (font (face "Arial") (size 1 1) (thickness 0.15))))'] }),
-    "a barcode and a track": board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), "(barcode)", '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }),
+    "a creepage rule": board({ setup: "(setup (pad_to_mask_clearance 0) (creepage 1.5))", body: [footprint({ pads: [pad({ at: "0 0" })] }), '(segment (start 0 0) (end 5 0) (width 0.2) (layer "F.Cu") (net 0))'] }),
     "a custom property": board({ body: ["(custom_property)"] }),
-    "a hatched copper pour": board({ body: [footprint({ pads: [pad({ at: "0 0" })] }), '(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (fill yes (mode hatch) (hatch_thickness 0.5) (hatch_gap 1) (hatch_orientation 0)) (polygon (pts (xy 0 0) (xy 5 0) (xy 5 5))))'] }),
   }
 
   for (const [what, text] of Object.entries(boards)) {

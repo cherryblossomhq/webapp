@@ -1,4 +1,5 @@
 import type { NetChain, Project } from "./types"
+import { isObject } from "../lib/guards"
 
 // X21: KiCad's net chains (a run of nets through series parts: a termination resistor, a connector pair), kept by net name and by the pad each end is on. Nothing in the editor routes or checks by a chain yet; the
 // project holds it, and it follows what it names: a net renamed in the schematic is renamed in its chains, a part that is gone takes its terminal pads with it.
@@ -29,7 +30,6 @@ export function pruneNetChains(project: Project): Project {
   return next.length ? { ...rest, netChains: next } : (rest as Project)
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
 
 /** The chains of a stored project, each valid or gone; absent when there are none. */
 export function normalizeNetChains(raw: unknown): NetChain[] | undefined {

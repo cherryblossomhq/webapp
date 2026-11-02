@@ -263,13 +263,53 @@ describe("mapping a .kicad_pro into the model", () => {
     const r = { ...DEFAULT_RULES, ...m.rules }
     expect(classIndex(r).classOf("HV_A")?.name).toBe("High")
   })
-  it("names what it cannot keep: a class the file does not define, a repeated class, a net in two classes", () => {
-    const m = mapKicadProjectNetClasses({ classes: [{ name: "Default" }, { name: "A" }, { name: "B" }, { name: "A" }], patterns: [{ netclass: "Nope", pattern: "x" }, { netclass: "B", pattern: "V*" }], assignments: { VCC: ["A", "B"], Y: "Gone" } }, DEFAULT_RULES, ["VCC"])
-    expect(m.problems.join("\n")).toMatch(/two net classes are named "A"/)
-    expect(m.problems.join("\n")).toMatch(/pattern "x" names the class "Nope"/)
-    expect(m.problems.join("\n")).toMatch(/net "Y" is in the class "Gone"/)
-    expect(m.problems.join("\n")).toMatch(/net "VCC" is claimed by more than one class/)
-    expect(m.overlapping).toEqual(["VCC"])
+  it("names what it cannot keep: a repeated class", () => {
+    const m = mapKicadProjectNetClasses({ classes: [{ name: "Default" }, { name: "A" }, { name: "A" }], patterns: [] }, DEFAULT_RULES, [])
+    expect(m.problems).toEqual(['two net classes are named "A"'])
+  })
+  it("a class a net or a pattern names and the file does not define is an empty class, as KiCad makes it: its nets have Default's values", () => {
+    const m = mapKicadProjectNetClasses({ classes: [{ name: "Default", clearance: 0.15 }, { name: "A", clearance: 0.3 }], patterns: [{ netclass: "Nope", pattern: "x*" }], assignments: { Y: "Gone" } }, DEFAULT_RULES, ["Y", "x1"])
+    expect(m.problems).toEqual([])
+    expect(m.rules.netClasses).toEqual([{ name: "A", clearance: 0.3, nets: [] }, { name: "Gone", nets: ["Y"] }, { name: "Nope", nets: [], patterns: ["x*"] }])
+    const index = classIndex({ ...DEFAULT_RULES, ...m.rules })
+    expect([index.classOf("Y")?.name, index.classOf("x1")?.name]).toEqual(["Gone", "Nope"])
+    expect(index.clearanceOf("Y")).toBe(0.15)
+    expect(m.notes[0]).toMatch(/the classes "Gone", "Nope", which nets or patterns name and the file does not define/)
+  })
+  it("a net several classes claim in a KiCad 9 file is in the class KiCad combines from them: in priority order, each value from the first that sets it", () => {
+    const m = mapKicadProjectNetClasses(
+      {
+        classes: [{ name: "Default", priority: 2147483647, clearance: 0.15 }, { name: "Power", priority: 0, track_width: 0.8 }, { name: "HV", priority: 1, clearance: 1.2, track_width: 0.4 }],
+        patterns: [{ netclass: "HV", pattern: "+48*" }],
+        assignments: { "+48V": ["Power"], VCC: ["HV", "Power"], SIG: ["Gone"] },
+      },
+      DEFAULT_RULES,
+      ["+48V", "VCC", "SIG", "+48V_SENSE"],
+    )
+    expect(m.problems).toEqual([])
+    expect(m.overlapping).toEqual(["+48V", "VCC"])
+    const index = classIndex({ ...DEFAULT_RULES, ...m.rules })
+    // Power is first by priority and sets the width, HV sets the clearance; one combined class for both nets
+    expect(m.rules.netClasses!.find((c) => c.name === "Power,HV")).toEqual({ name: "Power,HV", traceWidth: 0.8, clearance: 1.2, nets: ["+48V", "VCC"] })
+    expect([index.classOf("+48V")?.name, index.classOf("VCC")?.name, index.classOf("+48V_SENSE")?.name, index.classOf("SIG")?.name]).toEqual(["Power,HV", "Power,HV", "HV", "Gone"])
+    expect(m.rules.netClasses!.find((c) => c.name === "Power")!.nets).toEqual([])
+    expect(m.notes.join("\n")).toMatch(/2 nets that several classes claim \("\+48V", "VCC"\): each is in the class KiCad 9 combines from them, a class of its own here \("Power,HV"\)/)
+  })
+  it("a KiCad 8 file (no priorities) whose net an assignment and a pattern both claim is the assignment's, as KiCad 8 has it, and no problem", () => {
+    // moteus x1: GHA is assigned to Gate and matches HV's pattern
+    const file = { classes: [{ name: "Default" }, { name: "Gate", clearance: 0.23 }, { name: "HV", clearance: 0.23 }], patterns: [{ netclass: "HV", pattern: "/Gate Driver/GHA" }], assignments: { "/Gate Driver/GHA": "Gate" } }
+    const m = mapKicadProjectNetClasses(file, DEFAULT_RULES, ["/Gate Driver/GHA"])
+    expect(m.problems).toEqual([])
+    expect(classIndex({ ...DEFAULT_RULES, ...m.rules }).classOf("/Gate Driver/GHA")?.name).toBe("Gate")
+    // two patterns of two classes: KiCad 8 takes the first in the file; where the editor's order of classes would take the other, the net is listed in KiCad 8's
+    const crossed = mapKicadProjectNetClasses({ classes: [{ name: "Default" }, { name: "A" }, { name: "B" }], patterns: [{ netclass: "B", pattern: "V*" }, { netclass: "A", pattern: "VC*" }] }, DEFAULT_RULES, ["VCC"])
+    expect(crossed.overlapping).toEqual(["VCC"])
+    expect(crossed.problems).toEqual([])
+    expect(classIndex({ ...DEFAULT_RULES, ...crossed.rules }).classOf("VCC")?.name).toBe("B")
+    // with priorities it is a KiCad 9 file, which combines the classes
+    const nine = mapKicadProjectNetClasses({ ...file, classes: file.classes.map((c, i) => ({ ...c, priority: i })) }, DEFAULT_RULES, ["/Gate Driver/GHA"])
+    expect(nine.overlapping).toEqual(["/Gate Driver/GHA"])
+    expect(classIndex({ ...DEFAULT_RULES, ...nine.rules }).classOf("/Gate Driver/GHA")).toMatchObject({ name: "Gate,HV", clearance: 0.23 })
   })
   it("a file with no Default class has the base rules, and overlappingNets counts a listed net and a pattern as two claims", () => {
     const m = mapKicadProjectNetClasses({ classes: [{ name: "A", clearance: 0.3 }], patterns: [] }, { clearance: 0.21, traceWidth: 0.22, viaDiameter: 0.7, viaDrill: 0.35 })

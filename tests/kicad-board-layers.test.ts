@@ -360,6 +360,25 @@ describe("X1 and X5: the pads of a board of more than two layers", () => {
     expect(out).toContain("(mode front_inner_back)")
   })
 
+  it("a user layer KiCad 10 puts on the back or the front side is a user layer like any other", () => {
+    const layers = '(layers (0 "F.Cu" signal) (2 "B.Cu" signal) (44 "Edge.Cuts" user) (39 "User.1" back) (41 "User.2" front "Front notes"))'
+    const text = board({ version: 20260206, layers, body: ['(gr_line (start 0 0) (end 5 0) (stroke (width 0.1) (type solid)) (layer "User.1") (uuid "00000000-0000-4000-8000-000000000001"))'] })
+    const p = imported(text)
+    expect(p.graphics?.map((g) => g.layer)).toEqual(["User.1"])
+  })
+
+  it("a pad stack layer's own pour settings come in, and KiCad 9's inherited zone_connect -1 leaves the pad's own", async () => {
+    // KiCad 9 writes `(zone_connect -1)` on every layer of a stack; a layer may also set its own clearance, thermal relief and copper offset
+    const stack = '(padstack (mode front_inner_back) (layer "Inner" (shape circle) (size 1 1) (zone_connect -1) (clearance 0.3)) (layer "B.Cu" (shape circle) (size 1.6 1.6) (zone_connect -1) (thermal_bridge_angle 45)))'
+    const p = imported(board({ layers: L4, nets: NETS, body: [fp([thru('"*.Cu" "*.Mask"', `(zone_connect 2) ${stack}`)])] }))
+    const def = p.footprints![0].pads[0]
+    expect(def.zoneConnect).toBe("solid")
+    expect(def.stack?.layers.inner).toMatchObject({ clearance: 0.3 })
+    expect(def.stack?.layers.inner).not.toHaveProperty("zoneConnect")
+    expect(def.stack?.layers.bottom).toMatchObject({ thermalAngle: 45 })
+    expect(def.stack?.layers.bottom).not.toHaveProperty("zoneConnect")
+  })
+
   it("a pad stack on a part on the bottom has its own side at the file's back layer", async () => {
     const stack = '(padstack (mode front_inner_back) (layer "Inner" (shape circle) (size 1 1)) (layer "B.Cu" (shape rect) (size 2.4 2.4)))'
     const text = board({ layers: L4, nets: NETS, body: [footprint({ ref: "J1", layer: "B.Cu", at: "10 5", pads: [thru('"*.Cu" "*.Mask"', stack)] })] })

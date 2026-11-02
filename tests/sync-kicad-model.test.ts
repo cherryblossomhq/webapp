@@ -64,9 +64,13 @@ const HOW: Record<keyof Project, "item" | "value" | "never"> = {
   properties: "item",
   ignoredChecks: "value",
   importMarks: "value",
+  points: "value",
+  netChains: "item",
+  fonts: "value",
+  kicad: "value",
   netStyles: "value",
 }
-const KEYS: Partial<Record<keyof Project, string>> = { footprints: "name", properties: "key" }
+const KEYS: Partial<Record<keyof Project, string>> = { footprints: "name", properties: "key", netChains: "name" }
 
 /** The KiCad half of a project, every field set. Shapes are only as real as sync needs: sync reads ids and values, never the model. */
 function rich(): Project {
@@ -97,6 +101,10 @@ function rich(): Project {
     properties: [{ key: "rev", value: "A" }],
     ignoredChecks: ["bare-led:c_1"],
     importMarks: { checks: ["bare-led:c_1"], noConnect: { c_1: ["1"] } },
+    points: [{ x: 1, y: 2, size: 0.5, layer: "F.Fab" }],
+    netChains: [{ name: "Chain", nets: ["A", "B"] }],
+    fonts: { board: true, files: [] },
+    kicad: { paper: '"A4"' },
     netStyles: { VBUS: "label" },
     zones: [{ id: "z1", net: "GND", layer: "top" } as Zone],
     board: withCopperCount({ ...p.board }, 4),

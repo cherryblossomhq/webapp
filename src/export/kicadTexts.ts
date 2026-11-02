@@ -12,7 +12,8 @@ import { kiRound, mmToIu } from "../lib/kicadText"
 import { findPart } from "../model/library"
 import { isPhysical } from "../model/instances"
 import type { WorldText } from "../model/texts"
-import { isDimensionText, shownOf, textBoxCorners, worldTexts } from "../model/texts"
+import { currentOutline, isDimensionText, shownOf, textBoxCorners, textPose, worldTexts } from "../model/texts"
+import { outlineRings, UNNAMED_FONT } from "../model/textOutlines"
 import type { Project, Vec2 } from "../model/types"
 import { KICAD_PAGE_ORIGIN, localFrame } from "./kicadShapes"
 import { quoteTabs as quote } from "../lib/kicadQuote"
@@ -59,12 +60,45 @@ function writtenThickness(t: WorldText): number | null {
   return (t.bold ? kiRound(iu * 1.6) : iu) / 1e6
 }
 
-export function effects(t: WorldText, mirror: boolean, hide: boolean, href?: string): string[] {
+/**
+ * The outlines KiCad drew a text with (`render_cache`), written back as the file had them (X19): the polygons as they are when the text has not moved, mapped by its pose when
+ * it has, and none when an edit has taken them away (KiCad draws that text again from the font). `to` maps a point of the board in millimetres (y up) into the file.
+ */
+export function renderCache(project: Project, t: WorldText, to: (p: Vec2) => Vec2): string[] {
+  const o = currentOutline(project, t)
+  if (!o) return []
+  const now = textPose(t)
+  const same = o.at.x === now.x && o.at.y === now.y && o.at.rot === now.rot && (o.at.mirror === true) === now.mirror
+  const angle = same ? o.angle : norm(o.angle + now.rot - o.at.rot)
+  const out = [`(render_cache ${quote(o.text)} ${mm6(angle)}`]
+  for (const polygon of outlineRings(o, now)) {
+    out.push("  (polygon")
+    for (const ring of polygon) {
+      out.push("    (pts")
+      const pts = []
+      for (let i = 0; i < ring.length; i += 2) pts.push(`(xy ${xy(to({ x: ring[i] / 1e6, y: ring[i + 1] / 1e6 }))})`)
+      for (let i = 0; i < pts.length; i += 4) out.push(`      ${pts.slice(i, i + 4).join(" ")}`)
+      out.push("    )")
+    }
+    out.push("  )")
+  }
+  out.push(")")
+  return out
+}
+
+/** What a file frame is for `effects`: the project (a text's outlines are valid only while it still shows what they were drawn for) and where the board's millimetres go in the file. */
+export interface OutlineFrame {
+  project: Project
+  to: (p: Vec2) => Vec2
+}
+
+export function effects(t: WorldText, mirror: boolean, hide: boolean, href?: string, outlines?: OutlineFrame): string[] {
   const thickness = writtenThickness(t)
   const justify = [t.hj === -1 ? "left" : t.hj === 1 ? "right" : "", t.vj === -1 ? "top" : t.vj === 1 ? "bottom" : "", mirror ? "mirror" : ""].filter(Boolean)
   return [
     "(effects",
     "  (font",
+    ...(t.face !== undefined && t.face !== UNNAMED_FONT ? [`    (face ${quote(t.face)})`] : []),
     `    (size ${mm6(t.size)} ${mm6(t.w)})`,
     ...(thickness !== null ? [`    (thickness ${mm6(thickness)})`] : []),
     ...(t.bold ? ["    (bold yes)"] : []),
@@ -75,6 +109,7 @@ export function effects(t: WorldText, mirror: boolean, hide: boolean, href?: str
     ...(hide ? ["  (hide yes)"] : []),
     ...(href ? [`  (href ${quote(href)})`] : []),
     ")",
+    ...(outlines ? renderCache(outlines.project, t, outlines.to) : []),
   ]
 }
 
@@ -97,6 +132,7 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
   const refOf = new Map<string, string>()
   for (const c of project.components) if (isPhysical(findPart(c.partId))) refOf.set(c.id, c.ref)
   const toBoard = (p: Vec2): Vec2 => ({ x: KICAD_PAGE_ORIGIN + p.x, y: KICAD_PAGE_ORIGIN - p.y })
+  const frame: OutlineFrame = { project, to: toBoard }
   const layers = new Set<string>()
   const board: string[] = []
   const byRef = new Map<string, string[]>()
@@ -132,14 +168,14 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
           `  (margins ${b.margins.map(mm6).join(" ")})`,
           `  (layer ${quote(t.layer)})`,
           `  (uuid ${uuid()})`,
-          ...effects(t, t.mirror, false).map((l) => `  ${l}`),
+          ...effects(t, t.mirror, false, undefined, frame).map((l) => `  ${l}`),
           ")",
         ]
         board.push(indent(lines, "  "))
         uuids.set(t.id, [`00000000-0000-4000-a000-${(serial).toString(16).padStart(12, "0")}`])
       } else {
         const at = toBoard({ x: t.x, y: t.y })
-        const lines = [`(gr_text ${quote(content)}`, `  (at ${xy(at)}${norm(t.rot) ? ` ${mm6(norm(t.rot))}` : ""})`, `  ${layer}`, `  (uuid ${uuid()})`, ...effects(t, t.mirror, false).map((l) => `  ${l}`), ")"]
+        const lines = [`(gr_text ${quote(content)}`, `  (at ${xy(at)}${norm(t.rot) ? ` ${mm6(norm(t.rot))}` : ""})`, `  ${layer}`, `  (uuid ${uuid()})`, ...effects(t, t.mirror, false, undefined, frame).map((l) => `  ${l}`), ")"]
         board.push(indent(lines, "  "))
         uuids.set(t.id, [`00000000-0000-4000-a000-${(serial).toString(16).padStart(12, "0")}`])
       }
@@ -154,9 +190,9 @@ export function applyTexts(pcb: string, project: Project): KicadTexts {
     replaced.add(ref)
     if (t.kind === "reference" || t.kind === "value") {
       const name = t.kind === "reference" ? "Reference" : "Value"
-      list.push(indent([`(property ${quote(name)} ${quote(content)}`, `  ${at}`, `  ${layer}`, ...(t.hidden ? ["  (hide yes)"] : []), `  (uuid ${uuid()})`, ...effects(t, t.mirror, false).map((l) => `  ${l}`), ")"], "    "))
+      list.push(indent([`(property ${quote(name)} ${quote(content)}`, `  ${at}`, `  ${layer}`, ...(t.hidden ? ["  (hide yes)"] : []), `  (uuid ${uuid()})`, ...effects(t, t.mirror, false, undefined, frame).map((l) => `  ${l}`), ")"], "    "))
     } else {
-      list.push(indent([`(fp_text user ${quote(content)}`, `  ${at}`, `  ${layer}`, ...(t.hidden ? ["  (hide yes)"] : []), `  (uuid ${uuid()})`, ...effects(t, t.mirror, false).map((l) => `  ${l}`), ")"], "    "))
+      list.push(indent([`(fp_text user ${quote(content)}`, `  ${at}`, `  ${layer}`, ...(t.hidden ? ["  (hide yes)"] : []), `  (uuid ${uuid()})`, ...effects(t, t.mirror, false, undefined, frame).map((l) => `  ${l}`), ")"], "    "))
     }
     byRef.set(ref, list)
     uuids.set(t.id, [`00000000-0000-4000-a000-${serial.toString(16).padStart(12, "0")}`])

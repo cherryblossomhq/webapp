@@ -18,6 +18,10 @@ import { drawingBounds, hitDrawing, moveDrawing, updateDrawings } from "../src/m
 import { inBom, onBoard, setFlags } from "../src/model/partFlags"
 import { pasteItems, rekeyAutoNets, renameReference, setBlockLocked, setLabelStyle } from "../src/model/schematicEdit"
 import { boxTextAt, imageSize } from "../src/model/sheetItems"
+import { decodeBase64, sha256Hex } from "../src/lib/imageFacts"
+import { rememberImage } from "../src/store/imageFiles"
+import { paintDrawing } from "../src/editor/schematic/drawingPaint"
+import { SCH_LIGHT } from "../src/editor/theme"
 import { tidySchematic } from "../src/model/tidy"
 import { type Project, type Zone } from "../src/model/types"
 import { parseSexpr } from "./kicad-census/sexpr.mjs"
@@ -63,6 +67,8 @@ const rich = () =>
 const imp = (text: string) => {
   const r = importKicadSchematic(text)
   if (r.status !== "imported") throw new Error(`refused: ${r.message}\n${r.report.entries.map((e) => e.why).join("\n")}`)
+  // The sheet's pictures are files the import screen keeps, and the page has their bytes from then on (`putImageFile`).
+  for (const f of r.build.pictures) rememberImage(f.id, f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.byteLength) as ArrayBuffer)
   return r
 }
 
@@ -167,7 +173,10 @@ describe("S4: the sheet's drawings, held at the file's numbers", () => {
     const image = kind("image")[0] as D<"image">
     check(image, kid(rawOf("image")[0], "at")!)
     expect(image.scale).toBe(2)
-    expect(image.data).toBe(PNG)
+    // the PNG is a file of the store (version 5), named by its SHA-256 and kept with the import, with its size in pixels
+    expect(image.data).toBeUndefined()
+    expect(image).toMatchObject({ file: sha256Hex(decodeBase64(PNG)!), px: 1, py: 1 })
+    expect(imp(rich()).build.pictures.map((f) => [f.id, [...f.bytes]])).toEqual([[image.file, [...decodeBase64(PNG)!]]])
     // a 1 pixel picture at the default 300 per inch, drawn at scale 2: 2 * 25.4 / 300 mm
     expect(mm(imageSize(image).w)).toBeCloseTo((2 * 25.4) / 300, 4)
     const table = kind("table")[0] as D<"table">
@@ -182,6 +191,16 @@ describe("S4: the sheet's drawings, held at the file's numbers", () => {
     expect(junction.dotColor).toBe("#00ff00")
     const nc = kind("noconnect")[0] as D<"noconnect">
     check(nc, kid(rawOf("no_connect")[0], "at")!)
+  })
+
+  it("draws a picture of the file store once its file is on the page, and a frame of its size before", () => {
+    const image = kind("image")[0] as D<"image">
+    const drawn = paintDrawing(image, SCH_LIGHT, 0.01)[0]
+    expect(drawn.tag).toBe("image")
+    expect(drawn.attrs.href).toBe(`data:image/png;base64,${PNG}`)
+    const elsewhere = paintDrawing({ ...image, file: "b".repeat(64) }, SCH_LIGHT, 0.01)[0]
+    const s = imageSize(image)
+    expect(elsewhere).toMatchObject({ tag: "rect", attrs: { width: s.w, height: s.h, fill: "none" } })
   })
 
   it("carries a wire's own stroke, and a locked group", () => {

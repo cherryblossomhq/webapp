@@ -2,12 +2,11 @@ import { transformPoint } from "../lib/geometry"
 import { flipShapeLayer } from "./shapeLayers"
 import { copperLayers } from "./stack"
 import type { ComponentInstance, PartUnit, PcbPoint, Project } from "./types"
+import { finite as num, isObject } from "../lib/guards"
 
 // X23: PCB points and footprint units (KiCad 10). A point is a reference mark: drawn as a circle with a cross, plotted nowhere. A part's points are in the footprint's own frame
 // as a pad is (y up, laid out as for a part on the top, on the layer it has there), so they move, turn and flip with the part; the board's own are in the board's frame.
 
-const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
 
 /** PCB points as stored; an entry that is not a place of a size on a layer is dropped. */
 export function normalizePoints(raw: unknown): PcbPoint[] | undefined {

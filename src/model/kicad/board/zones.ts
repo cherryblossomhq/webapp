@@ -4,7 +4,7 @@ import type { PathSeg, ShapePath } from "../../shapes"
 import type { CopperLayer, DesignRules, Vec2, Zone } from "../../types"
 import { flipShapeLayer } from "../../shapeLayers"
 import { flipLayer } from "../../stack"
-import { anchorSide, isOtherZoneLayer, orderedOtherLayers } from "../../zoneLayers"
+import { anchorSide, isOtherZoneLayer, orderedOtherLayers, PLOTTED_LAYERS } from "../../zoneLayers"
 import { hasOtherLayers, isOtherZone, kicadUuid } from "../../zones"
 import { pt } from "../../zoneGeom"
 import { DEFAULT_MIN_HOLE, DEFAULT_SMOOTH_VALUE, hatchTooFine, MAX_HOLES } from "../../zoneHatch"
@@ -40,9 +40,6 @@ interface ZoneLayerSplit {
   other: string[]
   unknown: string[]
 }
-
-/** The non-copper layers the editor has a Gerber for. */
-const PLOTTED_LAYERS = /^[FB]\.(Mask|Paste|SilkS)$|^Edge\.Cuts$/
 
 const SIDED_WILDCARD = /^\*\.(Adhes|Paste|SilkS|Mask|CrtYd|Fab)$/
 
@@ -174,6 +171,8 @@ interface One {
   lossy?: string
   unfilled?: true
   ignoredNet?: true
+  /** A rule area inside a part that sets a placement, which is not kept. */
+  placementDropped?: true
 }
 
 /** One zone of the file as the project's, or what keeps it from being one. */
@@ -243,7 +242,12 @@ function convertOne(z: KicadZone, cx: OneContext): One {
       ...(z.keepout?.copperpour ? { pour: true as const } : {}),
       ...(z.keepout?.footprints ? { footprints: true as const } : {}),
     }
-    return { zone }
+    // X20: what the rule area places. A switched off area that names no sheet is what KiCad writes on every ordinary keepout: it holds nothing.
+    // A rule area inside a part places nothing here (the part's land is shared by every part that has it, and a placement area is a rule of the board), so it is left out and the report says so.
+    const pl = z.placement
+    const sets = !!pl && (pl.enabled || pl.by !== "sheet" || pl.name !== "")
+    if (pl && sets && !cx.inPart) zone.placement = { by: pl.by, name: pl.name, ...(pl.enabled ? {} : { off: true as const }) }
+    return { zone, ...(sets && cx.inPart ? { placementDropped: true as const } : {}) }
   }
   // A zone on layers that is not copper has no net and no teardrop: KiCad's file says what it says of the rest (clearance, pad connection, thermal gap) and the zone keeps it.
   let ignoredNet: true | undefined
@@ -300,7 +304,6 @@ export function convertZones(cx: ZoneContext): ZoneResult {
   const r: ZoneResult = { zones: out, lossy: [], unfilled: 0, degenerate: 0, loose: [], ignoredNets: 0 }
   const one: OneContext = { ...cx, widest: edgeWidth(board), map: flip, bottomPart: false, inPart: false, id: () => uid("z") }
   for (const z of board.zones) {
-    if (z.kind === "placement") continue
     const made = convertOne(z, one)
     if (made.lossy) {
       if (!r.lossy.includes(made.lossy)) r.lossy.push(made.lossy)
@@ -319,28 +322,32 @@ interface PartZones {
   zones: Zone[]
   lossy: string[]
   degenerate: number
+  /** The rule areas whose placement (a sheet, class or group they place parts by) was left out. */
+  placements: number
 }
 
 /**
  * The zones of one footprint (X30: a keepout, or a pour on no net, drawn inside a part) as a land's, in the land's frame: the point as the part's own side has it (y up, the land
- * the library's on both sides, as `landShapes` has it) and the layers as that side has them. Placement areas are the part's own business (X20) and are left out here as on the board.
+ * the library's on both sides, as `landShapes` has it) and the layers as that side has them. A rule area inside a part keeps no placement (X20): a land is shared by every part that has it, so the sheet, class or group it places parts by is left out and counted for the report.
  */
 export function convertPartZones(fp: KicadFootprint, bottom: boolean, cx: ZoneContext): PartZones {
-  const out: PartZones = { zones: [], lossy: [], degenerate: 0 }
-  const one: OneContext = { ...cx, widest: 0, map: bottom ? (p) => ({ x: p.x + 0, y: p.y + 0 }) : flip, bottomPart: bottom, inPart: true, id: () => `z${out.zones.length}` }
+  const out: PartZones = { zones: [], lossy: [], degenerate: 0, placements: 0 }
+  const one: OneContext = { ...cx, widest: 0, map: bottom ? (p) => ({ x: p.x, y: p.y }) : flip, bottomPart: bottom, inPart: true, id: () => `z${out.zones.length}` }
   for (const z of fp.zones) {
-    if (z.kind === "placement") continue
     const made = convertOne(z, one)
     if (made.lossy) {
       if (!out.lossy.includes(made.lossy)) out.lossy.push(made.lossy)
     } else if (made.degenerate) out.degenerate++
-    else if (made.zone) out.zones.push(made.zone)
+    else if (made.zone) {
+      out.zones.push(made.zone)
+      if (made.placementDropped) out.placements++
+    }
   }
   return out
 }
 
 /** The report of the zones that were inside parts (X30): what they are, and that they move with their part. */
-export function reportPartZones(r: { parts: number; zones: Zone[]; degenerate: number }, report: ImportReport) {
+export function reportPartZones(r: { parts: number; zones: Zone[]; degenerate: number; placements: number }, report: ImportReport) {
   const keepouts = r.zones.filter((z) => z.keepout).length
   const pours = r.zones.filter((z) => !z.keepout && !isOtherZone(z)).length
   const areas = r.zones.length - keepouts - pours
@@ -353,6 +360,9 @@ export function reportPartZones(r: { parts: number; zones: Zone[]; degenerate: n
       why: "Kept with the part: they move, turn and flip with it, as KiCad's do, and act as the same zones on the board do (a keepout keeps tracks, vias, pads, pours or parts out, a pour is filled). They are edited by editing the part, not as zones of the board.",
       count: r.zones.length,
     })
+  }
+  if (r.placements) {
+    report.entries.push({ code: "placement-in-parts", severity: "not-brought", object: `${r.placements} placement area${r.placements === 1 ? "" : "s"} inside parts`, why: "A placement area belongs to the board, not to a part that is placed over and over, so the rule area was kept as a rule area and the sheet, class or group it places parts by was left out.", count: r.placements })
   }
   if (r.degenerate) {
     report.entries.push({ code: "zones-degenerate", severity: "not-brought", object: `${r.degenerate} zone${r.degenerate === 1 ? "" : "s"} inside parts with fewer than three corners, or on no copper layer of the board`, why: "KiCad draws and fills nothing for such a zone, so none was brought in.", count: r.degenerate })

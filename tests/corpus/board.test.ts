@@ -222,6 +222,10 @@ interface Row {
   fillWorst: number
   fillP99: number
   fillMs: number
+  /** Zones that keep KiCad's fill (`Zone.kept`): what the editor shows of the kept copper against the file's (layers, mm2 of the file's copper, mm2 in only one of the two). */
+  keptLayers: number
+  keptTheirs: number
+  keptXor: number
   textsByOrder: number
   textsInkWrong: number
   /** The texts survive the stored form. */
@@ -389,6 +393,9 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
           fillWorst: 0,
           fillP99: 0,
           fillMs: 0,
+          keptLayers: 0,
+          keptTheirs: 0,
+          keptXor: 0,
           textsByOrder: 0,
           textsInkWrong: 0,
           textsRoundTrip: true,
@@ -842,6 +849,14 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
               const f0 = performance.now()
               const fills = await cachedExport("compareFills", [text, imported.project], () => compareFills(text, imported.project), ["tests/kicad-zones-check.ts", "tests/kicad-census"])
               row.fillMs = performance.now() - f0
+              if (imported.project.zones.some((z) => z.kept)) {
+                const keptRows = await cachedExport("compareKeptFills", [text, imported.project], () => compareFills(text, imported.project, 3, "copper", true), ["tests/kicad-zones-check.ts", "tests/kicad-census"])
+                row.keptLayers = keptRows.length
+                for (const x of keptRows) {
+                  row.keptTheirs += x.theirs
+                  row.keptXor += x.xor
+                }
+              }
               row.fillLayers = fills.length
               row.fillStored = fills.filter((x) => x.stored).length
               for (const x of fills.filter((y) => y.stored)) {
@@ -930,6 +945,8 @@ describe.skipIf(!CORPUS)("the KiCad corpus", () => {
       expect(rows.filter((r) => r.endToEnd && r.endToEnd !== "ok").map((r) => `${r.file}: ${r.endToEnd}`)).toEqual([])
       // X3: every zone of the file is in the project with its outline, layers, net and settings (oracle), the stored form gives them back, and on every board that imports the editor's fill is KiCad's within the measured bounds
       expect(rows.filter((r) => r.zonesWrong > 0 || !r.zoneRoundTrip).map((r) => `${r.file}: ${r.notes.find((n) => n.startsWith("zones"))}`)).toEqual([])
+      // A zone that keeps KiCad's fill shows it: the copper the editor draws and checks is the file's, to the rounding of a micrometre and of the pen's round corners.
+      expect(rows.filter((r) => r.status === "imported" && r.keptLayers > 0 && r.keptXor > Math.max(0.005 * r.keptTheirs, 0.5)).map((r) => `${r.file}: ${r.keptXor.toFixed(2)} of ${r.keptTheirs.toFixed(0)} mm2`)).toEqual([])
       expect(rows.filter((r) => r.status === "imported" && r.fillStored > 0 && r.fillXor > Math.max(0.1 * r.fillTheirs, 5)).map((r) => r.file)).toEqual(ONLY.length || LIMIT ? expect.arrayContaining([]) : ZONE_FILL_OUTLIERS)
       expect(rows.filter((r) => r.flagsWrong > 0 || r.ncWrong > 0 || r.copperNets === "fail" || !r.copperLocked || !r.mismatchListed || !r.gateExact).map((r) => r.file)).toEqual([])
     },

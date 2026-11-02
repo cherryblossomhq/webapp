@@ -33,6 +33,7 @@ import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
 import { shapeLayerInfo } from "../model/shapeLayers"
 import { isOtherZone, isWholeBoardPour, keepoutFlags, zoneLayers, zoneOtherLayers } from "../model/zones"
+import { placementWords } from "../model/placementAreas"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
 import { NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
@@ -633,10 +634,10 @@ function PoursSection({ project }: { project: Project }) {
             return (
               <li key={z.id} className="flex items-center justify-between rounded-[6px] px-1.5 py-0.5 hover:bg-chrome">
                 <span className={`text-[12.5px] ${z.outline ? "cursor-pointer" : ""}`} onClick={z.outline ? () => uiApi().select([`z:${z.id}`]) : undefined}>
-                  <span className="mono text-ink">{z.keepout ? "Keepout" : isOtherZone(z) ? "Zone" : z.net || "No net"}</span>
+                  <span className="mono text-ink">{z.keepout ? (z.placement ? "Placement area" : "Keepout") : isOtherZone(z) ? "Zone" : z.net || "No net"}</span>
                   {z.name && <span className="text-ink-2"> {z.name}</span>}
                   <span className="text-ink-2"> on {[...zoneLayers(z).map((l) => layerLabel(project.board, l)), ...zoneOtherLayers(z).map((n) => shapeLayerInfo(n)?.label ?? n)].map((s) => s.toLowerCase()).join(" and ")}</span>
-                  {z.outline && <span className="text-ink-3">, {z.keepout ? "keeps out " + (keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join(", ") || "nothing") : "polygon"}</span>}
+                  {z.outline && <span className="text-ink-3">, {z.keepout ? (z.placement ? `holds ${placementWords(z.placement)}${z.placement.off ? " (off)" : ""}` : "") + (keepoutFlags(z).length || !z.placement ? `${z.placement ? "; " : ""}keeps out ` + (keepoutFlags(z).map((f) => (f === "footprints" ? "parts" : f)).join(", ") || "nothing") : "") : "polygon"}</span>}
                   {z.clearance !== undefined && <span className="text-ink-3">, {formatLength(zoneClearance(project, z.clearance), unit, true)} gap</span>}
                   {empty && !z.keepout && !isOtherZone(z) && <span className="text-warn"> (no copper to fill)</span>}
                 </span>

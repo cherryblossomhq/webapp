@@ -2,7 +2,7 @@ import { normalizeOutline, packOutline, unpackOutline } from "./outlineCodec"
 import { segStart, type ShapePath } from "./shapes"
 import { isOtherZoneLayer, orderedOtherLayers } from "./zoneLayers"
 import { isCopperLayerId } from "./stack"
-import type { CopperLayer, Zone, ZoneConnection, ZoneKeepout } from "./types"
+import type { CopperLayer, KeptFill, Vec2, Zone, ZoneConnection, ZoneKeepout } from "./types"
 import { finite, isObject } from "../lib/guards"
 
 // Zones stored compactly and exactly (X3). A zone of the editor's own whole-board kind is stored as it always was. A zone with a polygon
@@ -53,16 +53,91 @@ export function unpackRings(raw: unknown): ShapePath[] | null {
   return out.length ? out : null
 }
 
-const legacyKeys = new Set(["id", "net", "layer", "clearance"])
-const isLegacy = (z: Zone) => Object.keys(z).every((k) => legacyKeys.has(k) || (z as unknown as Json)[k] === undefined)
+// KiCad's stored fill of a zone (`Zone.kept`) is stored as `ff`: `{ g: signature, s?: 1, l: [[layer, [ring, ...], islandIndexes?], ...] }`. A ring whose points are all
+// whole nanometres (a KiCad file's are) is `["d", x0, y0, dx, dy, ...]`: the first point and then each step from the one before, in nanometres, which keeps a fill that is
+// megabytes as KiCad's text a few bytes a point; any other ring is `["p", x, y, ...]` as it is. Every number reads back as it was.
 
-/** The zones as they are written: the polygon of each is `ol`. */
+const NM = 1e6
+const wholeNm = (v: number) => Math.abs(v) < 8e9 && Math.round(v * NM) / NM === v
+
+function packFillRing(ring: Vec2[]): (string | number)[] {
+  if (!ring.every((p) => wholeNm(p.x) && wholeNm(p.y))) return ["p", ...ring.flatMap((p) => [p.x, p.y])]
+  const out: (string | number)[] = ["d"]
+  let px = 0
+  let py = 0
+  for (const p of ring) {
+    const x = Math.round(p.x * NM)
+    const y = Math.round(p.y * NM)
+    out.push(x - px, y - py)
+    px = x
+    py = y
+  }
+  return out
+}
+
+function unpackFillRing(r: unknown): Vec2[] | null {
+  if (!Array.isArray(r) || (r[0] !== "d" && r[0] !== "p")) return null
+  const v = r.slice(1)
+  if (v.length < 6 || v.length % 2 || !v.every(finite)) return null
+  const out: Vec2[] = []
+  if (r[0] === "p") {
+    for (let i = 0; i < v.length; i += 2) out.push({ x: v[i] as number, y: v[i + 1] as number })
+    return out
+  }
+  let x = 0
+  let y = 0
+  for (let i = 0; i < v.length; i += 2) {
+    x += v[i] as number
+    y += v[i + 1] as number
+    out.push({ x: x / NM + 0, y: y / NM + 0 })
+  }
+  return out
+}
+
+function packKept(k: KeptFill): Json {
+  return { g: k.sig, ...(k.stroked ? { s: 1 } : {}), l: k.layers.map((l) => [l.layer, l.rings.map(packFillRing), ...(l.islands?.length ? [l.islands] : [])]) }
+}
+
+/** The kept fill a stored zone holds, or nothing when it does not read (the zone is then filled by the editor, as one with no stored fill). */
+function unpackKept(raw: unknown): KeptFill | null {
+  if (!isObject(raw) || typeof raw.g !== "string" || !Array.isArray(raw.l)) return null
+  const layers: KeptFill["layers"] = []
+  for (const l of raw.l) {
+    const layer = Array.isArray(l) ? layerOf(l[0]) : null
+    if (!Array.isArray(l) || !layer || !Array.isArray(l[1])) return null
+    const rings: Vec2[][] = []
+    for (const r of l[1]) {
+      const ring = unpackFillRing(r)
+      if (!ring) return null
+      rings.push(ring)
+    }
+    const islands = Array.isArray(l[2]) ? l[2].filter((i): i is number => Number.isInteger(i) && i >= 0 && i < rings.length) : []
+    if (layers.some((x) => x.layer === layer)) return null
+    layers.push({ layer, rings, ...(islands.length ? { islands } : {}) })
+  }
+  return layers.length ? { layers, ...(raw.s === 1 ? { stroked: true as const } : {}), sig: raw.g } : null
+}
+
+const legacyKeys = new Set(["id", "net", "layer", "clearance"])
+
+/**
+ * The zones as they are written: each as it is, but its polygon and its kept fill compact under their own keys (`outline`, `kept`), which an edit only ever replaces
+ * or takes off whole. Written before, they were `ol` and `ff`, which a live edit of either (by its own key) did not reach; both are still read.
+ */
 export function packZones(zones: Zone[]): unknown[] {
-  return zones.map((z) => {
-    if (isLegacy(z) || !z.outline) return z
-    const { outline, ...rest } = z
-    return { ...rest, ol: packRings(outline) }
-  })
+  return zones.map((z) => (z.outline || z.kept ? { ...z, ...(z.outline ? { outline: packRings(z.outline) } : {}), ...(z.kept ? { kept: packKept(z.kept) } : {}) } : z))
+}
+
+/** A zone's kept fill as stored: compact (`packKept`), or an object an edit wrote (read through the compact form, so it is checked the same way). */
+function readKept(raw: unknown): KeptFill | null {
+  if (isObject(raw) && Array.isArray(raw.layers)) {
+    try {
+      return unpackKept(packKept(raw as unknown as KeptFill))
+    } catch {
+      return null
+    }
+  }
+  return unpackKept(raw)
 }
 
 const layerOf = (v: unknown): CopperLayer | null => (isCopperLayerId(v) ? v : null)
@@ -96,8 +171,15 @@ export function normalizeZones(raw: unknown): Zone[] {
     if (item.unordered === true) z.unordered = true
     const oh = item.outlineHatch
     if (isObject(oh) && (oh.style === "none" || oh.style === "edge" || oh.style === "full") && finite(oh.pitch) && oh.pitch > 0) z.outlineHatch = { style: oh.style, pitch: oh.pitch }
-    // The stored form is `ol`; a hand-written file may give plain paths, `outline: [{ closed, segs }]`.
-    const rings = item.ol !== undefined ? unpackRings(item.ol) : Array.isArray(item.outline) ? (normalizeOutline({ paths: item.outline })?.paths.map((p) => ({ ...p, closed: true })) ?? null) : null
+    // The polygon: compact under its own key (`packRings`), or the paths an edit wrote there (`[{ closed, segs }]`); or `ol`, where it was written before, which either replaces.
+    const outline = item.outline
+    const rings = Array.isArray(outline)
+      ? Array.isArray(outline[0])
+        ? unpackRings(outline)
+        : (normalizeOutline({ paths: outline })?.paths.map((p) => ({ ...p, closed: true })) ?? null)
+      : item.ol !== undefined
+        ? unpackRings(item.ol)
+        : null
     // A polygon that was stored and does not read is a zone lost, not a zone over the whole board.
     if ((item.ol !== undefined || item.outline !== undefined) && !rings?.length) continue
     if (rings?.length) z.outline = rings
@@ -148,6 +230,12 @@ export function normalizeZones(raw: unknown): Zone[] {
     }
     if (item.teardrop === "padvia" || item.teardrop === "track_end") z.teardrop = item.teardrop
     if (item.locked === true) z.locked = true
+    // KiCad's stored fill: only on a pour with a polygon, on layers the zone is on. `ff` is where it was written before.
+    const fill = item.kept !== undefined ? item.kept : item.ff
+    if (fill !== undefined && !z.keepout && z.outline) {
+      const kept = readKept(fill)
+      if (kept && kept.layers.every((l) => (z.layers ?? [z.layer]).includes(l.layer))) z.kept = kept
+    }
     out.push(z)
   }
   return out

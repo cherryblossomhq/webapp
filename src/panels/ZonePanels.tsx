@@ -4,8 +4,11 @@ import { getConnectivity, getLiveAnalysis, useFillTick } from "../store/analysis
 import { updateZone, removeZones, setZoneSurface, type ZonePatch } from "../model/zoneOps"
 import { nonCopperFills } from "../model/nonCopperFill"
 import { shapeLayerInfo } from "../model/shapeLayers"
-import { OTHER_LAYER_ORDER } from "../model/zoneLayers"
-import { isOtherZone, zoneSettings } from "../model/zones"
+import { OTHER_LAYER_ORDER, PLOTTED_LAYERS } from "../model/zoneLayers"
+import { hatchTooFine, MAX_HOLES } from "../model/zoneHatch"
+import { ring } from "../model/zoneGeom"
+import { isOtherZone, zoneRings, zoneSettings } from "../model/zones"
+import { areaReport, PLACEMENT_BY, sheetNames } from "../model/placementAreas"
 import { copperLayers, layerLabel } from "../model/stack"
 import { formatLength } from "../model/rules"
 import type { CopperLayer, Project, Zone, ZoneConnection } from "../model/types"
@@ -28,6 +31,72 @@ const KEEPOUTS: { key: keyof NonNullable<Zone["keepout"]>; label: string; hint: 
   { key: "pour", label: "Copper pours", hint: "Pours keep out of the area, with no gap" },
   { key: "footprints", label: "Parts", hint: "No part may sit in the area" },
 ]
+
+/** What a filled area does, by the layers it is on: only the mask, paste, silkscreen and board edge have a Gerber. */
+function filledAreaHelp(layers: readonly string[]): string {
+  const used = (re: RegExp) => layers.some((n) => re.test(n))
+  const does = [used(/\.Mask$/) ? "On the mask it opens the solder mask" : "", used(/\.Paste$/) ? "on the paste layer it is stencil" : "", used(/\.SilkS$/) ? "on the silkscreen it is ink" : "", used(/^Edge\.Cuts$/) ? "on the board edge it is cut" : ""].filter(Boolean)
+  const lead = does.length ? `${does.join(", ").replace(/^./, (c) => c.toUpperCase())}. ` : ""
+  const plots = layers.length > 0 && layers.every((n) => PLOTTED_LAYERS.test(n)) ? "It plots on the Gerber of its layer." : layers.some((n) => PLOTTED_LAYERS.test(n)) ? "It plots on the Gerber of the layers that have one." : "The editor draws and keeps it but has no Gerber for its layer."
+  return `The area is filled again as soon as the zone or the board changes. ${lead}${plots}`
+}
+
+/** X20: whose parts a rule area holds: the parts of a sheet, of a component class, or in a PCB group. The parts it picks have to sit inside it. */
+function PlacementFields({ project, zone, patch }: { project: Project; zone: Zone; patch: (p: ZonePatch) => void }) {
+  const p = zone.placement
+  const names = {
+    sheet: sheetNames(project),
+    class: [...new Set(project.components.flatMap((c) => c.classes ?? []))].sort(),
+    group: [...new Set((project.groups ?? []).map((g) => g.name).filter(Boolean))].sort(),
+  }
+  const report = areaReport(project, zone)
+  return (
+    <div className="space-y-1.5 pt-1">
+      <Field label="Holds the parts of">
+        <select className="field h-8" aria-label="Placement target kind" value={p?.by ?? "none"} onChange={(e) => patch({ placement: e.target.value === "none" ? undefined : { by: e.target.value as "sheet" | "class" | "group", name: "" } })}>
+          <option value="none">No one</option>
+          {PLACEMENT_BY.map((k) => (
+            <option key={k.value} value={k.value}>
+              {k.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {p && (
+        <>
+          <Field label={p.by === "sheet" ? "Sheet path" : p.by === "class" ? "Class name" : "Group name"}>
+            <input
+              key={`${p.by}:${p.name}`}
+              className="field mono h-8"
+              aria-label="Placement target"
+              list="placement-names"
+              defaultValue={p.name}
+              placeholder={p.by === "sheet" ? "/Power/" : p.by === "class" ? "Power" : "Group name"}
+              onBlur={(e) => e.target.value !== p.name && patch({ placement: { ...p, name: e.target.value } })}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+            />
+            <datalist id="placement-names">
+              {names[p.by].map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          </Field>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[12.5px] text-ink-2" title="Off: the area keeps its target but places no one">
+              Parts have to sit in it
+            </span>
+            <Switch label="Parts have to sit in it" checked={!p.off} onChange={(on) => patch({ placement: { by: p.by, name: p.name, ...(on ? {} : { off: true as const }) } })} />
+          </div>
+          {!p.off && (
+            <p className="text-[12px] text-ink-3" aria-label="Placement report">
+              {p.name === "" ? `Name the ${p.by} to pick parts.` : `Picks ${report.picked} part${report.picked === 1 ? "" : "s"}${report.outside.length ? `; outside it: ${report.outside.slice(0, 8).join(", ")}${report.outside.length > 8 ? " and more" : ""}` : report.picked ? ", all inside" : ""}. Layout and Sakura keep them in.`}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
 
 /** What is selected on the board when it is a zone: a pour or a keepout of its own shape. */
 export function ZoneInspector({ project, zone }: { project: Project; zone: Zone }) {
@@ -58,7 +127,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
   const flat = isOtherZone(zone) && !rule
   const fmt = (mm: number) => `${formatLength(mm, unit, true)}`
   const row = (label: string, hint: string, control: React.ReactNode) => (
-    <div className="flex items-center justify-between gap-3">
+    <div key={label} className="flex items-center justify-between gap-3">
       <span className="text-[12.5px] text-ink-2" title={hint}>
         {label}
       </span>
@@ -66,7 +135,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
     </div>
   )
   return (
-    <Section title={rule ? "Keepout" : flat ? "Filled area" : zone.teardrop ? "Teardrop zone" : "Copper zone"}>
+    <Section title={rule ? (zone.placement ? "Placement area" : "Keepout") : flat ? "Filled area" : zone.teardrop ? "Teardrop zone" : "Copper zone"}>
       <Field label="Name">
         <input key={zone.name ?? ""} className="field h-8" aria-label="Zone name" defaultValue={zone.name ?? ""} placeholder="No name" onBlur={(e) => e.target.value !== (zone.name ?? "") && patch({ name: e.target.value || undefined })} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
       </Field>
@@ -126,6 +195,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
               />,
             ),
           )}
+          <PlacementFields project={project} zone={zone} patch={patch} />
         </div>
       ) : flat ? (
         <>
@@ -196,13 +266,15 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
               </Field>
             )}
           </div>
-          <Field label="Fill">
-            <select className="field h-8" aria-label="Fill style" value={zone.hatch ? "hatch" : "solid"} onChange={(e) => patch({ hatch: e.target.value === "hatch" ? (zone.hatch ?? { thickness: 1, gap: 1.5 }) : undefined })}>
-              <option value="solid">Solid</option>
-              <option value="hatch">Hatched</option>
-            </select>
-          </Field>
-          {zone.hatch && (
+          {!zone.teardrop && (
+            <Field label="Fill">
+              <select className="field h-8" aria-label="Fill style" value={zone.hatch ? "hatch" : "solid"} onChange={(e) => patch({ hatch: e.target.value === "hatch" ? (zone.hatch ?? { thickness: 1, gap: 1.5 }) : undefined })}>
+                <option value="solid">Solid</option>
+                <option value="hatch">Hatched</option>
+              </select>
+            </Field>
+          )}
+          {zone.hatch && !zone.teardrop && (
             <div className="grid grid-cols-3 gap-2">
               <Field label="Line width">
                 <LengthInput min={0.01} value={zone.hatch.thickness} ariaLabel="Hatch line width" onCommit={(v) => v !== null && patch({ hatch: { ...zone.hatch!, thickness: v } })} />
@@ -218,6 +290,9 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
                   }} />
               </Field>
             </div>
+          )}
+          {zone.hatch && !zone.teardrop && hatchTooFine(zoneRings(zone).slice(0, 1).map(ring), zone.hatch, set.minWidth) && (
+            <p className="text-[12px] text-ink-3" role="status">This grid has more than {MAX_HOLES.toLocaleString("en-US")} holes over the zone, more than the editor cuts: the zone is filled solid. Make the holes or the zone larger.</p>
           )}
           <Field label="Copper no net copper touches">
             <select
@@ -244,7 +319,7 @@ export function ZoneInspector({ project, zone }: { project: Project; zone: Zone 
       <Row label="Area" value={`${facts.area.toFixed(1)} mm²`} mono />
       {!rule && !flat && <Row label="Copper" value={facts.empty ? "none: nothing to fill here" : `${areaMm2OfZone(facts.copper).toFixed(1)} mm² in ${facts.pieces} piece${facts.pieces === 1 ? "" : "s"}`} />}
       {flat && <Row label="Filled" value={filledMm2 === 0 ? "nothing: the area is outside the board or thinner than the minimum" : `${filledMm2.toFixed(1)} mm²`} />}
-      {flat && <p className="text-[12px] text-ink-3">The area is filled again as soon as the zone or the board changes. On the mask it opens the solder mask, on the paste layer it is stencil, on the silkscreen it is ink; it plots on the Gerber of its layer.</p>}
+      {flat && <p className="text-[12px] text-ink-3">{filledAreaHelp(others)}</p>}
       {!rule && !flat && <p className="text-[12px] text-ink-3">The copper is filled again as soon as the zone or the copper round it changes (as you let go of a drag): gap {fmt(set.clearance)}, thinnest copper {fmt(set.minWidth)}.</p>}
       <p className="text-[12px] text-ink-3">Drag a square to move a corner, a dot on an edge to add one, the zone's edge to move the whole zone, right-click a corner to remove it. Delete removes the zone.</p>
       <div className="flex items-center justify-between gap-3">

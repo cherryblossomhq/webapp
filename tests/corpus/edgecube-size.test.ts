@@ -15,7 +15,6 @@ describe.skipIf(!CORPUS || !existsSync(DIR))("EdgeCubeH3 size", () => {
     const r = importKicadBoard(readFileSync(join(DIR, "EdgeCubeH3.kicad_pcb")), { limitBytes: Number.MAX_SAFE_INTEGER })
     if (r.status !== "imported") throw new Error(`${r.status}: ${r.message}`)
     const bytes = new TextEncoder().encode(serializeProject(r.project)).length
-    console.log(`EdgeCubeH3 stored size: ${bytes} bytes (limit ${STORED_PROJECT_LIMIT_BYTES})`)
-    expect(bytes).toBeLessThan(STORED_PROJECT_LIMIT_BYTES)
+    expect(bytes, `EdgeCubeH3 stored size: ${bytes} bytes (limit ${STORED_PROJECT_LIMIT_BYTES})`).toBeLessThan(STORED_PROJECT_LIMIT_BYTES)
   })
 })

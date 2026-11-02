@@ -1,6 +1,7 @@
 import { dist, emptyBox, expandBox, pointSegmentDistance, segmentSegmentDistance, type Box } from "../lib/geometry"
-import type { BoardShape, ShapeDash, ShapeGeometry, ShapePoint, Vec2 } from "./types"
 import { finite as num } from "../lib/guards"
+import { curveTangents, endingOutline, endingStyle, shortenArc, shortenCurve, shortenSegment, type Bezier } from "./lineEnds"
+import type { BoardShape, LineEnd, ShapeDash, ShapeGeometry, ShapePoint, ShapeStyle, Vec2 } from "./types"
 
 // The geometry of a board or footprint drawing: its outline as exact pieces (lines, arcs, curves,
 // elliptical arcs), flattened where a tool needs points, mapped from a footprint's frame onto the
@@ -273,10 +274,93 @@ export function shapeRings(shape: ShapeGeometry, tol = FLATTEN_TOLERANCE): Vec2[
 
 /** The centre lines of a shape's stroke as lists of points: an open path is one, a closed path repeats its first point. */
 export function shapePolylines(shape: ShapeGeometry, tol = FLATTEN_TOLERANCE): Vec2[][] {
-  return shapePaths(shape).map((p) => {
+  return drawnPaths(shape).map((p) => {
     const pts = flattenPath(p, tol)
     return p.closed && pts.length ? [...pts, pts[0]] : pts
   })
+}
+
+// ---------- line ends (X24) ----------
+
+/** What one end of a drawing adds to it: the outline of an ending, closed unless `open` (an open arrow's two strokes), and the width of the stroke along it (none for a closed one that has no outline). */
+export interface LineEndPart {
+  outline: Vec2[]
+  open: boolean
+  width: number
+}
+
+const curveOf = (g: Extract<ShapeGeometry, { type: "curve" }>): Bezier => ({ p0: g.p0, c1: g.c1, c2: g.c2, p1: g.p1 })
+
+/** The ends of a drawing that has an ending KiCad draws: the point of each and the direction out of the line there. Only a line, an arc and a curve have ends. */
+function endPlaces(shape: ShapeGeometry & Partial<ShapeStyle>): { start: { at: Vec2; tangent: number }; end: { at: Vec2; tangent: number } } | null {
+  const ends = shape.ends
+  if (!ends || (!endingStyle(ends.start) && !endingStyle(ends.end))) return null
+  const straight = (a: Vec2, b: Vec2) => {
+    const t = Math.atan2(b.y - a.y, b.x - a.x)
+    return { start: { at: a, tangent: t + Math.PI }, end: { at: b, tangent: t } }
+  }
+  switch (shape.type) {
+    case "line":
+      return straight(shape.a, shape.b)
+    case "arc": {
+      const a = arcCircle(shape.start, shape.mid, shape.end)
+      if (!a) return straight(shape.start, shape.end)
+      // out of the arc is against the way round at its start and along it at its end, a quarter turn from the radius
+      const sign = a.sweep > 0 ? 1 : -1
+      return { start: { at: shape.start, tangent: a.a0 - (sign * Math.PI) / 2 }, end: { at: shape.end, tangent: a.a0 + a.sweep + (sign * Math.PI) / 2 } }
+    }
+    case "curve": {
+      const [start, end] = curveTangents(curveOf(shape), ends.start, ends.end, shape.width ?? 0)
+      return { start: { at: shape.p0, tangent: start }, end: { at: shape.p1, tangent: end } }
+    }
+    default:
+      return null
+  }
+}
+
+/** The ends of a drawing as KiCad draws, plots and keeps copper from them (`GetShapes`): none for a drawing with no ending, or one that is not a line, an arc or a curve. */
+export function lineEndParts(shape: BoardShape): LineEndPart[] {
+  const places = endPlaces(shape)
+  if (!places || !shape.ends) return []
+  const out: LineEndPart[] = []
+  for (const [ending, place] of [[shape.ends.start, places.start], [shape.ends.end, places.end]] as const) {
+    if (!ending || !endingStyle(ending)) continue
+    const outline = endingOutline(ending, place.at, place.tangent, shape.width)
+    if (!outline.length) continue
+    const open = ending.style === "arrow_open"
+    // An open arrow is stroked with its own outline width or else the line's; a closed ending is filled and has an outline only where it says a width.
+    out.push({ outline, open, width: open ? (ending.stroke && ending.stroke.width > 0 ? ending.stroke.width : shape.width) : (ending.stroke?.width ?? 0) })
+  }
+  return out
+}
+
+/**
+ * The paths a drawing's stroke is drawn along: its own, or with the line stopped short under its ends (`ShortenSegmentForEndings`, `ShortenArcForEndings`, `ShortenedBezierCurve`), which are drawn on their
+ * own (`lineEndParts`). A line the ends take all of has none.
+ */
+export function drawnPaths(shape: ShapeGeometry & Partial<ShapeStyle>): ShapePath[] {
+  const ends = shape.ends
+  if (!ends || (!endingStyle(ends.start) && !endingStyle(ends.end))) return shapePaths(shape)
+  const width = shape.width ?? 0
+  const line = (body: [Vec2, Vec2] | null): ShapePath[] => (body ? [{ closed: false, segs: [{ kind: "line", a: body[0], b: body[1] }] }] : [])
+  switch (shape.type) {
+    case "line":
+      return line(shortenSegment(shape.a, shape.b, ends.start, ends.end, width))
+    case "arc": {
+      const a = arcCircle(shape.start, shape.mid, shape.end)
+      if (!a) return line(shortenSegment(shape.start, shape.end, ends.start, ends.end, width))
+      const body = shortenArc(a.r, a.sweep, ends.start, ends.end, width)
+      if (!body) return []
+      const from = a.a0 + body.startBy
+      return [{ closed: false, segs: [{ kind: "arc", start: onCircle(a.c, a.r, from), mid: onCircle(a.c, a.r, from + body.sweep / 2), end: onCircle(a.c, a.r, from + body.sweep) }] }]
+    }
+    case "curve": {
+      const body = shortenCurve(curveOf(shape), ends.start, ends.end, width)
+      return body ? [{ closed: false, segs: [{ kind: "bezier", p0: body.p0, c1: body.c1, c2: body.c2, p1: body.p1 }] }] : []
+    }
+    default:
+      return shapePaths(shape)
+  }
 }
 
 // ---------- extent ----------
@@ -337,7 +421,18 @@ export function pathsBox(paths: ShapePath[]): Box {
 export function shapeInkBox(shape: BoardShape): Box {
   const b = shapeBox(shape)
   const h = shape.width / 2
-  return { minX: b.minX - h, minY: b.minY - h, maxX: b.maxX + h, maxY: b.maxY + h }
+  const ink = { minX: b.minX - h, minY: b.minY - h, maxX: b.maxX + h, maxY: b.maxY + h }
+  // the ends of a line reach past its width (an arrow's wings)
+  for (const part of lineEndParts(shape)) {
+    const g = part.width / 2
+    for (const p of part.outline) {
+      ink.minX = Math.min(ink.minX, p.x - g)
+      ink.minY = Math.min(ink.minY, p.y - g)
+      ink.maxX = Math.max(ink.maxX, p.x + g)
+      ink.maxY = Math.max(ink.maxY, p.y + g)
+    }
+  }
+  return ink
 }
 
 // ---------- mapping onto another frame ----------
@@ -428,29 +523,108 @@ export interface ShapeCopper {
   half: number
   /** The ring and holes a filled shape covers (empty for one that is only outlined). */
   fill: Vec2[][]
+  /** The ends of a line that has them (X24), each as copper of its own: an ending is filled and outlined by a width of its own. */
+  parts?: ShapeCopper[]
 }
 
 export function shapeCopper(shape: BoardShape, tol = FLATTEN_TOLERANCE): ShapeCopper {
   const edges: [Vec2, Vec2][] = []
   for (const line of shapePolylines(shape, tol)) for (let i = 0; i + 1 < line.length; i++) edges.push([line[i], line[i + 1]])
-  return { edges, half: shape.width / 2, fill: shape.fill ? shapeRings(shape, tol) : [] }
+  const copper: ShapeCopper = { edges, half: shape.width / 2, fill: shape.fill ? shapeRings(shape, tol) : [] }
+  const parts = lineEndParts(shape).map((part): ShapeCopper => {
+    const ring = part.open ? part.outline : [...part.outline, part.outline[0]]
+    return { edges: ring.slice(1).map((p, i): [Vec2, Vec2] => [ring[i], p]), half: part.width / 2, fill: part.open ? [] : [part.outline] }
+  })
+  return parts.length ? { ...copper, parts } : copper
 }
+
+/** A shape's copper and its ends' as pieces each with its own half width. */
+const pieces = (c: ShapeCopper): ShapeCopper[] => [c, ...(c.parts ?? [])]
 
 /** Distance from a point to the copper of a shape, 0 inside it. */
 export function pointShapeDistance(p: Vec2, c: ShapeCopper): number {
-  if (c.fill.length && pointInRings(p, c.fill)) return 0
   let best = Infinity
-  for (const [a, b] of c.edges) best = Math.min(best, pointSegmentDistance(p, a, b))
-  return Math.max(0, best - c.half)
+  for (const piece of pieces(c)) {
+    if (piece.fill.length && pointInRings(p, piece.fill)) return 0
+    for (const [a, b] of piece.edges) best = Math.min(best, Math.max(0, pointSegmentDistance(p, a, b) - piece.half))
+  }
+  return best
 }
 
-/** Distance between the copper of two shapes, 0 where they touch or one lies inside the other. */
-export function shapeShapeDistance(x: ShapeCopper, y: ShapeCopper): number {
-  if (x.fill.length && y.edges.length && pointInRings(y.edges[0][0], x.fill)) return 0
-  if (y.fill.length && x.edges.length && pointInRings(x.edges[0][0], y.fill)) return 0
+/** A piece's edges by their boxes, in the order of their left sides, and the widest edge across: what finds the edges near another (`shapeShapeDistance`). */
+interface EdgeIndex {
+  order: number[]
+  minX: number[]
+  maxX: number[]
+  minY: number[]
+  maxY: number[]
+  span: number
+}
+
+const edgeIndexes = new WeakMap<ShapeCopper, EdgeIndex>()
+
+function edgeIndex(c: ShapeCopper): EdgeIndex {
+  let ix = edgeIndexes.get(c)
+  if (ix) return ix
+  const order = c.edges.map((_, i) => i).sort((i, j) => Math.min(c.edges[i][0].x, c.edges[i][1].x) - Math.min(c.edges[j][0].x, c.edges[j][1].x))
+  const at = (f: (a: Vec2, b: Vec2) => number) => order.map((i) => f(c.edges[i][0], c.edges[i][1]))
+  ix = {
+    order,
+    minX: at((a, b) => Math.min(a.x, b.x)),
+    maxX: at((a, b) => Math.max(a.x, b.x)),
+    minY: at((a, b) => Math.min(a.y, b.y)),
+    maxY: at((a, b) => Math.max(a.y, b.y)),
+    span: c.edges.reduce((m, [a, b]) => Math.max(m, Math.abs(a.x - b.x)), 0),
+  }
+  edgeIndexes.set(c, ix)
+  return ix
+}
+
+/** Pieces with fewer edge pairs than this are measured pair by pair: the index costs more than it saves. */
+const INDEXED_PAIRS = 4096
+
+/**
+ * Distance between the copper of two shapes, 0 where they touch or one lies inside the other. With a `limit` the distance is exact only below it:
+ * edges farther apart than that are not measured, and a pair with none nearer gives a number at least the limit (Infinity). The checks ask with one
+ * (touching, a clearance); measuring every edge against every other took over a minute on a board of copper polygons of a thousand corners.
+ */
+export function shapeShapeDistance(x: ShapeCopper, y: ShapeCopper, limit = Infinity): number {
   let best = Infinity
-  for (const [a, b] of x.edges) for (const [p, q] of y.edges) best = Math.min(best, segmentSegmentDistance(a, b, p, q))
-  return Math.max(0, best - x.half - y.half)
+  for (const u of pieces(x)) {
+    for (const v of pieces(y)) {
+      if (u.fill.length && v.edges.length && pointInRings(v.edges[0][0], u.fill)) return 0
+      if (v.fill.length && u.edges.length && pointInRings(u.edges[0][0], v.fill)) return 0
+      if (!Number.isFinite(limit) || u.edges.length * v.edges.length <= INDEXED_PAIRS) {
+        for (const [a, b] of u.edges) for (const [p, q] of v.edges) best = Math.min(best, Math.max(0, segmentSegmentDistance(a, b, p, q) - u.half - v.half))
+        continue
+      }
+      // Each edge of the smaller piece against the edges of the other whose boxes come within reach of its own: the rest are farther than the limit.
+      const reach = limit + u.half + v.half
+      const [few, many] = u.edges.length <= v.edges.length ? [u, v] : [v, u]
+      const ix = edgeIndex(many)
+      const n = ix.order.length
+      for (const [a, b] of few.edges) {
+        const x0 = Math.min(a.x, b.x) - reach
+        const x1 = Math.max(a.x, b.x) + reach
+        const y0 = Math.min(a.y, b.y) - reach
+        const y1 = Math.max(a.y, b.y) + reach
+        // The first edge whose left side is past x0 less the widest edge: none before it reaches x0.
+        let lo = 0
+        let hi = n
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if (ix.minX[mid] < x0 - ix.span) lo = mid + 1
+          else hi = mid
+        }
+        for (let i = lo; i < n && ix.minX[i] <= x1; i++) {
+          if (ix.maxX[i] < x0 || ix.minY[i] > y1 || ix.maxY[i] < y0) continue
+          const [p, q] = many.edges[ix.order[i]]
+          best = Math.min(best, Math.max(0, segmentSegmentDistance(a, b, p, q) - u.half - v.half))
+        }
+      }
+    }
+  }
+  return best
 }
 
 // ---------- dashes ----------
@@ -538,7 +712,7 @@ export function dashShape(shape: BoardShape): DashPiece[] {
   const pattern = dashPattern(shape.dash, shape.width)
   const out: DashPiece[] = []
   const restart = shape.type === "line" || shape.type === "arc" || shape.type === "rect" || shape.type === "circle"
-  for (const path of shapePaths(shape)) {
+  for (const path of drawnPaths(shape)) {
     if (restart) {
       for (const s of path.segs) {
         if (s.kind === "arc") dashArc(s, pattern, out)
@@ -561,7 +735,7 @@ const f6 = (n: number) => String(Math.round(n * 1e6) / 1e6)
  * counter-clockwise, which is what SVG's sweep flag 1 means in a y-up user space).
  */
 export function shapeSvgPath(shape: ShapeGeometry): string {
-  return pathsSvgPath(shapePaths(shape))
+  return pathsSvgPath(drawnPaths(shape))
 }
 
 /** SVG path data for some paths (an outline's), in the frame they are held in. */
@@ -603,7 +777,7 @@ export function pathsSvgPath(paths: ShapePath[]): string {
 
 /** Draw a shape's outline into a 2D canvas context whose user space is the board's (y up). Strokes and fills are the caller's. */
 export function shapeCanvasPath(ctx: CanvasPathLike, shape: ShapeGeometry) {
-  pathsCanvasPath(ctx, shapePaths(shape))
+  pathsCanvasPath(ctx, drawnPaths(shape))
 }
 
 type CanvasPathLike = { moveTo(x: number, y: number): void; lineTo(x: number, y: number): void; arc(x: number, y: number, r: number, a0: number, a1: number, anticlockwise?: boolean): void; ellipse(x: number, y: number, rx: number, ry: number, rot: number, a0: number, a1: number, anticlockwise?: boolean): void; bezierCurveTo(a: number, b: number, c: number, d: number, e: number, f: number): void; closePath(): void }
@@ -698,5 +872,38 @@ export function normalizeShape(raw: unknown, validLayer: (name: string) => boole
     ...(r.fill === true && isClosedShape(geom) ? { fill: true as const } : {}),
     ...(typeof r.net === "string" && r.net.trim() ? { net: r.net } : {}),
     ...(r.locked === true ? { locked: true as const } : {}),
+    ...(lineEnds(r.ends) ? { ends: lineEnds(r.ends) } : {}),
+    ...(lineColor(r.color) ? { color: lineColor(r.color) } : {}),
   }
+}
+
+const NON_NEGATIVE = (v: unknown): v is number => num(v) && v >= 0
+
+/** One end of a line as it reads (X24): a style word and the numbers that read; null when there is no style. */
+function lineEnd(raw: unknown): LineEnd | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.style !== "string" || !r.style) return null
+  const s = r.stroke && typeof r.stroke === "object" ? (r.stroke as Record<string, unknown>) : null
+  return {
+    style: r.style,
+    ...(NON_NEGATIVE(r.length) ? { length: r.length } : {}),
+    ...(NON_NEGATIVE(r.width) ? { width: r.width } : {}),
+    ...(s && NON_NEGATIVE(s.width) ? { stroke: { width: s.width, ...(typeof s.dash === "string" && DASHES.has(s.dash) ? { dash: s.dash as ShapeDash } : {}) } } : {}),
+  }
+}
+
+/** A drawing's line ends as they read (X24); undefined when neither end does. */
+function lineEnds(raw: unknown): ShapeStyle["ends"] {
+  if (!raw || typeof raw !== "object") return undefined
+  const start = lineEnd((raw as Record<string, unknown>).start)
+  const end = lineEnd((raw as Record<string, unknown>).end)
+  return start || end ? { ...(start ? { start } : {}), ...(end ? { end } : {}) } : undefined
+}
+
+/** A drawing's colour as it reads (X24): red, green and blue from 0 to 255 and an opacity from 0 to 1; undefined when it does not. */
+function lineColor(raw: unknown): ShapeStyle["color"] {
+  if (!Array.isArray(raw) || raw.length !== 4 || !raw.every(num)) return undefined
+  const [r, g, b, a] = raw as number[]
+  return [r, g, b].every((c) => c >= 0 && c <= 255) && a >= 0 && a <= 1 ? [r, g, b, a] : undefined
 }

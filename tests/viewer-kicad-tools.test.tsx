@@ -40,7 +40,7 @@ describe("a viewer's toolbars", () => {
   const SCHEMATIC_GROUPS: Record<string, string[]> = { "Bus tools": ["Bus", "Bus entry"], "Block and sheet tools": ["Block", "Sheet"], "Drawing tools": ["Line", "Rectangle"] }
   const PCB = ["Route trace", "Place via", "Re-pack parts", "Autoroute"]
   const PCB_GROUPS: Record<string, string[]> = {
-    "Zone tools": ["Draw a copper zone", "Draw a keepout"],
+    "Zone tools": ["Draw a copper zone", "Draw a keepout", "Draw a placement area"],
     "Drawing tools": ["Draw line", "Draw arc", "Draw circle", "Draw rectangle", "Draw polygon", "Cut a slot"],
     "Text and dimension tools": ["Add text", "Add dimension", "Add reference image"],
   }

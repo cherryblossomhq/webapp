@@ -4,6 +4,7 @@ import type { ImportReport } from "../board/report"
 import type { KicadBoard } from "../board/types"
 import { KICAD_MAX_ERROR } from "../board/netClassImport"
 import type { KicadPro } from "./pro"
+import { isObject } from "../../../lib/guards"
 
 // X10 from the project file side: the net classes, their nets and patterns, and the board's design rules of a KiCad 6 or later
 // `.kicad_pro`, written into `Project.rules` the way a KiCad 4 or 5 board's own classes are (`board/netClassImport.ts`).
@@ -23,7 +24,6 @@ import type { KicadPro } from "./pro"
 /** The keys of `board.design_settings.rules` that are carried into `DesignRules` (the rows of `PRO_RULES` that say "used" name the same). */
 export const CARRIED_RULE_KEYS = ["min_clearance", "min_track_width", "min_through_hole_diameter", "min_via_diameter", "min_via_annular_width", "min_hole_to_hole", "min_copper_edge_clearance", "max_error", "min_microvia_diameter", "min_microvia_drill", "allow_microvias", "allow_blind_buried_vias"] as const
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
 const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0
 const nonNegative = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0
 

@@ -2,7 +2,7 @@ import { create } from "zustand"
 import { getConnectivity, getErc } from "../model/connectivityCache"
 import type { SchematicConnectivity } from "../model/connectivity"
 import type { ErcFinding } from "../model/erc"
-import { analyzePcb, type PcbAnalysis } from "../model/pcb"
+import { analyzePcb, followDrag, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
@@ -189,10 +189,17 @@ export function stopZoneFills(): void {
  * asked again. While something is being dragged it is `getPcbAnalysis`'s, which keeps the last fill until the drop.
  */
 export function getLiveAnalysis(p: Project): PcbAnalysis {
+  // While something is dragged on a big board the views are given the analysis the drag began with, its moved copper where it is now
+  // (`followDrag`): analysing the whole board for every frame of the drag took 18 s a frame on a board of 1,566 parts. A small board is analysed
+  // whole, so its checks follow the drag.
+  const base = useProjectStore.getState().transientBase
+  if (base !== null && base !== p) {
+    const start = getLiveAnalysis(base)
+    if (start.items.length > DRAG_FOLLOW_ITEMS) return draggedAnalysis(p, base, start)
+  }
   if (!needsZoneEngine(p)) return getPcbAnalysis(p)
   const exact = pcbCache.get(p)
   if (exact) return exact
-  if (useProjectStore.getState().transientBase !== null) return getPcbAnalysis(p)
   const tick = useFillTick.getState().tick
   const hit = liveCache.get(p)
   if (hit && hit.tick === tick) return hit.value
@@ -204,6 +211,17 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
     pcbCache.set(p, value)
     noteCurrent(p, value)
   }
+  return value
+}
+
+/** The copper items past which a drag follows the analysis it began with instead of analysing every frame. */
+const DRAG_FOLLOW_ITEMS = 4000
+
+const dragFrames = new WeakMap<Project, PcbAnalysis>()
+
+function draggedAnalysis(p: Project, base: Project, start: PcbAnalysis): PcbAnalysis {
+  let value = dragFrames.get(p)
+  if (!value) dragFrames.set(p, (value = followDrag(start, base, p, getConnectivity(base))))
   return value
 }
 

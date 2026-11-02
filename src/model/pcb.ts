@@ -833,6 +833,34 @@ export function derivedCopperNets(project: Project, sch: SchematicConnectivity, 
   return { traceNet, viaNet }
 }
 
+/**
+ * The analysis of a board while something on it is dragged: `from`, the analysis of `base` (the board as the drag began), with the copper of what
+ * moved where it is now. Its connections, checks and pours stay those of the start (the drop analyses the board again, and refills its pours), and
+ * an unrouted connection that ends on a pad that moved follows the pad. CERN's Macbeth (1,566 parts) took 18 s a frame to analyse whole.
+ */
+export function followDrag(from: PcbAnalysis, base: Project, project: Project, sch: SchematicConnectivity): PcbAnalysis {
+  const before = new Map(base.components.map((c) => [c.id, c]))
+  const components = project.components.filter((c) => before.get(c.id) !== c)
+  const traces = new Set(base.traces)
+  const vias = new Set(base.vias)
+  const movedTraces = project.traces.filter((t) => !traces.has(t))
+  const movedVias = project.vias.filter((v) => !vias.has(v))
+  if (!components.length && !movedTraces.length && !movedVias.length) return from
+  const fresh = new Map(buildCopperItems({ ...project, components, traces: movedTraces, vias: movedVias }, sch).map((it) => [it.id, it]))
+  // Where each pad that moved was, and is: an unrouted connection's end is a pad's centre (`itemPoint`).
+  const moves = new Map<string, Vec2>()
+  const items = from.items.map((it) => {
+    const now = fresh.get(it.id)
+    if (!now) return it
+    if (it.kind === "pad" && now.kind === "pad" && (it.pad.x !== now.pad.x || it.pad.y !== now.pad.y)) moves.set(`${it.pad.x},${it.pad.y}`, { x: now.pad.x, y: now.pad.y })
+    return now
+  })
+  const had = new Set(from.items.map((it) => it.id))
+  for (const [id, it] of fresh) if (!had.has(id)) items.push(it)
+  const follow = (q: Vec2) => moves.get(`${q.x},${q.y}`) ?? q
+  return { ...from, items, ratsnest: moves.size ? from.ratsnest.map((r) => ({ ...r, a: follow(r.a), b: follow(r.b) })) : from.ratsnest }
+}
+
 /** The net id of each copper item (by index) as the copper alone connects it, which is what a pour is filled against (and what a kept fill's signature reads, `zoneKeep.ts`). */
 export function copperNetOf(project: Project, sch: SchematicConnectivity, copper: CopperItem[]): (i: number) => string | null {
   const pre = connectItems(copper, netTies(project, copper))

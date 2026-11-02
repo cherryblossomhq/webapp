@@ -1,6 +1,8 @@
 import { kicadFontLoaded, loadKicadFont } from "../../lib/kicadFont/load"
 import type { Project } from "../../model/types"
+import { registerProjectParts } from "../../model/customParts"
 import { imageBytes, loadImage } from "../../store/imageFiles"
+import { projectApi } from "../../store/projectStore"
 import { boardModels, contentHash, unpackOriginal, type OriginalFile } from "./pack"
 import { fileVersion } from "./sexp"
 import { neutralText, patchFile, type Kind } from "./patch"
@@ -129,9 +131,16 @@ async function makeBefore(id: string, files: OriginalFile[], record: { name?: st
   }
   // The model files kept with the board are found again, as the import found them, so the project read again holds the same models.
   const models = board ? (await boardModels(files.map((f) => ({ path: f.path, size: f.data.length, read: async () => f.data })), board.path, board.data)).given : undefined
-  const r = importKicadProject(files, { name: record.name, source: record.source, limitBytes: Number.MAX_SAFE_INTEGER, ...(models?.size ? { models } : {}) })
-  if (r.status !== "imported") return `the original files could not be read again (${r.message})`
-  const written = await write(r.project)
+  // The import registers the original's lands under the names the open project's have, one the user edited among them: the open project's go back once it is written.
+  let written: Awaited<ReturnType<Write>>
+  try {
+    const r = importKicadProject(files, { name: record.name, source: record.source, limitBytes: Number.MAX_SAFE_INTEGER, ...(models?.size ? { models } : {}) })
+    if (r.status !== "imported") return `the original files could not be read again (${r.message})`
+    written = await write(r.project)
+  } finally {
+    const open = projectApi().project
+    if (open) registerProjectParts(open)
+  }
   if (charsOf(written.files) <= CACHED_CHARS) {
     cache.set(id, written.files)
     while (cache.size > CACHED_PROJECTS || [...cache.values()].reduce((n, f) => n + charsOf(f), 0) > CACHED_CHARS) cache.delete(cache.keys().next().value!)

@@ -7,7 +7,9 @@ import { saveImported } from "../src/kicadImport/save"
 import { connectAnalytics } from "../src/kicadImport/analytics"
 import type { Project } from "../src/model/types"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { getFootprint } from "../src/model/footprints"
 import { connectModelFiles, modelFileId, type ModelFileStore } from "../src/store/modelFiles"
+import { useProjectStore } from "../src/store/projectStore"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { entry, fakeStorage, stubLocalStorage } from "./kicad-import-helpers"
 import { importKept } from "./kicad-keep-corpus.test"
@@ -115,6 +117,25 @@ describe("the user's own files go with the project", () => {
     expect(pcb).toBe(text.replace('(at 5 5)', '(at 7 5)'))
     expect(pcb).toContain("KICAD9_3DMODEL_DIR")
     expect(Object.keys(out.files)).toEqual(["blink.kicad_pcb"])
+  })
+
+  it("leaves the open project's own lands in place, one the user edited among them, after reading the original files again", async () => {
+    const { store } = memoryFiles()
+    connectModelFiles(store)
+    const { storage, created } = fakeStorage()
+    await saveImported(storage, await imported())
+    const p = parseProjectFile(created[0].content, { id: "p1", createdAt: 0, updatedAt: 0 })
+    const land = p.footprints![0]
+    const edited = { ...p, footprints: [{ ...land, pads: land.pads.map((pd, i) => (i === 0 ? { ...pd, width: 1.5 } : pd)) }, ...p.footprints!.slice(1)] }
+    useProjectStore.setState({ project: edited })
+    try {
+      expect(getFootprint(land.name).pads[0].width).toBe(1.5)
+      await kicadFiles(edited)
+      // the original's land, which the import read again under the same name, did not stay in its place
+      expect(getFootprint(land.name).pads[0].width).toBe(1.5)
+    } finally {
+      useProjectStore.setState({ project: null })
+    }
   })
 
   it("a project made in the editor has no original and exports as before", async () => {

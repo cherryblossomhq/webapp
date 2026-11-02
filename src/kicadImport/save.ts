@@ -68,10 +68,10 @@ export async function saveImported(storage: ProjectStorage, outcome: ImportOutco
         summary.notes = [...summary.notes.filter((n) => n.code !== "originals-kept"), { code: "originals-not-kept", object: "Your original KiCad files could not be kept", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The project is saved, and export writes every file from it.` }]
         continue
       }
-      // A 3D model the board came with is how a part looks, not what it is: the part keeps its model line for the export and draws its generated body.
+      // A 3D model the board came with is how a part looks, not what it is: the part keeps its model line for the export and draws its pads only.
       if (isModel) {
         modelsLost++
-        if (modelsLost === 1) summary.notes.push({ code: "models-not-kept", object: "3D model files of the board", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The parts they belong to show their generated bodies, and the export still names the files.` })
+        if (modelsLost === 1) summary.notes.push({ code: "models-not-kept", object: "3D model files of the board", why: `${e instanceof Error && e.message ? e.message : "The account's files are full"} The parts they belong to show their pads only, and the export still names the files.` })
         continue
       }
       throw new SaveRefused(`Couldn't keep the board's files (reference images and embedded fonts)${e instanceof Error && e.message ? `: ${e.message}` : ""}. Nothing was saved.`, "again")

@@ -90,13 +90,13 @@ export function readPost(raw: unknown): { front?: PostMachining; back?: PostMach
 }
 
 /** The X22 fields of a stored via, each repaired or left out when it does not read, so a via is never half of a backdrill. */
-function readViaX22(item: Record<string, unknown>, known?: (l: unknown) => boolean): Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> {
+function readViaX22(item: Record<string, unknown>): Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> {
   const out: Partial<Pick<Via, (typeof VIA_X22_KEYS)[number]>> = {}
   const protect = readProtection(item.protect)
   if (protect) out.protect = protect
-  const backdrill = readBackdrill(item.backdrill, known)
+  const backdrill = readBackdrill(item.backdrill)
   if (backdrill) out.backdrill = backdrill
-  const tertiary = readBackdrill(item.tertiary, known)
+  const tertiary = readBackdrill(item.tertiary)
   if (tertiary) out.tertiary = tertiary
   const post = readPost(item.post)
   if (post) out.post = post

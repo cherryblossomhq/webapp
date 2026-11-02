@@ -4,6 +4,7 @@ import { setLookRenderer, type Board3dView, type LookImage, type LookRenderer } 
 import { LOOK_SIZES, MAX_IMAGE_BYTES, MAX_LOOKS_PER_REQUEST, newLookBudget } from "../src/ai/vision/limits"
 import { addComponent, createProject } from "../src/model/ops"
 import type { Project } from "../src/model/types"
+import { connectModelFiles } from "../src/store/modelFiles"
 
 interface Drawn {
   kind: "svg" | "3d"
@@ -207,6 +208,21 @@ describe("the look tool", () => {
     expect((await look(circuit(), { target: "pcb", layers: ["gerber"] })).result).toContain("must be one of")
     expect((await look(circuit(), { target: "pcb", region: { x: 0, y: 0 } })).result).toContain("is required")
     expect(drawn).toHaveLength(0)
+  })
+
+  it("draws a sheet's picture kept in the file store, not the empty frame that stands in until its file is read", async () => {
+    const file = "ab".repeat(32)
+    const asked: string[] = []
+    connectModelFiles({ put: async () => file, get: async (id) => (asked.push(id), new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer) })
+    try {
+      const p: Project = { ...circuit(), drawings: [{ id: "pic", type: "image", x: 2, y: -3, scale: 1, file, px: 30, py: 20, ppi: 300 }] }
+      const out = await look(p, { target: "schematic" })
+      expect(out.isError, out.result).toBe(false)
+      expect(asked).toEqual([file])
+      expect(drawn[0].svg).toContain("data:image/png;base64,")
+    } finally {
+      connectModelFiles(null)
+    }
   })
 
   it("stops before drawing when the run is stopped", async () => {

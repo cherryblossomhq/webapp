@@ -111,6 +111,8 @@ async function lookFlat(whole: Project, target: "schematic" | "pcb", input: Tool
   let problems: number
   if (target === "schematic") {
     const m = measureSchematic(project)
+    // A sheet's pictures in the file store are read first, or the picture draws each as an empty frame.
+    if (pictureFiles(project).length) await preloadImages(project)
     svg = schematicSvg(project, box, size, m)
     numbers = describeSchematic(m)
     key = SCHEMATIC_KEY
@@ -118,7 +120,7 @@ async function lookFlat(whole: Project, target: "schematic" | "pcb", input: Tool
   } else {
     const m = measurePcb(project)
     // A board's reference images are read from the file store first, so the picture has them (a board with none waits for nothing).
-    if (project.images?.length || pictureFiles(project).length) await preloadImages(project)
+    if (project.images?.length) await preloadImages(project)
     const side = (input.side as PcbSide | undefined) ?? "both"
     const wanted = refList(input.layers)
     const extras = new Set<PcbExtra>(wanted ? wanted.filter((l): l is PcbExtra => (PCB_EXTRAS as string[]).includes(l)) : DEFAULT_PCB_EXTRAS)

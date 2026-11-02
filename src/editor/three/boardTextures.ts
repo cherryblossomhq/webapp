@@ -199,9 +199,16 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
     for (const poly of fill.polygons) ringsPath(ctx, poly)
     ctx.fill("evenodd")
   }
+  // Tracks of one width in one stroke: the copper is drawn under a blur, which a canvas applies to each draw, and a board of 5,800 tracks drawn one
+  // by one held its 3D view for minutes.
+  const byWidth = new Map<number, Vec2[][]>()
   for (const t of project.traces) {
-    if (t.layer === layer) strokePolylines(ctx, [t.points], t.width)
+    if (t.layer !== layer) continue
+    const paths = byWidth.get(t.width)
+    if (paths) paths.push(t.points)
+    else byWidth.set(t.width, [t.points])
   }
+  for (const [width, paths] of byWidth) strokePolylines(ctx, paths, width)
   ctx.beginPath()
   for (const pads of padsByComponent.values()) {
     for (const p of pads) if ((isNpth(p) ? (p.ring ?? []) : p.layers).includes(layer)) padPath(ctx, p)
@@ -349,7 +356,9 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   s.ctx.fillStyle = `rgb(${H_COPPER},${R_MASK},0)`
   s.ctx.strokeStyle = s.ctx.fillStyle
   drawCopper(s.ctx, input, side)
-  s.ctx.filter = blurPx(0.015)
+  // The silkscreen's own step is not blurred: half a pixel at most, which a canvas spends a blur on for each of a big board's thousands of
+  // drawings and texts.
+  s.ctx.filter = "none"
   s.ctx.globalCompositeOperation = "lighter"
   s.ctx.strokeStyle = `rgb(${H_SILK},${R_SILK - R_MASK},0)`
   for (const set of silkSets) strokePolylines(s.ctx, set.paths, set.width)

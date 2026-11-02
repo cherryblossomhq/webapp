@@ -158,10 +158,23 @@ function holePath(pad: WorldPad): THREE.Path {
 }
 
 /** Extruded slab with only its top (or bottom) cap and walls; z0 is the face it sits on. */
-function slab(shape: THREE.Shape, depth: number, z0: number, down: boolean): THREE.BufferGeometry {
-  const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 20 })
+function slab(shape: THREE.Shape, depth: number, z0: number, down: boolean, curveSegments = 20): THREE.BufferGeometry {
+  const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments })
   g.translate(0, 0, down ? z0 - depth : z0)
   return g
+}
+
+/**
+ * The curve segments for copper whose arcs are about `size` mm across. Three.js gives every arc twice as many points, a full circle and a pad's
+ * small corner alike, so at 20 a 1 mm pad was 160 points round and a via ring 40: the copper of a 2,970-part board was 10 million vertices, which
+ * held its 3D view for minutes. A 0.6 mm via ring is now 12 points round, a 1 mm pad's corner 4, a mounting hole's ring as before.
+ */
+const curveSegmentsFor = (size: number) => Math.max(2, Math.min(20, Math.round(size * 10)))
+
+/** The curve segments for a pad: by its round ends, its corners, and its drill. */
+function padCurveSegments(pad: WorldPad): number {
+  const ends = pad.shape === "circle" ? pad.width : pad.shape === "pill" ? Math.min(pad.width, pad.height) : pad.shape === "polygon" ? 0 : 2 * (pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12)
+  return curveSegmentsFor(Math.max(ends, pad.holeDiameter ?? 0))
 }
 
 function mergeInto(group: THREE.Group, geoms: THREE.BufferGeometry[], material: THREE.Material, name: string, shadows = true) {
@@ -228,7 +241,7 @@ function ringWalls(ring: readonly Vec2[], z0: number, z1: number, hole: boolean)
 /** The points round a drill: a circle, or a capsule for a slot. */
 function drillRing(h: { x: number; y: number; r: number; slot?: [Vec2, Vec2] }): Vec2[] {
   if (h.slot) return capsule(h.slot[0], h.slot[1], h.r).getPoints(12)
-  const n = Math.max(16, Math.min(64, Math.round(h.r * 40)))
+  const n = Math.max(8, 2 * curveSegmentsFor(2 * h.r))
   return Array.from({ length: n }, (_, i) => ({ x: h.x + h.r * Math.cos((2 * Math.PI * i) / n), y: h.y + h.r * Math.sin((2 * Math.PI * i) / n) }))
 }
 
@@ -427,9 +440,10 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     for (const p of pads) {
       if (!insideBoard(p.x, p.y, 0) || (isNpth(p) && !p.ring)) continue
       const sides = isNpth(p) ? p.ring! : p.layers
+      const segments = padCurveSegments(p)
       for (const shape of padShapes(p)) {
-        if (sides.includes("top")) copper.push(slab(shape, PAD_DEPTH, topZ, false))
-        if (sides.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true))
+        if (sides.includes("top")) copper.push(slab(shape, PAD_DEPTH, topZ, false, segments))
+        if (sides.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true, segments))
       }
     }
   }
@@ -447,7 +461,7 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
       if (!viaSide(v, side)) continue
       const ring = circleShape(v.x, v.y, v.diameter / 2)
       if (hole) ring.holes.push(circlePath(v.x, v.y, v.drill / 2))
-      copper.push(slab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom"))
+      copper.push(slab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom", curveSegmentsFor(v.diameter)))
     }
   }
   mergeInto(group, copper, metal, "copper", false)
@@ -461,7 +475,7 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     if (h.bare) continue
     if (viaAt.has(`${h.x},${h.y}`)) {
       for (const z of [t / 2 - 0.06, -t / 2 + 0.06]) {
-        const g = new THREE.CircleGeometry(h.r, 20)
+        const g = new THREE.CircleGeometry(h.r, 2 * curveSegmentsFor(2 * h.r))
         if (z < 0) g.rotateX(Math.PI)
         g.translate(h.x, h.y, z)
         plugs.push(g)

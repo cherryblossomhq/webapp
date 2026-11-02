@@ -30,7 +30,15 @@ export async function attachLcsc(outcome: ImportOutcome, lookup: LcscLookup | nu
     const entries: LcscEntry[] = [{ code: "lcsc-not-looked-up", object: `${n} part${n > 1 ? "s" : ""} with an LCSC number`, why: "The parts database is not available here, so they were not looked up and stay as the file has them.", count: n }]
     return { outcome: { ...outcome, summary: { ...summary, notes: [...summary.notes, ...entries.map(line)] } }, stats: null }
   }
-  const matched = await matchLcsc(project, lookup, options)
+  let matched: Awaited<ReturnType<typeof matchLcsc>>
+  try {
+    matched = await matchLcsc(project, lookup, options)
+  } catch (e) {
+    // The lookups' own failures are lines of the report already; anything else (a record the page could not apply) leaves the parts as the file has them, never the import stuck.
+    const n = project.components.filter((c) => lcscNumberOf(c)).length
+    const why = `${e instanceof Error ? e.message : String(e)} The parts stay as the file has them.`
+    return { outcome: { ...outcome, summary: { ...summary, notes: [...summary.notes, line({ code: "lcsc-lookup-failed", object: `LCSC lookup of ${n} part${n > 1 ? "s" : ""}`, why, count: n })] } }, stats: null }
+  }
   return { outcome: { ...outcome, project: await rehashed(matched.project), summary: { ...summary, notes: [...summary.notes, ...matched.entries.map(line)] } }, stats: matched.stats }
 }
 

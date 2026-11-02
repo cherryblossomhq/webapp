@@ -243,6 +243,12 @@ describe("limitOffer", () => {
     expect(limitOffer(ultra(onDemand(true, false)), "month")).toEqual({ upgrade: false, payAsYouGo: "enable" })
   })
 
+  it("doesn't ask to raise a cap that has room again", () => {
+    const raised = { ...account(), onDemand: { ...account().onDemand, enabled: true, capCents: 10_000, spentCents: 5_000 } }
+    expect(limitOffer(raised, "day")).toEqual({ upgrade: true, payAsYouGo: null })
+    expect(limitOffer(ultra(raised), "day")).toBeNull()
+  })
+
   it("offers nothing for the burst, an unknown window, or a plan with nothing to buy", () => {
     expect(limitOffer(onDemand(true, false), "minute")).toBeNull()
     expect(limitOffer(onDemand(true, false), undefined)).toBeNull()

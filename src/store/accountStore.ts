@@ -71,13 +71,14 @@ export interface LimitOffer {
  * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. The
  * minute burst is the same on every plan and pay-as-you-go never buys past it; the day and month
  * allowances are what Ultra raises and pay-as-you-go goes past. `onDemand` on `/api/v1/me` says
- * whether that is one click away, already on (so its cap is what stopped the request), or not
- * offered to this account at all.
+ * whether that is one click away, already on with its cap spent (what stopped the request), or not
+ * offered to this account at all. On with room left means the cap was raised since the refusal:
+ * trying again is the way past it, not raising it once more.
  */
 export function limitOffer(account: MeResponse | null, limit: RateLimitWindow | undefined): LimitOffer | null {
   if (!account || !limit || limit === "minute") return null
   const upgrade = account.plan.tier === "pro"
-  const { available, enabled } = account.onDemand
-  const payAsYouGo = !available ? null : enabled ? "raise" : "enable"
+  const { available, enabled, spentCents, capCents } = account.onDemand
+  const payAsYouGo = !available ? null : !enabled ? "enable" : spentCents >= capCents ? "raise" : null
   return upgrade || payAsYouGo ? { upgrade, payAsYouGo } : null
 }

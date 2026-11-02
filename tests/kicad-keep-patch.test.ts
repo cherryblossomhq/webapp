@@ -94,6 +94,13 @@ describe("patching the user's file with what changed", () => {
     expect(r.text).toBe(original)
   })
 
+  it("gives the file up to a full write, and never fails the export, when the patch itself goes wrong", () => {
+    const r = patchFile("board", original, written({}), "not a board")
+    expect(r.ok).toBe(false)
+    expect(r.text).toBe(original)
+    expect(r.reason).toMatch(/^the patch failed \(/)
+  })
+
   it("does not write the day the project was saved into the user's title block", () => {
     const titled = (date: string) => written({}).replace("  (general", `  (title_block (title "p") (date "${date}"))
   (general`)

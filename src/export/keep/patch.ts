@@ -661,8 +661,9 @@ export function patchFile(kind: Kind, original: string, before: string, after: s
     const text = patcher.run()
     return { ok: true, text, stats: patcher.stats }
   } catch (e) {
-    if (e instanceof Unpatchable) return { ok: false, text: original, reason: e.message, stats }
-    throw e
+    // Any other failure is a fault of the patch, never of the user's files: the file is written from the project, as for one that cannot be patched, and the
+    // export still happens.
+    return { ok: false, text: original, reason: e instanceof Unpatchable ? e.message : `the patch failed (${e instanceof Error ? e.message : String(e)})`, stats }
   }
 }
 

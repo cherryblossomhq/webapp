@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearHistory, runCopilot, type CopilotEvent } from "../src/ai/copilot"
 import { coalesceReasoningDetails, connectManagedAi } from "../src/ai/managedAi"
 import { createProject } from "../src/model/ops"
-import { useAccount } from "../src/store/accountStore"
+import { limitOffer, useAccount } from "../src/store/accountStore"
 import { DEFAULT_SETTINGS } from "../src/store/settings"
 import { useProjectStore } from "../src/store/projectStore"
 import { useUi } from "../src/store/uiStore"
@@ -146,8 +146,24 @@ describe("copilot over managed AI", () => {
 
     replies = [() => Response.json({ error: { type: "model_not_allowed", message: "vendor/large needs Ultra." } }, { status: 403 })]
     expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ kind: "plan", message: "vendor/large needs Ultra." })
-    // A plan refusal refreshes what the panel knows of the plan.
-    await vi.waitFor(() => expect(calls.filter((c) => c.url.endsWith("/me"))).toHaveLength(2))
+    // A limit and a plan refusal each refresh what the panel knows of the plan.
+    await vi.waitFor(() => expect(calls.filter((c) => c.url.endsWith("/me"))).toHaveLength(3))
+  })
+
+  it("offers Ultra and pay-as-you-go when Pro runs out, as the plan is after the refusal", async () => {
+    const limited = (limit: string) => () =>
+      Response.json({ error: { type: "rate_limited", message: "Daily limit reached (600 AI actions/day on the Pro plan).", limit } }, { status: 429 })
+    replies = [limited("day")]
+    expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ kind: "limit", offer: { upgrade: true, payAsYouGo: "enable" } })
+
+    // Pay-as-you-go turned on in another tab since: its spent cap is what stopped this one.
+    me = () => Response.json({ ...account(), onDemand: { available: true, enabled: true, capCents: 5_000, creditsThisPeriod: 10_000_000, spentCents: 5_000 } })
+    replies = [limited("month")]
+    expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ offer: { upgrade: true, payAsYouGo: "raise" } })
+
+    // The minute burst is the same on every plan: nothing to buy.
+    replies = [limited("minute")]
+    expect((await run("route it")).find((e) => e.type === "error")).not.toHaveProperty("offer")
   })
 
   it("doesn't ask the user to sign in for the upstream's own 401", async () => {
@@ -213,5 +229,24 @@ describe("reasoning replay", () => {
       { type: "reasoning.encrypted", index: 1, data: "y" },
       { type: "reasoning.text", index: 0, text: "c" },
     ])
+  })
+})
+
+describe("limitOffer", () => {
+  const onDemand = (available: boolean, enabled: boolean) => ({ ...account(), onDemand: { ...account().onDemand, available, enabled } })
+  const ultra = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "ultra", name: "Ultra" } })
+
+  it("offers Ultra to Pro, and pay-as-you-go where the account has it", () => {
+    expect(limitOffer(onDemand(true, false), "day")).toEqual({ upgrade: true, payAsYouGo: "enable" })
+    expect(limitOffer(onDemand(true, true), "month")).toEqual({ upgrade: true, payAsYouGo: "raise" })
+    expect(limitOffer(onDemand(false, false), "month")).toEqual({ upgrade: true, payAsYouGo: null })
+    expect(limitOffer(ultra(onDemand(true, false)), "month")).toEqual({ upgrade: false, payAsYouGo: "enable" })
+  })
+
+  it("offers nothing for the burst, an unknown window, or a plan with nothing to buy", () => {
+    expect(limitOffer(onDemand(true, false), "minute")).toBeNull()
+    expect(limitOffer(onDemand(true, false), undefined)).toBeNull()
+    expect(limitOffer(null, "day")).toBeNull()
+    expect(limitOffer(ultra(onDemand(false, false)), "day")).toBeNull()
   })
 })

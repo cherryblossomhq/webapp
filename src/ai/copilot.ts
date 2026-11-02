@@ -1,4 +1,4 @@
-import { copilotAccess, copilotModel, useAccount } from "../store/accountStore"
+import { copilotAccess, copilotModel, limitOffer, useAccount, type LimitOffer } from "../store/accountStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
@@ -54,7 +54,7 @@ export type CopilotEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; name: string; summary: string; isError: boolean; changed: boolean }
-  | { type: "error"; message: string; kind?: FailureKind }
+  | { type: "error"; message: string; kind?: FailureKind; offer?: LimitOffer }
   | { type: "done"; stopReason: string | null }
 
 interface Conversation {
@@ -304,7 +304,10 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
     if (signal?.aborted) {
       stopReason = "aborted"
     } else if (err instanceof ManagedAiError) {
-      onEvent({ type: "error", message: err.message, kind: err.kind })
+      // A limit offers what the plan and pay-as-you-go are now, not what they were when the panel
+      // opened: pay-as-you-go may have been turned on in another tab since.
+      const offer = err.kind === "limit" ? limitOffer((await useAccount.getState().load(true)) ?? useAccount.getState().account, err.limit) : null
+      onEvent({ type: "error", message: err.message, kind: err.kind, ...(offer && { offer }) })
       // The plan or session changed under the panel: show what it is now.
       if (err.kind === "signin" || err.kind === "plan") void useAccount.getState().load(true)
     } else {

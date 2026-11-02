@@ -1,4 +1,4 @@
-import type { MeResponse } from "@cherryblossom/api-contract"
+import type { MeResponse, RateLimitWindow } from "@cherryblossom/api-contract"
 import { create } from "zustand"
 import { fetchAccount, ManagedAiError } from "../ai/managedAi"
 
@@ -57,4 +57,27 @@ export function copilotModel(account: MeResponse, preferred: string | null): str
   const models = account.plan.allowedModels
   if (preferred && models.includes(preferred)) return preferred
   return models[models.length - 1] ?? null
+}
+
+/** The ways forward offered to a user refused on a plan limit. */
+export interface LimitOffer {
+  /** Ultra, for a Pro user: a larger allowance. */
+  upgrade: boolean
+  /** Turn pay-as-you-go on, or, when it is on and its monthly limit is spent, raise that limit. */
+  payAsYouGo: "enable" | "raise" | null
+}
+
+/**
+ * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. The
+ * minute burst is the same on every plan and pay-as-you-go never buys past it; the day and month
+ * allowances are what Ultra raises and pay-as-you-go goes past. `onDemand` on `/api/v1/me` says
+ * whether that is one click away, already on (so its cap is what stopped the request), or not
+ * offered to this account at all.
+ */
+export function limitOffer(account: MeResponse | null, limit: RateLimitWindow | undefined): LimitOffer | null {
+  if (!account || !limit || limit === "minute") return null
+  const upgrade = account.plan.tier === "pro"
+  const { available, enabled } = account.onDemand
+  const payAsYouGo = !available ? null : enabled ? "raise" : "enable"
+  return upgrade || payAsYouGo ? { upgrade, payAsYouGo } : null
 }

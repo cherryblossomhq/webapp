@@ -1,4 +1,4 @@
-import type { ApiErrorResponse, MeResponse } from "@cherryblossom/api-contract"
+import type { ApiErrorResponse, MeResponse, RateLimitWindow } from "@cherryblossom/api-contract"
 
 // The copilot's only way out to a model: Cherry Blossom's managed AI, `/api/v1` on the host.
 // Every request carries the signed-in user's WorkOS token; the proxy decides plan, model and
@@ -50,6 +50,8 @@ export class ManagedAiError extends Error {
     readonly type?: string,
     /** Seconds, from `Retry-After`. */
     readonly retryAfter?: number,
+    /** On a `429`: which allowance ran out, which decides what the copilot offers. */
+    readonly limit?: RateLimitWindow,
   ) {
     super(message)
     this.name = "ManagedAiError"
@@ -81,11 +83,14 @@ async function headers(traceId?: string): Promise<Record<string, string>> {
 export async function responseError(res: Response): Promise<ManagedAiError> {
   let type: string | undefined
   let message: string | undefined
+  let limit: RateLimitWindow | undefined
   let upstream = false
   try {
     const body = (await res.json()) as Partial<ApiErrorResponse> & { error?: { code?: string | number } }
     type = typeof body.error?.type === "string" ? body.error.type : undefined
     message = typeof body.error?.message === "string" ? body.error.message : undefined
+    const window: unknown = body.error?.limit
+    limit = window === "minute" || window === "day" || window === "month" ? window : undefined
     // OpenRouter's own errors pass through carrying a `code` and no `type`.
     upstream = !type && body.error?.code !== undefined
   } catch {
@@ -101,7 +106,7 @@ export async function responseError(res: Response): Promise<ManagedAiError> {
     return new ManagedAiError(message ?? "Your plan doesn't include Sakura.", "plan", res.status, type)
   }
   if (res.status === 429 || type === "rate_limited") {
-    return new ManagedAiError(message ?? "You've reached your plan's usage limit. Try again later.", "limit", res.status, type, retryAfter)
+    return new ManagedAiError(message ?? "You've reached your plan's usage limit. Try again later.", "limit", res.status, type, retryAfter, limit)
   }
   const fallback = res.status >= 500 ? "Sakura is unavailable right now. Try again in a moment." : `Request failed (${res.status}).`
   return new ManagedAiError(message ?? fallback, "error", res.status, type)

@@ -470,5 +470,14 @@ export interface ApiErrorResponse {
   error: {
     type: string;
     message: string;
+    /** On a managed-AI `429 rate_limited`: which allowance ran out. */
+    limit?: RateLimitWindow;
   };
 }
+
+/**
+ * The managed-AI window a `429` was refused on. `day` and `month` are the
+ * plan's allowance, which a bigger plan or pay-as-you-go raises; `minute` is a
+ * burst limit, the same on every plan and not for sale.
+ */
+export type RateLimitWindow = "minute" | "day" | "month";

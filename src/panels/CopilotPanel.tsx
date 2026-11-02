@@ -2,7 +2,7 @@ import { describeManagedModel } from "@cherryblossom/ai-models"
 import { AlertTriangle, ArrowUp, ArrowUpRight, Boxes, Check, CornerDownRight, Loader2, LogIn, PanelLeftClose, RotateCcw, Sparkles, Square } from "lucide-react"
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { managedAiHost, type FailureKind } from "../ai/managedAi"
-import { copilotAccess, copilotModel, useAccount, type CopilotAccess } from "../store/accountStore"
+import { copilotAccess, copilotModel, useAccount, type CopilotAccess, type LimitOffer } from "../store/accountStore"
 import { useCopilot, type Entry } from "../store/copilotStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
@@ -63,15 +63,18 @@ export function CopilotPanel() {
   const planGated = access === "upgrade" || access === "unavailable"
   const running = runningProject !== null
 
-  // "Upgrade to Pro" opens in a new tab: coming back to this one should find the plan bought.
+  const runningHere = !!projectId && runningProject === projectId
+  const last = entries[entries.length - 1]
+  const limitOffered = last?.kind === "error" && !!last.offer
+
+  // "Upgrade to Pro", "Upgrade to Ultra" and pay-as-you-go open in a new tab: coming back to this
+  // one should find the plan bought, and the picker with the models it adds.
   useEffect(() => {
-    if (!planGated) return
+    if (!planGated && !limitOffered) return
     const refresh = () => void useAccount.getState().load(true)
     window.addEventListener("focus", refresh)
     return () => window.removeEventListener("focus", refresh)
-  }, [planGated])
-  const runningHere = !!projectId && runningProject === projectId
-  const last = entries[entries.length - 1]
+  }, [planGated, limitOffered])
   const waiting = runningHere && (!last || last.kind === "user" || (last.kind === "tool" && last.status !== "running"))
 
   useEffect(() => {
@@ -205,14 +208,18 @@ function ModelPicker({ models, value, disabled }: { models: string[]; value: str
 
 const signIn = () => managedAiHost()?.signIn?.()
 
-function LinkButton({ href, children }: { href: string | undefined; children: ReactNode }) {
+function LinkButton({ href, quiet, children }: { href: string | undefined; quiet?: boolean; children: ReactNode }) {
   if (!href) return null
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex h-7 items-center gap-1 rounded-full bg-brand px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+      className={
+        quiet
+          ? "inline-flex h-7 items-center gap-1 rounded-full border border-brand/40 px-3 text-[12px] font-medium text-ink transition-colors hover:bg-brand-soft"
+          : "inline-flex h-7 items-center gap-1 rounded-full bg-brand px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+      }
     >
       {children}
       <ArrowUpRight size={13} />
@@ -314,6 +321,43 @@ function EmptyState({ gate, unreachable, onPick }: { gate: Gate; unreachable: bo
   )
 }
 
+/**
+ * A request refused on the plan's day or month allowance, with the ways past it: Ultra for a Pro
+ * user, pay-as-you-go for anyone whose plan has it. Both are the host's pages; pay-as-you-go is
+ * turned on there, beside the line that says what turning it on agrees to, never from here.
+ */
+function LimitNotice({ text, offer }: { text: string; offer: LimitOffer }) {
+  const host = managedAiHost()
+  const { upgrade, payAsYouGo } = offer
+  const next =
+    payAsYouGo === "raise"
+      ? upgrade
+        ? "Your pay-as-you-go limit for the month is spent too. Raise it, or upgrade to Ultra for a larger allowance."
+        : "Your pay-as-you-go limit for the month is spent too. Raise it to keep working."
+      : payAsYouGo === "enable"
+        ? upgrade
+          ? "Upgrade to Ultra for a larger allowance, or turn on pay-as-you-go to keep working and pay only for what you use past it."
+          : "Turn on pay-as-you-go to keep working and pay only for what you use past it."
+        : "Upgrade to Ultra for a larger allowance."
+  return (
+    <Notice
+      title="You've reached your plan's AI limit"
+      action={
+        <div className="flex flex-wrap gap-2">
+          {upgrade && <LinkButton href={host?.upgradeUrl}>Upgrade to Ultra</LinkButton>}
+          {payAsYouGo && (
+            <LinkButton href={host?.accountUrl} quiet={upgrade}>
+              {payAsYouGo === "raise" ? "Raise limit" : "Turn on pay-as-you-go"}
+            </LinkButton>
+          )}
+        </div>
+      }
+    >
+      {text} {next}
+    </Notice>
+  )
+}
+
 function FailureAction({ failure }: { failure?: FailureKind }) {
   const host = managedAiHost()
   if (failure === "signin" && host?.signIn) {
@@ -405,6 +449,7 @@ function EntryView({ entry, projectId, busy }: { entry: Entry; projectId: string
         </div>
       )
     case "error":
+      if (entry.offer) return <LimitNotice text={entry.text} offer={entry.offer} />
       return (
         <div className="flex items-start gap-1.5 rounded-[var(--radius-ctl)] bg-danger-soft px-2.5 py-2 text-[12px] text-danger">
           <AlertTriangle size={13} className="mt-px shrink-0" />

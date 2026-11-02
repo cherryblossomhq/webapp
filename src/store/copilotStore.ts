@@ -2,6 +2,7 @@ import { create } from "zustand"
 import { applySession, CLEANUP_APPLY_PROMPT, CLEANUP_PROMPT, CLEANUP_REQUEST, checkPlan, loosePartRefs, planningSession, type ProposedPlan } from "../ai/cleanupAi"
 import { clearHistory, runCopilot, type CopilotEvent } from "../ai/copilot"
 import type { FailureKind } from "../ai/managedAi"
+import type { LimitOffer } from "./accountStore"
 import { openCleanup } from "../editor/schematic/cleanupAction"
 import { hasParts } from "../model/cleanup"
 import { announceTidy } from "../editor/schematic/tidyAction"
@@ -14,7 +15,8 @@ export type Entry =
   | { kind: "user"; id: number; text: string }
   | { kind: "assistant"; id: number; text: string }
   | { kind: "tool"; id: number; toolId: string; label: string; status: "running" | "ok" | "error"; changed: boolean }
-  | { kind: "error"; id: number; text: string; failure?: FailureKind }
+  /** `offer`: what a plan limit's refusal offered when it happened (Ultra, pay-as-you-go). */
+  | { kind: "error"; id: number; text: string; failure?: FailureKind; offer?: LimitOffer }
   /** The blocks Clean up with AI proposes, waiting for the user's word. */
   | { kind: "plan"; id: number; plan: ProposedPlan; status: PlanStatus }
 
@@ -80,7 +82,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
         set({ activity: "Thinking" })
         break
       case "error":
-        update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind }])
+        update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind, ...(e.offer && { offer: e.offer }) }])
         break
       case "done":
         set({ runningProject: null, controller: null, activity: null })

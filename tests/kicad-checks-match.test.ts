@@ -9,6 +9,8 @@ import { analyzePcb } from "../src/model/pcb"
 import type { ZoneFill } from "../src/model/pour"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
+import { LIB_U, schematic } from "./kicad-schematic-fixtures"
+import { BUILT_EXTENSIONS as SCHEMATIC_BUILT } from "../src/model/kicad/schematic/needs"
 
 // Checks of a project from KiCad say what KiCad's DRC says, at the project's severities (`model/checkRules.ts`): KiCad's tolerance, net ties,
 // courtyards as drawn, connections through a pour's spokes, the checks KiCad does not have left out, and the project file's severities applied.
@@ -154,6 +156,31 @@ describe("pads of one number", () => {
   it("but not on a footprint that says they are jumpers, or when the file left them on no net", () => {
     expect(kinds(twoPegs(net(3, "unconnected-(J1-MP)"), "(duplicate_pad_numbers_are_jumpers yes)"), "unrouted")).toEqual([])
     expect(kinds(twoPegs(""), "unrouted")).toEqual([])
+  })
+  it("nor when they touch, as KiCad joins touching copper of a net: a module's castellated pad over its through-hole pad, on the net the board gave a pin the schematic leaves open", () => {
+    const symbol = "00000000-0000-4000-8000-0000000000a1"
+    const lone = net(3, "unconnected-(U1-A-Pad1)")
+    const pcb = board({
+      nets: ['(net 0 "")', lone],
+      body: [
+        footprint({
+          name: "Test:Module",
+          ref: "U1",
+          at: "10 5",
+          extra: `(path "/${symbol}")`,
+          pads: [
+            pad({ number: "1", type: "thru_hole", shape: "oval", at: "0 0", size: "1.7 1.7", layers: '"*.Cu" "*.Mask"', net: lone, extra: "(drill 1.02)" }),
+            pad({ number: "1", at: "-0.9 0", size: "3.5 1.7", net: lone }),
+          ],
+        }),
+      ],
+      outline: OUTLINE,
+    })
+    const sch = schematic({ libs: [LIB_U], symbols: [{ lib: "Test:U", at: "100 100", ref: "U1", footprint: "Test:Module", uuid: symbol }] })
+    const r = importKicadProject([{ path: "demo.kicad_pcb", data: pcb }, { path: "demo.kicad_sch", data: sch }], { built: new Set([...ALL, ...SCHEMATIC_BUILT]) })
+    if (r.status !== "imported") throw new Error(`refused: ${r.message}`)
+    expect(r.project.components.find((c) => c.ref === "U1")?.loneNets).toEqual({ "1": "unconnected-(U1-A-Pad1)" })
+    expect(kinds(r.project, "unrouted")).toEqual([])
   })
 })
 

@@ -29,6 +29,8 @@ if (process.env.NODE_ENV === "development") {
         projectApi: projectStore.projectApi,
         // The store itself, so a browser test can put the editor in a state (a viewer's, say) the harness can't reach.
         projectStore: projectStore.useProjectStore,
+        // Where the open project is saved, so a check by hand can make its saves fail (`push` rejecting) on the real app.
+        projectStorage: projectStore.projectStorage,
         uiApi: uiStore.uiApi,
         getConnectivity: analysis.getConnectivity,
         getPcbAnalysis: analysis.getPcbAnalysis,

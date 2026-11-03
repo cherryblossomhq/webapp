@@ -6,7 +6,7 @@ import { resolveDesignatorClashes } from "../model/designators"
 import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { usePresence } from "../store/presence"
-import { isCreatedHere, onRemoteChanges, projectApi, useProjectStore } from "../store/projectStore"
+import { editingPaused, isCreatedHere, onRemoteChanges, projectApi, useProjectStore } from "../store/projectStore"
 import type { RemoteBatch } from "../store/storage"
 import { uiApi } from "../store/uiStore"
 import { Button } from "../ui/controls"
@@ -60,10 +60,16 @@ export function CollabNotices() {
     setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), TOAST_MS)
   }, [])
 
-  // An edit refused because the user may only look.
+  // An edit refused because the user may only look, or because editing waits for the connection.
   const refused = useProjectStore((s) => s.refusedEdits)
   useEffect(() => {
-    if (refused) say("You can view this project, not change it. Ask its owner for edit access.")
+    if (!refused) return
+    const state = projectApi()
+    say(
+      state.role !== "viewer" && editingPaused(state)
+        ? "Editing is paused until your changes can be saved."
+        : "You can view this project, not change it. Ask its owner for edit access.",
+    )
   }, [refused, say])
 
   // Made an editor or a viewer while it was open.

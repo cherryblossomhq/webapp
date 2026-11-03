@@ -6,9 +6,9 @@ import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
 import type { Project, SchematicDrawing } from "../src/model/types"
 import { projectChanges } from "../src/store/changes"
 import { connectProjectStorage, isCreatedHere, onRemoteChanges, settleSaves, useProjectStore } from "../src/store/projectStore"
-import { openStoredProject, projectRecord, type ProjectStorage, type PushOutcome, type RemoteBatch } from "../src/store/storage"
+import { openStoredProject, projectRecord, type RemoteBatch } from "../src/store/storage"
 import { ProjectSync, type SaveStatus, type SyncHost } from "../src/store/sync"
-import { memoryStorage, memoryUnsent } from "./memoryStorage"
+import { memoryStorage } from "./memoryStorage"
 
 /**
  * Live editing: the open project's edits travel as batches of changes, everyone else's arrive the
@@ -190,19 +190,52 @@ describe("live editing", () => {
     expect(api().project!.name).toBe("Once")
   })
 
-  it("keeps edits made offline and sends them, in order, once storage answers", async () => {
+  it("pauses editing while a batch keeps failing, and sends what was queued once storage answers", async () => {
     const { memory, id } = await opened()
     memory.setFailure(new Error("offline"))
     rename("A")
+    api().commit(moveFirst(2))
     await settle()
     expect(api().save.state).toBe("retrying")
-    api().commit(moveFirst(2))
+    const before = api().project
     rename("B")
+    api().undo()
+    api().beginTransient()
+    api().setTransient(moveFirst(5))
+    expect(api().project).toBe(before)
+    expect(api().refusedEdits).toBe(3)
     memory.setFailure(null)
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(memory.project(id)).toMatchObject({ name: "B" })
+    expect(memory.project(id)).toMatchObject({ name: "A" })
     expect(memory.project(id).components[0].sch.x).toBe(2)
     expect(api().save.state).toBe("saved")
+    rename("B")
+    await settle()
+    expect(memory.project(id).name).toBe("B")
+  })
+
+  it("pauses editing while storage can't be reached, ending a drag in progress", async () => {
+    const memory = memoryStorage()
+    let connection: (online: boolean) => void = () => {}
+    connectProjectStorage({ ...memory.storage, watchConnection: (listener) => ((connection = listener), () => {}) })
+    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
+    const stored = (await memory.storage.load(id))!
+    api().open(openStoredProject(stored), stored)
+    await settle()
+    const before = api().project
+    api().beginTransient()
+    api().setTransient(moveFirst(5))
+    connection(false)
+    expect(api().online).toBe(false)
+    expect(api().project).toBe(before)
+    rename("Offline")
+    expect(api().project).toBe(before)
+    expect(api().refusedEdits).toBe(1)
+    connection(true)
+    rename("Online")
+    await settle()
+    expect(memory.project(id).name).toBe("Online")
+    expect(memory.project(id).components[0].sch.x).toBe(before!.components[0].sch.x)
   })
 
   it("sends the waiting edits a moment after Try again now, and has the connection sign in again first", async () => {
@@ -424,239 +457,6 @@ describe("live editing", () => {
   })
 })
 
-describe("edits kept in this browser until they land", () => {
-  beforeEach(() => vi.useFakeTimers())
-  /** The pages "closed" in a test: their syncs live on in the module, so each is told its project is gone at the end. */
-  const closed: (() => void)[] = []
-  afterEach(async () => {
-    api().close()
-    for (const end of closed.splice(0)) end()
-    await vi.advanceTimersByTimeAsync(60_000)
-    connectProjectStorage(null)
-    vi.useRealTimers()
-  })
-
-  /**
-   * A page whose pushes fail (`push`, until `close`), as they did all afternoon on November 2, 2026 for a user still signed in.
-   * Closed, it never sends again, as a page reloaded or shut doesn't.
-   */
-  async function firstPage(push: ProjectStorage["push"] = () => Promise.reject(new Error("Sign in to work on projects."))) {
-    const memory = memoryStorage()
-    const kept = memoryUnsent()
-    let open = true
-    let end: ((outcome: PushOutcome) => void) | null = null
-    let ended = false
-    closed.push(() => {
-      open = false
-      ended = true
-      end?.({ ok: false, reason: "not_found" })
-    })
-    connectProjectStorage({
-      ...memory.storage,
-      unsent: kept.unsent,
-      push: (id, batch) =>
-        open ? push(id, batch) : ended ? Promise.resolve({ ok: false, reason: "not_found" }) : new Promise((resolve) => (end = resolve)),
-    })
-    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
-    const stored = (await memory.storage.load(id))!
-    api().open(openStoredProject(stored), stored)
-    await settle()
-    const clientId = api().sessionId!
-    return {
-      memory,
-      kept,
-      id,
-      clientId,
-      /** Reload: this page goes, and the next opens the project with storage that works. */
-      async reopen() {
-        open = false
-        kept.closeAll()
-        api().close()
-        connectProjectStorage({ ...memory.storage, unsent: kept.unsent })
-        memory.calls.length = 0
-        const again = (await memory.storage.load(id))!
-        api().open(openStoredProject(again), again)
-      },
-    }
-  }
-
-  const pushes = (memory: ReturnType<typeof memoryStorage>) => memory.calls.filter((c) => c.op === "push")
-
-  it("keeps each batch that hasn't landed, as it gathers edits, and lets go of it once it lands", async () => {
-    const memory = memoryStorage()
-    const kept = memoryUnsent()
-    connectProjectStorage({ ...memory.storage, unsent: kept.unsent })
-    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
-    const stored = (await memory.storage.load(id))!
-    api().open(openStoredProject(stored), stored)
-    await settle()
-    memory.setFailure(new Error("offline"))
-    rename("A")
-    await settle()
-    api().commit(moveFirst(2))
-    rename("B")
-    await settle()
-    // The one sent, and the one gathering the edits after it.
-    expect([...kept.rows.values()].map((r) => r.changes.length)).toEqual([1, 2])
-    memory.setFailure(null)
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(api().save.state).toBe("saved")
-    expect(kept.rows.size).toBe(0)
-  })
-
-  it("sends what a reloaded page couldn't, first and under its own tab and numbers, and shows it", async () => {
-    const page = await firstPage()
-    rename("A")
-    await settle()
-    api().commit(moveFirst(2))
-    rename("B")
-    await settle()
-    expect(api().save.state).toBe("retrying")
-    expect(page.memory.project(page.id).name).toBe("Start")
-
-    // The new page edits while it is still reading what was kept: its edit is newer, so it waits, lands after them and wins.
-    const orphans = page.kept.unsent.orphans
-    let read!: () => void
-    const reading = new Promise<void>((resolve) => (read = resolve))
-    page.kept.unsent.orphans = async (id) => {
-      await reading
-      return orphans(id)
-    }
-    await page.reopen()
-    api().commit(moveFirst(5))
-    await settle()
-    expect(pushes(page.memory)).toHaveLength(0)
-    read()
-    await settle()
-    expect(api().project!.name).toBe("B")
-    expect(api().project!.components[0].sch.x).toBe(5)
-    expect(page.memory.project(page.id)).toMatchObject({ name: "B" })
-    expect(page.memory.project(page.id).components[0].sch.x).toBe(5)
-    const sent = pushes(page.memory)
-    expect(sent.slice(0, 2).map((c) => [c.clientId, c.batch])).toEqual([
-      [page.clientId, 1],
-      [page.clientId, 2],
-    ])
-    expect(sent[2].clientId).not.toBe(page.clientId)
-    expect(page.kept.rows.size).toBe(0)
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("applies once a batch that landed after all, though the page never heard", async () => {
-    let lose = true
-    const page = await firstPage(async (id, batch) => {
-      const outcome = await page.memory.storage.push(id, batch)
-      if (lose) throw new Error("The connection dropped before the answer came")
-      return outcome
-    })
-    page.memory.setQuiet(page.id, true)
-    rename("Once")
-    await settle()
-    expect(page.kept.rows.size).toBe(1)
-    lose = false
-
-    await page.reopen()
-    page.memory.setQuiet(page.id, false)
-    await settle()
-    expect(page.memory.rows.get(page.id)!.log).toHaveLength(1)
-    expect(api().project!.name).toBe("Once")
-    expect(page.kept.rows.size).toBe(0)
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("sends its own edits after a while when this browser never says what was kept", async () => {
-    const memory = memoryStorage()
-    const kept = memoryUnsent()
-    kept.unsent.orphans = () => new Promise(() => {})
-    connectProjectStorage({ ...memory.storage, unsent: kept.unsent })
-    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
-    const stored = (await memory.storage.load(id))!
-    api().open(openStoredProject(stored), stored)
-    rename("A")
-    await settle()
-    expect(pushes(memory)).toHaveLength(0)
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(memory.project(id).name).toBe("A")
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("leaves a page still open its own edits, and edits kept by an editor of another format", async () => {
-    const page = await firstPage()
-    rename("Mine")
-    await settle()
-    page.kept.unsent.keep(page.id, { clientId: "s_old", batch: 1, changes: [{ kind: "set", set: [[["name"], "Older format"]] }], formatVersion: PROJECT_FILE_VERSION - 1, seen: 1, savedAt: 0 })
-    // Another tab, while the first is open: only the old format's is anyone's to send, and it isn't this editor's.
-    api().close()
-    connectProjectStorage({ ...page.memory.storage, unsent: page.kept.unsent })
-    const stored = (await page.memory.storage.load(page.id))!
-    api().open(openStoredProject(stored), stored)
-    await settle()
-    expect(pushes(page.memory)).toHaveLength(0)
-    expect(api().project!.name).toBe("Start")
-    expect(page.kept.rows.size).toBe(2)
-  })
-
-  /** A page that couldn't save "Mine", closed; then someone else renames the project and adds a label before it opens again. */
-  async function changedSince() {
-    const page = await firstPage()
-    rename("Mine")
-    await settle()
-    const stored = openStoredProject((await page.memory.storage.load(page.id))!)
-    await page.memory.pushAs("other", page.id, projectChanges(stored, { ...addLabel(stored, "GND", { x: 9, y: 9 }).project, name: "Theirs" }))
-    await page.reopen()
-    await settle()
-    return page
-  }
-
-  it("holds what a closed page kept when the project changed since, rather than send it over the newer work", async () => {
-    const page = await changedSince()
-    expect(api().heldEdits).not.toBeNull()
-    expect(pushes(page.memory)).toHaveLength(0)
-    expect(api().project!.name).toBe("Theirs")
-    expect(page.kept.rows.size).toBe(1)
-    // The copy to keep has them on top of what is there now.
-    expect(api().heldEditsCopy()).toMatchObject({ name: "Mine", labels: [{ name: "GND" }] })
-
-    // The page's own edits go ahead meanwhile.
-    api().commit(moveFirst(3))
-    await settle()
-    expect(page.memory.project(page.id).components[0].sch.x).toBe(3)
-
-    api().restoreHeldEdits()
-    await settle()
-    expect(api().heldEdits).toBeNull()
-    expect(page.memory.project(page.id)).toMatchObject({ name: "Mine", labels: [{ name: "GND" }] })
-    expect(page.memory.project(page.id).components[0].sch.x).toBe(3)
-    expect(api().project!.name).toBe("Mine")
-    expect(pushes(page.memory).find((c) => c.clientId === page.clientId)).toMatchObject({ batch: 1 })
-    expect(page.kept.rows.size).toBe(0)
-    expect(api().save.state).toBe("saved")
-  })
-
-  it("lets held edits go for good when discarded", async () => {
-    const page = await changedSince()
-    api().discardHeldEdits()
-    await settle()
-    expect(api().heldEdits).toBeNull()
-    expect(page.kept.rows.size).toBe(0)
-    expect(pushes(page.memory)).toHaveLength(0)
-    expect(page.memory.project(page.id).name).toBe("Theirs")
-  })
-
-  it("holds them too when the log no longer reaches back to when they were kept", async () => {
-    const page = await firstPage()
-    rename("Mine")
-    await settle()
-    const stored = openStoredProject((await page.memory.storage.load(page.id))!)
-    await page.memory.pushAs("other", page.id, projectChanges(stored, addLabel(stored, "GND", { x: 9, y: 9 }).project))
-    page.memory.dropLog(page.id)
-    await page.reopen()
-    await settle()
-    expect(api().heldEdits).not.toBeNull()
-    expect(pushes(page.memory)).toHaveLength(0)
-  })
-})
-
 describe("two tabs on one project", () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
@@ -670,7 +470,7 @@ describe("two tabs on one project", () => {
       role: () => {},
       gone: () => {},
       refused: () => {},
-      held: () => {},
+      connection: () => {},
     }
     const sync = new ProjectSync(id, project, revision, PROJECT_FILE_VERSION, "owner", memory.storage, host)
     sync.start()

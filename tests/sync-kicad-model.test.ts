@@ -176,7 +176,7 @@ describe("two copies of one project, editing the KiCad model", () => {
       role: () => {},
       gone: () => {},
       refused: () => {},
-      held: () => {},
+      connection: () => {},
     }
     const sync = new ProjectSync(id, project, revision, PROJECT_FILE_VERSION, "owner", memory.storage, host)
     sync.start()

@@ -1,7 +1,6 @@
 import { CloudOff, Eye, Sparkles } from "lucide-react"
-import { useEffect, useState } from "react"
 import { canFollow, distinctPeople, usePresence, type Collaborator } from "../store/presence"
-import { projectStorage, useProjectStore } from "../store/projectStore"
+import { useProjectStore } from "../store/projectStore"
 import { Avatar } from "../ui/Avatar"
 import { Tooltip } from "../ui/Tooltip"
 
@@ -92,14 +91,13 @@ function Face({ peer, first, following, sessionId }: { peer: Collaborator; first
   )
 }
 
-/** Shown while storage can't be reached: edits are kept, and sent when it can. */
+/** Shown while storage can't be reached: editing waits for it (`editingPaused`), and others' edits show when it's back. */
 export function OfflinePill() {
-  const [online, setOnline] = useState(true)
-  const unsaved = useProjectStore((s) => s.save.state === "saving" || s.save.state === "retrying")
-  useEffect(() => projectStorage()?.watchConnection?.(setOnline), [])
+  const online = useProjectStore((s) => s.online)
+  const viewer = useProjectStore((s) => s.role === "viewer")
   if (online) return null
   return (
-    <Tooltip label="Offline" hint={unsaved ? "Your edits are kept here and will be saved when you're back online" : "Edits you make now are saved when you're back online"}>
+    <Tooltip label="Offline" hint={viewer ? "Changes show again when you're back online" : "Editing is paused until you're back online"}>
       <span className="flex h-7 items-center gap-1.5 rounded-full bg-chrome-2 px-2.5 text-[12px] font-[600] text-ink-2">
         <CloudOff size={13} />
         Offline

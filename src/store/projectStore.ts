@@ -9,7 +9,7 @@ import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
 import { projectChanges } from "./changes"
 import type { ProjectRole, ProjectStorage, RemoteBatch } from "./storage"
-import { ProjectSync, type HeldEdits, type SaveStatus, type SyncHost } from "./sync"
+import { ProjectSync, type SaveStatus, type SyncHost } from "./sync"
 
 export type { SaveStatus } from "./sync"
 
@@ -57,9 +57,11 @@ interface ProjectState {
   /** Snapshot taken when a drag/transient edit began. */
   transientBase: Project | null
   save: SaveStatus
+  /** Whether storage can be reached (`ProjectStorage.watchConnection`): editing waits while it can't (`editingPaused`). */
+  online: boolean
   /** What this user may do to the open project. A viewer's edits are refused before they happen. */
   role: ProjectRole
-  /** Counts edits refused because the project is view-only, so the notice saying so shows each time. */
+  /** Counts edits refused because the project is view-only or editing is paused, so the notice saying so shows each time. */
   refusedEdits: number
   /** A past version shown in place of `project`, or null. While set, `role` reads `viewer`. */
   preview: Preview | null
@@ -91,14 +93,6 @@ interface ProjectState {
   dismissSaveNotice: () => void
   /** The strip's Try again now, while edits aren't arriving: the connection signs in again, and they are sent at once. */
   retrySave: () => void
-  /** Edits a closed page kept in this browser, held for the user because the project changed since they were made. */
-  heldEdits: HeldEdits | null
-  /** Send the held edits after all, over what changed since. */
-  restoreHeldEdits: () => void
-  /** Let the held edits go for good. */
-  discardHeldEdits: () => void
-  /** The project with the held edits on top, for a copy to download before deciding. */
-  heldEditsCopy: () => Project | null
   beginTransient: () => void
   /** Replace the document during a drag without creating history entries. */
   setTransient: (fn: (base: Project) => Project) => void
@@ -107,6 +101,13 @@ interface ProjectState {
   undo: () => void
   redo: () => void
 }
+
+/**
+ * Edits can't reach storage now: it can't be reached, or a batch keeps failing (a session the server dropped, a server error).
+ * The user's edits are refused until they can, as a viewer's are: kept only in this tab, they would be lost to a reload, and
+ * were once for hours of work. What a background check or someone else's edit settles (`patch`) still queues.
+ */
+export const editingPaused = (s: Pick<ProjectState, "online" | "save">) => !s.online || s.save.state === "retrying"
 
 let storage: ProjectStorage | null = null
 
@@ -226,17 +227,18 @@ function applyStep(project: Project, changes: Change[]): Project {
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => {
-  /** True, and the read-only notice shown again, when the open project can't be edited by this user. */
+  /** True, and the read-only notice shown again, when the open project can't be edited by this user, or not now. */
   const readOnly = () => {
-    if (get().role !== "viewer") return false
+    if (get().role !== "viewer" && !editingPaused(get())) return false
     // A preview says why itself, in its banner.
     if (get().preview) return true
     set((s) => ({ refusedEdits: s.refusedEdits + 1 }))
     return true
   }
   /**
-   * A viewer pressed something that would start a drag. A press is also how they select, so it is
-   * refused silently, and said only if the pointer then moves (`setTransient`).
+   * A viewer (or anyone, while editing is paused) pressed something that would start a drag. A press
+   * is also how they select, so it is refused silently, and said only if the pointer then moves
+   * (`setTransient`).
    */
   let viewerPress = false
 
@@ -262,7 +264,15 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       if (batches.length && before && after) for (const listener of remoteListeners) listener(batches, before, after)
     },
     status(save) {
-      if (sync === self()) set({ save })
+      if (sync !== self()) return
+      set({ save })
+      // A drag in progress can't land either.
+      if (editingPaused(get())) get().cancelTransient()
+    },
+    connection(online) {
+      if (sync !== self()) return
+      set({ online })
+      if (!online) get().cancelTransient()
     },
     role(role) {
       if (sync !== self()) return
@@ -277,9 +287,6 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     refused() {
       if (sync === self()) set({ past: [], future: [] })
     },
-    held(heldEdits) {
-      if (sync === self()) set({ heldEdits })
-    },
   })
 
   return {
@@ -288,12 +295,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     future: [],
     transientBase: null,
     save: { state: "saved" },
+    online: true,
     role: "owner",
     refusedEdits: 0,
     gone: false,
     sessionId: null,
     preview: null,
-    heldEdits: null,
 
     open: (p, stored) => {
       retireSync()
@@ -313,12 +320,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         )
       }
       sync = created
-      set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null, heldEdits: null })
+      set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, online: true, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null })
       created?.start()
     },
     close: () => {
       retireSync()
-      set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" }, role: "owner", gone: false, sessionId: null, preview: null, heldEdits: null })
+      set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" }, online: true, role: "owner", gone: false, sessionId: null, preview: null })
     },
 
     startPreview: (shown, version) => {
@@ -384,14 +391,11 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       storage?.reconnect?.()
       sync?.retryNow()
     },
-    restoreHeldEdits: () => sync?.restoreHeld(),
-    discardHeldEdits: () => sync?.discardHeld(),
-    heldEditsCopy: () => sync?.heldCopy() ?? null,
 
     beginTransient: () => {
       const { project, role } = get()
       if (!project) return
-      viewerPress = role === "viewer"
+      viewerPress = role === "viewer" || editingPaused(get())
       if (!viewerPress) set({ transientBase: project })
     },
     setTransient: (fn) => {

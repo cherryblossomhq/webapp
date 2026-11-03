@@ -1,16 +1,8 @@
 import { AlertTriangle, Loader2 } from "lucide-react"
-import { useState, type ReactNode } from "react"
-import { downloadText, projectFileName } from "../export/bundle"
-import { serializeProject } from "../model/projectFile"
-import type { Project } from "../model/types"
+import type { ReactNode } from "react"
 import { useProjectStore } from "../store/projectStore"
 
 const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-danger/10"
-const STRIP = "flex h-9 shrink-0 animate-fade-in items-center gap-2 border-b border-danger/25 bg-danger-soft px-3 text-[12.5px] text-danger"
-const when = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
-
-/** The project as a file that opens as a new project from the projects page: the same file Export makes. */
-const download = (project: Project) => downloadText(serializeProject(project, { pretty: true }), projectFileName(project, "json"), "application/json")
 
 /**
  * Saving is silent while it works. This is the strip under the top bar for when it doesn't:
@@ -21,37 +13,23 @@ export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
   const dismiss = useProjectStore((s) => s.dismissSaveNotice)
   const retry = useProjectStore((s) => s.retrySave)
-  // Whether there is one, not the project itself: that changes on every edit and drag frame.
-  const open = useProjectStore((s) => s.project !== null)
-  const held = useProjectStore((s) => s.heldEdits)
-  if (save.state === "saved" || save.state === "saving") return held ? <HeldNotice savedAt={held.savedAt} /> : null
+  // Editing waits for the connection (`editingPaused`); a viewer edits nothing, and the top bar says they're offline.
+  const offline = useProjectStore((s) => !s.online && s.role !== "viewer")
   if (save.state === "refused" && save.reason === "not_found") return null
+  if (save.state === "saved" || save.state === "saving") {
+    if (!offline) return null
+    return <Strip waiting text="You're offline. Editing is paused until the connection is back." />
+  }
   const reload = () => window.location.reload()
   let text: string
   let actions: ReactNode = null
   if (save.state === "retrying") {
-    // The edits not saved yet are in this tab, and kept in this browser only where the host can
-    // (`ProjectStorage.unsent`, best effort: not in private windows or on a full disk). A copy of
-    // what is on screen keeps them whatever happens: it opens as a new project from the projects
-    // page. A user once lost hours of work to a reload here.
-    text = "Your latest changes aren't saved yet. Keep this tab open while we try again."
+    // What is queued lives in this tab only, so no more is made until it lands.
+    text = "Your latest changes aren't saved yet. Editing is paused until they are; keep this tab open."
     actions = (
-      <>
-        <button className={ACTION} onClick={retry}>
-          Try again now
-        </button>
-        {open && (
-          <button
-            className={ACTION}
-            onClick={() => {
-              const { project } = useProjectStore.getState()
-              if (project) download(project)
-            }}
-          >
-            Download a copy
-          </button>
-        )}
-      </>
+      <button className={ACTION} onClick={retry}>
+        Try again now
+      </button>
     )
   } else if (save.reason === "outdated") {
     text = "A newer version of Cherry Blossom saved this project. Reload to update before editing it here."
@@ -74,63 +52,19 @@ export function SaveNotice() {
       </button>
     )
   }
-  return (
-    <div role="status" title={save.state === "retrying" ? save.message : undefined} className={STRIP}>
-      {save.state === "retrying" ? <Loader2 size={14} className="shrink-0 animate-spin" /> : <AlertTriangle size={14} className="shrink-0" />}
-      <span className="min-w-0 flex-1 truncate">{text}</span>
-      {actions}
-    </div>
-  )
+  return <Strip waiting={save.state === "retrying"} title={save.state === "retrying" ? save.message : undefined} text={text} actions={actions} />
 }
 
-/**
- * Edits this browser kept from a page that closed before they were saved, and which the project has moved on from since:
- * restored, they would win over the newer work wherever both changed a value, so the user decides, with a copy to keep
- * either way. Discarding asks once more, since it can't be undone.
- */
-function HeldNotice({ savedAt }: { savedAt: number }) {
-  const restore = useProjectStore((s) => s.restoreHeldEdits)
-  const discard = useProjectStore((s) => s.discardHeldEdits)
-  const copy = useProjectStore((s) => s.heldEditsCopy)
-  const [discarding, setDiscarding] = useState(false)
-  const made = when.format(savedAt)
+function Strip({ waiting, title, text, actions }: { waiting: boolean; title?: string; text: string; actions?: ReactNode }) {
   return (
-    <div role="status" className={STRIP}>
-      <AlertTriangle size={14} className="shrink-0" />
-      <span className="min-w-0 flex-1 truncate">
-        {discarding
-          ? `Discard the edits from ${made}? They can't be brought back.`
-          : `Edits from ${made} in this browser were never saved, and the project has changed since.`}
-      </span>
-      {discarding ? (
-        <>
-          <button className={ACTION} onClick={discard}>
-            Discard
-          </button>
-          <button className={ACTION} onClick={() => setDiscarding(false)}>
-            Cancel
-          </button>
-        </>
-      ) : (
-        <>
-          <button className={ACTION} onClick={restore} title="Where they and a newer change touch the same thing, these edits replace it">
-            Restore
-          </button>
-          <button
-            className={ACTION}
-            onClick={() => {
-              const withThem = copy()
-              if (withThem) download(withThem)
-            }}
-            title="This project with those edits, as a file that opens as a new project"
-          >
-            Download a copy
-          </button>
-          <button className={ACTION} onClick={() => setDiscarding(true)}>
-            Discard…
-          </button>
-        </>
-      )}
+    <div
+      role="status"
+      title={title}
+      className="flex h-9 shrink-0 animate-fade-in items-center gap-2 border-b border-danger/25 bg-danger-soft px-3 text-[12.5px] text-danger"
+    >
+      {waiting ? <Loader2 size={14} className="shrink-0 animate-spin" /> : <AlertTriangle size={14} className="shrink-0" />}
+      <span className="min-w-0 flex-1 truncate">{text}</span>
+      {actions}
     </div>
   )
 }

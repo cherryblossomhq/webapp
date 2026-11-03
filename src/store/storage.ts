@@ -46,15 +46,10 @@ export interface ProjectStorage {
    * copy hears at once that it was made read-only.
    */
   watchChanges(id: string, after: number, listener: (event: ChangesEvent) => void, onError: (error: Error) => void): () => void
-  /** Whether storage can be reached now, as it changes: an open project says when edits are waiting for the connection. */
+  /** Whether storage can be reached now, as it changes: an open project pauses editing while it can't (`editingPaused`). */
   watchConnection?(listener: (online: boolean) => void): () => void
   /** Have the connection sign in again (the save strip's Try again now), for a session it dropped while the user is still signed in. */
   reconnect?(): void
-  /**
-   * Where an open copy keeps the edits that haven't landed, so a reload, a closed tab or a crash doesn't lose them. Absent where a
-   * push can't fail, as in this browser's storage.
-   */
-  unsent?: UnsentEdits
   /** Delete a project: the owner deletes it for everyone, anyone else leaves it. */
   remove(id: string): Promise<void>
   /** Sharing by email (the Share dialog). Absent where projects are one person's, as in this browser's storage. */
@@ -115,39 +110,6 @@ export interface OutgoingBatch {
   formatVersion: number
   /** Parts on the board after it, for the projects list. */
   componentCount: number
-}
-
-/**
- * A batch an open copy keeps in this browser until it lands (`UnsentEdits`), under the tab and the number it was made with:
- * sent again under them, one that landed after all is answered with its revision rather than applied twice.
- */
-export interface KeptBatch {
-  clientId: string
-  batch: number
-  changes: Change[]
-  /** The file format its changes were worked out in: an editor writing another leaves them alone, since they could mean something else to it. */
-  formatVersion: number
-  /**
-   * The project's revision the page had when it kept it: what landed after, the page never saw, and the batch sent now would
-   * win over it wherever both changed a value.
-   */
-  seen: number
-  /** When it was last kept. */
-  savedAt: number
-}
-
-/**
- * The batches of edits open copies haven't got to storage yet, kept in this browser for the signed-in user (the host's; the
- * website's is IndexedDB). The next copy of a project opened here sends first what a page no longer open left of it: a
- * reload, a closed tab or a crash loses nothing that was made.
- */
-export interface UnsentEdits {
-  /** Mark `clientId` as this page's for as long as it is open: the batches it keeps are left to it. */
-  claim(clientId: string): void
-  /** What pages no longer open kept of `projectId`, in the order it was made: each page's in its order, and the pages' woven together. */
-  orphans(projectId: string): Promise<KeptBatch[]>
-  keep(projectId: string, batch: KeptBatch): void
-  drop(projectId: string, clientId: string, batch: number): void
 }
 
 /**

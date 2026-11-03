@@ -1,5 +1,5 @@
 import { CircuitBoard, Cloud, Copy, Download, Ellipsis, FileUp, FolderOpen, HardDrive, LayoutGrid, List, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react"
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react"
 import { openProjectRoute } from "../App"
 import { EXAMPLES, type Example } from "../model/examples"
 import { createProject } from "../model/ops"
@@ -14,15 +14,16 @@ import {
   createStoredProject,
   downloadStoredProject,
   duplicateStoredProject,
+  examplePreview,
   importProjectFile,
-  previewProject,
+  projectPicture,
   removeStoredProject,
   renameStoredProject,
 } from "../store/projectActions"
 import type { ProjectStorage, StoredProjectSummary } from "../store/storage"
 import { useUi } from "../store/uiStore"
 import { Button, IconButton, Kbd, Segmented, useDismiss } from "../ui/controls"
-import { BoardPreview } from "./BoardPreview"
+import { LazyPreview } from "./BoardPreview"
 
 function relativeTime(ts: number) {
   const s = Math.round((Date.now() - ts) / 1000)
@@ -40,56 +41,8 @@ const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`
 const partCount = (p: Project) => p.components.filter((c) => !c.ref.startsWith("#")).length
 const boardSize = (p: Project) => `${Number(p.board.width.toFixed(1))} × ${Number(p.board.height.toFixed(1))} mm`
 
-/** True once the element has scrolled near view: a preview costs a pour fill, so only draw the ones seen. */
-function useSeen(ref: RefObject<Element | null>): boolean {
-  const [seen, setSeen] = useState(false)
-  useEffect(() => {
-    const el = ref.current
-    if (!el || seen) return
-    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setSeen(true), {
-      root: el.closest("[data-scroll-root]"),
-      rootMargin: "320px 0px",
-    })
-    io.observe(el)
-    return () => io.disconnect()
-  }, [ref, seen])
-  return seen
-}
-
-/** One project that won't draw (a hand-edited file, say) shows an icon, not a broken dashboard. */
-class PreviewBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false }
-  static getDerivedStateFromError() {
-    return { failed: true }
-  }
-  render() {
-    return this.state.failed ? <CircuitBoard size={22} className="text-white/25" /> : this.props.children
-  }
-}
-
 function ProjectPreview({ meta, storage }: { meta: StoredProjectSummary; storage: ProjectStorage }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const seen = useSeen(ref)
-  const [project, setProject] = useState<Project | null>(null)
-  useEffect(() => {
-    if (!seen) return
-    let current = true
-    void previewProject(storage, meta).then((p) => current && setProject(p))
-    return () => {
-      current = false
-    }
-  }, [seen, storage, meta])
-  return (
-    <div ref={ref} className="flex h-full w-full items-center justify-center">
-      {project && (
-        <PreviewBoundary>
-          <div className="h-full w-full animate-fade-in">
-            <BoardPreview project={project} />
-          </div>
-        </PreviewBoundary>
-      )}
-    </div>
-  )
+  return <LazyPreview id={`${meta.id}@${meta.updatedAt}@${meta.thumbnail?.madeAt ?? 0}`} load={() => projectPicture(storage, meta)} className="h-full w-full animate-fade-in" />
 }
 
 const CARD =
@@ -124,7 +77,7 @@ function ExampleCard({ example, onOpen }: { example: Example; onOpen: () => void
     <button onClick={onOpen} className={`group ${CARD}`}>
       <div className="studio flex aspect-[4/3] items-center justify-center overflow-hidden rounded-[8px] p-2.5 ring-1 ring-inset ring-white/[0.06]">
         <div className="h-full w-full transition-transform duration-300 ease-out group-hover:scale-[1.04]">
-          <BoardPreview project={p} />
+          <LazyPreview id={example.id} load={() => examplePreview(example)} />
         </div>
       </div>
       <CardText title={example.name} detail={example.description} meta={`${plural(partCount(p), "part")} · ${boardSize(p)}`} />

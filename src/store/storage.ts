@@ -31,6 +31,11 @@ export interface ProjectStorage {
   watchList(listener: (projects: StoredProjectSummary[] | null) => void, onError: (error: Error) => void): () => void
   /** One project's file, or null when there is no such project for this user. */
   load(id: string): Promise<StoredProject | null>
+  /**
+   * Keep a picture of a project's board for the list (`thumbnail`), drawn from it as it was at `madeAt`. False when it
+   * isn't kept (the user may only view it, or a newer one is kept). A storage without it has the pictures drawn on each visit.
+   */
+  saveThumbnail?(id: string, picture: Blob, madeAt: number): Promise<boolean>
   create(record: ProjectRecord, dates?: { createdAt?: number; updatedAt?: number }): Promise<{ id: string; revision: number }>
   /** Apply one batch of changes from an open copy. Refusals are answers; a fault (offline) is a rejected promise. */
   push(id: string, batch: OutgoingBatch): Promise<PushOutcome>
@@ -85,6 +90,8 @@ export interface StoredProjectSummary extends ProjectSummary {
   link?: "editor" | "viewer"
   /** Who shared it, on a project the user doesn't own. */
   owner?: { name: string; email: string; pictureUrl?: string }
+  /** A kept picture of its board and the `updatedAt` it was drawn at (`saveThumbnail`); older than `updatedAt`, it is due again. */
+  thumbnail?: { url: string; madeAt: number }
 }
 
 export interface StoredProject {

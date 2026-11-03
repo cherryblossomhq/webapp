@@ -8,6 +8,7 @@ import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { seedZoneFills, type PendingGroup } from "../model/zoneFill"
 import { needsZoneEngine } from "../model/zones"
+import { previewFills } from "../pages/boardPreviewSvg"
 import { useProjectStore } from "./projectStore"
 import type { ZoneFillReply, ZoneFillRequest } from "./zoneFill.worker"
 
@@ -215,19 +216,14 @@ export function getZoneFills(p: Project): ZoneFill[] {
   return getPcbAnalysis(p).zoneFills
 }
 
-/** Parts, tracks and vias past which a board's preview fills none of its zones itself. */
-const PREVIEW_FILL_ITEMS = 3000
-
 /**
- * The fills a board's preview draws: the analysis's when it is made; on a small board, every zone filled, as the editor fills them; on a big one, the fills kept
- * already (KiCad's own, or ones this page made), filling no zone that has none. A projects page draws a preview of every project on the page itself, and filling
- * the 47 zones of a 2,970-part board there held it for minutes; the editor fills them in its worker once the project is open.
+ * The fills a board's preview draws when it is drawn on the page's thread (`BoardPreview`): the analysis's when it is made, else `previewFills`. A projects
+ * page draws its previews in a worker instead (`pages/previews.ts`).
  */
 export function getPreviewFills(p: Project): ZoneFill[] {
   const made = pcbCache.get(p)
   if (made) return made.zoneFills
-  const big = p.components.length + p.traces.length + p.vias.length > PREVIEW_FILL_ITEMS
-  return analyzePcb(p, getConnectivity(p), { ...(big ? { reuseOnly: { stale: [] } } : {}), fillsOnly: true }).zoneFills
+  return previewFills(p, getConnectivity(p))
 }
 
 export function useConnectivity(): SchematicConnectivity | null {

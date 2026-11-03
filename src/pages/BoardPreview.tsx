@@ -1,123 +1,92 @@
-import { useId, useMemo } from "react"
-import { resolvedComponents } from "../model/ruleAreas"
-import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../model/board"
-import { isNpth, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
-import { onBoard } from "../model/partFlags"
-import { pathsSvgPath } from "../model/shapes"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { Project } from "../model/types"
 import { getPreviewFills } from "../store/analysis"
+import type { PreviewPicture } from "../store/projectActions"
+import { boardPreviewSvg } from "./boardPreviewSvg"
 
-/** Mix two hex colours; t = 0 gives a, 1 gives b. */
-function mix(a: string, b: string, t: number): string {
-  const pa = parseInt(a.slice(1), 16)
-  const pb = parseInt(b.slice(1), 16)
-  const ch = (shift: number) => Math.round(((pa >> shift) & 255) * (1 - t) + ((pb >> shift) & 255) * t)
-  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, "0")}`
+/**
+ * A board preview (`boardPreviewSvg`) shown as an image: the browser draws it once, where the same
+ * drawing as page elements was thousands of nodes to lay out per card.
+ */
+export function PreviewImage({ svg }: { svg: string }) {
+  const url = useMemo(() => URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" })), [svg])
+  useEffect(() => () => URL.revokeObjectURL(url), [url])
+  return <img src={url} alt="" aria-hidden draggable={false} className="h-full w-full object-contain" />
 }
 
-function padElement(pad: WorldPad, key: string, fill: string) {
-  if (pad.shape === "circle") return <circle key={key} cx={pad.x} cy={pad.y} r={pad.width / 2} fill={fill} />
-  if (pad.rings && pad.rings.length > 1) return <path key={key} d={pad.rings.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`).join("")} fillRule="evenodd" fill={fill} />
-  if (pad.shape === "polygon" && pad.points) return <polygon key={key} points={pad.points.map((p) => `${p.x},${p.y}`).join(" ")} fill={fill} />
-  const rx = pad.shape === "pill" ? Math.min(pad.width, pad.height) / 2 : pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12
-  return <rect key={key} x={pad.x - pad.width / 2} y={pad.y - pad.height / 2} width={pad.width} height={pad.height} rx={rx} fill={fill} />
+/** A preview: a kept picture by its link, or SVG text drawn here. */
+function Picture({ picture }: { picture: PreviewPicture }) {
+  if ("svg" in picture) return <PreviewImage svg={picture.svg} />
+  return <img src={picture.url} alt="" aria-hidden draggable={false} decoding="async" className="h-full w-full object-contain" />
+}
+
+/** An image's bytes loaded and decoded, so showing it draws at once; settles either way. */
+function preload(url: string): Promise<void> {
+  if (typeof Image === "undefined") return Promise.resolve()
+  const img = new Image()
+  img.src = url
+  return img.decode().catch(() => {})
+}
+
+/** True once the element has come within 320 px of view, in the closest `[data-scroll-root]` or the page. */
+export function useSeen(ref: React.RefObject<Element | null>): boolean {
+  const [seen, setSeen] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || seen) return
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setSeen(true), {
+      root: el.closest("[data-scroll-root]"),
+      rootMargin: "320px 0px",
+    })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [ref, seen])
+  return seen
 }
 
 /**
- * Top view of the bare board as a fab would ship it: copper under the mask shows lighter,
- * pads are plated, silkscreen on top. Part bodies are hinted with soft shadows.
+ * A preview that is asked for only once its place nears view, and drawn when it comes: a project's
+ * (`projectPicture`) or an example's (`examplePreview`). `id` says when it is another preview. Nothing
+ * shows until it comes, or when it can't be drawn.
+ */
+export function LazyPreview({ id, load, className }: { id: string; load: () => Promise<PreviewPicture | string | null>; className?: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const seen = useSeen(ref)
+  const [picture, setPicture] = useState<PreviewPicture | null>(null)
+  const latest = useRef(load)
+  useEffect(() => {
+    latest.current = load
+  })
+  useEffect(() => {
+    if (!seen) return
+    let current = true
+    void latest.current().then(async (p) => {
+      const next = typeof p === "string" ? { svg: p } : p
+      // A kept picture replaces the one drawn here once storage has it (the list then names it): load it before
+      // the swap, so the card goes from one to the other without a blank frame between them.
+      if (next && "url" in next) await preload(next.url)
+      if (current) setPicture(next)
+    })
+    return () => {
+      current = false
+    }
+  }, [seen, id])
+  return (
+    <div ref={ref} className="flex h-full w-full items-center justify-center">
+      {picture ? (
+        <div className={className ?? "h-full w-full"}>
+          <Picture picture={picture} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Top view of the bare board as a fab would ship it, drawn here and now. A projects page draws its
+ * previews in a worker instead (`LazyPreview`); this is for a project already open.
  */
 export function BoardPreview({ project }: { project: Project }) {
-  const content = useMemo(() => {
-    const b = project.board
-    const { mask, silk } = boardColors(b)
-    const metal = { gold: "#e1bd62", tin: "#cfd2d6", copper: "#d99a6c" }[finishMetal(boardFinish(b))]
-    const copperTone = mix(mask, "#e8b04a", 0.22)
-    const fills = getPreviewFills(project).filter((f) => f.layer === "top")
-    const parts = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
-    const topPads = parts.flatMap((c) => pcbPads(c).filter((p) => p.layers.includes("top")))
-    const pourD = fills
-      .flatMap((f) => f.polygons.flatMap((poly) => poly.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`)))
-      .join("")
-    const outlineD = b.outline?.paths.length ? pathsSvgPath(b.outline.paths.filter((p) => p.closed)) : ""
-    return { b, mask, silk, metal, copperTone, pourD, outlineD, parts, topPads }
-  }, [project])
-
-  const { b, mask, silk, metal, copperTone, pourD, outlineD, parts, topPads } = content
-  // Not the project's id: the examples share one, and an SVG id is global to the page.
-  const soft = `soft${useId().replace(/[^\w-]/g, "")}`
-  const minX = b.x - b.width / 2
-  const minY = b.y - b.height / 2
-  const pad = Math.max(b.width, b.height) * 0.06
-  return (
-    <svg
-      viewBox={`${minX - pad} ${-(minY + b.height) - pad} ${b.width + pad * 2} ${b.height + pad * 2}`}
-      className="h-full w-full"
-      aria-hidden
-    >
-      <defs>
-        <filter id={soft} x="-20%" y="-20%" width="140%" height="140%">
-          <feGaussianBlur stdDeviation={Math.max(b.width, b.height) * 0.006} />
-        </filter>
-      </defs>
-      <g transform="scale(1,-1)">
-        {outlineD ? (
-          <>
-            <path d={outlineD} transform={`translate(${pad * 0.12} ${-pad * 0.18})`} fill="#000" fillRule="evenodd" opacity={0.28} filter={`url(#${soft})`} />
-            <path d={outlineD} fill={mask} fillRule="evenodd" />
-          </>
-        ) : (
-          <>
-            <rect x={minX + pad * 0.12} y={minY - pad * 0.18} width={b.width} height={b.height} rx={b.cornerRadius} fill="#000" opacity={0.28} filter={`url(#${soft})`} />
-            <rect x={minX} y={minY} width={b.width} height={b.height} rx={b.cornerRadius} fill={mask} />
-          </>
-        )}
-        {pourD && <path d={pourD} fill={copperTone} fillRule="evenodd" />}
-        {project.traces
-          .filter((t) => t.layer === "top")
-          .map((t) => (
-            <polyline key={t.id} points={t.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={copperTone} strokeWidth={t.width} strokeLinecap="round" strokeLinejoin="round" />
-          ))}
-        {project.vias.map((v) => (
-          <circle key={v.id} cx={v.x} cy={v.y} r={v.diameter / 2} fill={copperTone} />
-        ))}
-        {/* Soft footprint shadows hint at where parts sit. */}
-        <g filter={`url(#${soft})`} opacity={0.3}>
-          {parts.map((c) => {
-            const cy = pcbCourtyard(c)
-            if (!cy || c.pcb.side !== "top") return null
-            const inset = Math.min(cy.maxX - cy.minX, cy.maxY - cy.minY) * 0.18
-            return <rect key={c.id} x={cy.minX + inset} y={cy.minY + inset} width={cy.maxX - cy.minX - inset * 2} height={cy.maxY - cy.minY - inset * 2} fill="#000" />
-          })}
-        </g>
-        {/* Non-plated holes have no copper; they only show as drilled holes below. */}
-        {topPads.map((p, i) => (isNpth(p) ? null : padElement(p, `p${i}`, metal)))}
-        {mountingHoles(b).map((h) => (
-          <circle key={h.id} cx={h.x} cy={h.y} r={h.diameter / 2} fill={metal} />
-        ))}
-        {topPads.filter((p) => p.holeDiameter).map((p, i) => {
-          const ends = slotEnds(p)
-          if (!ends) return <circle key={`h${i}`} cx={(p.hole ?? p).x} cy={(p.hole ?? p).y} r={(p.holeDiameter ?? 0) / 2} fill="#141217" />
-          const [a, z] = ends
-          return <line key={`h${i}`} x1={a.x} y1={a.y} x2={z.x} y2={z.y} stroke="#141217" strokeWidth={p.holeDiameter} strokeLinecap="round" />
-        })}
-        {mountingHoles(b).map((h) => (
-          <circle key={`mh${h.id}`} cx={h.x} cy={h.y} r={h.drill / 2} fill="#141217" />
-        ))}
-        {project.vias.map((v) => (
-          <circle key={`vh${v.id}`} cx={v.x} cy={v.y} r={v.drill / 2} fill={mix(mask, "#000000", 0.45)} />
-        ))}
-        <g fill="none" stroke={silk} strokeLinecap="round" strokeLinejoin="round" opacity={0.92}>
-          {parts
-            .filter((c) => c.pcb.side === "top")
-            .flatMap((c) => pcbSilk(c).map((path, i) => <polyline key={`${c.id}${i}`} points={path.map((p) => `${p.x},${p.y}`).join(" ")} strokeWidth={0.15} />))}
-          {ownTexts(project)
-            .filter((t) => t.side === "top")
-            .flatMap((t) =>
-              boardTextStrokes(t).map((path, i) => <polyline key={`${t.id}${i}`} points={path.map((p) => `${p.x},${p.y}`).join(" ")} strokeWidth={boardTextStrokeWidth(t)} />),
-            )}
-        </g>
-      </g>
-    </svg>
-  )
+  const svg = useMemo(() => boardPreviewSvg(project, getPreviewFills(project)), [project])
+  return <PreviewImage svg={svg} />
 }

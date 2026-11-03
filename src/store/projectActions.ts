@@ -1,7 +1,9 @@
 import { downloadText, projectFileName } from "../export/bundle"
 import { forgetReport } from "../kicadImport/reportStore"
+import type { Example } from "../model/examples"
 import { parseProjectFile, ProjectFileError, serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
+import { boardPreview, drawnPreview, forgetPreview, queue, rasterize } from "../pages/previews"
 import { openStoredProject, projectRecord, type ProjectStorage, type SaveRefusal, type StoredProjectSummary } from "./storage"
 
 /**
@@ -66,21 +68,61 @@ export async function renameStoredProject(storage: ProjectStorage, m: StoredProj
 
 export async function removeStoredProject(storage: ProjectStorage, id: string) {
   await storage.remove(id)
-  previews.delete(id)
+  forgetPreview(id)
   forgetReport(id)
 }
 
-/** Stored projects for previews, read again only once a project has changed. */
-const previews = new Map<string, { updatedAt: number; project: Promise<Project | null> }>()
+/**
+ * A stored project's preview, as SVG text for an image; `null` when it can't be read, which draws a placeholder.
+ * Downloaded and drawn only when the one kept in this browser is older than the project (`pages/previews.ts`).
+ */
+export function previewProject(storage: ProjectStorage, m: StoredProjectSummary): Promise<string | null> {
+  return boardPreview({ key: m.id, updatedAt: m.updatedAt, file: async () => (await storage.load(m.id))?.content ?? null })
+}
 
-/** A stored project to draw a preview of; `null` when it can't be read, which draws a placeholder. */
-export function previewProject(storage: ProjectStorage, m: StoredProjectSummary): Promise<Project | null> {
-  const hit = previews.get(m.id)
-  if (hit?.updatedAt === m.updatedAt) return hit.project
-  const project = storage
-    .load(m.id)
-    .then((stored) => (stored ? openStoredProject(stored) : null))
-    .catch(() => null)
-  previews.set(m.id, { updatedAt: m.updatedAt, project })
-  return project
+/** An example's preview, as SVG text for an image, drawn once a visit. */
+export function examplePreview(example: Example): Promise<string | null> {
+  return boardPreview({ key: `example:${example.id}`, file: () => serializeProject(example.project) })
+}
+
+/** A preview to show: a kept picture's link, or SVG text drawn here. */
+export type PreviewPicture = { url: string } | { svg: string }
+
+/**
+ * What a projects page shows for a project. The picture kept with it, at once, when there is one: the list
+ * hands out its link, so nothing else is downloaded. Otherwise the preview is drawn here (`previewProject`).
+ *
+ * For someone who may edit the project, a picture that is missing, or older than the project, is drawn here and kept
+ * (`storage.saveThumbnail`) in the background, one at a time, so the next visit, theirs or a collaborator's, shows it
+ * at once. A stale picture is shown meanwhile: it is the board as it was, which beats nothing.
+ */
+export function projectPicture(storage: ProjectStorage, m: StoredProjectSummary): Promise<PreviewPicture | null> {
+  const keeps = !!storage.saveThumbnail && (m.role ?? "owner") !== "viewer"
+  if (m.thumbnail) {
+    if (keeps && m.thumbnail.madeAt < m.updatedAt) void previewProject(storage, m).then((svg) => svg && keepPicture(storage, m, svg))
+    // The picture this page just drew and kept: the card already shows it, so it stays as it is rather than
+    // swapping to the same board fetched back from storage.
+    const drawn = m.thumbnail.madeAt >= m.updatedAt ? drawnPreview(m.id, m.updatedAt) : undefined
+    const url = m.thumbnail.url
+    if (drawn) return drawn.then((svg): PreviewPicture => (svg ? { svg } : { url }))
+    return Promise.resolve({ url })
+  }
+  return previewProject(storage, m).then((svg) => {
+    if (svg && keeps) keepPicture(storage, m, svg)
+    return svg ? { svg } : null
+  })
+}
+
+const pictureUploads = queue(1)
+/** Pictures asked to be kept this visit, by project and change: each is tried once. */
+const keeping = new Set<string>()
+
+function keepPicture(storage: ProjectStorage, m: StoredProjectSummary, svg: string) {
+  const key = `${m.id}@${m.updatedAt}`
+  if (keeping.has(key)) return
+  keeping.add(key)
+  void pictureUploads.run(async () => {
+    const picture = await rasterize(svg)
+    if (picture) await storage.saveThumbnail?.(m.id, picture, m.updatedAt).catch(() => false)
+  })
 }

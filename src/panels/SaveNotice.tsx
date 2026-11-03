@@ -21,7 +21,8 @@ export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
   const dismiss = useProjectStore((s) => s.dismissSaveNotice)
   const retry = useProjectStore((s) => s.retrySave)
-  const project = useProjectStore((s) => s.project)
+  // Whether there is one, not the project itself: that changes on every edit and drag frame.
+  const open = useProjectStore((s) => s.project !== null)
   const held = useProjectStore((s) => s.heldEdits)
   if (save.state === "saved" || save.state === "saving") return held ? <HeldNotice savedAt={held.savedAt} /> : null
   if (save.state === "refused" && save.reason === "not_found") return null
@@ -29,17 +30,24 @@ export function SaveNotice() {
   let text: string
   let actions: ReactNode = null
   if (save.state === "retrying") {
-    // The edits not saved yet are only in this tab, so closing or reloading it loses them. A copy
-    // of what is on screen keeps them whatever happens: it opens as a new project from the
-    // projects page. A user once lost hours of work to a reload here.
+    // The edits not saved yet are in this tab, and kept in this browser only where the host can
+    // (`ProjectStorage.unsent`, best effort: not in private windows or on a full disk). A copy of
+    // what is on screen keeps them whatever happens: it opens as a new project from the projects
+    // page. A user once lost hours of work to a reload here.
     text = "Your latest changes aren't saved yet. Keep this tab open while we try again."
     actions = (
       <>
         <button className={ACTION} onClick={retry}>
           Try again now
         </button>
-        {project && (
-          <button className={ACTION} onClick={() => download(project)}>
+        {open && (
+          <button
+            className={ACTION}
+            onClick={() => {
+              const { project } = useProjectStore.getState()
+              if (project) download(project)
+            }}
+          >
             Download a copy
           </button>
         )}

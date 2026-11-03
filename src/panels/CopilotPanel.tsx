@@ -1,4 +1,4 @@
-import { describeManagedModel } from "@cherryblossom/ai-models"
+import { creditWeightNote, describeManagedModel, modelNameWithWeight } from "@cherryblossom/ai-models"
 import { AlertTriangle, ArrowUp, ArrowUpRight, Boxes, Check, CornerDownRight, Loader2, LogIn, PanelLeftClose, RotateCcw, Sparkles, Square } from "lucide-react"
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { managedAiHost, type FailureKind } from "../ai/managedAi"
@@ -183,15 +183,19 @@ export function CopilotPanel() {
 
 const EMPTY: Entry[] = []
 
-/** The plan's models by their product names; just the name when there is one. */
+/**
+ * The plan's models by their product names, with what a weighted one costs in
+ * credits ("Sakura 2 High (4× credits)"); just the name when there is one.
+ */
 function ModelPicker({ models, value, disabled }: { models: string[]; value: string; disabled: boolean }) {
   if (models.length < 2) {
-    return <span className="truncate text-[11.5px] text-ink-3">{describeManagedModel(value).label}</span>
+    return <span className="truncate text-[11.5px] text-ink-3">{modelNameWithWeight(value)}</span>
   }
+  const { tagline } = describeManagedModel(value)
   return (
     <select
       aria-label="Model"
-      title={describeManagedModel(value).tagline}
+      title={[tagline, creditWeightNote(value)].filter(Boolean).join(". ")}
       value={value}
       disabled={disabled}
       onChange={(e) => useUi.getState().updateSettings({ model: e.target.value })}
@@ -199,7 +203,7 @@ function ModelPicker({ models, value, disabled }: { models: string[]; value: str
     >
       {models.map((id) => (
         <option key={id} value={id}>
-          {describeManagedModel(id).label}
+          {modelNameWithWeight(id)}
         </option>
       ))}
     </select>

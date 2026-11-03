@@ -1,9 +1,8 @@
 import { Download, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
-import { downloadText, projectFileName } from "../export/bundle"
+import { downloadProjectFile } from "../export/bundle"
 import { resolveDesignatorClashes } from "../model/designators"
-import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { usePresence } from "../store/presence"
 import { editingPaused, isCreatedHere, onRemoteChanges, projectApi, useProjectStore } from "../store/projectStore"
@@ -167,7 +166,7 @@ function GoneDialog() {
         </h2>
         <p className="mt-2 text-[13px] leading-[1.5] text-ink-2">It was deleted, or it is no longer shared with you. Download a copy to keep what's on screen; it opens as a new project from your projects page.</p>
         <div className="mt-5 flex justify-end gap-2">
-          <Button onClick={() => downloadText(serializeProject(project, { pretty: true }), projectFileName(project, "json"), "application/json")}>
+          <Button onClick={() => downloadProjectFile(project)}>
             <Download size={14} />
             Download a copy
           </Button>

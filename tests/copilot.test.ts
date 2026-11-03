@@ -118,10 +118,34 @@ describe("copilot over managed AI", () => {
     expect(String(messages[3].content)).toContain("Added D1")
   })
 
-  it("tells the model editing is paused rather than to call the tool again", async () => {
+  it("waits out a pause in editing and then makes the change, without the model knowing", async () => {
+    replies = [toolTurn, () => textTurn()]
+    useProjectStore.setState({ online: false })
+    // The connection comes back as the change is refused.
+    const stop = useProjectStore.subscribe((s, prev) => {
+      if (s.refusedEdits > prev.refusedEdits) useProjectStore.setState({ online: true })
+    })
+    const events = await run("add an LED")
+    stop()
+
+    expect(useProjectStore.getState().project?.components.map((c) => c.ref)).toEqual(["D1"])
+    expect(events.find((e) => e.type === "tool_end")).toMatchObject({ isError: false, changed: true })
+    const tool = (chatCalls()[1].body!.messages as Record<string, unknown>[])[3]
+    expect(String(tool.content)).toContain("Added D1")
+  })
+
+  it("tells the model editing is paused, rather than to call the tool again, when it stays paused", async () => {
     replies = [toolTurn, () => textTurn("Editing is paused.")]
     useProjectStore.setState({ online: false })
-    const events = await run("add an LED")
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const running = run("add an LED")
+    await vi.waitFor(() => expect(useProjectStore.getState().refusedEdits).toBeGreaterThan(0))
+    // Sakura waits two minutes for the pause to end.
+    await vi.advanceTimersByTimeAsync(119_000)
+    expect(chatCalls()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1_000)
+    const events = await running
+    vi.useRealTimers()
 
     expect(useProjectStore.getState().project?.components).toEqual([])
     expect(events.find((e) => e.type === "tool_end")).toMatchObject({ isError: true, changed: false, summary: "Not applied: editing is paused" })

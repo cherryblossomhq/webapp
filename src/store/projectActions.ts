@@ -1,4 +1,4 @@
-import { downloadText, projectFileName } from "../export/bundle"
+import { downloadProjectFile } from "../export/bundle"
 import { forgetReport } from "../kicadImport/reportStore"
 import type { Example } from "../model/examples"
 import { parseProjectFile, ProjectFileError, serializeProject } from "../model/projectFile"
@@ -57,7 +57,7 @@ export async function duplicateStoredProject(storage: ProjectStorage, m: StoredP
 
 export async function downloadStoredProject(storage: ProjectStorage, m: StoredProjectSummary) {
   const { project } = await read(storage, m)
-  downloadText(serializeProject(project, { pretty: true }), projectFileName(project, "json"), "application/json")
+  downloadProjectFile(project)
 }
 
 export async function renameStoredProject(storage: ProjectStorage, m: StoredProjectSummary, name: string) {

@@ -5,9 +5,9 @@ import { addComponent, addLabel, createProject } from "../src/model/ops"
 import { PROJECT_FILE_VERSION } from "../src/model/projectFile"
 import type { Project, SchematicDrawing } from "../src/model/types"
 import { projectChanges } from "../src/store/changes"
-import { connectProjectStorage, isCreatedHere, onRemoteChanges, settleSaves, useProjectStore } from "../src/store/projectStore"
+import { connectProjectStorage, isCreatedHere, onRemoteChanges, reloadKeepingEdits, settleSaves, useProjectStore } from "../src/store/projectStore"
 import { openStoredProject, projectRecord, type RemoteBatch } from "../src/store/storage"
-import { ProjectSync, type SaveStatus, type SyncHost } from "../src/store/sync"
+import { PAUSE_AFTER_MS, ProjectSync, type SaveStatus, type SyncHost } from "../src/store/sync"
 import { memoryStorage } from "./memoryStorage"
 
 /**
@@ -178,7 +178,8 @@ describe("live editing", () => {
     memory.loseNextAnswer()
     rename("Once")
     await settle()
-    expect(api().save.state).toBe("retrying")
+    // A blip: editing carries on.
+    expect(api().save.state).toBe("saving")
     await vi.advanceTimersByTimeAsync(1_500)
     const pushes = memory.calls.filter((c) => c.op === "push")
     expect(pushes).toHaveLength(2)
@@ -190,12 +191,16 @@ describe("live editing", () => {
     expect(api().project!.name).toBe("Once")
   })
 
-  it("pauses editing while a batch keeps failing, and sends what was queued once storage answers", async () => {
+  it("carries on through a blip, pauses editing once batches have failed for a while, and sends what was queued once storage answers", async () => {
     const { memory, id } = await opened()
     memory.setFailure(new Error("offline"))
     rename("A")
-    api().commit(moveFirst(2))
     await settle()
+    // The batch didn't land, and editing goes on: most failures are over in a second or two.
+    expect(api().save.state).toBe("saving")
+    api().commit(moveFirst(2))
+    expect(api().refusedEdits).toBe(0)
+    await vi.advanceTimersByTimeAsync(PAUSE_AFTER_MS)
     expect(api().save.state).toBe("retrying")
     const before = api().project
     rename("B")
@@ -214,7 +219,7 @@ describe("live editing", () => {
     expect(memory.project(id).name).toBe("B")
   })
 
-  it("pauses editing while storage can't be reached, ending a drag in progress", async () => {
+  it("carries a drag through a short outage, and pauses editing when storage stays out of reach, ending the drag", async () => {
     const memory = memoryStorage()
     let connection: (online: boolean) => void = () => {}
     connectProjectStorage({ ...memory.storage, watchConnection: (listener) => ((connection = listener), () => {}) })
@@ -226,6 +231,12 @@ describe("live editing", () => {
     api().beginTransient()
     api().setTransient(moveFirst(5))
     connection(false)
+    await vi.advanceTimersByTimeAsync(PAUSE_AFTER_MS - 1_000)
+    connection(true)
+    expect(api().online).toBe(true)
+    expect(api().project!.components[0].sch.x).toBe(before!.components[0].sch.x + 5)
+    connection(false)
+    await vi.advanceTimersByTimeAsync(PAUSE_AFTER_MS)
     expect(api().online).toBe(false)
     expect(api().project).toBe(before)
     rename("Offline")
@@ -238,23 +249,54 @@ describe("live editing", () => {
     expect(memory.project(id).components[0].sch.x).toBe(before!.components[0].sch.x)
   })
 
-  it("sends the waiting edits a moment after Try again now, and has the connection sign in again first", async () => {
-    const { memory, id } = await opened()
-    const reconnect = vi.fn()
-    memory.storage.reconnect = reconnect
+  it("keeps what a reload would lose in the tab, and the next page shows it and sends it first, under the old page's ids", async () => {
+    const kept = new Map<string, string>()
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => kept.get(key) ?? null,
+      setItem: (key: string, value: string) => void kept.set(key, value),
+      removeItem: (key: string) => void kept.delete(key),
+    })
+    const memory = memoryStorage()
+    // The old page's requests stop when it goes, until the end.
+    let gone = false
+    connectProjectStorage({ ...memory.storage, push: (id, batch) => (gone ? Promise.reject(new Error("The page is gone.")) : memory.storage.push(id, batch)) })
+    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
+    const stored = (await memory.storage.load(id))!
+    api().open(openStoredProject(stored), stored)
+    await settle()
+    const oldPage = api().sessionId
     memory.setFailure(new Error("Sign in to work on projects."))
-    rename("A")
-    // Four tries have failed, and the next is 15 s away.
-    await vi.advanceTimersByTimeAsync(13_000)
+    rename("Kept")
+    await settle()
+    await vi.advanceTimersByTimeAsync(PAUSE_AFTER_MS)
     expect(api().save.state).toBe("retrying")
-    const tries = memory.calls.filter((c) => c.op === "push").length
+
+    const reload = vi.fn()
+    vi.stubGlobal("window", { location: { reload } })
+    reloadKeepingEdits()
+    vi.stubGlobal("window", undefined)
+    expect(reload).toHaveBeenCalledTimes(1)
+    gone = true
+
+    // The next page in the tab, signed in again.
+    connectProjectStorage(memory.storage)
     memory.setFailure(null)
-    api().retrySave()
-    expect(reconnect).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(1_100)
-    expect(memory.calls.filter((c) => c.op === "push")).toHaveLength(tries + 1)
-    expect(memory.project(id).name).toBe("A")
+    const again = (await memory.storage.load(id))!
+    expect(openStoredProject(again).name).toBe("Start")
+    memory.calls.length = 0
+    api().open(openStoredProject(again), again)
+    expect(api().project!.name).toBe("Kept")
+    expect(kept.size).toBe(0)
+    await settle()
+    expect(memory.project(id).name).toBe("Kept")
+    expect(memory.calls.filter((c) => c.op === "push").map((c) => c.clientId)).toEqual([oldPage])
     expect(api().save.state).toBe("saved")
+
+    // The old page's last try got through after all: applied once.
+    gone = false
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(memory.rows.get(id)!.log).toHaveLength(1)
+    vi.unstubAllGlobals()
   })
 
   it("splits a long run of queued edits into batches, so a refusal undoes only the last few", async () => {

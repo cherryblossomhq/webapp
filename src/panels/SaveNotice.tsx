@@ -1,6 +1,7 @@
 import { AlertTriangle, Loader2 } from "lucide-react"
 import type { ReactNode } from "react"
-import { useProjectStore } from "../store/projectStore"
+import { downloadProjectFile } from "../export/bundle"
+import { reloadKeepingEdits, useProjectStore } from "../store/projectStore"
 
 const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-danger/10"
 
@@ -12,24 +13,33 @@ const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-
 export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
   const dismiss = useProjectStore((s) => s.dismissSaveNotice)
-  const retry = useProjectStore((s) => s.retrySave)
   // Editing waits for the connection (`editingPaused`); a viewer edits nothing, and the top bar says they're offline.
   const offline = useProjectStore((s) => !s.online && s.role !== "viewer")
   if (save.state === "refused" && save.reason === "not_found") return null
+  // While edits can't land, the way out is the file: what is on screen (the live project, under a preview), queued edits and all.
+  const download = (
+    <button className={ACTION} onClick={() => downloadProjectFile(useProjectStore.getState().preview?.live ?? useProjectStore.getState().project!)}>
+      Download a copy
+    </button>
+  )
   if (save.state === "saved" || save.state === "saving") {
     if (!offline) return null
-    return <Strip waiting text="You're offline. Editing is paused until the connection is back." />
+    return <Strip waiting text="You're offline. Editing is paused until the connection is back." actions={download} />
   }
   const reload = () => window.location.reload()
   let text: string
   let actions: ReactNode = null
   if (save.state === "retrying") {
-    // What is queued lives in this tab only, so no more is made until it lands.
-    text = "Your latest changes aren't saved yet. Editing is paused until they are; keep this tab open."
+    // What is queued lives in this tab only, so no more is made until it lands. A reload takes it along (`reloadKeepingEdits`),
+    // and loads the page with a fresh session, or asks to sign in when there is none.
+    text = "Your latest changes aren't saved yet, so editing is paused. Reloading keeps them; closing the tab doesn't."
     actions = (
-      <button className={ACTION} onClick={retry}>
-        Try again now
-      </button>
+      <>
+        <button className={ACTION} onClick={reloadKeepingEdits}>
+          Reload
+        </button>
+        {download}
+      </>
     )
   } else if (save.reason === "outdated") {
     text = "A newer version of Cherry Blossom saved this project. Reload to update before editing it here."

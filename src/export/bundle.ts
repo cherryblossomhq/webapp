@@ -1,6 +1,7 @@
 import JSZip from "jszip"
 import { computeConnectivity } from "../model/connectivity"
 import { analyzePcb } from "../model/pcb"
+import { serializeProject } from "../model/projectFile"
 import { ensureTextFont } from "../model/textFont"
 import { withRuleAreaFlags } from "../model/ruleAreas"
 import type { Project } from "../model/types"
@@ -91,4 +92,9 @@ export function downloadBlob(blob: Blob, filename: string) {
 
 export function downloadText(text: string, filename: string, mime = "text/plain") {
   downloadBlob(new Blob([text], { type: mime }), filename)
+}
+
+/** The project as a file of its own, the one Export JSON makes: it opens as a new project from the projects page. */
+export function downloadProjectFile(project: Project) {
+  downloadText(serializeProject(project, { pretty: true }), projectFileName(project, "json"), "application/json")
 }

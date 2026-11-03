@@ -1,5 +1,5 @@
 import { copilotAccess, copilotModel, limitOffer, useAccount, type LimitOffer } from "../store/accountStore"
-import { editingPaused, useProjectStore } from "../store/projectStore"
+import { editingPaused, editingResumes, useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
 import type { Project } from "../model/types"
@@ -21,7 +21,12 @@ export const MAX_ITERATIONS = 32
 const MAX_TOKENS = 32000
 /** Thinking before acting pays off on circuits; medium keeps a tool round quick. */
 const REASONING_EFFORT = "medium"
-/** What a change refused because editing is paused (`editingPaused`) tells the model: trying again is refused the same way. */
+/**
+ * How long a change refused because editing is paused (`editingPaused`) waits for it to resume before Sakura gives up. Most
+ * pauses are over by then (the session back, the connection back), and the change lands as if nothing happened.
+ */
+const PAUSE_WAIT_MS = 120_000
+/** What a change refused because editing stayed paused tells the model: trying again is refused the same way. */
 const PAUSED_RESULT =
   "Editing is paused because the user's latest changes haven't reached storage yet (offline, or the server isn't answering), so this change was not applied. Don't call more tools: tell the user to ask again once the strip under the top bar is gone."
 
@@ -269,7 +274,10 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
         else if (changed) {
           const base = outcome.base
           // Commit only onto the project the change was made to; a newer edit can't be overwritten.
-          useProjectStore.getState().commit((p) => (p === base ? outcome.project : p))
+          const apply = () => useProjectStore.getState().commit((p) => (p === base ? outcome.project : p))
+          apply()
+          // Refused with the project as it was: editing is paused, or was a moment ago. Wait for it, then make the change as meant.
+          if (useProjectStore.getState().project === base && (await editingResumes(PAUSE_WAIT_MS, signal))) apply()
           if (useProjectStore.getState().project !== outcome.project) {
             changed = false
             // Refused, not overtaken: calling again would be refused the same way until the edits already made land.
@@ -319,6 +327,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
   }
   for (const lease of leases) lease.release()
   if (stopReason === "aborted") failed = true
+  // A pause at the end waits to be over before the work is kept, as a single change's does.
+  if (together && !failed && working !== project && editingPaused(useProjectStore.getState())) await editingResumes(PAUSE_WAIT_MS, signal)
   if (together && !failed) {
     // All of it or none: a sheet edited meanwhile, or work that is not finished, is not committed, and the user is told.
     const edited = working !== project && useProjectStore.getState().project !== project

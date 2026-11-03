@@ -1,10 +1,9 @@
 import { Box, Braces, CircuitBoard, Download, FileJson, FileSpreadsheet, Package } from "lucide-react"
 import { resolvedComponents } from "../model/ruleAreas"
 import { useEffect, useRef, useState } from "react"
-import { buildFabricationZip, downloadBlob, downloadText, projectFileName } from "../export/bundle"
+import { buildFabricationZip, downloadBlob, downloadProjectFile, downloadText, projectFileName } from "../export/bundle"
 import { circuitJsonFile } from "../export/circuitJson"
 import { outlineWarning } from "../export/outlineGuard"
-import { serializeProject } from "../model/projectFile"
 import { bomCsv } from "../export/bom"
 import { pnpCsv } from "../export/pnp"
 import { ensureTextFont } from "../model/textFont"
@@ -125,7 +124,7 @@ export function ExportMenu() {
             icon={<FileJson size={16} />}
             title="Project file"
             detail="Cherry Blossom .json you can import later"
-            onClick={() => run(() => downloadText(serializeProject(projectApi().project!, { pretty: true }), projectFileName(projectApi().project!, "json"), "application/json"))}
+            onClick={() => run(() => downloadProjectFile(projectApi().project!))}
           />
         </div>
       )}

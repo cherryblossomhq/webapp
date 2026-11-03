@@ -8,8 +8,9 @@ import { PROJECT_FILE_VERSION } from "../model/projectFile"
 import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
 import { projectChanges } from "./changes"
+import { forgetKeptEdits, keepEdits, takeKeptEdits } from "./keptEdits"
 import type { ProjectRole, ProjectStorage, RemoteBatch } from "./storage"
-import { ProjectSync, type SaveStatus, type SyncHost } from "./sync"
+import { ProjectSync, type KeptBatch, type SaveStatus, type SyncHost } from "./sync"
 
 export type { SaveStatus } from "./sync"
 
@@ -91,8 +92,6 @@ interface ProjectState {
   patch: (fn: (p: Project) => Project) => void
   /** Take down the strip saying the last edits were refused. */
   dismissSaveNotice: () => void
-  /** The strip's Try again now, while edits aren't arriving: the connection signs in again, and they are sent at once. */
-  retrySave: () => void
   beginTransient: () => void
   /** Replace the document during a drag without creating history entries. */
   setTransient: (fn: (base: Project) => Project) => void
@@ -103,11 +102,32 @@ interface ProjectState {
 }
 
 /**
- * Edits can't reach storage now: it can't be reached, or a batch keeps failing (a session the server dropped, a server error).
- * The user's edits are refused until they can, as a viewer's are: kept only in this tab, they would be lost to a reload, and
- * were once for hours of work. What a background check or someone else's edit settles (`patch`) still queues.
+ * Edits haven't reached storage for a while (`PAUSE_AFTER_MS`): it can't be reached, or batches keep failing (a session the
+ * server dropped, a server error). The user's edits are refused until they can, as a viewer's are: kept only in this tab, they
+ * would be lost with it, and were once for hours of work. What a background check or someone else's edit settles (`patch`)
+ * still queues.
  */
 export const editingPaused = (s: Pick<ProjectState, "online" | "save">) => !s.online || s.save.state === "retrying"
+
+/** Resolves true once editing isn't paused, or false if it still is after `ms` or `signal` aborts first: Sakura waits out a pause this way. */
+export function editingResumes(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    const done = (resumed: boolean) => {
+      clearTimeout(timer)
+      unsubscribe()
+      signal?.removeEventListener("abort", aborted)
+      resolve(resumed)
+    }
+    const aborted = () => done(false)
+    const timer = setTimeout(aborted, ms)
+    const unsubscribe = useProjectStore.subscribe((s) => {
+      if (!editingPaused(s)) done(true)
+    })
+    signal?.addEventListener("abort", aborted)
+    if (signal?.aborted) aborted()
+    else if (!editingPaused(useProjectStore.getState())) done(true)
+  })
+}
 
 let storage: ProjectStorage | null = null
 
@@ -134,6 +154,26 @@ function retireSync() {
 const unsavedSyncs = () => {
   for (const s of retired) if (!s.unsaved) retired.delete(s)
   return [sync, ...retired].filter((s): s is ProjectSync => !!s?.unsaved)
+}
+
+/** Keep every edit that hasn't landed for the next page in this tab (`keptEdits.ts`). False when some couldn't be kept. */
+function keepUnsentEdits(): boolean {
+  const byProject = new Map<string, KeptBatch[]>()
+  // Oldest first: a project closed and opened again has its earlier copy's batches before the open one's.
+  for (const s of [...retired, sync]) {
+    if (!s?.unsaved) continue
+    byProject.set(s.id, [...(byProject.get(s.id) ?? []), ...s.unsent()])
+  }
+  return keepEdits(byProject)
+}
+
+/** Set while the page reloads with its unsent edits kept, so leaving needn't ask. */
+let leavingKept = false
+
+/** Reload the page, its unsent edits kept for the next page to send. If they can't be kept, leaving asks first, as it always did. */
+export function reloadKeepingEdits() {
+  leavingKept = keepUnsentEdits()
+  window.location.reload()
 }
 
 /** How long leaving the editor waits for its saves before going anyway: offline, a save never lands. */
@@ -321,7 +361,9 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
       sync = created
       set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, online: true, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null })
-      created?.start()
+      // What the page before this one in the tab didn't get saved (a reload, signing in again) goes out first. A viewer's
+      // couldn't land: they stay kept for when this tab opens it as someone who can edit it.
+      created?.start(role === "viewer" ? [] : takeKeptEdits(p.id))
     },
     close: () => {
       retireSync()
@@ -387,10 +429,6 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     dismissSaveNotice: () => sync?.dismiss(),
-    retrySave: () => {
-      storage?.reconnect?.()
-      sync?.retryNow()
-    },
 
     beginTransient: () => {
       const { project, role } = get()
@@ -453,13 +491,23 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 })
 
 if (typeof window !== "undefined") {
-  window.addEventListener("pagehide", () => unsavedSyncs().forEach((s) => void s.flush()))
-  // An edit is a network request, and one cut off by the page going away is work lost.
+  // Kept for the next page in this tab (a reload, signing in again, the host reloading a page whose session check failed),
+  // and sent once more in case this page's last request gets through.
+  window.addEventListener("pagehide", () => {
+    keepUnsentEdits()
+    unsavedSyncs().forEach((s) => void s.flush())
+  })
+  // Back from the back-forward cache: this page still holds its edits, and what it kept as it went is stale.
+  window.addEventListener("pageshow", (e) => {
+    leavingKept = false
+    if (e.persisted) forgetKeptEdits()
+  })
+  // An edit is a network request, and one cut off by the page going away is work lost: a closed tab takes what it kept with it.
   window.addEventListener("beforeunload", (e) => {
     const unsaved = unsavedSyncs()
     if (!unsaved.length) return
     unsaved.forEach((s) => void s.flush())
-    e.preventDefault()
+    if (!leavingKept) e.preventDefault()
   })
 }
 

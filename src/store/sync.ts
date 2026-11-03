@@ -14,14 +14,19 @@ const MAX_BATCH_STEPS = 8
 const MAX_BATCH_CHANGES = 2_000
 /** Waits before sending again a batch that didn't arrive (offline, a server error). */
 const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
-/** Try again now's wait: a moment for the connection, asked to sign in again with it, to do so. */
-const RETRY_NOW_MS = 1_000
+/**
+ * How long edits may go without reaching storage (offline, or batches failing) before editing
+ * pauses. A blip, such as a dropped sign-in renewed in seconds or one server error, mustn't end a
+ * drag or stop Sakura; the second retry and the website's first reconnect both fall inside it.
+ */
+export const PAUSE_AFTER_MS = 8_000
 
 /**
  * How the open project's edits are getting to storage.
  *
  * - `saving`: an edit is on its way.
- * - `retrying`: a batch didn't arrive; it is sent again until it does, and editing waits for it.
+ * - `retrying`: batches haven't arrived for `PAUSE_AFTER_MS`; they are sent again until they do, and
+ *   editing waits for them.
  * - `refused`: storage turned a batch away, and the top bar says what that means:
  *   `outdated` (a newer editor saved it: reload), `not_found` (deleted or unshared),
  *   `forbidden` (made read-only: the edit was undone), `too_large` (the edit was undone),
@@ -44,7 +49,7 @@ export interface SyncHost {
   role(role: ProjectRole): void
   /** Deleted, or no longer shared with this user. */
   gone(): void
-  /** Whether storage can be reached, as it changes (`ProjectStorage.watchConnection`): editing waits while it can't. */
+  /** Whether storage can be reached (`ProjectStorage.watchConnection`), once it has been out for `PAUSE_AFTER_MS`: editing waits while it can't. */
   connection(online: boolean): void
   /**
    * Edits were refused and taken off the screen. The undo history held them, and its steps are
@@ -54,7 +59,16 @@ export interface SyncHost {
   refused(): void
 }
 
+/** A batch that hadn't landed when its page went (`unsent`): the next page in the tab sends it under its own tab and number. */
+export interface KeptBatch {
+  clientId: string
+  batch: number
+  changes: Change[]
+}
+
 interface Pending {
+  /** Set on a batch an earlier page in this browser tab made (`start`): it is sent under that page's id. */
+  clientId?: string
   batch: number
   changes: Change[]
   /** Edits gathered in it. */
@@ -82,10 +96,11 @@ interface Pending {
  * - **A gap** (a long sleep, a whole-project write, a format change) loads the project again and
  *   puts `pending` back on top. A batch resent after a reload is recognised by its number and not
  *   applied twice.
- * - **Edits are kept in this tab only.** While they can't reach storage (offline, or a batch keeps
- *   failing), the store refuses new ones (`editingPaused`) rather than pile up work a reload would
- *   lose: edits were once refused for hours while the user was still signed in, and a reload lost
- *   them all. What was already queued is sent once storage answers.
+ * - **Edits are kept in this tab only.** While they can't reach storage (offline, or batches keep
+ *   failing, for `PAUSE_AFTER_MS`), the store refuses new ones (`editingPaused`) rather than pile up
+ *   work a closed tab would lose: edits were once refused for hours while the user was still signed
+ *   in. What was already queued is sent once storage answers, or by the next page in this tab
+ *   (a reload, signing in again), which takes it over (`unsent`, then `start`).
  *
  * Like the autosave it replaced, it outlives the project being on screen: closing a project leaves
  * its last batches to land (`retire`).
@@ -100,6 +115,10 @@ export class ProjectSync {
   private inFlight: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private failures = 0
+  /** Since when edits haven't been reaching storage, and why: editing pauses once it has been `PAUSE_AFTER_MS`. */
+  private trouble: { since: number; message: string } | null = null
+  private pauseTimer: ReturnType<typeof setTimeout> | null = null
+  private offlineTimer: ReturnType<typeof setTimeout> | null = null
   private stopped: "outdated" | "not_found" | "unupgradable" | null = null
   private notice: "forbidden" | "too_large" | null = null
   private unwatch: (() => void) | null = null
@@ -124,16 +143,35 @@ export class ProjectSync {
     this.role = role
   }
 
-  /** Follow the project's log, after upgrading a document stored in an older format. */
-  start() {
-    this.unwatchConnection = this.storage.watchConnection?.((online) => this.host.connection(online)) ?? null
-    if (this.formatVersion < PROJECT_FILE_VERSION && this.role !== "viewer") void this.upgrade()
-    else this.watch()
+  /**
+   * Follow the project's log, after upgrading a document stored in an older format. `kept` are the
+   * batches the page before this one in the tab didn't get to storage (`unsent`): they show at once
+   * and go out first, under that page's ids, so one that landed after all is answered with its
+   * revision rather than applied twice.
+   */
+  start(kept: KeptBatch[] = []) {
+    this.unwatchConnection = this.storage.watchConnection?.((online) => this.connected(online)) ?? null
+    if (kept.length) {
+      this.pending.push(...kept.map((k) => ({ ...k, steps: 1, sent: true })))
+      this.host.rebase(this.view(), [])
+      this.report()
+    }
+    if (this.formatVersion < PROJECT_FILE_VERSION && this.role !== "viewer") return void this.upgrade()
+    this.watch()
+    if (kept.length) void this.flush()
   }
 
   /** True while an edit hasn't reached storage yet and is still going to. */
   get unsaved() {
     return !this.stopped && this.pending.some((p) => p.landed === undefined)
+  }
+
+  /** The batches that haven't landed, in order, for the next page in this tab to send (`start`). */
+  unsent(): KeptBatch[] {
+    if (this.stopped) return []
+    return this.pending
+      .filter((p) => p.landed === undefined)
+      .map((p) => ({ clientId: p.clientId ?? this.clientId, batch: p.batch, changes: p.changes }))
   }
 
   /** Queue the changes of a local edit. */
@@ -163,7 +201,7 @@ export class ProjectSync {
     const view = this.view()
     this.inFlight = this.storage
       .push(this.id, {
-        clientId: this.clientId,
+        clientId: next.clientId ?? this.clientId,
         batch: next.batch,
         changes: next.changes,
         formatVersion: PROJECT_FILE_VERSION,
@@ -172,6 +210,7 @@ export class ProjectSync {
       .then(
         (outcome) => {
           this.failures = 0
+          this.recovered()
           if (!outcome.ok) return this.refused(next, outcome.reason)
           next.landed = outcome.revision
           // Already in `confirmed`: a resend of a batch that landed before a reload. If it was still
@@ -183,7 +222,7 @@ export class ProjectSync {
           }
         },
         (error: unknown) => {
-          this.host.status({ state: "retrying", message: error instanceof Error ? error.message : String(error) })
+          this.troubled(error)
           this.wait(RETRY_DELAYS_MS[Math.min(this.failures++, RETRY_DELAYS_MS.length - 1)])
         },
       )
@@ -202,12 +241,6 @@ export class ProjectSync {
     this.report()
   }
 
-  /** Send the batch that didn't arrive again soon, rather than after the wait it is in (up to 30 s). */
-  retryNow() {
-    if (this.failures === 0 || this.inFlight || this.stopped || this.reloading) return
-    this.wait(RETRY_NOW_MS)
-  }
-
   /** The project is off screen: stop following it, and let what is queued land. */
   retire() {
     this.retired = true
@@ -215,6 +248,9 @@ export class ProjectSync {
     this.unwatch = null
     this.unwatchConnection?.()
     this.unwatchConnection = null
+    this.recovered()
+    if (this.offlineTimer) clearTimeout(this.offlineTimer)
+    this.offlineTimer = null
     void this.flush()
   }
 
@@ -255,7 +291,7 @@ export class ProjectSync {
         gap = true
         break
       }
-      const mine = b.clientId === this.clientId ? this.pending.findIndex((p) => p.batch === b.batch) : -1
+      const mine = this.pending.findIndex((p) => p.batch === b.batch && (p.clientId ?? this.clientId) === b.clientId)
       if (mine >= 0) {
         this.confirmed = applyChanges(this.confirmed, this.pending[mine].changes)
         this.pending.splice(mine, 1)
@@ -290,11 +326,13 @@ export class ProjectSync {
       stored = await this.storage.load(this.id)
     } catch (error) {
       this.reloading = false
-      this.host.status({ state: "retrying", message: error instanceof Error ? error.message : String(error) })
+      this.troubled(error)
       setTimeout(() => void this.reload(attempt + 1), RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)])
       return
     }
     this.reloading = false
+    // The project can be read again; batches that keep failing are still trouble of their own.
+    if (!this.failures) this.recovered()
     if (!stored) return this.lose()
     let project: Project
     try {
@@ -399,6 +437,7 @@ export class ProjectSync {
 
   private stop(reason: "outdated" | "not_found" | "unupgradable") {
     this.stopped = reason
+    this.recovered()
     this.unwatch?.()
     this.unwatch = null
     if (this.timer) clearTimeout(this.timer)
@@ -414,12 +453,49 @@ export class ProjectSync {
     }, ms)
   }
 
+  // ---------- Edits not reaching storage ----------
+
+  /**
+   * A batch, or reading the project again, failed. Editing carries on through a blip, and pauses
+   * (`retrying`) once nothing has got through for `PAUSE_AFTER_MS`.
+   */
+  private troubled(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    this.trouble = { since: this.trouble?.since ?? Date.now(), message }
+    const left = this.trouble.since + PAUSE_AFTER_MS - Date.now()
+    if (left <= 0) return this.host.status({ state: "retrying", message })
+    if (this.pauseTimer) clearTimeout(this.pauseTimer)
+    this.pauseTimer = setTimeout(() => {
+      this.pauseTimer = null
+      if (this.trouble) this.host.status({ state: "retrying", message: this.trouble.message })
+    }, left)
+  }
+
+  /** Something got through: whatever was failing is over. */
+  private recovered() {
+    this.trouble = null
+    if (this.pauseTimer) clearTimeout(this.pauseTimer)
+    this.pauseTimer = null
+  }
+
+  /** Storage went, or came back. Going is news once it has lasted `PAUSE_AFTER_MS`. */
+  private connected(online: boolean) {
+    if (this.offlineTimer) clearTimeout(this.offlineTimer)
+    this.offlineTimer = null
+    if (online) return this.host.connection(true)
+    this.offlineTimer = setTimeout(() => {
+      this.offlineTimer = null
+      this.host.connection(false)
+    }, PAUSE_AFTER_MS)
+  }
+
   private report() {
     if (this.stopped) return this.host.status({ state: "refused", reason: this.stopped })
     const waiting = this.pending.some((p) => p.landed === undefined)
     // A batch whose answer was lost but which the log showed landed: nothing is failing any more.
     if (!waiting) this.failures = 0
     if (this.failures > 0) return
+    this.recovered()
     if (waiting) return this.host.status({ state: "saving" })
     this.host.status(this.notice ? { state: "refused", reason: this.notice } : { state: "saved" })
   }

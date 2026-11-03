@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { clearZoneFillCache } from "../src/model/zoneFill"
 import type { Project } from "../src/model/types"
-import { FILL_DEBOUNCE_MS, getLiveAnalysis, getPcbAnalysis, getPreviewFills, stopZoneFills, useFillTick } from "../src/store/analysis"
+import { computeConnectivity } from "../src/model/connectivity"
+import { previewFills } from "../src/pages/boardPreviewSvg"
+import { FILL_DEBOUNCE_MS, getLiveAnalysis, getPcbAnalysis, stopZoneFills, useFillTick } from "../src/store/analysis"
 import { useProjectStore } from "../src/store/projectStore"
 import { rectangle, twoResistors, withZone } from "./zones-fixtures"
 
@@ -90,24 +92,21 @@ describe("getLiveAnalysis", () => {
   })
 })
 
-describe("getPreviewFills", () => {
+describe("previewFills", () => {
+  const fills = (p: Project) => previewFills(p, computeConnectivity(p))
+
   it("fills a small board's polygon zones, as the editor does", () => {
-    const p = withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })
-    expect(getPreviewFills(p).length).toBeGreaterThan(0)
+    expect(fills(withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })).length).toBeGreaterThan(0)
   })
 
-  it("fills no polygon zone of a big board on the page, and draws the fill once one is made", () => {
-    // A projects page draws every project's preview: a big board's zones took minutes to fill there.
+  it("fills no polygon zone of a big board: the preview worker draws one board at a time", () => {
     const small = withZone(twoResistors(), rectangle(-19, -13, -11, -5), { net: "GND" })
     const p = { ...small, vias: Array.from({ length: 3001 }, (_, i) => ({ id: `v${i}`, x: 40 + (i % 60), y: 40 + Math.floor(i / 60), diameter: 0.6, drill: 0.3 })) }
-    expect(getPreviewFills(p)).toEqual([])
-    const made = getPcbAnalysis(p).zoneFills
-    expect(made.length).toBeGreaterThan(0)
-    expect(getPreviewFills(p)).toBe(made)
+    expect(fills(p)).toEqual([])
   })
 
   it("fills a project of whole-board pours as the analysis does", () => {
     const whole = { ...twoResistors(), zones: [{ id: "pour", net: "GND", layer: "bottom" as const }] }
-    expect(getPreviewFills(whole)).toEqual(getPcbAnalysis(whole).zoneFills)
+    expect(fills(whole)).toEqual(getPcbAnalysis(whole).zoneFills)
   })
 })

@@ -9,22 +9,16 @@ import { pathsSvgPath } from "../model/shapes"
 import type { Project } from "../model/types"
 
 /**
- * The bare board as a fab would ship it, top view, as the text of an SVG file: copper under the mask
- * shows lighter, pads are plated, silkscreen on top, part bodies hinted with soft shadows.
- *
- * A string and not React elements so a worker can draw it (`preview.worker.ts`): a projects page shows a
- * preview per project, and building thousands of pads, traces and pour edges as live elements, with the
- * pour fill before them, held the page's thread for seconds on a list with a big board in it.
- * The page shows the string as an image, which the browser draws once.
+ * The bare board as a fab would ship it, top view, as the text of an SVG file: copper under the mask shows lighter, pads
+ * are plated, silkscreen on top, part bodies hinted with soft shadows. Text rather than React elements so the preview
+ * worker can draw it and the page show it as one image.
  */
 
-/** Parts, tracks and vias past which a board's preview fills none of its zones itself. */
 const PREVIEW_FILL_ITEMS = 3000
 
 /**
- * The pour fills a preview draws: on a small board every zone filled, as the editor fills them; on a big one only the fills kept already
- * (KiCad's own), filling no zone that has none. The 47 zones of a 2,970-part board took minutes to fill, and the worker draws one preview
- * at a time, so one such board would hold up every card after it; the editor fills them in its own worker once the project is open.
+ * The pour fills a preview draws: every zone on a small board; on a big one only the fills kept already (KiCad's), since
+ * the 47 zones of a 2,970-part board took minutes and would hold up every preview queued after it.
  */
 export function previewFills(p: Project, connectivity: SchematicConnectivity): ZoneFill[] {
   const big = p.components.length + p.traces.length + p.vias.length > PREVIEW_FILL_ITEMS
@@ -75,7 +69,8 @@ export function boardPreviewSvg(project: Project, fills: ZoneFill[]): string {
   const pad = Math.max(b.width, b.height) * 0.06
   const out: string[] = []
   out.push(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(minX - pad)} ${n(-(minY + b.height) - pad)} ${n(b.width + pad * 2)} ${n(b.height + pad * 2)}">`,
+    // A size as well as the box, so the image has the board's shape when it is drawn onto a canvas (`rasterize`).
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${n(b.width + pad * 2)}" height="${n(b.height + pad * 2)}" viewBox="${n(minX - pad)} ${n(-(minY + b.height) - pad)} ${n(b.width + pad * 2)} ${n(b.height + pad * 2)}">`,
     `<defs><filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${n(Math.max(b.width, b.height) * 0.006)}"/></filter></defs>`,
     `<g transform="scale(1,-1)">`,
   )

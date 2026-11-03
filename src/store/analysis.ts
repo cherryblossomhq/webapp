@@ -8,7 +8,6 @@ import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { seedZoneFills, type PendingGroup } from "../model/zoneFill"
 import { needsZoneEngine } from "../model/zones"
-import { previewFills } from "../pages/boardPreviewSvg"
 import { useProjectStore } from "./projectStore"
 import type { ZoneFillReply, ZoneFillRequest } from "./zoneFill.worker"
 
@@ -214,16 +213,6 @@ export const getLiveZoneFills = (p: Project): ZoneFill[] => getLiveAnalysis(p).z
 /** Filled copper pours, computed as part of the PCB analysis. */
 export function getZoneFills(p: Project): ZoneFill[] {
   return getPcbAnalysis(p).zoneFills
-}
-
-/**
- * The fills a board's preview draws when it is drawn on the page's thread (`BoardPreview`): the analysis's when it is made, else `previewFills`. A projects
- * page draws its previews in a worker instead (`pages/previews.ts`).
- */
-export function getPreviewFills(p: Project): ZoneFill[] {
-  const made = pcbCache.get(p)
-  if (made) return made.zoneFills
-  return previewFills(p, getConnectivity(p))
 }
 
 export function useConnectivity(): SchematicConnectivity | null {

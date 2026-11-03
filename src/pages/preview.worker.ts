@@ -2,9 +2,8 @@ import { computeConnectivity } from "../model/connectivity"
 import { parseProjectFile } from "../model/projectFile"
 import { boardPreviewSvg, previewFills } from "./boardPreviewSvg"
 
-// A projects page's previews, drawn off the page's thread: reading a stored project, filling its pours and writing the
-// picture took seconds for a big board, and the page froze while every card in view did it at once. The project comes as its
-// file, which reading registers its own parts and land patterns for here, one request at a time, so each is drawn with its own.
+// A projects page's previews, drawn off the page's thread. The project comes as its file, which reading registers its
+// parts and land patterns for here, one request at a time, so each is drawn with its own.
 
 export interface PreviewRequest {
   key: string

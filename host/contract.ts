@@ -47,12 +47,7 @@ export interface MeResponse {
     dayResetsAt: number | null;
     monthlyTokens: number;
     monthResetsAt: number | null;
-    /**
-     * Gift credits left: free credits given to this account by hand, spent
-     * once `monthlyTokens` reaches the plan's limit and before on-demand. They
-     * never expire, and lift the monthly credit limit only. Usually 0; absent
-     * from a server older than gift credits, which reads the same.
-     */
+    /** Gift credits left: spent past the monthly limit, before on-demand. Absent from older servers. */
     giftCredits?: number;
   };
   /**

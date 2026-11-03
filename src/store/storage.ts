@@ -48,6 +48,8 @@ export interface ProjectStorage {
   watchChanges(id: string, after: number, listener: (event: ChangesEvent) => void, onError: (error: Error) => void): () => void
   /** Whether storage can be reached now, as it changes: an open project says when edits are waiting for the connection. */
   watchConnection?(listener: (online: boolean) => void): () => void
+  /** Have the connection sign in again (the save strip's Try again now), for a session it dropped while the user is still signed in. */
+  reconnect?(): void
   /** Delete a project: the owner deletes it for everyone, anyone else leaves it. */
   remove(id: string): Promise<void>
   /** Sharing by email (the Share dialog). Absent where projects are one person's, as in this browser's storage. */

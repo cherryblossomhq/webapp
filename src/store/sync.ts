@@ -14,6 +14,8 @@ const MAX_BATCH_STEPS = 8
 const MAX_BATCH_CHANGES = 2_000
 /** Waits before sending again a batch that didn't arrive (offline, a server error). */
 const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
+/** Try again now's wait: a moment for the connection, asked to sign in again with it, to do so. */
+const RETRY_NOW_MS = 1_000
 
 /**
  * How the open project's edits are getting to storage.
@@ -190,6 +192,12 @@ export class ProjectSync {
     if (!this.notice) return
     this.notice = null
     this.report()
+  }
+
+  /** Send the batch that didn't arrive again soon, rather than after the wait it is in (up to 30 s). */
+  retryNow() {
+    if (this.failures === 0 || this.inFlight || this.stopped || this.reloading) return
+    this.wait(RETRY_NOW_MS)
   }
 
   /** The project is off screen: stop following it, and let what is queued land. */

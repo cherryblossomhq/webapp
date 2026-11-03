@@ -1,5 +1,7 @@
 import { AlertTriangle, Loader2 } from "lucide-react"
 import type { ReactNode } from "react"
+import { downloadText, projectFileName } from "../export/bundle"
+import { serializeProject } from "../model/projectFile"
 import { useProjectStore } from "../store/projectStore"
 
 const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-danger/10"
@@ -12,13 +14,33 @@ const ACTION = "h-6 shrink-0 rounded-[6px] px-2 text-[12px] font-[600] hover:bg-
 export function SaveNotice() {
   const save = useProjectStore((s) => s.save)
   const dismiss = useProjectStore((s) => s.dismissSaveNotice)
+  const retry = useProjectStore((s) => s.retrySave)
+  const project = useProjectStore((s) => s.project)
   if (save.state === "saved" || save.state === "saving") return null
   if (save.state === "refused" && save.reason === "not_found") return null
   const reload = () => window.location.reload()
   let text: string
   let actions: ReactNode = null
   if (save.state === "retrying") {
-    text = "Your latest changes aren't saved yet. Trying again…"
+    // The edits not saved yet are only in this tab, so closing or reloading it loses them. A copy
+    // of what is on screen keeps them whatever happens: it opens as a new project from the
+    // projects page. A user once lost hours of work to a reload here.
+    text = "Your latest changes aren't saved yet. Keep this tab open while we try again."
+    actions = (
+      <>
+        <button className={ACTION} onClick={retry}>
+          Try again now
+        </button>
+        {project && (
+          <button
+            className={ACTION}
+            onClick={() => downloadText(serializeProject(project, { pretty: true }), projectFileName(project, "json"), "application/json")}
+          >
+            Download a copy
+          </button>
+        )}
+      </>
+    )
   } else if (save.reason === "outdated") {
     text = "A newer version of Cherry Blossom saved this project. Reload to update before editing it here."
     actions = (

@@ -205,6 +205,25 @@ describe("live editing", () => {
     expect(api().save.state).toBe("saved")
   })
 
+  it("sends the waiting edits a moment after Try again now, and has the connection sign in again first", async () => {
+    const { memory, id } = await opened()
+    const reconnect = vi.fn()
+    memory.storage.reconnect = reconnect
+    memory.setFailure(new Error("Sign in to work on projects."))
+    rename("A")
+    // Four tries have failed, and the next is 15 s away.
+    await vi.advanceTimersByTimeAsync(13_000)
+    expect(api().save.state).toBe("retrying")
+    const tries = memory.calls.filter((c) => c.op === "push").length
+    memory.setFailure(null)
+    api().retrySave()
+    expect(reconnect).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1_100)
+    expect(memory.calls.filter((c) => c.op === "push")).toHaveLength(tries + 1)
+    expect(memory.project(id).name).toBe("A")
+    expect(api().save.state).toBe("saved")
+  })
+
   it("splits a long run of queued edits into batches, so a refusal undoes only the last few", async () => {
     const { memory, id } = await opened()
     memory.setFailure(new Error("offline"))

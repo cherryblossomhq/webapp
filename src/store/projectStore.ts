@@ -89,6 +89,8 @@ interface ProjectState {
   patch: (fn: (p: Project) => Project) => void
   /** Take down the strip saying the last edits were refused. */
   dismissSaveNotice: () => void
+  /** The strip's Try again now, while edits aren't arriving: the connection signs in again, and they are sent at once. */
+  retrySave: () => void
   beginTransient: () => void
   /** Replace the document during a drag without creating history entries. */
   setTransient: (fn: (base: Project) => Project) => void
@@ -366,6 +368,10 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     dismissSaveNotice: () => sync?.dismiss(),
+    retrySave: () => {
+      storage?.reconnect?.()
+      sync?.retryNow()
+    },
 
     beginTransient: () => {
       const { project, role } = get()

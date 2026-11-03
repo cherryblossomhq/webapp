@@ -35,7 +35,7 @@ import { shapeLayerInfo } from "../model/shapeLayers"
 import { isOtherZone, isWholeBoardPour, keepoutFlags, zoneLayers, zoneOtherLayers } from "../model/zones"
 import { placementWords } from "../model/placementAreas"
 import { Button, Field, IconButton, Segmented } from "../ui/controls"
-import { NetClassesSection, NetClassField } from "./NetClassesSection"
+import { ClearanceRulesSection, NetClassesSection, NetClassField } from "./NetClassesSection"
 import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, RuleRow, Section, Switch, useLengthUnit } from "../ui/form"
 import { onBoard } from "../model/partFlags"
 import { LayersSection } from "./LayersSection"
@@ -76,6 +76,7 @@ export function ProjectInspector({ project }: { project: Project }) {
       <PoursSection project={project} />
       <NetsSection project={project} />
       <NetClassesSection project={project} />
+      <ClearanceRulesSection project={project} />
       <NetChainsSection project={project} />
     </div>
   )

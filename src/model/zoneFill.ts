@@ -404,7 +404,7 @@ function padReachOf(recs: ItemRec[]): number {
 
 /** The part of the design rules that sets a gap between nets, as text: what a fill kept under a key depends on besides the copper and the zones. */
 function classSignature(rules: Project["rules"]): string {
-  return JSON.stringify([rules.clearance, rules.minClearance ?? 0, (rules.netClasses ?? []).map((c) => [c.nets, c.patterns ?? [], c.clearance ?? null])])
+  return JSON.stringify([rules.clearance, rules.minClearance ?? 0, (rules.netClasses ?? []).map((c) => [c.nets, c.patterns ?? [], c.clearance ?? null]), rules.clearanceRules ?? []])
 }
 
 // ---------- Reusing fills (X3) ----------
@@ -621,14 +621,14 @@ export function carveFills(project: Project, fills: ZoneFill[], fresh: { item: C
     const zone = project.zones.find((z) => z.id === f.zoneId)
     if (!zone || !f.polygons.length) return f
     const own = zoneSettings(project, zone).clearance
-    const gapOf = (net: string | null) => Math.max(own, classes.pair(f.netName || null, netName(net))) + EXTRA
+    const gapOf = (net: string | null, part: string | null = null) => Math.max(own, classes.pair(f.netName || null, netName(net), null, part)) + EXTRA
     const paths: Paths64 = f.polygons.flatMap((poly) => poly.map(ring))
     const box = boundsOf(paths)
     const holes: Paths64 = []
     for (const { item: it, net } of fresh) {
       if (!it.layers.includes(f.layer) || (net !== null && net === f.netId)) continue
       const b = it.box
-      const gap = gapOf(net)
+      const gap = gapOf(net, it.kind === "pad" ? it.pad.componentId : null)
       if (!overlaps({ minX: b.minX * U, maxX: b.maxX * U, minY: b.minY * U, maxY: b.maxY * U }, box, gap * U)) continue
       if (it.kind === "segment") holes.push(...stroke(trackPoints(it), it.width / 2 + gap + ROUND))
       else if (it.kind === "via") holes.push(circlePath(it.at.x, it.at.y, it.diameter / 2 + gap))
@@ -682,7 +682,8 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
   // KiCad max's a zone's local clearance with the class value and does not substitute it (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063), and the
   // class value is the larger of the two items' classes (9.0 :1383-1400). A board with no classes is the zone's clearance or the rules', as before.
   const zoneNet = zone.net || null
-  const gapTo = (net: string | null) => Math.max(set.clearance, prep.classes.pair(zoneNet, prep.netName(net)))
+  // A clearance rule for a pad's part or for the two nets replaces the class value (`ClassIndex.pair`), and is max'ed with the zone's own the same way.
+  const gapTo = (net: string | null, part: string | null = null) => Math.max(set.clearance, prep.classes.pair(zoneNet, prep.netName(net), null, part))
   const gap = gapTo(null)
   const holeGap = zone.holeGap ?? gap
 
@@ -774,7 +775,7 @@ function fillOne(prep: Prepared, zone: Zone, layer: CopperLayer, netId: string |
         continue
       }
       // A pad with a clearance of its own (X7) is kept that far from at least, as KiCad max's a local clearance with the class's (and the zone's, which `gapTo` has).
-      const padGap = pad.clearance ? Math.max(gapTo(net), pad.clearance) : gapTo(net)
+      const padGap = pad.clearance ? Math.max(gapTo(net, pad.componentId), pad.clearance) : gapTo(net, pad.componentId)
       holes.push(...padObstacle(pad, padGap + EXTRA + ROUND))
       const h = holeShape(pad)
       if (h) holes.push(...inflate(h, Math.max(padGap, holeGap) + EXTRA + ROUND))

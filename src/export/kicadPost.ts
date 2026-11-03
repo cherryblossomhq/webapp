@@ -769,6 +769,13 @@ export function kicadCustomRules(project: Project): { text: string | null; notes
   return { text: `(version 1)\n\n${body}\n`, notes }
 }
 
+/** The `.kicad_dru` to write: the one the project was imported with, as it was, with the clearance rules' after its own; null when there is neither. */
+export function kicadDruText(kept: string | undefined, custom: string | null): string | null {
+  if (!custom) return kept ?? null
+  if (!kept) return custom
+  return `${kept.trimEnd()}\n\n${custom.replace(/^\(version 1\)\n\n/, "")}`
+}
+
 /** The fields only the Default class has, in KiCad's names. */
 function defaultFields(d: NonNullable<Project["rules"]["defaultClass"]>) {
   return {

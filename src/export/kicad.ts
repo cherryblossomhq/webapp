@@ -27,7 +27,7 @@ import { ROOT_SHEET, isHierarchical, sheetsOf, sheetView, useAt, usesOfSheet } f
 import { mayHaveBuses } from "../model/busConnectivity"
 import { variantExportNotes, variantNames } from "../model/variants"
 import { addBlockGroups, addBusItems, addSheetItems, localizePower, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
-import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, noConnectPins, symbolFields, titleBlock, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
+import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, kicadCustomRules, kicadDruText, noConnectPins, symbolFields, titleBlock, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
 // the user asks for them: it and the packages it needs (the KiCad file writer and tscircuit's
@@ -339,6 +339,8 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   if (hierarchical && (project.sheetSymbols ?? []).some((sym) => sheetFlagsWritten(project, sym, asKicad10 ? "keep" : "apply"))) sheetNotes.push("The flags of a sheet symbol are written on the sheet symbol, in the file of the sheet it is drawn on, as KiCad 9 reads them: KiCad applies them to everything below it, so the symbols in that sheet's own file say only their own flags.")
   if (hierarchical) sheetNotes.push(`The schematic is ${sheetIds.length} files: the root and a file for each other sheet, drawn once however many sheet symbols use it, with every symbol's reference for each use in its instance data.`)
   const settings = applyProjectSettings(pro.getOutputString(), project)
+  const custom = kicadCustomRules(project)
+  const dru = kicadDruText(project.kicad?.dru, custom?.text ?? null)
   // The project file lists the sheets by their symbols' ids and names.
   if (hierarchical) {
     const json = JSON.parse(settings.text) as Record<string, unknown>
@@ -352,8 +354,8 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
       [`${base}.kicad_sch`]: tidyNumbers(schText),
       ...Object.fromEntries(sheetIds.filter((id) => id !== ROOT_SHEET).map((id) => [files.get(id)!, tidyNumbers(sheetTexts.get(id)!)])),
       [`${base}.kicad_pcb`]: tidyNumbers(applyFootprintLinks(boardText, [...sheetTexts].map(([id, text]) => ({ file: id === ROOT_SHEET ? `${base}.kicad_sch` : (files.get(id) ?? `${base}.kicad_sch`), text })), (ref) => !fromKicadFiles(project) || project.components.some((c) => c.ref === ref && c.sheetFile !== undefined))),
-      // The custom design rules the project was imported with, written back as they were.
-      ...(project.kicad?.dru ? { [`${base}.kicad_dru`]: project.kicad.dru } : {}),
+      // The custom design rules the project was imported with, written back as they were, and the clearance rules after them.
+      ...(dru ? { [`${base}.kicad_dru`]: dru } : {}),
     },
     notes: [
       ...notes,
@@ -374,6 +376,8 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
       "The design rules are in the KiCad project: clearance, trace width, via and drill sizes, annular ring, hole to hole, copper to the board edge, mask and paste openings, and trace widths by net as net classes. Vias in pads and via tenting have no setting there.",
       ...(project.rules.netClasses?.length ? ["Net classes are in the KiCad project (net settings): each class's clearance, trace width, via, micro via and differential pair sizes, with its nets as patterns that match them exactly. A width given to one net is a class of its own that sets only the width."] : []),
       ...settings.notes,
+      ...(custom?.text ? [`Clearance rules for a pair of nets or a part's pads are KiCad custom rules, in the .kicad_dru beside the project${project.kicad?.dru ? ", after the rules it was imported with" : ""}.`] : []),
+      ...(custom?.notes ?? []),
       ...(settings.unmatched.length ? [`Trace widths for nets with * or ? in the name were left out, since KiCad reads those as wildcards: ${settings.unmatched.join(", ")}.`] : []),
       "The project's name, revision, company, description and other properties are in the schematic's title block and the project's text variables.",
       ...(project.kicad?.pro ? ["The project file keeps what the KiCad project it came from said that the editor has no setting for (the severity of each check, the sizes offered while routing, the text sizes of new items, the BOM and ERC settings, the colours of net classes), written back as it was."] : []),

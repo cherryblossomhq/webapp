@@ -17,7 +17,7 @@ import { trackPoints } from "./arcTracks"
 import type { CopperItem } from "./pcb"
 import { outlineGeometry } from "./outline"
 import { flattenPath, lineEndParts, shapePolylines, shapeRings } from "./shapes"
-import { classPourClearance, hasNetClasses } from "./netClasses"
+import { classPourClearance, hasClearanceRules, hasNetClasses } from "./netClasses"
 import { zoneClearance } from "./rules"
 import { fillPolygonZones, fillPolygonZonesEx, type PendingGroup } from "./zoneFill"
 import { needsZoneEngine } from "./zones"
@@ -316,7 +316,7 @@ function fillZonesIn(project: Project, sch: SchematicConnectivity, input: PourIn
   const eroded = inflate(area, -minWidth / 2)
   const fills: ZoneFill[] = []
   const filledByLayer = new Map<CopperLayer, Paths64>()
-  const classed = hasNetClasses(rules)
+  const classed = hasNetClasses(rules) || hasClearanceRules(rules)
   const netNames = classed ? new Map(sch.nets.map((n) => [n.id, n.name])) : null
 
   for (const zone of project.zones) {
@@ -335,12 +335,13 @@ function fillZonesIn(project: Project, sch: SchematicConnectivity, input: PourIn
     // A zone keeps at least the clearance a net class asks for, from copper of that class (`classPourClearance`), and at least its own: KiCad
     // max's a zone's local clearance with the class value and does not substitute it (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063; the polygon
     // engine, `zoneFill.ts`, does the same). A board with no classes is the zone's gap throughout.
+    // A clearance rule (for the two nets, or a pad's part) replaces the class value in that, and is max'ed with the zone's own the same way.
     const lifted = classed
     input.items.forEach((it, i) => {
       if (!it.layers.includes(zone.layer) || it.kind === "zone") return
       const itemNet = input.netOf(i)
       const same = itemNet === netId
-      const g = lifted ? Math.max(gap, classPourClearance(rules, zone.net, itemNet ? (netNames!.get(itemNet) ?? null) : null)) : gap
+      const g = lifted ? Math.max(gap, classPourClearance(rules, zone.net, itemNet ? (netNames!.get(itemNet) ?? null) : null, it.kind === "pad" ? it.pad.componentId : null)) : gap
       // A non-plated hole carries no net: cleared by the zone clearance, never relieved.
       if (it.kind === "pad" && isNpth(it.pad)) clip.push(...padClearance(it.pad, g + m))
       else if (it.kind === "pad") {

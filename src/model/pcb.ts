@@ -1059,6 +1059,7 @@ export function analyzePcb(
   const netNames = new Map(sch.nets.map((n) => [n.id, n.name]))
   const nameOfNet = (id: string | null | undefined) => (id && id !== "short" ? (netNames.get(id) ?? null) : null)
   const reported = new Set<string>()
+  const padPart = (it: CopperItem) => (it.kind === "pad" ? it.pad.componentId : null)
   const refOfPart = new Map(project.components.map((c) => [c.id, c.ref]))
   /** Which copper an item is, for a message: a pad as "J1.2", else a trace, a via or a mounting hole. */
   const describe = (it: CopperItem) => {
@@ -1117,7 +1118,8 @@ export function analyzePcb(
       // KiCad leaves a part's own drawings alone against each other, and a net tie's against its pads; a part's other pads it checks against its drawings.
       if (ox !== null && ox === ownerOf(y) && ox !== BOARD_OWNER && (!kicad || (x.kind === "shape" && y.kind === "shape") || ties?.pads.has(ox))) return
     }
-    let need = hasNetClasses(project.rules) ? classes.pair(nameOfNet(ni), nameOfNet(nj)) : classes.worst
+    // A clearance rule for a pad's part, or for the two nets, replaces the classes' (`ClassIndex.pair`); a board with neither is the rules' one.
+    let need = hasNetClasses(project.rules) || classes.ruledAny ? classes.pair(nameOfNet(ni), nameOfNet(nj), padPart(x), padPart(y)) : classes.worst
     // A pad's own clearance raises the classes' and never lowers it: `DRC_ENGINE::EvalRules` max's each item's local clearance with the class value
     // (drc_engine.cpp 9.0 :1451-1540, 10.0 :1982-2063) and then holds the result to the board's minimum, which `classes.worst` and `pair` already do.
     const ox = x.kind === "pad" ? x.pad.clearance : undefined

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { runTool } from "../src/ai/tools"
-import { kicadCustomRules } from "../src/export/kicadPost"
+import { kicadCustomRules, kicadDruText } from "../src/export/kicadPost"
 import { fabricationNotes } from "../src/export/notes"
 import { autoroute } from "../src/model/autoroute"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -230,6 +230,19 @@ describe("the KiCad export of clearance rules", () => {
     expect(wild.notes.join(" ")).toContain("reads * and ? there as wildcards")
     const gone = { ...p, rules: setClearanceRule(p.rules, { component: "nobody", clearance: 0.05 }) }
     expect(kicadCustomRules(gone)).toEqual({ text: null, notes: [] })
+  })
+
+  it("puts the clearance rules after the custom rules a project was imported with, which stay as they were", () => {
+    const kept = '(version 1)\n\n(rule "Board edge"\n\t(constraint edge_clearance (min 0.5mm)))\n'
+    const p = pair(0.25)
+    const custom = kicadCustomRules({ ...p, rules: setClearanceRule(p.rules, { nets: ["A", "B"], clearance: 0.4 }) })!.text
+    const both = kicadDruText(kept, custom)!
+    expect(both.startsWith(kept)).toBe(true)
+    expect(both.match(/\(version 1\)/g)).toHaveLength(1)
+    expect(both).toContain('(rule "Clearance A to B"')
+    expect(kicadDruText(kept, null)).toBe(kept)
+    expect(kicadDruText(undefined, custom)).toBe(custom)
+    expect(kicadDruText(undefined, null)).toBeNull()
   })
 })
 

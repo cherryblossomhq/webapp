@@ -6,9 +6,9 @@
     "edits (tidy, clean up, paste, delete, rotate, autoroute): ids the edit makes are numbered from zero (withStableIds), as the shipped examples are built, since a real id carries the time and a random number."
   ],
   "sizes": {
-    "systemPrompt": 11196,
-    "toolDefinitions": 51885,
-    "toolCount": 39
+    "systemPrompt": 11407,
+    "toolDefinitions": 53065,
+    "toolCount": 40
   },
   "hashes": {
     "blinker/flipped/3d.board-texture-drawing": "f669b44d7ad72aa4b9862b66bc77e8e9edc9ba529095b631e0cfdce5caa017ff",
@@ -333,8 +333,8 @@
     "esp32-robot/unplaced/sakura.look-schematic": "f63a511f5bbbe965190ef40ce5bb3c79f88e00f3a9647bd1b75289b435e06dc4",
     "esp32-robot/unplaced/step.board-solid": "342b599c92191ed2e82325a027301f1a998dfda7566619405f8bd3a0fa7c7fab",
     "global/sakura.request-settings": "01d9ed903bf7e9cdd8888fed9b70fe020d47a98a4353e528cfeb4c0ec46fc215",
-    "global/sakura.system-prompt": "313493fb1d51ae61201249ed4100b8521bb0f9b5d7264f095e35f8d71974c7da",
-    "global/sakura.tool-definitions": "d68ff1ff8967d1c81589a5a31747e3aa2d0552cccb6fad8dd7fbcd6a5b6e73e1",
+    "global/sakura.system-prompt": "d2d6026868457358e0a67a23a17591f74020cdf59bbe93872d969695a6346aa7",
+    "global/sakura.tool-definitions": "901d30e009f28623ad3d37a68bcd213bee56785f96826c1f4e983834294c0a0a",
     "mcu/flipped/3d.board-texture-drawing": "9e50f3404aed4d606777b956ae61bc1ba3c743b32fbac7f20f345f910a07d0fd",
     "mcu/flipped/checks.drc": "55b8562e54e26fb835a7410d149886dd69300b99dadeed58e657192ab2b335c2",
     "mcu/flipped/checks.erc": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",

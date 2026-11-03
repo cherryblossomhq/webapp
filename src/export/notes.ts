@@ -10,7 +10,7 @@ import { copperCount } from "../model/stack"
 import { boardStackup, copperThickness, formatLength } from "../model/rules"
 import { worldShapes } from "../model/shapeItems"
 import { isDimensionText, textFontState, worldTexts } from "../model/texts"
-import type { Project } from "../model/types"
+import type { ClearanceRule, Project } from "../model/types"
 import { drillHoles, npthHoles } from "./excellon"
 import { outlineWarning } from "./outlineGuard"
 import { padMachining, postMachiningComment, protectionWords, viaProtection, viaBackdrills } from "../model/machining"
@@ -157,11 +157,14 @@ function netClassNotes(project: Project): string[] {
 
 /** The clearance rules of a board that has any: a pair of nets or a part's pads, each with the space it is held to in place of the classes'. */
 function clearanceRuleNotes(project: Project): string[] {
-  const list = project.rules.clearanceRules ?? []
-  if (!list.length) return []
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
-  const rows = list.map((r) => `  ${(r.nets ? `${r.nets[0]} to ${r.nets[1]}` : `${refOf.get(r.component!) ?? "?"} pads`).slice(0, 18).padEnd(18)}${mm(r.clearance)} space${r.nets ? "" : " to every other net"}`)
-  return ["CLEARANCE RULES", ...rows, `  Tightest space    ${mm(Math.min(...list.map((r) => r.clearance)))}: these replace the classes' spaces where they apply`, ""]
+  // A rule for a part no longer in the project holds nothing; each is the space it is checked at, never below the board's minimum.
+  const list = (project.rules.clearanceRules ?? []).filter((r) => r.nets || refOf.has(r.component!))
+  if (!list.length) return []
+  const space = (r: ClearanceRule) => Math.max(r.clearance, project.rules.minClearance ?? 0)
+  // The name is never cut short: a pair of net names is what tells the fab which copper the space is for.
+  const rows = list.map((r) => `  ${(r.nets ? `${r.nets[0]} to ${r.nets[1]}` : `${refOf.get(r.component!)} pads`).padEnd(17)} ${mm(space(r))} space${r.nets ? "" : " to every other net"}`)
+  return ["CLEARANCE RULES", ...rows, `  Tightest space    ${mm(Math.min(...list.map(space)))}: these replace the classes' spaces where they apply`, ""]
 }
 
 /** Where the drawings on the board and in its parts went, and which were not plotted: only for a board that has any. */

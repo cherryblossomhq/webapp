@@ -55,6 +55,7 @@ export type { PartsIndexSource, SupplierPartsSource } from "./ai/supplierParts"
 export type { ModelFileStore } from "./store/modelFiles"
 export type {
   ChangesEvent,
+  KeptBatch,
   OutgoingBatch,
   ProjectRecord,
   ProjectRole,
@@ -66,6 +67,7 @@ export type {
   SaveRefusal,
   StoredProject,
   StoredProjectSummary,
+  UnsentEdits,
 } from "./store/storage"
 export type { PresenceMe, PresencePeer, PresenceSource } from "./store/presence"
 export type { LeaseAnswer, LeaseHolder, LockSource } from "./store/boardLease"

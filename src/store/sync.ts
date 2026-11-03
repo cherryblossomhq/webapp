@@ -2,7 +2,7 @@ import { applyChanges, type Change } from "@cherryblossom/project-changes"
 import { uid } from "../lib/id"
 import { PROJECT_FILE_VERSION, summarizeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
-import { openStoredProject, projectRecord, type ChangesEvent, type ProjectRole, type ProjectStorage, type PushRefusal, type RemoteBatch } from "./storage"
+import { openStoredProject, projectRecord, type ChangesEvent, type KeptBatch, type ProjectRole, type ProjectStorage, type PushRefusal, type RemoteBatch, type UnsentEdits } from "./storage"
 
 /** Quiet time after an edit before it is sent, so the edits of one gesture travel as one batch. */
 const SEND_DELAY_MS = 40
@@ -61,6 +61,8 @@ interface Pending {
   sent: boolean
   /** The revision storage gave it; it is part of `confirmed` once the log shows it. */
   landed?: number
+  /** The tab that made it, when not this one: a page that closed before it landed kept it in this browser (`adopt`). */
+  from?: string
 }
 
 /**
@@ -80,6 +82,9 @@ interface Pending {
  * - **A gap** (a long sleep, a whole-project write, a format change) loads the project again and
  *   puts `pending` back on top. A batch resent after a reload is recognised by its number and not
  *   applied twice.
+ * - **What hasn't landed is kept in this browser** (`storage.unsent`) until it does: the next copy
+ *   of the project opened here, after a reload or a closed tab, sends it first (`adopt`). Edits were
+ *   once refused for hours while the user was still signed in, and a reload lost them all.
  *
  * Like the autosave it replaced, it outlives the project being on screen: closing a project leaves
  * its last batches to land (`retire`).
@@ -100,6 +105,10 @@ export class ProjectSync {
   /** Reads of the log that failed in a row, for the wait before reading it again. */
   private watchFailures = 0
   private reloading = false
+  /** Taking on what a closed page kept (`adopt`): nothing is sent until it is first in line. */
+  private adopting = false
+  /** The batches kept in this browser (`storage.unsent`), with the edits each held when it was. */
+  private kept = new Map<Pending, number>()
   private retired = false
   private role: ProjectRole
 
@@ -119,6 +128,11 @@ export class ProjectSync {
 
   /** Follow the project's log, after upgrading a document stored in an older format. */
   start() {
+    const unsent = this.storage.unsent
+    if (unsent) {
+      unsent.claim(this.clientId)
+      if (this.role !== "viewer") void this.adopt(unsent)
+    }
     if (this.formatVersion < PROJECT_FILE_VERSION && this.role !== "viewer") void this.upgrade()
     else this.watch()
   }
@@ -148,14 +162,14 @@ export class ProjectSync {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     if (this.inFlight) return this.inFlight
-    if (this.stopped || this.reloading) return Promise.resolve()
+    if (this.stopped || this.reloading || this.adopting) return Promise.resolve()
     const next = this.pending.find((p) => p.landed === undefined)
     if (!next) return Promise.resolve()
     next.sent = true
     const view = this.view()
     this.inFlight = this.storage
       .push(this.id, {
-        clientId: this.clientId,
+        clientId: next.from ?? this.clientId,
         batch: next.batch,
         changes: next.changes,
         formatVersion: PROJECT_FILE_VERSION,
@@ -245,7 +259,7 @@ export class ProjectSync {
         gap = true
         break
       }
-      const mine = b.clientId === this.clientId ? this.pending.findIndex((p) => p.batch === b.batch) : -1
+      const mine = this.pending.findIndex((p) => p.batch === b.batch && (p.from ?? this.clientId) === b.clientId)
       if (mine >= 0) {
         this.confirmed = applyChanges(this.confirmed, this.pending[mine].changes)
         this.pending.splice(mine, 1)
@@ -338,6 +352,50 @@ export class ProjectSync {
     }
   }
 
+  // ---------- Edits kept in this browser ----------
+
+  /**
+   * Put first in line, and on screen, the edits a page that closed before they landed kept of this project (a reload, a closed
+   * tab, a crash). They go under the tab and number they were made with, so one that landed after all is answered with its
+   * revision and taken off again rather than applied twice; edits made here meanwhile wait, since they are newer.
+   */
+  private async adopt(unsent: UnsentEdits) {
+    this.adopting = true
+    let kept: KeptBatch[] = []
+    try {
+      kept = (await unsent.orphans(this.id)).filter((k) => k.formatVersion === PROJECT_FILE_VERSION)
+    } catch {
+      // The browser won't say: this page's own edits go ahead, and what was kept stays for the next.
+    }
+    this.adopting = false
+    if (this.stopped) return
+    if (kept.length) {
+      const adopted = kept.map((k): Pending => ({ batch: k.batch, changes: k.changes, steps: 1, sent: true, from: k.clientId }))
+      for (const p of adopted) this.kept.set(p, p.steps)
+      this.pending.unshift(...adopted)
+      this.host.rebase(this.view(), [])
+    }
+    void this.flush()
+  }
+
+  /** Keep in this browser each batch that hasn't landed, as it gathers edits, and let go of each as it lands or is refused. */
+  private keep() {
+    const unsent = this.storage.unsent
+    // Stopped, nothing it holds will land from here, and an editor that can send it may open it next.
+    if (!unsent || this.stopped) return
+    const waiting = new Set(this.pending.filter((p) => p.landed === undefined))
+    for (const p of this.kept.keys()) {
+      if (waiting.has(p)) continue
+      unsent.drop(this.id, p.from ?? this.clientId, p.batch)
+      this.kept.delete(p)
+    }
+    for (const p of waiting) {
+      if (this.kept.get(p) === p.steps) continue
+      unsent.keep(this.id, { clientId: p.from ?? this.clientId, batch: p.batch, changes: p.changes, formatVersion: PROJECT_FILE_VERSION, savedAt: Date.now() })
+      this.kept.set(p, p.steps)
+    }
+  }
+
   // ---------- Refusals ----------
 
   private refused(batch: Pending, reason: PushRefusal) {
@@ -405,6 +463,7 @@ export class ProjectSync {
   }
 
   private report() {
+    this.keep()
     if (this.stopped) return this.host.status({ state: "refused", reason: this.stopped })
     const waiting = this.pending.some((p) => p.landed === undefined)
     // A batch whose answer was lost but which the log showed landed: nothing is failing any more.

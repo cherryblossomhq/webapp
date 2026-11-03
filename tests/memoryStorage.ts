@@ -1,6 +1,6 @@
 import { applyChanges, type Change } from "@cherryblossom/project-changes"
 import type { HistoryState, HistorySource, VersionInfo, VersionSummary } from "../src/store/history"
-import type { ChangesEvent, OutgoingBatch, ProjectRole, ProjectStorage, PushOutcome, SaveOutcome } from "../src/store/storage"
+import type { ChangesEvent, KeptBatch, OutgoingBatch, ProjectRole, ProjectStorage, PushOutcome, SaveOutcome, UnsentEdits } from "../src/store/storage"
 
 /**
  * An account's storage in memory, behaving as the hosted app's storage does: it applies each batch
@@ -282,4 +282,23 @@ export function memoryStorage() {
     },
     project: (id: string) => JSON.parse(rows.get(id)!.content).project,
   }
+}
+
+/**
+ * This browser's kept edits (`UnsentEdits`) in memory, copied in and out as IndexedDB does. A page is open while its claim is
+ * held; `closeAll` lets go of every claim, as a reload or closing the tabs does.
+ */
+export function memoryUnsent() {
+  const rows = new Map<string, KeptBatch & { projectId: string }>()
+  const open = new Set<string>()
+  const key = (projectId: string, clientId: string, batch: number) => `${projectId}/${clientId}/${batch}`
+  const unsent: UnsentEdits = {
+    claim: (clientId) => void open.add(clientId),
+    // In the order they were first kept, which is each page's in order.
+    orphans: async (projectId) =>
+      [...rows.values()].filter((r) => r.projectId === projectId && !open.has(r.clientId)).map(({ projectId: _, ...kept }) => structuredClone(kept)),
+    keep: (projectId, batch) => void rows.set(key(projectId, batch.clientId, batch.batch), structuredClone({ ...batch, projectId })),
+    drop: (projectId, clientId, batch) => void rows.delete(key(projectId, clientId, batch)),
+  }
+  return { unsent, rows, closeAll: () => open.clear() }
 }

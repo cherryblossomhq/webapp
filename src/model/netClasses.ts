@@ -1,4 +1,4 @@
-import type { ClearanceRule, DefaultNetClass, DesignRules, NetClass } from "./types"
+import type { ClearanceRule, DefaultNetClass, DesignRules, NetClass, Project } from "./types"
 
 // Net classes (X10): which class a net is in, what the class sets, and the clearance two nets are
 // checked at. The rules are KiCad's:
@@ -508,6 +508,28 @@ export function setClearanceRule(rules: DesignRules, rule: ClearanceRule): Desig
 export function removeClearanceRule(rules: DesignRules, target: Pick<ClearanceRule, "nets" | "component">): DesignRules {
   if (!findClearanceRule(rules.clearanceRules, target)) return rules
   return withRuleList(rules, rules.clearanceRules!.filter((r) => !sameTarget(r, target)))
+}
+
+/**
+ * A part's clearance rule goes with the part an edit deleted, or follows it to the unit that took its place (a part of several units
+ * whose unit with the footprint was deleted: `repairUnits`). Rules for parts the edit left alone are not looked at; no part rule, or
+ * none whose part went: the very same object.
+ */
+export function followRemovedParts(before: Project, made: Project): Project {
+  const list = made.rules.clearanceRules
+  if (!list?.some((r) => r.component) || made.components === before.components) return made
+  const now = new Map(made.components.map((c) => [c.id, c]))
+  const was = new Map(before.components.map((c) => [c.id, c]))
+  const gone = list.filter((r) => r.component && !now.has(r.component) && was.has(r.component))
+  if (!gone.length) return made
+  let out = list.filter((r) => !gone.includes(r))
+  for (const r of gone) {
+    const ref = was.get(r.component!)!.ref
+    // The unit that took over is one that was there before, now under the part rather than its twin.
+    const heir = made.components.find((c) => c.ref === ref && was.has(c.id) && was.get(c.id)!.partId !== c.partId)
+    if (heir && !findClearanceRule(out, { component: heir.id })) out = withClearanceRule(out, { component: heir.id, clearance: r.clearance })
+  }
+  return { ...made, rules: withRuleList(made.rules, out) }
 }
 
 /** Clearance rules from a stored project, each valid: one pair of two different non-empty net names or one component id, and a finite clearance of 0 or more; a repeat keeps the first. */

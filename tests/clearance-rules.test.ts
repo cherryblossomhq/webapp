@@ -6,10 +6,11 @@ import { autoroute } from "../src/model/autoroute"
 import { computeConnectivity } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
 import { classIndex, classPourClearance, normalizeClearanceRules, removeClearanceRule, renameClassNets, setClearanceRule } from "../src/model/netClasses"
-import { addComponent, createProject, labelPin, resolvePinSpec, updateComponent } from "../src/model/ops"
+import { addComponent, createProject, labelPin, removeItems, resolvePinSpec, updateComponent } from "../src/model/ops"
 import { analyzePcb } from "../src/model/pcb"
 import { normalizeProject } from "../src/model/projectFile"
 import { DEFAULT_RULES } from "../src/model/rules"
+import { settleEdit } from "../src/model/settleEdit"
 import { renameNets } from "../src/model/tidy"
 import type { DesignRules, Project } from "../src/model/types"
 import { chipBoard, drcErrors } from "./finePitch"
@@ -170,6 +171,19 @@ describe("set_clearance_rule", () => {
     expect(runTool(p, "set_clearance_rule", { ref: "R1", clearance: 0.05 }).result).toContain("below the 0.1 mm the finest fab class makes")
     expect(runTool({ ...p, rules: { ...p.rules, minClearance: 0.15 } }, "set_clearance_rule", { ref: "R1", clearance: 0.12 }).result).toContain("minimum clearance of the board")
     expect(runTool(p, "set_clearance_rule", { ref: "R1", remove: true }).result).toContain("There is no clearance rule for R1's pads")
+  })
+})
+
+describe("a part's clearance rule and the part", () => {
+  it("goes when the part is deleted, and leaves the other rules and an edit that deletes nothing alone", () => {
+    const p = pair(0.25)
+    const ruled = { ...p, rules: setClearanceRule(setClearanceRule(p.rules, { nets: ["A", "B"], clearance: 0.4 }), { component: idOf(p, "R2"), clearance: 0.15 }) }
+    const out = settleEdit(ruled, removeItems(ruled, { components: [idOf(p, "R2")] }))
+    expect(out.rules.clearanceRules).toEqual([{ nets: ["A", "B"], clearance: 0.4 }])
+    const alone = { ...p, rules: setClearanceRule(p.rules, { component: idOf(p, "R1"), clearance: 0.15 }) }
+    expect(settleEdit(alone, removeItems(alone, { components: [idOf(p, "R1")] })).rules.clearanceRules).toBeUndefined()
+    const moved = updateComponent(ruled, idOf(p, "R1"), { pcb: { x: 0, y: 5, rot: 0, side: "top", placed: true } })
+    expect(settleEdit(ruled, moved).rules).toBe(moved.rules)
   })
 })
 

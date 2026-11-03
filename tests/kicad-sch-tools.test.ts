@@ -5,6 +5,8 @@ import { registerProjectParts } from "../src/model/customParts"
 import { EXAMPLES } from "../src/model/examples"
 import { schematicPins, unitOwners } from "../src/model/instances"
 import { findPart } from "../src/model/library"
+import { setClearanceRule } from "../src/model/netClasses"
+import { settleEdit } from "../src/model/settleEdit"
 import type { ComponentInstance, Project } from "../src/model/types"
 import { importSheet, place } from "./kicad-sch-parts"
 
@@ -503,6 +505,11 @@ describe("remove_component on a part with several units", () => {
     expect(design(out.project).components[0].units_missing).toEqual([1])
     // Still one line in the board's BOM terms: one physical part.
     expect(out.project.components.filter((c) => c.footprint).length).toBe(1)
+    // Its clearance rule is the part's, so it follows to the unit that took over.
+    const first = refs(p, "U1").find((c) => !findPart(c.partId)?.unitOf)!
+    const ruled = { ...p, rules: setClearanceRule(p.rules, { component: first.id, clearance: 0.15 }) }
+    const settled = settleEdit(ruled, must(ruled, "remove_component", { ref: "U1", placed_unit: 1 }).project)
+    expect(settled.rules.clearanceRules).toEqual([{ component: owners[0].id, clearance: 0.15 }])
   })
 
   it("removes every unit when no unit is named, with the wires on their pins", () => {

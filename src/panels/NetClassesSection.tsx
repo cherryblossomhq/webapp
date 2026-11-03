@@ -10,6 +10,7 @@ import {
   classNameOf,
   classNameProblem,
   defaultClassName,
+  findClearanceRule,
   removeClearanceRule,
   removeNetClass,
   renameNetClass,
@@ -81,7 +82,10 @@ export function ClearanceRulesSection({ project }: { project: Project }) {
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const label = (r: ClearanceRule) => (r.nets ? `${r.nets[0]} and ${r.nets[1]}` : `${refOf.get(r.component!) ?? "a removed part"}'s pads`)
   const target = (r: ClearanceRule): Pick<ClearanceRule, "nets" | "component"> => (r.nets ? { nets: r.nets } : { component: r.component })
-  const start = rules.clearance
+  // A new rule starts where it loosens nothing: a pair at the clearance it is checked at now, a part's pads at the largest any class asks for.
+  const pairNow = classIndex(rules).pair(a || null, b || null)
+  const partStart = Math.max(rules.clearance, rules.minClearance ?? 0, ...(rules.netClasses ?? []).map((c) => c.clearance ?? rules.clearance))
+  const pairTaken = !!a && !!b && !!findClearanceRule(list, { nets: [a, b] })
   return (
     <Section title="Clearance rules" id="clearance-rules">
       <p className="text-[11.5px] text-ink-3">
@@ -119,9 +123,10 @@ export function ClearanceRulesSection({ project }: { project: Project }) {
         <Button
           className="px-2"
           aria-label="Add a clearance rule for the two nets"
-          disabled={!a || !b || a === b}
+          title={pairTaken ? `${a} and ${b} already have a clearance rule` : undefined}
+          disabled={!a || !b || a === b || pairTaken}
           onClick={() => {
-            commitRules((x) => setClearanceRule(x, { nets: [a, b], clearance: start }))
+            commitRules((x) => setClearanceRule(x, { nets: [a, b], clearance: pairNow }))
             setA("")
             setB("")
           }}
@@ -136,7 +141,7 @@ export function ClearanceRulesSection({ project }: { project: Project }) {
           value=""
           onChange={(e) => {
             const id = e.target.value
-            if (id) commitRules((x) => setClearanceRule(x, { component: id, clearance: start }))
+            if (id) commitRules((x) => setClearanceRule(x, { component: id, clearance: partStart }))
           }}
         >
           <option value="">Add one for a part&apos;s pads...</option>

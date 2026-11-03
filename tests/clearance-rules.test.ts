@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { runTool } from "../src/ai/tools"
 import { kicadCustomRules } from "../src/export/kicadPost"
+import { fabricationNotes } from "../src/export/notes"
 import { autoroute } from "../src/model/autoroute"
 import { computeConnectivity } from "../src/model/connectivity"
 import { pcbPads } from "../src/model/instances"
@@ -192,5 +193,31 @@ describe("the KiCad export of clearance rules", () => {
       ].join("\n"),
     )
     expect(kicadCustomRules(pair(0.25))).toBeNull()
+  })
+
+  it("says why a rule is left out even when none is left to write, and skips a part no longer in the project", () => {
+    const p = pair(0.25)
+    const quoted = { ...p, rules: setClearanceRule(p.rules, { nets: ["A'1", "B"], clearance: 0.4 }) }
+    const out = kicadCustomRules(quoted)!
+    expect(out.text).toBeNull()
+    expect(out.notes.join(" ")).toContain("The clearance rule for A'1 and B is left out")
+    const gone = { ...p, rules: setClearanceRule(p.rules, { component: "nobody", clearance: 0.05 }) }
+    expect(kicadCustomRules(gone)).toEqual({ text: null, notes: [] })
+  })
+})
+
+describe("the fabrication notes of clearance rules", () => {
+  it("names each rule whole, at the space it is checked at, and leaves out a part no longer in the project", () => {
+    const p = pair(0.25)
+    let r = setClearanceRule(p.rules, { nets: ["A", "B"], clearance: 0.4 })
+    r = setClearanceRule(r, { component: "nobody", clearance: 0.05 })
+    r = setClearanceRule(r, { component: idOf(p, "R2"), clearance: 0.08 })
+    const notes = fabricationNotes({ ...p, rules: { ...r, minClearance: 0.1 } }, [], []).split("\n")
+    const block = notes.slice(notes.indexOf("CLEARANCE RULES"), notes.indexOf("CLEARANCE RULES") + 4)
+    expect(block[1]).toMatch(/^ {2}A to B +0\.4 mm space$/)
+    expect(block[2]).toMatch(/^ {2}R2 pads +0\.1 mm space to every other net$/)
+    expect(block[3]).toMatch(/^ {2}Tightest space +0\.1 mm/)
+    const long = setClearanceRule(p.rules, { nets: ["MAINS_LIVE", "MAINS_N"], clearance: 2 })
+    expect(fabricationNotes({ ...p, rules: long }, [], [])).toContain("MAINS_LIVE to MAINS_N 2 mm space")
   })
 })

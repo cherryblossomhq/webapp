@@ -246,7 +246,11 @@ function PartEditorBody({ spec, askRemove }: { spec: CustomPartSpec; askRemove: 
       setRefused(res.problems)
       return
     }
-    if (res.project !== live) projectApi().commit(() => res.project)
+    if (res.project !== live) {
+      projectApi().commit(() => res.project)
+      // Refused while editing is paused (a toast says so): the dialog stays, with the draft in it.
+      if (projectApi().project === live) return
+    }
     close()
     if (res.moved.length) uiApi().showNotice(`${normalized.name} saved. The pins of ${listed(res.moved)} moved with its symbol: check their wires.`)
   }

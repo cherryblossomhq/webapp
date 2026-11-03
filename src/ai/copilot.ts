@@ -1,5 +1,5 @@
 import { copilotAccess, copilotModel, limitOffer, useAccount, type LimitOffer } from "../store/accountStore"
-import { useProjectStore } from "../store/projectStore"
+import { editingPaused, useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
 import type { Project } from "../model/types"
@@ -21,6 +21,9 @@ export const MAX_ITERATIONS = 32
 const MAX_TOKENS = 32000
 /** Thinking before acting pays off on circuits; medium keeps a tool round quick. */
 const REASONING_EFFORT = "medium"
+/** What a change refused because editing is paused (`editingPaused`) tells the model: trying again is refused the same way. */
+const PAUSED_RESULT =
+  "Editing is paused because the user's latest changes haven't reached storage yet (offline, or the server isn't answering), so this change was not applied. Don't call more tools: tell the user to ask again once the strip under the top bar is gone."
 
 const SYSTEM_PROMPT = `You are Sakura, the design copilot inside Cherry Blossom, a browser-based schematic and PCB editor. You change the user's open project only through the tools; every tool call is applied immediately and can be undone by the user.
 
@@ -269,8 +272,10 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
           useProjectStore.getState().commit((p) => (p === base ? outcome.project : p))
           if (useProjectStore.getState().project !== outcome.project) {
             changed = false
-            outcome.result = "Error: The project changed while this ran, so the change was not applied. Call the tool again."
-            outcome.summary = "Not applied: the project changed meanwhile"
+            // Refused, not overtaken: calling again would be refused the same way until the edits already made land.
+            const paused = editingPaused(useProjectStore.getState())
+            outcome.result = paused ? `Error: ${PAUSED_RESULT}` : "Error: The project changed while this ran, so the change was not applied. Call the tool again."
+            outcome.summary = paused ? "Not applied: editing is paused" : "Not applied: the project changed meanwhile"
             outcome.isError = true
           }
         }
@@ -324,6 +329,12 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
       onEvent({ type: "error", message: problem })
     } else if (working !== project) {
       useProjectStore.getState().commit(() => working)
+      // Refused while editing is paused: nothing was kept, and saying it was done would be wrong.
+      if (useProjectStore.getState().project === project) {
+        failed = true
+        if (outOfSteps) stopped()
+        onEvent({ type: "error", message: "Editing is paused until your latest changes are saved, so nothing was changed." })
+      }
     }
   }
   // Said to the model as well as to the user: its tool results above say the changes happened, and

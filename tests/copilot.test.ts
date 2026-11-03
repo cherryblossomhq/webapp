@@ -118,6 +118,18 @@ describe("copilot over managed AI", () => {
     expect(String(messages[3].content)).toContain("Added D1")
   })
 
+  it("tells the model editing is paused rather than to call the tool again", async () => {
+    replies = [toolTurn, () => textTurn("Editing is paused.")]
+    useProjectStore.setState({ online: false })
+    const events = await run("add an LED")
+
+    expect(useProjectStore.getState().project?.components).toEqual([])
+    expect(events.find((e) => e.type === "tool_end")).toMatchObject({ isError: true, changed: false, summary: "Not applied: editing is paused" })
+    const tool = (chatCalls()[1].body!.messages as Record<string, unknown>[])[3]
+    expect(String(tool.content)).toMatch(/^Error: Editing is paused/)
+    expect(String(tool.content)).not.toContain("Call the tool again")
+  })
+
   it("uses the model the user picked while the plan allows it", async () => {
     useUi.setState({ settings: { ...DEFAULT_SETTINGS, model: "vendor/small" } })
     replies = [() => textTurn()]

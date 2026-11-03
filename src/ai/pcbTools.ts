@@ -771,7 +771,9 @@ const setClearanceRuleTool: PcbToolSpec = {
       if (netsIn.length !== 2) return fail(project, `nets is two net names, not ${netsIn.length}`)
       if (netsIn[0] === netsIn[1]) return fail(project, `${netsIn[0]} twice: a rule is between two different nets`)
       const { has, hint } = netNames(project)
-      const unknown = netsIn.filter((n) => !has(n))
+      // A rule whose net is gone (deleted, or renamed by hand) is still removed by the names the list gives.
+      const removing = input.remove === true && !!findClearanceRule(project.rules.clearanceRules, { nets: [netsIn[0], netsIn[1]] })
+      const unknown = removing ? [] : netsIn.filter((n) => !has(n))
       if (unknown.length) return fail(project, `Nothing was changed. ${unknown.map((n) => `No net named ${n}.${hint(n)}`).join(" ")}`)
       target = { nets: [netsIn[0], netsIn[1]] }
       what = `${netsIn[0]} and ${netsIn[1]}`

@@ -735,8 +735,9 @@ export function applyProjectSettings(pro: string, project: Project): KicadProjec
 /**
  * The project's clearance rules as KiCad custom rules (a `.kicad_dru`, null when none can be written), or null when it has none. KiCad lets
  * the last rule that applies win, so they are written smallest first, which gives the largest where several apply, as the editor does; each
- * condition is written both ways round. A net name or designator with a quote in it can't be written in a condition, and is left out with a
- * note; a rule for a part no longer in the project is left out.
+ * condition is written both ways round. A net name or designator with a quote in it can't be written in a condition, nor one with * or ?,
+ * which KiCad's `==` reads as wildcards (so the rule would reach other nets), and is left out with a note; a rule for a part no longer in
+ * the project is left out.
  */
 export function kicadCustomRules(project: Project): { text: string | null; notes: string[] } | null {
   const list = project.rules.clearanceRules ?? []
@@ -748,16 +749,16 @@ export function kicadCustomRules(project: Project): { text: string | null; notes
   for (const r of [...list].sort((a, b) => a.clearance - b.clearance)) {
     if (r.nets) {
       const [a, b] = r.nets
-      if (/['"\\]/.test(a + b)) {
-        notes.push(`The clearance rule for ${a} and ${b} is left out of the KiCad rules: KiCad can't name a net with a quote or backslash in a rule's condition.`)
+      if (/['"\\*?]/.test(a + b)) {
+        notes.push(`The clearance rule for ${a} and ${b} is left out of the KiCad rules: KiCad can't name a net with a quote or backslash in a rule's condition, and reads * and ? there as wildcards.`)
         continue
       }
       rows.push({ name: `${a} to ${b}`, clearance: r.clearance, condition: `(A.NetName == ${quoted(a)} && B.NetName == ${quoted(b)}) || (A.NetName == ${quoted(b)} && B.NetName == ${quoted(a)})` })
     } else {
       const ref = refOf.get(r.component!)
       if (!ref) continue
-      if (/['"\\]/.test(ref)) {
-        notes.push(`The clearance rule for ${ref}'s pads is left out of the KiCad rules: KiCad can't name a part with a quote or backslash in a rule's condition.`)
+      if (/['"\\*?]/.test(ref)) {
+        notes.push(`The clearance rule for ${ref}'s pads is left out of the KiCad rules: KiCad can't name a part with a quote or backslash in a rule's condition, and reads * and ? there as wildcards.`)
         continue
       }
       rows.push({ name: `${ref} pads`, clearance: r.clearance, condition: `(A.Type == 'Pad' && A.memberOfFootprint(${quoted(ref)})) || (B.Type == 'Pad' && B.memberOfFootprint(${quoted(ref)}))` })

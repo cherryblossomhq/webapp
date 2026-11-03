@@ -172,6 +172,15 @@ describe("set_clearance_rule", () => {
     expect(runTool({ ...p, rules: { ...p.rules, minClearance: 0.15 } }, "set_clearance_rule", { ref: "R1", clearance: 0.12 }).result).toContain("minimum clearance of the board")
     expect(runTool(p, "set_clearance_rule", { ref: "R1", remove: true }).result).toContain("There is no clearance rule for R1's pads")
   })
+
+  it("removes a rule whose net is gone by the names the list gives, and still refuses to set one", () => {
+    const p = pair(0.25)
+    const stale = { ...p, rules: setClearanceRule(p.rules, { nets: ["A", "GONE"], clearance: 0.4 }) }
+    expect(runTool(stale, "set_clearance_rule", { nets: ["A", "GONE"], clearance: 0.5 }).result).toContain("No net named GONE")
+    const gone = runTool(stale, "set_clearance_rule", { nets: ["GONE", "A"], remove: true })
+    expect(gone.isError).toBe(false)
+    expect(gone.project.rules.clearanceRules).toBeUndefined()
+  })
 })
 
 describe("a part's clearance rule and the part", () => {
@@ -215,6 +224,10 @@ describe("the KiCad export of clearance rules", () => {
     const out = kicadCustomRules(quoted)!
     expect(out.text).toBeNull()
     expect(out.notes.join(" ")).toContain("The clearance rule for A'1 and B is left out")
+    // KiCad's == reads * and ? as wildcards: written, the rule would reach every net the pattern matches.
+    const wild = kicadCustomRules({ ...p, rules: setClearanceRule(p.rules, { nets: ["CS*", "B"], clearance: 0.4 }) })!
+    expect(wild.text).toBeNull()
+    expect(wild.notes.join(" ")).toContain("reads * and ? there as wildcards")
     const gone = { ...p, rules: setClearanceRule(p.rules, { component: "nobody", clearance: 0.05 }) }
     expect(kicadCustomRules(gone)).toEqual({ text: null, notes: [] })
   })

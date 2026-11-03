@@ -18,6 +18,11 @@ const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
 const RETRY_NOW_MS = 1_000
 /** How long the log may take to say whether a project changed since a closed page kept edits of it, before they are asked about. */
 const CHANGED_SINCE_MS = 10_000
+/**
+ * How long this browser may take to say what closed pages kept, before this page's own edits go ahead without it: nothing is
+ * sent until it answers, and an IndexedDB that never does would otherwise hold back every save.
+ */
+const ORPHANS_MS = 5_000
 
 /**
  * How the open project's edits are getting to storage.
@@ -415,10 +420,14 @@ export class ProjectSync {
     this.adopting = true
     const opened = this.revision
     let kept: KeptBatch[] = []
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      kept = (await unsent.orphans(this.id)).filter((k) => k.formatVersion === PROJECT_FILE_VERSION)
+      const late = new Promise<KeptBatch[]>((resolve) => (timer = setTimeout(() => resolve([]), ORPHANS_MS)))
+      kept = (await Promise.race([unsent.orphans(this.id), late])).filter((k) => k.formatVersion === PROJECT_FILE_VERSION)
     } catch {
-      // The browser won't say: this page's own edits go ahead, and what was kept stays for the next.
+      // The browser won't say (or not in time): this page's own edits go ahead, and what was kept stays for the next.
+    } finally {
+      clearTimeout(timer)
     }
     const changed = kept.length > 0 && !this.stopped && (await this.changedSince(kept, opened))
     this.adopting = false

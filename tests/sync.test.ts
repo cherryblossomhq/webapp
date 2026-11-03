@@ -564,6 +564,22 @@ describe("edits kept in this browser until they land", () => {
     expect(api().save.state).toBe("saved")
   })
 
+  it("sends its own edits after a while when this browser never says what was kept", async () => {
+    const memory = memoryStorage()
+    const kept = memoryUnsent()
+    kept.unsent.orphans = () => new Promise(() => {})
+    connectProjectStorage({ ...memory.storage, unsent: kept.unsent })
+    const { id } = await memory.storage.create(projectRecord(addComponent(createProject("Start"), "resistor").project))
+    const stored = (await memory.storage.load(id))!
+    api().open(openStoredProject(stored), stored)
+    rename("A")
+    await settle()
+    expect(pushes(memory)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(memory.project(id).name).toBe("A")
+    expect(api().save.state).toBe("saved")
+  })
+
   it("leaves a page still open its own edits, and edits kept by an editor of another format", async () => {
     const page = await firstPage()
     rename("Mine")

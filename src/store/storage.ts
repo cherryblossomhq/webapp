@@ -127,6 +127,11 @@ export interface KeptBatch {
   changes: Change[]
   /** The file format its changes were worked out in: an editor writing another leaves them alone, since they could mean something else to it. */
   formatVersion: number
+  /**
+   * The project's revision the page had when it kept it: what landed after, the page never saw, and the batch sent now would
+   * win over it wherever both changed a value.
+   */
+  seen: number
   /** When it was last kept. */
   savedAt: number
 }

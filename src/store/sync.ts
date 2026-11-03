@@ -16,6 +16,8 @@ const MAX_BATCH_CHANGES = 2_000
 const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000]
 /** Try again now's wait: a moment for the connection, asked to sign in again with it, to do so. */
 const RETRY_NOW_MS = 1_000
+/** How long the log may take to say whether a project changed since a closed page kept edits of it, before they are asked about. */
+const CHANGED_SINCE_MS = 10_000
 
 /**
  * How the open project's edits are getting to storage.
@@ -45,11 +47,23 @@ export interface SyncHost {
   /** Deleted, or no longer shared with this user. */
   gone(): void
   /**
+   * Edits a page that closed kept in this browser, held back because the project changed after they were made: sent, they
+   * would undo what changed wherever both touched a value, so the user decides (`restoreHeld`, `discardHeld`). Null once
+   * decided.
+   */
+  held(edits: HeldEdits | null): void
+  /**
    * Edits were refused and taken off the screen. The undo history held them, and its steps are
    * changes worked out against them: undoing one would write back values over other people's
    * edits for a step that never landed, so the history goes.
    */
   refused(): void
+}
+
+/** Edits held back for the user to decide on (`SyncHost.held`). */
+export interface HeldEdits {
+  /** When they were last kept, which is about when they were made. */
+  savedAt: number
 }
 
 interface Pending {
@@ -84,7 +98,9 @@ interface Pending {
  *   applied twice.
  * - **What hasn't landed is kept in this browser** (`storage.unsent`) until it does: the next copy
  *   of the project opened here, after a reload or a closed tab, sends it first (`adopt`). Edits were
- *   once refused for hours while the user was still signed in, and a reload lost them all.
+ *   once refused for hours while the user was still signed in, and a reload lost them all. When the
+ *   project changed after they were made (someone else, another tab or device), sending them would
+ *   undo that wherever both touched a value, so they wait for the user to restore or discard them.
  *
  * Like the autosave it replaced, it outlives the project being on screen: closing a project leaves
  * its last batches to land (`retire`).
@@ -109,6 +125,8 @@ export class ProjectSync {
   private adopting = false
   /** The batches kept in this browser (`storage.unsent`), with the edits each held when it was. */
   private kept = new Map<Pending, number>()
+  /** What a closed page kept, waiting on the user because the project changed since (`adopt`). */
+  private held: KeptBatch[] = []
   private retired = false
   private role: ProjectRole
 
@@ -206,6 +224,37 @@ export class ProjectSync {
     if (!this.notice) return
     this.notice = null
     this.report()
+  }
+
+  /** The project on screen with the held edits on top: what restoring them makes, for a copy to keep first. */
+  heldCopy(): Project | null {
+    return this.held.length ? this.held.reduce((p, k) => applyChanges(p, k.changes), this.view()) : null
+  }
+
+  /**
+   * Send the held edits after all. They go after this tab's batches already sent and before the ones still gathering, so the
+   * edits made here since they were found stay the newest, and win where both changed a value.
+   */
+  restoreHeld() {
+    if (!this.held.length || this.stopped || this.role === "viewer") return
+    const restored = this.held.map(adopted)
+    this.held = []
+    for (const p of restored) this.kept.set(p, p.steps)
+    const at = this.pending.findIndex((p) => !p.sent)
+    this.pending.splice(at < 0 ? this.pending.length : at, 0, ...restored)
+    this.host.held(null)
+    this.host.rebase(this.view(), [])
+    this.report()
+    void this.flush()
+  }
+
+  /** Let the held edits go for good. */
+  discardHeld() {
+    const unsent = this.storage.unsent
+    if (!this.held.length) return
+    for (const k of this.held) unsent?.drop(this.id, k.clientId, k.batch)
+    this.held = []
+    this.host.held(null)
   }
 
   /** Send the batch that didn't arrive again soon, rather than after the wait it is in (up to 30 s). */
@@ -358,24 +407,71 @@ export class ProjectSync {
    * Put first in line, and on screen, the edits a page that closed before they landed kept of this project (a reload, a closed
    * tab, a crash). They go under the tab and number they were made with, so one that landed after all is answered with its
    * revision and taken off again rather than applied twice; edits made here meanwhile wait, since they are newer.
+   *
+   * Unless the project changed after they were made. Landing last, they would win over every value both they and that change
+   * touched: a laptop's edits kept a week, sent over the work done on a desktop since. Those are held for the user instead.
    */
   private async adopt(unsent: UnsentEdits) {
     this.adopting = true
+    const opened = this.revision
     let kept: KeptBatch[] = []
     try {
       kept = (await unsent.orphans(this.id)).filter((k) => k.formatVersion === PROJECT_FILE_VERSION)
     } catch {
       // The browser won't say: this page's own edits go ahead, and what was kept stays for the next.
     }
+    const changed = kept.length > 0 && !this.stopped && (await this.changedSince(kept, opened))
     this.adopting = false
     if (this.stopped) return
-    if (kept.length) {
-      const adopted = kept.map((k): Pending => ({ batch: k.batch, changes: k.changes, steps: 1, sent: true, from: k.clientId }))
-      for (const p of adopted) this.kept.set(p, p.steps)
-      this.pending.unshift(...adopted)
+    if (changed) {
+      this.held = kept
+      this.host.held({ savedAt: Math.max(...kept.map((k) => k.savedAt)) })
+    } else if (kept.length) {
+      const taken = kept.map(adopted)
+      for (const p of taken) this.kept.set(p, p.steps)
+      this.pending.unshift(...taken)
       this.host.rebase(this.view(), [])
     }
     void this.flush()
+  }
+
+  /**
+   * Whether anything but the kept batches themselves landed after the oldest of them was kept: anyone's edit, this user's on
+   * another tab or computer, a whole write. Read from the log; a log that no longer reaches back, can't be read or doesn't
+   * answer in time is taken as a change, since the cost of asking is a strip and the cost of guessing wrong is lost work.
+   */
+  private changedSince(kept: KeptBatch[], opened: number): Promise<boolean> {
+    const since = Math.min(...kept.map((k) => k.seen))
+    if (since === opened) return Promise.resolve(false)
+    const theirs = new Set(kept.map((k) => `${k.clientId}/${k.batch}`))
+    return new Promise((resolve) => {
+      let answered = false
+      let unwatch: (() => void) | null = null
+      const answer = (changed: boolean) => {
+        if (answered) return
+        answered = true
+        clearTimeout(timer)
+        unwatch?.()
+        resolve(changed)
+      }
+      const timer = setTimeout(() => answer(true), CHANGED_SINCE_MS)
+      let read = since
+      unwatch = this.storage.watchChanges(
+        this.id,
+        since,
+        (event) => {
+          if (event.type !== "batches") return answer(true)
+          for (const b of event.batches) {
+            if (b.revision <= read) continue
+            if (b.revision !== read + 1 || !theirs.has(`${b.clientId}/${b.batch}`)) return answer(true)
+            read = b.revision
+          }
+          if (read >= event.revision) answer(false)
+        },
+        () => answer(true),
+      )
+      if (answered) unwatch()
+    })
   }
 
   /** Keep in this browser each batch that hasn't landed, as it gathers edits, and let go of each as it lands or is refused. */
@@ -391,7 +487,14 @@ export class ProjectSync {
     }
     for (const p of waiting) {
       if (this.kept.get(p) === p.steps) continue
-      unsent.keep(this.id, { clientId: p.from ?? this.clientId, batch: p.batch, changes: p.changes, formatVersion: PROJECT_FILE_VERSION, savedAt: Date.now() })
+      unsent.keep(this.id, {
+        clientId: p.from ?? this.clientId,
+        batch: p.batch,
+        changes: p.changes,
+        formatVersion: PROJECT_FILE_VERSION,
+        seen: this.revision,
+        savedAt: Date.now(),
+      })
       this.kept.set(p, p.steps)
     }
   }
@@ -473,3 +576,6 @@ export class ProjectSync {
     this.host.status(this.notice ? { state: "refused", reason: this.notice } : { state: "saved" })
   }
 }
+
+/** A batch a closed page kept, in line to be sent under its tab and number. */
+const adopted = (k: KeptBatch): Pending => ({ batch: k.batch, changes: k.changes, steps: 1, sent: true, from: k.clientId })

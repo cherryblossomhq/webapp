@@ -9,7 +9,7 @@ import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
 import { projectChanges } from "./changes"
 import type { ProjectRole, ProjectStorage, RemoteBatch } from "./storage"
-import { ProjectSync, type SaveStatus, type SyncHost } from "./sync"
+import { ProjectSync, type HeldEdits, type SaveStatus, type SyncHost } from "./sync"
 
 export type { SaveStatus } from "./sync"
 
@@ -91,6 +91,14 @@ interface ProjectState {
   dismissSaveNotice: () => void
   /** The strip's Try again now, while edits aren't arriving: the connection signs in again, and they are sent at once. */
   retrySave: () => void
+  /** Edits a closed page kept in this browser, held for the user because the project changed since they were made. */
+  heldEdits: HeldEdits | null
+  /** Send the held edits after all, over what changed since. */
+  restoreHeldEdits: () => void
+  /** Let the held edits go for good. */
+  discardHeldEdits: () => void
+  /** The project with the held edits on top, for a copy to download before deciding. */
+  heldEditsCopy: () => Project | null
   beginTransient: () => void
   /** Replace the document during a drag without creating history entries. */
   setTransient: (fn: (base: Project) => Project) => void
@@ -269,6 +277,9 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     refused() {
       if (sync === self()) set({ past: [], future: [] })
     },
+    held(heldEdits) {
+      if (sync === self()) set({ heldEdits })
+    },
   })
 
   return {
@@ -282,6 +293,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     gone: false,
     sessionId: null,
     preview: null,
+    heldEdits: null,
 
     open: (p, stored) => {
       retireSync()
@@ -301,12 +313,12 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         )
       }
       sync = created
-      set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null })
+      set({ project: p, past: [], future: [], transientBase: null, save: { state: "saved" }, role, refusedEdits: 0, gone: false, sessionId: created?.clientId ?? null, preview: null, heldEdits: null })
       created?.start()
     },
     close: () => {
       retireSync()
-      set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" }, role: "owner", gone: false, sessionId: null, preview: null })
+      set({ project: null, past: [], future: [], transientBase: null, save: { state: "saved" }, role: "owner", gone: false, sessionId: null, preview: null, heldEdits: null })
     },
 
     startPreview: (shown, version) => {
@@ -372,6 +384,9 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       storage?.reconnect?.()
       sync?.retryNow()
     },
+    restoreHeldEdits: () => sync?.restoreHeld(),
+    discardHeldEdits: () => sync?.discardHeld(),
+    heldEditsCopy: () => sync?.heldCopy() ?? null,
 
     beginTransient: () => {
       const { project, role } = get()

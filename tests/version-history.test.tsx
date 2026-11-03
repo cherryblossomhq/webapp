@@ -193,6 +193,7 @@ describe("restoring with two copies open", () => {
       role: () => {},
       gone: () => {},
       refused: () => {},
+      held: () => {},
     }
     const sync = new ProjectSync(id, project, revision, PROJECT_FILE_VERSION, "editor", memory.storage, hostFor)
     sync.start()

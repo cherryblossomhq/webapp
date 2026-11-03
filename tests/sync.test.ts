@@ -568,7 +568,7 @@ describe("edits kept in this browser until they land", () => {
     const page = await firstPage()
     rename("Mine")
     await settle()
-    page.kept.unsent.keep(page.id, { clientId: "s_old", batch: 1, changes: [{ kind: "set", set: [[["name"], "Older format"]] }], formatVersion: PROJECT_FILE_VERSION - 1, savedAt: 0 })
+    page.kept.unsent.keep(page.id, { clientId: "s_old", batch: 1, changes: [{ kind: "set", set: [[["name"], "Older format"]] }], formatVersion: PROJECT_FILE_VERSION - 1, seen: 1, savedAt: 0 })
     // Another tab, while the first is open: only the old format's is anyone's to send, and it isn't this editor's.
     api().close()
     connectProjectStorage({ ...page.memory.storage, unsent: page.kept.unsent })
@@ -578,6 +578,66 @@ describe("edits kept in this browser until they land", () => {
     expect(pushes(page.memory)).toHaveLength(0)
     expect(api().project!.name).toBe("Start")
     expect(page.kept.rows.size).toBe(2)
+  })
+
+  /** A page that couldn't save "Mine", closed; then someone else renames the project and adds a label before it opens again. */
+  async function changedSince() {
+    const page = await firstPage()
+    rename("Mine")
+    await settle()
+    const stored = openStoredProject((await page.memory.storage.load(page.id))!)
+    await page.memory.pushAs("other", page.id, projectChanges(stored, { ...addLabel(stored, "GND", { x: 9, y: 9 }).project, name: "Theirs" }))
+    await page.reopen()
+    await settle()
+    return page
+  }
+
+  it("holds what a closed page kept when the project changed since, rather than send it over the newer work", async () => {
+    const page = await changedSince()
+    expect(api().heldEdits).not.toBeNull()
+    expect(pushes(page.memory)).toHaveLength(0)
+    expect(api().project!.name).toBe("Theirs")
+    expect(page.kept.rows.size).toBe(1)
+    // The copy to keep has them on top of what is there now.
+    expect(api().heldEditsCopy()).toMatchObject({ name: "Mine", labels: [{ name: "GND" }] })
+
+    // The page's own edits go ahead meanwhile.
+    api().commit(moveFirst(3))
+    await settle()
+    expect(page.memory.project(page.id).components[0].sch.x).toBe(3)
+
+    api().restoreHeldEdits()
+    await settle()
+    expect(api().heldEdits).toBeNull()
+    expect(page.memory.project(page.id)).toMatchObject({ name: "Mine", labels: [{ name: "GND" }] })
+    expect(page.memory.project(page.id).components[0].sch.x).toBe(3)
+    expect(api().project!.name).toBe("Mine")
+    expect(pushes(page.memory).find((c) => c.clientId === page.clientId)).toMatchObject({ batch: 1 })
+    expect(page.kept.rows.size).toBe(0)
+    expect(api().save.state).toBe("saved")
+  })
+
+  it("lets held edits go for good when discarded", async () => {
+    const page = await changedSince()
+    api().discardHeldEdits()
+    await settle()
+    expect(api().heldEdits).toBeNull()
+    expect(page.kept.rows.size).toBe(0)
+    expect(pushes(page.memory)).toHaveLength(0)
+    expect(page.memory.project(page.id).name).toBe("Theirs")
+  })
+
+  it("holds them too when the log no longer reaches back to when they were kept", async () => {
+    const page = await firstPage()
+    rename("Mine")
+    await settle()
+    const stored = openStoredProject((await page.memory.storage.load(page.id))!)
+    await page.memory.pushAs("other", page.id, projectChanges(stored, addLabel(stored, "GND", { x: 9, y: 9 }).project))
+    page.memory.dropLog(page.id)
+    await page.reopen()
+    await settle()
+    expect(api().heldEdits).not.toBeNull()
+    expect(pushes(page.memory)).toHaveLength(0)
   })
 })
 
@@ -594,6 +654,7 @@ describe("two tabs on one project", () => {
       role: () => {},
       gone: () => {},
       refused: () => {},
+      held: () => {},
     }
     const sync = new ProjectSync(id, project, revision, PROJECT_FILE_VERSION, "owner", memory.storage, host)
     sync.start()

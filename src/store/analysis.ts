@@ -6,7 +6,7 @@ import { analysisWithItems, analyzePcb, followEdit, openingAnalysis, type PcbAna
 import type { ZoneFill } from "../model/pour"
 import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
-import { seedZoneFills, type PendingGroup } from "../model/zoneFill"
+import { keptZoneFills, seedZoneFills, type PendingGroup } from "../model/zoneFill"
 import { needsZoneEngine } from "../model/zones"
 import { useProjectStore } from "./projectStore"
 import type { ZoneFillReply, ZoneFillRequest } from "./zoneFill.worker"
@@ -179,8 +179,10 @@ function nextCheck() {
   checkWanted = null
   if (pcbCache.get(p) || useProjectStore.getState().project !== p) return
   const w = checksWorker()
-  if (!w) return
+  // With no checks worker (it failed), the fill worker makes the whole analysis.
+  if (!w) return wantFill(p, [])
   checking = p
+  const sent = lastGood.project === p.id ? lastGood.fills : []
   const done = () => {
     checking = null
     nextCheck()
@@ -192,8 +194,16 @@ function nextCheck() {
       checkerOff = true
       wantFill(p, [])
     } else if (!pcbCache.get(p)) {
-      const value = adopted({ project: p, groups: [] }, e.data)
-      if (!e.data.pending) {
+      // The checks worker fills nothing and keeps no fill, so it lists every group the editor fills as pending. A group whose fill kept here is the
+      // one it was sent to stand in for it was checked with its current fill: only the others are pending.
+      const stood = new Set(sent)
+      const pending = e.data.pending?.filter((g) => !keptZoneFills(g.key)?.every((f) => stood.has(f)))
+      // Those groups' fills are the very ones sent (the reply's are copies), so the next edit's answer is judged by them too.
+      const current = new Set(e.data.pending?.filter((g) => !pending?.includes(g)).flatMap((g) => g.zones))
+      const sentAt = new Map(sent.map((f) => [`${f.zoneId}|${f.layer}`, f]))
+      const fills = e.data.fills.map((f) => (current.has(f.zoneId) && sentAt.get(`${f.zoneId}|${f.layer}`)) || f)
+      const value = adopted({ project: p, groups: [] }, { ...e.data, fills, pending: pending?.length ? pending : undefined })
+      if (!pending?.length) {
         // No pour was reached: these are the board's checks.
         pcbCache.set(p, value)
         noteCurrent(p, value)
@@ -201,7 +211,7 @@ function nextCheck() {
       } else {
         // The checks with the last fills of the pours the edit reached, which the fill worker fills again now.
         liveCache.set(p, { value, tick: useFillTick.getState().tick + 1 })
-        wantFill(p, e.data.pending)
+        wantFill(p, pending)
       }
       if (lastShown?.project.id === p.id) lastShown = { project: p, value }
       bump()
@@ -215,7 +225,7 @@ function nextCheck() {
     wantFill(p, [])
     done()
   }
-  w.postMessage({ file: fileOf(p), stale: lastGood.project === p.id ? lastGood.fills : [] } satisfies ZoneFillRequest)
+  w.postMessage({ file: fileOf(p), stale: sent } satisfies ZoneFillRequest)
 }
 
 function finish(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>) {
@@ -315,9 +325,13 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
     const start = getLiveAnalysis(base)
     if (start.items.length > DRAG_FOLLOW_ITEMS) return draggedAnalysis(p, base, start)
   }
-  if (!needsZoneEngine(p)) return getPcbAnalysis(p)
+  // A big board's analysis is made off the page's thread whether or not it has pours to fill (below).
+  const big = bigBoard(p) && fillWorker() !== null
+  if (!big && !needsZoneEngine(p)) return getPcbAnalysis(p)
   const exact = pcbCache.get(p)
   if (exact) return shown(p, exact)
+  // A drag on a smaller board keeps the last fill until the drop (`getPcbAnalysis`), and starts no refill of a project it is only passing through.
+  if (base !== null) return getPcbAnalysis(p)
   const tick = useFillTick.getState().tick
   const hit = liveCache.get(p)
   if (hit && hit.tick === tick) return shown(p, hit.value)
@@ -325,7 +339,7 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   // analysis shown last with the edited copper where it is now (`followEdit`), and when the board opens its copper alone, with KiCad's kept fills
   // drawn as they are (`openingAnalysis`); the worker's analysis, connections and checks, replaces either when it comes. Analysing the board here
   // took 14 s an edit on one of 1,566 parts, and its connections alone held the page for 15 to 20 s as it opened.
-  if (bigBoard(p) && fillWorker() !== null) {
+  if (big) {
     const from = lastShown
     const value =
       from && from.project.id === p.id && from.project !== p
@@ -357,8 +371,8 @@ function shown(p: Project, value: PcbAnalysis): PcbAnalysis {
   return value
 }
 
-/** The copper items past which a drag follows the analysis it began with instead of analysing every frame. */
-const DRAG_FOLLOW_ITEMS = 4000
+/** The copper items past which a drag follows the analysis it began with instead of analysing every frame, and the PCB view keeps its drawing. */
+export const DRAG_FOLLOW_ITEMS = 4000
 
 const dragFrames = new WeakMap<Project, PcbAnalysis>()
 

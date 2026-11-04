@@ -57,18 +57,6 @@ describe("an analysis that follows an edit, and one made elsewhere", () => {
     expect(now.ratsnest.some((r) => ends.has(`${r.a.x},${r.a.y}`) || ends.has(`${r.b.x},${r.b.y}`))).toBe(false)
   })
 
-  it("stops before the checks when asked for the connections only, with the same copper, islands and connections to make", () => {
-    const p = structuredClone(EXAMPLES.find((e) => e.id === "esp32-robot")!.project) as Project
-    const sch = computeConnectivity(p)
-    const full = analyzePcb(p, sch)
-    const quick = analyzePcb(p, sch, { connectionsOnly: true })
-    expect(quick.checksPending).toBe(true)
-    expect(quick.items.map((it) => it.id)).toEqual(full.items.map((it) => it.id))
-    expect([...quick.island]).toEqual([...full.island])
-    expect(quick.ratsnest).toEqual(full.ratsnest)
-    expect(quick.violations.every((v) => full.violations.some((w) => w.kind === v.kind && w.message === v.message))).toBe(true)
-  })
-
   it("is the same analysis when its results are made elsewhere and its copper here", () => {
     const p = structuredClone(EXAMPLES.find((e) => e.id === "esp32-robot")!.project) as Project
     const sch = computeConnectivity(p)

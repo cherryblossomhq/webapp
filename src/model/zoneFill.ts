@@ -438,6 +438,9 @@ export function seedZoneFills(entries: { key: string; fills: ZoneFill[] }[]): vo
   for (const e of entries) remember(e.key, e.fills)
 }
 
+/** The fills kept under a group's key, if any (the checks worker's answer is judged by them, `store/analysis.ts`). */
+export const keptZoneFills = (key: string): ZoneFill[] | undefined => fillStore().cache.get(key)
+
 /** The groups filled since this was last called (and forget them): the worker's reply. */
 export function takeFilled(): { key: string; fills: ZoneFill[] }[] {
   const kept = fillStore()

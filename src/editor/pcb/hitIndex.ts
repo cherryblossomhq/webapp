@@ -1,17 +1,17 @@
 import { CellGrid } from "../../lib/cellGrid"
-import type { Box } from "../../lib/geometry"
+import { emptyBox, expandBox, type Box } from "../../lib/geometry"
 import { arcOf, isArcTrace } from "../../model/arcTracks"
 import { pcbCourtyard } from "../../model/instances"
 import type { CopperItem, PcbAnalysis } from "../../model/pcb"
 import { resolvedComponents } from "../../model/ruleAreas"
-import type { ComponentInstance, Project, Trace, Via } from "../../model/types"
+import type { ComponentInstance, Project, Trace, Via, Vec2 } from "../../model/types"
 
 // What the pointer is over, found among what is near it: the PCB view asks on every move of the pointer, and going through each of a board's
 // pads, vias, track pieces and parts took tens of milliseconds a move on CERN's Macbeth (10,000 pads, 5,215 vias, 5,798 tracks, 1,566 parts).
 
 type PadItem = Extract<CopperItem, { kind: "pad" }>
 
-export interface HitIndex {
+interface HitIndex {
   /** The pad items, in the order of the analysis's items. */
   pads: PadItem[]
   padGrid: CellGrid
@@ -24,7 +24,8 @@ export interface HitIndex {
   partGrid: CellGrid
 }
 
-const grow = (b: Box, d: number): Box => ({ minX: b.minX - d, minY: b.minY - d, maxX: b.maxX + d, maxY: b.maxY + d })
+/** The box of points, `pad` round them. */
+const boxOf = (points: readonly Vec2[], pad: number): Box => points.reduce((b, q) => expandBox(b, q, pad), emptyBox())
 
 const indexes = new WeakMap<CopperItem[], WeakMap<Project, HitIndex>>()
 
@@ -38,17 +39,16 @@ export function hitIndex(p: Project, items: CopperItem[]): HitIndex {
   const padGrid = new CellGrid()
   pads.forEach((it, i) => padGrid.add(i, it.box))
   const viaGrid = new CellGrid()
-  p.vias.forEach((v, i) => viaGrid.add(i, grow({ minX: v.x, minY: v.y, maxX: v.x, maxY: v.y }, v.diameter / 2)))
+  p.vias.forEach((v, i) => viaGrid.add(i, boxOf([v], v.diameter / 2)))
   const traceGrid = new CellGrid()
   p.traces.forEach((t, i) => {
     if (isArcTrace(t)) {
       // An arc track lies within its circle's box, its width round it.
       const c = arcOf(t.points).circle
-      const box: Box = c && Number.isFinite(c.r) ? { minX: c.c.x - c.r, minY: c.c.y - c.r, maxX: c.c.x + c.r, maxY: c.c.y + c.r } : boundsOf(t.points)
-      traceGrid.add(i, grow(box, t.width / 2))
+      traceGrid.add(i, c && Number.isFinite(c.r) ? boxOf([c.c], c.r + t.width / 2) : boxOf(t.points, t.width / 2))
       return
     }
-    for (let s = 0; s < t.points.length - 1; s++) traceGrid.add(i, grow(boundsOf([t.points[s], t.points[s + 1]]), t.width / 2))
+    for (let s = 0; s < t.points.length - 1; s++) traceGrid.add(i, boxOf([t.points[s], t.points[s + 1]], t.width / 2))
   })
   const parts: HitIndex["parts"] = []
   const partGrid = new CellGrid()
@@ -64,22 +64,8 @@ export function hitIndex(p: Project, items: CopperItem[]): HitIndex {
   return index
 }
 
-function boundsOf(points: { x: number; y: number }[]): Box {
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const q of points) {
-    if (q.x < minX) minX = q.x
-    if (q.y < minY) minY = q.y
-    if (q.x > maxX) maxX = q.x
-    if (q.y > maxY) maxY = q.y
-  }
-  return { minX, minY, maxX, maxY }
-}
-
 /** A net's tracks, pads and vias. */
-export interface NetCopper {
+interface NetCopper {
   traces: Trace[]
   pads: PadItem[]
   vias: Via[]

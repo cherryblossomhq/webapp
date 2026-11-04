@@ -1,13 +1,13 @@
 import type { ReactNode, SVGProps } from "react"
 import { slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
-import type { Via } from "../../model/types"
+import type { Vec2, Via } from "../../model/types"
 import { PCB } from "../theme"
 
 // The board's copper drawn as few paths: one for all the pieces that look alike (the tracks of one width, the pads of one colour, the drills),
 // where it was an element or three for each. A board of 5,798 tracks, 5,215 vias and 10,000 pads was 110,000 elements, and the page went
 // through all of them on every move of the pointer (to find what is under it) and every frame anything changed (to sort them into layers).
-// Pieces of one path are drawn alike: opaque, they look as the separate elements did.
+// Pieces of one path are drawn alike: opaque, and each filled shape wound the same way round, so where two overlap the path fills both.
 
 /** A piece of a path, the props of the path it goes in (which pieces with the same `style` share), and its path data. */
 export interface PathPiece {
@@ -15,6 +15,30 @@ export interface PathPiece {
   props: SVGProps<SVGPathElement>
   d: string
 }
+
+/** Things in one list for each opacity, the faintest first. */
+function byOpacityOf<T>(items: [opacity: number, item: T][]): [number, T[]][] {
+  const groups = new Map<number, T[]>()
+  for (const [o, item] of items) {
+    const list = groups.get(o)
+    if (list) list.push(item)
+    else groups.set(o, [item])
+  }
+  return [...groups].sort((a, b) => a[0] - b[0])
+}
+
+const fadeGroup = (o: number, children: ReactNode) => (
+  <g key={o} opacity={o === 1 ? undefined : o}>
+    {children}
+  </g>
+)
+
+/**
+ * Elements in one group for each opacity, the fainter under the rest. An opacity of its own on each element makes it a piece of its own that the page
+ * sorts into layers again on every frame anything changes: the 18,586 faint drawings and back-side parts of CERN's Macbeth took a quarter of a second
+ * a frame to move the pointer over, where the same elements in a few groups take nothing.
+ */
+export const byOpacity = (items: [opacity: number, el: ReactNode][]): ReactNode[] => byOpacityOf(items).map(([o, els]) => fadeGroup(o, els))
 
 /** One path for each style, in the order the styles first come, each with the data of all its pieces. */
 export function mergedPaths(pieces: PathPiece[]): ReactNode[] {
@@ -27,27 +51,16 @@ export function mergedPaths(pieces: PathPiece[]): ReactNode[] {
   return [...byStyle].map(([style, { props, d }]) => <path key={style} {...props} d={d.join("")} />)
 }
 
-/** The pieces in one group for each opacity, the fainter under the rest, each group's pieces merged (`mergedPaths`). */
-export function fadedPaths(pieces: [opacity: number, piece: PathPiece][]): ReactNode[] {
-  const groups = new Map<number, PathPiece[]>()
-  for (const [o, p] of pieces) {
-    const list = groups.get(o)
-    if (list) list.push(p)
-    else groups.set(o, [p])
-  }
-  return [...groups]
-    .sort((a, b) => a[0] - b[0])
-    .map(([o, list]) => (
-      <g key={o} opacity={o === 1 ? undefined : o}>
-        {mergedPaths(list)}
-      </g>
-    ))
-}
+/** Path pieces in one group for each opacity (`byOpacity`), each group's pieces merged (`mergedPaths`). */
+export const fadedPaths = (pieces: [opacity: number, piece: PathPiece][]): ReactNode[] => byOpacityOf(pieces).map(([o, list]) => fadeGroup(o, mergedPaths(list)))
 
 const n = (v: number) => +v.toFixed(5)
 
+// Every filled shape below is wound the same way (the shoelace sum of its points positive, as `roundRectD` goes), so that in one path, filled by
+// the non-zero rule, two that overlap fill their overlap rather than cancel there.
+
 /** A circle as path data. */
-export const circleD = (x: number, y: number, r: number) => `M${n(x - r)},${n(y)}a${n(r)},${n(r)} 0 1 0 ${n(2 * r)},0a${n(r)},${n(r)} 0 1 0 ${n(-2 * r)},0Z`
+export const circleD = (x: number, y: number, r: number) => `M${n(x - r)},${n(y)}a${n(r)},${n(r)} 0 1 1 ${n(2 * r)},0a${n(r)},${n(r)} 0 1 1 ${n(-2 * r)},0Z`
 
 /** A rectangle with rounded corners (`rx` as an SVG rect has it, no more than half a side) as path data. */
 export function roundRectD(x0: number, y0: number, w: number, h: number, rx: number): string {
@@ -59,24 +72,34 @@ export function roundRectD(x0: number, y0: number, w: number, h: number, rx: num
   return `M${n(x0 + r)},${n(y0)}H${n(x1 - r)}${a}${n(x1)},${n(y0 + r)}V${n(y1 - r)}${a}${n(x1 - r)},${n(y1)}H${n(x0 + r)}${a}${n(x0)},${n(y1 - r)}V${n(y0 + r)}${a}${n(x0 + r)},${n(y0)}Z`
 }
 
-const ringD = (ring: { x: number; y: number }[]) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`
+const ringD = (ring: Vec2[]) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`
+
+/** A polygon as path data, wound as the other shapes are. */
+function polygonD(ring: Vec2[]): string {
+  let twice = 0
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i]
+    const q = ring[(i + 1) % ring.length]
+    twice += p.x * q.y - q.x * p.y
+  }
+  return ringD(twice < 0 ? [...ring].reverse() : ring)
+}
 
 /**
- * A pad as path pieces, drawn as `PadShape` draws it: its copper (`copper`), then its drill and plating (`holes`). A custom pad with a hole in it
- * or in pieces (more than one ring, filled even-odd) is a path of its own (its style names it), so no other pad's copper cuts into it.
+ * A pad as path pieces, drawn as the board always drew it: its copper, then its drill and plating (`holes`). A custom pad with a hole in it or in
+ * pieces (more than one ring, filled even-odd) is a path of its own (its style names it), so no other pad's copper cuts into it.
  */
-export function padPieces(pad: WorldPad, id: string, color: string, highlight: boolean, px: number): { copper: PathPiece; holes: PathPiece[] } {
-  const stroke = highlight ? "#ffffff" : "none"
-  const sw = highlight ? 1.6 * px : 0
-  const look = { fill: color, stroke, strokeWidth: sw }
+function padPieces(pad: WorldPad, id: string, color: string, highlight: boolean, px: number): { copper: PathPiece; holes: PathPiece[] } {
+  const look = { fill: color, stroke: highlight ? "#ffffff" : "none", strokeWidth: highlight ? 1.6 * px : 0 }
+  const style = `pad|${color}|${highlight}`
   let copper: PathPiece
-  if (pad.shape === "circle") copper = { style: `pad|${color}|${highlight}`, props: look, d: circleD(pad.x, pad.y, pad.width / 2) }
+  if (pad.shape === "circle") copper = { style, props: look, d: circleD(pad.x, pad.y, pad.width / 2) }
   else if (pad.rings && pad.rings.length > 1) copper = { style: `rings|${id}`, props: { ...look, fillRule: "evenodd" }, d: pad.rings.map(ringD).join("") }
-  else if (pad.shape === "polygon" && pad.points) copper = { style: `pad|${color}|${highlight}`, props: look, d: ringD(pad.points) }
+  else if (pad.shape === "polygon" && pad.points) copper = { style, props: look, d: polygonD(pad.points) }
   else {
     // A pad that has its own shape is drawn as it is; the plain one keeps the slight rounding it has always been drawn with.
     const rr = pad.shape === "pill" ? Math.min(pad.width, pad.height) / 2 : pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12
-    copper = { style: `pad|${color}|${highlight}`, props: look, d: roundRectD(pad.x - pad.width / 2, pad.y - pad.height / 2, pad.width, pad.height, rr) }
+    copper = { style, props: look, d: roundRectD(pad.x - pad.width / 2, pad.y - pad.height / 2, pad.width, pad.height, rr) }
   }
   const holes: PathPiece[] = []
   const d = pad.holeDiameter
@@ -97,14 +120,14 @@ export function padPieces(pad: WorldPad, id: string, color: string, highlight: b
   return { copper, holes }
 }
 
-/** Pads as few paths, in groups by opacity: all their copper, then all their drills. */
-export function padPaths(pads: { opacity: number; pad: WorldPad; id: string; color: string; highlight: boolean }[], px: number): ReactNode[] {
+/** Pads as few paths, in groups by opacity: all their copper, then all their drills. `outline` draws the copper as its lit outline alone. */
+export function padPaths(pads: { opacity: number; pad: WorldPad; id: string; color: string; highlight: boolean; outline?: boolean }[], px: number): ReactNode[] {
   const copper: [number, PathPiece][] = []
   const holes: [number, PathPiece][] = []
   for (const p of pads) {
     const made = padPieces(p.pad, p.id, p.color, p.highlight, px)
-    copper.push([p.opacity, made.copper])
-    for (const h of made.holes) holes.push([p.opacity, h])
+    copper.push([p.opacity, p.outline ? { ...made.copper, style: `outline|${made.copper.style}`, props: { ...made.copper.props, fill: "none" } } : made.copper])
+    if (!p.outline) for (const h of made.holes) holes.push([p.opacity, h])
   }
   return fadedPaths([...copper, ...holes])
 }

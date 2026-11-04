@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { circleD, fadedPaths, mergedPaths, roundRectD } from "../src/editor/pcb/boardPaths"
+import { circleD, fadedPaths, mergedPaths, padPaths, roundRectD } from "../src/editor/pcb/boardPaths"
 import { hitShape, pointShapeInkDistance, shapeShown, type ShapeVisibility } from "../src/editor/pcb/shapeEditing"
 import { hitText, textBox, textShownOnScreen } from "../src/editor/pcb/textEditing"
 import { CellGrid } from "../src/lib/cellGrid"
 import { computeConnectivity } from "../src/model/connectivity"
 import { EXTENSION_NAMES, importKicadBoard } from "../src/model/kicad/board"
 import { analyzePcb, openingAnalysis } from "../src/model/pcb"
-import { pcbCourtyard } from "../src/model/instances"
+import { pcbCourtyard, type WorldPad } from "../src/model/instances"
 import { shapeInkBox } from "../src/model/shapes"
 import { worldShapes } from "../src/model/shapeItems"
 import { textLayerKind, worldTexts } from "../src/model/texts"
@@ -154,7 +154,25 @@ describe("the copper drawn as few paths", () => {
     expect(roundRectD(0, 0, 4, 2, 0)).toBe("M0,0H4V2H0Z")
     // Corners no rounder than half the short side, as an SVG rect has them.
     expect(roundRectD(0, 0, 4, 2, 5)).toBe("M1,0H3A1,1 0 0 1 4,1V1A1,1 0 0 1 3,2H1A1,1 0 0 1 0,1V1A1,1 0 0 1 1,0Z")
-    expect(circleD(1, 2, 0.5)).toBe("M0.5,2a0.5,0.5 0 1 0 1,0a0.5,0.5 0 1 0 -1,0Z")
+    expect(circleD(1, 2, 0.5)).toBe("M0.5,2a0.5,0.5 0 1 1 1,0a0.5,0.5 0 1 1 -1,0Z")
+  })
+
+  // In one path, filled by the non-zero rule, two shapes wound opposite ways cancel where they overlap: a circle pad over a polygon pad drawn the
+  // other way round showed the board through them.
+  it("winds every pad the same way, a polygon pad given the other way round reversed", () => {
+    const pad = (shape: WorldPad["shape"], extra: Partial<WorldPad> = {}): WorldPad => ({ componentId: "c", pin: "1", padNumber: "1", shape, x: 0, y: 0, width: 1, height: 1, layers: ["top"], ...extra })
+    const square = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ]
+    const d = (p: WorldPad) => ((padPaths([{ opacity: 1, pad: p, id: "p", color: "red", highlight: false }], 0.1)[0] as unknown as { props: { children: { props: { d: string } }[] } }).props.children[0].props.d)
+    expect(d(pad("polygon", { points: square }))).toBe("M0,0L1,0L1,1L0,1Z")
+    expect(d(pad("polygon", { points: [...square].reverse() }))).toBe("M0,0L1,0L1,1L0,1Z")
+    // The rectangle and the circle go the same way round as the polygon: right along the bottom, then up.
+    expect(d(pad("rect", { x: 0.5, y: 0.5 }))).toMatch(/^M0\.12,0H0\.88A/)
+    expect(circleD(0, 0, 1)).toMatch(/0 1 1 /)
   })
 })
 

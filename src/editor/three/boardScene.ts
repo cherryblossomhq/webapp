@@ -207,6 +207,7 @@ export class BoardScene {
       this.content.add(this.board.group)
     }
     if (partsChanged) this.rebuildParts(project)
+    if (boardChanged || partsChanged) this.compileFirst()
 
     this.boardRect = { x: b.x, y: b.y, width: b.width, height: b.height }
     setContactShadowBoard(this.shared.contact, b)
@@ -588,6 +589,23 @@ export class BoardScene {
   }
 
   private disposed = false
+  /** The shaders being compiled for what the scene holds now; nothing is drawn until they are (`compileFirst`). */
+  private compiling: Promise<unknown> | null = null
+
+  /**
+   * Compile the shaders of what the scene holds without holding the page, then draw. The first draw of a scene compiles them on the page's
+   * thread, where the graphics driver can take many seconds for the board's metal and mask (half a minute on a laptop's integrated graphics,
+   * the first time); `compileAsync` asks the driver to compile them in parallel (KHR_parallel_shader_compile) and waits without blocking.
+   */
+  private compileFirst() {
+    const job = this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined)
+    this.compiling = job
+    void job.then(() => {
+      if (this.compiling !== job) return
+      this.compiling = null
+      this.requestRender()
+    })
+  }
 
   private requestRender = () => {
     if (!this.frame && !this.disposed) this.frame = requestAnimationFrame(this.tick)
@@ -609,6 +627,8 @@ export class BoardScene {
     }
     // update() returns true while damping is still settling.
     if (this.controls.update()) active = true
+    // Drawn once the shaders are ready (`compileFirst`), which asks for a frame then.
+    if (this.compiling) return
     this.renderer.render(this.scene, this.camera)
     this.cube?.sync(this.camera.quaternion)
     if (active) this.requestRender()

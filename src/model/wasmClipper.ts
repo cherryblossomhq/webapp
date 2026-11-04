@@ -19,16 +19,21 @@ export async function loadWasmClipper(wasmUrl?: string): Promise<FastClipper> {
   ])
   const into = (paths: Paths64): WasmPaths64 => {
     const out = new m.Paths64()
-    for (const path of paths) {
-      const xyz = new BigInt64Array(path.length * 3)
-      for (let i = 0; i < path.length; i++) {
-        xyz[i * 3] = BigInt(path[i].x)
-        xyz[i * 3 + 1] = BigInt(path[i].y)
+    try {
+      for (const path of paths) {
+        const xyz = new BigInt64Array(path.length * 3)
+        for (let i = 0; i < path.length; i++) {
+          xyz[i * 3] = BigInt(path[i].x)
+          xyz[i * 3 + 1] = BigInt(path[i].y)
+        }
+        const p = new m.Path64()
+        p.assign(xyz)
+        out.push_back(p)
+        p.delete()
       }
-      const p = new m.Path64()
-      p.assign(xyz)
-      out.push_back(p)
-      p.delete()
+    } catch (err) {
+      out.delete()
+      throw err
     }
     return out
   }
@@ -59,12 +64,15 @@ export async function loadWasmClipper(wasmUrl?: string): Promise<FastClipper> {
     },
     boolean(op, a, b, rule) {
       const wa = into(a)
-      const wb = into(b)
       try {
-        return back(ops[op].call(m, wa, wb, rules[rule]))
+        const wb = into(b)
+        try {
+          return back(ops[op].call(m, wa, wb, rules[rule]))
+        } finally {
+          wb.delete()
+        }
       } finally {
         wa.delete()
-        wb.delete()
       }
     },
   }

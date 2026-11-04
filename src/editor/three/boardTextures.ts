@@ -397,7 +397,6 @@ function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictu
   }
   drawTexts(s.ctx, input.project, silkLayer, () => (s.ctx.fillStyle = s.ctx.strokeStyle))
   s.ctx.globalCompositeOperation = "source-over"
-  s.ctx.filter = "none"
 
   return { albedo: a.canvas, surface: s.canvas }
 }

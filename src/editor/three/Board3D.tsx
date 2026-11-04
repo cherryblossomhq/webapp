@@ -235,7 +235,7 @@ export function Board3D() {
           <div ref={cubeRef} className="absolute right-3 top-3 z-10 h-[104px] w-[104px]" aria-label="View cube: click a face, edge or corner to look from there" />
 
           {building && (
-            <div role="status" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">
+            <div role="status" className="absolute left-1/2 top-16 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">
               <LoaderCircle size={13} className="animate-spin" />
               <span>Building the 3D board</span>
             </div>

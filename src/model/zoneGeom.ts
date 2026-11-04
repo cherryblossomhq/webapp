@@ -57,13 +57,22 @@ export const setFastClipper = (engine: FastClipper | null) => {
 const FAST_FROM = 4000
 const pointsIn = (a: Paths64, b: Paths64 = []) => a.reduce((n, p) => n + p.length, 0) + b.reduce((n, p) => n + p.length, 0)
 
-export const inflate = (paths: Paths64, d: number, join: JoinType = JoinType.Round): Paths64 => {
-  if (!paths.length || d === 0) return paths
-  const done = fast && pointsIn(paths) >= FAST_FROM ? fast.inflate(paths, d * U, join, ARC_TOL) : null
-  return done ?? Clipper.inflatePaths(paths, d * U, join, EndType.Polygon, 2, ARC_TOL)
+/** The fast engine's answer for big paths, or null where there is none: small paths, no engine, or an engine that fails (on a point that is no number). */
+function viaFast(points: number, run: (engine: FastClipper) => Paths64 | null): Paths64 | null {
+  if (!fast || points < FAST_FROM) return null
+  try {
+    return run(fast)
+  } catch {
+    return null
+  }
 }
 
-const boolean = (op: "union" | "difference" | "intersect", a: Paths64, b: Paths64, rule: FillRule): Paths64 => (fast && pointsIn(a, b) >= FAST_FROM ? fast.boolean(op, a, b, rule) : Clipper[op](a, b, rule))
+export const inflate = (paths: Paths64, d: number, join: JoinType = JoinType.Round): Paths64 => {
+  if (!paths.length || d === 0) return paths
+  return viaFast(pointsIn(paths), (e) => e.inflate(paths, d * U, join, ARC_TOL)) ?? Clipper.inflatePaths(paths, d * U, join, EndType.Polygon, 2, ARC_TOL)
+}
+
+const boolean = (op: "union" | "difference" | "intersect", a: Paths64, b: Paths64, rule: FillRule): Paths64 => viaFast(pointsIn(a, b), (e) => e.boolean(op, a, b, rule)) ?? Clipper[op](a, b, rule)
 
 /** An open polyline grown to a stroke of the given half width, with round ends. */
 export const stroke = (points: Vec2[], halfWidth: number): Paths64 => Clipper.inflatePaths([points.map((p) => pt(p.x, p.y))], Math.max(halfWidth, 1e-5) * U, JoinType.Round, EndType.Round, 2, ARC_TOL)

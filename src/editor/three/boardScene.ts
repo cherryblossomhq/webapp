@@ -205,7 +205,8 @@ export class BoardScene {
       !prev || !this.parts || prev.project.components !== project.components || prev.project.models !== project.models || pb?.thickness !== b.thickness
     const boardChanged =
       !prev ||
-      !this.board ||
+      // A board still being made in the worker is the one asked for.
+      !(this.board || this.building) ||
       partsChanged ||
       prev.project.traces !== project.traces ||
       prev.project.vias !== project.vias ||
@@ -290,16 +291,26 @@ export class BoardScene {
     this.stopBuilding()
     const worker = bigBoard(project) ? this.boardWorker() : null
     if (!worker) return this.showBoard(project, boardShapes(project, fills), false)
-    const packed = packFills(fills)
     const reply = new Promise<BoardBuildReply | null>((done) => (this.building = { ask, done }))
-    worker.postMessage({ job: ask, file: projectFileOf(project), fills: packed } satisfies BoardBuildRequest, [packed.polygons.buffer, packed.rings.buffer, packed.points.buffer, packed.xy.buffer])
+    try {
+      const packed = packFills(fills)
+      worker.postMessage({ job: ask, file: projectFileOf(project), fills: packed } satisfies BoardBuildRequest, [packed.polygons.buffer, packed.rings.buffer, packed.points.buffer, packed.xy.buffer])
+    } catch {
+      this.building = null
+      return this.showBoard(project, boardShapes(project, fills), false)
+    }
     const shown: Promise<void> = reply.then((r) => {
       if (this.boardBuilding === shown) this.boardBuilding = null
       // Stopped (null), or a newer build asked for.
       if (!r || ask !== this.boardAsked || this.disposed) return
       this.building = null
-      this.showBoard(project, "shapes" in r ? shapesFrom(r.shapes) : boardShapes(project, fills), true)
-      this.onBoardBuilding?.(false)
+      // A worker that could not make it is not asked again: the page makes it, now and after.
+      if (!("shapes" in r)) workersOff = true
+      try {
+        this.showBoard(project, "shapes" in r ? shapesFrom(r.shapes) : boardShapes(project, fills), true)
+      } finally {
+        this.onBoardBuilding?.(false)
+      }
     })
     this.boardBuilding = shown
     this.onBoardBuilding?.(true)

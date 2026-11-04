@@ -11,14 +11,18 @@ const scope = globalThis as unknown as {
   postMessage: (reply: BoardBuildReply, moved: Transferable[]) => void
 }
 
+/** A drawing as a bitmap, drawn upside down onto a canvas of its own (`createImageBitmap`'s `imageOrientation` is not in every browser). */
 const bitmap = async (picture: BoardPicture) => {
   const canvas = picture as OffscreenCanvas
+  const turned = new OffscreenCanvas(canvas.width, canvas.height)
+  const ctx = turned.getContext("2d")!
+  ctx.setTransform(1, 0, 0, -1, 0, canvas.height)
+  ctx.drawImage(canvas, 0, 0)
   // Reading a pixel waits here for the graphics process to finish the drawing, so the page's first frame of the board waits for less: on CERN's
   // Macbeth 1 s (its textures and buffers going in), where it waited 1.6 s.
-  canvas.getContext("2d")!.getImageData(0, 0, 1, 1)
-  const out = await createImageBitmap(canvas, { imageOrientation: "flipY" })
+  ctx.getImageData(0, 0, 1, 1)
   canvas.width = 0
-  return out
+  return turned.transferToImageBitmap()
 }
 
 scope.onmessage = async ({ data: { job, file, fills } }) => {

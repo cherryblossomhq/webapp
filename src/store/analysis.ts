@@ -131,12 +131,14 @@ function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>)
   })
 }
 
-/** A project as the workers read it, written once for both. */
-const files = new WeakMap<Project, string>()
+/**
+ * A project as the workers read it, written once for both, and kept for the last project only: one for each project the undo history holds was
+ * 26 MB each on CERN's Macbeth, up to 200 of them.
+ */
+let fileKept: { project: Project; file: string } | null = null
 function fileOf(p: Project): string {
-  let file = files.get(p)
-  if (file === undefined) files.set(p, (file = serializeProject(p)))
-  return file
+  if (fileKept?.project !== p) fileKept = { project: p, file: serializeProject(p) }
+  return fileKept.file
 }
 
 // ---------- The checks of a big board, off the page's thread ----------
@@ -309,6 +311,7 @@ export function stopZoneFills(): void {
   checking = null
   if (checker) checker.terminate()
   checker = null
+  fileKept = null
 }
 
 /**

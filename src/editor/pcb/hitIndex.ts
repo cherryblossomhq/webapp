@@ -27,14 +27,12 @@ interface HitIndex {
 /** The box of points, `pad` round them. */
 const boxOf = (points: readonly Vec2[], pad: number): Box => points.reduce((b, q) => expandBox(b, q, pad), emptyBox())
 
-const indexes = new WeakMap<CopperItem[], WeakMap<Project, HitIndex>>()
+/** The index of the project and analysis asked last: the pointer is over the board as it is, and one for each project the undo history holds would add up. */
+let indexKept: { p: Project; items: CopperItem[]; index: HitIndex } | null = null
 
 /** The index of a project's copper and parts for picking, made once for each project and analysis. */
 export function hitIndex(p: Project, items: CopperItem[]): HitIndex {
-  let byProject = indexes.get(items)
-  if (!byProject) indexes.set(items, (byProject = new WeakMap()))
-  let index = byProject.get(p)
-  if (index) return index
+  if (indexKept?.p === p && indexKept.items === items) return indexKept.index
   const pads = items.filter((i): i is PadItem => i.kind === "pad")
   const padGrid = new CellGrid()
   pads.forEach((it, i) => padGrid.add(i, it.box))
@@ -59,8 +57,8 @@ export function hitIndex(p: Project, items: CopperItem[]): HitIndex {
     partGrid.add(parts.length, courtyard)
     parts.push({ c, courtyard })
   }
-  index = { pads, padGrid, viaGrid, traceGrid, parts, partGrid }
-  byProject.set(p, index)
+  const index = { pads, padGrid, viaGrid, traceGrid, parts, partGrid }
+  indexKept = { p, items, index }
   return index
 }
 
@@ -71,12 +69,12 @@ interface NetCopper {
   vias: Via[]
 }
 
-const byNets = new WeakMap<PcbAnalysis, { project: Project; nets: Map<string, NetCopper> }>()
+let netsKept: { project: Project; pcb: PcbAnalysis; nets: Map<string, NetCopper> } | null = null
 
-/** Each net's copper, found once for each analysis: lighting the net under the pointer went through the whole board for each net it passed over. */
+/** Each net's copper, found once for the analysis shown: lighting the net under the pointer went through the whole board for each net it passed over. */
 export function netCopper(p: Project, pcb: PcbAnalysis, net: string): NetCopper | undefined {
-  let kept = byNets.get(pcb)
-  if (!kept || kept.project !== p) {
+  let kept = netsKept
+  if (!kept || kept.project !== p || kept.pcb !== pcb) {
     const nets = new Map<string, NetCopper>()
     const of = (id: string | null | undefined) => {
       if (!id) return null
@@ -87,7 +85,7 @@ export function netCopper(p: Project, pcb: PcbAnalysis, net: string): NetCopper 
     for (const t of p.traces) of(pcb.traceNet.get(t.id))?.traces.push(t)
     for (const it of pcb.items) if (it.kind === "pad") of(it.netId)?.pads.push(it)
     for (const v of p.vias) of(pcb.viaNet.get(v.id))?.vias.push(v)
-    byNets.set(pcb, (kept = { project: p, nets }))
+    netsKept = kept = { project: p, pcb, nets }
   }
   return kept.nets.get(net)
 }

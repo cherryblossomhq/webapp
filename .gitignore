@@ -13,6 +13,8 @@ dist-ssr
 # Playwright generated artifacts — never commit these
 test-results
 playwright-report
+# The KiCad corpus tests' opt-in cache (KICAD_CORPUS_CACHE=1)
+.corpus-cache
 *.local
 .env
 .env.*

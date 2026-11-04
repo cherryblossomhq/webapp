@@ -26,10 +26,17 @@ type EditorHook = {
         blocks?: { id: string; name: string; components: string[] }[];
         wires: { id: string; points: { x: number; y: number }[] }[];
         labels: { id: string; name: string; x: number; y: number }[];
+        models?: { part: string; footprint: string; model: { name: string } }[];
       };
     };
     getConnectivity: (project: EditorProject) => { pinNet: Map<string, string> };
-    connectManagedAi: (host: { getAccessToken: () => Promise<string> }) => void;
+    connectManagedAi: (host: {
+      getAccessToken: () => Promise<string>;
+      upgradeUrl?: string;
+      accountUrl?: string;
+      assistantsUrl?: string;
+      assistantGuides?: Record<string, string>;
+    }) => void;
     connectSupplierParts: (source: { search: (q: string) => Promise<unknown>; part: (id: string) => Promise<unknown> }) => void;
   };
 };
@@ -42,6 +49,12 @@ async function newProject(page: Page) {
   await page.getByRole("button", { name: "New project" }).click();
   await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
   await page.waitForFunction(() => "__cherryblossom" in window);
+}
+
+/** The parts library is closed when a project opens (Sakura is open): its tab on the canvas's edge opens it. */
+async function openLibrary(page: Page) {
+  await page.getByRole("button", { name: "Parts", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Parts library" })).toBeVisible();
 }
 
 /**
@@ -73,10 +86,16 @@ test.describe("editor smoke", () => {
       timeout: 15_000,
     });
 
-    // The examples ship routed, so every card's board is drawn with the page.
+    // The examples ship routed, so every card's board is drawn with the page: in the preview worker, as an SVG
+    // shown as an image once the card nears view (`LazyPreview`), and decoded, not a broken image.
     const examples = page.getByRole("button", { name: /\d+ parts · / });
     await expect(examples).toHaveCount(5);
-    for (const card of await examples.all()) await expect(card.locator("svg polyline").first()).toBeAttached();
+    for (const card of await examples.all()) {
+      await card.scrollIntoViewIfNeeded();
+      const drawn = card.locator("img");
+      await expect(drawn).toHaveAttribute("src", /^blob:/, { timeout: 15_000 });
+      await expect.poll(() => drawn.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+    }
 
     await page.getByRole("button", { name: "New project" }).click();
     await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
@@ -291,7 +310,7 @@ test.describe("exports to other tools", () => {
     const elements = JSON.parse(await (await import("node:fs/promises")).readFile(path, "utf8")) as { type: string; name?: string }[];
     expect(elements.some((e) => e.type === "source_component" && e.name === "U1")).toBe(true);
     expect(elements.some((e) => e.type === "pcb_board")).toBe(true);
-    await expect(page.getByRole("status")).toContainText("What does not carry over");
+    await expect(page.getByRole("status")).toContainText("Exported Circuit JSON");
   });
 
   test("the export menu downloads a KiCad project as a zip", async ({ page }) => {
@@ -353,6 +372,7 @@ test.describe("electrical checks", () => {
 test.describe("parts and Sakura", () => {
   test("search reads values and packages, and placing applies them", async ({ page }) => {
     await newProject(page);
+    await openLibrary(page);
     const search = page.getByRole("combobox", { name: "Search parts" });
     await search.fill("10k 0603");
     const first = page.getByRole("option").first();
@@ -371,8 +391,9 @@ test.describe("parts and Sakura", () => {
     ]);
 
     await search.fill("bme280");
-    await expect(page.getByText('"bme280" isn\'t in the library.')).toBeVisible();
+    await expect(page.getByText('Can\'t find "bme280"?')).toBeVisible();
     await expect(page.getByRole("button", { name: "Create it with Sakura" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Import KiCad files" })).toBeVisible();
   });
 
   test("signed out, Sakura asks to sign in instead of calling a model", async ({ page }) => {
@@ -382,7 +403,9 @@ test.describe("parts and Sakura", () => {
       return route.abort();
     });
     await newProject(page);
-    await page.getByRole("button", { name: "Ask AI" }).click();
+    // Sakura is open when a project opens, and the parts library closed.
+    await expect(page.getByRole("complementary", { name: "Sakura" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Parts library" })).toHaveCount(0);
     await expect(page.getByText("Sign in to use Sakura").first()).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Message Sakura" })).toBeDisabled();
     expect(modelCalls).toBe(0);
@@ -451,9 +474,12 @@ test.describe("parts and Sakura", () => {
     await page.evaluate(() =>
       (window as unknown as EditorHook).__cherryblossom.connectManagedAi({ getAccessToken: async () => "e2e-token" }),
     );
-    await page.getByRole("button", { name: "Ask AI" }).click();
     const composer = page.getByRole("textbox", { name: "Message Sakura" });
     await expect(composer).toBeEnabled();
+    // Open from the start, Sakura leaves the focus to the canvas's shortcuts; opened by asking (⌘L), it takes it.
+    await expect(composer).not.toBeFocused();
+    await page.keyboard.press("ControlOrMeta+KeyL");
+    await page.keyboard.press("ControlOrMeta+KeyL");
     await expect(composer).toBeFocused();
     await composer.fill("Add a TPS7A02 3.3 V LDO");
     await composer.press("Enter");
@@ -471,6 +497,7 @@ test.describe("parts and Sakura", () => {
     expect(requests[2].body.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool", "assistant", "tool"]);
 
     // The made part is the project's own, in the library beside the built-in ones.
+    await openLibrary(page);
     await expect(page.getByRole("heading", { name: "This project" })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Parts library" }).getByText("TPS7A0233").first()).toBeVisible();
 
@@ -540,7 +567,6 @@ test.describe("parts and Sakura", () => {
         },
       });
     });
-    await page.getByRole("button", { name: "Ask AI" }).click();
     const composer = page.getByRole("textbox", { name: "Message Sakura" });
     await composer.fill("Add a TPS61023 boost converter");
     await composer.press("Enter");
@@ -559,6 +585,152 @@ test.describe("parts and Sakura", () => {
     await expect(page.getByText("isn't connected").first()).toBeVisible();
     await expect(page.getByText("not verified against a supplier")).toHaveCount(0);
     expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+  });
+
+  test("on Free, Sakura offers Pro and the user's own AI, each assistant linked to its steps", async ({ page }) => {
+    await page.route("**/api/v1/me", (route) =>
+      route.fulfill({
+        json: {
+          user: { id: "user_e2e", email: null, name: null },
+          plan: { tier: "free", name: "Free", managedAi: false, allowedModels: [] },
+          limits: { maxTokensPerRequest: 0, requestsPerMinute: 0, requestsPerDay: 0, monthlyTokens: 0 },
+          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          onDemand: { available: false, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
+        },
+      }),
+    );
+    await newProject(page);
+    // The host's links are what the website's mount passes; the panel's first fetch already found no session.
+    await page.evaluate(() =>
+      (window as unknown as EditorHook).__cherryblossom.connectManagedAi({
+        getAccessToken: async () => "e2e-token",
+        upgradeUrl: "/pricing",
+        assistantsUrl: "/docs/mcp",
+        assistantGuides: { claude: "/docs/mcp#claude", chatgpt: "/docs/mcp#chatgpt", claudeCode: "/docs/mcp#claude-code", codex: "/docs/mcp#codex", cursor: "/docs/mcp#cursor" },
+      }),
+    );
+    // The window's focus is what reloads the plan after a purchase in another tab.
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    const sakura = page.getByRole("complementary", { name: "Sakura" });
+    await expect(sakura.getByRole("link", { name: "Upgrade to Pro" })).toHaveAttribute("href", "/pricing");
+    const own = sakura.getByRole("region", { name: "Bring your own AI" });
+    await expect(own).toContainText("Use the Claude or ChatGPT you already pay for");
+    for (const [name, href] of [
+      ["Claude", "/docs/mcp#claude"],
+      ["ChatGPT", "/docs/mcp#chatgpt"],
+      ["Claude Code", "/docs/mcp#claude-code"],
+      ["Codex", "/docs/mcp#codex"],
+      ["Cursor", "/docs/mcp#cursor"],
+    ]) {
+      await expect(own.getByRole("link", { name: `Connect ${name}`, exact: true })).toHaveAttribute("href", href);
+    }
+    await expect(own.getByRole("link", { name: "How it works" })).toHaveAttribute("href", "/docs/mcp");
+    await expect(sakura.getByRole("textbox", { name: "Message Sakura" })).toBeDisabled();
+  });
+
+  test("a Pro user out of credits is offered Ultra and pay-as-you-go", async ({ page }) => {
+    await page.route("**/api/v1/me", (route) =>
+      route.fulfill({
+        json: {
+          user: { id: "user_e2e", email: null, name: null },
+          plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
+          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
+          usage: { requestsThisMinute: 1, minuteResetsAt: null, requestsThisDay: 40, dayResetsAt: null, monthlyTokens: 4000000, monthResetsAt: null },
+          onDemand: { available: true, enabled: false, capCents: 5000, creditsThisPeriod: 0, spentCents: 0 },
+        },
+      }),
+    );
+    await page.route("**/api/v1/chat/completions", (route) =>
+      route.fulfill({
+        status: 429,
+        headers: { "retry-after": "86400" },
+        json: {
+          error: {
+            type: "rate_limited",
+            message: "Monthly AI credit limit reached (4,000,000 credits/30 days on the Pro plan).",
+            limit: "month",
+          },
+        },
+      }),
+    );
+
+    await newProject(page);
+    // The host's session, with the links the website's mount gives it.
+    await page.evaluate(() =>
+      (window as unknown as EditorHook).__cherryblossom.connectManagedAi({
+        getAccessToken: async () => "e2e-token",
+        upgradeUrl: "/pricing",
+        accountUrl: "/account/usage",
+      }),
+    );
+    const composer = page.getByRole("textbox", { name: "Message Sakura" });
+    await expect(composer).toBeEnabled();
+    await composer.fill("Route the board");
+    await composer.press("Enter");
+
+    const sakura = page.getByRole("complementary", { name: "Sakura" });
+    await expect(sakura.getByText("You've reached your plan's AI limit")).toBeVisible();
+    await expect(sakura.getByText("Monthly AI credit limit reached", { exact: false })).toBeVisible();
+    // Plans for Ultra, the usage page for pay-as-you-go, where turning it on is agreed to.
+    await expect(sakura.getByRole("link", { name: "Upgrade to Ultra" })).toHaveAttribute("href", "/pricing");
+    await expect(sakura.getByRole("link", { name: "Turn on pay-as-you-go" })).toHaveAttribute("href", "/account/usage");
+  });
+});
+
+test.describe("the project's own parts", () => {
+  test("a part is edited in the part editor for every component placed from it, and an unused one removed", async ({ page }) => {
+    await newProject(page);
+    await page.evaluate(() => {
+      const pins = (names: string[]) => names.map((name, i) => ({ number: String(i + 1), name }));
+      (window as unknown as EditorHook).__cherryblossom.projectApi().commit((p) => ({
+        ...p,
+        parts: [
+          { id: "ldo-aaaaaa", name: "TPS7A0233", description: "3.3 V LDO", category: "Power", refPrefix: "U", footprint: "sot23_5", pins: pins(["IN", "GND", "EN", "NC", "OUT"]), props: { mpn: "TPS7A0233" }, valueProp: "mpn" },
+          { id: "sht31-bbbbbb", name: "SHT31", description: "Humidity sensor", category: "ICs", refPrefix: "U", footprint: "soic8", pins: pins(["SDA", "ADDR", "ALERT", "SCL", "VDD", "NRESET", "R", "VSS"]), props: {} },
+        ],
+      }));
+    });
+    await openLibrary(page);
+    await page.getByRole("button", { name: /^TPS7A0233/ }).click();
+    const canvas = await page.evaluate(() => {
+      const r = document.querySelector('svg > g[transform^="matrix"]')!.closest("div")!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await page.mouse.click(canvas.x, canvas.y);
+    await expect.poll(async () => (await project(page)).components.map((c) => c.partId)).toEqual(["ldo-aaaaaa"]);
+    await page.keyboard.press("Escape");
+
+    // Nothing is placed from the sensor: it says so, and goes at once.
+    const sensor = page.locator("li", { hasText: "SHT31" });
+    await expect(sensor).toContainText("Unused");
+    await sensor.hover();
+    await page.getByRole("button", { name: "Remove SHT31 from the project" }).click();
+    await expect.poll(async () => (await project(page)).parts!.map((s) => s.name)).toEqual(["TPS7A0233"]);
+
+    await page.locator("li", { hasText: "TPS7A0233" }).hover();
+    await page.getByRole("button", { name: "Edit TPS7A0233" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Placed as U1");
+    await expect(dialog.getByRole("img", { name: "Footprint sot23_5" })).toBeVisible();
+    await dialog.getByLabel("Part name").fill("TPS7A02");
+    await dialog.getByRole("tab", { name: "Pins (5)" }).click();
+    await dialog.getByLabel("Pin 3 name").fill("ENABLE");
+    // Its 3D model, chosen in the same draft: drawn on the footprint in the dialog's own 3D view.
+    await dialog.getByRole("tab", { name: "3D model" }).click();
+    await expect(dialog.locator("canvas")).toBeVisible({ timeout: 30_000 });
+    const body = "v -1.45 -0.8 0.1\nv 1.45 -0.8 0.1\nv 1.45 0.8 0.1\nv -1.45 0.8 0.1\nv -1.45 -0.8 1.2\nv 1.45 -0.8 1.2\nv 1.45 0.8 1.2\nv -1.45 0.8 1.2\nf 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n";
+    await dialog.locator('input[type="file"]').setInputFiles({ name: "sot23-5.obj", mimeType: "text/plain", buffer: Buffer.from(body) });
+    await expect(dialog).toContainText("OBJ file", { timeout: 20_000 });
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const p = await project(page);
+    expect(p.parts!.map((s) => s.name)).toEqual(["TPS7A02"]);
+    expect(p.components.map((c) => c.partId)).toEqual([p.parts![0].id]);
+    expect(p.models!.map((m) => [m.part, m.footprint, m.model.name])).toEqual([[p.parts![0].id, "sot23_5", "sot23-5.obj"]]);
+    // Made from memory, it stays unverified however it is edited, and Checks says so under its new name.
+    await page.getByRole("tab", { name: "Checks" }).click();
+    await expect(page.getByText(/U1 \(TPS7A02\): pinout and footprint not verified against a supplier/).first()).toBeVisible();
   });
 });
 
@@ -624,8 +796,9 @@ test.describe("drawing on the schematic", () => {
     await page.keyboard.press("Enter");
     await expect.poll(async () => (await drawn(page)).drawings).toEqual([expect.objectContaining({ type: "text", text: "Blinker", x: -0.5, y: 1.8 })]);
 
-    // A rectangle, styled from the Inspector, and each change one undo step.
-    await page.getByRole("button", { name: "Rectangle", exact: true }).click();
+    // A rectangle, from the drawing tools' menu, styled from the Inspector, and each change one undo step.
+    await page.getByRole("button", { name: "Drawing tools", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Rectangle", exact: true }).click();
     await drag(page, [3, 1], [4.5, -0.5]);
     await page.getByRole("button", { name: "Colour: blue" }).click();
     await page.getByRole("tab", { name: "Dashed" }).click();
@@ -677,8 +850,42 @@ test.describe("projects", () => {
       const [entry] = JSON.parse(localStorage.getItem("cherryblossom:editor:index") ?? "[]");
       return JSON.parse(localStorage.getItem(`cherryblossom:editor:project:${entry.id}`) ?? "null");
     });
-    expect(stored).toMatchObject({ format: "cherryblossom.project", version: 2, project: { name: "Saved board" } });
+    expect(stored).toMatchObject({ format: "cherryblossom.project", version: 5, project: { name: "Saved board" } });
     expect(stored.project).not.toHaveProperty("id");
+  });
+
+  test("the paused strip's Reload keeps the edits saves couldn't take, and sends them", async ({ page }) => {
+    await newProject(page);
+    const name = page.getByRole("textbox", { name: "Project name" });
+    // Saves fail: this harness keeps projects in localStorage, and a write there that throws is a failed save.
+    await page.evaluate(() => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key: string, value: string) {
+        if (this === localStorage && key.startsWith("cherryblossom:editor:")) throw new Error("Saves are off for this test");
+        return set.call(this, key, value);
+      };
+    });
+    await name.fill("Kept board");
+    await name.press("Enter");
+    // Editing pauses once saves have failed for 8 s, and the strip says what to do.
+    await expect(page.getByText("Your latest changes aren't saved yet")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Download a copy" })).toBeVisible();
+
+    // The strip's own Reload asks nothing: the edits go along in the tab.
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.type());
+      void dialog.dismiss();
+    });
+    await Promise.all([page.waitForEvent("load"), page.getByRole("button", { name: "Reload" }).click()]);
+    expect(dialogs).toEqual([]);
+    // The new page has no failing saves: the edit is on screen and lands.
+    await expect(name).toHaveValue("Kept board");
+    await page.waitForFunction(() => {
+      const index = JSON.parse(localStorage.getItem("cherryblossom:editor:index") ?? "[]");
+      return index.some((p: { name: string }) => p.name === "Kept board");
+    });
+    await expect(page.getByText("Your latest changes aren't saved yet")).toHaveCount(0);
   });
 
   test("a project saved before the file format had a version still opens", async ({ page }) => {
@@ -833,7 +1040,7 @@ test.describe("3D models", () => {
       hook.uiApi().select([`c:${u1.id}`]);
     });
 
-    await page.locator('input[type="file"][accept*=".step"]').setInputFiles(CUBE_STEP);
+    await page.locator('input[type="file"][accept*=".step"]:not([accept*=".kicad_mod"])').setInputFiles(CUBE_STEP);
     // Read (or refused) before it is assigned: the name in the Inspector means the worker read it.
     await expect(page.getByText("Cube 10x10.stp")).toBeVisible({ timeout: 45_000 });
     await expect(page.getByText("STEP file", { exact: true })).toBeVisible();
@@ -841,12 +1048,51 @@ test.describe("3D models", () => {
       () => (window as unknown as { __cherryblossom: { projectApi: () => { project: { models?: { part: string; model: { source: string; format: string; id: string } }[] } } } }).__cherryblossom.projectApi().project.models,
     );
     expect(models).toHaveLength(1);
-    expect(models![0]).toMatchObject({ part: "ne555", model: { source: "file", format: "step" } });
+    // The blinker's 555 is a part of its own, as every chip is: the library holds basic parts only.
+    expect(models![0]).toMatchObject({ part: expect.stringMatching(/^ne555_timer-/), model: { source: "file", format: "step" } });
     expect(models![0].model.id).toMatch(/^[0-9a-f]{64}$/);
 
-    // Back to the generated body, and the 3D view keeps drawing.
+    // Back to the model a SOIC-8 has built in, KiCad's, which can't be removed; the 3D view keeps drawing.
     await page.getByRole("button", { name: "Remove 3D model" }).click();
-    await expect(page.getByText("Generated body")).toBeVisible();
+    await expect(page.getByText("SOIC-8_3.9x4.9mm_P1.27mm", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove 3D model" })).toHaveCount(0);
+    expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+  });
+
+  test("a KiCad part imported from its files comes in with its model, and places", async ({ page }) => {
+    test.slow();
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    const kicad = (path: string) => fileURLToPath(new URL(`../tests/fixtures/kicad/${path}`, import.meta.url));
+    await newProject(page);
+    await openLibrary(page);
+
+    await page.getByLabel("KiCad files to import").setInputFiles([
+      kicad("symbols/Regulator_Linear.kicad_symdir/AP2204K-1.5.kicad_sym"),
+      kicad("footprints/Package_TO_SOT_SMD.pretty/SOT-23-5.kicad_mod"),
+      CUBE_STEP,
+    ]);
+    // The STEP file is read before the part comes in, so the notice waits on the worker.
+    await expect(page.getByText("Imported AP2204K-1.5. Click the schematic to place it.")).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByRole("button", { name: /^AP2204K-1\.5/ })).toBeVisible();
+
+    const canvas = await page.evaluate(() => {
+      const r = document.querySelector('svg > g[transform^="matrix"]')!.closest("div")!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await page.mouse.click(canvas.x, canvas.y);
+    await expect.poll(async () => (await project(page)).components.map((c) => c.ref)).toEqual(["U1"]);
+    const doc = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __cherryblossom: { projectApi: () => { project: { parts?: { id: string; source?: unknown }[]; models?: { part: string; model: { source: string; name: string } }[] } } };
+          }
+        ).__cherryblossom.projectApi().project,
+    );
+    expect(doc.parts).toHaveLength(1);
+    expect(doc.parts![0].source).toEqual({ pins: "file", land: "file", file: { symbol: "AP2204K-1.5", footprint: "SOT-23-5" } });
+    expect(doc.models).toEqual([expect.objectContaining({ part: doc.parts![0].id, model: expect.objectContaining({ source: "file", name: "Cube 10x10.stp" }) })]);
     expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@ import { pcbSvg } from "../src/ai/vision/pcbSvg"
 import { measurePcb } from "../src/ai/vision/measure"
 import { runTool } from "../src/ai/tools"
 import { projectToCircuitJson } from "../src/export/circuitJson"
-import { buildBoardTextures } from "../src/editor/three/boardTextures"
+import { paintBoardSides } from "../src/editor/three/boardTextures"
 import { gerberLayers, type GerberLayerName } from "../src/export/gerber"
 import { kicadFiles } from "../src/export/kicad"
 import { fabricationNotes } from "../src/export/notes"
@@ -344,7 +344,7 @@ describe("the 3D board", () => {
     logs = []
     registerProjectParts(p)
     const placed = p.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
-    buildBoardTextures({ project: p, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [], anisotropy: 1 }).dispose()
+    paintBoardSides({ project: p, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [] })
     return logs
   }
   it("asks the canvas for nothing more when there is no text", () => {

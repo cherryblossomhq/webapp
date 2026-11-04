@@ -301,10 +301,6 @@ export interface BoardShapes {
   placedCount: number
 }
 
-export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMaterials, anisotropy: number): BoardBuild {
-  return assembleBoard(project, boardShapes(project, fills), shared, anisotropy)
-}
-
 export function boardShapes(project: Project, fills: ZoneFill[]): BoardShapes {
   const b = project.board
   const t = b.thickness

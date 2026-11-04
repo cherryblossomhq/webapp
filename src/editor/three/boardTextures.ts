@@ -53,10 +53,6 @@ export interface PaintInput {
   fills: ZoneFill[]
 }
 
-export interface TextureInput extends PaintInput {
-  anisotropy: number
-}
-
 // ---------- colour helpers ----------
 
 const css = ([r, g, b]: [number, number, number]) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`
@@ -430,6 +426,3 @@ export function sideTextures(sides: { top: SidePictures; bottom: SidePictures },
   }
 }
 
-export function buildBoardTextures(input: TextureInput): BoardTextureSet {
-  return sideTextures(paintBoardSides(input), input.anisotropy)
-}

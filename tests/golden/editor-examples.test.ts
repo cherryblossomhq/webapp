@@ -10,7 +10,7 @@ import { executeTool, runTool, TOOL_DEFINITIONS } from "../../src/ai/tools"
 import { setLookRenderer, type LookRenderer } from "../../src/ai/vision/encode"
 import { newLookBudget } from "../../src/ai/vision/limits"
 import { placedComponents } from "../../src/editor/three/buildBoard"
-import { buildBoardTextures } from "../../src/editor/three/boardTextures"
+import { paintBoardSides } from "../../src/editor/three/boardTextures"
 import { buildFabricationFiles, slugify } from "../../src/export/bundle"
 import { circuitJsonFile } from "../../src/export/circuitJson"
 import { kicadFiles } from "../../src/export/kicad"
@@ -154,14 +154,12 @@ function recordTextures(project: Project): string {
   vi.stubGlobal("document", fakeDocument)
   try {
     const placed = placedComponents(project)
-    const set = buildBoardTextures({
+    paintBoardSides({
       project,
       placed,
       padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])),
       fills: analyzePcb(project, computeConnectivity(project)).zoneFills,
-      anisotropy: 1,
     })
-    set.dispose()
   } finally {
     vi.unstubAllGlobals()
   }

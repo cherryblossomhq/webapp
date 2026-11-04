@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { runTool } from "../src/ai/tools"
 import { measurePcb, describePcb } from "../src/ai/vision/measure"
 import { pcbSvg } from "../src/ai/vision/pcbSvg"
-import { buildBoard, createSharedMaterials } from "../src/editor/three/buildBoard"
+import { assembleBoard, boardShapes, createSharedMaterials } from "../src/editor/three/buildBoard"
 import { buildFabricationFiles } from "../src/export/bundle"
 import { projectToCircuitJson } from "../src/export/circuitJson"
 import { excellonDrill, npthHoles } from "../src/export/excellon"
@@ -365,6 +365,7 @@ describe("the 3D board and the STEP solid", () => {
   afterEach(() => vi.unstubAllGlobals())
   const volume = (text: string, deflection = 0.002) => stepVolume(text, deflection)
   const step = (p: Project) => writeStep({ name: "t", board: stepBoard(p), models: [], placements: [] })
+  const board3d = (p: Project) => assembleBoard(p, boardShapes(p, []), createSharedMaterials(), 1)
 
   it("the STEP solid is the outline extruded with its cutouts cut, to the volume the outline says", () => {
     const p = drawn()
@@ -415,7 +416,7 @@ describe("the 3D board and the STEP solid", () => {
       }),
     })
     const p = drawn()
-    const built = buildBoard(p, [], createSharedMaterials(), 1)
+    const built = board3d(p)
     const substrate = built.group.getObjectByName("substrate") as THREE.Mesh
     const g = substrate.geometry
     const pos = g.attributes.position
@@ -444,13 +445,13 @@ describe("the 3D board and the STEP solid", () => {
       },
     })
     const few = drawn()
-    const small = buildBoard(few, [], createSharedMaterials(), 1)
+    const small = board3d(few)
     expect(((small.group.getObjectByName("mask-top") as THREE.Mesh).material as THREE.MeshPhysicalMaterial).alphaMap).toBeNull()
     const one = addVia(few, P(1, 1), { locked: true }).project.vias.at(-1)!
     const vias = Array.from({ length: 1500 }, (_, i) => ({ ...one, id: `v${i}`, x: 2 + (i % 50) * 0.7, y: 2 + Math.floor(i / 50) * 0.8 }))
     const p = { ...few, vias }
     const start = performance.now()
-    const built = buildBoard(p, [], createSharedMaterials(), 1)
+    const built = board3d(p)
     expect(performance.now() - start).toBeLessThan(10_000)
     const top = built.group.getObjectByName("mask-top") as THREE.Mesh
     const face = top.material as THREE.MeshPhysicalMaterial

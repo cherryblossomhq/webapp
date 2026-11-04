@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest"
-import { buildBoardTextures, type TextureInput } from "../src/editor/three/boardTextures"
+import { paintBoardSides, type PaintInput } from "../src/editor/three/boardTextures"
 import { registerProjectParts } from "../src/model/customParts"
 import { EXAMPLES } from "../src/model/examples"
 import { isPhysical, pcbPads } from "../src/model/instances"
@@ -46,17 +46,16 @@ const blinker = () => structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.
 const style = (layer: string, width = 0.2, extra: Partial<ShapeStyle> = {}): ShapeStyle => ({ layer, width, ...extra })
 const withGraphics = (shapes: BoardShape[], base: Project): Project => ({ ...base, graphics: shapes.map((s, i): BoardGraphic => ({ ...s, id: `zg${i}` })) })
 
-function input(project: Project): TextureInput {
+function input(project: Project): PaintInput {
   registerProjectParts(project)
   const placed = project.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
-  return { project, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [], anisotropy: 1 }
+  return { project, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [] }
 }
 
 /** The log of each canvas, in the order they are made: per side its copper (laid on the albedo and the surface), albedo and surface. */
 function draw(project: Project) {
   logs = []
-  const set = buildBoardTextures(input(project))
-  set.dispose()
+  paintBoardSides(input(project))
   expect(logs).toHaveLength(6)
   return { topCopper: logs[0], topAlbedo: logs[1], topSurface: logs[2], bottomCopper: logs[3], bottomAlbedo: logs[4], bottomSurface: logs[5] }
 }

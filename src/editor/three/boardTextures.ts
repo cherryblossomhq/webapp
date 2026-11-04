@@ -309,6 +309,18 @@ const H_SILK = 40
 const R_MASK = 105
 const R_SILK = 255
 
+/**
+ * Whether a side's copper is drawn sharp on a canvas of its own and laid on each map with one blur, rather than blurred draw by draw. Chromium
+ * (Chrome, Edge, Opera) spends about 20 ms on each blurred draw the size of a big board: Macbeth's faces took it 6.3 s to draw, and 1.3 s this
+ * way (the ESP32 robot example's 0.84 s and 0.37 s). Firefox spends a tenth of that, and there the canvas saves nothing (Macbeth's 2.1 s either
+ * way) and costs the robot's a third more, so it and Safari blur each draw, as does a side with no pour or track, whose pads are one draw.
+ * `navigator.userAgentData` is Chromium's alone.
+ */
+function blurOnce(input: PaintInput, side: CopperLayer): boolean {
+  const chromium = typeof navigator !== "undefined" && "userAgentData" in navigator
+  return chromium && (input.fills.some((f) => f.layer === side) || input.project.traces.some((t) => t.layer === side))
+}
+
 function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictures {
   const b = input.project.board
   const minX = b.x - b.width / 2
@@ -323,16 +335,25 @@ function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictu
   const { mask, silk } = boardColors(b)
   const shades = maskShades(mask)
 
-  // The copper, drawn sharp once on a canvas of its own and laid on each map in that map's colour and blur. A canvas blurs every draw on its
-  // own, and a big board has thousands (pours, tracks, pads, texts): 700 big fills, each blurred, took Chromium 15 s, and 0.9 s blurred as one.
-  const copper = makeCanvas(w, h)
-  world(copper.ctx)
-  copper.ctx.fillStyle = "#fff"
-  copper.ctx.strokeStyle = "#fff"
-  drawCopper(copper.ctx, input, side)
-  copper.ctx.setTransform(1, 0, 0, 1, 0, 0)
-  copper.ctx.globalCompositeOperation = "source-in"
-  const layCopper = (ctx: CanvasRenderingContext2D, colour: string, blurMm: number) => {
+  const copper = blurOnce(input, side) ? makeCanvas(w, h) : null
+  if (copper) {
+    world(copper.ctx)
+    copper.ctx.fillStyle = "#fff"
+    copper.ctx.strokeStyle = "#fff"
+    drawCopper(copper.ctx, input, side)
+    copper.ctx.setTransform(1, 0, 0, 1, 0, 0)
+    copper.ctx.globalCompositeOperation = "source-in"
+  }
+  /** The copper on a map in the map's colour and blur: laid on from its own canvas (`blurOnce`), or drawn there blurred draw by draw. */
+  const copperOn = (ctx: CanvasRenderingContext2D, colour: string, blurMm: number) => {
+    if (!copper) {
+      ctx.fillStyle = colour
+      ctx.strokeStyle = colour
+      ctx.filter = blurPx(blurMm)
+      drawCopper(ctx, input, side)
+      ctx.filter = "none"
+      return
+    }
     copper.ctx.fillStyle = colour
     copper.ctx.fillRect(0, 0, w, h)
     ctx.save()
@@ -347,7 +368,7 @@ function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictu
   a.ctx.fillStyle = css(shades.laminate)
   a.ctx.fillRect(0, 0, w, h)
   world(a.ctx)
-  layCopper(a.ctx, css(shades.overCopper), 0.02)
+  copperOn(a.ctx, css(shades.overCopper), 0.02)
 
   const silkSets = silkStrokes(input, side)
   const silkShapes = drawingsOn(input.project, side === "top" ? "F.SilkS" : "B.SilkS")
@@ -382,8 +403,8 @@ function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictu
   s.ctx.fillRect(0, 0, w, h)
   world(s.ctx)
   // Mask flows over copper edges, so soften the step.
-  layCopper(s.ctx, `rgb(${H_COPPER},${R_MASK},0)`, 0.05)
-  copper.canvas.width = 0
+  copperOn(s.ctx, `rgb(${H_COPPER},${R_MASK},0)`, 0.05)
+  if (copper) copper.canvas.width = 0
   // The silkscreen's own step is not blurred: half a pixel at most, which a canvas spends a blur on for each of a big board's thousands of
   // drawings and texts.
   s.ctx.globalCompositeOperation = "lighter"

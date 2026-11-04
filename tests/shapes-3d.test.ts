@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { paintBoardSides, type PaintInput } from "../src/editor/three/boardTextures"
 import { registerProjectParts } from "../src/model/customParts"
 import { EXAMPLES } from "../src/model/examples"
@@ -52,12 +52,12 @@ function input(project: Project): PaintInput {
   return { project, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [] }
 }
 
-/** The log of each canvas, in the order they are made: per side its copper (laid on the albedo and the surface), albedo and surface. */
+/** The log of each canvas, in the order they are made: top albedo, top surface, bottom albedo, bottom surface. */
 function draw(project: Project) {
   logs = []
   paintBoardSides(input(project))
-  expect(logs).toHaveLength(6)
-  return { topCopper: logs[0], topAlbedo: logs[1], topSurface: logs[2], bottomCopper: logs[3], bottomAlbedo: logs[4], bottomSurface: logs[5] }
+  expect(logs).toHaveLength(4)
+  return { topAlbedo: logs[0], topSurface: logs[1], bottomAlbedo: logs[2], bottomSurface: logs[3] }
 }
 
 interface Mark {
@@ -151,14 +151,39 @@ describe("3D board textures: drawings", () => {
     expect(stroke).toBeTruthy()
   })
 
-  it("a copper drawing is copper of its layer: filled and outlined on its side's copper, which the albedo and the surface are given", () => {
+  it("a copper drawing is copper of its layer: filled in the copper's colour on the albedo and the surface", () => {
     const rect: BoardShape = { type: "rect", a: { x: 2, y: 2 }, b: { x: 6, y: 4 }, ...style("B.Cu", 0.25, { fill: true }) }
     const out = draw(withGraphics([rect], base))
-    const filled = marks(out.bottomCopper).filter((m) => m.kind === "fill" && m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))
-    expect(filled).toHaveLength(1)
-    expect(marks(out.bottomCopper).filter((m) => m.kind === "stroke" && m.width === 0.25).length).toBeGreaterThan(0)
-    for (const log of [out.bottomAlbedo, out.bottomSurface]) expect(log.filter((e) => e[0] === "drawImage")).toHaveLength(1)
-    for (const key of ["topCopper", "topAlbedo", "topSurface"] as const) expect(sameLog(out[key], ref[key]), key).toBe(true)
+    for (const [log, refLog] of [[out.bottomAlbedo, ref.bottomAlbedo], [out.bottomSurface, ref.bottomSurface]] as const) {
+      const filled = marks(log).filter((m) => m.kind === "fill" && m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))
+      expect(filled).toHaveLength(1)
+      const stroked = marks(log).filter((m) => m.kind === "stroke" && m.width === 0.25)
+      expect(stroked.length).toBeGreaterThan(0)
+      expect(log.length).toBeGreaterThan(refLog.length)
+    }
+    expect(sameLog(out.topAlbedo, ref.topAlbedo)).toBe(true)
+    expect(sameLog(out.topSurface, ref.topSurface)).toBe(true)
+  })
+
+  it("in Chromium, a side with tracks or pours has its copper drawn on a canvas of its own, laid on its albedo and surface with one blur each", () => {
+    // `navigator.userAgentData` is Chromium's alone: there, blurring each of a big board's draws took seconds (`blurOnce`).
+    vi.stubGlobal("navigator", { userAgentData: {} })
+    try {
+      const rect: BoardShape = { type: "rect", a: { x: 2, y: 2 }, b: { x: 6, y: 4 }, ...style("B.Cu", 0.25, { fill: true }) }
+      logs = []
+      paintBoardSides(input(withGraphics([rect], base)))
+      // The blinker has tracks on both sides: per side its copper, then its albedo and surface.
+      expect(logs).toHaveLength(6)
+      const [, topAlbedo, topSurface, bottomCopper, bottomAlbedo, bottomSurface] = logs
+      expect(marks(bottomCopper).filter((m) => m.kind === "fill" && m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))).toHaveLength(1)
+      for (const log of [topAlbedo, topSurface, bottomAlbedo, bottomSurface]) {
+        expect(log.filter((e) => e[0] === "drawImage")).toHaveLength(1)
+        expect(log.some((e) => e[0] === "set" && e[1] === "filter" && String(e[2]).startsWith("blur("))).toBe(true)
+        expect(marks(log).some((m) => m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))).toBe(false)
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("a mask drawing is an opening on its side's albedo only", () => {

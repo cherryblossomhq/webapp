@@ -17,12 +17,25 @@ A browser-based schematic and PCB editor: **the editor** of
   UI edits go through `projectApi().commit` so every change can be undone.
 - **It is written to be mounted by a host.** `src/` is the editor, and it knows
   nothing about where it runs: everything that needs a backend (where projects
-  are kept, the AI copilot, supplier part data) is a prop of `App` that the host
-  may leave out. `host/main.tsx` is this repo's host, and it leaves all of them
-  out (see [The host](#the-host)).
+  are kept, the AI copilot, supplier part data, the 3D models parts come with)
+  is a prop of `App` that the host may leave out. `host/main.tsx` is this
+  repo's host, and it leaves out all of them but a copilot session with no one
+  signed in (see [The host](#the-host)).
+- **Projects are edited together.** Every edit travels through the host's
+  storage as what it changed, so several people, or several tabs, can have one
+  project open and see each other's cursors, selections and edits live (see
+  [Working together](#working-together)). Here the storage is this browser's,
+  and the others are its other tabs. A project is stored as a project file, a
+  versioned JSON format of its own (see
+  [Projects: storage and the file format](#projects-storage-and-the-file-format)).
+- **Its pages are paths under the host's `basePath`**: the dashboard is the
+  base itself and a project is `<basePath>/p/<id>`, so the host routes both to
+  the same mount. The editor moves between them with `history.pushState`,
+  without a page load. Here the base is the site's root.
 - **The hosted app at trycherryblossom.com mounts the same editor with a
-  backend**: accounts with projects in the cloud, Sakura (the AI copilot) on
-  managed AI, supplier part data and a parts database. That backend is not part
+  backend**: accounts with projects in the cloud that are shared and edited
+  together, version history, Sakura (the AI copilot) on managed AI, supplier
+  part data, KiCad's 3D models and a parts database. That backend is not part
   of this repository, and nothing here calls it.
 
 The bar is professional EDA, and the aim is to beat it: real Gerbers, checks
@@ -33,12 +46,15 @@ incumbents feel like old software.
 
 ```bash
 npm install
-npm run dev          # the editor on http://localhost:5173
-npm run check        # typecheck + unit tests + production build: run before committing
-npm run test         # vitest, node environment, tests/
-npm run test:e2e     # Playwright, against the dev server (npm run test:e2e:install once)
-npm run examples     # rebuild the shipped examples (see below)
-npm run build        # production build into dist/, a static site
+npm run dev             # the editor on http://localhost:5173
+npm run check           # typecheck + unit tests + production build: run before committing
+npm run typecheck       # tsc, strict, with noUnused*
+npm run test            # vitest over tests/: node, or jsdom where a suite says so
+npm run test:e2e        # Playwright, against the dev server (npm run test:e2e:install once)
+npm run test:corpus     # tests/corpus, over a local KiCad corpus (KICAD_CORPUS=<dir>)
+npm run examples        # rebuild the shipped examples (see below)
+npm run library-models  # rebuild the built-in parts' KiCad models (fetches KiCad's libraries)
+npm run build           # production build into dist/, a static site
 ```
 
 No environment variables, no services, no secrets. A fresh clone runs as-is.
@@ -58,10 +74,14 @@ Use a GPU-enabled Chromium for the 3D view. There is no lint step.
 ## Repository layout
 
 ```
-src/        the editor: model, canvases, panels, exports, the copilot's tools
-tests/      unit tests (vitest), with their fixtures
+src/        the editor: model, canvases, panels, exports, the copilot's tools,
+            the KiCad import
+tests/      unit tests (vitest), with their fixtures; tests/corpus runs over a
+            local KiCad corpus, against the independent oracles of
+            tests/kicad-census (plain Node, no install)
 host/       the standalone host: main.tsx mounts App; contract.ts and
-            ai-models.ts stand in for two packages of the hosted app
+            ai-models.ts stand in for two packages of the hosted app, and
+            project-changes.ts is a copy of a third
 e2e/        the browser suite (Playwright), driving the dev server
 public/     the logo and icons, served at the site's root
 docs/       images for the README
@@ -75,29 +95,63 @@ docs/       images for the README
 
 | Prop | What | This build |
 |---|---|---|
-| `storage` | Where projects are kept (`ProjectStorage`, `src/store/storage.ts`) | absent: this browser's `localStorage` |
-| `modelFiles` | Where added 3D model files are kept (`ModelFileStore`) | absent: this browser's IndexedDB |
+| `storage` | Where projects are kept (`ProjectStorage`, `src/store/storage.ts`), with the sources that come with them, each optional: `sharing` (the Share dialog), `presence` (faces, cursors, selections), `history` (version history) and `locks` (the board lease) | absent: this browser's `localStorage`, with `presence` between its tabs (`browserPresence`, a `BroadcastChannel`) and no sharing, history or lease |
+| `modelFiles` | Where the 3D model files a user adds are kept (`ModelFileStore`, `src/store/modelFiles.ts`) | absent: this browser's IndexedDB |
+| `partModels` | Where the 3D models parts come with are fetched from: the supplier's and KiCad's, the built-in parts' included (`PartModelSource`, `src/store/partModels.ts`) | absent: those parts show only their pads |
 | `managedAi` | The session Sakura calls models with (`ManagedAiHost`, `src/ai/managedAi.ts`) | one with no token, so Sakura asks to sign in; signing in opens the hosted app |
-| `supplierParts` | Supplier pins, land patterns and models, and the parts index | absent: parts come from the built-in library, and Sakura's from memory |
-| `account` | Who is signed in, and the host's projects page | absent: the editor's own dashboard is the home page |
+| `supplierParts` | Supplier pins, land patterns and datasheets by LCSC number, and the parts index (`SupplierPartsSource`, `src/ai/supplierParts.ts`) | absent: parts come from the built-in library, and Sakura's from memory |
+| `account` | Who is signed in, and the host's pages for projects, settings and signing out (`EditorAccount`, `src/store/account.ts`) | absent: the editor's own dashboard is the home page |
 | `initialPrompt` | A request to open a new project with, in Sakura's composer | absent |
-| `basePath` | Where the editor is mounted | absent: the site's root |
+| `basePath` | Where the editor is mounted: the dashboard is this path and a project `<basePath>/p/<id>` | absent: the site's root |
+
+Every prop is optional. `src/index.ts` exports `App` and the types a host
+implements them with (`ProjectStorage`, `SharingSource`, `PresenceSource`,
+`HistorySource`, `LockSource`, `ModelFileStore`, `PartModelSource`,
+`SupplierPartsSource`, `EditorAccount`, `ManagedAiHost`).
 
 What that arrangement relies on:
 
 - **`src/` stays host-agnostic.** The hosted app bundles the same source with
-  Next.js, so `src/` reads `process.env.NODE_ENV`, never `import.meta.env`
+  a bundler of its own, so `src/` reads `process.env.NODE_ENV`, never `import.meta.env`
   (`vite.config.ts` defines it), imports nothing from `host/`, and loads its
   workers and WASM through `new URL(..., import.meta.url)`, which both bundlers
   understand.
-- **Two packages are stand-ins.** The editor imports types from
-  `@cherryblossom/api-contract` (the shapes its host answers in) and one
-  function from `@cherryblossom/ai-models` (how the model picker names a
-  model). `tsconfig.json`, `vite.config.ts` and `vitest.config.ts` alias both to
-  `host/`. Keep the three in step.
+- **Three packages of the hosted app are answered by `host/`.** The editor
+  imports types from `@cherryblossom/api-contract` (the shapes its host
+  answers in: `host/contract.ts`) and the model picker's names from
+  `@cherryblossom/ai-models` (`host/ai-models.ts`, which names a model by its
+  id): both are stand-ins. `@cherryblossom/project-changes`
+  (`host/project-changes.ts`) is a copy of the change format live editing runs
+  on, which the hosted app's server applies too, so a change to it is a change
+  to the format (see [Working together](#working-together)). `vite.config.ts`
+  aliases the three (`hostAliases`, which `vitest.config.ts` imports) and
+  `tsconfig.json` maps the same paths; keep the two in step.
+- **The model and Sakura's tools also run on a server.** The hosted app runs
+  the tools on stored projects for a user's own assistant (see
+  [MCP](#mcp-sakuras-tools-for-the-users-own-ai)), many people's at once in one
+  process, each call in a scope of its own (`model/scope.ts`). So module state
+  that depends on what a project defines (the parts and land patterns
+  `findPart` and `getFootprint` resolve, and caches of what is worked out from
+  them) is declared with `scoped`, never as a bare module-level `Map`.
 - **Client-only.** Every store reads `localStorage` or `location` as it is
   created, and importing `src/index.ts` starts the editor (theme sync, and in
   development the `window.__cherryblossom` hook the browser suite drives).
+  `src/projects.ts` is what a host's own projects page needs, and starts
+  nothing: `LazyPreview` with `projectPicture` and `examplePreview` (drawn in a
+  worker, and a picture kept with each project: `pages/previews.ts`), the
+  examples, the project actions (`store/projectActions.ts`: create, import,
+  duplicate, download, rename, delete) the editor's dashboard runs too, and the
+  KiCad import's controller and report.
+- **`account` makes the host the editor's home.** It carries who is signed in
+  (name, email, picture) and three of the host's pages: projects, settings and
+  sign-out. With it, the top bar's account menu (`panels/AccountMenu.tsx`)
+  appears at its right, "All projects" (`goHome`) is a navigation to the
+  host's projects page, and the home route (`basePath` with no project) replaces
+  itself with that page rather than drawing the dashboard — except while a
+  handed-over prompt's project is being made, which is a home route with
+  somewhere to go. Every item in the menu is a link, since the session and
+  those pages are the host's. Its `user.id` tells the user's own other tabs
+  apart from other people's. This build passes none.
 - **The logo is the host's** `/logo.svg`, from `public/`.
 - **Workers are invisible to Vite's dependency scan**, so `optimizeDeps.entries`
   lists them; without it the first STEP file or Tidy in a fresh dev server
@@ -107,14 +161,21 @@ What that arrangement relies on:
 
 | Tier | Where | What it's for |
 |---|---|---|
-| Unit | `tests/` (vitest, node) | The model, routing, pours, checks, Tidy, exports, the project file format, the copilot's tools and loop against a scripted model |
-| Browser | `e2e/` (Playwright, Chromium) | The editor bundled and running: the stylesheet, the lazy 3D chunk, the workers and WASM, the examples' JSON, autosave and reload |
+| Unit | `tests/*.test.ts` (vitest, node) and `tests/*.test.tsx` (each declares `// @vitest-environment jsdom`) | The model, routing, pours, checks, Tidy, exports, the project file format, the KiCad import and export, the live sync, the copilot's tools and loop against a scripted model; the `.tsx` suites mount panels (the Inspector's sections, the sheet tabs, version history, the KiCad import screens) |
+| Corpus | `tests/corpus/` (`npm run test:corpus` with `KICAD_CORPUS=<dir>`) | The KiCad import and export over a local corpus of real projects, against the independent oracles in `tests/kicad-census/`; skipped without `KICAD_CORPUS` |
+| Browser | `e2e/` (Playwright, Chromium) | The editor bundled and running: the stylesheet, the lazy 3D chunk, the workers and WASM, the examples' JSON, autosave and reload (`editor.spec.ts`), and two tabs on one project, live (`collaboration.spec.ts`) |
+
+`tests/chips.ts` is the unit tests' setup file: it registers the chips and
+modules the library used to list under their old ids, so a test can place a
+familiar chip without making one (see [Library parts](#library-parts)). CI
+(`.github/workflows/ci.yml`) runs the typecheck, the unit tests, the build and
+the browser suite on pull requests and on pushes to `main`.
 
 The copilot's tests stub `fetch`, so no model and no supplier is ever called:
 `tests/copilot-parts.test.ts` scripts a model turn by turn against recorded
 supplier answers (`tests/fixtures/supplier/recorded.json`), and
-`tests/fixtures/imagePolicy.ts` holds the managed-AI proxy's limits on
-pictures, which `src/ai/vision/limits.ts` mirrors. The browser suite stands in
+`tests/fixtures/imagePolicy.ts` restates the managed-AI proxy's rules on
+pictures with the caps in `src/ai/vision/limits.ts`. The browser suite stands in
 a session and a parts source through the development hook, against mocked
 `/api/v1` routes.
 
@@ -129,6 +190,8 @@ a session and a parts source through the development hook, against mocked
   7.6 MB WASM file, loaded in a worker only when a STEP model is first drawn, and
   by the tests to read exported files back. Being LGPL, it stays a separate file
   a user could replace; don't inline it into a bundle.
+- **`THIRD-PARTY-NOTICES.md`** lists the third-party components and the code
+  ported from KiCad, with their licences.
 
 ## Branding
 
@@ -161,8 +224,9 @@ KiCad users read without thinking.
 - **Examples**: five routed, poured boards, including a 38-part ATmega328P board
   with a 7805 supply and a 74HC595 LED bar, and an ESP32 robot controller. Their
   schematics are grouped in blocks and laid out by Tidy when they are built
-  (`group` in `templates.ts`).
-- **Schematic**: about 90 library parts (see [Library parts](#library-parts)),
+  (`group` in `templates.ts`). Their chips and modules are parts of their own
+  (`examples/parts.json`), as a project's are, since the library has none.
+- **Schematic**: about 70 basic library parts (see [Library parts](#library-parts)),
   power and ground ports, orthogonal wires, net labels (on vertical wires they
   run along the wire, so labels on neighbouring pins sit side by side),
   junction dots, rubber-banding when parts move, copy/paste, undo/redo.
@@ -185,12 +249,22 @@ KiCad users read without thinking.
   and double-clicking the title renames it. Copying a selected block pastes a
   new block around the copies; parts copied alone land in none. Sakura groups
   by function with `group_parts` and `edit_block`, which also moves a block
-  whole (`move_by`, checked like a drag of its title).
+  whole (`move_by`, checked like a drag of its title; a move of nothing
+  answers with the frame), and puts blocks in rows of its choosing with
+  `arrange_blocks` (`ai/arrangeTool.ts`): left to right and top to bottom,
+  frames top-aligned with `gap` between them, starting at the named blocks'
+  top-left, blocks not named in a last row below. Each moves whole through
+  `dragSelection`; with more than one to move they first go together, as they
+  stand, clear of the sheet and the layout, then each to its place, so none
+  lands on one that hasn't left yet. A refused move refuses the call. An
+  assistant asked for it after a whole-sheet tidy put its inputs on the right,
+  and fixing that took one `edit_block` per block, each from frames it had to
+  read first.
 - **Schematic drawings** (`model/drawings.ts`): text, lines, arrows,
   polygons and rectangles, as Altium's drawing tools make, for
   sheet titles, notes, callouts and the boxes that explain a sheet. Graphics
-  only: connectivity, checks and the exports never read them, so a line drawn
-  from pin to pin connects nothing. Colours are named (`ink`, `gray`, `red`,
+  only: connectivity and checks never read them, so a line drawn
+  from pin to pin connects nothing (the KiCad export writes them; Circuit JSON leaves out the ones the tools made). Colours are named (`ink`, `gray`, `red`,
   `orange`, `yellow`, `green`, `blue`, `purple`) and drawn in a shade of each
   for the light sheet and another for the dark one (`theme.ts`); a fill is a
   soft tint of one. Lines are thin, medium or thick, solid, dashed or dotted;
@@ -249,9 +323,19 @@ KiCad users read without thinking.
   labels.
 - **Autorouter**: two-layer grid A* with vias and net-aware clearances. Nets can
   have their own trace width (set in the Inspector's net list, e.g. 1 mm for
-  motor and battery current), supply nets get wider traces by default,
-  connections that can't be made wide (into small pads) fall back to narrower
-  ones, pads drop vias into ground pours, and failed nets are retried first.
+  motor and battery current), supply nets get wider traces by default, a
+  trace wider than a pad it ends on leaves the pad by a **neck** as wide as
+  the pad (to the grid), as far as the wide copper is clear of the pad
+  (`neckDown`: the search starts in the pad where the wide trace would be
+  clear, so the narrower neck is too), connections with no room for their
+  width at all fall back to narrower ones, and `route_pcb` names the nets
+  given a width whose connections did (`narrowed`), pads drop vias into
+  ground pours, and failed nets are retried first. Necks used to be missing:
+  a trace started only where it fitted in a pad whole, so 3 mm on a 10 A
+  board with 2.6 mm terminal pads came out at the default width end to end,
+  and nothing said so but a clause of `set_net_width`'s reply. A neck is no
+  narrower than the default trace width, so a pad smaller than that is left
+  to the narrower widths and the fine-pitch retry as before.
   Boards with 0.65 mm pitch parts switch to a 0.1 mm grid, and the cells in front
   of fine-pitch pads are kept clear for their own nets. Locked (hand-routed)
   copper is kept. **Connections still open at fine-pitch pads get a second
@@ -274,11 +358,22 @@ KiCad users read without thinking.
   was tried, and tells Sakura not to clear and re-route the same layout (the
   router is deterministic); only connections away from fine-pitch pads are
   blamed on room.
-- **Copper pours**: board-wide fills per net and layer (Clipper2), with
+- **Copper pours**: board-wide fills per net and layer (Clipper2; zones of any shape: see Zones (X3) under Reading KiCad boards), with
   clearance to other nets, thermal spokes (2 or 4, square or at 45°, on
-  through-hole pads or all pads, or none), minimum-width cleanup and island
-  removal. Pours count for connectivity and DRC, and export as
-  Gerber regions. Stitching vias tie the top and bottom pours of a net together
+  through-hole pads or all pads, or none) across a thermal gap of their own
+  (`rules.thermalGap`, the pour clearance when not set, as it always was),
+  minimum-width cleanup and island removal. Pours count for connectivity and
+  DRC, and export as Gerber regions. A through-hole pad joins a fill where a
+  point of its copper round the hole is in it, not only its centre
+  (`joinsFill` in `model/pcb.ts`): a fill that joins it by spokes has the
+  drill cut out, so every relieved through-hole pad in a polygon pour, or in
+  any zone with settings of its own (every pour of a KiCad board), used to
+  read as unconnected and got a trace from `route_pcb`. `set_pour` and
+  `set_design_rules` name the pads a pour leaves out (`model/pourReach.ts`:
+  no fill of it joins them to another pad of the net), with the thermal gap
+  and clearance: an assistant set a 2.5 mm pour clearance on a 10 A board,
+  which made a 7.6 mm ring round each 2.6 mm terminal pad in a 7 mm strip of
+  pour, and the pads were dropped without a word. Stitching vias tie the top and bottom pours of a net together
   on a 4 to 8 mm grid (wider on bigger boards), away from pads, traces, parts and
   silkscreen; pour islands the grid misses get a via of their own so they aren't
   removed.
@@ -292,13 +387,27 @@ KiCad users read without thinking.
   a button checks the unverified ones against supplier data (see
   [Project parts](#project-parts)). The Checks panel groups identical findings,
   and a click steps through them.
+- **Checks of a project from KiCad** (`model/checkRules.ts`, `fromKicad`) say what KiCad's DRC and ERC say, at the
+  severities its project file sets (`KicadCarry.checks`, kept by the import: the severities of the KiCad rules the editor
+  maps, the ERC pin table when it is not KiCad's, `min_hole_clearance`, and the minimums set to 0). A rule set to `ignore`
+  is not reported; KiCad's default stands for one the file does not name. The editor's own opinions (a via in an SMD pad, a
+  part past the outline, a decoupling capacitor's distance, an LED with no resistor, a two-pin part on one net) are not run
+  there. What KiCad does differently and the editor follows there: a gap within KiCad's 0.5 um of a clearance passes
+  (0.2 um more for the import's rounding), courtyards are the outlines the land draws (none when it draws none), a pad or
+  via joins a fill that touches it and fills of one net that overlap are one, pads of one number are joined only on a
+  footprint that says they are jumpers (and the pads the file put on a net of their own must be), a short is each two
+  items that touch, a hole is held to `min_hole_clearance` against copper of another net, a no-connect flag on a wire
+  leaves that net open. Measured against `kicad-cli` 10 on moteus and 34 corpus boards.
+  A project drawn here keeps every check as it was.
 - **Electrical checks** (`model/erc.ts`, whether the circuit is right rather
   than drawn right): an LED with no series resistor, followed along strings of
   LEDs, diodes and switches to the one they share; a two-pin part with both
-  pins on one net; a pin whose label no other pin has. Always warnings, never
-  errors. A click selects the part; **Ignore** keeps a false alarm quiet for
-  good in `Project.ignoredChecks` (keyed by component id, so a rename keeps
-  it), listed under Ignored to restore. Sakura sees them in `run_checks` and
+  pins on one net; a pin whose label no other pin has; one net with several
+  names. Always warnings, never errors. A click selects the part (for a net
+  with several names, its odd labels and ports); **Ignore** keeps a false
+  alarm quiet for good in `Project.ignoredChecks` (keyed by component id, so a
+  rename keeps it; a net with several names by those names), listed under
+  Ignored to restore. Sakura sees them in `run_checks` and
   is told not to try to fix ignored ones.
 - **Project, board and design rules** (the Inspector with nothing selected):
   name, description, stats and free-form properties (revision, author...);
@@ -308,27 +417,26 @@ KiCad users read without thinking.
   clearance, vias and holes, mask and paste, and pours, with fab capability
   classes that set a fab's limits in one step. Every rule is used by routing,
   pours, checks or the Gerbers (`model/rules.ts`). Lengths show in mm or mil.
-- **3D view**: procedural models for every library package (chip passives with
-  value codes, gull-wing ICs with markings, TO-220, crystals, through-hole and
-  SMD electrolytics, tantalums, headers, sockets, screw and pluggable terminal
-  blocks, JST and Qwiic housings, USB-C and micro-USB, a barrel jack, microSD,
-  a coin cell holder, a relay, a buzzer, WS2812B LEDs, tact and slide
-  switches, trimmers, glowing LEDs, the dev boards on their headers (Arduino
-  Nano, ESP32 DevKits, D1 Mini, XIAO), a Pico soldered by its castellations,
-  bare WROOM modules and an I2C OLED module). The board shows glossy mask over
+- **3D view**: every part is drawn with a real 3D model file, or not at all:
+  a part with no model shows only its pads, silkscreen and courtyard outline
+  when selected, as in KiCad and Altium, never a body made up from its
+  footprint. The built-in parts come with KiCad's models where the host
+  fetches them (`partModels`; this build doesn't, so they show their pads; see
+  [Real 3D models](#real-3d-models-and-the-step-export)). The board shows glossy mask over
   copper relief, gold, solder or bare copper pads, plated holes and slots and silkscreen, with
   soft shadows, a studio floor with a mm grid, a view cube, any mask and
   silkscreen colour, the four finishes, open or tented vias, and PNG export.
-  **Parts can be drawn with their real 3D model files** (STEP, OBJ, WRL, STL,
-  GLB): one the user adds in the Inspector, the supplier's model of the
-  part, which parts Sakura builds from an LCSC record get on their own, or
-  KiCad's, which KiCad parts from the parts database get. The generated
-  bodies are the instant preview and the fallback, read from the package's
-  name where the land has one; see
+  **A part's model is a real file** (STEP, OBJ, WRL, STL, GLB): one the user
+  adds in the Inspector, the supplier's model of the part, which parts Sakura
+  builds from an LCSC record get on their own, KiCad's, which KiCad parts from
+  the parts database get, or the KiCad model a built-in part comes with. The
+  status line names the parts with none; see
   [Real 3D models](#real-3d-models-and-the-step-export).
 - **Export**: RS-274X Gerbers (copper with pours, mask and paste with the rules'
   expansions, silkscreen, edge cuts), Excellon drill (slotted holes, such as
-  USB-C shell tabs, as G85 slots), BOM CSV, pick-and-place CSV, fabrication
+  USB-C shell tabs, as G85 slots), BOM CSV, pick-and-place CSV (a part marked
+  virtual, do not populate or left out of the BOM or the position file, as boards
+  brought in from KiCad can have, is left out of the file it is marked out of), fabrication
   notes (the board spec, the smallest features, the rules and the project's
   properties), the project file (re-importable), and, for other tools,
   Circuit JSON (tscircuit) and a KiCad project (see
@@ -339,11 +447,18 @@ KiCad users read without thinking.
   the sun/moon button in the top bar or under Settings.
 - **Parts search**: understands values ("10k", "4k7", "100nF", "16 MHz"),
   packages ("0805", "SOT-23"), pin counts ("6 pin header"), part-number
-  fragments ("555", "328p"), synonyms ("ldo", "op-amp") and typos. A value or
-  package in the query is applied to the part it places, so "10k 0603" places
-  a 10k 0603 resistor. In a host that hands the editor a parts source (the
-  hosted app does; this build doesn't), under the library's results come the
-  parts database's (`panels/IndexResults.tsx`): KiCad's library parts and the supplier records
+  fragments ("555", "328p", in the project's own parts), synonyms ("ldo",
+  "op-amp") and typos. A value or package in the query is applied to the part
+  it places, so "10k 0603" places a 10k 0603 resistor. The library holds basic
+  parts only (see [Library parts](#library-parts)); a specific chip or module
+  is the database's to find, and basic parts that match only some of the words
+  ("op amp" finding a push button) give way to its hits. Three letters inside
+  a longer word don't match ("ldo" is not in "pulldown"). The panel's footer
+  says the order while a search is typed: the basic parts, then our parts
+  database, then LCSC for a part number neither has. In a host that hands the
+  editor a parts source (the hosted app does; this build doesn't), under the
+  library's results come the parts database's
+  (`panels/IndexResults.tsx`): KiCad's library parts and the supplier records
   the database kept, searched 150 ms after typing pauses, only those stored
   whole. Picking one reads it (`GET /api/v1/parts/index/{id}`), makes it a
   project part with its own land and 3D model (`model/indexPart.ts`) that says
@@ -364,7 +479,8 @@ KiCad users read without thinking.
   3D model), and the server keeps it, so the next search finds it in the
   database. The credit lines under database results link to `/credits`. Arrow
   keys and Enter pick from all three lists; a part none has is one click from
-  Sakura.
+  Sakura, or from importing its KiCad files (`NotFound` in
+  `panels/LibraryPanel.tsx`).
 - **Sakura, the copilot**: adds parts, creates the ones the library doesn't
   have from supplier data (LCSC's catalogue, with EasyEDA's symbols and land
   patterns) or the parts database (KiCad's libraries), wires nets, groups and
@@ -372,17 +488,43 @@ KiCad users read without thinking.
   pours and routes the board, and runs checks
   through tool calls. It also does the hand work on the PCB: `place_parts`
   moves, turns, flips and locks parts (by millimetres or beside a pin, such as
-  "C1 beside U1.VIN within 1 mm", with the gap it reached reported), `set_net_width`
-  sets a net's trace width like the Inspector's net list, and `clear_routing`
+  "C1 beside U1.VIN within 1 mm", with the gap it reached reported; a part a placement
+  area holds is kept inside it), `set_net_width`
+  sets a net's trace width like the Inspector's net list, `set_net_class`
+  makes and changes net classes (a clearance of their own to every other net,
+  a width and a via size) like the Inspector's Net classes,
+  `set_clearance_rule` gives one pair of nets, or one part's pads, a clearance
+  of their own in place of the classes', smaller or larger, like the
+  Inspector's Clearance rules, `draw_trace` draws
+  a locked trace through given points and `pcb_text` puts, changes or removes a
+  board text like the PCB editor's route and text tools, and `clear_routing`
   deletes copper so it can be routed again (`src/ai/pcbTools.ts`; the search for
-  a free spot beside a pin is `model/placeNear.ts`). `get_design` reports each
+  a free spot beside a pin is `model/placeNear.ts`). `draw_trace` and copper
+  text are refused where they would short a net, touch nothing of theirs, or
+  bring a clearance, edge or keepout error the board did not have. An
+  assistant over MCP asked for all three on its first 10 A board: it kept
+  mains nets apart by raising every net's clearance, carried current in
+  polygon pours for want of a wide trace, and could not label a terminal
+  block's pins. `get_design` reports each
   part's PCB position, side, rotation and lock. Every change is a separate undo step. It is a panel of its
   own on the left, between the parts library and the canvas. "Sakura" is the
   product's name for it; the code still calls it the copilot. It needs a
   managed-AI session from the host (see [The host](#the-host)): this build has
   none, so the panel shows its sign-in notice and never makes a request.
+- **Working together**: a Share button (in a host with sharing) invites
+  people by email as editors or viewers, or opens the project to anyone with
+  its link; faces in the top bar for everyone on
+  the project, with their view and whether Sakura is working for them, and a
+  click to follow one; their cursors and selection outlines on the canvas in
+  their colours; edits that land live, undo that takes back only your own, and
+  a view-only mode for viewers. In this build the others are this browser's
+  other tabs on the project. See [Working together](#working-together).
 - **Panels**: the parts library and Sakura on the left, Inspect and Checks on
-  the right. Each panel's own header button is the only thing that closes it,
+  the right. A project opens with Sakura and the side panel open (both closed
+  in windows under 1180 px) and the parts library closed. Sakura open from the
+  start leaves the focus to the canvas; opened by asking (its tab, `⌘L`, a
+  hand-off), it puts it in the composer (`copilotAsked` in the UI store).
+  Each panel's own header button is the only thing that closes it,
   and a closed panel leaves a tab hanging off that edge of the canvas, in its
   upper half, with an icon and its name written down it ("Parts", "Ask AI") to
   reopen it. There are no panel toggles in the top bar. The library's
@@ -390,18 +532,24 @@ KiCad users read without thinking.
 - **Project parts**: a part the copilot makes (`create_part`) is stored in the
   project, so it opens the same in any browser and from an exported file. It
   is listed under "This project" in the library and placed like any other.
+  The project's parts are a library the user keeps, as Altium's project
+  library is: a part nothing is placed from says "Unused" and a row's trash
+  button removes it. A row's
+  pencil (or a double-click, or the Inspector's pencil on a placed one) opens
+  the part editor, its details and the place to change them. See [Kept by the
+  user](#kept-by-the-user-the-part-editor).
+- **Importing KiCad parts**: the library's import button (or files dropped on
+  the panel) takes a part's own KiCad files, a vendor's zip of them
+  included, and makes project parts of them, the 3D model too. It needs no
+  backend, so this build has it. See [Imported from KiCad
+  files](#imported-from-kicad-files).
 
 ## Library parts
 
 - **Generic**: resistors, ceramic, electrolytic and tantalum capacitors,
   inductors, trimmers, crystals, diodes, Schottkys, Zeners, LEDs, BJTs and
   MOSFETs, power and ground ports, a battery.
-- **ICs and power**: NE555, LM358, ATmega328P (TQFP-32 and DIP-28), ATtiny85,
-  74HC595, CH340C, CH340G, ULN2003A, PC817, TB6612FNG, LM7805, AMS1117-3.3 and
-  -5.0, AP2112K-3.3, a CR2032 holder, WS2812B.
-- **Modules**: Arduino Nano, Raspberry Pi Pico, ESP32-WROOM-32E,
-  ESP32-S3-WROOM-1, ESP32-DevKitC, ESP32 DevKit V1, Wemos D1 Mini, Seeed XIAO
-  ESP32-C3, a 0.96" I2C OLED.
+- **Power**: a CR2032 holder.
 - **Connectors**: 2.54 mm headers (1x2 to 1x10 male and female, 2x3 ISP, 2x5,
   2x20), DIP-8/14/16/28 IC sockets, screw terminals, Phoenix MKDS 1,5 (5.08 mm)
   and PT 1,5 (3.5 mm) terminal blocks, Phoenix MC 1,5 (3.81 mm) and MSTBA 2,5
@@ -409,6 +557,21 @@ KiCad users read without thinking.
   USB-C (USB 2.0, 16 contacts), micro-USB, a 5.5 x 2.1 mm barrel jack, a
   microSD socket.
 - **Electromechanical**: tact switches, a slide switch, a 5 V relay, a buzzer.
+
+**The library holds basic parts only**: the generic parts, symbols, connectors
+and switches, the same for the library panel and for Sakura's `search_parts`.
+A specific chip, regulator or module is found in the parts database (the
+panel's search, Sakura's `find_part`), made by Sakura (`create_part`) or
+imported from KiCad files, and becomes a project part. Until October 2026 the
+library also listed 25 chips and modules (the NE555, the ATmega328P, the
+AMS1117, the ESP32 modules and dev boards, the WS2812B...). Project file
+version 4 gives a project that placed one the part as its own, drawn exactly as
+the library drew it (`migrations/libraryParts.ts`, frozen in
+`libraryParts.json`), with the provenance `library`: unreported in Checks, as
+it was, and allowed the other packages the library offered for it. The
+examples' chips are the same parts (`examples/parts.json`). The tests still
+place them by their old ids (`tests/chips.ts` registers them), so a test can
+use a familiar chip without making one.
 
 Conventions:
 
@@ -432,6 +595,7 @@ Conventions:
 | `W` | wire | `X` | route |
 | `L` | net label | `V` | via tool / via while routing |
 | `R` | rotate | `R` / `F` | rotate / flip side |
+| `X` / `Y` | mirror top to bottom / left to right | | |
 | `/` | flip wire bend | `L` | switch layer |
 | `B` | block tool | `W` (routing) | next preferred trace width |
 | `⇧T` / `P` | text / line | | |
@@ -445,10 +609,59 @@ The PCB toolbar also has autoroute and ground-pour buttons (the pour button also
 adds stitching vias); the Inspector sets the board, the design rules, pours and
 stitching.
 
+The less used tools are grouped behind a chevron, as Figma keeps its shapes
+(`ui/ToolGroup.tsx`): on the schematic bus and bus entry, block and sheet, line
+and rectangle; on the board copper zone and keepout, the shapes with the slot,
+and text with dimensions and reference images. A group's button is its last
+used tool and picks it again; a key still picks any tool, and the group then
+shows that one, lit.
+
 Both editors: `Del` deletes, `Esc` cancels, `⌘Z` / `⇧⌘Z` undo/redo, Space-drag
 or middle-drag pans, the wheel or a pinch zooms. `[` and `]` show or hide the
 parts library and the side panel, and `⌘L` opens or closes Sakura (from
 anywhere, its composer included, and it lands in the composer).
+The schematic's sheets (the root is `Main`, never named after the project) are
+tabs docked under it (`panels/SheetTabs.tsx`), as Altium's document tabs: one
+per use of a sheet, in tree order, by name alone, the sheet shown raised;
+pointing at one says where it is in the tree, and a double-click renames it.
+The `+` after them makes a new empty sheet (`addSheetInFreeSpace`: its symbol
+in free space on the sheet shown, 2 by 1.2), shows it, and has its tab ready
+to be named. A sheet is a name: no file name is shown or asked for, and the
+KiCad export names each sheet's file after it (`sheetFileNames`), except a sheet
+brought in from KiCad, which keeps the file it came from (`SchematicSheet.file`,
+set by the import, never shown) so a KiCad project's history in git stays
+whole; a name Windows keeps for a device (`CON`, `aux.txt`) or one that ends in
+a dot or a space is made safe. **Move to new
+sheet** (the Inspector, with parts or a block selected;
+`model/sheetRefactor.ts`, `editor/schematic/sheetActions.ts`) is Altium's
+"Move Selected Sub-Circuit to Different Sheet" with the sheet made for it and
+the connections kept: the parts, what hangs off their pins alone, and the
+wires, labels and drawings selected go to a new sheet below the one shown, in
+every use of it, and each net that ran between what moved and what stayed
+leaves through a pin of its name (a label that already joined both sides by
+name; else the net's own name; else one made from its pins, `U1_OUT`), with a
+hierarchical label inside where the drawing was cut (or the label that named
+it, made hierarchical) and a label of the name outside at the pin and at each
+loose end. A supply crosses by its name instead: a copy of its power symbol
+where it was cut (a global label along a wire's side, where a pin would join
+nothing). The symbol goes where the parts were when nothing that stays is
+there, else in free space. The result is compared pin for pin with the
+netlist before and refused, changing nothing, if anything differs
+(`tests/sheet-refactor.test.ts` moves every block of every example, and
+seeded random selections, once and then again inside a sheet used twice).
+The symbol is then selected (the Inspector lists its pins) and its tab is
+ready to be named. The button at the tabs' left, or `⌘B` (from either view),
+once there are two sheets, opens the menu of every sheet
+(`panels/SheetMenu.tsx`) above it, which lists the same uses as rows with no
+folds, since a sheet is never a folder: the sheets on Main sit beside it, a
+sheet drawn on one of those is set in under it with a guide line, and a sheet
+used again says how many uses it has (`×2`). A click (or the arrows and Enter)
+shows that use and closes the menu, a double-click or F2 renames it, and with
+nothing selected the Inspector's Sheet section names and goes up from the sheet
+shown (`renameSheetUse` in `model/sheetOps.ts`). There are no page numbers:
+the KiCad export numbers its pages in tree order (`SheetUse.page`). A
+project of one sheet has the `Main` tab and the `+` only, and nothing for a
+viewer.
 
 ## Layout
 
@@ -456,8 +669,8 @@ anywhere, its composer included, and it lands in the composer).
   development, exposes `window.__cherryblossom` for driving the editor from
   browser automation.
 - `src/model`: document types, design rules and the stackup (`rules.ts`),
-  parts library (`library.ts`, with the modules and connectors in
-  `partsModules.ts` and `partsConnectors.ts`, built with `partKit.ts`),
+  parts library (`library.ts`, basic parts only, with the connectors in
+  `partsConnectors.ts`, built with `partKit.ts`),
   discrete symbols (`discreteSymbols.ts`) and box symbols (`symbols.ts`),
   the footprint adapter, data-defined footprints
   (`footprintLibrary.ts`, `footprintModules.ts`, `footprintConnectors.ts`, on
@@ -466,8 +679,8 @@ anywhere, its composer included, and it lands in the composer).
   templates and the shipped examples (`examples.ts`, `examples/*.json`).
 - `src/editor`: SVG viewport, schematic and PCB editors (the schematic's
   drawings are painted by `schematic/drawingPaint.ts`), canvas palettes
-  (`theme.ts`), three.js board (`three/models` holds the procedural part
-  models, `three/files` the readers for real model files and their cache).
+  (`theme.ts`), three.js board (`three/files` holds the readers for model
+  files and their cache).
 - `src/pages`: dashboard and editor. What the dashboard does to stored
   projects is `src/store/projectActions.ts`, shared with the hosted
   app's projects page through `src/projects.ts`.
@@ -475,60 +688,95 @@ anywhere, its composer included, and it lands in the composer).
   settings and export menu.
 - `src/export`: Gerber, Excellon, BOM, PnP and zip bundling, and the exits to
   other tools: `circuitJson.ts`, `kicad.ts`, and `step3d.ts` over the STEP
-  writer in `step/`.
+  writer in `step/`. The KiCad export writes the `.kicad_pcb` of a project that came
+  from a KiCad board natively (`kicadBoard.ts`, X16: KiCad 9's format, in the file's
+  own frame, so the board imports again as the same project); a project drawn in the
+  editor goes through the converter and the text writers (`kicadPads.ts`,
+  `kicadShapes.ts`, `kicadTexts.ts`, `kicadObjects.ts`, `kicadZones.ts`), as before.
+  `tests/kicad-roundtrip-check.ts` compares a project with the one its written file
+  imports as; `tests/corpus/roundtrip.test.ts` does it over a local corpus.
 - `src/ai`: copilot tool schemas and executors (`tools.ts`; the part tools in
   `partTools.ts`, the drawing tools in `drawingTools.ts`, name lookups in
   `partLookup.ts` and in the parts database in `databaseLookup.ts`, what
   every tool is made of in `toolKit.ts`), the agent loop, `managedAi.ts`, the only code that talks to
-  `/api/v1` for models, and `supplierParts.ts`, the host's parts source.
+  `/api/v1` for models, and `supplierParts.ts`, the host's parts source (the
+  3D models parts come with are `store/partModels.ts`'s).
 - `src/model/kicad`: KiCad's symbol and footprint files as parts:
   the S-expression reader (`sexpr.ts`), symbols (`symbol.ts`), footprints as
   lands (`footprint.ts`) and the two paired pin for pad, with the reason when
   they can't be (`convert.ts`). `library.ts` walks a library directory for the
-  tests. The parts database runs it when it is filled, so the editor never
-  converts a KiCad file itself; `model/indexPart.ts` builds a project part from
-  what the database stores.
+  tests. The hosted app's parts database runs it when it is filled, and the
+  editor runs it on the KiCad part files a user imports (`model/kicadImport.ts`);
+  `model/indexPart.ts` builds a project part from what the database stores.
+- `src/model/kicad/board`, `src/model/kicad/schematic` (KiCad 4 and 5's files
+  in `schematic/legacy`) and `src/model/kicad/project`: KiCad boards,
+  schematics and whole projects as projects (see
+  [Reading KiCad boards](#reading-kicad-boards-built) and
+  [Reading KiCad schematics](#reading-kicad-schematics-built)).
+- `src/kicadImport`: the dashboard's "Import KiCad": picking the files, the
+  import in a worker, and the report (see the end of
+  [Reading KiCad boards](#reading-kicad-boards-built)).
+- `src/lib`: geometry, ids and values, and KiCad's text layout
+  (`kicadText.ts`) with KiCad's stroke font (`kicadFont/`, loaded only for a
+  project with KiCad text).
 - `src/model/supplier`: supplier part data in the editor's terms: pin roles
   (`roles.ts`), the pin map and land comparisons (`pinmap.ts`, `land.ts`),
   footprint names that draw another package (`footprintGuard.ts`), building a
   part's pins and land from a record (`build.ts`) and checking a drawing
   against one (`verify.ts`). `model/partChecks.ts` is what Checks says about
   project parts.
-- `src/store`: zustand stores (project with history and autosave, UI state,
-  theme), memoised analysis, the storage interface and this browser's
-  implementation of it (`storage.ts`), and browser settings (`settings.ts`).
+- `src/store`: zustand stores (project with history, UI state, theme),
+  memoised analysis, the storage interface and this browser's implementation
+  of it (`storage.ts`), and browser settings (`settings.ts`). Working together:
+  the live sync of the open project (`sync.ts`, with what a project's fields
+  are in `changes.ts`), presence and following (`presence.ts`) and the sharing
+  interface (`sharing.ts`). Their UI is `panels/ShareDialog.tsx`,
+  `panels/Collaborators.tsx` (faces, following, offline), `panels/CollabNotices.tsx`
+  and `editor/PeerLayer.tsx` (cursors and selections on the canvas);
+  `model/designators.ts` settles a designator two people took at once.
+  Version history is `history.ts` and `historyActions.ts`, the board lease
+  `boardLease.ts`, and the edits a reload keeps `keptEdits.ts`.
 - `src/model/projectFile.ts`: the project file format, its migrations and the
   tolerant reader (`normalizeProject`).
 
 ## Not included yet
 
-Real-time multiplayer, simulation, hierarchical sheets, custom pour outlines,
-schematic drawings in the KiCad and Circuit JSON exports (and arcs, curves and
-pictures among the drawings), boards with more than two layers, blind and buried vias, net classes beyond
-per-net trace widths (per-net clearance), rip-up of existing
+Simulation,
+schematic drawings of the drawing tools in the Circuit JSON export (the KiCad export writes them), routing on inner layers, rip-up of existing
 traces during autorouting, dragging a database or supplier part onto the
-canvas (click or Enter), version history of a
-project, sharing, and product analytics. For 3D: checks against the real
+canvas (click or Enter), and product analytics (the editor's one event is the
+KiCad import's, sent only to a sink the host connects). Working together, still to
+come: seeing a part move while someone drags it (it moves when they let go),
+following someone's camera in the 3D view (following switches to the view),
+comments, handing a project to another owner, and Sakura for
+viewers (it changes the board, so it is an editor's). For 3D: checks against the real
 models (part heights, parts that collide, a model that doesn't sit on its
 pads), copper, mask and silkscreen as layers of the STEP export, 3D models in
-the KiCad export, model files inside a downloaded project file, and a model for
-a package that has no model file (those draw as a body read from the package's
-name, or the footprint's).
+the KiCad export, model files inside a downloaded project file, and models for
+the built-in parts KiCad has none of (the ESP32 DevKits, Arduino Nano, D1 Mini,
+XIAO and OLED modules, the slide switch, barrel jack, micro-USB, coin cell
+holder, trimmer and the screw terminals of no particular maker). For parts: drawing a symbol or a land by hand in the
+part editor (it chooses a box or a discrete symbol, and a footprint by name),
+and the details of the built-in library's parts.
 
 ## Projects: storage and the file format
 
 **Storage is the host's.** `App` takes a `ProjectStorage`
-(`src/store/storage.ts`): a live list, `load`, `create`, `save` and `remove`.
-The hosted app's keeps projects in the signed-in account; without one the
-editor uses `browserProjectStorage`, this browser's `localStorage`, which is
-what this build and the tests run on. Storage moves text and summaries and never parses
-a project.
+(`src/store/storage.ts`): a live list, `load`, `create`, `push` (a batch of
+changes), `watchChanges` (everyone's batches, live), `replace` (the whole
+file over a revision) and `remove`, with `sharing`, `presence`, `history` and
+`locks` beside them, each optional. The hosted app's keeps projects in the
+signed-in account; without one the editor uses `browserProjectStorage`, this
+browser's `localStorage`, which is what this build and the tests run on.
+Storage never reads the project's model: it stores the file as text and
+applies changes to its JSON with `@cherryblossom/project-changes`
+(`host/project-changes.ts` here), which addresses lists and items by name.
 
 **The format is `model/projectFile.ts`**, one format for the account, the
 browser and a downloaded file:
 
 ```json
-{ "format": "cherryblossom.project", "version": 2, "project": { "name": "…", "components": [], … } }
+{ "format": "cherryblossom.project", "version": 5, "project": { "name": "…", "components": [], … } }
 ```
 
 - `project` is `Project` without `id`, `createdAt` and `updatedAt`, which
@@ -550,10 +798,59 @@ browser and a downloaded file:
   wire (a wire drawn across the part) is left unconnected, which Checks
   reports, rather than shorted to it. `tests/fixtures/project-v1` holds files
   written then, with the netlists they had.
+- **Version 2** drew the discrete symbols at KiCad's proportions.
+- **Version 3** is the KiCad import, in one step from 2 (the step is `MIGRATIONS[2]`, which runs its sub-steps in order).
+  Everything it added is an optional field whose absence is its default, except two rewrites: a version 2 file reads as it was,
+  with the root sheet listed. It gave:
+  - **Boards:** a component footprint flags and net ties (`flags`), a trace the net it is on (`net`), a via its (`routedNet`), the board
+    drawings (`graphics`), a land its drawings (`shapes`, `noCourtyard`), text objects (`texts` with a `layer`, a part's own `texts`), any angle
+    (`pcb.rot`) and any outline (`board.outline`), net classes and the rules with them (`netClasses`, `defaultClass`,
+    `viaSizes`, `diffPairSizes`, `minViaDrill`, `minClearance`, `maskMinWidth`, `pasteRatio`, `maxError`, `maskBridgesInParts`),
+    dimensions, groups and reference images, zones as any polygon with their own settings, the pad model, copper layers and the stackup
+    (`board.stack`), arc tracks and via kinds, via protection, backdrills and post-machining on a via (`protect`, `backdrill`, `tertiary`, `post`)
+    and on a land's pad (with `dieLength` and `dieDelay`), the board's own protection rule (`rules.viaProtect`), a group's
+    generator (`gen`), net chains (`netChains`), text in a TrueType font (`face`, the `outline` KiCad cached) and the fonts a board embeds (`fonts`, with the bytes in the
+    file store).
+  - **Schematics:** a placed symbol a unit, a body style, a mirror (`sch.mirror`), fields with a place of their own (`fields`) and a
+    chosen alternate per pin (`pinAlt`), a project the symbol drawings its parts are drawn from (`Project.symbols`, `CustomPartSpec.drawing`), a part the
+    `@sub` twin its other units are placed as, a label a kind, shape, look and fields, a wire a look, a block a lock, the project KiCad's net names
+    (`netNames`) and the wider drawings (arcs, curves, circles, text boxes, pictures, tables, junction dots, no-connect flags, exact strokes and fills);
+    hierarchical sheets (`sheets`, `sheetSymbols`), directive labels and rule areas, buses (`bus`, `busentry`, `busAliases`), variants
+    (`Project.variants`, `ComponentInstance.variants`, `SheetSymbol.variants`) and KiCad's joining rules (`SchematicSheet.kicadRules`).
+  - **Two rewrites** (`migrations/schematicUnits.ts`, `migrations/sheetsRoot.ts`). `schematicUnits` changes two shapes that only a development
+    build of the schematic track wrote: a symbol's flags (`inBom: false`, `onBoard: false`, `inPosFiles: false`, `fieldsAutoplaced` inside `flags`) become the
+    one `PartFlags` set, and a sheet's `items` become `drawings`. `sheetsRoot` lists a one-sheet project's sheet as `[{id:"root"}]`.
+    `normalizeProject` drops a drawing the editor cannot draw with the parts that name it, drops the drawings no part names, and promotes a unit
+    left with no part of its reference.
+
+- **Version 3 also holds the extras of the KiCad import**, as optional fields whose absence is none: the zone family (X29, X30, X31: a zone's `other`, a land's `zones`, a land pad's
+  `zoneLayers`) and X20 (`placement` on a rule area, `classes` and `sheetPath` on a part), beside the fields listed above. The extras were one import split in
+  several PRs, so they have no version of their own.
+- **Version 4** took the chips and modules out of the library (`migrations/libraryParts.ts`): a component placed from one of the 25 now names
+  a project part drawn exactly as the library drew it, added to `Project.parts` with the provenance `library`, and so does a 3D model assigned to
+  it (`models[].part`). Components keep the footprints they had. See [Library parts](#library-parts).
+- **Version 5** lets a schematic picture be a file in the host's file store (`DrawingImage.file`, the SHA-256 of the PNG,
+  with `px`, `py` and `ppi` so the sheet is laid out before the file is read) instead of base64 in the project (`data`).
+  The KiCad import stores every PNG a schematic draws so (`storePictures` in `kicad/schematic/build.ts`) and hands the
+  files to the import screen, which keeps them as it keeps a board's pictures: pictures do not compress, and were what
+  took schematics over the stored project's limits. A version 4 document reads as it was (`MIGRATIONS[4]` changes
+  nothing); the bump keeps a version 4 reader from opening, and dropping, a stored picture. The canvas loads them with
+  `useImages`, the KiCad export and `look` with `preloadImages`, and a picture whose file is not here draws as a frame
+  and is left out of the export. Version 5 is also the first a version 4 reader would not read whole for the KiCad import's later fields
+  (generated groups, via protection, a zone's kept fill), which it would drop and save the loss back.
+- **How a project is written** (`serializeProject`): every list the live sync edits item by item (`PROJECT_SHAPE` in `store/changes.ts`) is a list of its items,
+  and every value is under the key the model gives it, because storage applies an edit to the stored file by those paths. Only a value an edit always
+  replaces whole is compact, under its own key: a part's `units`, a land's `shapes`, `pads` and `zones`, a zone's `outline` and `kept` fill. Until November 2026 much more
+  was compact (`tx`, `gr`, `kt`, `kp`, `textStyles`, `dm`, `dimStyles`, `grp`, `gd`, `vx`, `im`, the outlines' `ol`, a zone's `ff`, the board's drawings in runs),
+  and an edit of one of those, by the model's path, was lost when the project was read again; the reader still reads them, and an object an edit put beside them
+  stands for the stored entry of its id. `tests/stored-edits.test.ts` applies every kind of edit to a stored file and reads it back.
+- **Schematic drawings** (`Project.drawings`, the lines, boxes and text of the
+  drawing tools) were added to the format without a version of their own; their
+  absence is the default, so every version reads as having none.
 - **Writing** (`serializeProject`) always writes the current version, so a
   project is upgraded the first time it is saved after a format change.
 
-**To change the format**, bump `PROJECT_FILE_VERSION` and add the migration from
+**To change the format** (the next version is 6), bump `PROJECT_FILE_VERSION` and add the migration from
 the previous one — plain JSON in and out, importing nothing from the live
 model, since it describes a format as it was — with a document of the old
 version in `tests/project-file.test.ts`. A new optional field that
@@ -561,44 +858,397 @@ version in `tests/project-file.test.ts`. A new optional field that
 or meaning does. Never change or remove a shipped migration: stored projects and
 files stay at whatever version wrote them until they are next saved.
 
-**Saving** is autosave, in `store/projectStore.ts`: 600 ms after edits pause,
-one save at a time, each naming the revision it was made from. A stale revision
-is refused (`conflict`, two tabs or computers on one project), and so is an
-older format over a newer one (`outdated`), a project gone elsewhere
-(`not_found`) and one over the size cap (`too_large`, about 900 KB in an
-account; the examples are 8 to 60 KB). Refusals stop autosave until the user
-answers in the top bar ("Keep mine" saves over the other copy); a save that
-doesn't arrive is retried with backoff. A drag in progress is never saved, and
-a tab closed with a save pending asks before leaving.
+**Saving is sending changes**, not saving files: every edit is sent as what it
+changed, live, and the stored file is always current (see
+[Working together](#working-together)). A drag in progress is never sent, and
+a tab closed with a batch on its way asks before leaving. Refusals are said in
+the strip under the top bar: an older editor writing over a newer format
+(`outdated`, reload), an edit that would take the project over the size cap
+(`too_large`: in the hosted app's storage, 32 MB of JSON; the examples are 8 to 60 KB, a big
+imported board about 1 MB and the largest of 1,145 open-source KiCad projects
+25 MB with its pours; the edit is undone on screen), a user made a
+viewer meanwhile (`forbidden`, the
+edit is undone). A project deleted or unshared while open (`not_found`) is a
+dialog that offers a download of what is on screen. **A document in an older
+format is upgraded before anything is sent to it**: the first copy to open it
+writes it whole in the current format (`replace`), since changes worked out on
+the migrated project could mean something else applied to the old one, and
+every other copy loads it again.
 
 **Projects from before accounts.** On the first visit with account storage,
 `moveBrowserProjects` uploads every project left in `localStorage`, in the
 current format with its dates, and deletes each from the browser only once it
 has landed. One it can't read is left where it is.
 
-## Project parts
+## Working together
 
-`model/customParts.ts`. The library has the generic parts and the common
-specific ones (see [Library parts](#library-parts)); anything else (an LDO by
-part number, a sensor, an odd connector) is a *project part*: a
-`CustomPartSpec` stored in the project (`Project.parts`), so it opens the same
-in any browser and from an exported file. `normalizeProject` drops one that no
-longer builds.
+Several people (or tabs) can have one project open, and each sees the others'
+edits as they land, as in Onshape or Figma. It is built so that nobody has to
+think about it: no locks, no "someone else is editing", no merge step.
 
-- **Where they come from.** Sakura's `create_part` builds one from a supplier
-  record when the host provides supplier data (`model/supplierPart.ts`, over
-  `model/supplier/build.ts`), and from the pinout it remembers only when none
-  does. A part picked from the parts index is built by `model/indexPart.ts`.
-  Each says where it came from (`source` on the spec), and the Inspector shows
-  the credit.
-- **Checked, never trusted.** A part made from memory is a warning in Checks
-  ("pinout and footprint not verified against a supplier"), and one a supplier
-  contradicts is an error (`model/partChecks.ts`, `model/supplier/verify.ts`).
-  A pin's role is read from its name (`model/supplier/roles.ts`), and a land is
-  compared with the supplier's pad by pad (`model/supplier/land.ts`).
-- **Without a supplier source**, as here, the copilot's parts are made from
-  memory and marked unverified, and the library panel offers only the built-in
-  library.
+### How an edit travels (`store/sync.ts`)
+
+- **An edit is what it changed.** `commit` and the end of a drag work out the
+  changes from the project before to the project after (`store/changes.ts`,
+  over `@cherryblossom/project-changes`): lists of items (parts, wires, labels,
+  traces, vias, pours, texts, blocks, schematic drawings, project parts, land
+  patterns) item by item and value by value, everything else value by value.
+  Moving a part sets `pcb.x` and `pcb.y` of that part; someone changing its
+  value at the same moment sets `props.value`; both stay. No edit operation had
+  to change for this: the edits are still pure functions of a `Project`.
+- **The KiCad model travels too.** Sheets and sheet symbols, bus aliases, board
+  graphics, dimensions, groups, reference images and project properties are
+  lists of items (`PROJECT_SHAPE`); the schematic variants are a list inside an
+  object (`variants.list`, by name; `variants.active` is a value beside it);
+  the board (its layer stack, stackup, net classes), the rules, the symbol
+  drawings and `importMarks` are values down to each key, and a list with no ids
+  in it (the stack's layers, `models`, `ignoredChecks`) is one value that the
+  later edit wins. `tests/sync-kicad-model.test.ts` has a table of every field
+  of `Project` that fails to compile when one is added without saying how it
+  travels. What keeps a KiCad sheet right (`settleEdit`: the S11 joining rules,
+  net renames, import marks, groups) and the copies of a reused sheet
+  (`syncCopies`) run where the edit is made; only their result travels. What
+  merges can still break is settled on every copy (`model/settleStructure.ts`,
+  run by the store after an undo, a redo and each remote batch, and the
+  difference is sent): what is drawn on a sheet or use the tree no longer has
+  goes (`dropUnusedSheets`), each use of a reused sheet gets the parts another
+  use has and it lacks (`fillCopies`: additive only, ordered by path and key,
+  ids made from the template and the use, so two copies settling one state
+  write the same items and do not trade edits), and nothing stays on a copper
+  layer the board no longer has (`dropDeadLayers`). Not in the sync table above:
+  the pins of a sheet symbol and `models` still travel as one value.
+- **Storage orders them.** A tab sends one batch at a time, numbered, and
+  storage applies each to the stored file and gives it the project's next
+  revision. Every tab follows that log and applies everyone's batches in the
+  same order, so every copy ends up the same. The same value edited by two
+  people at once ends as the later one storage applied.
+- **What is on screen is storage's copy with this tab's unsent batches on
+  top.** A local edit shows at once; someone else's batch is applied under the
+  tab's own pending ones, so the user never sees their own edit flicker back to
+  someone else's value and then return. A drag in progress stays where the
+  pointer has it while others' edits land underneath.
+- **Deletion wins.** A change to something someone else deleted does nothing.
+- **Resends are safe.** A batch whose answer was lost is sent again under its
+  number, and storage answers with the revision it landed at instead of
+  applying it twice.
+- **Editing pauses while edits can't land** (`editingPaused` in
+  `store/projectStore.ts`): offline (`watchConnection`, the top bar's
+  "Offline") or batches that keep failing (`retrying`, as when the server drops
+  a session the sign-in still has), for `PAUSE_AFTER_MS` (8 s, `store/sync.ts`).
+  A blip shorter than that (a sign-in renewed in a second, one server error,
+  Wi-Fi changing networks) pauses nothing, so a drag or Sakura carries on.
+  Unsaved edits live in this tab only, so the store then refuses new ones as
+  it does a viewer's, with a toast and the save strip saying why, rather than
+  pile up work a closed tab would lose (a user once lost hours that way). The
+  strip offers **Reload** and **Download a copy** (the project file, queued
+  edits and all). Sakura waits up to two minutes for the pause to end and then
+  makes its change as if nothing happened; past that its tool result tells it
+  to stop and say so rather than call again. The part editor keeps its dialog
+  and draft open. What was already queued goes out in order when the
+  connection is back.
+- **A reload keeps the edits** (`store/keptEdits.ts`). As the page goes
+  (`pagehide`, or the strip's Reload) the batches that haven't landed are
+  written to the tab's `sessionStorage`; the next page in that tab (reloaded,
+  or back from signing in again, which a reload with an ended session leads
+  to) opens the project with them on top and sends them first, under the old
+  page's tab id and numbers, so one that landed after all is applied once.
+  It costs no edit a write (an earlier IndexedDB copy of every batch was
+  dropped for that), and only a tab's own next page reads it, so two tabs
+  never take each other's. A closed tab takes it along, which is why leaving
+  still asks first, except for the strip's own Reload. Batches kept by an
+  editor of another file format are dropped; a viewer's open leaves them for
+  when the tab opens the project as someone who can edit.
+- **A gap reloads.** A tab further behind than the log reaches, or a whole-file
+  write (a rename from the projects page, a format upgrade), loads the project
+  again and puts its unsent batches back on top.
+
+### Undo is yours
+
+`past` and `future` hold each step as the changes that undo and redo it, not
+as copies of the project. Undo applies a step's undo changes to the project as
+it now is, which puts back the values this user's step replaced and leaves
+everyone else's edits alone; a part someone else deleted meanwhile stays
+deleted. What isn't the user's own doing (`patch`: a designator renumbered after
+someone else's edit, a background check's verdict on a part) isn't a step; it
+is written into every item a step puts back whole instead, so Undo then Redo of
+the part's placement brings the part back with it.
+
+Undo of a step that removes a sheet (a new sheet, say) keeps the sheet when
+someone else has put parts or wires on it (`keepSheetsWithWork`): the step was
+only ever this user's own sheet, and removing it would delete a collaborator's
+work or leave it on no sheet. An empty sheet goes as the step said.
+
+### Seeing each other (`store/presence.ts`, `editor/PeerLayer.tsx`)
+
+- **Each tab says what it is doing**: its view, pointer, selection, what its
+  canvas shows, whether Sakura is working and whom it follows. Alone on a
+  project it says so only when that changes and every 15 s; with company it
+  sends its pointer too, at most every 90 ms, and cursors glide between the
+  points that arrive. A tab that stops saying anything is gone after 40 s.
+- **Faces** in the top bar, in each person's colour, with their view or
+  "Sakura is working for them"; the user's own other tabs aren't company.
+  Colours are the same in all of a person's tabs and differ between people
+  while there are colours to go round (`PEER_COLORS`, chosen against the
+  selection blue and the copper colours).
+- **Cursors and selections** on the canvas, for people on the same view: what
+  someone has selected is outlined in their colour with their name, which is
+  how everyone sees who is working on what without asking.
+- **Following**: a click on a face mirrors that person's view and what their
+  canvas shows, framed to fill this one, until the user pans, zooms, clicks the
+  canvas or presses Esc. Two people can't follow each other: each would frame
+  the other's frame, a little wider every time.
+
+### Sakura with several people (`store/boardLease.ts`)
+
+- **Sakura is working for them**: while a user's run is active their presence
+  carries `copilot` and a one or two word `copilotLabel` ("Routing",
+  "Thinking"; `toolPhase` in `ai/tools.ts`, never the user's own text). Others
+  see a chip "Sakura for Ada: Routing" after the faces and the label beside
+  that person's cursor. It clears when the run ends, is stopped or fails.
+- **The board lease**: whole-board actions take a per-project lease first, so
+  two people (or one person's two tabs) never rewrite the board at once.
+  Sakura's tools: `layout_pcb` (and `relayout_all`), `route_pcb`,
+  `clear_routing` without nets or refs, `tidy_schematic` without blocks
+  (`wholeBoardAction`). The toolbar: Re-pack, Autoroute, Tidy (button and `T`),
+  Clean up (free and with AI). Left out because each touches what the call
+  names: `place_parts`, `set_board`, `set_pour`, `set_net_width`,
+  `group_parts`, `edit_block`.
+- **Refused, not queued**: a tool that finds the lease taken does not run; its
+  result says who and what ("Ada's Sakura is routing the board right now. Wait
+  for it to finish, or work on something else.", "Your other tab is ...") and
+  Sakura tells the user. The toolbar buttons are off and a note under the
+  toolbar says who holds it. The system prompt and tool definitions are
+  unchanged (the golden tool size test).
+- **Lifetime**: held while the action runs, renewed every 20 s (`RENEW_MS`),
+  released when it finishes, errors or is stopped; a tab that dies loses it
+  after 60 s (`LEASE_MS`). Actions in one tab share it (Clean up tidies under
+  its own). The host's `ProjectStorage.locks` provides it; without one (this
+  build) every action goes ahead, and so does one when the lease can't be
+  reached (offline), since it is coordination, never access.
+
+### What working together needed solving (`panels/CollabNotices.tsx`)
+
+- **Something you have selected is deleted by someone else**: it leaves the
+  selection and a note says who deleted what.
+- **Two people add a part at once and both take R3**: the tab that added the
+  later one (by id, which starts with the time) renumbers it and says so
+  (`model/designators.ts`); both tabs reach the same answer without asking. A
+  designator typed by hand to match is left alone.
+- **Typing in a field while someone else changes it**: the field keeps what
+  is being typed (`CommitInput`, the project name) and the user's value lands
+  when they commit it, as the later edit.
+- **Someone joins**: a note, and their face.
+- **Made a viewer, or an editor, while it is open**: a note, and the editor
+  changes at once.
+- **Viewers** (`role` in the project store): edits are refused before they
+  happen, with a note each time; the Inspector's controls are disabled (a
+  `fieldset`), the library and the editing tools too, and Sakura says it works
+  on projects the user can edit. Viewers can select, measure, run checks,
+  follow and export.
+
+### Sharing (`panels/ShareDialog.tsx`, `store/sharing.ts`)
+
+The Share dialog invites addresses (typed, pasted, or several at once) as
+editors or viewers, with an optional note, and lists the owner, the members
+and open invitations with what the user may do about each: copy an
+invitation's link, send it again, withdraw it, change a member's role, remove
+them, or leave. Under them, "General access" is who the project's link
+opens it to (`SharingState.link`): the owner switches "Only people invited" to
+"Anyone with the link" as "Can view" or "Can edit". The link is the project's
+own address (`projectLink` in `App.tsx`), so there is nothing to make or
+reset, and everyone with access can copy it. The dialog's link is always the
+bare address, which opens on the schematic. Any project address takes
+`?view=pcb`, `?view=3d` or `?view=sch` when the project opens, and the address
+bar follows the view shown (`replaceState`, nothing for the schematic), so the
+address in it is always a link to what is on screen. Someone who has the project only
+through the link (`viaLink`) is told so, and invites no one. What the user may
+do comes from the host (`SharingState`), and the host decides; the dialog only
+draws it. Given an `account` with a user and no `storage`, `App` gives this
+browser's storage a Share dialog that keeps invitations and the link's setting
+in memory (`localSharing`); this build passes no account, so it has no Share
+button.
+
+Signed out, a host may still open a project its owner shares by link, view
+only: it passes an `account` with `signIn` (`EditorAccount`), and the top bar
+shows "Sign in" in place of the account menu and no way back to projects.
+Storage refuses every write then; the editor never asks, as with any viewer.
+
+### Version history (`panels/HistoryPanel.tsx`, `store/history.ts`, `store/historyActions.ts`)
+
+- **Where it opens**: the clock button in the top bar (only where storage has a `history` source; this browser's has none). A column on the left like the sheet tree: "Current version", then the copies the server kept, newest first, each with when, who edited in its span and what changed since the one before (parts, wires, traces, vias, zones, labels, other items: added, removed, changed). A named version carries a tag.
+- **What is kept** is the host's to decide (`HistorySource` in `store/history.ts`: the list, `open`, `name`, `unname` and `restore`); the editor draws what it is given. The hosted app keeps copies as a project is edited, one before each restore, and the ones an editor names, which are never pruned.
+- **Preview**: a click shows a version in place of the project, read-only (`projectStore.startPreview`). The store's `role` reads `viewer` while it is open, so every edit path refuses with no sync traffic; `preview.live` follows everyone's edits behind it, and "Back to current" shows it. The banner over the canvas (`PreviewBanner`) says so and carries the way back and the restore.
+- **Restore** (editors and owners): this tab's pending edits land first, then `history.restore` keeps the current document as a version and writes the old one whole at the next revision, logged with no changes, the same write as `replace`. Every open copy (this one too) hears a gap, loads the document again and carries on, with no page reload. The restoring tab's undo history is dropped (its steps were worked out against a state that is gone). Restoring the "Before restoring" version undoes a restore.
+- **Not done**: a diff of two versions on the canvas, restoring part of a version, version comments.
+
+### Testing it
+
+`tests/sync.test.ts` runs the store against `tests/memoryStorage.ts`, which
+behaves as the hosted app's storage does (ordering, resends, roles, a trimmed
+log, format versions): live edits under a drag, a pending value over someone
+else's, undo of only your own steps, editing paused offline, refusals, reloads
+and upgrades, and two tabs converging. `e2e/collaboration.spec.ts` runs two
+tabs of this build on one project in a real browser: edits, cursors and
+selections both ways, undo of only your own, a deleted selection, following,
+and a viewer's refused edit.
+
+## Managed AI (the copilot)
+
+- **The host provides the session.** `App` takes a `managedAi` prop
+  (`ManagedAiHost` in `src/ai/managedAi.ts`): a `getAccessToken` that returns
+  a fresh WorkOS token, the PostHog distinct id, `signIn`, and the upgrade and
+  account links. This build's (`host/main.tsx`) has no token, and its
+  `signIn` opens the hosted app. `App` connects it during render, not in
+  an effect, because the copilot panel's first account fetch runs in an effect
+  of its own and child effects run first.
+- **No plan logic here.** `GET /api/v1/me` says which models the plan has
+  (`store/accountStore.ts`); the picker lists them by their product names from
+  `@cherryblossom/ai-models` (here `host/ai-models.ts`, which names a model by
+  its id), with a weighted model's credits beside its name
+  ("Sakura 2 High (4× credits)", `modelNameWithWeight`), and the default is the
+  plan's last, strongest one. Everything else is the proxy's error contract:
+  `401` asks to sign in, `403 plan_required | model_not_allowed` offers plans,
+  `429` shows the
+  server's sentence and, for a day or month limit (`error.limit`), what gets
+  past it (`limitOffer` in `store/accountStore.ts`, from `/me` fetched again at
+  the refusal): Ultra for a Pro user, which is the host's `upgradeUrl`, and
+  turning pay-as-you-go on, or raising its spent cap, which is its
+  `accountUrl`. The offer is kept on the error entry as it was when made, so
+  an old notice doesn't change once pay-as-you-go is on. A minute limit, or a
+  plan with nothing to buy, links to usage as before. A plan without managed AI — Free, which is
+  the editor without the AI — keeps every editing tool and loses only the
+  composer. In its place Free gets two offers (`GateNotice` in
+  `panels/CopilotPanel.tsx`): Pro, and the user's own AI through MCP
+  (`panels/OwnAiNotice.tsx`), a card naming Claude, ChatGPT, Claude Code,
+  Codex and Cursor, each linked to its own steps (`assistantGuides`, the
+  host's; `assistantsUrl` when it has none). A conversation that loses its
+  plan midway shows them under the thread.
+- **The wire is Chat Completions through OpenRouter.** Tools are OpenAI
+  function tools; the proxy refuses OpenRouter's routing and server-tool
+  fields, so nothing here may send them. Reasoning is on (`medium`), and each
+  assistant turn's `reasoning_details` go back with it, merged from their
+  stream fragments first: Claude splits a thinking block across chunks, and
+  replaying the pieces fails its signature check. One UUID per conversation is
+  the `X-Trace-Id` (one PostHog trace) and the `session_id` (cache affinity).
+- **Stop stops the batch.** The loop checks the signal before every tool call
+  in a turn (each skipped call still gets an error result, so the conversation
+  stays valid) and `executeTool` before and after a call's lookups, so a turn of
+  `find_part` plus two `add_component` pressed Stop during the lookup adds
+  nothing. A turn is at most 32 rounds (`MAX_ITERATIONS`): a specific part is
+  three or four rounds on its own (find, read, build, place).
+- **The system prompt's design rules are `ai/designGuide.ts`**: the design,
+  parts and good practice sections (and the KiCad, units and sheets notes),
+  which the hosted app's MCP server teaches too (see
+  [MCP](#mcp-sakuras-tools-for-the-users-own-ai)), so the two can't teach
+  different rules. Sakura's prompt is those sections joined in the order they
+  always were, so an edit to the guide is an edit to Sakura's prompt (and a new
+  prompt cache) as well; `copilot.ts` adds who Sakura is, when it looks and how
+  it replies.
+- **Sakura can look at its own work** (`ai/lookTool.ts`, the `look` tool, with
+  its drawing and measuring code in `ai/vision/`). It takes a picture of the
+  schematic, the PCB (top, bottom or both, with layers named) or the 3D board,
+  whole or zoomed to `refs`, the user's selection or a `region`, and returns the
+  numbers behind it as the tool result: overlaps, wires through symbols, texts
+  drawn over symbols, unconnected pins, parts off the board, unplaced parts,
+  unrouted connections, bounds. The schematic's picture has the block frames
+  and the drawings, as the user sees them. Models act on numbers more than on pictures, so every problem the
+  picture can show is also written out, and a failed picture still leaves them.
+  - **Off screen.** The schematic and PCB are drawn as SVG built from the
+    project (`schematicSvg.ts`, `pcbSvg.ts`) and rasterised on a canvas that is
+    never attached; the 3D board gets a `BoardScene` of its own in a hidden box
+    (`BoardScene.capture`) that is disposed afterwards. The user's view, camera
+    and selection never move.
+  - **How the picture reaches the model.** A Chat Completions tool result is
+    text, so the picture goes in a **user message right after the turn's tool
+    results**, an `image_url` part holding a base64 PNG (JPEG for a heavy 3D
+    view) data URL (`vision/messages.ts`), which OpenRouter hands to Claude as
+    an image. The text part says it is not from the user. Pictures are counted
+    one by one across the whole history (`pruneImages`): the newest
+    `KEEP_IMAGES` (2) stay, or all of a turn's if it made three, and older ones
+    become a line of text, since a picture rides in every later request. Before
+    every send the history is also trimmed to the proxy's limits, oldest first,
+    so a conversation can never be left holding pictures the proxy refuses (it
+    would refuse every later request too). Only the oldest pictures change, so a
+    request's start stays byte for byte as it was and its prompt cache holds;
+    what follows a dropped picture is read once at full price, which is the
+    cost of not paying for a stale picture on every round.
+  - **Caps, in code** (`vision/limits.ts`). A picture is at most 1280 px on a
+    side and 1.1 megapixels (`detail: "high"`: 1600 and 1.7 MP) and 450 KB
+    before base64, redrawn smaller until it fits (`encode.ts`). Claude bills
+    about width x height / 750 tokens: a 4:3 picture is about 1,440 tokens
+    (about 2,270 for high), the shapes of real boards 700 to 1,500. A request
+    gets `MAX_LOOKS_PER_REQUEST` (3) pictures; the fourth look is refused with a
+    plain message that tells the model to report, and the count is per
+    `runCopilot` call, so the user's next message starts fresh. A refused or
+    failed look still counts, so a broken view cannot be retried forever.
+    The repeat guard (`repeatGuard.ts`) does not count the cap's refusal: it already
+    says what to do, so a model that keeps asking gets the same message each time.
+    A look that really failed (an empty 3D board, say) does count, so an identical
+    one is refused on the third try without spending a picture.
+  - **The proxy** (the hosted app's) accepts these pictures and nothing wider:
+    only `text` parts in every role, plus an `image_url` part in a user
+    message, only as a PNG or JPEG data URL whose bytes start like one (never a
+    link, which OpenRouter would fetch), at most 640,000 characters each, 8 and
+    3.2 MB per request; any other part type is a 400. `limits.ts` holds those
+    caps (`PROXY_MAX_*`), `tests/fixtures/imagePolicy.ts` restates the proxy's
+    rules with them, and `tests/look-images.test.ts` runs what the editor sends
+    through it.
+  - **When it looks** is in the system prompt in `copilot.ts`: after a big step
+    only (building or extending a circuit, tidying, `layout_pcb`, `route_pcb`),
+    read the numbers first, fix with the normal tools, look once more at most,
+    and say in plain words what it saw and changed.
+  - **It reads a sheet's layout too** (`ai/vision/measure.ts`): block frames
+    over each other, and a drawn text over a block's title or across its frame,
+    are problems, outlined in the picture (a text wholly inside a frame is a
+    note, and fine). A `Sheet use:` line says how much of the drawn area is
+    used (frames count whole), where the largest empty area is, and which
+    frames sit nearer than Tidy's 0.5 gap; below 45% on a sheet with blocks, or
+    12% on one without, it calls the sheet sparse. The thresholds were measured
+    on the examples and the blog boards tidied, against the same sheets pushed
+    apart. An assistant had a sheet title over a block's title and nothing in
+    the numbers said so; `tests/look-sheet-layout.test.ts` holds the examples
+    to none of it.
+  - **Tests**: `tests/look-render.test.ts` (sizes, byte cap, framing, the
+    numbers, the SVG), `tests/look-tool.test.ts` (the tool, its cap and its
+    failure modes), `tests/look-loop.test.ts` (a scripted model builds, looks,
+    fixes, looks, and is stopped by the cap, with the wire checked; many
+    batches over many requests, a stop mid-batch), `tests/look-images.test.ts`
+    (pictures counted part by part, the proxy's limits).
+- **An answer stays where an assistant shows it.** Claude Code warns about a
+  tool's output past 10k tokens, and puts one past 25k tokens or 50,000
+  characters in a file. `get_design` grows with the board, about 430
+  characters a part (27k on a dense 41-part board), so it answers at most
+  45,000 (`DESIGN_BUDGET` in `ai/tools.ts`, room left for the notes the MCP
+  server adds):
+  past that, about 100 parts, it lists each part as its designator, part id and
+  value, each net by name and the blocks without their ports, and asks again
+  with `block` or `refs`, which read those parts with their pins and every net
+  they touch. A 600-part design's list fits (`tests/design-budget.test.ts`).
+  `get_wiring` is held to 30,000 the same way (see
+  [Schematic edits by the copilot](#schematic-edits-by-the-copilot)).
+- **Tests stub `fetch`** (`tests/copilot.test.ts`), so they pin the request
+  the proxy receives as well as the loop's behaviour. `tests/copilot-parts.test.ts`
+  scripts the model turn by turn (find, read, build, place) against recorded
+  supplier answers, so no model and no supplier is called.
+- **Supplier answers are recorded**: `tests/fixtures/supplier/recorded.json` is
+  what the hosted app's parts API answered for the 13 production parts and the
+  lookup traps (`tests/fixtures/supplier/production.ts` lists them, with what
+  each must do). It is recorded against the real endpoints on the hosted app's
+  side, which checks that replaying the raw answers still gives exactly this
+  file.
+
+## MCP: Sakura's tools for the user's own AI
+
+The hosted app also runs Sakura's tools, on its server, for an AI assistant
+the user brings (Claude, ChatGPT, Cursor, Claude Code or any MCP client),
+through an MCP server that is not part of this repository; a tool added to
+`TOOL_SPECS` is on it too, with the same description. What the tools keep for
+it is here: a call there is a request of its own (`ToolContext.standalone` in
+`ai/toolKit.ts`), so a tool that would act on what the request made asks to be
+told instead (`tidy_schematic` with neither `blocks` nor `whole_sheet` tidies
+nothing on a sheet with parts), `look` draws with the `ToolContext.renderer`
+the server gives it, and the model's per-project state is scoped (see
+[The host](#the-host)).
 
 ## Schematic edits by the copilot
 
@@ -608,9 +1258,379 @@ Sakura's tools (`src/ai/tools.ts`) may not join nets nobody asked to join. Pins 
 - **`connect`** (`model/attach.ts`) judges each way of drawing against an index of the sheet instead of recomputing connectivity: a drawn wire for two pins, then labels. A label is tried as a straight stub (0.3, 0.5, 0.9), bent, and last on the pin itself. Nothing may touch the 0.3 in front of another pin (`PIN_CORRIDOR`), so no wire leaves a neighbour without a way out. The result is checked once more with the full connectivity. Pins that cannot be reached are left out and named with what is in the way; the rest are connected (`Partly connected: ...`). If fewer than two pins (one with `net_name`) can be connected nothing changes. The reply offers a spot for the blocked part only after trying it.
 - **`update_component`** checks every move, turn and power port rail against the same rules and refuses (changing nothing) with the pins and nets, and a spot or turn that was tried (`model/spots.ts`). What hangs off a part's pins and is nobody else's moves and turns with it (`partFollowers` in `model/ops.ts`): the drawing is cut into fragments of wires, labels and power symbols that touch, and a fragment that reaches the part's pins and no other part's goes whole (a stub to a net label, a symbol on a pin, a comb joining supply pins with a tee to a symbol). Wires that reach other parts stretch (moves) or follow the pin (turns), and wires that end on a wire that moves follow it. Whatever sat on a wire that was reshaped and is no longer on it (a net label in the middle of the wire, the end of a wire that tees into it) is put back on the net (`reseat` in `model/ops.ts`, inside `moveSchematicItems` and `rotateComponent`, so a canvas drag gets it too): on the same run of the wire when it can, only where it touches nothing of another net, never pulling a wire end off a pin that stays, and when it cannot move (it is still held by another wire it crossed, or sits on a pin) with a short wire from it to the wire it lost. A wire stretched into a hook or a doubled-back spur is simplified first, so a label on the spur is reseated rather than left floating. A pin that touched another part's pin directly, with no wire between them to stretch (a power symbol set right on a pin, as Tidy draws them, or two parts pin to pin), gets a short wire to the pin that stayed (`bridgePinContacts`, in the same two functions), as KiCad's drag does, so neither is stuck; a wire that would land on another net is refused like any other. Fragments, an index of the sheet and its connectivity are built once per sheet, so a drag frame is under a millisecond. A move or turn that would still cut a pin off its net, or take a name (a label, a power symbol) off it, is refused like a join is (`pinsCutOff` in `model/merges.ts`, one check with the joins in `moveProblems`), naming the pins, each pin once: a pin already named among the nets it would join is not named again as cut. Dragging a part on the canvas carries and reseats the same things (`dragPlan`, used by `SchematicEditor.tsx`), and is checked when it is dropped (below).
 - **The canvas has the same rules, by hand** (`model/schematicEdit.ts`). The R key, the Inspector's rotate button, a drag's drop, paste and duplicate, and placing a part (click or drag from the library) are built with the carrier above and checked with `moveProblems`, then returned or refused with a sentence that says what to do (`CanvasNotice`, `uiApi().showNotice`) and nothing changed. Drawing is not refused: only two nets that each already stand for something (they have a name, or hold 2+ pins) joined, a pin cut off its net, or a pin left lying on another net's wire (`lenient` in `unrequestedMerges`). A symbol dropped on a pin or a wire end, a label naming an unnamed wire, a pin meeting a loose wire, all go through; so does a two-pin part dropped with both pins on the middle of a wire, which cuts the wire at its pins and runs the net through it (`spliceInline`; with anything else touching that stretch it is refused with "cut the wire first"). A single part whose quarter turn is blocked goes to the next position that is not and says so. The check takes the store's memoised `getConnectivity` for the sheet it started from (`Guard.conn`) and computes the result once. `tests/net-rules.ts` writes the rules out for `tests/schematic-edit-fuzz.test.ts` and `tests/examples-turns.test.ts`; `tests/schematic-edit-speed.test.ts` holds a drop and a turn to a time on a 315 part sheet.
-- **`add_component`** with x/y, **`create_part`** with `replaces` and **`remove_component`** are checked too; removing a part says which pins it cut loose.
-- **Names `connect` makes up** (`NETn`) are renamed when their net is joined under another name, and never count as a name clash.
+- **`add_component`** with x/y, **`create_part`** with `replaces` and **`remove_component`** are checked too; removing a part says which pins it cut loose. A part `replaces` switches keeps its wiring on each pin by number (`switchPart` in `model/ops.ts`): what hangs off one pin alone moves with that pin, a label or power symbol right on a pin goes to it, and a wire ending on a pin is stretched to where the new symbol draws it, then `reseat` and `bridgePinContacts` as for a turn. It used to keep the wires where they were: pins of a symbol drawn anew fell off their nets without a word, or landed on another net's wire and the switch was refused, even for a part whose pin numbers and footprint had not changed (an assistant hit it rebuilding a bridge rectifier from supplier data). A switch that still joins nets is not made: the new part is still stored, beside the old one whose components stay as they were, and the result says why and to place it with `add_component` instead. It used to be refused whole while naming the new part_id to place, which no project held: `search_parts` couldn't find it and `replaces` said it "wasn't made in this project". Pins it still cuts off, and pin numbers the new part lacks, are said in the result. `create_part` again with a part the project already has and `replaces` is the switch to it.
+- **`remove_wiring`** (`model/unwire.ts`) is how a wire or a label is deleted, which no tool could do before (an assistant over MCP was left with the ports, labels and wire a tidy kept, and only `remove_component` for the ports). `pins` takes each pin off its net: from the pin, the wire as far as the first junction, label, port, sheet pin or other pin (on Tidy's wire graph, `wireGraph` in `tidy/cut.ts`), labels and ports right on the pin, and a label or port that leaves standing on nothing; a pin touching another pin directly stays on it, and the reply says so, as it names every other pin cut off. `loose` deletes each island of drawing that reaches no part (what Tidy keeps below the blocks and counts, so a tidy's result that kept some points to it), except one with a hierarchical label or at a sheet pin, and except one whose going would cut pins off: two names on one wire join their nets, so it is kept and said. It only deletes, so it never joins nets: a piece left of a wire cut short ends where the cut was, and where that end would join something the wire only passed over (a pin under its middle, another wire's end at its side), the wire goes whole instead. `tests/remove-wiring.test.ts` holds that on every example. `get_design` says when there is any (`loose_wiring`, counted once per sheet): it lists no plain wires or labels, so a sheet of two stray ports, two labels and a wire read as empty to the assistant that hit this, and Tidy then kept them below its blocks, as it should.
+- **`get_wiring` and `draw_wiring`** (`ai/wiringTools.ts`) are the schematic by its coordinates, for when where things go matters (an assistant matching one block's drawing to another's measured pins in `look`'s picture, and `connect` refused a wire for passing in front of a pin on its own net). `get_wiring` lists pin ends (with the way each faces and its net), wires, labels, ports, junctions and frames, for a block, an area or the sheet; `get_design` stays without coordinates, which would double it. An answer is at most 30,000 characters (`WIRING_BUDGET`, about 10k tokens, where Claude Code starts warning about a tool's output; see [Managed AI](#managed-ai-the-copilot)): a whole sheet past that (a dense 41-part board's is 32k) answers with its frames, to ask again by block or area, and every block of the examples and the blog boards fits. `draw_wiring` draws exactly the wires (horizontal and vertical segments) and labels (a point and the side the text runs to) it is given, and is refused whole, with nothing drawn, when it would join anything but what its wire ends and labels touch (`schematicEditProblems` with those nets allowed), join two named nets (a name clash), leave a pin under another net's wire, run a wire along one already drawn, or leave a label on nothing. It doesn't keep pins' corridors as `connect` does: the caller chose the geometry. Its reply says what each end touched, the net each wire is on, a wire end left on nothing, and a wire through a symbol. `connect` itself was left alone: letting it pass in front of a same-net pin drew a wire along that pin's stub and across its wire, worse than the labels it falls back to.
+- **`edit_net`** (`ai/wiringTools.ts`, `model/netEdit.ts`) renames a net keeping every wire: each label and power port carrying its name takes the new one, and what the board keeps by its name (pours, vias, widths, net classes, the copper's net, its style) follows (`renameNets`). Refused, with nothing changed, when another net has the new name (that is a join, which `connect` makes), when the name is one the editor makes up, or when the pins would not be on the same nets after (a hidden power pin or a hierarchical label joining by the old name would stay behind). A net with no name gets one from a label `connect` puts on one of its pins, checked the same way first (`renameTargetProblem`): `connect` with another net's name would join the two. `draw_as` sets `Project.netStyles` (below, under Tidy); `port` is refused for a net a local or hierarchical label names, which Tidy keeps as labels, and the Inspector doesn't offer it there. An assistant renamed a net with a temporary name, a tidy and rewiring by hand.
+- **Names `connect` makes up** (`NETn`) never count as a name clash, and are renamed when their net is joined under another name: by `connect` for the joins it draws, and by the store for every other edit (`settleMadeUpNames` in `model/madeUpNames.ts`, in `settleEdit`), so a power port or a part moved onto such a net leaves no `NET3` label on `GND` for Checks to report.
 - **The tests**: `tests/connect-shorts.test.ts` and `tests/schematic-edits.test.ts` pin the cases. `tests/connect-fuzz.test.ts` runs random designs through every tool with an oracle (`tests/schematic-fuzz.ts`); set `FUZZ_DESIGNS=300` for the full run. `tests/sakura-move-drops-connections.test.ts` and `tests/sakura-session-fuzz.test.ts` replay a Sakura session in which a move cut a BME280's supply pins loose, and `tests/tidied-move-fuzz.test.ts` moves and turns random parts on sheets drawn the way Tidy draws them (`tests/tidy-shapes.ts`): each call keeps every pin on its net, or is refused and changes nothing (`FUZZ_SHEETS=200` for more). `tests/drag-keeps-nets.test.ts` pins drags that used to cut a net, and `tests/examples-moves.test.ts` drags every part of every example 18 ways (the shipped ones and the ones drawn before Tidy, `tests/frozen-examples.ts`; rates such as fewer than 5% refused are held on the latter only, since a tidied sheet packs parts closer and a big jump lands on a neighbour, which is refused as it should be), and none is left out of the count: each drop keeps the netlist, connects only by the lenient rule, or is refused with the sheet untouched (the drops an unchecked drag would have broken are the refused ones), and fewer than 5% of nudges by update_component are refused. `tests/reseat.test.ts` holds `reseat` to doing no harm of its own on hand-drawn sheets.
+
+## Project parts
+
+`model/customParts.ts`. The library has the generic parts and the common
+specific ones (see [Library parts](#library-parts)); anything else (an LDO by
+part number, a sensor, an odd connector) the copilot makes with `create_part`,
+**from supplier data when a supplier has the part, and from the pinout it
+remembers only when none does.** Without a supplier source they are made from
+memory and marked unverified, and the library panel's search finds only the
+built-in library and the project's own parts. This build has neither a
+supplier source nor a session for Sakura.
+
+### Built from supplier data
+
+Parts made from memory are wrong too often to ship: of 13 that Sakura made
+with `create_part` and that were checked against LCSC, three had pin maps that
+kill the board (a TPS61023 with its input on its output pin, an AD8318 with its
+supply on its ground pins, a filter with its RF output on a ground pad) and
+eight sat on the wrong land. So:
+
+- **The tools.** `find_part` searches the supplier catalogue, `get_part_data`
+  reads one part (pins with their roles, the land in millimetres, its size on
+  the board: the courtyard create_part's land will have, the silkscreen's
+  outline and the body its 3D model's or package's name gives, stock,
+  datasheet), and `create_part` takes `lcsc` and builds the part's pins and
+  land from that record. Without `lcsc`, `create_part` looks the name up
+  itself (`ai/partLookup.ts`) and builds from what it finds. `verify_parts`
+  checks parts made earlier: ten a call, parts not checked yet first, the
+  count of those left over said, and a part whose lookup failed reported with
+  the reason ("Checked 3, couldn't check 7: ...") and moved to the back of the
+  line rather than read as nothing to check. They reach the supplier through the host's
+  `SupplierPartsSource` (`ai/supplierParts.ts`), which is the hosted app's
+  `/api/v1/parts`.
+- **The parts database answers beside the supplier** (`ai/databaseLookup.ts`):
+  KiCad's libraries and the supplier records the server kept, through the
+  same source's `index` (`/api/v1/parts/index/*`), which spends no supplier
+  lookups. `find_part` lists its parts after the supplier's with a
+  `database_id`, and still answers from it when the supplier search fails;
+  `get_part_data` and `create_part` take a `database_id`. `create_part` by
+  name asks both at once: the supplier's part is built when it has one (with
+  a note when KiCad's drawing of it disagrees), unless it is only a user's
+  upload or has no land and a stored part is the name. Otherwise a stored
+  part, before memory, in this order: the same number, or a KiCad wildcard
+  that covers it (`STM32F103C8Tx` for `STM32F103C8T6`, built with the asked
+  number as its part number); a stored LCSC record of an orderable number of
+  it whose drawings agree (`TPS61023DRLR` for `TPS61023`); and only when
+  nothing nearer is stored and the drawing's footprint names the same package,
+  the name less its ordering letters (`NE555P` for `NE555PW`, the DIP for the
+  TSSOP). The drawing's footprint narrows a choice and never overrides the
+  name. Stored parts that are different parts (package, body size, pin map:
+  `samePart`) are listed for Sakura to choose. A KiCad part built by
+  `database_id` is compared with the supplier when it is built (a KiCad
+  wildcard under the name asked, which is also its part number, and not at all
+  without one), one built while the supplier is failing is left `pending`, and
+  the verdict is kept on it: on the part the project already has too, where a
+  real comparison replaces whatever it held.
+- **One comparison with the supplier** (`ai/supplierVerdict.ts`): verify_parts,
+  `create_part database_id` and the library panel's check all ask it, so a part
+  gets one verdict whoever asks. The drawing's pins and footprint choose the
+  package first (a KiCad SOT-223 is compared with LCSC's SOT-223, not a SOT-89
+  its pins happen to fit); a stored part's own land is not compared pad by pad,
+  since a supplier draws the same package with other pads.
+- **`read_datasheet` reads what the datasheet says about the circuit**
+  (`ai/datasheetTool.ts`): `lcsc` or `name`, a `section` (`pins`, `ratings`,
+  `application`, `overview`) or a `page`, through the host's
+  `SupplierPartsSource.datasheet` (the hosted app's
+  `/api/v1/parts/{lcsc}/datasheet`; absent in this build, where the tool says
+  so). It is for a chip's recommended support values, ratings near a limit, and
+  supplier data that is missing or disputed, and returns about 2.5k tokens of
+  pages with their numbers so Sakura can cite "datasheet p.12". **The text is
+  untrusted**: wrapped in `[datasheet text begins ...]` and `[datasheet text
+  ends]` markers that nothing inside can close (lookalikes are replaced), with
+  the system prompt and the result both saying it is data, never instructions.
+  It is async with the abort checks and the repeat guard like the other
+  lookups, and never changes the project except through `confirm_part`: a pin
+  table compared with a project part and found to agree is recorded as
+  `source.datasheet` (pages, LCSC number), which Checks says in words ("Sakura
+  compared its pins with the datasheet (p.4), which is not a supplier check")
+  and which never makes the part verified. Pin tables are not parsed into pins.
+- **A name resolves to a part family, not to an orderable number.** A name is
+  rarely the number a supplier sells under (`TPS61023` is `TPS61023DRLR`,
+  `ADS1115` is `ADS1115IDGSR`, `SHT31-DIS` is `SHT31-DIS-F2.5kS`, `MPU6050` is
+  catalogued `MPU-6050`), so `partLookup.ts` reads the records whose number is the
+  name (ignoring punctuation and a packaging note) and, when it has no record
+  of its own, its ordering-suffix variants
+  (`model/supplier/partNumber.ts`: a number that merely goes on with digits,
+  `INA2191` for `INA219`, is another part). They are **grouped by package and
+  by function on every pin number**: one group is one part, resolved to its
+  best stocked member (the first listed when no stock is known), and the answer
+  says which LCSC number and part number was chosen. Variants are one part only
+  when no pin number carries another function in one than in the other: a rail
+  that is another rail (VIN and VOUT) or a signal that is the other record's
+  name for another pin (SDA and SCL swapped) splits them, with the differing
+  pins spelled out; a name spelled two ways on one pin (`OD` and `DOUT`, `VDD`
+  and `VCC`) doesn't. More than one group is a real choice (`ADS1115` in
+  VSSOP-10, X2QFN-10 and WLCSP-12; `INA219` in SOT-23-8 and SOIC-8), refused
+  with a short list, best stocked first, and what differs; a package nobody has
+  in stock isn't a choice while another is. When stock is unknown for all of them
+  the most common package comes first (one with a footprint of its own, then the
+  family most candidates come in) and the text says the stock is unknown, never
+  "best stocked". An exact record whose stock is unknown (not sold, or not
+  looked up) doesn't outrank the name's stocked variants: they join it (the
+  WS2812B's stocked 5.0 x 5.0 mm part is listed first). The drawing narrows it
+  first: its footprint's family and size (`led5050` is the 5.0 x 5.0 mm record,
+  not the 3535 that is better stocked), its pin count, and the records its pins
+  don't contradict. `WS2812B-2020` is another size and another pin order, so it
+  never joins `WS2812B`'s group, and a name whose own records name no pins
+  builds nothing from a variant, however well it is drawn (the variants in its
+  package still refuse a wrong drawing, below).
+  A package is the same one when its length, width and pitch agree within a
+  fraction of a millimetre (suppliers call one package SOT-23-5 and SOT-25-5),
+  and a symbol with fewer pins than its package has leads is an unfinished
+  drawing, passed over. A reviewed LCSC record outranks an EasyEDA user's
+  upload (`C99...`) even when the upload is the exact name; an upload is the
+  part only when nothing reviewed is, marked lower confidence wherever it is
+  used. Records the supplier couldn't be read for are unknown, and a name left
+  with only those is "couldn't check", never "no pinout". Known limit: the first
+  listed of a choice is the best stocked package, not always the commonest one
+  (W25Q128JV lists its 16-pin SOIC "FIQ TR" before the 8-pin SOIC).
+- **A drawing's pins are checked whenever there are candidates**, which is what
+  `from_memory` once skipped (production TPS61023 pins, wrong, with
+  `from_memory: true`, were made; `verify_parts` then said "no record" although
+  C919459 exists). The drawn pins are compared role by role with the family
+  the name resolves to, or with every package it is sold in: a mismatch is
+  refused in `create_part` and is `contradicted` (an error in Checks) in
+  `verify_parts`, including when the records numbered exactly like the name
+  name no pins: its pinned ordering variants in the same package (by size, so
+  not another size) still refuse a wrong map, though they build nothing.
+  `from_memory` is honoured only when no supplier part numbered
+  like the name has the drawn pin count (`different`: those are other parts),
+  and a name with no supplier part at all needs no flag. "No record" is said
+  only when there is none, and a name with parts of another pin count is
+  `different_part`. **A lookup that fails builds the part only as plainly
+  unverified**, with `source.check.verdict: "pending"`: Checks warns that it
+  was made while the lookup was failing, and `verify_parts` and the Checks
+  button take it first once the supplier is back.
+- **What it refuses, with numbers.** Pins or a footprint passed with a record
+  are compared with it (`model/supplier/verify.ts`). Pins are compared by role,
+  not spelling (`pinmap.ts`): a supply or ground pin of the real part drawn as
+  anything else, a supply or ground drawn on a named signal, a supply input on
+  a supply output (TPS61023), a name the supplier uses on another pin, a pin
+  number the part doesn't have. Spellings (`1B` for `IN1`, `VDD` for `VCC`,
+  `I/O1` for `IO1a`) are reported and the supplier's names used. Lands are
+  compared pad by pad after centring, over the four quarter turns
+  (`land.ts`): each supplier lead position has to be on the drawn pad's copper
+  and the drawn pad's middle on the supplier's. The refusal quotes pad counts,
+  pitch, row spacing and the worst pad in millimetres, and says when the pads
+  fit but are numbered the other way round.
+- **Footprint names that draw another package** are refused even with no
+  record to compare (`footprintGuard.ts`), each with what it draws:
+  `dfn8` (a SOIC-8 land), `ssopN` (1.27 mm pitch), `tssopN` (0.5 mm),
+  `msop8`/`msop10` (the footprinter numbers their second row top to bottom, so
+  pin 6 sits opposite pin 1: `vssop8`/`vssop10` are the same pads numbered the
+  right way), and `qfnN`/`sonN` with no size.
+- **The land is the supplier's own copper**, as a project land pattern
+  (`model/supplier/build.ts`) named after its package family and LCSC number
+  (`sot563_c919459-1a2b3c`) so the 3D view picks a body for it; a chip-sized
+  part whose pads the footprinter's `0603` (say) matches uses that instead.
+- **Diodes keep the supplier's numbering**: pad 1 is the cathode, as on LCSC
+  and in IPC land patterns, where the library's own diodes number the anode 1
+  on lands drawn for that. Both are right because the symbol finds `A` and `K`
+  by name; a drawing numbered the other way from its supplier is reported as a
+  convention, not refused.
+- **Exposed pads take a pin number**: the footprinter's thermal pad is
+  numbered one past the last lead (17 on a QFN-16, `PadDef.exposed`), as
+  datasheets and supplier lands number it, so a part can wire it to ground. A
+  part that leaves it without a pin still builds, as before.
+- **Provenance is stored on the part** (`CustomPartSpec.source`): where the
+  pins and the land came from, the supplier record and how many of its
+  drawings agree, why a part was made from memory, and the latest check of a
+  memory part. A part placed from the parts database has `pins` and `land`
+  `database` and `database` naming the KiCad part or supplier record, its
+  release, licence and credit; it counts as built from data, so Checks says
+  nothing about it and `verify_parts` leaves it alone, unless a comparison
+  with the supplier found it contradicted, which is an error. A KiCad part
+  placed from the panel is compared in the background
+  (`model/placedPartCheck.ts`, one at a time through a small queue, never for
+  a KiCad wildcard name, which no supplier number is), recorded with the
+  store's `patch`: not an undo step, but written into the part as the undo
+  and redo steps put it back too, so Undo then Redo keeps the verdict, even for
+  a part undone while its lookup ran. A failed lookup, or a check the queue had no room for,
+  records `pending`, which `needsCheck` counts, so `verify_parts` and the
+  Checks button take it up later. A part built straight from a supplier's
+  record keeps the record's credit (`source.supplier.attribution`), shown in
+  the Inspector. A part whose pins or land the user changed in the part editor
+  has them as `user` (see [Kept by the user](#kept-by-the-user-the-part-editor)).
+  A chip the library used to list has them as `library` (see [Library
+  parts](#library-parts)): Checks says nothing about it, on any footprint.
+  It is an optional field, so no format
+  version: a part saved before it has none, and reads as made from memory. The reader checks it field by field (`normalizeSource` in `projectFile.ts`): a malformed `check` or `supplier` is dropped or given neutral values, so a damaged file can't crash Checks. It is left out of the
+  part's id, so a part checked later keeps its id. `model/partChecks.ts` turns
+  it into what Checks and `run_checks` say: memory parts are warnings,
+  contradicted ones errors, and parts built from data say nothing unless the
+  supplier's drawings disagree or the component's footprint was swapped.
+- **Copilot tools can be async.** A tool with lookups has a `prepare` that
+  awaits them, and its `run` then makes the change to the project as it is at
+  that moment (`executeTool` in `tools.ts`), committed only if it is still the
+  open project: an edit the user makes during a lookup is kept, as its own undo
+  step. `runTool` runs a tool with no lookups at all, as with no supplier.
+
+### Imported from KiCad files
+
+`model/kicadImport.ts` reads them, and `panels/kicadImport.ts` hands them
+over; the button and the result line are in the library panel
+(`panels/ImportKicad.tsx`).
+
+- **The same converter as the parts database's** (`model/kicad`): a symbol
+  is paired with its footprint pin for pad, or refused with the reason
+  (`SKIP_TEXT`). What the import adds is finding the footprint, since a
+  user's files aren't in KiCad's library layout: the file the symbol's
+  Footprint field names, matched by name with the library left off; one
+  symbol given with one footprint is paired whatever the field says, and the
+  result says so (vendors' names rarely agree); among several, only names
+  pair them, or a symbol could land on another part's pads. A symbol may
+  extend one in another file given with it (KiCad 10 keeps a library as a
+  directory of one-symbol files), and a base given in a file of its own only
+  for that is not imported itself. Footprints given with no symbol at all are parts with a
+  pin per pad. Power symbols are passed over.
+- **The part is the user's own land**, never swapped for a footprinter one,
+  named like a database part's (`sot23_5_file_sot_23_5-<hash>`) and carrying
+  its package's name. Part number, maker and LCSC number are
+  read from the fields vendors use (`MPN`, `MP`, `Manufacturer`, `MF`,
+  `LCSC Part`...), the part number defaulting to the symbol's name.
+- **Provenance is `pins: "file"`, `land: "file"` and `source.file`**
+  (the symbol as `Library:Name` and the footprint's name). It counts as
+  built from data, as a database part does: Checks says nothing about it and
+  `verify_parts` leaves it alone unless named, and then compares its pins
+  only, since its land is the user's own. The Inspector says "Imported
+  KiCad files". Not to be confused with `import`, a part that came in with
+  a whole KiCad schematic (the dashboard's import, `source.imported`).
+- **Its 3D model**: a file given for the model the footprint names (by
+  name, a STEP of the same name preferred over a WRL), placed as the footprint
+  places it (the angles negated as for KiCad's own, a WRL's tenths of an
+  inch); else the one model file given for the one part, fitted to the land;
+  else KiCad's own STEP when the footprint names a model in KiCad's 3D
+  library, at `KICAD_MODELS_RELEASE`. Given files are read before they are
+  kept, as the Inspector's are, and a file that doesn't read leaves the part
+  without a model, said in the result. A part already in the project
+  keeps its model, unless a file is given with it again. KiCad 5 footprints
+  (`(module ...)`, a model's `at` in inches, `${KISYS3DMOD}`) read too.
+- **Zips are opened in the browser** (jszip): every KiCad and model file in
+  them, whatever folder it is in, and nothing else. KiCad 5 libraries
+  (`.lib`, `.mod`) are refused with a sentence; KiCad 8's models embedded in
+  a footprint are not read.
+- The parts land as one undo step, in the project the import started in. One
+  part is placed at once; several are listed under "This project".
+
+### Kept by the user: the part editor
+
+`model/projectParts.ts` (pure functions on the project) and
+`panels/PartEditor.tsx` (the dialog), with what the library panel shares with
+it in `panels/partActions.ts`.
+
+- **Removing a part** (`removeParts`) takes out the spec, every component
+  placed from it (through `removeItems`, as deleting them does), its 3D models,
+  and the land patterns and symbol drawings nothing left in the project names.
+  One undo step. A part nothing is placed from goes at once from the panel; one
+  that is placed asks first, in the part editor, naming the components that go
+  with it.
+- **The part editor** is a dialog over the canvas: the symbol and the land
+  drawn live from the draft on the left, and General (name, description,
+  category, designator prefix, symbol, search keywords, parameters and which
+  one is the value), Pins (number, name, type, side; read only for a part with
+  a KiCad drawing, whose drawing has them), Footprint (the name, shared
+  pads, each pad with the pin it carries) and 3D model on the right. The 3D
+  model tab is the Inspector's controls (`ModelControls` in
+  `panels/ModelSection.tsx`: a file, the supplier's model, the built-in model
+  or none, the placement) over a 3D view of the part alone on a scrap of board in the
+  project's colours (`editor/three/PartPreview3D.tsx`, the 3D view's own
+  `BoardScene`, loaded on demand), so a model is placed by eye before it is
+  saved. A model sat on a footprint the draft moves the part off is left out,
+  unless "Keep it anyway" carries it over. What
+  `customPartProblems` says is wrong shows under it and holds Save back. The
+  footer names the components placed from it, a click shows one. A viewer
+  reads it all and changes nothing.
+- **Saving is `editPart`**, one undo step. A part's id follows from its
+  definition, so the edit is a new spec in the old one's place in the list, and
+  every component placed from it switches over: to the new footprint unless it
+  was given another, and to the new parameters where it still has the old
+  ones (a value set on one component stays). Its 3D models follow while the
+  footprint stays; a model fitted to a footprint that changed is dropped. A
+  model chosen in the dialog (`model`) is the part's on its footprint after
+  the edit, and is the whole edit when nothing else changed. An
+  edit that comes out the same as another part of the project switches to that
+  one. It is refused, with the reasons, when the spec doesn't build or when
+  its pins would join nets on the sheet (`schematicEditProblems`, as
+  `create_part replaces` is), and it says whose pins moved with the symbol.
+- **Provenance after an edit** (`editedSource`): the name, description,
+  parameters, pin types and sides and the symbol say nothing about where the
+  pins and the land came from, so they keep it. Pins (numbers and names) or a
+  land changed by hand become `user`, the user's word for the part as their
+  own KiCad files are: Checks says nothing about them, `verify_parts` leaves
+  them alone unless named, and the Inspector says "Edited by hand", still with
+  the credit of what it started from. A part made from memory stays `memory`
+  however it is edited, so its warning stays until a supplier settles it, and
+  any edit of the pins or land drops the check (and a datasheet reading of the
+  pins) that was about what was there before.
+
+### The spec
+
+- **A part is a spec, stored in the project** (`Project.parts`), and built into
+  a `PartDef` when the project is opened or imported. Its id is a slug of the
+  name plus a hash of the definition, so one id never names two different
+  parts; that is what lets `findPart` keep a registry (`registerPart` in
+  `library.ts`, one per scope: `model/scope.ts`) instead of threading the
+  project through every renderer, and why a corrected part (`replaces`) gets a
+  new id.
+- **The footprint is a footprinter string**, or the name of one of the
+  project's own land patterns (below), and `customPartProblems` checks that
+  the pins and the package's numbered pads match one to one (shared pads, like
+  a SOT-223 tab, go through `pad_alias`). The error names the pads or pins that
+  don't match, which is what the model needs to fix it on the next round.
+- **A footprint whose pads aren't numbered like the part's pins is refused**
+  by `add_component` and `update_component` (`footprintPinProblem` in
+  `footprints.ts`): every pin needs a pad of its number, through the part's
+  `padAlias`, and every numbered pad a pin (an exposed pad may have none),
+  with the pins and pads that don't match. What the part's own first
+  footprint already leaves unmatched is not held against another, since a
+  KiCad symbol need not match its footprint. An assistant gave a connector
+  another part's land and nothing checked it.
+- **A footprinter option its family doesn't take is refused**
+  (`footprintOptions` in `footprints.ts`, `footprintOptionProblem` in
+  `supplier/footprintGuard.ts`), by `create_part`, `add_component` and
+  `update_component`, with the land it would draw and the sizes the family
+  takes. The footprinter itself drops such an option without a word: an
+  assistant over MCP asked for a Phoenix 1777558 (three pins, the middle one
+  9 mm behind the others) wrote `pinrow3_p6.35mm_zigzag9mm_...`, then
+  `_stagger9mm_`, and got three pads in a row both times. An option counts as
+  taken when the family's parameters read it back, or when leaving it out
+  changes the copper (`smtpad_circle_d1` spells its parameters otherwise,
+  `sot23_5` reads its pin count from the string); a bare pin count the family
+  has anyway (`to220_3`) is fine. `res`, `cap`, `led` and `diode` read back
+  whatever they are given, so theirs is a list. The same check found that
+  `dfn` reads no `h`, which the tool description had been recommending.
+- **A land no footprint string draws is given pad by pad**: `create_part`'s
+  `land` (`model/drawnLand.ts`), each pad's number, place, shape (`rect`,
+  `roundrect`, `circle`, `oval`) and size, with `drill` and `slot_length` for
+  through-hole, `plated: false` for a bare mounting hole, a turn, and paste and
+  mask settings; pads given one number are one pin. The body's two corners
+  draw the silkscreen and, with a margin, the courtyard. Millimetres, y up, the
+  origin wherever the pads put it. What can't be drawn as given is refused
+  with the pad it is about (a hole with no copper round it, a circle given two
+  sizes, paste on a through-hole pad, copper of two pins overlapping), and a
+  field the schema doesn't name is refused by `validateInput`
+  (`additionalProperties: false`), not read past, so `hole` for `drill` can't
+  quietly make a surface-mount pad. `land.kicad_mod` takes a KiCad footprint
+  file's text instead (`kicadFootprintLand`, the import's reader). Either way
+  the part is from memory, marked unverified like any other, and compared
+  with the supplier's land when the supplier has one.
+- **Symbols**: a box with power pins on top, ground below, inputs left and
+  outputs right by default; discretes can use a library symbol
+  (`CUSTOM_SYMBOLS`), with polarized pins matched by name (A/K, +/-, B/C/E,
+  G/D/S) rather than by number, since packages disagree about numbering.
+- A spec that no longer builds is dropped on load rather than breaking the
+  project; its components show as unknown parts. Pasting a project part into
+  another project copies its spec along (`withPartsFrom`), and its land
+  pattern if it has its own.
+- **Project land patterns** (`Project.footprints`) are pads, silkscreen and a
+  courtyard as data, for a package neither the library nor the footprinter
+  draws. Any component or project part names one like any other footprint;
+  `registerProjectFootprints` (in `footprints.ts`) makes the names resolve, as
+  `registerPart` does parts, and `normalizeProject` drops one with a malformed
+  pad whole rather than drawing it without that pad. Their names end in a hash
+  of the pattern, like a project part's id. Imported boards and imported KiCad
+  footprints make them, and so does the copilot when it builds a part on a
+  supplier's land or is given one (`land`, above); other parts made from
+  memory are on footprinter strings.
 
 ## Tidy: arranging the schematic
 
@@ -646,7 +1666,9 @@ where it has room. Wire that leads to no pin at all (a stub, or wire a part
 was dragged off) is not cut: it stays where it was drawn with any label or
 port on it, and the message counts it. The cut reads the drawing as it was, so the order of the
 parts changes nothing. Sakura tidies the whole sheet only on a sheet that was
-empty, else the blocks it added or changed parts in.
+empty, else the blocks it added or changed parts in. What a tidy keeps that
+reaches no part, `remove_wiring` with `loose` deletes, and the tool's result
+says so.
 
 - **Between blocks** (`flow.ts`): reading order by signal flow, from the nets
   and the parts on them: the connector on the highest supply first, then
@@ -719,6 +1741,14 @@ empty, else the blocks it added or changed parts in.
   blocks, it would move with that wire next time). A name with no room anywhere
   is left out and the message says so; it never stops the rest of the sheet
   being tidied.
+- **Labels or ports, by choice** (`Project.netStyles`, by the name a net's
+  labels and ports give it): `label` draws a net with labels even when its
+  name or pins make it a supply, `port` with power or ground ports;
+  `styledRail` in `nets.ts` applies it over what Tidy would choose. Set by
+  `edit_net draw_as` and the Inspector's net list ("on the schematic"), kept
+  through a rename, and travelling between copies as a value. Tidy drew any net
+  named VBUS as ports, a 10 A path through a fuse included, and nothing could
+  tell it otherwise.
 - **Ports** (`model/blockPorts.ts`): each block's ports, the nets crossing its
   frame with a direction from pin kinds and flow (in, out, both, power,
   ground) and a bus (I2C, SPI, USB...) where the name says so. Computed, never
@@ -826,10 +1856,13 @@ is one undo step.
 
 ## Real 3D models and the STEP export
 
-The 3D view's generated bodies (`three/models`) are built from a footprint and
-a part alone, so they are there the moment the view opens, for any part. They
-are a likeness. **A real model file is the truth**: where a part has one, the
-3D view draws it once it is read, and the STEP export writes it.
+**A part is drawn with a model file or not at all.** Where a part has one, the
+3D view draws it once it is read and the STEP export writes it; where it has
+none, the 3D view shows only its pads and the STEP export leaves it out, as
+KiCad and Altium do. The editor used to draw a body made up from the footprint
+(`three/models`, procedural, until November 2026): a black box the size of a
+courtyard reads as the part, and in a STEP file someone designs an enclosure
+around, it is worse than a gap. It is gone, and nothing may bring one back.
 
 ### In the document
 
@@ -841,7 +1874,7 @@ are a likeness. **A real model file is the truth**: where a part has one, the
 - **A `Model3D` names a file and says where it sits**: `source` `file` (one the
   user added, by the SHA-256 of its bytes), `supplier` (the supplier's model,
   by its id) or `kicad` (a STEP file in KiCad's 3D library, by
-  `<release>/<path>`, through `PartsIndexSource.model`; `format` is always
+  `<release>/<path>`, through `PartModelSource.kicad`; `format` is always
   `step`), the file's `format`, and a placement in the footprint's frame
   (mm, z up from the board's top): `rotation` in degrees about x, then y, then
   z, then `offset`. `origin: "model"` places the file's own origin, as KiCad
@@ -852,13 +1885,19 @@ are a likeness. **A real model file is the truth**: where a part has one, the
   reader stands a GLB up on the board's z before anything places it. The maths is
   `three/files/placement.ts`, and the export uses the same function.
 - **The files are the host's, never the project's**: a STEP file is often
-  megabytes and a project may hold about 900 KB. The host gives `App` a
-  `ModelFileStore` (`store/modelFiles.ts`: `put` and `get` by hash; the
-  hosted app's keeps them in the account, this build's in this browser's
-  IndexedDB), and supplier files come through `SupplierPartsSource.model(id,
-  "obj" | "step")`. A project file
-  downloaded and opened on another account names files that account doesn't
-  have: those parts show their generated bodies, and the status line says why.
+  megabytes, and one file used by ten boards is kept once. The host gives `App` a
+  `ModelFileStore` for the user's own (`store/modelFiles.ts`: `put` and `get`
+  by hash, each given the open project; the hosted app's keeps a file added on
+  a project in its owner's account, this build's in this browser's IndexedDB),
+  and a `PartModelSource` for the supplier's and KiCad's
+  (`store/partModels.ts`: `supplier(id, "obj" | "step")` and `kicad(id)`, each
+  given the open project too; the hosted app's is `/api/v1/parts/models`, and
+  this build has none, so those parts show only their pads). That one is apart
+  from `SupplierPartsSource` on purpose: looking parts up needs an account and
+  drawing a project's parts doesn't, so a host can give someone signed out on a
+  project shared by link the one without the other. A project file downloaded
+  and opened on another account names files that account doesn't have: those
+  parts show only their pads, and the status line says why.
 
 ### Where models come from
 
@@ -875,18 +1914,52 @@ are a likeness. **A real model file is the truth**: where a part has one, the
   footprint names: `origin: "model"`, the offset as written, and the rotation
   negated, because KiCad turns a model clockwise by the written angles
   (scale, then x, then y, then z, then the offset). A scale other than 1
-  leaves no model rather than a wrong one. A stored supplier record gets
+  is the model's `stretch`, drawn as KiCad draws it (a STEP export writes a
+  stretched model as its mesh, since an assembly's transforms are rigid); a
+  scale of zero or less leaves no model. A stored supplier record gets
   `supplierModel`, or, when its land was swapped for a footprinter name, the
   model moved with the pads (`supplierModelOnLand`), or none if they don't
   match. Only a part newly added gets a model: one the project already has
-  keeps what the user chose for it, the generated body included. KiCad model
-  ids follow one rule (`model/supplier/kicadModel.ts`).
-- **The Inspector's 3D model section** (`panels/ModelSection.tsx`): add a file
+  keeps what the user chose for it, no model included. KiCad model
+  ids follow one rule (`model/supplier/kicadModel.ts`), which the hosted app's
+  model route shares.
+- **Imported KiCad parts bring their own**, or KiCad's when their footprint
+  names one of its library models: see [Imported from KiCad
+  files](#imported-from-kicad-files).
+- **The built-in parts come with KiCad's models** (`model/libraryModels.ts`,
+  read by `componentModel` when the project gives a part on a footprint none of
+  its own), fetched through the host's `partModels`: this build has none, so
+  they show their pads. `model/libraryModelSources.ts` says which KiCad
+  footprint each is:
+  the same part where KiCad has it by part number (the TL3342, the SRD relay,
+  the Phoenix MKDS, PT, MC and MSTBA blocks, the GCT USB4105, the Hirose
+  DM3AT), else the standard package the footprint is (an 0603 resistor,
+  capacitor, inductor or LED; SOD-123, SMA/B/C; SOT-23, SOT-223, SOIC, TQFP-32,
+  DIP, TO-220; pin headers and sockets; JST PH and XH). Packages are listed
+  under the part `*` too, so a chip on `soic8` (the 555 the v4 migration made a
+  project part, or one Sakura drew) gets KiCad's SOIC-8; a two-pad chip
+  footprint isn't, since an `0603` says nothing of what is on it. A part or
+  footprint that is neither has no model: no screw terminal of no particular
+  maker is drawn as a Phoenix. `npm run library-models` reads each KiCad
+  footprint from KiCad's libraries at `KICAD_LIBRARY_RELEASE` (the release the
+  parts index serves), puts its pads on ours by number (by position for a land numbered
+  another way, such as a tact switch's four legs; a diode's or LED's pad 1 is
+  KiCad's cathode and our pin 2, so those turn half way), refuses one whose
+  pads miss ours by more than 0.35 mm, and writes the placed models to
+  `libraryModels.json` and KiCad's pads to `tests/library-model-pads.json`,
+  which `tests/library-models.test.ts` checks our footprints against without
+  fetching anything. The footprinter's `tqfp32_p0.8mm` rows are 1.3 mm wider
+  than a 7×7 TQFP's, which is allowed for that one and shows in 3D: the
+  ATmega328P's leads stop short of its pads. The crystal is HC-49/S, the
+  low-profile one, since its footprint takes both.
+- **The Inspector's 3D model section** (`panels/ModelSection.tsx`, whose
+  controls the part editor's 3D model tab shares, keeping the choice in its
+  draft until Save): add a file
   (STEP, OBJ, WRL, STL or GLB, 40 MB at most; read before it is kept, so a
   file that doesn't read is neither stored nor assigned), take the supplier
-  model of the part's LCSC number, or search the supplier for one (a library
-  part on `0603` can take a real chip model this way); edit the placement; or
-  go back to the generated body. A file placed by its own origin that lands off
+  model of the part's LCSC number, or search the supplier for one; edit the
+  placement; or remove the project's model, which leaves the built-in one if
+  the part has one (shown as "built in", and not removable) and else none. A file placed by its own origin that lands off
   its footprint (a manufacturer's model drawn about some other point) is
   centred on the footprint instead.
 
@@ -894,11 +1967,16 @@ are a likeness. **A real model file is the truth**: where a part has one, the
 
 - `three/files/library.ts` reads each file once for the page and every part
   is a copy sharing its geometry (`userData.shared`, which `disposeGeometries`
-  leaves alone). `BoardScene` draws generated bodies first and swaps in each
-  real model as its file is read (`refreshModels`), without rebuilding the
-  board. The toolbar's Boxes button turns real models off (a browser setting,
-  `realModels`), and a status line counts files loading and names ones that
-  failed, with Retry. Sakura's `look` at the 3D board waits up to 4 s for them.
+  leaves alone). `BoardScene` adds each part's model as its file is read
+  (`refreshModels`), without rebuilding the board; a part with no model has
+  nothing in the scene, and when selected its courtyard is outlined on the
+  board. The soft shadow on the board under a part belongs to its model
+  (`three/contactShadow.ts`, sized from the model's own box, in the holder
+  beside it, cut off at the board's box and never hit by a click): the board's
+  texture used to bake one under every courtyard, which left a dark patch where a
+  part with no model would be. A status line counts files loading, names ones that failed, with
+  Retry, and otherwise names the parts with no model ("No 3D model: J1, SW1
+  and U2"). Sakura's `look` at the 3D board waits up to 4 s for them.
 - **A supplier model is drawn from its OBJ and exported from its STEP**: the
   same model in one frame (checked on EasyEDA's: the SOT-563's OBJ is 105 KB
   and its STEP 2.4 MB). The OBJ carries its materials inline (`obj.ts`).
@@ -909,23 +1987,6 @@ are a likeness. **A real model file is the truth**: where a part has one, the
   (`stepCache.ts`), so it is triangulated once per browser. Meshes are merged
   by colour, one draw call per colour per part. CAD files rarely say what is
   metal, so pale greys and golds are (`looksMetallic`).
-- **Bodies from a package's name** (`three/models/translate.ts`, `plan.ts`):
-  the generated body of a part whose land has a package name
-  (`FootprintDef.package`, set for supplier and KiCad lands) is read from the
-  name first: chips by code with the role from the name's prefix,
-  SOT/SOD/SMA/SMB/SMC, SO/SSOP/TSSOP/MSOP/QFP, QFN/DFN/SON, BGA/CSP/LGA, DIP,
-  TO-220/92/252/263, vertical 2.54 mm headers and sockets, JST PH/XH/EH, with
-  the body size from the name (`3.9x4.9mm`, or a supplier's `L4.9-W3.9`),
-  never the category default a project part's `body3d` holds; SOICs 7.5 mm
-  wide are 2.65 mm tall and 5.3 mm ones 2.05, plastic QFPs 2.7, SOT-523s
-  0.8 mm wide; TO-220 and TO-92 bodies turned along their pad row; and
-  exposed pads drawn as plates, not leads. Things that look like these but
-  aren't (TO-247, TO-92 lying flat, PowerPAK, horizontal or SMD headers, DIP
-  sockets) and any name it doesn't know fall through to the footprint rules.
-  `model/partPackage.ts` reads the package when drawing, so parts placed
-  before get it too, and only on the part's own footprint: one switched to
-  another footprint is drawn by that footprint's rules. Library parts have no package and draw as
-  before (`tests/library-models.test.ts`).
 - **EasyEDA's placement rule** was checked against through-hole pins: turn the
   model by its `c_rotation` about its bounding box's centre, then put that
   centre on the centre of the model outline the record draws, and its bottom at
@@ -937,15 +1998,14 @@ are a likeness. **A real model file is the truth**: where a part has one, the
 The board and every placed part as one AP214 assembly, for mechanical CAD:
 from the Export menu, or the 3D view's toolbar.
 
-- **What each part is in the file** (`step3d.ts`): its real model where it has
-  one (a supplier's STEP fetched for the export, or the STEP file the user
-  added, copied whole and exact; a mesh file as its mesh), else its generated
-  body, faceted. A model file that can't be read is written as the generated
-  body, and a STEP file that can't be fetched (a supplier's over the rate
-  limit, say) as the mesh the 3D view drew; the export's notes say which parts.
-  Every part written as its generated body is listed in one note ("12 parts
-  are approximate bodies, not their real models: R1, R2, ... and 4 more"),
-  twelve designators at most, so nobody takes a guessed height for a real one. Each distinct model is written
+- **What each part is in the file** (`step3d.ts`): its model (a supplier's or
+  KiCad's STEP fetched for the export, or the STEP file the user added, copied
+  whole and exact; a mesh file as its mesh), or nothing. A part whose model
+  file can't be read is left out, and a STEP file that can't be fetched (a
+  supplier's over the rate limit, say) is written as the mesh the 3D view drew;
+  the export's notes say which parts. Every part with no model is listed in one
+  note ("3 parts have no 3D model and are left out: J1, J2, SW1"), twelve
+  designators at most, so nobody takes the gap for free space. Each distinct model is written
   once and placed per component, so the tree reads R1, R2, U1 in the other
   program. STEP's frame: the board's bottom face at z = 0, x and y the
   project's. Placement uses the same `placementMatrix` as the 3D view, so the
@@ -963,9 +2023,7 @@ from the Export menu, or the 3D view's toolbar.
     other schemas are kept and noted.
   - Meshes are welded on a 1e-6 mm grid and flat regions merged into polygon
     faces (a box is 6 faces): closed pieces are `FACETED_BREP`, open ones
-    surfaces, all with `POLY_LOOP` faces. About 175 bytes a triangle: the ESP32
-    robot example, all generated bodies, is 23 MB, most of it the DevKit's 82k
-    triangles.
+    surfaces, all with `POLY_LOOP` faces. About 175 bytes a triangle.
 - **Tests read the file back with OpenCascade** (`occt-import-js` in node):
   `tests/step-*.test.ts` (the writer, with the CAx-IF files occt-import-js ships,
   read from `node_modules`) and `tests/export-step3d.test.ts` (a board, a
@@ -976,18 +2034,18 @@ from the Export menu, or the 3D view's toolbar.
   should be a supplier's STEP instead. Nothing has been opened in SolidWorks,
   Fusion or KiCad yet; do that by hand before relying on a release of it.
 
-
 ## Taking boards to other tools
 
 Circuit JSON, tscircuit's netlist-and-geometry format, goes both ways, and the
 two directions are each other's inverse: `model/circuitJsonImport.ts` reads it
 into a project (`projectFromCircuitJson`) and `export/circuitJson.ts` writes
 one (`projectToCircuitJson`, with `circuitJsonFile` for the text). The importer
-is how the boards of the tscircuit editor `/app` used to be came across in
-October 2026; the export is the way out
+is how the boards of the hosted app's earlier, tscircuit-based editor came
+across in October 2026; the export is the way out
 for someone who wants to leave, or to use another tool beside this one. Both
-return `notes`, in sentences, for what did not carry over, and the export menu
-shows the exporter's under "What does not carry over".
+return `notes`, in sentences, for what did not carry over. The export menu
+shows only a line saying what was exported: the notes are for the tests and
+these docs, not a list after every download.
 
 ### Writing Circuit JSON (`export/circuitJson.ts`)
 
@@ -1031,6 +2089,22 @@ shows the exporter's under "What does not carry over".
   the footprinter string where the footprint is one, which is what lets the
   importer give the library's footprint back.
 
+**Cherry Blossom is its own editor, not a KiCad front end.** KiCad import and
+export are exits, and what a trip through KiCad must keep is the physical
+board and its circuit: the netlist, parts and where they are, pads, holes,
+copper, outline. A round trip also keeps the user's data: a sub-sheet's title
+block, a pad on silkscreen or another non-copper layer, a symbol item KiCad
+hides on a sheet (`private`), a text or table cell left out of simulation, the
+places of labels' and sheets' fields, hyperlinks, and the design block a group
+came from. Only KiCad's own bookkeeping is regenerated: uuids (the export makes
+them from the editor's ids), page numbers (the export numbers pages in tree
+order) and the board-wide `castellated_pads` flag KiCad 8 dropped. The
+import reads past those (`not-needed` in the decision tables,
+`tests/kicad-census/decisions*.mjs`), and a saved project that still has one
+loads and ignores it. KiCad's conventions (how a project is split into files,
+its naming) are the exporter's to deduce: the editor never shows them, and a
+project that comes back different in those alone is a good round trip.
+
 **The round trip is a test, not a hope.** For every example, the v1 fixtures
 and 30 seeded random boards, export then import must give the same netlist, pin
 for pin (nets the original named keep their names), and the same pads, in
@@ -1047,7 +2121,7 @@ KiCad files come from [`circuit-json-to-kicad`](https://github.com/tscircuit/cir
 (MIT, tscircuit's), which the export feeds the same Circuit JSON. It is loaded
 by `import()` when someone asks for KiCad, and it brings `kicadts`,
 `schematic-symbols` and a few more (all MIT; the converter declares none of
-them, so they are in this package's `package.json`): about 4 MB of JavaScript
+them, so they are in `package.json`): about 4 MB of JavaScript
 that no one editing a board downloads.
 
 - The converter draws a schematic unit as 15 mm and ours is 12.7 mm (ten of
@@ -1063,8 +2137,9 @@ that no one editing a board downloads.
   `do_not_connect`, and every pin is typed passive, so ERC would otherwise
   report them all), each symbol's Footprint (the board's library id), MPN,
   LCSC, Manufacturer, voltage and other properties as hidden fields, the
-  design rules, default sizes and per-net widths (as net classes) in the
-  `.kicad_pro`, each pour's clearance, thinnest neck and thermal gap and
+  design rules, default sizes, net classes (every class with all its sizes, its nets as patterns that match them exactly) and per-net widths (as net
+  classes of their own that set only the width and come first) in the
+  `.kicad_pro`, the mask web, paste ratio and mask bridges in the board's setup, each pour's clearance, thinnest neck and thermal gap and
   bridge, the mask and paste openings, and the project's name, revision,
   company, description and properties in the title block and the project's text
   variables. Pours arrive filled (the converter writes the computed fill);
@@ -1097,6 +2172,461 @@ Nothing in the UI calls the importer yet.
   collide, and the result is checked against the netlist pin for pin.
   tscircuit's named groups become blocks; the board's own group and groups
   tscircuit named itself don't.
-- **Copper** on the two outer layers comes across: traces, vias and pours of
-  a net. A board routed on four layers comes across unrouted.
+- **Copper** comes across on every layer the board has (X1: `num_layers`, `inner1` and beyond; a via's `from_layer` and `to_layer` make it a blind or buried via, X5): traces, vias and pours of
+  a net. A board of more than 32 layers comes across unrouted.
 - What didn't come across as it was is returned as `notes`, in sentences.
+
+### Reading KiCad boards (built)
+
+`src/model/kicad/board/` reads a `.kicad_pcb` of any release (stamps 3 to 11) and imports it exactly or not at all. The dashboard's "Import KiCad" runs it (`src/kicadImport/`, below);
+`importKicadBoard(text or bytes, options)` is the entry and never throws for a file.
+
+- `sexpr.ts` (parser: skips a byte order mark, decodes UTF-16, names a truncated or unbalanced file and a nesting that is too deep), `read.ts` (24 numbered version switches, each tested in `tests/kicad-board-read.test.ts`, into the
+  typed `KicadBoard` of `types.ts`, which keeps every node's own list), `outline.ts` (Edge.Cuts pieces, the repair, loops; a loop is a rectangle or rounded rectangle only when every piece lies on it to
+  0.001 mm and each corner bends the right way), `account.ts` (every node of the file looked up in `decisions.ts`: imported, not needed with its reason, pending an extension, reported, or unknown, which
+  is a refusal; every bare word of every list is scanned, and a word no row allows is unknown), `carried.ts` (which extension nodes the builder writes into the project, which only say what the editor
+  works out for itself, and the `setup` settings that equal KiCad's defaults), `needs.ts` (which of X1 to X31 a board needs, pad by pad for X7: a pad's copper, mask and paste against what the editor
+  draws for its type and side, pads of one number that disagree on net), `graphics.ts` (below), `models.ts` and `stockModels.ts` (which 3D model a part holds, and the STEP models of KiCad's library at
+  the release the parts index serves, so a model that does not resolve is named in the report), `build.ts` (the project: a land per footprint, the library's, the same on both sides, and a part, with
+  the placement turned half a turn on the bottom; nets drawn as a generated schematic with a label on every connected pin, keyed by the net's raw name, and checked pad by pad against the file; tracks
+  joined into polylines, design rules, stock 3D models), `import.ts` (the gate, the notes, and the size refusal measured with `serializeProject`).
+- `BUILT_EXTENSIONS` (`needs.ts`) is X1 to X15, X19, X20, X21, X22, X23, X24, X25, X27, X29, X30 and X31. A board that needs anything else is refused with "This board uses ..., which is not supported
+  yet". X24 is what KiCad 9 and 10 add to a drawing that the shapes do not hold: hatched fills, line end shapes, colours, a filled drawing with a negative width, a track exposed through the mask. X25 is
+  tables, barcodes, drill charts, text boxes inside footprints and text a board file cannot resolve. X19 (text in a TrueType font) is built and has no need rule.
+- `decisions.ts` is generated from `tests/kicad-census/decisions.mjs` by `node tests/kicad-census/emit-decisions-ts.mjs`, and `stockModels.ts` from a listing of KiCad's 3D repository by
+  `tests/kicad-census/emit-stock-models.mjs`; a test fails when `decisions.ts` and the table differ.
+- **A node counts as imported only where the builder writes it.** To build an extension: add it to `BUILT_EXTENSIONS`, to the project builder, to `carried.ts` and to the check list of the "a node counted
+  as imported is in the built project" test in `tests/kicad-board-exactness.test.ts`; the gate itself does not change. `tests/kicad-board-nets-and-flags.test.ts`, `tests/kicad-board-shapes.test.ts` and its `-edit`
+  and `-checks` siblings are the early tests of this (X13, X15, X8, X9).
+
+**The pad model (X7, in project file version 3).** `PadDef` (`model/types.ts`) holds what a KiCad pad has, each field optional and absent for a pad drawn before: `rot` (its own turn), `round` (corner
+ratio), `chamfer`, `custom` (an anchor and drawings, written compactly by `model/padCodec.ts`), `holeOffset` and `holeAxis`, `layers` (copper, mask, paste, silk and other layers, relative to the part's own
+side; `model/padFaces.ts` has the defaults of each kind), `maskMargin`, `pasteMargin`, `pasteRatio`, `clearance`, `zoneConnect`, the thermal settings, `property`, and `number` (the number the KiCad file
+gives a pad whose pin has another: pads of one number on different nets, and pads with no number that carry a net, each have a pin of their own, `planPins` in `kicad/board/build.ts`). `pcbPads`
+(`model/instances.ts`) gives a pad with none of these exactly the world pad it always gave (the golden test and `tests/kicad-board-pads.test.ts` pin that); one with any is built by `x7WorldPad` with
+`corner`, `rings`, `hole`, `mask`/`paste`/`silk`, `ring` (copper round a non-plated hole), `opening` and `x7` (the land's pad and its placement, which the plot's openings and the KiCad file are made
+from). Geometry: `padGeom.ts` (the land's rings), `padDistance.ts` (distances, the box, the annular ring), `padOpening.ts` (the mask and paste openings as KiCad plots them). Writers: `export/gerber.ts`
+and `maskMerge.ts` (regions for any X7 pad but a plain circle), `excellon.ts` (the hole's own place), `kicadPads.ts` (every pad of a part that has any X7 field, as KiCad has it). The Inspector's Pads
+section (`panels/PadPanels.tsx`, `model/padOps.ts`) edits a pad's own margins, clearance and pour connection in the part's land. A KiCad 9 pad stack, and a through-hole pad that drops its copper on
+layers nothing connects to, are X1; a pad that joins a pour on some layers only is `PadDef.zoneLayers` (X31: the layers its copper stays on when its unused layers go, `pruneUnused`); its own tenting is
+X5. The oracle is `tests/kicad-census/pad-detail.mjs`, checked over the corpus by `tests/kicad-x7-check.ts`. Checks has one error, `mask-bridge` (openings of two nets that run together), on a board that
+has pads with X7 features or states a minimum mask web.
+
+- **Net classes and design rules (X10).** `netClassImport.ts` writes a KiCad 4 or 5 board's net classes and the rules of `setup` into `DesignRules` (`model/netClasses.ts` is the model: which class a net
+  is in, the clearance of two nets, the Inspector's edits, and `mapKicadProjectNetClasses`, which the schematic track's `.kicad_pro` reader calls to put a project file's classes into the same fields).
+  The Default class is the rules (a class named Default only; any other class is a `NetClass`); its own description, micro via size and differential pair go to `defaultClass`; KiCad's own defaults (the
+  English description, a micro via of 0.3 and 0.1, a `max_error` of 0.005) are stored as nothing. A class the model cannot hold exactly is a refusal naming it (two of one name, a net in two classes, a
+  field the block leaves out). `creepage` is X26, which is not built: a non-zero one refuses the board by name. The router (`autoroute.ts`, `RouteRules`) keys its keepout cells by trace width and class
+  clearance, and its via keepouts by via size and class clearance; a board with no classes has one of each and routes as it always did (the golden test holds that). Checks (`analyzePcb`) look as far as
+  the largest clearance and test each pair at its own; pours (`fillZones`) keep a class's clearance where the zone sets none of its own, and a zone's own clearance is a local override that wins, as in
+  KiCad; the mask Gerber merges openings closer than `maskMinWidth` (`export/maskMerge.ts`). Tests: `tests/kicad-board-net-classes.test.ts`, `tests/net-classes.test.ts`, `tests/net-class-fab-output.test.ts`,
+  `tests/net-classes-ui.test.tsx` and the corpus test's X10 check (`tests/kicad-x10-check.ts`, against `tests/kicad-census/rules.mjs`).
+- **Board and footprint drawings (X8).** `graphics.ts` reads each `gr_*`, `fp_*` and `target` in KiCad's own frame and sends it through one map into the editor's (y negated; a bottom footprint's y kept,
+  as `landPad` does, and its layers swapped), so an arc stays its three points, a circle its centre and radius, a curve its four points, an ellipse its radii and angle (the map turns the angle and flips
+  the sweep when it mirrors). KiCad's rules are applied: a polygon off Edge.Cuts with no `fill` is filled, an unfilled shape with no width gets 0.1 mm, a polygon's arc corners are kept, a shape on a
+  copper layer and its mask is the copper and an opening grown by the mask margin, a `target` is its circle and two lines, translated layer names (Italian, Polish, French, as KiCad maps them) are read,
+  a footprint's private layers and a polygon with fewer than three corners are named in the report and not brought. Drawings on Edge.Cuts are the outline's (X2), not shapes. A footprint's drawings are
+  its land's `shapes` (the land is the library's, so one footprint has one land on either side), its courtyard is the box of the drawing on its courtyard layer, and a footprint with no pad is a part
+  with no pins on a land with no pads (`noCourtyard` when it has no courtyard of its own). Board drawings are `Project.graphics`. The accounting counts `stroke`, `width` and `fill` of an Edge.Cuts
+  drawing as not needed (the board is cut along its centre) and those of every other drawing as written (`carried.ts`, `edgeNodeCounts`). `tests/kicad-census/graphics.mjs` is the oracle that shares no
+  code with `src`, and `tests/kicad-graphics-check.ts` compares a built project with it, drawing by drawing, to 0.001 mm.
+- **Text objects (X9).** `texts.ts` (importer) turns `gr_text`, `gr_text_box`, `fp_text` and a footprint's `property` nodes into `BoardText` (the board's, with a `layer`) and `PartText` (a part's, in
+  its land's frame: `landAngle = bottom ? rot - world : world - rot`); `read.ts` reads face, bold, italic, knockout, line spacing, `unlocked` (keep upright off), `hide`, boxes, `%R` and `%V`. A part
+  with `texts` has the file's reference, value and fields and no designator of the editor's (`silk.ts` skips it); a part drawn here has none and its designator is placed as always. `lib/kicadText.ts`
+  is KiCad's layout rewritten (markup, advance, tabs, italic, overbar, sub and superscript, line spacing, justification, mirror, turn, pen width and knockout margin; a port of KiCad's GPL code, so each
+  such file starts with KiCad's copyright and licence notice and the KiCad files it ports). **KiCad's own stroke font is shipped** (listed with the rest of what is ported from KiCad in `THIRD-PARTY-NOTICES.md`):
+  `lib/kicadFont/glyphsBase.ts` (U+0020 to U+2FFF) and `glyphsCjk.ts` (U+3000 to U+FFEE), each with KiCad's licence header, written by `tests/kicad-census/emit-newstroke.mjs`, imported only through
+  `lib/kicadFont/load.ts` (`loadKicadFont`) when a project has KiCad text: `model/textFont.ts` (`ensureTextFont`), the project store's watch, the import engine and the exports call it. Until it has
+  loaded `editorStrokeFont` is used; the editor's own silkscreen text (`strokeFont.ts`) never uses KiCad's font, so editor-drawn boards are unchanged. A text box's stored rectangle is read by the
+  file's version (`BOX_LIB_FRAME_FROM`, 20260616: older files store it as drawn, newer ones unturned), and its knockout is its own node `(knockout yes)`. `${LAYER}`, `${FOOTPRINT_NAME}`,
+  `${FOOTPRINT_LIBRARY}` (from `ComponentInstance.fpid`) and `${FILENAME}` resolve from the board. `DesignRules.minViaDiameter` is KiCad's `via_min_size` (absent on a board drawn here; Checks
+  `via-size`); a KiCad 4 or 5 board opens with no annular-ring minimum. `model/texts.ts` (variables, world place, ink, knockout polygons, by layer), `textOps.ts` (edits), `textCodec.ts` (compact storage
+  in project file version 3: `textStyles`, per-part `tx`, board `kt`). Text on a copper layer is copper of no net (`CopperItem` `what: "text"`) for checks, pours and the router. Gerber (`plotTexts`:
+  silk, copper, mask, paste, Edge.Cuts, knockout as a region, text box borders), KiCad export (`export/kicadTexts.ts`), Circuit JSON (`circuitJsonTexts.ts`), Sakura's picture, 3D, fabrication notes
+  (TEXT block) and `get_design` (`texts`, only when there is text) draw or list them; the PCB view has a Text tool (T), the Inspector a `TextInspector` and a part's `PartTextsSection`
+  (`panels/TextPanels.tsx`). Tests: `kicad-text-layout.test.ts`, `kicad-board-texts.test.ts`, `texts-model.test.ts`, `texts-outputs.test.ts`; the oracle is `tests/kicad-census/texts.mjs`, the check
+  `tests/kicad-texts-check.ts`.
+- **Text outlines and embedded fonts (X19).** A text in a TrueType font keeps its `face` and the polygons KiCad cached (`render_cache`) as `TextAttrs.outline` (`model/textOutlines.ts`: packed rings,
+  the pose they were drawn at, a signature of what they depend on). They are the text's shape (`currentOutline`, `outlineInk` in `model/texts.ts`: drawn, plotted as Gerber regions, copper of no net on a
+  copper layer) while the text shows what they were drawn for and its signature holds; a move, turn, mirror or part flip maps them rigidly (`outlineRings`), and any other edit leaves the text in the
+  stroke font with a dashed amber box, an Inspector note (`fontNotes`, and the button that drops the face), a line in the fabrication notes and an import report entry (`textFontState`: `outline`,
+  `edited`, `uncached`). Edited text is not re-rendered: no TrueType rasteriser is shipped, and KiCad's embedded fonts are zstd compressed (kept as they are, `Project.fonts`, bytes in the model file
+  store like a reference image's, written back by `export/kicadBoard.ts`). `effects()` in `export/kicadTexts.ts` writes `face` and `render_cache` for both writers. Tests: `kicad-x19.test.ts` and the
+  corpus test `corpus/fonts.test.ts` (the oracle reads the raw file with the census's reader).
+- **Drawing extras (X24).** `Zone.hatch` and `Zone.hatchAt` (KiCad's hatched fill and KiCad 10's hatch position), `Trace.bare` (a track open through the mask), line `ends` (KiCad 11 development's line
+  end shapes) and a drawing's `color`; all optional fields of version 3. The hatch fill is not stored: `model/zoneHatch.ts` ports KiCad's `addHatchFillTypeOnZone` and `fillOne` calls it where KiCad
+  does. The writer puts the KiCad 9 words and notes the ones it cannot (hatch position, line ends). Tests: `kicad-board-hatch.test.ts`, `corpus/zones-hatch.test.ts`.
+- **Tables, barcodes and text boxes in parts (X25).** `model/kicad/board/flatten.ts` turns a table into the lines KiCad draws (`PCB_TABLE::DrawBorders`) and a text box per cell, a QR code into one
+  filled polygon (`lib/qrCode.ts`, after zint), in the same place and layer; the report names what was flattened. A cell with `start` and `end` and an angle that is not a quarter turn is the rectangle
+  turned about its centre. A text box inside a part is a part text with a `box` and is written back as `fp_text_box`. Data Matrix, Code 39, Code 128, Micro QR and drill maps are refused by name. Tests:
+  `kicad-board-tables-qr.test.ts`.
+- **A dimension inside a part (X27).** KiCad keeps its points as the board's in every file, so it comes over as the board's dimension of the same points and no longer moves with the part (the report
+  says so). Its prefix, suffix and text are filled in from the part's own value at import and do not follow a later variant switch. Tests: `kicad-board-objects.test.ts`.
+- **Any angle (X6).** `pcb.rot` is any number of degrees. `lib/geometry.ts` has the rotation (`rotate90` and `transformPoint` take any angle and stay exact on a quarter turn; `normalizeAngle`,
+  `isQuarterTurn`, `cosSin`). `pcbPads` (`model/instances.ts`) gives a part on a quarter turn the pads it always gave (a level `rect` or `pill`, swapped sizes) and a part at any other angle polygons for
+  its rectangular and pill pads (`WorldPad.points`, with `oriented` for the size and angle an exporter that has a turned pad of its own wants, and `slotAxis` for a slot), so every distance, the pour
+  (`padPaths`), the router (`padInset`), the Gerber (a region), the drill file (`slotEnds`), Circuit JSON (`rotated_rect`, `rotated_pill`) and the 3D board read the turned copper. A part's courtyard is
+  the box of its turned one (`pcbCourtyard`) with the turned ring itself for the outside-board and overlap checks (`pcbCourtyardRing`, `partOutsideBoard`, `convexOverlap`). The importer places a part
+  at the file's own angle, taken to a millionth of a degree (`placementRotation`); a pad's own turn is the stored angle less the part's (`needs.ts`), so a pad that follows its part is no X7 need at any
+  angle. The Inspector has an angle field, the R key and the part bar turn a quarter turn from wherever the part is, Sakura's `place_parts` takes `rotation` in degrees, the position file writes the
+  angle KiCad's does (`positionAngle`: the footprint's own, the editor's bottom half turn taken off, for a part from a KiCad board; a part drawn here as ever). Tests: `tests/any-angle.test.ts`; the
+  corpus compares every pad, text and drawing of a turned part with the oracle's.
+- **Board outline (X2).** `BoardDef.outline` (`BoardOutline.paths`: `ShapePath`s of lines, arcs, curves and elliptical arcs, closed or not) is the board's shape when it is not the rectangle `width` by
+  `height` with `cornerRadius`; the box follows it (`syncOutlineBox`). No `outline` is the rectangle, and every consumer keeps its own rectangle code for it, so an editor-drawn board is byte for byte
+  what it was (`tests/golden`). Closed paths are loops that nest (a loop inside the board is a hole, inside that board again, and so on); a path that does not close is kept as drawn, and an outline of
+  no paths is a board with no outline: `outlineState` says `closed`, `open` or `missing`, Checks reports one error (`outline`) for the last two, and the exports that need the board cut out refuse with
+  a sentence (`export/outlineGuard.ts`: Gerber and drill, STEP). `model/outline.ts` is the geometry (`outlineGeometry`: rings, regions, `contains`, `nearest`, `signedDistance`, `rasterizeInside`,
+  `copperEdgeClearance`, `outsideBoxes`, `boxOnBoard`), `model/outlineOps.ts` the edits (`addOutlinePaths` joins drawn pieces and decides cutout or board, `moveOutlineVertex`, `toggleOutlineArc`,
+  `splitOutlineSeg`, `addSlot`, `outlineSlots`, `resetOutline`), `model/outlineCodec.ts` the stored form (a flat array per path, `board.ol`), `model/outlineText.ts` the text Sakura reads and writes.
+  Consumers: DRC edge clearance and outside-board (`pcb.ts`), the pour area (`pour.ts` `boardArea`), the router's edge cells (`autoroute.ts` `markEdge`), placement (`boardObstacles` adds
+  `outsideBoxes`), designators (`silk.ts`), Gerber Edge_Cuts (arcs exact, `gerber.ts`), the drill file (a stadium cutout is routed as a G85 slot in the non-plated file too), the 3D board
+  (`buildBoard.ts`, a shape per piece, cutouts cut), the STEP solid (`step/board.ts` `writeRegions`: one solid per piece, arcs either way round), the KiCad export (`export/kicadOutline.ts` writes
+  `gr_line`, `gr_arc` and `gr_curve`), Circuit JSON (the biggest piece as the outline, `pcb_cutout` for each cutout, a note for what it cannot hold), the fabrication notes, Sakura's picture and
+  numbers, and `get_design` (`board_mm.outline` and `cutouts` as text, only when there is an outline). The PCB view draws it (`OutlineDraw`), picks a piece (`o:<path>:<piece>`), drags its corners, arc
+  middles and whole shapes, and has a bar to bend an edge into an arc, add a corner or delete the shape; the drawing tools work on the Edge.Cuts layer of the layer picker (a closed shape inside the
+  rectangle is a cutout, one that reaches outside replaces it, a piece waits to be closed) and a Slot tool (O) cuts a stadium. Sakura's `set_board` takes `outline`, `add_cutouts` and `remove_cutouts`.
+  The importer holds a plain or rounded rectangle as before and any other outline as these paths; where the file's pieces meet by a gap of up to 0.1 mm a straight connector closes the loop (no piece
+  of the file moves; `outline-joined` says how many), and what does not close stays open. Tests: `tests/outline-model.test.ts`, `tests/outline-outputs.test.ts`; the corpus compares the outline with
+  the file's Edge.Cuts both ways (`tests/kicad-census/edge.mjs`, `tests/kicad-edge-check.ts`).
+- **Dimensions, groups and reference images (X11, X12, X14).** `BoardDimension`, `PcbGroup` and `ReferenceImage` (`model/types.ts`; ops in `model/boardObjects.ts`, group moves in
+  `model/groupMoves.ts`, compact storage in `model/dimCodec.ts`: `dimStyles` and `dm`, `grp`, `im`, a part's `gr`; project file version 3). **A dimension's drawing is never stored**:
+  `model/dimensions.ts` (a port of KiCad's `pcb_dimension.cpp`, so it carries KiCad's licence notice) works it out in KiCad's frame and unit, and `worldShapes` (`dim`, ids `m:<id>:<i>`) and
+  `worldTexts` (owner `#dim`) hand it to the Gerber, SVG, 3D (silkscreen only), checks and Circuit JSON code; the KiCad export and the notes skip those derived entries (`!s.dim`,
+  `isDimensionText`) and write the dimension itself (`export/kicadObjects.ts`, KiCad 9 format). A group's members are project ids (a part's own groups name `p<i>` pads, `s<i>` shapes, `t<i>` texts,
+  `g<i>` groups); the store's `settleEdit` prunes dead members and empty groups (`pruneGroups`, identity without groups); selecting a member selects its group (`expandToGroups`; Ctrl or Cmd click
+  picks one); a locked group locks its leaf members. A reference image's bytes live in the model-file store, never the project JSON (`store/imageFiles.ts`, `lib/imageFacts.ts`); it is never plotted.
+  The importer reads them in `model/kicad/board/{dimensions,groups,images}.ts` (`BuildResult.files` are stored before the project is saved); a footprint's dimension is X27 and an image that is not
+  PNG or JPEG is X28 (a refusal). The oracle is `tests/kicad-census/dimensions.mjs` and the check `tests/kicad-dimensions-check.ts`. Tests: `board-objects-model`, `kicad-board-x11`,
+  `board-objects-outputs`, `board-objects-editor`. Sakura has no tool for these: `get_design` lists `dimensions`, `groups` and `images` only when a board has them.
+- **Nets on copper (X13).** `Trace.net` and `Via.routedNet` (not `Via.net`, which marks a stitching via the stitcher owns) are the net of the project's own name that the file puts the item on. Stored
+  names follow a rename (`copperNets.ts`, run by the store's `commit`, and `renameNets`). `analyzePcb` treats copper that names its net as copper of it: another net's pad under it is a short, and a
+  stub on a net is an island of it for the ratsnest, the pours and the router. `derivedCopperNets` is what the editor works out from the pads alone; the import compares the two for every item and puts
+  each difference in one `copper-net-differs` report entry, whose `items` lists them all. A trace drawn or routed in the editor has no `net` and is as it was.
+- **Zones (X3).** `Zone` (`types.ts`) is the editor's whole-board pour when it has only `id`, `net`, `layer` and `clearance` (`isWholeBoardPour`, `model/zones.ts`), and then `pour.ts` fills it,
+  `stitch.ts` stitches it, the toolbar's ground pour button and Sakura's `set_pour` add and remove it, as ever. Any other field makes it a zone of its own shape: `outline` (the first closed path is the
+  outline, the rest are holes; lines and arcs), `layers` (both copper layers), `priority`, `minWidth`, `connect` (thermal, through-hole only, solid, none), `thermalGap`, `spokeWidth`, `smoothing`,
+  `islands`, `edgeGap`, `holeGap`, `teardrop`, `name`, `locked`, and `keepout` (a rule area: tracks, vias, pads, pour, footprints; no net, no fill). `fillZones` hands a project that has one such zone to
+  `fillPolygonZones` (`model/zoneFill.ts`, geometry in `zoneGeom.ts`, in tenths of a micron), which fills every zone, the whole-board pours too, by KiCad's rules:
+  zones in priority order, thermal reliefs of four spokes, the minimum width by shrinking and growing, same-net zones
+  joined, islands by the zone's rule. **The fill is never stored**: it is computed from the zone and the copper round it, and **kept while those are the same**: `fillPolygonZones` splits the zones into
+  groups that can touch each other and keeps each group's fill under a key made of the zones, their resolved settings, the board's outline and the copper (with its nets) whose box reaches them, so a
+  part moved away from a zone, or an edit that is no copper, fills nothing again (`clearZoneFillCache`, `takeFilled`, `setZoneFillCacheLimit` are for tests and measures). The views take
+  `getLiveAnalysis` (`store/analysis.ts`) and not `getPcbAnalysis`: where a group has to be filled again it shows the last fill, sets `zonesPending` (the PCB view and Checks say so) and has the zone fill
+  worker (`store/zoneFill.worker.ts`) make the new one after the edits settle, then `useFillTick` changes and the views ask again; `getPcbAnalysis`, which Sakura, the exports and the exit checks use,
+  waits for the exact fill. While something is dragged the last fill is kept and refills on drop. Autoroute shares the fill the board had at the start across its steps with the copper it adds cut out
+  of it (`carveFills`) and fills again for the result. A zone's outline is stored by `model/zoneCodec.ts` (`ol` on the zone, a straight ring as `["p", x, y, ...]`, project file version 3). An imported
+  KiCad file's `filled_polygon` is read for the corpus test and not kept; the report says the copper is the editor's own. Rule areas are checked (`zoneChecks.ts`: a track, via, pad or part inside one
+  that keeps it out is an error), kept out of by the router (`autoroute.ts` `markKeepouts`), by placement (`boardObstacles`) and by pours. The PCB view has the Zone (Z) and Keepout (K) tools, picks a
+  zone by its edge or its copper (`z:<id>`; a placement area by its edge only), drags corners, adds one by dragging an edge's dot, removes one by a right click, moves a whole zone
+  (`editor/pcb/zoneEditing.ts`, `ZoneDraw.tsx`), and the Inspector (`panels/ZonePanels.tsx`) sets every property. Sakura's `set_pour` takes `polygon`, `keepout`, `priority`, `places` (X20) and `id`, and
+  `get_design` lists `zones` only for a project that has one of its own shape. The KiCad export writes the zones of such a project itself (`export/kicadZones.ts`, filled as the editor filled them),
+  Circuit JSON gets a `pcb_keepout` outline per rule area and the pours as the copper they fill, and a zone's net follows a rename in the schematic (`copperNets.ts`). The fill's gaps join the net
+  classes (X10) and the pad model (X7), as KiCad does: the gap to copper of another net is the largest of the zone's own clearance, the larger of the two nets' class clearances and the board minimum
+  (a local clearance is max'ed with the class value and never replaces it, `drc_engine.cpp` 9.0 `:1451-1540`; the whole-board path does the same), a pad's own clearance raises it, a pad's own
+  `zoneConnect`, thermal gap, spoke width and spoke angle replace the zone's, and a pad's rounded corners, custom rings and hull are what is cleared (`zoneGeom.ts`); a class's clearance or members
+  changing, and a pad's fields, are part of the key a fill is kept under, and the fill worker is sent the project file, which holds both. A group (X12) cannot hold a zone yet: the importer counts a
+  zone a group lists as "not brought in". Tests: `tests/zones-*.test.ts`; the corpus compares every zone with the raw file (`tests/kicad-census/zones.mjs`, `tests/kicad-zones-check.ts`) and the
+  editor's fill.
+- **Copper layers, arc tracks and via kinds (X1, X4, X5; in project file version 3).** A layer is an id by position in the stack (`CopperLayer` in `model/types.ts`: `top`, `in1` to `in30`, `bottom`);
+  `model/stack.ts` is the one place that knows the stack (`copperLayers(board)`, `layerAt`, `viaLayers`, `flipLayer`, `viaBetween`, KiCad's names both ways). A board with no `board.stack` is two plain
+  layers and every consumer keeps its old two-layer behaviour, byte for byte (the golden test); never assume two layers, ask `copperLayers`. `BoardDef.stack` (`BoardStack`) holds the copper rows
+  (label, type), the stackup rows, the finish and the edge settings; `model/stackCodec.ts` repairs it on load and `projectFile.ts` fits traces and vias to it (`fitCopperToStack`). `model/layerOps.ts`
+  is every edit (layer count, names, the stackup, via kind and span, arc tracks): the editor and Sakura call it. An arc track is a `Trace` with `arc: true` and exactly three points
+  (`model/arcTracks.ts` has the exact distances; `pcb.ts` items stay `segment` with an `arc`); draw one with `traceD` (`editor/pcb/traceGraphics.ts`) and never flatten one for a check. A via has an
+  optional `kind` (blind, buried, micro), `from`, `to`, per-side `tent`, `unused`, `zoneLayers`, `free` and a `stack` of diameters; absent kind is a through via; use `viaLayers`, `viaDiameterOn` and
+  `viaTentedOn` (`model/viaRules.ts`). A pad has `layers.inner` and an optional `stack` (padstack) that `padVariants` in `instances.ts` turns into the shape on each layer; `pruneUnused` in `pcb.ts`
+  is KiCad's flashing rule. The router routes the two outer layers only, keeps its vias off the copper of inner layers and its new vias are through vias; Sakura says so (`route_pcb`), and
+  `clear_routing` keeps inner traces. Outputs: Gerber and drill per layer and span (`gerber.ts`, `excellon.ts`: `drillSets`), STEP and 3D drill only the through vias (a note says how many are not
+  drawn), Circuit JSON has `num_layers` and `inner1` to `inner8`, and the writer (`kicadBoard.ts`) writes layers, stackup, arcs, via words and padstacks back (a project with a stack goes by the native
+  writer). The corpus checks them against the raw file with an independent oracle (`tests/kicad-census/layers.mjs`, `tests/kicad-layers-check.ts`). Not built: blind holes in the STEP solid, inner
+  copper in the 3D view, routing on inner layers.
+- **Tuning patterns, pad lengths, net chains, via protection, backdrill and post-machining (X21, X22).** A KiCad `generated` item (a tuning pattern, a via stack, via stitching) is a `PcbGroup` with a
+  `gen` (`PcbGenerator`: its kind, copper layer and KiCad's own property list, points in the project's frame, `model/generators.ts`): moving or turning the group carries its points
+  (`carryGenerators`, called by `moveObjects` and `rotateObjects`), and Ungroup takes it apart into plain tracks and vias. The importer (`kicad/board/drilling.ts` reads KiCad 10's grammar,
+  `build22.ts` builds) resolves a generator's members like a group's (`groups.ts`, after the plain groups, as KiCad's `resolveGroups` does) and drops a tuning pattern or via stack with no members, as
+  KiCad does. A pad's `dieLength` (mm) and `dieDelay` (ps) and a net's length (`model/netLengths.ts`: tracks, vias by the stackup distance between their layers, and the lengths inside the packages of
+  its pads) feed the fabrication notes and Checks' `length` finding (a tuning pattern whose two-pad, unbranched net is outside its target range). Via protection (`Via.protect`, a tri-state for
+  filling, capping, covering and plugging of each side over `rules.viaProtect`), backdrills (`Via.backdrill`, `tertiary`; a pad's, in the part's own frame) and post-machining (`post`) follow KiCad 10's
+  drill enumerator (`model/machining.ts`): the Excellon writer makes KiCad's two files for each backdrill span and its post-machining comments (`export/excellon.ts`), Gerber files `-filling-`,
+  `-capping-`, `-covering-` and `-plugging-` carry the protection (`export/viaProtection.ts`), the notes list all of it with a pad's (KiCad's drill files carry vias only), and the pour keeps out of
+  the hole a backdrill or post-machining cuts (`CopperItem.cut`, `zoneFill.ts`). **The writer does not write KiCad 10's words** (the 9.0 parser refuses them: `unknownNodes`): a tuning pattern and
+  `die_length` are KiCad 9's and are written; the rest stays in the project and is a named difference of the round trip (`BY_DESIGN`). Edits: `model/machiningOps.ts` (the Inspector and Sakura's
+  `get_design` use them). Tests: `kicad-board-x21`, `kicad-board-x22`, and over the corpus `kicad-extras-corpus` (oracle `tests/kicad-census/extras.mjs`, check `tests/kicad-extras-check.ts`).
+- **Board variants, footprint units and PCB points (X23).** A KiCad 10 board variant is a schematic variant (S9): `Project.variants` lists them, `ComponentInstance.variants` says per name what each
+  changes on a part (`dnp`, `excludeFromBom`, `excludeFromPos`, `excludeFromSim` as true or false, and `fields`), and `model/variants.ts` (`resolvedComponents`) is the one resolver the BOM, the position
+  file, the do not populate marks and the exports follow, so nothing reads `c.flags` of a board part without it. `ComponentInstance.units` (`{ name, pins }`) and `points` (`PcbPoint`, in the footprint's
+  own frame like a pad, an older file's brought in from the board's frame) and `Project.points` (the board's frame) are optional fields of version 3 (`model/pcbPoints.ts`). **The writer does not write
+  KiCad 10's words** (`variants`, `variant`, `units`, `point`): the footprints are written as the variant shown makes them and the rest stays in the project and is a named difference of the round trip
+  (`BY_DESIGN`). Sakura's `get_design` has `variants`. `custom_property` (KiCad 11 development) is X23X, not built. Tests: `kicad-board-x23`, and over the corpus `x23-corpus`.
+- **Flags and net ties (X15, joined with the symbol's flags S7).** `ComponentInstance.flags` (`PartFlags`, `model/partFlags.ts`) is the one set, for the symbol and the footprint of a part: mounting,
+  virtual, not in the BOM or position file, not on the board, left out of simulation, board only, do not populate, allowed missing courtyard and mask bridges, jumper pad groups, net ties; every key is
+  `true` and present only when it differs from KiCad's default (`fieldsAutoplaced` is on the component, not in the flags). `partFlags.ts` also has the rules: `onBoard` (a part with a footprint, unless
+  `notOnBoard`), `inBom`, `inPositionFile` (do not populate and virtual leave both, board only alone stays in the BOM; the paste layer is unchanged, as KiCad plots it), `cleanFlags`, `setFlags` (every
+  unit of a part carries them; taking a part off the board also removes its unlocked traces and vias), `joinFlags` and `kicadAttributes`. Nothing asks `isPhysical(findPart(...))` for "is it on the
+  board": it asks `onBoard`. The fabrication notes state each rule; a net tie exempts its pads from the short check and the clearance check (`pcb.ts`); the Inspector has one Flags section for a part, in
+  both views, and a panel each for a trace and a via; `get_design` lists a part's flags (`flags`, in words, and `net_ties`) and `update_component` sets them (`dnp`, `in_bom`, `on_board`,
+  `in_pos_files`, `board_only`, `virtual`); the KiCad export writes the footprint's `attr` and the groups (`applyFootprintFlags`, `export/kicadPost.ts`) and the symbol's `dnp`, `in_bom`, `on_board`,
+  `exclude_from_sim` (`applySymbolFlags`, `export/kicadSheet.ts`). The KiCad 9 schematic has no `in_pos_files`, so "not in the position file" goes on the footprint only. A project import has both the
+  symbol and the footprint for a linked part: the symbol wins for do not populate, the BOM, the position file, simulation and being on the board, the footprint for the rest, and a report note
+  (`symbol-footprint-flags-differ`) says where they disagreed (`joinFlags`).
+- **Drawings in the editor (X8).** `model/shapes.ts` is the geometry (exact pieces, flattening within 0.0002 mm, mapping onto another frame, KiCad's dash patterns, SVG and canvas paths),
+  `shapeLayers.ts` the layers by KiCad's name, `shapeItems.ts` every drawing in the board's frame with its selection id (`g:<id>` on the board, `s:<component>:<index>` in a part's land), `shapeOps.ts`
+  the edits. A drawing has a layer, a stroke width, a dash, a fill (solid, also outlined by the width), a net and a lock. Behaviour by layer: copper drawings are copper (`CopperItem` kind `shape` in
+  `pcb.ts`: they join their net's copper when they name one, and a drawing with no net connects nothing and keeps clear of nets; pours clear around them or take them in; the router keeps off them;
+  edge clearance applies), mask and paste drawings go to those Gerber files, silkscreen drawings to the silkscreen Gerber (designators keep clear of a filled one and avoid the runs of an outline,
+  `silk.ts`; a part with no pins has no designator), fab, courtyard, adhesive and user layers are drawn muted and plotted nowhere (KiCad's default). A net tie excuses only the tie's own copper
+  (`tieExempt`). The PCB view draws them, selects, moves and deletes board drawings, and has line, arc, circle, rectangle and polygon tools (D, A, C, B, P) on a layer picked in the toolbar; the
+  Inspector edits a drawing's layer, width, dash, fill, lock and net, and lists a part's land drawings (a land is shared: every part with it changes). Exports: Gerber (arcs exact with G02 and G03,
+  circles, rounded rectangles, polygon holes bridged, curves and ellipses flattened, dashes), KiCad (`gr_*` and `fp_*`), Circuit JSON (silkscreen, fabrication, courtyard, copper), Sakura's picture,
+  the 3D board (silk, copper and mask openings); STEP has no copper or silkscreen, so it does not change. `get_design` counts drawings per layer and lists the copper ones.
+- **Single-pad nets, pads with no net and pin types.** Every net keeps a label, so a net with one pad would show "goes only to a label no other pin has" in Checks: the import sets each of those
+  findings to ignored (`ignoredChecks`, listed under Ignored, restorable) and says how many in one note. A pad the file puts on no net is a pin left unconnected, which Checks would list one by one as
+  "isn't connected": it is marked no connect (`ComponentInstance.nc`) and one note says how many; clearing the flag in the Inspector brings the check back, and `Project.importMarks`
+  (`importMarks.ts`) records what the import set so one action hands the no-connect pins back and an ignored key is retired once its finding is gone, never touching the user's own. A pin type the
+  editor's seven roles fold (tri-state, open collector, power output, free, unspecified) is listed in a `pin-type-folded` note; the file's own type stays in the `KicadBoard` that was read.
+- KiCad's own code settled the semantics the importer depends on (a pad's stored angle, how a bottom footprint is stored and drawn, text angles, `unlocked`, a 3D model's transform, inches in
+  `(at (xyz))`, the overbar conversion).
+- Every test that needs the local corpus is in `tests/corpus/` (shared walk, env and report helpers in `tests/corpus/shared.ts`); `KICAD_CORPUS=<corpus> npm run test:corpus` runs them all, and without `KICAD_CORPUS` they skip, so `npm test` and CI are unchanged.
+- `KICAD_CORPUS=<corpus> npx vitest run tests/corpus/board.test.ts` prints the per-board pass or fail table over a local corpus.
+- Corpus tests (`tests/*corpus*.test.ts`): `KICAD_CORPUS_SAMPLE=N` runs about N boards (every k-th, the same ones each run); unset runs them all. A board stuck for `KICAD_BOARD_TIMEOUT_S` (300)
+  seconds is named and the run ends. An opt-in on-disk cache of imports and exports (`KICAD_CORPUS_CACHE=1`, in `.corpus-cache` at the repository's root, which is not to be committed) exists but is NOT trusted yet: a warm hit
+  changes the extras test result. See `tests/corpus/shared.ts`.
+- **The store's commit hooks** (`followNetRenames`, `pruneImportMarks`) share `model/connectivityCache.ts`, whose `getConnectivity` reuses the schematic's connectivity across edits that leave the
+  schematic alone (`sameSchematic`: wires, labels, and each part's id, part, reference, properties, place and no-connect pins); a drag ends through the same hooks. "Use the net it touches" clears every
+  trace and via of the same connected copper that names the same net (`sameStoredNet`).
+
+**The dashboard's import (`src/kicadImport/`).** "Import KiCad" takes `.kicad_pcb`, `.kicad_sch`, `.kicad_pro`, `.kicad_dru`, KiCad 5's `.sch`, `.lib` and `.pro`, a legacy `.brd`, a `.zip`, several
+files at once, and a dropped folder.
+
+- `pick.ts` opens the zips and picks the board and what sits beside it (several boards: the user
+  chooses); `engine.ts` is one job (pick, read, import, summarize) and `worker.ts` runs it off the
+  main thread, `client.ts` starts a worker per job and cancel ends it. `protocol.ts` is the messages.
+- A KiCad 4 or 5 project (its `.sch`, `.pro` and `.lib`, with no `.kicad_sch` beside them) imports
+  with its schematic through the same project importer. When the schematic cannot
+  be read (most often a symbol its libraries do not have, about one project in four) the board comes in
+  alone, with a schematic drawn from its connections, and the report says why for each file. Beside a
+  `.kicad_sch` they are an older copy, set aside as such. Over 1,400 boards of open projects came in
+  without their schematic before this; 1,017 of them now come in whole.
+- Limits: a file is read up to 64 MB (`MAX_FILE_BYTES`; the import takes about 26 MB of memory per MB
+  of board), a zip entry is counted as it unpacks, KiCad's `-backups/` folders and the zips in them are
+  skipped unread, and a worker that says nothing for 2 minutes is ended (`WATCHDOG_MS`).
+- Dialogs (`focus.ts`, `useModal`): focus moves in and back out, Tab stays in, and no key reaches the
+  editor's shortcuts behind it; a running import is ended only by its Cancel button.
+- The importer is loaded by a dynamic `import()` in `engine.ts` only, when a job starts, so its code
+  and `stockModels.ts` stay out of the page's bundle. A test fails if any other module of the editor
+  imports the importer for more than a type.
+- **The schematic and project importer plugs in at one place**: `loadProjectImporter` in
+  `engine.ts`. While it is `null`, `.kicad_pro` and schematic files are named in the report as not
+  read yet and the board is imported alone.
+- `summary.ts` turns a result into plain data (extension ids into `PLAIN_NAMES`, the one table of
+  plain names; a test pins its keys to the importer's), and the text and JSON downloads.
+  `ReportView.tsx` is the report screen and `KicadImportDialog.tsx` the dialog around it (choose, progress
+  with cancel, report). **A saved import opens the project at once** (both hosts' dialogs mark it,
+  `justImported.ts`, and call `onOpen`), and the editor says so in one line that fades,
+  "Imported from KiCad. See the report." (`ImportedNote.tsx`): the report window is only for a refused
+  import or a save that failed. The report is kept in this browser and, as a zip of one `report.json`,
+  in the host's file store, which the project names (`KicadCarry.report`, left out of `contentHash`), so
+  it opens on any computer and for the people the project is shared with (`reportStore.ts`,
+  `ReportDialog.tsx`); the Inspector's KiCad import section shows it again.
+- `controller.ts` is the flow as plain state (tested without React; `useKicadImport` puts it on a
+  page); `save.ts` measures the stored text against the 32 MB limit before `createStoredProject` (how a host's storage keeps a big one is its own affair; the editor sends it as any other).
+- `analytics.ts`: the editor sends no events of its own. The import sends one `kicad_import` event
+  (outcome, KiCad stamp and release, missing extension ids, board KB, duration; never a name) to a
+  sink the host connects with `connectAnalytics` (exported by `src/projects.ts`); the hosted app's
+  projects page connects PostHog. The editor's own dashboard, this build's home, connects none, so
+  it sends nothing.
+- **Two pages run it.** The editor's `Dashboard.tsx` (this build's) and the hosted app's projects
+  page each draw the same controller and the same report (`sections.ts`, as data) in their own style.
+
+The census behind the import:
+
+- The decision for every board node, value atom and keyword is the data in `tests/kicad-census/decisions.mjs`; `node tests/kicad-census/gap-table.mjs <census-out>` prints it as a table.
+- The same for schematics (extensions S1 to S12) is `tests/kicad-census/decisions-sch.mjs`; its node table comes from `node tests/kicad-census/gap-table-sch.mjs <census-out>`.
+
+`tests/kicad-census/` has the scripts (plain Node, no install) and `decisions.mjs` and `decisions-sch.mjs`, the tables the importer reads.
+
+### Reading KiCad schematics (built)
+
+`src/model/kicad/schematic/` reads a `.kicad_sch` (KiCad 6 on, or a KiCad 4 or 5 `.sch`: see "KiCad 4 and 5 schematics" below) and the sheets below it, and `src/model/kicad/project/` imports a board,
+its schematic and its project file as one project. The dashboard's "Import KiCad" runs them (`src/kicadImport/`). `importKicadSchematic(text, bytes or { files, root }, options)` and
+`importKicadProject(files, options)` never throw for a file: what cannot be imported is a refusal with its report. The model types of S5, S6 and S10 and the optional fields of S2, S4 and S7 are in the
+project file, version 3 (see "Symbols with units, mirrors, fields and drawings" and "KiCad net names, sheet items and symbol flags" below).
+
+- `read.ts` reads one file into the typed `KicadSchematic` of `types.ts` (every object keeps its own list), through the board's `sexpr.ts` (BOM, UTF-16, named errors for a cut file or too deep a
+  nesting), with its version switches numbered in order. `tree.ts` follows the sheet files (KiCad 6's `Sheet file`, KiCad 7's `Sheetfile`, reused sheets, any
+  depth): a missing, unreadable or self-containing sheet is a named `SheetError`, never a throw and never a hang.
+- `account.ts` looks up every node in `decisions.ts`, generated from `tests/kicad-census/decisions-sch.mjs` by `node tests/kicad-census/emit-decisions-sch-ts.mjs` (a test fails when they differ). A list
+  the table has no atom row for holds names and identities, as in the census, so its words are not checked. `carried.ts` says which extension nodes say nothing more than the editor already draws
+  (`Plainness`: a default wire, a label of KiCad's default size, a symbol used once on the root sheet, a junction of the default size, a no-connect on a pin), `needs.ts` which of S1 to S12 a file needs:
+  the census's rules of `needs-sch.mjs`, and on top of them every extension node that is not settled, which is how a label of its own size needs S2. `BUILT_EXTENSIONS` is S1 to S12; what still refuses
+  is S9X (the KiCad 11 development words) and S11L (KiCad 5's own rules). A file that needs something not built is refused with "This schematic uses ..., which is not supported yet".
+  `tests/kicad-sch-carried.test.ts` looks every node counted as imported under `lib_symbols` and every placed symbol node up in the project, with no list of paths let through.
+- `symbols.ts` turns a cached symbol into a `SymbolDrawing` (`drawingFromLib`: every shape with its width, dash, colour and fill, every pin with its type, shape, alternates and visibility, units, body
+  styles, jumpers, the place and look of each field, all in the editor's units and KiCad's own numbers to 0.001 mm) and into the spec of a part (`specFromSymbol`); `link.ts` links footprints to symbols:
+  path, then timestamp, then reference, then nothing (KiCad 6's root list and KiCad 7's instances give the same board path; a reused sheet links several footprints to one symbol). `build.ts` makes the
+  project of a flat sheet: a symbol is a component of a part drawn from its drawing (one part per drawing and footprint, the drawing stored once under its hash in `Project.symbols`), placed with its
+  turn, mirror, unit, body style, fields and chosen pin alternates; the units of one reference are several components, the one the board's footprint is linked to being the part and the others its twins;
+  a power symbol of one power-input pin is a power port that keeps KiCad's drawing; a junction on a wire's body cuts the wire, a no-connect pin is left out of the nets by connectivity, a hidden
+  power-input pin joins the global net of its name by connectivity as well. What the editor would join or name differently from KiCad is a `lossy` need with its extension, and the importer refuses a
+  schematic that has one that is not built: a wire end on a wire's side with no junction, a label on a pin on a wire, two points closer than the editor tells apart (S11), a symbol the cache lacks
+  (S12). What the drawing cannot hold (a power symbol with other pins, a pin of an unknown type) is a refused report entry, never a drop. A power symbol is named by its hidden pin before stamp
+  20230221 and by its Value from it. The object count is limited to 25,000.
+- `project/import.ts` imports the board with the board importer, links, builds the schematic with the footprints it linked, and replaces the generated schematic (the schematic's parts and drawings
+  come into the project; a board part a loose footprint uses stays). A footprint with no symbol stays a part with a stub and a label of its board net on each pad. Footprints are matched to the board
+  importer's parts by place, side and reference, and an ambiguous one refuses. It compares every pad's net on the board with its pin's net (power ports and units included) and lists each difference by
+  part and pin as a board not updated from its schematic. If the schematic is refused and the board is fine, the project is refused and the message says that the `.kicad_pcb` alone imports with a
+  generated schematic. `pro.ts` and `dru.ts` read `.kicad_pro` and `.kicad_dru` and account for every key and node: net classes, assignments, custom rules and any design setting that is not the
+  editor's own are pending X10 (a project that has them is refused until it is built), the rest is not needed with its reason.
+- `tests/kicad-census/netlist-sch.mjs` derives a schematic's nets from the raw file, sharing no code with `src`, and `boardPadNets` reads the board's own: the nets test and the corpus test compare the
+  editor's `computeConnectivity` with the first, and the first with the second. `tests/kicad-census/drawing-sch.mjs` reads the cached symbols from the raw file the same way, and the corpus test
+  compares every symbol drawing with it, number by number.
+- `KICAD_CORPUS=<corpus> npx vitest run tests/corpus/schematic.test.ts` prints the per-file and per-project table.
+
+#### KiCad 4 and 5 schematics
+
+`.sch` (`EESchema Schematic File Version` 1 to 5), `.lib` (2.3, 2.4), `name-cache.lib` or `name.cache.lib` and the legacy `.pro` go through the same reader, accounting, needs, link and build as a
+`.kicad_sch`. Nothing in the editor, Sakura or the model is specific to them.
+
+- `schematic/legacy/sch.ts` parses every record strictly (KiCad 5.1 skips a line it does not know; this refuses it, naming the record: `unknown-node`, reason `unknown`), `legacy/sexpr.ts` writes the
+  sheet as the text of a `.kicad_sch` (the KiCad 6 form KiCad converts it to), and `readKicadSchematic(text, legacyInfo)` reads that, so nothing downstream knows the difference except where KiCad 5
+  differs (`root.legacy` in `build.ts`). The file's own version is the stamp, so the reader's switches for files before 20230221 and before 20210606 apply to every legacy file.
+- Files are read as UTF-8 first, else Latin-1 (said in the report and in `legacy.encoding`). Lengths are exact (mils to millimetres). Records KiCad ignores in a version 1 file are counted and said,
+  not dropped.
+- `legacy/lib.ts` reads a `.lib` and writes each symbol as the KiCad 6 symbol KiCad converts it to; it is read by the `.kicad_sch` reader at stamp 20230221 (so a lone `~` is empty and no arc is
+  complemented). `legacy/sources.ts`: the cache first (`Lib_name`, then `Lib:name`), then the libraries the `.pro` lists in order. A symbol in none is S12 and refuses naming it; **nothing is drawn that
+  the files do not have**. A symbol from a library, not the cache, is refused when a wire ends near it where it has no pin (`symbol-may-have-changed`).
+- KiCad 5 rules in `build.ts`: a power symbol is named by its pin (shown or not); a label on a pin on a wire's side joins both, as the editor does (no S11); a pin of the type no connect with anything
+  drawn at it joins it in KiCad 5 and not here: S11.
+- `project/legacyPro.ts` accounts every `.pro` line; net classes and design rules are pending X10 like the `.kicad_pro`'s. `pickProjectFiles` picks a legacy project when there is a `.sch` and no
+  `.kicad_sch` (its project file is a `.pro` or a `.kicad_pro`).
+- Tests: `tests/kicad-schematic-legacy.test.ts` (unit), `corpus/schematic-legacy-demos.test.ts` and `corpus/schematic-legacy.test.ts` (corpus; `KICAD_CORPUS=<corpus>`), with the independent
+  `tests/kicad-census/census-legacy.mjs` and `netlist-legacy.mjs`.
+
+#### Symbols with units, mirrors, fields and drawings (S5, S6, S10)
+
+- **The drawing is the source.** `SymbolDrawing` (`types.ts`, stored in `Project.symbols` by a hash, a part names it in `CustomPartSpec.drawing`) is KiCad's symbol in the editor's units.
+  `model/symbolDrawing.ts` makes everything the editor works with from it: `drawnPart` (pins, the `SymbolDef` of each unit and body style as `PartDef.units`, jumpers, field places), `pinGraphics` (the
+  line and the mark on the end of a pin as KiCad's painter builds them), `pinTexts` (names and numbers laid out as `pin_layout_cache.cpp` does, by the pin's way on the sheet, not the symbol's),
+  `readDrawing` (a file's drawing, or null). `symbolOf(part, c)` is the symbol a placed component draws: never read `part.symbol` for a placed component.
+- **Shapes** (S6): `SymbolPrimitive` has arc, bezier and ellipse besides path, circle and text, and a `look` (width, dash, colour, background or colour fill). `model/primitiveGeometry.ts` gives path
+  data and sample points; an arc is KiCad's three points and a filled arc is a pie. The editor's own symbols have no `look` and draw as before.
+- **Placement** (S5): `ComponentInstance.sch.mirror` (`x` flips top to bottom, `y` left to right, after the turn, as KiCad applies them: `orientPoint`, `orientBox`, `orientDir`); `unit`, `bodyStyle`,
+  `pinAlt`; `fields` (a place, size, justification and visibility for Reference, Value and every other field). A field's `x`, `y` is its drawn anchor from the symbol's origin; its angle and
+  justification are the symbol's own, as the file has them. KiCad's rules (`SCH_FIELD::GetDrawRotation`, `GetBoundingBox`, `GetPosition`) are in `textOnSheet`, `fieldPlaceOf` and `fieldBox`
+  (`symbolDrawing.ts`): a quarter turn swaps across and up, the box goes through the turn and mirror, and turning or mirroring a symbol moves its fields with it (`reorientFields` in `ops.ts`; Tidy's
+  `reseat` does the same when it turns a part). `tests/kicad-census/drawing-sch.mjs` `rawFields` derives every field's angle and box from the raw file, sharing no code with `src`, and the corpus test
+  compares them. `ops.ts` `reorientComponent` turns or mirrors a part with its stubs and wires (`rotateComponent` and `mirrorComponent` are its two faces; `composeOrientation` is the algebra);
+  `schematicEdit.ts` has `mirrorSelection`, `setSymbolVariant` (unit, body style, pin function), `addUnit`, `setFieldPlace`, `renameReference`, all guarded like the canvas edits: refused with the reason
+  when they would change a net.
+- **Units**: a part with several units is several components of one reference. The one with the footprint is the part; the others are placements of its twin (`unitTwinId`, `PartDef.unitOf`, no
+  footprint), so everything that counts boards, BOM and footprints skips them by itself. `unitOwners(components)` maps a twin to the part, matching by reference and by the symbol the twin is drawn from
+  (so duplicated designators cannot hand a unit to another part); connectivity lists a twin's pins under the part and keeps both keys in `pinNet`. `removeItems` promotes the next unit when the part is
+  deleted (`units.ts`).
+- **Real parts**: an imported symbol is a part of the sheet whether or not it has a footprint (a footprint is linked later). `isSchematicPart` (`instances.ts`) is the test for everything schematic
+  (nets, ERC, Tidy, Clean up, BOM, Circuit JSON); `isPhysical` stays the test for the board. The file's Footprint field is carried as text (`props.Footprint`) and is the BOM's footprint column until a
+  land pattern is linked.
+- **Connectivity**: pins of a KiCad symbol are separate nodes by place (`PartDef.jumpers` present: pins of one number are one pin only when the symbol says so, and `jumpers.groups` join numbers), a pin
+  of the type `no_connect` is on no net, a hidden power-input pin is on the global net of its name. The editor's own parts have no `jumpers` and behave as before.
+- **Other subsystems**: ERC has `missing-unit` and `pin-conflict` (KiCad's pin-type table; only pins with a `type` take part); Tidy keeps mirror, unit, fields and pin functions, draws a net's ports
+  with the imported power part when it has one (`portShape`, `portInstance` in `tidy/shapes.ts`) and never wires a hidden pin; `get_design`, `add_component`, `update_component` (with `placed_unit`),
+  `connect` know units, mirrors, fields, hidden pins and functions; the BOM counts a multi-unit part once; Tidy that has no room says whose text is in the way when that is the cause
+  (`textInTheWay`, found by laying the block out again without it); Circuit JSON writes every unit as a schematic component of one source component (`symbols` on the export carries the links) and the
+  KiCad export merges the units into one library symbol and writes each pin's name and electrical type (`export/kicadPost.ts` `writeSymbolLinks`, `patchPins`), with notes for what does not come
+  across (text inside a symbol is written on the sheet, other pin functions are left out). Sakura's prompt gets the note about units (`UNITS_NOTE`, `systemMessageFor` in `ai/copilot.ts`) only for a
+  design with KiCad parts; for any other the prompt is byte for byte the old one. Symbols in a file's cache that nothing places are stored as drawings (`Project.symbols`) but not listed as parts,
+  with one report entry.
+- **Editor**: `X` and `Y` mirror the selection (or the part being placed); the Inspector has Unit, Body style, mirror buttons, Place unit, the function of a pin with alternates, and the fields (place,
+  hide); a field of an imported part is dragged by its text.
+
+### KiCad net names, sheet items and symbol flags (S2, S4, S7)
+
+- `Project.netNames` (`"kicad"` or `"kicad6"`, set by the importer) switches `computeConnectivity` to KiCad's naming (`model/netNames.ts`): driver priority global label 7, global power 6, local power 5,
+  local label 4, pin 1; a name with `-Pad` last, then the name that sorts first. Local label or local power nets are `/NAME`, global ones `NAME`. Unnamed nets take a pin's name (`Net-(R1-Pad2)`,
+  `Net-(U1A-VCC)`, `unconnected-(...)`); `kicad6` always adds `-PadN`; an empty power Value is `<NO NET>`. `bareName(net)` is the text to type to get a net's name; `labelTextFor` maps a name back to
+  label text (`connect` uses it). A project with no `netNames` is named exactly as before.
+- `NetLabel` has `kind`, `shape`, `look`, `fields`, `fieldsAutoplaced`; `labelShapes.ts` draws them. `Wire.look` holds a wire's stroke; `SchematicBlock.locked` locks a group. All optional, read only
+  when they say something, a malformed one is dropped.
+- **One model of the sheet's drawings** (`Project.drawings`, `SchematicDrawing`, `model/types.ts`). The drawing tools' lines, boxes and text and everything a KiCad sheet draws are one list, in one
+  order, selected as `d:<id>`. A KiCad polyline is a `line` and a rectangle a `rect` (by its lower-left corner and size); they say what the file said in `stroke` (width, dash, colour; an empty one says
+  "KiCad's own line", 0.012 wide, in wire blue) and `paint` (the outline's colour, the sheet's, or one of its own), which win over the named `color`, `weight`, `dash` and `fill` until the editor
+  restyles the drawing (`applyStyle`). Only a KiCad sheet has the rest: `circle`, `arc`, `bezier`, `textbox`, `image`, `table`, `junction` (a dot of its own size and `dotColor`) and `noconnect`
+  (`isKicadOnly`, `model/sheetItems.ts`, which has their geometry, reading and hit tests). A text from KiCad always has `valign` (KiCad's own default is the middle; the editor's texts are anchored at
+  the top and have none), says its justification, turn and look in its own fields (`lookOfText`, `kicadText`), and is drawn and written back as KiCad has it. `isExact` is a drawing that says
+  something exactly (a KiCad kind, a stroke, a fill or a `valign`); the Inspector gives it the exact controls (`ExactDrawingInspector`, millimetres, a colour of any value), and Tidy leaves it where it
+  is unless a block's frame holds it (`sheetFixed`). Both the canvas and Sakura's pictures paint every drawing with `editor/schematic/drawingPaint.ts`. Drawings of the drawing tools and Sakura's
+  drawing tools behave as they always did; the file's migration turns the old `items` (each with a `kind`) into drawings.
+- A symbol's flags are the part's flags (`PartFlags`, above); `fieldsAutoplaced` is on the component. A symbol not on the board gets no footprint in the project import.
+- Tidy and Clean up keep names: no power ports for a net a local label names, a global label of its own KiCad name for an unnamed net, labels restyled by text, the drawings a KiCad sheet gave
+  treated as obstacles (the drawing tools' own go with the block that holds them), a dropped junction noted. Clean up's refusal lists the pins and the off-grid note.
+- The KiCad export (`export/kicadSheet.ts`) writes labels, **every drawing** (a drawing the tools made is written with exact strokes and fills: its named colours as the light sheet draws them, an
+  arrowhead as a small filled triangle, a text with a border or a background as a text box, `exactForm`), wire strokes and flags; a local power symbol is written local (`(power local)`,
+  `localizePower`), so its net has its sheet's path in the schematic and the board. Circuit JSON leaves out the drawings the tools made (its note says so) and writes the ones a KiCad sheet gave.
+- Parts imported from a KiCad file have `source.pins/land = "import"`, so no "made from memory" warning.
+- Sakura: `KICAD_NET_NOTE` is added to the system message only when `project.netNames` is set; `update_component` takes `dnp`, `in_bom`, `on_board`, `in_pos_files`, `board_only`, `virtual`;
+  `get_design` lists a part's `flags` and the sheet's `drawings` (the first 100, then `drawings_more` counts the rest; the board's own drawings are `board_drawings`); `layout_pcb` and `route_pcb` say
+  so when an imported design has no footprints.
+- Independent checks: `tests/kicad-census/netlist-sch.mjs` (names) and `items-sch.mjs` (drawing geometry) share no code with `src`; `tests/kicad-sch-net-names.test.ts` holds the unit tests.
+
+### Sheets (S1, in project file version 3)
+
+A schematic can have several sheets: `Project.sheets` (a project of one sheet has `[{id:"root"}]`, which migration gives it; the root is `Main` until it has a `name` of its own, never the project's name), `Project.sheetSymbols` (a rectangle on a sheet with
+pins, standing for another sheet) and the hierarchical label (`NetLabel.kind: "hierarchical"`). `model/sheets.ts` is the one place to read:
+a **use** of a sheet is a path of sheet symbol ids (`` for the root, `/h1/h4`); a wire, label, drawing or sheet symbol belongs to a **sheet**
+(`sheet`), a part's symbol to a **use** (`inst`, and `tpl` on the copies a reused sheet makes). Anything that works on one sheet runs on a
+`sheetView(project, path)` (the project with only that use's items, `scope` set) and goes back with `commitOnUse` (merge, then `syncCopies` so
+every use of a reused sheet stays alike); for a project of one sheet the view is the project and nothing changes. In the editor `store/sheetScope.ts`
+(`commitHere`, `dragHere`, `dropHere`, `commitFor`, `shownProject`) is how a schematic edit is made: use it, not `projectApi().commit`, for anything
+that edits parts, wires, labels or drawings. `computeConnectivity` works per use (a name joins by use, a sheet pin joins the labels of its name on the
+sheet below its symbol, a global name joins everywhere; `byUse` has what a reused sheet's wire ids mean per use); `sameSchematic` must say a sheet symbol
+changed, or the connectivity cache would be stale. Sakura's `get_design`, `get_wiring`, `connect`, `draw_wiring`, `tidy_schematic`, `add_component`, `group_parts`, `edit_block`, `arrange_blocks` and `draw` take `sheet` (`ai/sheetTools.ts`; the sheet shown when none is named), and builds sheets with `add_sheet` (new, or `reuse` for another use), `edit_sheet` (rename, move, resize, pins, delete), `add_hier_label`, `wire_sheet_pin` and `show_sheet`, all through the `sheetOps` functions the editor uses. `get_design` lists each sheet with its box and pins. Copper layers have a colour each, up to 32 (`copperColor` and `pourColor` in `editor/theme.ts`, the only place that decides one; `panels/CopperLayerList.tsx` is the list with swatches and eyes). Circuit JSON
+and the board are flattened (`export/flatten.ts`); the KiCad export writes a file for each sheet, named after it (`export/kicadSheets.ts`).
+A flag on a sheet symbol reaches the parts through `withSheetFlags`
+(BOM, position file, exports), not the PCB view. Several top level sheets (KiCad 10) are refused by name (`S1T`).
+
+### Directive labels, rule areas and symbols from libraries (S8 and S12, in project file version 3)
+
+A **directive label** (`netclass_flag`) is a drawing of the type `directive` (`DrawingDirective`: its anchor, turn, flag shape, pin length, look and every property it has, as `LabelField`s) and a
+**rule area** is a closed `DrawingLine` with `ruleArea` (its flags). They are drawings, so select, move, rotate, delete, copy, the sheet tag and the save are the drawings' own
+(`model/sheetItems.ts` has the geometry, `directiveShape` the pin and flag as KiCad's painter draws them; `panels/SheetInspectors.tsx` the Inspector). What they mean is worked out, never stored as the
+user's: `model/directives.ts` (`labelClassClaims`, `withLabelNetClasses`, `settleLabelNetClasses`) gives each net the classes a `Netclass` field says (a directive label, or a plain label's own
+property, or a directive on a rule area's edge for the wires, labels and pins inside it) and keeps them in `NetClass.labelNets` (a class only a label names is `implicit: true`, KiCad's class that
+sets no size, and goes with the label); the store runs it after every commit (`settleEdit`, a no-op returning the very same object for a project with none). A net two classes claim is a refusal at
+import (`netclass-conflict`), since the model has one class per net. `model/ruleAreas.ts` (`ruleAreaFlags`, `withRuleAreaFlags`) puts a rule area's flags on the symbols whose box touches the polygon
+(`model/polygonHits.ts`: KiCad's collide rules), read by the BOM, the position file and the exports like `withSheetFlags`, and drawn on the symbol by the editor. Tidy leaves a sheet with either alone
+(it draws wires anew). The KiCad 9 export writes `(netclass_flag ...)` and `(rule_area (polyline ...))` only: KiCad 9's parser reads nothing but the polyline in a rule area, the flags came with file
+version 20250610, so the flags go on the symbols the area touches. Symbols the schematic's cache lacks are looked up by `schematic/libraries.ts` (`SymbolLibraries`, `tree.libraries`): the project's
+`sym-lib-table` and `.kicad_sym` (or `.lib`) files, then `databaseSymbols` (what a host fetched from the parts database for the ids a first import named).
+
+### Buses (S3, in project file version 3)
+
+A bus is a drawing (`SchematicDrawing` of type `bus`: a polyline of segments, each a KiCad `(bus ...)`) and a bus entry another (`busentry`: a corner, `dx` and `dy`, and `toBus` for KiCad 5's
+bus-to-bus entry); both are KiCad-only drawings (`isKicadOnly`), so the drawing tools, selection, moves, copies, sheets and the export carry them with no code of their own. `Project.busAliases` holds
+the aliases. A label or sheet pin whose name is a bus (`model/busNames.ts`: KiCad's `ParseBusVector`, `ParseBusGroup` and `ConfigureFromLabel`, with a `kicad9` and a `kicad10` grammar) and that touches
+a bus line or no wire is a **bus label**: it names no net (`labelNet` has none for it) and gives its bus's members. `model/busConnectivity.ts` finds the buses of a sheet; `computeConnectivity` joins
+the members of every name of a bus (a vector's by position, a group's by the member's own name without its prefix: `matchBusMember`), through a sheet pin and a hierarchical label of one bus name (a
+chain), names every net on a member by the chain driver's member as a driver of its own (below a global name), and lets a bus entry join what is at its ends except at an end on a bus. A net joins a
+bus **only by name**, as in KiCad: nothing about an entry's geometry decides a net. `sameSchematic` compares bus drawings and aliases by identity, or the connectivity cache would go stale on a bus
+edit. The ERC has `bus-entry-no-bus` and `net-not-bus-member`. The KiCad export writes `(bus ...)`, `(bus_entry ...)` (a bus-to-bus one as a short bus segment, which KiCad 6 and later have no entry
+for), `(bus_alias ...)` and the labels the converter does not write (`addBusItems`). The importer refuses a bus name on a wire, a name KiCad 9 and 10 read differently and a bus over 4,096 nets by name (`S3B`).
+
+### Variants and KiCad's joining rules (S9 and S11, in project file version 3)
+
+**Variants** (`model/variants.ts`, the one resolver): `Project.variants` (`list`, `active`), `ComponentInstance.variants` and `SheetSymbol.variants` (by the use of the parent sheet) hold what each
+KiCad 10 variant changes on a symbol (only what differs from the symbol: `dnp`, `excludeFromBom`, `notOnBoard`, `excludeFromSim`, `excludeFromPos`, and `fields`). The symbols are never rewritten by a
+variant: what the BOM, the position file, the do not populate marks, the board side and the exports use is `resolvedComponents(project)` (`model/ruleAreas.ts`), the one chain in KiCad 10's order: the
+symbol's own flags with the active variant's true or false for each (`resolveVariant`, `overlayFlags`, which touch the symbol's own flag only), then the flags of the sheet symbols above it
+(`applySheetFlags`, each use asking its own variant, `variantSheetFlags`), then the rule areas' (`ruleAreaFlags`). The sheets' and the areas' flags are only put on, so a variant never clears one of
+them. It returns `project.components` itself when no variant is active and no sheet symbol or area is flagged, and keeps its answer per components array, drawings, sheets, variants and active name, so
+switching the variant is never answered with the last one's flags. Every reader of `c.flags`, `c.props` or on-board goes through it (never `resolveVariant` alone: there is no `variantComponents`); the
+exports that keep the variants in the files (KiCad 10) use `withRuleAreaFlagsOnly`. Read a new consumer of `c.flags` or `c.props` through it. Operations: `addVariant`, `renameVariant`,
+`removeVariant`, `setActiveVariant`, `setVariantOverride` (a rename or remove moves what is keyed by the name); the Inspector sections are in `panels/VariantPanels.tsx`. The importer reads a variant of
+a symbol or sheet instance (`read.ts`, `link.ts`, `build.ts` `overridesOf`); `in_bom` in a variant is the exclusion itself before stamp 20260306 and the positive word from it. KiCad 9 and Circuit JSON
+have no variants: they are written from the active variant and the notes say so; a project written as KiCad 10 files (a local power symbol) keeps its variants in the instance data (`writeVariants`,
+stamp 20260306). Sakura does not know variants. `S9X` (`delegate`, `symbol_override`, `custom_property`, `default_instance`) is refused by name.
+
+**KiCad's joining rules** (`SchematicSheet.kicadRules`, `model/kicadJoin.ts`): the importer builds a sheet again, with the flag and six digits per coordinate, when KiCad and the editor would join
+different things (a wire end on a wire's side with no junction, a label on a pin on a wire's side, a point a hair from a wire, two points the editor cannot tell apart). On a flagged sheet
+`computeConnectivity` keys points by KiCad's integers of 100 nm, joins a wire's side only through a junction item or a label (a label with a pin at its point skips the wires that pass), and does not
+probe wire ends. A point KiCad has on a pin is put where the editor has the pin (`kicad-pins-snapped`), so edits that recompute pins keep the join. `addWire` cuts wires at a T on a flagged sheet;
+other edits do not. A sheet with none of these has no flag and its connectivity is untouched (`tests/golden` is the guard). KiCad 5's own differences are `S11L`, refused.
+`tests/corpus/sch-joining.test.ts` changes real files to have the cases and compares with the independent oracle.

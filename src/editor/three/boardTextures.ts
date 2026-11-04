@@ -23,11 +23,21 @@ export function texelsPerMm(width: number, height: number): number {
   return Math.max(6, Math.min(44, byEdge, byArea))
 }
 
-export interface SideTextures {
+/** A canvas of the board's: the page's, or a worker's offscreen one (`boardBuild.worker.ts`). */
+export type BoardCanvas = HTMLCanvasElement | OffscreenCanvas
+/** A drawing of the board: a canvas, or a worker's canvas come back to the page as a bitmap. */
+export type BoardPicture = BoardCanvas | ImageBitmap
+
+export interface SidePictures {
   /** sRGB colour: mask, copper seen through the mask, silkscreen. */
-  albedo: THREE.CanvasTexture
+  albedo: BoardPicture
   /** Linear data: R = height (bump), G = roughness. */
-  surface: THREE.CanvasTexture
+  surface: BoardPicture
+}
+
+export interface SideTextures {
+  albedo: THREE.Texture
+  surface: THREE.Texture
 }
 
 export interface BoardTextureSet {
@@ -36,11 +46,14 @@ export interface BoardTextureSet {
   dispose(): void
 }
 
-export interface TextureInput {
+export interface PaintInput {
   project: Project
   placed: ComponentInstance[]
   padsByComponent: Map<string, WorldPad[]>
   fills: ZoneFill[]
+}
+
+export interface TextureInput extends PaintInput {
   anisotropy: number
 }
 
@@ -91,19 +104,21 @@ function padPath(ctx: CanvasRenderingContext2D, pad: WorldPad, grow = 0) {
   if (pad.shape === "polygon" && pad.points && pad.points.length >= 3) {
     ctx.moveTo(pad.points[0].x, pad.points[0].y)
     for (const p of pad.points.slice(1)) ctx.lineTo(p.x, p.y)
-    ctx.closePath()
     return
   }
   const r = pad.shape === "pill" ? Math.min(w, h) / 2 : pad.x7 ? Math.max(0, (pad.corner ?? 0) + grow) : Math.min(w, h) * 0.12
   ctx.roundRect(pad.x - w / 2, pad.y - h / 2, w, h, r)
 }
 
+/**
+ * Rings into the path, to be filled. They are left open: a fill closes every ring itself, and Chromium's `closePath` (Chrome, Edge, Opera) reads
+ * the whole path built so far, so one path of 16,000 rings took 4.6 s to build, and 30 ms left open. The same goes for `padPath`'s polygons.
+ */
 function ringsPath(ctx: CanvasRenderingContext2D, rings: Vec2[][]) {
   for (const ring of rings) {
     if (ring.length < 3) continue
     ctx.moveTo(ring[0].x, ring[0].y)
     for (const p of ring.slice(1)) ctx.lineTo(p.x, p.y)
-    ctx.closePath()
   }
 }
 
@@ -191,7 +206,7 @@ function drawTexts(ctx: CanvasRenderingContext2D, project: Project, layer: strin
 // ---------- layer content ----------
 
 /** Fill every copper shape on one layer with the current fill/stroke style. */
-function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: CopperLayer) {
+function drawCopper(ctx: CanvasRenderingContext2D, input: PaintInput, layer: CopperLayer) {
   const { project, padsByComponent, fills } = input
   for (const fill of fills) {
     if (fill.layer !== layer) continue
@@ -228,7 +243,7 @@ function drawCopper(ctx: CanvasRenderingContext2D, input: TextureInput, layer: C
 }
 
 /** Silkscreen polylines and their stroke widths for one side. */
-function silkStrokes(input: TextureInput, side: CopperLayer): { paths: Vec2[][]; width: number }[] {
+function silkStrokes(input: PaintInput, side: CopperLayer): { paths: Vec2[][]; width: number }[] {
   const out: { paths: Vec2[][]; width: number }[] = []
   const parts: Vec2[][] = []
   const designators = getDesignators(input.project)
@@ -246,7 +261,7 @@ function silkStrokes(input: TextureInput, side: CopperLayer): { paths: Vec2[][];
 }
 
 /** Openings over plated copper; non-plated holes are bare drills with no finish to show. */
-function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: CopperLayer, grow: number) {
+function maskOpenings(ctx: CanvasRenderingContext2D, input: PaintInput, side: CopperLayer, grow: number) {
   ctx.beginPath()
   for (const pads of input.padsByComponent.values()) {
     for (const p of pads) {
@@ -266,17 +281,21 @@ function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: 
 
 // ---------- canvases ----------
 
-function makeCanvas(w: number, h: number) {
-  const canvas = document.createElement("canvas")
+/** A canvas to draw on: in a worker (`boardBuild.worker.ts`), which has no document, an offscreen one. */
+export function makeCanvas(w: number, h: number): { canvas: BoardCanvas; ctx: CanvasRenderingContext2D } {
+  const canvas: BoardCanvas = typeof document === "undefined" ? new OffscreenCanvas(w, h) : document.createElement("canvas")
   canvas.width = w
   canvas.height = h
-  const ctx = canvas.getContext("2d", { willReadFrequently: false })
+  const ctx = canvas.getContext("2d", { willReadFrequently: false }) as CanvasRenderingContext2D | null
   if (!ctx) throw new Error("2D canvas unavailable")
   return { canvas, ctx }
 }
 
-function toTexture(canvas: HTMLCanvasElement, srgb: boolean, anisotropy: number) {
-  const t = new THREE.CanvasTexture(canvas)
+/** A drawing as a texture. A worker's comes as a bitmap drawn upside down (`boardBuild.worker.ts`): a bitmap is not turned on its way in. */
+export function pictureTexture(picture: BoardPicture, srgb: boolean, anisotropy: number): THREE.Texture {
+  const bitmap = typeof ImageBitmap !== "undefined" && picture instanceof ImageBitmap
+  const t = bitmap ? new THREE.Texture(picture) : new THREE.CanvasTexture(picture)
+  if (bitmap) t.flipY = false
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
   t.anisotropy = anisotropy
   t.generateMipmaps = true
@@ -294,7 +313,7 @@ const H_SILK = 40
 const R_MASK = 105
 const R_SILK = 255
 
-function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTextures {
+function paintSide(input: PaintInput, side: CopperLayer, ppm: number): SidePictures {
   const b = input.project.board
   const minX = b.x - b.width / 2
   const maxY = b.y + b.height / 2
@@ -308,16 +327,31 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   const { mask, silk } = boardColors(b)
   const shades = maskShades(mask)
 
+  // The copper, drawn sharp once on a canvas of its own and laid on each map in that map's colour and blur. A canvas blurs every draw on its
+  // own, and a big board has thousands (pours, tracks, pads, texts): 700 big fills, each blurred, took Chromium 15 s, and 0.9 s blurred as one.
+  const copper = makeCanvas(w, h)
+  world(copper.ctx)
+  copper.ctx.fillStyle = "#fff"
+  copper.ctx.strokeStyle = "#fff"
+  drawCopper(copper.ctx, input, side)
+  copper.ctx.setTransform(1, 0, 0, 1, 0, 0)
+  copper.ctx.globalCompositeOperation = "source-in"
+  const layCopper = (ctx: CanvasRenderingContext2D, colour: string, blurMm: number) => {
+    copper.ctx.fillStyle = colour
+    copper.ctx.fillRect(0, 0, w, h)
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.filter = blurPx(blurMm)
+    ctx.drawImage(copper.canvas, 0, 0)
+    ctx.restore()
+  }
+
   // Albedo
   const a = makeCanvas(w, h)
   a.ctx.fillStyle = css(shades.laminate)
   a.ctx.fillRect(0, 0, w, h)
   world(a.ctx)
-  a.ctx.fillStyle = css(shades.overCopper)
-  a.ctx.strokeStyle = css(shades.overCopper)
-  a.ctx.filter = blurPx(0.02)
-  drawCopper(a.ctx, input, side)
-  a.ctx.filter = "none"
+  layCopper(a.ctx, css(shades.overCopper), 0.02)
 
   const silkSets = silkStrokes(input, side)
   const silkShapes = drawingsOn(input.project, side === "top" ? "F.SilkS" : "B.SilkS")
@@ -352,13 +386,10 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   s.ctx.fillRect(0, 0, w, h)
   world(s.ctx)
   // Mask flows over copper edges, so soften the step.
-  s.ctx.filter = blurPx(0.05)
-  s.ctx.fillStyle = `rgb(${H_COPPER},${R_MASK},0)`
-  s.ctx.strokeStyle = s.ctx.fillStyle
-  drawCopper(s.ctx, input, side)
+  layCopper(s.ctx, `rgb(${H_COPPER},${R_MASK},0)`, 0.05)
+  copper.canvas.width = 0
   // The silkscreen's own step is not blurred: half a pixel at most, which a canvas spends a blur on for each of a big board's thousands of
   // drawings and texts.
-  s.ctx.filter = "none"
   s.ctx.globalCompositeOperation = "lighter"
   s.ctx.strokeStyle = `rgb(${H_SILK},${R_SILK - R_MASK},0)`
   for (const set of silkSets) strokePolylines(s.ctx, set.paths, set.width)
@@ -372,19 +403,33 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
   s.ctx.globalCompositeOperation = "source-over"
   s.ctx.filter = "none"
 
-  return { albedo: toTexture(a.canvas, true, input.anisotropy), surface: toTexture(s.canvas, false, input.anisotropy) }
+  return { albedo: a.canvas, surface: s.canvas }
 }
 
-export function buildBoardTextures(input: TextureInput): BoardTextureSet {
+/** The board's two sides drawn, top then bottom. */
+export function paintBoardSides(input: PaintInput): { top: SidePictures; bottom: SidePictures } {
   const b = input.project.board
   const ppm = texelsPerMm(b.width, b.height)
-  const top = buildSide(input, "top", ppm)
-  const bottom = buildSide(input, "bottom", ppm)
+  return { top: paintSide(input, "top", ppm), bottom: paintSide(input, "bottom", ppm) }
+}
+
+/** The textures of drawn sides; disposing them closes a worker's bitmaps too. */
+export function sideTextures(sides: { top: SidePictures; bottom: SidePictures }, anisotropy: number, more: THREE.Texture[] = []): BoardTextureSet {
+  const side = (p: SidePictures): SideTextures => ({ albedo: pictureTexture(p.albedo, true, anisotropy), surface: pictureTexture(p.surface, false, anisotropy) })
+  const top = side(sides.top)
+  const bottom = side(sides.bottom)
   return {
     top,
     bottom,
     dispose() {
-      for (const t of [top.albedo, top.surface, bottom.albedo, bottom.surface]) t.dispose()
+      for (const t of [top.albedo, top.surface, bottom.albedo, bottom.surface, ...more]) {
+        t.dispose()
+        if (typeof ImageBitmap !== "undefined" && t.image instanceof ImageBitmap) t.image.close()
+      }
     },
   }
+}
+
+export function buildBoardTextures(input: TextureInput): BoardTextureSet {
+  return sideTextures(paintBoardSides(input), input.anisotropy)
 }

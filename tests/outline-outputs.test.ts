@@ -436,13 +436,12 @@ describe("the 3D board and the STEP solid", () => {
   it("builds a board of many drills from its rings, with the drills cut from its faces by a mask", () => {
     // Up to 400 drills are cut from the slab and the faces as geometry; past that the triangulation of one shape with all of them grows with
     // the square of the drills (CERN's Macbeth, about 8,000, ran for minutes and crashed the page).
-    const paths: string[] = []
+    // Each canvas counts the rings begun on it.
     vi.stubGlobal("document", {
-      createElement: () => ({
-        width: 0,
-        height: 0,
-        getContext: () => new Proxy({}, { get: (_t, prop) => (prop === "canvas" ? {} : () => void (prop === "closePath" && paths.push("drill"))), set: () => true }),
-      }),
+      createElement: () => {
+        const canvas = { width: 0, height: 0, rings: 0, getContext: () => new Proxy({}, { get: (_t, prop) => (prop === "canvas" ? {} : () => void (prop === "moveTo" && canvas.rings++)), set: () => true }) }
+        return canvas
+      },
     })
     const few = drawn()
     const small = buildBoard(few, [], createSharedMaterials(), 1)
@@ -459,7 +458,7 @@ describe("the 3D board and the STEP solid", () => {
     expect(face.alphaTest).toBe(0.5)
     // The face is the outline alone, and each drill on the board is a hole in its mask.
     expect(top.geometry.attributes.position.count).toBeLessThan(2000)
-    expect(paths.length).toBeGreaterThan(400)
+    expect((face.alphaMap!.image as { rings: number }).rings).toBeGreaterThan(400)
     // The slab is walls only, facing out of the board: none of its normals is up or down, and on the straight edge at x = 0 they point to -x.
     const substrate = (built.group.getObjectByName("substrate") as THREE.Mesh).geometry
     const n = substrate.attributes.normal

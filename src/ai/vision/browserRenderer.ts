@@ -51,6 +51,8 @@ async function board3d(project: Parameters<LookRenderer["board3d"]>[0], view: Bo
       throw new Error("The 3D view needs WebGL, and this browser has it turned off.")
     }
     scene.setProject(project, getZoneFills(project))
+    // A big board is made in a worker.
+    await scene.boardReady()
     // Real model files the user's own view has read are drawn at once; others get a moment.
     await scene.modelsReady(4000)
     scene.view(view, false)

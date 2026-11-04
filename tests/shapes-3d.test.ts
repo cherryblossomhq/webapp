@@ -52,13 +52,13 @@ function input(project: Project): TextureInput {
   return { project, placed, padsByComponent: new Map(placed.map((c) => [c.id, pcbPads(c)])), fills: [], anisotropy: 1 }
 }
 
-/** The log of each canvas, in the order they are made: top albedo, top surface, bottom albedo, bottom surface. */
+/** The log of each canvas, in the order they are made: per side its copper (laid on the albedo and the surface), albedo and surface. */
 function draw(project: Project) {
   logs = []
   const set = buildBoardTextures(input(project))
   set.dispose()
-  expect(logs).toHaveLength(4)
-  return { topAlbedo: logs[0], topSurface: logs[1], bottomAlbedo: logs[2], bottomSurface: logs[3] }
+  expect(logs).toHaveLength(6)
+  return { topCopper: logs[0], topAlbedo: logs[1], topSurface: logs[2], bottomCopper: logs[3], bottomAlbedo: logs[4], bottomSurface: logs[5] }
 }
 
 interface Mark {
@@ -152,18 +152,14 @@ describe("3D board textures: drawings", () => {
     expect(stroke).toBeTruthy()
   })
 
-  it("a copper drawing is copper of its layer: filled in the copper's colour on the albedo and the surface", () => {
+  it("a copper drawing is copper of its layer: filled and outlined on its side's copper, which the albedo and the surface are given", () => {
     const rect: BoardShape = { type: "rect", a: { x: 2, y: 2 }, b: { x: 6, y: 4 }, ...style("B.Cu", 0.25, { fill: true }) }
     const out = draw(withGraphics([rect], base))
-    for (const [log, refLog] of [[out.bottomAlbedo, ref.bottomAlbedo], [out.bottomSurface, ref.bottomSurface]] as const) {
-      const filled = marks(log).filter((m) => m.kind === "fill" && m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))
-      expect(filled).toHaveLength(1)
-      const stroked = marks(log).filter((m) => m.kind === "stroke" && m.width === 0.25)
-      expect(stroked.length).toBeGreaterThan(0)
-      expect(log.length).toBeGreaterThan(refLog.length)
-    }
-    expect(sameLog(out.topAlbedo, ref.topAlbedo)).toBe(true)
-    expect(sameLog(out.topSurface, ref.topSurface)).toBe(true)
+    const filled = marks(out.bottomCopper).filter((m) => m.kind === "fill" && m.path.some((e) => e[0] === "moveTo" && e[1] === 2 && e[2] === 2))
+    expect(filled).toHaveLength(1)
+    expect(marks(out.bottomCopper).filter((m) => m.kind === "stroke" && m.width === 0.25).length).toBeGreaterThan(0)
+    for (const log of [out.bottomAlbedo, out.bottomSurface]) expect(log.filter((e) => e[0] === "drawImage")).toHaveLength(1)
+    for (const key of ["topCopper", "topAlbedo", "topSurface"] as const) expect(sameLog(out[key], ref[key]), key).toBe(true)
   })
 
   it("a mask drawing is an opening on its side's albedo only", () => {

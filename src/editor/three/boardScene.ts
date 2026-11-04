@@ -5,8 +5,11 @@ import { componentModel } from "../../model/models3d"
 import { naturalCompare } from "../../lib/natural"
 import type { ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Model3D, Project } from "../../model/types"
+import { bigBoard, projectFileOf } from "../../store/analysis"
+import { disposeShapes, packFills, shapesFrom, type BoardBuildReply, type BoardBuildRequest } from "./boardTransfer"
 import {
-  buildBoard,
+  assembleBoard,
+  boardShapes,
   buildParts,
   createSharedMaterials,
   disposeGeometries,
@@ -14,6 +17,7 @@ import {
   partModel,
   placedComponents,
   type BoardBuild,
+  type BoardShapes,
   type SharedMaterials,
 } from "./buildBoard"
 import { partBox, setContactShadowBoard } from "./contactShadow"
@@ -57,6 +61,50 @@ interface Tween {
   start: number
 }
 
+// ---------- A big board's shapes, made in a worker ----------
+//
+// Made on the page, CERN's Macbeth's board held it for seconds each time, and the drawing of its faces then kept the graphics process from drawing
+// the view: the worker makes both (`boardBuild.worker.ts`), and the page puts the meshes together.
+
+let builder: Worker | null = null
+let builderOff = false
+let jobs = 0
+const building = new Map<number, (reply: BoardBuildReply) => void>()
+
+function boardWorker(): Worker | null {
+  if (builder || builderOff || typeof Worker !== "function" || typeof OffscreenCanvas !== "function") return builder
+  try {
+    builder = new Worker(new URL("./boardBuild.worker.ts", import.meta.url), { type: "module" })
+    builder.onmessage = (e: MessageEvent<BoardBuildReply>) => {
+      building.get(e.data.job)?.(e.data)
+      building.delete(e.data.job)
+    }
+    // A worker that cannot start, or stops, is not asked again: what it was making is made on the page.
+    builder.onerror = () => {
+      builderOff = true
+      builder?.terminate()
+      builder = null
+      for (const [job, done] of building) done({ job, error: "The 3D board's worker stopped." })
+      building.clear()
+    }
+  } catch {
+    builderOff = true
+  }
+  return builder
+}
+
+/** A board's shapes: a big one's made in the worker, and on the page when the worker fails; a small one's on the page at once. */
+function buildShapes(project: Project, fills: ZoneFill[]): BoardShapes | Promise<BoardShapes> {
+  const worker = bigBoard(project) ? boardWorker() : null
+  if (!worker) return boardShapes(project, fills)
+  const job = ++jobs
+  const packed = packFills(fills)
+  return new Promise<BoardBuildReply>((done) => {
+    building.set(job, done)
+    worker.postMessage({ job, file: projectFileOf(project), fills: packed } satisfies BoardBuildRequest, [packed.polygons.buffer, packed.rings.buffer, packed.points.buffer, packed.xy.buffer])
+  }).then((reply) => ("shapes" in reply ? shapesFrom(reply.shapes) : boardShapes(project, fills)))
+}
+
 /** Owns the renderer, camera, lights and floor; rebuilds board and part meshes when the project changes. */
 export class BoardScene {
   private renderer: THREE.WebGLRenderer
@@ -93,6 +141,8 @@ export class BoardScene {
   onPickPart: ((id: string | null) => void) | null = null
   /** Called whenever the model files' progress changes. */
   onModelStatus: ((status: ModelStatus) => void) | null = null
+  /** Called when a big board starts being made in the worker, and when it is done. */
+  onBoardBuilding: ((building: boolean) => void) | null = null
 
   constructor(
     private host: HTMLElement,
@@ -175,6 +225,9 @@ export class BoardScene {
   /** Rebuild what changed. Returns the number of parts on the board. */
   setProject(project: Project | null, fills: ZoneFill[]): number {
     if (!project) {
+      // A board still being made is not shown.
+      this.boardAsked++
+      this.boardWanted = null
       this.clearBoard()
       this.clearParts()
       this.last = null
@@ -201,11 +254,7 @@ export class BoardScene {
       prev.fills !== fills
     this.last = { project, fills }
 
-    if (boardChanged) {
-      this.clearBoard()
-      this.board = buildBoard(project, fills, this.shared, this.maxAnisotropy)
-      this.content.add(this.board.group)
-    }
+    if (boardChanged) this.buildBoard(project, fills)
     if (partsChanged) this.rebuildParts(project)
 
     this.boardRect = { x: b.x, y: b.y, width: b.width, height: b.height }
@@ -224,6 +273,58 @@ export class BoardScene {
     if (boardChanged || partsChanged) this.compileFirst()
     this.requestRender()
     return this.board?.placedCount ?? 0
+  }
+
+  /** A big board being made in the worker; the board asked for since, made when it is done (the last asked for only); the asks, counted. */
+  private boardBuilding: Promise<void> | null = null
+  private boardWanted: { project: Project; fills: ZoneFill[] } | null = null
+  private boardAsked = 0
+
+  /** Make the board's meshes, a big board's shapes in the worker; the board shown stays until they come. */
+  private buildBoard(project: Project, fills: ZoneFill[], later = false) {
+    const ask = ++this.boardAsked
+    if (this.boardBuilding) {
+      this.boardWanted = { project, fills }
+      return
+    }
+    const shapes = buildShapes(project, fills)
+    if (!(shapes instanceof Promise)) return this.showBoard(project, shapes, later)
+    this.boardBuilding = shapes.then(
+      (made) => this.boardMade(ask, project, made),
+      () => this.boardMade(ask, project, null),
+    )
+    this.onBoardBuilding?.(true)
+  }
+
+  /** A worker's board come: shown if it is still the one asked for, else the one asked for since is made. */
+  private boardMade(ask: number, project: Project, made: BoardShapes | null) {
+    this.boardBuilding = null
+    const next = this.boardWanted
+    this.boardWanted = null
+    if (made && ask === this.boardAsked && !this.disposed) this.showBoard(project, made, true)
+    else {
+      if (made) disposeShapes(made)
+      if (next && !this.disposed) this.buildBoard(next.project, next.fills, true)
+    }
+    if (!this.boardBuilding) this.onBoardBuilding?.(false)
+  }
+
+  /** Put a board's meshes in the scene; when they come after `setProject` (`later`), frame its bounds and shadow and compile its shaders again. */
+  private showBoard(project: Project, shapes: BoardShapes, later: boolean) {
+    this.clearBoard()
+    this.board = assembleBoard(project, shapes, this.shared, this.maxAnisotropy)
+    this.content.add(this.board.group)
+    if (!later) return
+    this.updateBounds()
+    this.updateFloor(project)
+    this.fitShadow()
+    this.compileFirst()
+    this.requestRender()
+  }
+
+  /** Resolves once the board asked for last is in the scene: at once, but for a big board, which is made in the worker. */
+  async boardReady() {
+    while (this.boardBuilding) await this.boardBuilding
   }
 
   /** Wait, at most `ms`, for the board's model files to be read, and draw them: for a picture taken at once. */

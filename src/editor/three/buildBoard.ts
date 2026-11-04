@@ -9,7 +9,7 @@ import { outlineGeometry, pointInRing } from "../../model/outline"
 import { holeCentre } from "../../model/padDistance"
 import { polygonKit, withMaxError, type ZoneFill } from "../../model/pour"
 import type { ComponentInstance, Project, Vec2 } from "../../model/types"
-import { buildBoardTextures, texelsPerMm, type BoardTextureSet } from "./boardTextures"
+import { makeCanvas, paintBoardSides, pictureTexture, sideTextures, texelsPerMm, type BoardPicture, type BoardTextureSet, type SidePictures } from "./boardTextures"
 import { contactShadow, createContactShadowMaterial } from "./contactShadow"
 import { onBoard } from "../../model/partFlags"
 import { CellGrid } from "../../lib/cellGrid"
@@ -178,14 +178,20 @@ function padCurveSegments(pad: WorldPad): number {
   return curveSegmentsFor(Math.max(ends, pad.holeDiameter ?? 0))
 }
 
-function mergeInto(group: THREE.Group, geoms: THREE.BufferGeometry[], material: THREE.Material, name: string, shadows = true) {
-  if (!geoms.length) return
-  const merged = mergeGeometries(geoms.map((g) => (g.index ? g.toNonIndexed() : g)), false)
+/** Geometries as one, or null for none. */
+function merged(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+  if (!geoms.length) return null
+  const one = mergeGeometries(geoms.map((g) => (g.index ? g.toNonIndexed() : g)), false)
   for (const g of geoms) g.dispose()
-  if (!merged) return
-  const mesh = new THREE.Mesh(merged, material)
+  return one
+}
+
+/** A mesh that takes the shadows of others and casts none. */
+function addMesh(group: THREE.Group, geometry: THREE.BufferGeometry | null, material: THREE.Material, name: string) {
+  if (!geometry) return
+  const mesh = new THREE.Mesh(geometry, material)
   mesh.name = name
-  mesh.castShadow = shadows
+  mesh.castShadow = false
   mesh.receiveShadow = true
   group.add(mesh)
 }
@@ -247,33 +253,20 @@ function drillRing(h: { x: number; y: number; r: number; slot?: [Vec2, Vec2] }):
 }
 
 /** A mask of the drills for the board's faces (`alphaMap`, black where a drill is), in the frame the faces' UVs span. */
-function drillMask(b: Project["board"], drills: readonly { x: number; y: number; r: number; slot?: [Vec2, Vec2] }[]): THREE.CanvasTexture {
+function drillMask(b: Project["board"], drills: readonly { x: number; y: number; r: number; slot?: [Vec2, Vec2] }[]): BoardPicture {
   const ppm = texelsPerMm(b.width, b.height)
   const w = Math.max(2, Math.round(b.width * ppm))
   const h = Math.max(2, Math.round(b.height * ppm))
-  const canvas = document.createElement("canvas")
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext("2d")
-  if (!ctx) throw new Error("2D canvas unavailable")
+  const { canvas, ctx } = makeCanvas(w, h)
   ctx.fillStyle = "#fff"
   ctx.fillRect(0, 0, w, h)
   ctx.setTransform(w / b.width, 0, 0, -h / b.height, -(b.x - b.width / 2) * (w / b.width), (b.y + b.height / 2) * (h / b.height))
   ctx.fillStyle = "#000"
   ctx.beginPath()
-  for (const d of drills) {
-    const ring = drillRing(d)
-    ring.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)))
-    ctx.closePath()
-  }
+  // Each ring is left open for the fill to close (`ringsPath` in boardTextures.ts says why).
+  for (const d of drills) drillRing(d).forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)))
   ctx.fill()
-  const t = new THREE.CanvasTexture(canvas)
-  t.colorSpace = THREE.NoColorSpace
-  t.generateMipmaps = true
-  t.minFilter = THREE.LinearMipmapLinearFilter
-  t.magFilter = THREE.LinearFilter
-  t.needsUpdate = true
-  return t
+  return canvas
 }
 
 // ---------- Board ----------
@@ -289,9 +282,30 @@ export function placedComponents(project: Project): ComponentInstance[] {
   return resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
 }
 
+/**
+ * The board's geometry and drawings, without a material or a mesh: what a worker makes of a big board (`boardBuild.worker.ts`), and the page puts
+ * together (`assembleBoard`).
+ */
+export interface BoardShapes {
+  /** The board's walls: its outline's and its drills'. */
+  substrate: THREE.BufferGeometry
+  /** The faces, which the drawings go on. */
+  top: THREE.BufferGeometry
+  bottom: THREE.BufferGeometry
+  copper: THREE.BufferGeometry | null
+  barrels: THREE.BufferGeometry | null
+  tents: THREE.BufferGeometry | null
+  sides: { top: SidePictures; bottom: SidePictures }
+  /** The drills to cut from the faces, when there are too many to cut from their geometry. */
+  drills: BoardPicture | null
+  placedCount: number
+}
+
 export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMaterials, anisotropy: number): BoardBuild {
-  const group = new THREE.Group()
-  group.name = "board"
+  return assembleBoard(project, boardShapes(project, fills), shared, anisotropy)
+}
+
+export function boardShapes(project: Project, fills: ZoneFill[]): BoardShapes {
   const b = project.board
   const t = b.thickness
   const minX = b.x - b.width / 2
@@ -375,55 +389,13 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     substrate.clearGroups()
     substrate.addGroup(0, substrate.attributes.position?.count ?? 0, 1)
   }
-  const walls = new THREE.Mesh(substrate, [shared.hidden, shared.edge])
-  walls.name = "substrate"
-  walls.castShadow = true
-  walls.receiveShadow = true
-  group.add(walls)
-
-  const painted = buildBoardTextures({ project, placed, padsByComponent, fills, anisotropy })
+  const painted = paintBoardSides({ project, placed, padsByComponent, fills })
   const drills = cutInGeometry ? null : drillMask(b, accepted)
-  const textures: BoardTextureSet = {
-    ...painted,
-    dispose: () => {
-      painted.dispose()
-      drills?.dispose()
-    },
-  }
   const bounds = { minX, minY, w: b.width, h: b.height }
-  const faceMat = (side: "top" | "bottom") =>
-    new THREE.MeshPhysicalMaterial({
-      color: "#ffffff",
-      map: textures[side].albedo,
-      bumpMap: textures[side].surface,
-      bumpScale: 1.6,
-      roughnessMap: textures[side].surface,
-      roughness: 1,
-      metalness: 0,
-      clearcoat: 1,
-      clearcoatRoughness: 0.3,
-      clearcoatRoughnessMap: textures[side].surface,
-      // The clearcoat carries the gloss; a strong base lobe reads as a milky haze.
-      specularIntensity: 0.06,
-      envMapIntensity: 0.75,
-      ...(drills ? { alphaMap: drills, alphaTest: 0.5 } : {}),
-    })
-  const topMat = faceMat("top")
-  const bottomMat = faceMat("bottom")
-  const top = new THREE.Mesh(boardFace(outline, t / 2, false, bounds), topMat)
-  const bottom = new THREE.Mesh(boardFace(outline, -t / 2, true, bounds), bottomMat)
-  top.name = "mask-top"
-  bottom.name = "mask-bottom"
-  for (const m of [top, bottom]) {
-    m.receiveShadow = true
-    m.castShadow = true
-    group.add(m)
-  }
+  const top = boardFace(outline, t / 2, false, bounds)
+  const bottom = boardFace(outline, -t / 2, true, bounds)
 
   // Exposed copper: SMD pads, through-hole rings on both faces, mounting-hole rings.
-  const finish = finishMetal(boardFinish(b))
-  const metal = shared.pad[finish]
-  const barrelMat = shared.barrel[finish]
   const copper: THREE.BufferGeometry[] = []
   const topZ = t / 2 + LIFT
   const bottomZ = -t / 2 - LIFT
@@ -455,7 +427,6 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
       copper.push(slab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom", curveSegmentsFor(v.diameter)))
     }
   }
-  mergeInto(group, copper, metal, "copper", false)
 
   // Plated barrels for pad and mounting holes, and for vias unless they're tented: then mask
   // dips into the hole and closes it, so they read as small dimples rather than open holes.
@@ -485,7 +456,55 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     g.translate(h.x, h.y, 0)
     barrels.push(g)
   }
-  mergeInto(group, barrels, barrelMat, "barrels", false)
+  return { substrate, top, bottom, copper: merged(copper), barrels: merged(barrels), tents: merged(plugs), sides: painted, drills, placedCount: placed.length }
+}
+
+/** A board's shapes in their materials, as meshes. */
+export function assembleBoard(project: Project, shapes: BoardShapes, shared: SharedMaterials, anisotropy: number): BoardBuild {
+  const group = new THREE.Group()
+  group.name = "board"
+  const b = project.board
+  const walls = new THREE.Mesh(shapes.substrate, [shared.hidden, shared.edge])
+  walls.name = "substrate"
+  walls.castShadow = true
+  walls.receiveShadow = true
+  group.add(walls)
+
+  const drills = shapes.drills ? pictureTexture(shapes.drills, false, 1) : null
+  const textures: BoardTextureSet = sideTextures(shapes.sides, anisotropy, drills ? [drills] : [])
+  const faceMat = (side: "top" | "bottom") =>
+    new THREE.MeshPhysicalMaterial({
+      color: "#ffffff",
+      map: textures[side].albedo,
+      bumpMap: textures[side].surface,
+      bumpScale: 1.6,
+      roughnessMap: textures[side].surface,
+      roughness: 1,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.3,
+      clearcoatRoughnessMap: textures[side].surface,
+      // The clearcoat carries the gloss; a strong base lobe reads as a milky haze.
+      specularIntensity: 0.06,
+      envMapIntensity: 0.75,
+      ...(drills ? { alphaMap: drills, alphaTest: 0.5 } : {}),
+    })
+  const topMat = faceMat("top")
+  const bottomMat = faceMat("bottom")
+  const top = new THREE.Mesh(shapes.top, topMat)
+  const bottom = new THREE.Mesh(shapes.bottom, bottomMat)
+  top.name = "mask-top"
+  bottom.name = "mask-bottom"
+  for (const m of [top, bottom]) {
+    m.receiveShadow = true
+    m.castShadow = true
+    group.add(m)
+  }
+
+  // Exposed copper (SMD pads, through-hole and mounting-hole rings), the plated barrels, and the tented vias' plugs of mask.
+  const finish = finishMetal(boardFinish(b))
+  addMesh(group, shapes.copper, shared.pad[finish], "copper")
+  addMesh(group, shapes.barrels, shared.barrel[finish], "barrels")
   const tentMat = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(boardColors(b).mask).multiplyScalar(0.55),
     roughness: 0.45,
@@ -493,9 +512,9 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
     clearcoatRoughness: 0.2,
     specularIntensity: 0.2,
   })
-  mergeInto(group, plugs, tentMat, "via-tents", false)
+  addMesh(group, shapes.tents, tentMat, "via-tents")
 
-  return { group, textures, faceMaterials: [topMat, bottomMat, tentMat], placedCount: placed.length }
+  return { group, textures, faceMaterials: [topMat, bottomMat, tentMat], placedCount: shapes.placedCount }
 }
 
 // ---------- Parts ----------

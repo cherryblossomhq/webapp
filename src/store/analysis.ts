@@ -132,11 +132,11 @@ function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>)
 }
 
 /**
- * A project as the workers read it, written once for both, and kept for the last project only: one for each project the undo history holds was
- * 26 MB each on CERN's Macbeth, up to 200 of them.
+ * A project as the workers read it (the fill, checks and 3D board workers), written once for all, and kept for the last project only: one for each
+ * project the undo history holds was 26 MB each on CERN's Macbeth, up to 200 of them.
  */
 let fileKept: { project: Project; file: string } | null = null
-function fileOf(p: Project): string {
+export function projectFileOf(p: Project): string {
   if (fileKept?.project !== p) fileKept = { project: p, file: serializeProject(p) }
   return fileKept.file
 }
@@ -226,7 +226,7 @@ function nextCheck() {
     fail()
     done()
   }
-  w.postMessage({ file: fileOf(p), stale: sent } satisfies ZoneFillRequest)
+  w.postMessage({ file: projectFileOf(p), stale: sent } satisfies ZoneFillRequest)
 }
 
 function finish(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>) {
@@ -253,7 +253,7 @@ function start(job: Job) {
   let file: string | null = null
   if (w) {
     try {
-      file = fileOf(job.project)
+      file = projectFileOf(job.project)
     } catch {
       file = null
     }
@@ -369,9 +369,9 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   return shown(p, value)
 }
 
-/** The parts, tracks and vias past which a board's checks are made off the page's thread (`getLiveAnalysis`). */
+/** The parts, tracks and vias past which a board's checks (`getLiveAnalysis`) and its 3D board (`BoardScene`) are made off the page's thread. */
 const BACKGROUND_CHECKS_SIZE = 3000
-const bigBoard = (p: Project) => p.components.length + p.traces.length + p.vias.length > BACKGROUND_CHECKS_SIZE
+export const bigBoard = (p: Project) => p.components.length + p.traces.length + p.vias.length > BACKGROUND_CHECKS_SIZE
 
 /** The analysis the views were given last, and the project it is of: an edit's analysis follows it until the worker's comes (`followEdit`). */
 let lastShown: { project: Project; value: PcbAnalysis } | null = null

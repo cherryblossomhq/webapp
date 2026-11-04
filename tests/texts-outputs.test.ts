@@ -326,7 +326,8 @@ describe("the 3D board", () => {
     return new Proxy({} as CanvasRenderingContext2D, {
       get(_t, key: string) {
         if (key in state) return state[key]
-        return (...args: unknown[]) => void log.push([key, ...args])
+        // A canvas drawn onto another (the copper's, `buildSide`) is logged as one.
+        return (...args: unknown[]) => void log.push([key, ...args.map((a) => (a && typeof a === "object" && "getContext" in a ? "canvas" : a))])
       },
       set(_t, key: string, value) {
         state[key] = value
@@ -355,12 +356,12 @@ describe("the 3D board", () => {
     const before = draw(base)
     const p = withText(base, { layer: "F.SilkS", text: "3D", x: 5, y: 5, size: 2, thickness: 0.37 })
     const after = draw(p)
-    expect(after[0].length).toBeGreaterThan(before[0].length)
+    // Each side has three canvases: its copper, its albedo and its surface.
     expect(after[1].length).toBeGreaterThan(before[1].length)
+    expect(after[2].length).toBeGreaterThan(before[2].length)
     // the bottom side is the same
-    expect(after[2]).toEqual(before[2])
-    expect(after[3]).toEqual(before[3])
-    const widths = after[0].filter((e) => e[0] === "set" && e[1] === "lineWidth").map((e) => e[2])
+    expect(after.slice(3)).toEqual(before.slice(3))
+    const widths = after[1].filter((e) => e[0] === "set" && e[1] === "lineWidth").map((e) => e[2])
     expect(widths).toContain(0.37)
   })
 })

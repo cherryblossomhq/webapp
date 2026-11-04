@@ -44,6 +44,7 @@ export function Board3D() {
   const [finishOpen, setFinishOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null)
+  const [building, setBuilding] = useState(false)
   const [stepNotice, setStepNotice] = useState<{ text: string; notes: string[] } | null>(null)
 
   useEffect(() => {
@@ -60,6 +61,7 @@ export function Board3D() {
     if (process.env.NODE_ENV === "development") Object.assign(window, { __board3d: scene })
     scene.onPickPart = (id) => uiApi().select(id ? [`c:${id}`] : [])
     scene.onModelStatus = setModelStatus
+    scene.onBoardBuilding = setBuilding
     const p = useProjectStore.getState().project
     scene.setProject(p, p ? getLiveZoneFills(p) : [])
     return () => {
@@ -231,6 +233,13 @@ export function Board3D() {
           )}
 
           <div ref={cubeRef} className="absolute right-3 top-3 z-10 h-[104px] w-[104px]" aria-label="View cube: click a face, edge or corner to look from there" />
+
+          {building && (
+            <div role="status" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">
+              <LoaderCircle size={13} className="animate-spin" />
+              <span>Building the 3D board</span>
+            </div>
+          )}
 
           {showParts && modelStatus && (modelStatus.loading > 0 || modelStatus.failed.length > 0 || modelStatus.missing.length > 0) && (
             <div className="absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[12px] text-[#d9d4e6] backdrop-blur">

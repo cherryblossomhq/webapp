@@ -22,8 +22,9 @@ if (process.env.NODE_ENV === "development") {
     import("./model/instances"),
     import("./ai/managedAi"),
     import("./ai/supplierParts"),
+    import("./store/partModels"),
     import("./store/accountStore"),
-  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, accountStore]) => {
+  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, partModels, accountStore]) => {
     Object.assign(window, {
       __cherryblossom: {
         projectApi: projectStore.projectApi,
@@ -43,8 +44,9 @@ if (process.env.NODE_ENV === "development") {
           const account = accountStore.useAccount.getState()
           void account.load().then(() => (accountStore.useAccount.getState().status === "ready" ? null : account.load(true)))
         },
-        // And for its supplier part data.
+        // And for its supplier part data, and the supplier's and KiCad's 3D models.
         connectSupplierParts: supplierParts.connectSupplierParts,
+        connectPartModels: partModels.connectPartModels,
       },
     })
   })

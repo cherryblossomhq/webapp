@@ -17,7 +17,7 @@
   <img alt="TypeScript, strict" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square&logo=typescript&logoColor=white">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react&logoColor=black">
   <img alt="Vite 7" src="https://img.shields.io/badge/Vite-7-646cff?style=flat-square&logo=vite&logoColor=white">
-  <img alt="2,200+ tests" src="https://img.shields.io/badge/tests-2%2C200%2B-2f8a57?style=flat-square">
+  <img alt="5,000+ tests" src="https://img.shields.io/badge/tests-5%2C000%2B-2f8a57?style=flat-square">
   <img alt="Status: early" src="https://img.shields.io/badge/status-early-d69e2e?style=flat-square">
 </p>
 
@@ -30,14 +30,15 @@
 <br>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="The Cherry Blossom editor showing an ESP32 robot controller in 3D: an ESP32 DevKit, a motor driver, an OLED module, screw terminals and tact switches on a green board, with the parts library on the left and the Checks panel on the right" width="100%">
+  <img src="docs/images/hero.jpg" alt="The Cherry Blossom editor showing the ESP32 robot controller's PCB: screw terminals, the DevKit's headers, a motor driver and tact switches on a 100 mm board, routed on both layers under a top-side pour, with Sakura on the left and the Inspector on the right" width="100%">
   <br>
-  <sub>The ESP32 robot controller example in the 3D view: 45 parts, routed and poured, with one decoupling warning in Checks.</sub>
+  <sub>The ESP32 robot controller example on the PCB: 45 parts, 112 of 112 connections routed, poured, with one decoupling warning.</sub>
 </p>
 
 > [!NOTE]
 > **This is the editor behind [trycherryblossom.com](https://www.trycherryblossom.com).**
-> The hosted app adds accounts, projects in the cloud, supplier part data and
+> The hosted app adds accounts, projects in the cloud that you share and edit
+> together, version history, supplier part data, KiCad's 3D models and
 > **Sakura**, an AI copilot that builds circuits from a sentence. Everything in
 > this repository — the whole editor, by hand — runs locally with no backend.
 
@@ -61,15 +62,15 @@
     </td>
     <td width="25%" valign="top">
       <h3>⚡ Routed in seconds</h3>
-      Automatic placement that knows a regulator's power stage, a two-layer autorouter with per-net widths and fine-pitch escapes, and copper pours with thermals and stitching vias.
+      Automatic placement that knows a regulator's power stage, an autorouter with net classes, per-net widths and fine-pitch escapes, and copper pours and zones with thermals and stitching vias.
     </td>
     <td width="25%" valign="top">
       <h3>✅ Checked before you order</h3>
       Clearance, shorts, unrouted nets, courtyards, annular rings and the rest of the design rules, plus electrical checks that catch an LED with no resistor.
     </td>
     <td width="25%" valign="top">
-      <h3>📦 Ready for the fab</h3>
-      Gerbers, Excellon drill, BOM and pick-and-place in one zip, with fabrication notes. Or take the board elsewhere: KiCad, Circuit JSON and STEP.
+      <h3>📦 KiCad in, fab files out</h3>
+      Import a KiCad project, board or schematic. Export Gerbers, Excellon drill, BOM and pick-and-place in one zip, with fabrication notes, or take the board elsewhere: KiCad, Circuit JSON and STEP.
     </td>
   </tr>
 </table>
@@ -98,18 +99,18 @@ Every screenshot here is the editor as it runs from this repository, on its ship
       <h3>Layout that does the tedious part</h3>
       Auto-placement puts each decoupling capacitor beside the pin it serves, and a regulator's capacitors, inductor and feedback divider at its pins. The autorouter runs A* on two layers with vias, net-aware clearances and per-net trace widths, and keeps the copper you routed by hand.
       <br><br>
-      Interactive routing with 45° bends and vias, bottom-side parts, mounting holes, silkscreen text and board-wide pours with thermal spokes and stitching vias.
+      Interactive routing with 45° bends, arcs and vias, up to 32 copper layers with blind and buried vias, bottom-side parts, any board outline, mounting holes, text in KiCad's own font, dimensions, and pours and zones with thermal spokes and stitching vias.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/3d.jpg" alt="The Node-328 LED bar in 3D: a TO-220 regulator, a crystal, an electrolytic capacitor, a trimmer, headers and LEDs on a green board with gold pads, over a dark grid with millimetre marks" width="100%">
+      <img src="docs/images/3d.jpg" alt="The Node-328 LED bar in 3D: a green board with gold pads, plated holes, silkscreen and mounting holes, over a dark grid with millimetre marks, and a notice that its 13 parts' models couldn't be drawn here, so they show their pads" width="100%">
       <br>
-      <sub>Every library package has a model, so the 3D view is there the moment it opens.</sub>
+      <sub>Here a part shows its pads until it has a model; the hosted app draws KiCad's.</sub>
       <h3>See it before it's made</h3>
-      Procedural models for every library package, from chip resistors with value codes to ESP32 DevKits on their headers, on a board with glossy mask, plated holes and your choice of finish, mask and silkscreen colour.
+      The board in 3D with glossy mask, plated holes, tented or open vias and your choice of finish, mask and silkscreen colour. Parts are drawn only with real models, never made-up bodies.
       <br><br>
-      Drop in a real model (STEP, OBJ, WRL, STL or GLB) for any part. STEP files are read by OpenCascade in a Web Worker, so nothing leaves your machine.
+      Drop in a model (STEP, OBJ, WRL, STL or GLB) for any part. STEP files are read by OpenCascade in a Web Worker, so nothing leaves your machine. The hosted app also draws KiCad's 3D library and the supplier's models.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/checks.jpg" alt="The ESP32 robot controller's PCB with the Checks panel open, showing one warning: C4 is 7.1 mm from U2 pin 24 (VM1); aim for under 3 mm" width="100%">
@@ -128,13 +129,17 @@ Every screenshot here is the editor as it runs from this repository, on its ship
       <sub>Everything a fab, an assembler or another tool needs, from one menu.</sub>
       <h3>Take it anywhere</h3>
       RS-274X Gerbers with pours, mask and paste, Excellon drill with slots, a BOM, pick-and-place and fabrication notes, zipped. A KiCad 9 project with the rules and net classes carried over, Circuit JSON for tscircuit, and the whole board as a STEP assembly for mechanical CAD.
+      <br><br>
+      <b>KiCad in, too.</b> A KiCad project, board or schematic imports with its sheets, buses, zones, net classes and rules (KiCad 6 and later, and the schematics of KiCad 4 and 5). What the editor can't hold yet is named in a report, never dropped quietly, and the original files are kept with the project.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/dashboard.jpg" alt="The projects dashboard: a blank project and five example boards drawn as previews, ESP32 robot controller, Node-328 LED bar, 555 LED blinker, 3.3 V supply and ATmega328P minimal" width="100%">
+      <img src="docs/images/dashboard.jpg" alt="The projects dashboard: Import, Import KiCad and New project buttons, a blank project and five example boards drawn as previews, ESP32 robot controller, Node-328 LED bar, 555 LED blinker, 3.3 V supply and ATmega328P minimal" width="100%">
       <br>
       <sub>Five routed examples to start from, each opening as your own copy.</sub>
       <h3>Yours, in your browser</h3>
       Projects save as you work, in your browser, and download as a single versioned file you can open anywhere. Older files are migrated when they open, and a file from a newer version is refused rather than damaged.
+      <br><br>
+      Open a project in two tabs and each sees the other's edits, cursor and selection, and undo takes back only your own: the same live editing the hosted app runs between people.
       <br><br>
       Light and dark themes, shortcuts for every tool, and undo for every change.
     </td>
@@ -148,16 +153,16 @@ Every screenshot here is the editor as it runs from this repository, on its ship
 <table>
   <tr>
     <td width="33%" valign="top">
-      <h4>🧰 93 built-in parts</h4>
-      Resistors, capacitors (ceramic, electrolytic, tantalum), inductors, trimmers, crystals, diodes, LEDs, BJTs and MOSFETs · NE555, LM358, ATmega328P, ATtiny85, 74HC595, CH340, ULN2003A, PC817, TB6612FNG, LM7805, AMS1117, AP2112K, WS2812B · Arduino Nano, Raspberry Pi Pico, ESP32 modules and DevKits, Wemos D1 Mini, XIAO ESP32-C3, an I2C OLED · headers, IC sockets, screw and pluggable terminals, JST PH/XH, Qwiic, USB-C, micro-USB, barrel jack, microSD · switches, a relay, a buzzer.
+      <h4>🧰 Parts</h4>
+      Basic parts built in: resistors, capacitors (ceramic, electrolytic, tantalum), inductors, potentiometers, crystals, diodes, LEDs, BJTs and MOSFETs, power and ground ports, a battery and coin-cell holder, switches, a relay and a buzzer.
       <br><br>
-      Search understands values and packages: <code>10k 0603</code> places a 10k 0603 resistor.
+      Everything else is a part of the project: imported from a KiCad symbol, footprint and 3D model, or drawn in the part editor. Search understands values and packages: <code>10k 0603</code> places a 10k 0603 resistor.
     </td>
     <td width="33%" valign="top">
       <h4>✏️ Schematic</h4>
-      Wires · net labels · power and ground ports · junctions · no-connect flags · blocks · text, lines, arrows, polygons and rectangles for titles and notes · copy, paste and duplicate · Tidy · Clean up · rotate, flip and drag with nets kept intact.
+      Wires · net labels · power and ground ports · junctions · no-connect flags · blocks · hierarchical sheets · buses · variants · text, lines, arrows, polygons and rectangles for titles and notes · copy, paste and duplicate · Tidy · Clean up · rotate, flip and drag with nets kept intact.
       <h4>🟥 PCB</h4>
-      Auto-place · re-pack · autoroute · interactive routing · vias · per-net widths · copper pours · thermal spokes · stitching vias · locked parts and copper · board outline, corner radius, mounting holes · stackup, copper weight, finish, mask and silkscreen colours · design rules in mm or mil.
+      Auto-place · re-pack · autoroute · interactive routing · arcs · vias · up to 32 copper layers · net classes · per-net widths · copper pours and zones · keepouts · thermal spokes · stitching vias · locked parts and copper · any board outline, cutouts, mounting holes · dimensions · reference images · stackup, copper weight, finish, mask and silkscreen colours · design rules in mm or mil.
     </td>
     <td width="33%" valign="top">
       <h4>📤 Exports</h4>
@@ -185,6 +190,10 @@ browser; the models and the supplier data they call are the hosted app's. A loca
 build has no session, so its Sakura panel offers to sign in at the hosted app
 instead of calling anything.
 
+The hosted app also gives an AI assistant you already use (Claude, ChatGPT,
+Cursor, Claude Code or any MCP client) Sakura's tools on your projects, through
+its MCP server. That server is part of the hosted app, not this repository.
+
 ## Under the hood
 
 - **Its own document model.** A typed ECAD project edited by pure functions, with
@@ -198,10 +207,14 @@ instead of calling anything.
   only when you ask for them.
 - **A real file format.** Versioned, migrated on read, and tolerant of fields it
   doesn't know, which survive a save.
-- **Tested hard.** More than 2,200 unit tests, including fuzzers that throw random
-  edits at random sheets, round trips through Circuit JSON, and STEP and KiCad
-  exports read back and checked; plus a Playwright suite that
-  drives the editor in a real browser.
+- **Edits travel as changes.** Every edit is written as a list of changes to the
+  project's items (`host/project-changes.ts`), applied the same way by every open
+  copy, so two people, or two tabs, edit one project without overwriting each other.
+- **Tested hard.** More than 5,000 unit tests, including fuzzers that throw random
+  edits at random sheets, round trips through Circuit JSON and KiCad, STEP and
+  KiCad exports read back and checked, and corpus tests that import some 1,500
+  open-source KiCad boards when you point them at a copy (`npm run test:corpus`);
+  plus a Playwright suite that drives the editor in a real browser.
 
 ## Get started
 
@@ -230,10 +243,10 @@ architecture, the file format, how Tidy and the router work, and the sharp edges
 
 > [!IMPORTANT]
 > **Early stage.** The schematic and PCB editors work end to end and the examples
-> go all the way to Gerbers, but expect rough edges and breaking changes. Boards
-> are two layers for now; multi-layer boards, hierarchical sheets, simulation and
-> real-time collaboration are not here yet. Please file issues with the steps,
-> your browser, and a project file if you can share one.
+> go all the way to Gerbers, but expect rough edges and breaking changes. The
+> autorouter routes a board's two outer layers and leaves its inner ones to you,
+> and there is no simulation yet. Please file issues with the steps, your browser,
+> and a project file if you can share one.
 
 ## Contributing
 

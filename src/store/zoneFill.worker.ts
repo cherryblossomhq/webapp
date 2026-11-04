@@ -3,6 +3,8 @@ import { analyzePcb, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import type { PendingGroup } from "../model/zoneFill"
 import { parseProjectFile } from "../model/projectFile"
+import { loadWasmClipper } from "../model/wasmClipper"
+import { setFastClipper } from "../model/zoneGeom"
 
 // The zone fill off the page's thread (X3): filling a big board's pours takes seconds. The project comes as a project file, which reading
 // registers its own parts and land patterns for here as it does on the page, and the fills go back as they are (plain numbers). This
@@ -44,7 +46,14 @@ const pack = (a: PcbAnalysis): WorkerAnalysis => ({
   ...(a.connectionsPending ? { connectionsPending: a.connectionsPending } : {}),
 })
 
-scope.onmessage = (e) => {
+// The fills' big offsets and booleans in Clipper2 compiled to WebAssembly, about twice as fast (`wasmClipper.ts`); where it cannot load, the
+// TypeScript port does them as on the page. The literal `new URL(..., import.meta.url)` is what the bundler looks for.
+const engine = loadWasmClipper(new URL("clipper2-wasm/dist/es/clipper2z.wasm", import.meta.url).href)
+  .then(setFastClipper)
+  .catch(() => undefined)
+
+scope.onmessage = async (e) => {
+  await engine
   try {
     const project = parseProjectFile(e.data.file, { id: "fill", createdAt: 0, updatedAt: 0 })
     const sch = computeConnectivity(project)

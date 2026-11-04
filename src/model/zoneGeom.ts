@@ -38,15 +38,39 @@ export function circlePath(x: number, y: number, r: number): Path64 {
 
 export const rectPath = (cx: number, cy: number, w: number, h: number): Path64 => [pt(cx - w / 2, cy - h / 2), pt(cx + w / 2, cy - h / 2), pt(cx + w / 2, cy + h / 2), pt(cx - w / 2, cy + h / 2)]
 
-export const inflate = (paths: Paths64, d: number, join: JoinType = JoinType.Round): Paths64 =>
-  paths.length && d !== 0 ? Clipper.inflatePaths(paths, d * U, join, EndType.Polygon, 2, ARC_TOL) : paths
+/**
+ * The engine for the fill's offsets and booleans of big paths, where one is set (`setFastClipper`): the fill worker sets Clipper2 compiled to
+ * WebAssembly (`wasmClipper.ts`), twice as fast as the TypeScript port on a big board's pours. The port does everything else, on the page and in
+ * the tests. The two are different releases of Clipper2: on CERN's Macbeth their fills are the same 1,404 polygons, and differ by 0.0138 mm² of
+ * copper in 876,387.
+ */
+export interface FastClipper {
+  /** An offset as `Clipper.inflatePaths` makes it for closed paths, or null for a join it does not have. */
+  inflate(paths: Paths64, delta: number, join: JoinType, arcTolerance: number): Paths64 | null
+  boolean(op: "union" | "difference" | "intersect", a: Paths64, b: Paths64, rule: FillRule): Paths64
+}
+let fast: FastClipper | null = null
+export const setFastClipper = (engine: FastClipper | null) => {
+  fast = engine
+}
+/** The points past which an operation goes to the fast engine: below, copying the paths into it and back costs more than it saves. */
+const FAST_FROM = 4000
+const pointsIn = (a: Paths64, b: Paths64 = []) => a.reduce((n, p) => n + p.length, 0) + b.reduce((n, p) => n + p.length, 0)
+
+export const inflate = (paths: Paths64, d: number, join: JoinType = JoinType.Round): Paths64 => {
+  if (!paths.length || d === 0) return paths
+  const done = fast && pointsIn(paths) >= FAST_FROM ? fast.inflate(paths, d * U, join, ARC_TOL) : null
+  return done ?? Clipper.inflatePaths(paths, d * U, join, EndType.Polygon, 2, ARC_TOL)
+}
+
+const boolean = (op: "union" | "difference" | "intersect", a: Paths64, b: Paths64, rule: FillRule): Paths64 => (fast && pointsIn(a, b) >= FAST_FROM ? fast.boolean(op, a, b, rule) : Clipper[op](a, b, rule))
 
 /** An open polyline grown to a stroke of the given half width, with round ends. */
 export const stroke = (points: Vec2[], halfWidth: number): Paths64 => Clipper.inflatePaths([points.map((p) => pt(p.x, p.y))], Math.max(halfWidth, 1e-5) * U, JoinType.Round, EndType.Round, 2, ARC_TOL)
 
-export const union = (a: Paths64, b: Paths64 = [], rule: FillRule = FillRule.NonZero): Paths64 => (a.length || b.length ? Clipper.union(a, b, rule) : [])
-export const difference = (a: Paths64, b: Paths64, rule: FillRule = FillRule.NonZero): Paths64 => (a.length ? (b.length ? Clipper.difference(a, b, rule) : a) : [])
-export const intersect = (a: Paths64, b: Paths64, rule: FillRule = FillRule.NonZero): Paths64 => (a.length && b.length ? Clipper.intersect(a, b, rule) : [])
+export const union = (a: Paths64, b: Paths64 = [], rule: FillRule = FillRule.NonZero): Paths64 => (a.length || b.length ? boolean("union", a, b, rule) : [])
+export const difference = (a: Paths64, b: Paths64, rule: FillRule = FillRule.NonZero): Paths64 => (a.length ? (b.length ? boolean("difference", a, b, rule) : a) : [])
+export const intersect = (a: Paths64, b: Paths64, rule: FillRule = FillRule.NonZero): Paths64 => (a.length && b.length ? boolean("intersect", a, b, rule) : [])
 
 /** The area of some paths (the holes wound the other way count against it), in square millimetres. */
 export const areaMm2 = (paths: Paths64): number => Math.abs(Clipper.areaPaths(paths)) / (U * U)

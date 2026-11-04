@@ -5,13 +5,15 @@ import tailwindcss from "@tailwindcss/vite"
 import { themeScript } from "./src/store/themeScript"
 
 /**
- * The two packages the editor imports from the hosted app's monorepo, answered
- * here by local stand-ins (see `host/`). `vitest.config.ts` and `tsconfig.json`
+ * The packages the editor imports from the hosted app's monorepo, answered here
+ * from `host/`: stand-ins for the wire types and the model roster, and a copy of
+ * the change format live editing runs on. `vitest.config.ts` and `tsconfig.json`
  * carry the same map.
  */
 export const hostAliases = {
   "@cherryblossom/api-contract": fileURLToPath(new URL("./host/contract.ts", import.meta.url)),
   "@cherryblossom/ai-models": fileURLToPath(new URL("./host/ai-models.ts", import.meta.url)),
+  "@cherryblossom/project-changes": fileURLToPath(new URL("./host/project-changes.ts", import.meta.url)),
 }
 
 /** Sets the theme before first paint, so a dark-mode visitor never sees a light flash. */

@@ -16,7 +16,8 @@
     "types": ["node", "vite/client"],
     "paths": {
       "@cherryblossom/api-contract": ["./host/contract.ts"],
-      "@cherryblossom/ai-models": ["./host/ai-models.ts"]
+      "@cherryblossom/ai-models": ["./host/ai-models.ts"],
+      "@cherryblossom/project-changes": ["./host/project-changes.ts"]
     }
   },
   "include": ["src", "tests", "host", "e2e", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"]

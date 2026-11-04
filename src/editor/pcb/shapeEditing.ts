@@ -1,3 +1,4 @@
+import { CellGrid } from "../../lib/cellGrid"
 import { boxesOverlap, type Box } from "../../lib/geometry"
 import { arcCircle, pointShapeDistance, shapeCopper, shapeInkBox, type ShapeCopper } from "../../model/shapes"
 import { SHAPE_LAYERS, shapeLayerInfo, type ShapeLayerInfo } from "../../model/shapeLayers"
@@ -89,14 +90,32 @@ export function pointShapeInkDistance(at: Vec2, shape: BoardShape): number {
  * drawings are on top; board drawings come before a part's in the list, so a part's win a tie.
  */
 export function hitShape(shapes: WorldShape[], at: Vec2, tol: number, vis: ShapeVisibility): WorldShape | null {
-  for (let i = shapes.length - 1; i >= 0; i--) {
+  // Only the drawings whose boxes are near the point are tried, the last first, as going through them all would: a board's parts have tens of
+  // thousands of drawings, and the PCB view asks on every move of the pointer.
+  const { grid, boxes } = shapeIndex(shapes)
+  const near = grid.near({ minX: at.x - tol, minY: at.y - tol, maxX: at.x + tol, maxY: at.y + tol })
+  for (let k = near.length - 1; k >= 0; k--) {
+    const i = near[k]
     const s = shapes[i]
     if (!shapeShown(s, vis)) continue
-    const b = shapeInkBox(s.shape)
+    const b = boxes[i]
     if (at.x < b.minX - tol || at.x > b.maxX + tol || at.y < b.minY - tol || at.y > b.maxY + tol) continue
     if (pointShapeInkDistance(at, s.shape) <= tol) return s
   }
   return null
+}
+
+const shapeIndexes = new WeakMap<WorldShape[], { grid: CellGrid; boxes: Box[] }>()
+/** The drawings' ink boxes, and a grid of them, made once for a list of drawings (`worldShapes` keeps its list while nothing changes). */
+function shapeIndex(shapes: WorldShape[]) {
+  let index = shapeIndexes.get(shapes)
+  if (!index) {
+    const boxes = shapes.map((s) => shapeInkBox(s.shape))
+    const grid = new CellGrid()
+    boxes.forEach((b, i) => grid.add(i, b))
+    shapeIndexes.set(shapes, (index = { grid, boxes }))
+  }
+  return index
 }
 
 /** What clicking a drawing selects: a board drawing is itself, a dimension's line is the dimension, a part's drawing is the part. */

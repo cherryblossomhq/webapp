@@ -1,3 +1,4 @@
+import { CellGrid } from "../../lib/cellGrid"
 import { boxesOverlap, pointInBox, type Box } from "../../lib/geometry"
 import { pcbCourtyard } from "../../model/instances"
 import { shapeLayerInfo } from "../../model/shapeLayers"
@@ -55,14 +56,46 @@ const bodyUnder = (project: Project, at: Vec2) =>
  * win over the body of a part under the point, as in KiCad: a click on a part's middle picks the part, and a drag moves it, not the text.
  */
 export function hitText(project: Project, at: Vec2, tol: number, vis: ShapeVisibility): WorldText | null {
-  const all = visibleTexts(project, vis)
-  const body = all.some(isDocumentationText) && bodyUnder(project, at)
-  for (let i = all.length - 1; i >= 0; i--) {
-    if (body && isDocumentationText(all[i])) continue
-    const b = textBox(project, all[i])
-    if (b && near(at, b, tol)) return all[i]
+  // Only the texts on screen whose boxes are near the point are tried (`textIndex`), the last first, as going through them all would.
+  const { shown, grid, boxes, documentation } = textIndex(project, vis)
+  const cands = grid.near({ minX: at.x - tol, minY: at.y - tol, maxX: at.x + tol, maxY: at.y + tol })
+  // Whether a part's body is under the point, asked only when a documentation text is near (`documentation` says one is on screen at all).
+  let body: boolean | null = documentation ? null : false
+  for (let k = cands.length - 1; k >= 0; k--) {
+    const t = shown[cands[k]]
+    if (isDocumentationText(t) && (body ??= bodyUnder(project, at))) continue
+    const b = boxes[cands[k]]
+    if (b && near(at, b, tol)) return t
   }
   return null
+}
+
+let textIndexKept: {
+  all: WorldText[]
+  project: Project
+  hidden: ShapeVisibility["hidden"]
+  layers: ShapeVisibility["layers"]
+  shown: WorldText[]
+  grid: CellGrid
+  boxes: (Box | null)[]
+  documentation: boolean
+} | null = null
+
+/**
+ * The texts on screen, their boxes and a grid of them, made again only when the project or what is shown changes. Only the texts on screen: a
+ * text's box is its laid out ink, which the board has made for those it draws, and laying out every hidden one of a big board took a second and a
+ * half on the first move of the pointer.
+ */
+function textIndex(project: Project, vis: ShapeVisibility) {
+  const all = worldTexts(project)
+  const kept = textIndexKept
+  if (kept && kept.all === all && kept.project === project && kept.hidden === vis.hidden && kept.layers === vis.layers) return kept
+  const shown = all.filter((t) => textShownOnScreen(t, vis))
+  const boxes = shown.map((t) => textBox(project, t))
+  const grid = new CellGrid()
+  boxes.forEach((b, i) => b && grid.add(i, b))
+  textIndexKept = { all, project, hidden: vis.hidden, layers: vis.layers, shown, grid, boxes, documentation: shown.some(isDocumentationText) }
+  return textIndexKept
 }
 
 /** The texts a marquee touches, as selection ids: board texts and the texts of parts. */

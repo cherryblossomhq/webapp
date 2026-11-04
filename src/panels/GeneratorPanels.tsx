@@ -1,5 +1,6 @@
 import { useMemo } from "react"
-import { netLengths, padDieTimes, tuningPatterns } from "../model/netLengths"
+import type { SchematicConnectivity } from "../model/connectivity"
+import { netLengths, padDieTimes, tuningPatterns, type NetLength } from "../model/netLengths"
 import { formatLength } from "../model/rules"
 import { layerLabel } from "../model/stack"
 import type { GenValue, PcbGroup, Project } from "../model/types"
@@ -95,11 +96,22 @@ export function NetLengthSection({ project, net }: { project: Project; net: stri
   return needed ? <NetLengthReport project={project} net={net} /> : null
 }
 
+/** The lengths of every net of an analysis, made once for it: selecting one piece of copper after another asked for all of them each time. */
+const lengthsOf = new WeakMap<ReadonlyMap<string, string | null>, { project: Project; lengths: Map<string, NetLength> }>()
+function netLengthOf(project: Project, conn: SchematicConnectivity, traceNet: ReadonlyMap<string, string | null>, viaNet: ReadonlyMap<string, string | null>, net: string): NetLength | undefined {
+  let kept = lengthsOf.get(traceNet)
+  if (!kept || kept.project !== project) {
+    kept = { project, lengths: new Map(netLengths(project, conn, traceNet, viaNet).map((n) => [n.net, n])) }
+    lengthsOf.set(traceNet, kept)
+  }
+  return kept.lengths.get(net)
+}
+
 function NetLengthReport({ project, net }: { project: Project; net: string }) {
   const unit = useLengthUnit()
   const conn = useConnectivity()
   const pcb = usePcbAnalysis()
-  const l = useMemo(() => (conn && pcb ? netLengths(project, conn, pcb.traceNet, pcb.viaNet).find((n) => n.net === net) : undefined), [project, conn, pcb, net])
+  const l = useMemo(() => (conn && pcb ? netLengthOf(project, conn, pcb.traceNet, pcb.viaNet, net) : undefined), [project, conn, pcb, net])
   if (!l) return null
   return (
     <div className="space-y-1" aria-label="Net length">

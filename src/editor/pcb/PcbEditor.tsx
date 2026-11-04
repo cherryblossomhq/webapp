@@ -49,6 +49,8 @@ import { clampLayer, copperLayers, layerLabel, layerOfKicadName, viaLayers } fro
 import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../model/arcTracks"
 import { makeArcTrace, makeVia, moveArcPoint, nextCopperLayer } from "../../model/layerOps"
 import { traceD } from "./traceGraphics"
+import { hitIndex, netCopper } from "./hitIndex"
+import { fadedPaths, mergedPaths, padPaths, viaPaths, type PathPiece } from "./boardPaths"
 import { CanvasHint } from "../schematic/SchematicEditor"
 import { PointMark, ShapeDraw, shapeLayerColor } from "./ShapeGraphics"
 import { worldPoints } from "../../model/pcbPoints"
@@ -76,7 +78,7 @@ import { nonCopperFills } from "../../model/nonCopperFill"
 import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, PLACEMENT_TOOL_KEY, selectedZoneIds, zoneHit, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
 import { defaultPlacement } from "../../model/placementAreas"
 import { Tooltip } from "../../ui/Tooltip"
-import { isTyping, toWorld, Viewport, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
+import { isTyping, Viewport, type StillLayer, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
 import { onBoard } from "../../model/partFlags"
 
 export const PCB_GRID = 0.25
@@ -120,6 +122,10 @@ type Mode =
   /** Dragging one of the three points of a selected arc track. */
   | { kind: "arcEdit"; id: string; index: 0 | 1 | 2; moved: boolean }
 
+/** Whether a tool, or what is under way, draws something at the pointer (a route, a drawing, a zone, a via to place): only then does a move draw the editor again. */
+const drawsAtCursor = (tool: string, m: Mode) =>
+  m.kind === "route" || m.kind === "draw" || m.kind === "dim" || m.kind === "zone" || m.kind === "slot" || (m.kind === "idle" && tool !== "select")
+
 const boardBox = (p: Project): Box => ({
   minX: p.board.x - p.board.width / 2,
   maxX: p.board.x + p.board.width / 2,
@@ -130,8 +136,11 @@ const boardBox = (p: Project): Box => ({
 function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): Hit | null {
   const bb = boardBox(p)
   if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) return { type: "boardHandle" }
+  // Only what is near the pointer is tried (`hitIndex`), in the order the whole board would be.
+  const index = hitIndex(p, items)
+  const near: Box = { minX: at.x - tol * 0.5, minY: at.y - tol * 0.5, maxX: at.x + tol * 0.5, maxY: at.y + tol * 0.5 }
   // Pads on the active layer first, then any pad.
-  const pads = items.filter((i): i is Extract<CopperItem, { kind: "pad" }> => i.kind === "pad")
+  const pads = index.padGrid.near(near).map((i) => index.pads[i])
   for (const pass of [true, false]) {
     for (const it of pads) {
       if (it.pad.componentId === BOARD_OWNER) continue
@@ -139,12 +148,17 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
       if (pointPadDistance(at, it.pad) <= tol * 0.5) return { type: "pad", pad: it.pad, netId: it.netId }
     }
   }
-  for (const v of p.vias) {
+  for (const i of index.viaGrid.near(near)) {
+    const v = p.vias[i]
     if (Math.hypot(at.x - v.x, at.y - v.y) <= v.diameter / 2 + tol * 0.5) return { type: "via", id: v.id, at: { x: v.x, y: v.y } }
   }
   const ui = uiApi()
-  // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first.
-  const traces = p.traces.filter((t) => copperShown(ui, t.layer)).sort((a, b) => (a.layer === layer ? 1 : 0) - (b.layer === layer ? 1 : 0))
+  // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first, the last drawn first.
+  const traces = index.traceGrid
+    .near(near)
+    .map((i) => p.traces[i])
+    .filter((t) => copperShown(ui, t.layer))
+    .sort((a, b) => (a.layer === layer ? 1 : 0) - (b.layer === layer ? 1 : 0))
   for (let i = traces.length - 1; i >= 0; i--) {
     const t = traces[i]
     if (isArcTrace(t)) {
@@ -168,12 +182,10 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     const s = hitShape(shapes, at, tol * 0.5, shapeVisibility())
     if (s) return s.select ? { type: "shape", id: s.select } : s.owner === "#board" ? { type: "shape", id: s.id } : { type: "component", id: s.owner }
   }
-  const parts = resolvedComponents(p)
+  const parts = index.partGrid.near({ minX: at.x, minY: at.y, maxX: at.x, maxY: at.y })
   for (let i = parts.length - 1; i >= 0; i--) {
-    const c = parts[i]
-    if (!c.pcb.placed) continue
-    const cy = pcbCourtyard(c)
-    if (cy && pointInBox(at, cy)) return { type: "component", id: c.id }
+    const { c, courtyard } = index.parts[parts[i]]
+    if (pointInBox(at, courtyard)) return { type: "component", id: c.id }
   }
   // A zone with a polygon, by its edge or its copper, where nothing above it is.
   if (p.zones.some((z) => z.outline)) {
@@ -242,11 +254,35 @@ function keepDrawing(kept: Map<string, KeptDrawing>, name: string, key: unknown[
   return el
 }
 
-/** The pixel size the kept drawing is made at: the view's, to the nearest step of a factor of the square root of two, so a zoom draws again once a step. */
-const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale) / Math.log(Math.SQRT2))
+/** An element of the board's drawing and how faint it is drawn (`byOpacity`). */
+type Faded = [opacity: number, el: ReactNode]
 
-/** How long a zoom has to stop before the kept drawings are made again at its step. */
-const ZOOM_SETTLE_MS = 250
+/**
+ * Elements drawn in one group for each opacity, the fainter under the rest. An opacity of its own on each element makes it a piece of its own
+ * that the page sorts into layers again on every frame anything changes: the 18,000 faint drawings and back-side parts of CERN's Macbeth took a
+ * quarter of a second a frame to move the pointer over, where the same elements in a few groups take nothing.
+ */
+function byOpacity(items: Faded[]): ReactNode {
+  const groups = new Map<number, ReactNode[]>()
+  for (const [o, el] of items) {
+    const list = groups.get(o)
+    if (list) list.push(el)
+    else groups.set(o, [el])
+  }
+  return [...groups]
+    .sort((a, b) => a[0] - b[0])
+    .map(([o, els]) => (
+      <g key={o} opacity={o === 1 ? undefined : o}>
+        {els}
+      </g>
+    ))
+}
+
+/**
+ * The pixel size the kept drawing is made at: the view's, to the nearest step of a factor of the square root of two, so a zoom makes its elements
+ * again once a step (and in between only moves and scales them, `StillLayer`).
+ */
+const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale) / Math.log(Math.SQRT2))
 
 /** The copper items past which a drag keeps the board's drawing (and its analysis, `getLiveAnalysis`) as it began. */
 const KEEP_DRAWING_IN_DRAG = 4000
@@ -268,33 +304,13 @@ export function PcbEditor() {
   const focusRequest = useUi((s) => s.focusRequest)
   const vpRef = useRef<ViewportHandle>(null)
   const drawings = useRef(new Map<string, KeptDrawing>())
-  // The zoom step the kept drawings are made at (`drawingPx`). It follows the view a moment after a zoom stops: while one goes on, the drawings are
-  // those of the step it started at, scaled by the view's transform, so a turn of the wheel draws nothing again.
-  const drawStep = useRef<number | null>(null)
-  const stepTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [, redrawAtStep] = useState(0)
-  useEffect(() => () => {
-    if (stepTimer.current) clearTimeout(stepTimer.current)
-  }, [])
-  const stepFor = (scale: number) => {
-    const want = drawingPx(scale)
-    if (drawStep.current === null) drawStep.current = want
-    if (want !== drawStep.current) {
-      if (stepTimer.current) clearTimeout(stepTimer.current)
-      stepTimer.current = setTimeout(() => {
-        stepTimer.current = null
-        const now = vpRef.current?.transform().scale
-        if (now === undefined) return
-        drawStep.current = drawingPx(now)
-        redrawAtStep((n) => n + 1)
-      }, ZOOM_SETTLE_MS)
-    }
-    return drawStep.current
-  }
   const [mode, setMode] = useState<Mode>({ kind: "idle" })
   const modeRef = useRef(mode)
   modeRef.current = mode
+  // Where the pointer is, snapped. It is state (and the editor drawn again on every move of the pointer) only while a tool draws something at it:
+  // with the select tool a move draws nothing but the hovered item's highlight, which `hover` holds.
   const [cursor, setCursor] = useState<Vec2 | null>(null)
+  const cursorRef = useRef<Vec2 | null>(null)
   const [hover, setHover] = useState<Hit | null>(null)
   const [fitBox] = useState(() => boardBox(project))
   const [note, setNote] = useState<string | null>(null)
@@ -344,6 +360,8 @@ export function PcbEditor() {
   // A tool stays with its own clicks: switching tools drops a drawing that was half made.
   useEffect(() => {
     if (modeRef.current.kind === "draw" || modeRef.current.kind === "dim") setMode({ kind: "idle" })
+    // A tool that draws at the pointer starts where the pointer is, not where the last such tool left it.
+    setCursor(cursorRef.current)
   }, [tool])
 
   const drawStyle = () => ({ layer: drawLayer, width: drawWidth ?? defaultDrawWidth(drawLayer) })
@@ -726,7 +744,8 @@ export function PcbEditor() {
     const native = e.native as React.PointerEvent
     const m = modeRef.current
     const { at } = snapTarget(e.world, native.altKey)
-    setCursor(at)
+    cursorRef.current = at
+    if (drawsAtCursor(uiApi().pcbTool, m)) setCursor(at)
     uiApi().setCursor(at)
     if (m.kind === "marquee") {
       setMode({ ...m, current: e.world })
@@ -857,7 +876,8 @@ export function PcbEditor() {
     } else if (m.kind === "zone") {
       commitZone(m)
       setMode({ kind: "idle" })
-    } else if (m.kind === "idle" && cursor) {
+    } else if (m.kind === "idle" && cursorRef.current) {
+      const cursor = cursorRef.current
       // A right click on a corner of the selected zone takes the corner away (the polygon keeps three).
       const zsel = selectedZoneIds(uiApi().selection)
       const z = zsel.length === 1 ? projectApi().project!.zones.find((x) => x.id === zsel[0]) : undefined
@@ -1057,7 +1077,9 @@ export function PcbEditor() {
   const selectedArcs = selectionIds(selection, "t").length === 1 ? project.traces.filter((t) => selected.has(`t:${t.id}`) && isArcTrace(t)) : []
   const r = Math.min(project.board.cornerRadius, project.board.width / 2, project.board.height / 2)
   const cursorCss = tool === "route" || mode.kind === "route" || isDrawTool(tool) || tool === "text" || tool === "dimension" || tool === "zone" || tool === "keepout" || tool === "placement" ? "crosshair" : tool === "via" ? "cell" : hover?.type === "boardHandle" ? "nwse-resize" : "default"
-  const placed = resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c))
+  // What the render below draws from, made again only when what it depends on changes: hovering or selecting draws the editor again, and on a
+  // board of 1,566 parts each of these went through thousands of things every time.
+  const placed = useMemo(() => resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c)), [project])
   // Every copper layer is opaque; the active one is in front, so gaps in its pour show the others, which lie in stack order (the back first) behind it.
   const stack = copperLayers(project.board)
   const copperOn = (l: CopperLayer) => copperShown({ layers, hiddenCopper }, l)
@@ -1070,10 +1092,10 @@ export function PcbEditor() {
 
   const routeWidth = (mode.kind === "route" ? mode.width : undefined) ?? netTraceWidth(project.rules, mode.kind === "route" ? netName(mode.netId) : null)
   // Drawings on screen, by what they are drawn as: copper in its layer's group, silkscreen with the part silk, the rest muted.
-  const vis: ShapeVisibility = { hidden: hiddenShapeLayers, layers }
-  const shown = visibleShapes(worldShapes(project), vis)
+  const vis: ShapeVisibility = useMemo(() => ({ hidden: hiddenShapeLayers, layers }), [hiddenShapeLayers, layers])
+  const shown = useMemo(() => visibleShapes(worldShapes(project), vis), [project, vis])
   // X29: the fills of the zones on mask, paste, silkscreen and user layers.
-  const otherFills = nonCopperFills(project)
+  const otherFills = useMemo(() => nonCopperFills(project), [project])
   const otherShown = (name: string) => !hiddenShapeLayers[name] && (shapeLayerInfo(name)?.kind !== "silk" || layers.silk)
   const hlName = highlightNet ? netName(highlightNet) : null
   const shapeDim = (net: string | undefined) => (dimOthers && net !== hlName ? 0.3 : 1)
@@ -1098,8 +1120,8 @@ export function PcbEditor() {
     return [...frames.values()]
   })()
   // Texts on screen, by what their layer is for; none on a board that has none.
-  const shownTexts = visibleTexts(project, vis)
-  const markers = pcb.violations.filter((v) => v.severity === "error")
+  const shownTexts = useMemo(() => visibleTexts(project, vis), [project, vis])
+  const markers = useMemo(() => pcb.violations.filter((v) => v.severity === "error"), [pcb])
 
   // The board as drawn (its copper, holes, drawings, texts and silkscreen) and the marks on it (courtyards, ratsnest, errors), made again only when
   // what they show changes, at the zoom step of `drawingPx`: a pan, a zoom within a step and a move of the pointer give React the same elements, so
@@ -1127,46 +1149,38 @@ export function PcbEditor() {
                 {pours
                   .filter((f) => f.layer === l)
                   .map((f) => (
-                    <path
-                      key={f.zoneId}
-                      d={f.d}
-                      fill={pourColor(l)}
-                      fillRule="evenodd"
-                      opacity={dim(f.netId)}
-                    />
+                    <path key={f.zoneId} d={f.d} fill={pourColor(l)} fillRule="evenodd" fillOpacity={dim(f.netId)} />
                   ))}
-                {project.traces
-                  .filter((tr) => tr.layer === l)
-                  .map((tr) => {
+                {/* The tracks: the lit net's glow under all the copper, then the copper, as a path for each width */}
+                {(() => {
+                  const glows: [number, PathPiece][] = []
+                  const copper: [number, PathPiece][] = []
+                  for (const tr of project.traces) {
+                    if (tr.layer !== l) continue
                     const net = pcb.traceNet.get(tr.id) ?? null
-                    const isSel = false
-                    const hi = !!heldNet && net === heldNet
                     const d = traceD(tr)
-                    return (
-                      <g key={tr.id} opacity={dim(net)}>
-                        {(hi || isSel) && <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={isSel ? 0.95 : 0.6} />}
-                        <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
-                      </g>
-                    )
-                  })}
-                {shown
-                  .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
-                  .map((s) => (
-                    <g key={s.id} opacity={shapeDim(s.shape.net)}>
-                      <ShapeDraw shape={s.shape} color={copperColor(l)} px={px} selected={false} />
-                    </g>
-                  ))}
+                    if (heldNet && net === heldNet) glows.push([dim(net), { style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d }])
+                    copper.push([dim(net), { style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d }])
+                  }
+                  return fadedPaths([...glows, ...copper])
+                })()}
+                {byOpacity(
+                  shown
+                    .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
+                    .map((s): Faded => [shapeDim(s.shape.net), <ShapeDraw key={s.id} shape={s.shape} color={copperColor(l)} px={px} selected={false} />]),
+                )}
                 {shownTexts
                   .filter((tx) => textLayerKind(tx.layer) === "copper" && layerOfKicadName(tx.layer) === l)
                   .map((tx) => (
                     <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />
                   ))}
-                {pcb.items.map((it) =>
-                  it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l ? (
-                    <g key={it.id} opacity={dim(netOf(it))}>
-                      <PadShape pad={it.pad} color={l === front ? PCB.pad : PCB.padBack} highlight={!!heldNet && it.netId === heldNet} px={px} />
-                    </g>
-                  ) : null,
+                {padPaths(
+                  pcb.items.flatMap((it) =>
+                    it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l
+                      ? [{ opacity: dim(netOf(it)), pad: it.pad, id: it.id, color: l === front ? PCB.pad : PCB.padBack, highlight: !!heldNet && it.netId === heldNet }]
+                      : [],
+                  ),
+                  px,
                 )}
               </g>
             ) : null,
@@ -1175,111 +1189,108 @@ export function PcbEditor() {
           {/* Through-hole pads, mounting holes and vias span the layers they have copper on (every one for a through-hole pad and a through via) */}
           {stack.some((l) => copperOn(l)) && (
             <>
-              {pcb.items.map((it) =>
-                it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? (
-                  <g key={it.id} opacity={dim(netOf(it))}>
-                    <PadShape pad={it.pad} color={PCB.pad} highlight={!!heldNet && it.netId === heldNet} px={px} />
-                  </g>
-                ) : null,
+              {padPaths(
+                pcb.items.flatMap((it) =>
+                  it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => copperOn(l))
+                    ? [{ opacity: dim(netOf(it)), pad: it.pad, id: it.id, color: PCB.pad, highlight: !!heldNet && it.netId === heldNet }]
+                    : [],
+                ),
+                px,
               )}
-              {project.vias.map((v) => {
-                const net = pcb.viaNet.get(v.id) ?? null
-                const isSel = false
-                const span = viaLayers(project.board, v)
-                if (!span.some((l) => copperOn(l))) return null
-                // A via that does not run the whole stack (X5) is drawn in the colour of the layer it starts on, with a dashed ring: blind and buried, and a micro via a ring of its own.
-                const partial = v.kind !== undefined
-                return (
-                  <g key={v.id} opacity={dim(net)}>
-                    <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={isSel ? PCB.select : partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via} stroke={heldNet && net === heldNet ? "#fff" : partial ? PCB.hole : "none"} strokeWidth={1.4 * px} strokeDasharray={partial ? `${3 * px} ${2 * px}` : undefined} />
-                    <circle cx={v.x} cy={v.y} r={v.drill / 2} fill={PCB.hole} />
-                    {v.kind === "micro" && <circle cx={v.x} cy={v.y} r={v.diameter / 2 - 1.2 * px} fill="none" stroke={PCB.hole} strokeWidth={1 * px} />}
-                  </g>
-                )
-              })}
+              {viaPaths(
+                project.vias.flatMap((v) => {
+                  const net = pcb.viaNet.get(v.id) ?? null
+                  const span = viaLayers(project.board, v)
+                  if (!span.some((l) => copperOn(l))) return []
+                  // A via that does not run the whole stack (X5) is drawn in the colour of the layer it starts on, with a dashed ring: blind and buried, and a micro via a ring of its own.
+                  const partial = v.kind !== undefined
+                  return [{ opacity: dim(net), via: v, ringColor: partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via, partial, lit: !!heldNet && net === heldNet }]
+                }),
+                px,
+              )}
             </>
           )}
 
           {/* Drawings on mask, paste, fabrication, courtyard, adhesive and user layers: thin and muted, under the silkscreen */}
-          {shown
-            .filter((s) => {
-              const k = shapeKindOf(s.shape.layer)
-              return k !== "copper" && k !== "silk"
-            })
-            .map((s) => (
-              <g key={s.id} opacity={shapeDim(s.shape.net) * sideOpacity(s.shape.layer) * 0.85}>
-                <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={false} />
-              </g>
-            ))}
+          {byOpacity(
+            shown
+              .filter((s) => {
+                const k = shapeKindOf(s.shape.layer)
+                return k !== "copper" && k !== "silk"
+              })
+              .map((s): Faded => [shapeDim(s.shape.net) * sideOpacity(s.shape.layer) * 0.85, <ShapeDraw key={s.id} shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={false} />]),
+          )}
 
           <OtherZoneFills fills={otherFills} silk={false} shown={otherShown} opacityOf={(name) => sideOpacity(name) * 0.85} />
 
           {/* Text on mask, paste, fabrication, courtyard, adhesive, user and edge layers: muted, under the silkscreen */}
-          {shownTexts
-            .filter((tx) => {
-              const k = textLayerKind(tx.layer)
-              return k !== "copper" && k !== "silk"
-            })
-            .map((tx) => (
-              <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} opacity={(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85} />
-            ))}
+          {byOpacity(
+            shownTexts
+              .filter((tx) => {
+                const k = textLayerKind(tx.layer)
+                return k !== "copper" && k !== "silk"
+              })
+              .map((tx): Faded => [(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
+          )}
 
           {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
-          {worldPoints(project, placed)
-            .filter((pt) => otherShown(pt.layer))
-            .map((pt, i) => (
-              <g key={`pt${i}`} opacity={sideOpacity(pt.layer) * 0.85}>
-                <PointMark x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />
-              </g>
-            ))}
+          {byOpacity(
+            worldPoints(project, placed)
+              .filter((pt) => otherShown(pt.layer))
+              .map((pt, i): Faded => [sideOpacity(pt.layer) * 0.85, <PointMark key={`pt${i}`} x={pt.x} y={pt.y} size={pt.size} color={shapeLayerColor(pt.layer)} px={px} />]),
+          )}
 
           {/* Silkscreen: part outlines, designators and free text */}
           {layers.silk && (
             <>
-              {shownTexts
-                .filter((tx) => textLayerKind(tx.layer) === "silk")
-                .map((tx) => (
-                  <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} opacity={textSide(tx.layer) !== front ? 0.55 : 1} />
-                ))}
+              {byOpacity(
+                shownTexts
+                  .filter((tx) => textLayerKind(tx.layer) === "silk")
+                  .map((tx): Faded => [textSide(tx.layer) !== front ? 0.55 : 1, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
+              )}
               <OtherZoneFills fills={otherFills} silk shown={otherShown} opacityOf={sideOpacity} />
-              {shown
-                .filter((s) => shapeKindOf(s.shape.layer) === "silk")
-                .map((s) => (
-                  <g key={s.id} opacity={sideOpacity(s.shape.layer)}>
-                    <ShapeDraw shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={false} />
-                  </g>
-                ))}
-              {placed.map((c) => (
-                <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : 0.55}>
-                  {pcbSilk(c).map((path, i) => (
-                    <polyline
-                      key={i}
-                      points={path.map((p) => `${p.x},${p.y}`).join(" ")}
-                      fill="none"
-                      stroke={c.pcb.side === "top" ? PCB.silk : PCB.silkBottom}
-                      strokeWidth={SILK_WIDTH}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  ))}
-                  {designators.get(c.id) && <DesignatorText d={designators.get(c.id)!} />}
-                </g>
-              ))}
-              {ownTexts(project).map((tx) => (
-                <g key={tx.id} opacity={tx.side === front ? 1 : 0.55}>
-                  {boardTextStrokes(tx).map((path, i) => (
-                    <polyline
-                      key={i}
-                      points={path.map((p) => `${p.x},${p.y}`).join(" ")}
-                      fill="none"
-                      stroke={tx.side === "top" ? PCB.silk : PCB.silkBottom}
-                      strokeWidth={boardTextStrokeWidth(tx)}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  ))}
-                </g>
-              ))}
+              {byOpacity(
+                shown
+                  .filter((s) => shapeKindOf(s.shape.layer) === "silk")
+                  .map((s): Faded => [sideOpacity(s.shape.layer), <ShapeDraw key={s.id} shape={s.shape} color={shapeLayerColor(s.shape.layer)} px={px} selected={false} />]),
+              )}
+              {byOpacity(
+                placed.map((c): Faded => [
+                  c.pcb.side === front ? 1 : 0.55,
+                  <g key={`s${c.id}`}>
+                    {pcbSilk(c).map((path, i) => (
+                      <polyline
+                        key={i}
+                        points={path.map((p) => `${p.x},${p.y}`).join(" ")}
+                        fill="none"
+                        stroke={c.pcb.side === "top" ? PCB.silk : PCB.silkBottom}
+                        strokeWidth={SILK_WIDTH}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ))}
+                    {designators.get(c.id) && <DesignatorText d={designators.get(c.id)!} />}
+                  </g>,
+                ]),
+              )}
+              {byOpacity(
+                ownTexts(project).map((tx): Faded => [
+                  tx.side === front ? 1 : 0.55,
+                  <g key={tx.id}>
+                    {boardTextStrokes(tx).map((path, i) => (
+                      <polyline
+                        key={i}
+                        points={path.map((p) => `${p.x},${p.y}`).join(" ")}
+                        fill="none"
+                        stroke={tx.side === "top" ? PCB.silk : PCB.silkBottom}
+                        strokeWidth={boardTextStrokeWidth(tx)}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ))}
+                  </g>,
+                ]),
+              )}
             </>
           )}
         </g>
@@ -1288,41 +1299,39 @@ export function PcbEditor() {
   const passingHighlight = (px: number): ReactNode =>
     keepDrawing(drawings.current, "passing", [project, pcb, passingNet, layer, layers, hiddenCopper, px], () => {
       if (!passingNet) return null
+      // As few paths as the board's own copper (`boardPaths.tsx`), from the net's own copper (`netCopper`): pointing at a pad of a ground net lights
+      // thousands of pieces of copper.
+      const net = netCopper(project, pcb, passingNet) ?? { traces: [], pads: [], vias: [] }
       return (
         <g>
-          {layerOrder.map((l) =>
-            copperOn(l) ? (
+          {layerOrder.map((l) => {
+            if (!copperOn(l)) return null
+            const glows: PathPiece[] = []
+            const copper: PathPiece[] = []
+            for (const tr of net.traces) {
+              if (tr.layer !== l) continue
+              const d = traceD(tr)
+              glows.push({ style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d })
+              copper.push({ style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d })
+            }
+            return (
               <g key={l}>
-                {project.traces
-                  .filter((tr) => tr.layer === l && pcb.traceNet.get(tr.id) === passingNet)
-                  .map((tr) => {
-                    const d = traceD(tr)
-                    return (
-                      <g key={tr.id}>
-                        <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />
-                        <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
-                      </g>
-                    )
-                  })}
-                {pcb.items.map((it) =>
-                  it.kind === "pad" && it.netId === passingNet && it.layers.length === 1 && it.layers[0] === l ? (
-                    <PadShape key={it.id} pad={it.pad} color={l === front ? PCB.pad : PCB.padBack} highlight px={px} />
-                  ) : null,
+                {mergedPaths([...glows, ...copper])}
+                {padPaths(
+                  net.pads.flatMap((it) => (it.layers.length === 1 && it.layers[0] === l ? [{ opacity: 1, pad: it.pad, id: it.id, color: l === front ? PCB.pad : PCB.padBack, highlight: true }] : [])),
+                  px,
                 )}
               </g>
-            ) : null,
+            )
+          })}
+          {padPaths(
+            net.pads.flatMap((it) => (it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? [{ opacity: 1, pad: it.pad, id: it.id, color: PCB.pad, highlight: true }] : [])),
+            px,
           )}
-          {pcb.items.map((it) =>
-            it.kind === "pad" && it.netId === passingNet && it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? <PadShape key={it.id} pad={it.pad} color={PCB.pad} highlight px={px} /> : null,
+          {viaPaths(
+            net.vias.filter((v) => viaLayers(project.board, v).some((l) => copperOn(l))).map((v) => ({ opacity: 1, via: { ...v, kind: undefined }, ringColor: PCB.via, partial: false, lit: true })),
+            px,
           )}
-          {project.vias
-            .filter((v) => pcb.viaNet.get(v.id) === passingNet && viaLayers(project.board, v).some((l) => copperOn(l)))
-            .map((v) => (
-              <g key={v.id}>
-                <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={PCB.via} stroke="#fff" strokeWidth={1.4 * px} />
-                <circle cx={v.x} cy={v.y} r={v.drill / 2} fill={PCB.hole} />
-              </g>
-            ))}
           {layers.ratsnest &&
             pcb.ratsnest
               .filter((rl) => rl.netId === passingNet)
@@ -1477,6 +1486,41 @@ export function PcbEditor() {
       </g>
     ))
 
+  // The board with its marks under everything, and the labels over it, each in a layer of its own that a pan or a zoom moves and scales without
+  // drawing it again (`StillLayer`): the board once a zoom stops, at its step (`drawingPx`); the labels, which are only those on screen, once any
+  // move of the view stops.
+  const showLabels = layers.labels && (layers.top || layers.bottom)
+  const stills: StillLayer[] = [
+    {
+      key: "board",
+      follows: "zoom",
+      draw: (d) => {
+        const step = drawingPx(d.scale)
+        return (
+          <>
+            {boardDrawing(step)}
+            {boardMarks(step)}
+          </>
+        )
+      },
+    },
+    {
+      key: "labels",
+      over: true,
+      follows: "view",
+      // Pin names on pads and net names along traces once there is room to read them.
+      draw: (d, view) =>
+        keepDrawing(drawings.current, dragKept ? "labels!" : "labels", [project, pcb, pinNames, front, showLabels, d], () =>
+          showLabels ? (
+            <>
+              <TraceLabels project={project} items={pcb.items} traceNet={pcb.traceNet} netName={netName} scale={d.scale} front={front} view={view} />
+              <PadLabels items={pcb.items} pinNames={pinNames} scale={d.scale} front={front} view={view} />
+            </>
+          ) : null,
+        ),
+    },
+  ]
+
   return (
     <div className="absolute inset-0">
       <Viewport
@@ -1522,30 +1566,19 @@ export function PcbEditor() {
             )}
           </>
         )}
+        stills={stills}
       >
         {(t) => {
           const px = 1 / t.scale
-          const view = visibleBox(t, vpRef.current?.element())
-          const step = stepFor(t.scale)
+          const step = drawingPx(t.scale)
           return (
             <>
-              {boardDrawing(step)}
               {passingHighlight(step)}
               {selectionDrawing(step)}
               {movingDrawing(step)}
 
-              {/* Pin names on pads and net names along traces once there is room to read them */}
-              {layers.labels && (layers.top || layers.bottom) && (
-                <>
-                  <TraceLabels project={project} items={pcb.items} traceNet={pcb.traceNet} netName={netName} scale={t.scale} front={front} view={view} />
-                  <PadLabels items={pcb.items} pinNames={pinNames} scale={t.scale} front={front} view={view} />
-                </>
-              )}
-
-              {boardMarks(step)}
-
               {/* The outlines of the zones, and the corners of the selected ones */}
-              {tool !== "route" && <ZoneOutlines project={project} selected={selected} px={px} active={layer} />}
+              {tool !== "route" && keepDrawing(drawings.current, "zones", [project, selected, step, layer], () => <ZoneOutlines project={project} selected={selected} px={step} active={layer} />)}
               {(tool === "zone" || tool === "keepout" || tool === "placement") && (
                 <ZonePreview
                   points={mode.kind === "zone" ? mode.points : []}
@@ -1659,11 +1692,15 @@ export function PcbEditor() {
           )
         }}
       </Viewport>
-      {pcb.zonesPending && (
+      {pcb.opening ? (
+        <div role="status" className="pointer-events-none absolute left-3 top-3 rounded-[6px] bg-[#1f1d25]/90 px-2 py-1 text-[11px] text-white/80">
+          Finding the board's connections. The ratsnest and checks follow in a few seconds.
+        </div>
+      ) : pcb.zonesPending ? (
         <div role="status" className="pointer-events-none absolute left-3 top-3 rounded-[6px] bg-[#1f1d25]/90 px-2 py-1 text-[11px] text-white/80">
           Refilling copper pours. What is drawn and checked is the last fill until it is done.
         </div>
-      )}
+      ) : null}
       {mode.kind === "route" ? (
         <CanvasHint
           dark
@@ -1720,14 +1757,6 @@ function drawHint(tool: DrawTool, clicks: number): [string, string][] {
 }
 
 const netNameOf = (p: Project, netId: string | null) => (netId ? (getConnectivity(p).nets.find((n) => n.id === netId)?.name ?? null) : null)
-
-/** World-space box currently on screen, for culling labels. */
-function visibleBox(t: ViewTransform, el: HTMLElement | null | undefined): Box | null {
-  if (!el) return null
-  const a = toWorld(t, { x: 0, y: 0 })
-  const b = toWorld(t, { x: el.clientWidth, y: el.clientHeight })
-  return normBox(a, b)
-}
 
 const inView = (view: Box | null, p: Vec2, margin: number) =>
   !view || (p.x >= view.minX - margin && p.x <= view.maxX + margin && p.y >= view.minY - margin && p.y <= view.maxY + margin)

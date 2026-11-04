@@ -102,7 +102,27 @@ function ringsPath(ctx: CanvasRenderingContext2D, rings: Vec2[][]) {
   for (const ring of rings) {
     if (ring.length < 3) continue
     ctx.moveTo(ring[0].x, ring[0].y)
-    for (const p of ring.slice(1)) ctx.lineTo(p.x, p.y)
+    for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i].x, ring[i].y)
+    ctx.closePath()
+  }
+}
+
+/**
+ * Rings drawn with the points the texture can show: a point nearer than `step` (mm) to the last one drawn is left out. A pad's mask opening is
+ * cut to fractions of a micron round its corners, and drawing every point of the 10,000 openings of a big board took seconds.
+ */
+function coarseRingsPath(ctx: CanvasRenderingContext2D, rings: Vec2[][], step: number) {
+  const s2 = step * step
+  for (const ring of rings) {
+    if (ring.length < 3) continue
+    let last = ring[0]
+    ctx.moveTo(last.x, last.y)
+    for (let i = 1; i < ring.length; i++) {
+      const q = ring[i]
+      if (i < ring.length - 1 && (q.x - last.x) ** 2 + (q.y - last.y) ** 2 < s2) continue
+      ctx.lineTo(q.x, q.y)
+      last = q
+    }
     ctx.closePath()
   }
 }
@@ -115,7 +135,7 @@ function strokePolylines(ctx: CanvasRenderingContext2D, paths: Vec2[][], width: 
   for (const path of paths) {
     if (path.length < 2) continue
     ctx.moveTo(path[0].x, path[0].y)
-    for (const p of path.slice(1)) ctx.lineTo(p.x, p.y)
+    for (let i = 1; i < path.length; i++) ctx.lineTo(path[i].x, path[i].y)
   }
   ctx.stroke()
 }
@@ -246,14 +266,14 @@ function silkStrokes(input: TextureInput, side: CopperLayer): { paths: Vec2[][];
 }
 
 /** Openings over plated copper; non-plated holes are bare drills with no finish to show. */
-function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: CopperLayer, grow: number) {
+function maskOpenings(ctx: CanvasRenderingContext2D, input: TextureInput, side: CopperLayer, grow: number, texel: number) {
   ctx.beginPath()
   for (const pads of input.padsByComponent.values()) {
     for (const p of pads) {
       if (!maskSides(p).includes(side) || isNpth(p)) continue
       // A pad with X7 features has the opening KiCad plots for it, with its own margin.
       const rings = p.x7 ? padOpeningRings(p, maskMargin(p, input.project.rules)) : null
-      if (rings) ringsPath(ctx, rings)
+      if (rings) coarseRingsPath(ctx, rings, texel / 4)
       else padPath(ctx, p, grow)
     }
   }
@@ -334,7 +354,7 @@ function buildSide(input: TextureInput, side: CopperLayer, ppm: number): SideTex
 
   // Exposed pads are separate metal meshes; the thin rim of the mask opening shows the finish.
   a.ctx.fillStyle = RIM[finishMetal(boardFinish(b))]
-  maskOpenings(a.ctx, input, side, input.project.rules.maskExpansion)
+  maskOpenings(a.ctx, input, side, input.project.rules.maskExpansion, 1 / ppm)
   a.ctx.fill()
   // Drawings on the mask layer are openings too, shown in the finish's colour.
   const maskShapes = drawingsOn(input.project, side === "top" ? "F.Mask" : "B.Mask")

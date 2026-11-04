@@ -207,7 +207,6 @@ export class BoardScene {
       this.content.add(this.board.group)
     }
     if (partsChanged) this.rebuildParts(project)
-    if (boardChanged || partsChanged) this.compileFirst()
 
     this.boardRect = { x: b.x, y: b.y, width: b.width, height: b.height }
     setContactShadowBoard(this.shared.contact, b)
@@ -221,6 +220,8 @@ export class BoardScene {
       this.fitKey = key
       this.view("home", !first)
     }
+    // Once the floor and its shadow are in too, so every shader the next frame needs is among those compiled.
+    if (boardChanged || partsChanged) this.compileFirst()
     this.requestRender()
     return this.board?.placedCount ?? 0
   }

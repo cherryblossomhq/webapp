@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
@@ -51,6 +52,30 @@ describe("a zone keeps KiCad's own fill", () => {
     expect(Math.max(...outer.map((q) => q.y))).toBeCloseTo(-1.5, 3)
     expect(outer).toHaveLength(5)
     expect(fa.netName).toBe("GND")
+  })
+
+  it("keeps its fill where a number the copper is worked out to differs in its last digit, as Math.sin's does between browsers and Node", () => {
+    const p = imported([zoneA(), zoneB()])
+    expect(p.zones[0].kept!.sig.startsWith("2:")).toBe(true)
+    // R1's pad, under zone A, a hair to the side: what another engine's trigonometry gives for a turned part.
+    const nudged: Project = { ...p, components: p.components.map((c) => (c.ref === "R1" ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 1e-12 } } : c)) }
+    expect(fillOfZone(nudged, 0).fromFile).toBe(true)
+    // Moved for real, by a tenth of a millimetre, it is filled again.
+    const moved: Project = { ...p, components: p.components.map((c) => (c.ref === "R1" ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 0.1 } } : c)) }
+    expect(fillOfZone(moved, 0).fromFile).toBeUndefined()
+  })
+
+  it("still reads a signature of the first kind, made before numbers were rounded", () => {
+    // A board brought in and saved by the editor before (`fixtures/kept-fill-first-signature.json`, two pours over a track and an arc track): its
+    // fills stay KiCad's.
+    const p = parseProjectFile(readFileSync(new URL("./fixtures/kept-fill-first-signature.json", import.meta.url), "utf8"), { id: "first", createdAt: 0, updatedAt: 0 })
+    expect(p.zones.every((z) => !z.kept || !z.kept.sig.startsWith("2:"))).toBe(true)
+    expect(analyze(p).zoneFills.filter((f) => f.fromFile)).toHaveLength(2)
+    // A signature that is no match, of either kind, is not taken for one.
+    for (const sig of ["nope", "2:nope"]) {
+      const wrong: Project = { ...p, zones: p.zones.map((z) => (z.kept ? { ...z, kept: { ...z.kept, sig } } : z)) }
+      expect(analyze(wrong).zoneFills.filter((f) => f.fromFile)).toHaveLength(0)
+    }
   })
 
   it("reads the stored fill in KiCad's nanometres: two pieces 0.3 um apart stay two, where microns would join them", () => {

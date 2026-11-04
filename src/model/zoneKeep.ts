@@ -32,17 +32,26 @@ interface Box4 {
   maxY: number
 }
 
-/** JSON with the keys of every object in order and the undefined ones left out, so what a project says and not how it was read decides the signature (a stored project keeps its keys in another order). */
-function J(v: unknown): string {
+/**
+ * JSON with the keys of every object in order and the undefined ones left out, so what a project says and not how it was read decides the signature (a stored project keeps its
+ * keys in another order). With `rounded`, every number to four decimals (`SIGNATURE`; 0.1 µm of a length): what the copper is made of is worked out with `Math.sin` and the
+ * like (an arc track's circle, a turned part's pads), whose last digit is not the same in every browser and in Node, and a fill signed in one was refilled in the other (8 of
+ * CERN's Macbeth's 47 pours). A number within a last digit of a half step can still round two ways, which is far rarer.
+ */
+function J(v: unknown, rounded = false): string {
+  if (typeof v === "number" && rounded) return JSON.stringify(Math.round(v * 1e4) / 1e4)
   if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "u"
-  if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? "null" : J(x))).join(",")}]`
+  if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? "null" : J(x, rounded))).join(",")}]`
   const o = v as Record<string, unknown>
   return `{${Object.keys(o)
     .filter((k) => o[k] !== undefined)
     .sort()
-    .map((k) => `${JSON.stringify(k)}:${J(o[k])}`)
+    .map((k) => `${JSON.stringify(k)}:${J(o[k], rounded)}`)
     .join(",")}}`
 }
+
+/** The start of a signature made with rounded numbers (`J`); one without it is of the first kind, read the first way. */
+const SIGNATURE = "2:"
 
 function pointsOf(v: unknown, out: Vec2[]): void {
   if (!v || typeof v !== "object") return
@@ -71,16 +80,16 @@ const touches = (a: Box4, b: Box4, d = 0) => a.minX <= b.maxX + d && a.maxX >= b
 
 /** The zone's own fields that a fill reads: all of them but the kept fill itself. */
 const zoneText = (() => {
-  const cache = new WeakMap<Zone, { text: string; box: Box4 | null }>()
-  return (z: Zone, project: Project): { text: string; box: Box4 | null } => {
-    let hit = cache.get(z)
+  const cache = [new WeakMap<Zone, { text: string; box: Box4 | null }>(), new WeakMap<Zone, { text: string; box: Box4 | null }>()]
+  return (z: Zone, project: Project, rounded: boolean): { text: string; box: Box4 | null } => {
+    let hit = cache[rounded ? 1 : 0].get(z)
     if (!hit) {
-      const text = J({ ...z, kept: undefined })
+      const text = J({ ...z, kept: undefined }, rounded)
       const pts: Vec2[] = []
       pointsOf(z.outline, pts)
       const box = z.outline?.length ? boxOfPoints(pts) : null
       hit = { text, box }
-      cache.set(z, hit)
+      cache[rounded ? 1 : 0].set(z, hit)
     }
     if (hit.box) return hit
     // A zone with no polygon of its own is the whole board.
@@ -90,40 +99,40 @@ const zoneText = (() => {
 })()
 
 /** What a fill reads of the design rules. */
-function rulesText(project: Project): string {
+function rulesText(project: Project, rounded: boolean): string {
   const r = project.rules
-  return J([r.clearance, r.pourClearance, r.pourMinWidth, r.thermalRelief, r.thermalSpokes, r.thermalSpokeWidth, r.thermalSpokeAngle, r.edgeClearance, r.holeClearance, r.minClearance, r.maxError, r.netClasses, r.defaultClass, r.netWidths ? 1 : 0, project.board.stack?.copper.length ?? 2])
+  return J([r.clearance, r.pourClearance, r.pourMinWidth, r.thermalRelief, r.thermalSpokes, r.thermalSpokeWidth, r.thermalSpokeAngle, r.edgeClearance, r.holeClearance, r.minClearance, r.maxError, r.netClasses, r.defaultClass, r.netWidths ? 1 : 0, project.board.stack?.copper.length ?? 2], rounded)
 }
 
-const itemTexts = new WeakMap<CopperItem, string>()
+const itemTexts = [new WeakMap<CopperItem, string>(), new WeakMap<CopperItem, string>()]
 
 /** What a fill reads of one copper item, without its net. */
-function itemText(it: CopperItem): string {
-  let t = itemTexts.get(it)
+function itemText(it: CopperItem, rounded: boolean): string {
+  let t = itemTexts[rounded ? 1 : 0].get(it)
   if (t === undefined) {
     switch (it.kind) {
       case "pad":
-        t = `p${J([it.pad, it.layers, it.unflashed, it.cut])}`
+        t = `p${J([it.pad, it.layers, it.unflashed, it.cut], rounded)}`
         break
       case "segment":
-        t = `s${J([it.a, it.b, it.width, it.layers, it.arc])}`
+        t = `s${J([it.a, it.b, it.width, it.layers, it.arc], rounded)}`
         break
       case "via":
-        t = `v${J([it.at, it.diameter, it.layers, it.unflashed, it.cut])}`
+        t = `v${J([it.at, it.diameter, it.layers, it.unflashed, it.cut], rounded)}`
         break
       case "shape":
-        t = `h${J([it.shape, it.box, it.layers, it.what, it.conducts, it.owner])}`
+        t = `h${J([it.shape, it.box, it.layers, it.what, it.conducts, it.owner], rounded)}`
         break
       default:
         t = ""
     }
-    itemTexts.set(it, t)
+    itemTexts[rounded ? 1 : 0].set(it, t)
   }
   return t
 }
 
 /** The boxes of the pieces of the board's outline (an arc or curve by its points), with the text of each. */
-function outlinePieces(project: Project): { box: Box4; text: string }[] {
+function outlinePieces(project: Project, rounded: boolean): { box: Box4; text: string }[] {
   const out: { box: Box4; text: string }[] = []
   const paths = project.board.outline?.paths ?? []
   for (const p of paths) {
@@ -131,15 +140,17 @@ function outlinePieces(project: Project): { box: Box4; text: string }[] {
       const pts: Vec2[] = []
       pointsOf(s, pts)
       const box = boxOfPoints(pts)
-      if (box) out.push({ box, text: J(s) })
+      if (box) out.push({ box, text: J(s, rounded) })
     }
   }
   return out
 }
 
 export interface KeptContext {
-  /** The signature of a zone now. */
+  /** The signature of a zone now, as a fill is signed from here (`signKept`). */
   sigOf(zone: Zone): string
+  /** Whether a zone is as it was when its fill was signed `sig`: read the way it was made, a signature from before the rounded numbers too. */
+  matches(zone: Zone, sig: string): boolean
 }
 
 /**
@@ -147,43 +158,47 @@ export interface KeptContext {
  * each, by index), `netName` the name of a net id; one pass over the copper per zone that has a kept fill.
  */
 export function keptContext(project: Project, copper: CopperItem[], netOf: (i: number) => string | null, netName: (id: string | null) => string | null): KeptContext {
-  const rules = rulesText(project)
-  const pieces = project.board.outline?.paths?.length ? outlinePieces(project) : null
-  const rect = pieces ? "" : J([project.board.x, project.board.y, project.board.width, project.board.height, project.board.cornerRadius])
+  const texts = (rounded: boolean) => {
+    const pieces = project.board.outline?.paths?.length ? outlinePieces(project, rounded) : null
+    return { rules: rulesText(project, rounded), pieces, rect: pieces ? "" : J([project.board.x, project.board.y, project.board.width, project.board.height, project.board.cornerRadius], rounded), zones: project.zones.map((z) => ({ z, ...zoneText(z, project, rounded) })) }
+  }
+  const made: (ReturnType<typeof texts> | undefined)[] = []
   const nets = copper.map((_, i) => netName(netOf(i)) ?? "")
-  const zones = project.zones.map((z) => ({ z, ...zoneText(z, project) }))
   // A fill keeps at least its clearance from copper of another net, so what is farther than the widest gap of the zone, the rules or a pad's own cannot change it.
   const padReach = copper.reduce((m, it) => (it.kind === "pad" && it.pad.clearance ? Math.max(m, it.pad.clearance) : m), 0)
+  const signature = (zone: Zone, rounded: boolean): string => {
+    const { rules, pieces, rect, zones } = (made[rounded ? 1 : 0] ??= texts(rounded))
+    const own = zoneText(zone, project, rounded)
+    const layers = new Set(zoneLayers(zone))
+    const reach = 1 + Math.max(zone.clearance ?? 0, project.rules.clearance, project.rules.pourClearance, project.rules.edgeClearance, project.rules.holeClearance, project.rules.minClearance ?? 0, zone.edgeGap ?? 0, zone.holeGap ?? 0, zone.thermalGap ?? 0, padReach, ...(project.rules.netClasses ?? []).map((c) => c.clearance ?? 0))
+    const parts: string[] = [rules, own.text]
+    if (!own.box) return hashText(parts.join("|"))
+    const box = own.box
+    const items: string[] = []
+    for (let i = 0; i < copper.length; i++) {
+      const it = copper[i]
+      if (it.kind === "zone" || !touches(it.box, box, reach) || !it.layers.some((l) => layers.has(l))) continue
+      items.push(`${itemText(it, rounded)}@${nets[i]}`)
+    }
+    items.sort()
+    parts.push(`i${items.length}`, ...items)
+    const near: string[] = []
+    for (const o of zones) {
+      if (o.z === zone || o.z.id === zone.id || !o.box || !touches(o.box, box, reach)) continue
+      if (!zoneLayers(o.z).some((l) => layers.has(l))) continue
+      near.push(o.text)
+    }
+    near.sort()
+    parts.push(`z${near.length}`, ...near)
+    if (pieces) {
+      const edge = pieces.filter((p) => touches(p.box, box, reach)).map((p) => p.text)
+      parts.push(`e${pieces.length}`, ...edge)
+    } else parts.push(rect)
+    return hashText(parts.join("|")) + hashText(`${parts.length}:${parts.join("\n")}`)
+  }
   return {
-    sigOf(zone) {
-      const own = zoneText(zone, project)
-      const layers = new Set(zoneLayers(zone))
-      const reach = 1 + Math.max(zone.clearance ?? 0, project.rules.clearance, project.rules.pourClearance, project.rules.edgeClearance, project.rules.holeClearance, project.rules.minClearance ?? 0, zone.edgeGap ?? 0, zone.holeGap ?? 0, zone.thermalGap ?? 0, padReach, ...(project.rules.netClasses ?? []).map((c) => c.clearance ?? 0))
-      const parts: string[] = [rules, own.text]
-      if (!own.box) return hashText(parts.join("|"))
-      const box = own.box
-      const items: string[] = []
-      for (let i = 0; i < copper.length; i++) {
-        const it = copper[i]
-        if (it.kind === "zone" || !touches(it.box, box, reach) || !it.layers.some((l) => layers.has(l))) continue
-        items.push(`${itemText(it)}@${nets[i]}`)
-      }
-      items.sort()
-      parts.push(`i${items.length}`, ...items)
-      const near: string[] = []
-      for (const o of zones) {
-        if (o.z === zone || o.z.id === zone.id || !o.box || !touches(o.box, box, reach)) continue
-        if (!zoneLayers(o.z).some((l) => layers.has(l))) continue
-        near.push(o.text)
-      }
-      near.sort()
-      parts.push(`z${near.length}`, ...near)
-      if (pieces) {
-        const edge = pieces.filter((p) => touches(p.box, box, reach)).map((p) => p.text)
-        parts.push(`e${pieces.length}`, ...edge)
-      } else parts.push(rect)
-      return hashText(parts.join("|")) + hashText(`${parts.length}:${parts.join("\n")}`)
-    },
+    sigOf: (zone) => SIGNATURE + signature(zone, true),
+    matches: (zone, sig) => (sig.startsWith(SIGNATURE) ? SIGNATURE + signature(zone, true) : signature(zone, false)) === sig,
   }
 }
 
@@ -226,7 +241,7 @@ function polygonsOf(zone: Zone, minWidth: number, layer: CopperLayer): FillPolyg
 export function keptFills(project: Project, ctx: KeptContext, sch: SchematicConnectivity): Map<string, ZoneFill[]> {
   const out = new Map<string, ZoneFill[]>()
   for (const z of project.zones) {
-    if (!z.kept?.sig || z.keepout || z.part || !z.outline || ctx.sigOf(z) !== z.kept.sig) continue
+    if (!z.kept?.sig || z.keepout || z.part || !z.outline || !ctx.matches(z, z.kept.sig)) continue
     const netId = z.net ? (sch.nets.find((n) => n.name === z.net)?.id ?? null) : null
     const minWidth = z.minWidth ?? project.rules.pourMinWidth
     out.set(

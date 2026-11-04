@@ -27,6 +27,25 @@ a worker only when a STEP model is first drawn, and is never inlined into the
 editor's bundle — so it stays a separate, replaceable library, as the LGPL asks.
 Its source is at <https://github.com/kovacsv/occt-import-js>.
 
+## From KiCad
+
+The KiCad import and export draw text and read files exactly as KiCad does, so
+some of this repository is KiCad's own work, ported or carried over. It is used
+under its licence, the GPL-2.0-or-later, here under version 3, which allows its
+combination with this repository's AGPL-3.0-or-later (GPL-3.0, section 13).
+Each file keeps its original notice at its head.
+
+| Files | From | License |
+|---|---|---|
+| `src/lib/kicadFont/glyphsBase.ts` | KiCad's stroke font, `common/newstroke_font.cpp`: Copyright (C) 2010 vladimir uryvaev and the KiCad Developers | GPL-2.0-or-later |
+| `src/lib/kicadFont/glyphsCjk.ts` | The same font's CJK glyphs: KiCad's, drawn with code by Lingdong Huang (MIT) from [Source Han Sans](https://github.com/adobe-fonts/source-han-sans), Copyright 2014-2019 Adobe | GPL-2.0-or-later; the glyph outlines SIL OFL 1.1 |
+| `src/model/kicad/schematic/legacy/` | Ports of KiCad's legacy schematic and library readers (`sch_legacy_plugin.cpp`, `transform.cpp`): Copyright (C) 2016 CERN and the KiCad Developers | GPL-2.0-or-later |
+| `src/lib/kicadText.ts`, `src/model/texts.ts`, `src/model/dimensions.ts`, `src/model/kicad/board/` (texts, dimensions, groups, images), `src/export/kicadTexts.ts`, `src/export/kicadObjects.ts`, and the test oracles `tests/kicad-census/texts.mjs` and `dimensions.mjs` | Ports of KiCad's text layout, dimensions, groups and reference images: the KiCad Developers | GPL-2.0-or-later |
+
+The KiCad source these follow is at <https://gitlab.com/kicad/code/kicad>.
+`src/model/kicad/board/stockModels.ts` lists the names of the STEP models in
+KiCad's 3D library, which a host serves; no model is bundled here.
+
 ## Test data
 
 `tests/fixtures/kicad/` holds unmodified files from the

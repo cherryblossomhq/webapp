@@ -2,7 +2,7 @@ import { create } from "zustand"
 import { getConnectivity, getErc } from "../model/connectivityCache"
 import type { SchematicConnectivity } from "../model/connectivity"
 import type { ErcFinding } from "../model/erc"
-import { analysisWithItems, analyzePcb, followEdit, type PcbAnalysis } from "../model/pcb"
+import { analysisWithItems, analyzePcb, followEdit, openingAnalysis, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import { serializeProject } from "../model/projectFile"
 import type { Project } from "../model/types"
@@ -127,6 +127,7 @@ function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>)
     violations: a.violations,
     zoneFills: reply.fills,
     ...(reply.pending ? { zonesPending: reply.pending } : {}),
+    ...(a.connectionsPending ? { connectionsPending: a.connectionsPending } : {}),
   })
 }
 
@@ -321,15 +322,15 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   const hit = liveCache.get(p)
   if (hit && hit.tick === tick) return shown(p, hit.value)
   // A big board's checks are made off the page's thread, where its pours are filled (`zoneFill.worker.ts`): after an edit the views are given the
-  // analysis shown last with the edited copper where it is now (`followEdit`), and when the board opens its copper and connections without the
-  // checks (`connectionsOnly`); the worker's analysis replaces either when it comes. Analysing the board here took 14 s an edit, and 18 to 36 s on
-  // opening, on one of 1,566 parts.
+  // analysis shown last with the edited copper where it is now (`followEdit`), and when the board opens its copper alone, with KiCad's kept fills
+  // drawn as they are (`openingAnalysis`); the worker's analysis, connections and checks, replaces either when it comes. Analysing the board here
+  // took 14 s an edit on one of 1,566 parts, and its connections alone held the page for 15 to 20 s as it opened.
   if (bigBoard(p) && fillWorker() !== null) {
     const from = lastShown
     const value =
       from && from.project.id === p.id && from.project !== p
         ? { ...followEdit(from.value, from.project, p, getConnectivity(p)), checksPending: true }
-        : analyzePcb(p, getConnectivity(p), { reuseOnly: { stale: lastGood.project === p.id ? lastGood.fills : [] }, connectionsOnly: true })
+        : openingAnalysis(p, getConnectivity(p))
     liveCache.set(p, { value, tick })
     wantChecks(p)
     return shown(p, value)

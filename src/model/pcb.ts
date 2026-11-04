@@ -175,6 +175,17 @@ export interface PcbAnalysis {
    * or there are none (`connectionsOnly`). The copper is where it is now (`followEdit`).
    */
   checksPending?: boolean
+  /**
+   * The nets (by id) of the pours that are being filled with no earlier fill to show in their place (`reuseOnly`, a board just opened): their
+   * connections are left out of the ratsnest and the checks until the fill comes. Without a fill a pour joins nothing, so every pad of a ground
+   * plane counted as a connection to make: about 4,000 on CERN's Macbeth, where there are 220.
+   */
+  connectionsPending?: string[]
+  /**
+   * Set on a big board as it opens, before its analysis is made (`openingAnalysis`): its copper, and the fills KiCad kept drawn as they are, with no
+   * connections, ratsnest or checks yet. A worker makes them; `checksPending` is set too.
+   */
+  opening?: true
 }
 
 const segBox = (a: Vec2, b: Vec2, w: number): Box => ({
@@ -986,8 +997,37 @@ export type AnalysisResults = Omit<PcbAnalysis, "items">
 
 /** An analysis made elsewhere, with the board's copper items made here as `analyzePcb` makes them: by their ids, its islands and nets are theirs. */
 export function analysisWithItems(project: Project, sch: SchematicConnectivity, made: AnalysisResults): PcbAnalysis {
-  const copper = buildCopperItems(withPartZones(project), sch)
+  const copper = copperItemsOf(project, sch)
   return { ...made, items: made.zoneFills.length ? [...copper, ...zoneItems(made.zoneFills)] : copper }
+}
+
+/**
+ * The copper items of a project (its parts' zones its own, as `analyzePcb` has them), kept for the last project asked: a big board's opening
+ * analysis and then the worker's analysis of it both need them. One, not one for each project: the undo history holds every earlier project.
+ */
+let copperKept: { project: Project; sch: SchematicConnectivity; items: CopperItem[] } | null = null
+function copperItemsOf(project: Project, sch: SchematicConnectivity): CopperItem[] {
+  if (copperKept && copperKept.project === project && copperKept.sch === sch) return copperKept.items
+  const items = buildCopperItems(withPartZones(project), sch)
+  copperKept = { project, sch, items }
+  return items
+}
+
+/**
+ * A big board as it opens, before its analysis is made: its copper, and each fill KiCad kept drawn as the file has it (its rings, even-odd, as
+ * `usePourPaths` draws them), with no connections, ratsnest or checks (`opening`). The page shows it at once while a worker makes the analysis
+ * (`store/analysis.ts`): making the kept fills into the editor's polygons and finding how the copper connects held CERN's Macbeth's page for
+ * 15 to 20 s as it opened.
+ */
+export function openingAnalysis(project: Project, sch: SchematicConnectivity): PcbAnalysis {
+  const items = copperItemsOf(project, sch)
+  const netId = new Map(sch.nets.map((n) => [n.name, n.id]))
+  const zoneFills: ZoneFill[] = []
+  for (const z of project.zones) {
+    if (!z.kept || z.keepout) continue
+    for (const l of z.kept.layers) zoneFills.push({ zoneId: z.id, netId: z.net ? (netId.get(z.net) ?? null) : null, netName: z.net, layer: l.layer, polygons: l.rings.map((r) => [r]) })
+  }
+  return { items, island: new Map(), islandNet: new Map(), traceNet: new Map(), viaNet: new Map(), ratsnest: [], violations: [], zoneFills, checksPending: true, opening: true }
 }
 
 /** The net id of each copper item (by index) as the copper alone connects it, which is what a pour is filled against (and what a kept fill's signature reads, `zoneKeep.ts`). */
@@ -1003,6 +1043,23 @@ export function copperNetOf(project: Project, sch: SchematicConnectivity, copper
     }
     return net === "short" ? null : net
   }
+}
+
+/** The nets (by id) of the pours of `pending` that have no fill in `fills` to stand in for theirs: until it comes they join nothing (`connectionsPending`). */
+function unfilledNets(project: Project, sch: SchematicConnectivity, pending: PendingGroup[], fills: ZoneFill[]): Set<string> {
+  const out = new Set<string>()
+  if (!pending.length) return out
+  const filled = new Set(fills.map((f) => f.zoneId))
+  const zones = new Map(project.zones.map((z) => [z.id, z]))
+  for (const g of pending) {
+    for (const id of g.zones) {
+      const z = zones.get(id)
+      if (!z?.net || filled.has(id)) continue
+      const net = sch.nets.find((n) => n.name === z.net)?.id
+      if (net) out.add(net)
+    }
+  }
+  return out
 }
 
 /**
@@ -1167,7 +1224,9 @@ export function analyzePcb(
     m.set(r, pts)
     netIslands.set(net, m)
   })
+  const unfilled = unfilledNets(project, sch, pending, zoneFills)
   for (const [netId, islands] of netIslands) {
+    if (unfilled.has(netId)) continue
     const groups = [...islands.values()]
     if (groups.length < 2) continue
     for (const { a, b } of spanningLines(groups)) ratsnest.push({ netId, a, b })
@@ -1209,7 +1268,8 @@ export function analyzePcb(
     }
   }
 
-  if (opts.connectionsOnly) return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}), checksPending: true }
+  const waiting = unfilled.size ? { connectionsPending: [...unfilled] } : {}
+  if (opts.connectionsOnly) return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}), ...waiting, checksPending: true }
 
   // Clearance between copper on different nets (or unassigned copper vs a net).
   // Two nets are checked at the larger of their classes' clearances (a board with no classes: the rules' one), so the search looks as far as the largest.
@@ -1443,7 +1503,7 @@ export function analyzePcb(
 
   manufacturability(project, items, find, push, kicad)
 
-  return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}) }
+  return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}), ...waiting }
 }
 
 // ---------- Holes against copper (a project from KiCad) ----------

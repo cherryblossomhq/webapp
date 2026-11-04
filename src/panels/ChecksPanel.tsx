@@ -82,11 +82,19 @@ export function useChecks(): CheckItem[] {
     // One row each: their messages name the part, so there is nothing to group.
     for (const f of splitIgnored(erc, project.ignoredChecks).active) items.push(ercItem(f))
     // The pours of an edit are being filled again: say so, so no finding below is taken for one of the new fill.
-    if (pcb.checksPending) {
+    if (pcb.opening) {
+      items.push({ id: "checks-opening", severity: "warning", message: "The board is being checked in the background: its connections and checks show here in a few seconds.", where: "pcb", at: null, ats: [], count: 1 })
+    } else if (pcb.checksPending) {
       items.push({ id: "checks-pending", severity: "warning", message: "The board checks are running in the background. Those below are of the board before your last edit and will update.", where: "pcb", at: null, ats: [], count: 1 })
     }
     if (pcb.zonesPending) {
       items.push({ id: "pours-pending", severity: "warning", message: "Copper pours are being refilled. The board checks below are of the last fill and will update.", where: "pcb", at: null, ats: [], count: 1 })
+    }
+    // Pours with no fill yet join nothing, so the connections of their nets are left out until they are filled: say which.
+    if (pcb.connectionsPending?.length) {
+      const names = pcb.connectionsPending.map((id) => conn.nets.find((n) => n.id === id)?.name ?? id)
+      const named = names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ")
+      items.push({ id: "connections-pending", severity: "warning", message: `Copper pours are being filled. Unrouted connections on ${named} are counted once they are.`, where: "pcb", at: null, ats: [], count: 1 })
     }
     const unrouted = pcb.violations.filter((v) => v.kind === "unrouted")
     if (unrouted.length) {

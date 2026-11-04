@@ -29,11 +29,20 @@ export interface WorkerAnalysis {
   viaNet: [string, string | null][]
   ratsnest: PcbAnalysis["ratsnest"]
   violations: PcbAnalysis["violations"]
+  connectionsPending?: string[]
 }
 
 const scope = globalThis as unknown as { onmessage: ((e: MessageEvent<ZoneFillRequest>) => void) | null; postMessage: (reply: ZoneFillReply) => void }
 
-const pack = (a: PcbAnalysis): WorkerAnalysis => ({ island: [...a.island], islandNet: [...a.islandNet], traceNet: [...a.traceNet], viaNet: [...a.viaNet], ratsnest: a.ratsnest, violations: a.violations })
+const pack = (a: PcbAnalysis): WorkerAnalysis => ({
+  island: [...a.island],
+  islandNet: [...a.islandNet],
+  traceNet: [...a.traceNet],
+  viaNet: [...a.viaNet],
+  ratsnest: a.ratsnest,
+  violations: a.violations,
+  ...(a.connectionsPending ? { connectionsPending: a.connectionsPending } : {}),
+})
 
 scope.onmessage = (e) => {
   try {

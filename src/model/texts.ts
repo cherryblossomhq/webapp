@@ -377,11 +377,16 @@ export const DIMENSION_TEXT_OWNER = "#dim"
 /** Whether a world text is a dimension's: the texts the project holds as texts are not (the KiCad export writes a dimension with its text, not a text). */
 export const isDimensionText = (t: WorldText) => t.owner === DIMENSION_TEXT_OWNER
 
-let all: { board: Project["board"]; components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] } | null = null
+/**
+ * The texts of the last two boards asked for: the board on screen, and the copper of only what an edit moved (`followEdit`), which would otherwise
+ * drop it and have every text of the board made again on the next frame.
+ */
+let all: { board: Project["board"]; components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] }[] = []
 
 /** Every KiCad text of the board and of its parts, board text first. Reused while the parts and the board's text are unchanged. */
 export function worldTexts(project: Project): WorldText[] {
-  if (all && all.board === project.board && all.components === project.components && all.texts === project.texts && all.dimensions === project.dimensions) return all.value
+  const hit = all.find((a) => a.board === project.board && a.components === project.components && a.texts === project.texts && a.dimensions === project.dimensions)
+  if (hit) return hit.value
   const out: WorldText[] = []
   project.texts?.forEach((t, index) => {
     if (!isKicadText(t)) return
@@ -395,7 +400,7 @@ export function worldTexts(project: Project): WorldText[] {
     if (!isPhysical(findPart(c.partId))) continue
     out.push(...componentTexts(c, copperCount(project.board)))
   }
-  all = { board: project.board, components: project.components, texts: project.texts, dimensions: project.dimensions, value: out }
+  all = [{ board: project.board, components: project.components, texts: project.texts, dimensions: project.dimensions, value: out }, ...all.slice(0, 1)]
   return out
 }
 

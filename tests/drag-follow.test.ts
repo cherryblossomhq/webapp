@@ -57,6 +57,18 @@ describe("an analysis that follows an edit, and one made elsewhere", () => {
     expect(now.ratsnest.some((r) => ends.has(`${r.a.x},${r.a.y}`) || ends.has(`${r.b.x},${r.b.y}`))).toBe(false)
   })
 
+  it("drops the connections to make of a part that is still there but no longer on the board", () => {
+    const base = unrouted()
+    const sch = computeConnectivity(base)
+    const from = analyzePcb(base, sch)
+    const part = base.components.find((c) => c.pcb.placed && from.ratsnest.some((r) => from.items.some((it) => it.kind === "pad" && it.pad.componentId === c.id && it.pad.x === r.a.x && it.pad.y === r.a.y)))!
+    const ends = new Set(from.items.flatMap((it) => (it.kind === "pad" && it.pad.componentId === part.id ? [`${it.pad.x},${it.pad.y}`] : [])))
+    const after: Project = { ...base, components: base.components.map((c) => (c === part ? { ...c, pcb: { ...c.pcb, placed: false } } : c)) }
+    const now = followEdit(from, base, after, computeConnectivity(after))
+    expect(now.items.some((it) => it.kind === "pad" && it.pad.componentId === part.id)).toBe(false)
+    expect(now.ratsnest.some((r) => ends.has(`${r.a.x},${r.a.y}`) || ends.has(`${r.b.x},${r.b.y}`))).toBe(false)
+  })
+
   it("is the same analysis when its results are made elsewhere and its copper here", () => {
     const p = structuredClone(EXAMPLES.find((e) => e.id === "esp32-robot")!.project) as Project
     const sch = computeConnectivity(p)

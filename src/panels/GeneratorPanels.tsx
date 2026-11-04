@@ -96,15 +96,13 @@ export function NetLengthSection({ project, net }: { project: Project; net: stri
   return needed ? <NetLengthReport project={project} net={net} /> : null
 }
 
-/** The lengths of every net of an analysis, made once for it: selecting one piece of copper after another asked for all of them each time. */
-const lengthsOf = new WeakMap<ReadonlyMap<string, string | null>, { project: Project; lengths: Map<string, NetLength> }>()
+/** The lengths of every net of the analysis shown, made once for it: selecting one piece of copper after another asked for all of them each time. */
+let lengthsKept: { project: Project; traceNet: ReadonlyMap<string, string | null>; lengths: Map<string, NetLength> } | null = null
 function netLengthOf(project: Project, conn: SchematicConnectivity, traceNet: ReadonlyMap<string, string | null>, viaNet: ReadonlyMap<string, string | null>, net: string): NetLength | undefined {
-  let kept = lengthsOf.get(traceNet)
-  if (!kept || kept.project !== project) {
-    kept = { project, lengths: new Map(netLengths(project, conn, traceNet, viaNet).map((n) => [n.net, n])) }
-    lengthsOf.set(traceNet, kept)
+  if (lengthsKept?.project !== project || lengthsKept.traceNet !== traceNet) {
+    lengthsKept = { project, traceNet, lengths: new Map(netLengths(project, conn, traceNet, viaNet).map((n) => [n.net, n])) }
   }
-  return kept.lengths.get(net)
+  return lengthsKept.lengths.get(net)
 }
 
 function NetLengthReport({ project, net }: { project: Project; net: string }) {

@@ -595,11 +595,12 @@ export class BoardScene {
 
   /**
    * Compile the shaders of what the scene holds without holding the page, then draw. The first draw of a scene compiles them on the page's
-   * thread, where the graphics driver can take many seconds for the board's metal and mask (half a minute on a laptop's integrated graphics,
-   * the first time); `compileAsync` asks the driver to compile them in parallel (KHR_parallel_shader_compile) and waits without blocking.
+   * thread, where the graphics driver can take seconds for the board's metal and mask the first time; `compileAsync` asks the driver to compile
+   * them in parallel (KHR_parallel_shader_compile) and waits without blocking. It is waited for 10 s at most: a lost context never answers, and
+   * the next draw then compiles what is left as it always did.
    */
   private compileFirst() {
-    const job = this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined)
+    const job = Promise.race([this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined), new Promise((r) => setTimeout(r, 10_000))])
     this.compiling = job
     void job.then(() => {
       if (this.compiling !== job) return

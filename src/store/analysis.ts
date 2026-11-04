@@ -181,7 +181,6 @@ function nextCheck() {
   checkWanted = null
   if (pcbCache.get(p) || useProjectStore.getState().project !== p) return
   const w = checksWorker()
-  // With no checks worker (it failed), the fill worker makes the whole analysis.
   if (!w) return wantFill(p, [])
   checking = p
   const sent = lastGood.project === p.id ? lastGood.fills : []
@@ -189,13 +188,16 @@ function nextCheck() {
     checking = null
     nextCheck()
   }
+  // A checks worker that fails is not asked again: the fill worker makes the whole analysis, of this board and the next.
+  const fail = () => {
+    if (checker) checker.terminate()
+    checker = null
+    checkerOff = true
+    wantFill(p, [])
+  }
   w.onmessage = (e: MessageEvent<ZoneFillReply>) => {
-    if ("error" in e.data) {
-      if (checker) checker.terminate()
-      checker = null
-      checkerOff = true
-      wantFill(p, [])
-    } else if (!pcbCache.get(p)) {
+    if ("error" in e.data) fail()
+    else if (!pcbCache.get(p)) {
       // The checks worker fills nothing and keeps no fill, so it lists every group the editor fills as pending. A group whose fill kept here is the
       // one it was sent to stand in for it was checked with its current fill: only the others are pending.
       const stood = new Set(sent)
@@ -221,10 +223,7 @@ function nextCheck() {
     done()
   }
   w.onerror = () => {
-    if (checker) checker.terminate()
-    checker = null
-    checkerOff = true
-    wantFill(p, [])
+    fail()
     done()
   }
   w.postMessage({ file: fileOf(p), stale: sent } satisfies ZoneFillRequest)
@@ -234,12 +233,15 @@ function finish(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>) 
   const fills = reply.fills
   // Each group's fills are kept under the key this thread made for it, which is what the next analysis looks up.
   seedZoneFills(job.groups.map((g) => ({ key: g.key, fills: fills.filter((f) => g.zones.includes(f.zoneId)) })))
-  // The worker's analysis is the board's, checks and all: the views take it (and `getPcbAnalysis` too), with the copper items made here.
-  const value = adopted(job, reply)
-  pcbCache.set(job.project, value)
-  noteCurrent(job.project, value)
-  liveCache.delete(job.project)
-  if (lastShown?.project.id === job.project.id) lastShown = { project: job.project, value }
+  // A big board's analysis is the worker's, checks and all: the views take it (and `getPcbAnalysis` too), with the copper items made here. A smaller
+  // board is analysed here with the fills now kept, as its edits are.
+  if (bigBoard(job.project)) {
+    const value = adopted(job, reply)
+    pcbCache.set(job.project, value)
+    noteCurrent(job.project, value)
+    liveCache.delete(job.project)
+    if (lastShown?.project.id === job.project.id) lastShown = { project: job.project, value }
+  }
   inFlight = null
   bump()
   next()
@@ -312,12 +314,14 @@ export function stopZoneFills(): void {
   if (checker) checker.terminate()
   checker = null
   fileKept = null
+  lastShown = null
 }
 
 /**
  * The analysis of a project for the views. The same as `getPcbAnalysis` unless a polygon zone's fill has to be made again: then the last
  * fill stands in for it (`zonesPending`) and the new one is made off the page's thread, after which `useFillTick` changes and this is
- * asked again. While something is being dragged it is `getPcbAnalysis`'s, which keeps the last fill until the drop.
+ * asked again. While something is being dragged it is `getPcbAnalysis`'s, which keeps the last fill until the drop; on a big board it is the analysis
+ * the drag began with, its moved copper where it is now.
  */
 export function getLiveAnalysis(p: Project): PcbAnalysis {
   // While something is dragged on a big board the views are given the analysis the drag began with, its moved copper where it is now
@@ -344,10 +348,12 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   // took 14 s an edit on one of 1,566 parts, and its connections alone held the page for 15 to 20 s as it opened.
   if (big) {
     const from = lastShown
-    const value =
-      from && from.project.id === p.id && from.project !== p
-        ? { ...followEdit(from.value, from.project, p, getConnectivity(p)), checksPending: true }
-        : openingAnalysis(p, getConnectivity(p))
+    // Asked again after a refill of another project, it is what was shown, its checks asked for already.
+    if (from?.project === p) {
+      liveCache.set(p, { value: from.value, tick })
+      return from.value
+    }
+    const value = from?.project.id === p.id ? { ...followEdit(from.value, from.project, p, getConnectivity(p)), checksPending: true } : openingAnalysis(p, getConnectivity(p))
     liveCache.set(p, { value, tick })
     wantChecks(p)
     return shown(p, value)

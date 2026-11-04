@@ -45,11 +45,13 @@ export function parseShapeId(id: string): { kind: "board"; graphic: string } | {
 /** The kind of layer a drawing is on (a name that is none of KiCad's counts as a user layer). */
 export const shapeKind = (s: BoardShape): ShapeLayerKind => shapeLayerInfo(s.layer)?.kind ?? "user"
 
-let cache: { board: Project["board"]; components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; dimensions: Project["dimensions"]; value: WorldShape[] } | null = null
+/** The drawings of the last two boards asked for, as `worldTexts` keeps their texts: the board on screen, and the copper of only what an edit moved. */
+let cache: { board: Project["board"]; components: Project["components"]; graphics: Project["graphics"]; footprints: Project["footprints"]; dimensions: Project["dimensions"]; value: WorldShape[] }[] = []
 
 /** Every drawing of the board and of its parts, in the board's frame, board drawings first. Reused while parts, drawings and lands are unchanged. */
 export function worldShapes(project: Project): WorldShape[] {
-  if (cache && cache.board === project.board && cache.components === project.components && cache.graphics === project.graphics && cache.footprints === project.footprints && cache.dimensions === project.dimensions) return cache.value
+  const hit = cache.find((c) => c.board === project.board && c.components === project.components && c.graphics === project.graphics && c.footprints === project.footprints && c.dimensions === project.dimensions)
+  if (hit) return hit.value
   const out: WorldShape[] = []
   const count = copperCount(project.board)
   for (const g of project.graphics ?? []) out.push({ id: boardShapeId(g.id), owner: BOARD_SHAPE_OWNER, index: 0, shape: g, placed: true })
@@ -59,6 +61,6 @@ export function worldShapes(project: Project): WorldShape[] {
     if (!isPhysical(findPart(c.partId))) continue
     pcbShapes(c, count).forEach((shape, index) => out.push({ id: landShapeId(c.id, index), owner: c.id, index, shape, placed: c.pcb.placed }))
   }
-  cache = { board: project.board, components: project.components, graphics: project.graphics, footprints: project.footprints, dimensions: project.dimensions, value: out }
+  cache = [{ board: project.board, components: project.components, graphics: project.graphics, footprints: project.footprints, dimensions: project.dimensions, value: out }, ...cache.slice(0, 1)]
   return out
 }

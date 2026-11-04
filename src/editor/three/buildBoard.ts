@@ -12,6 +12,7 @@ import type { ComponentInstance, Project, Vec2 } from "../../model/types"
 import { buildBoardTextures, texelsPerMm, type BoardTextureSet } from "./boardTextures"
 import { contactShadow, createContactShadowMaterial } from "./contactShadow"
 import { onBoard } from "../../model/partFlags"
+import { CellGrid } from "../../lib/cellGrid"
 
 // Finished copper plus surface finish stands this far proud of the mask (mm).
 const PAD_DEPTH = 0.035
@@ -341,25 +342,15 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
   const accepted: typeof holes = []
   // A slot is tested as the circle round its whole length.
   const reach = (h: (typeof holes)[number]) => (h.slot ? h.r + Math.hypot(h.slot[1].x - h.x, h.slot[1].y - h.y) : h.r)
-  // Overlapping contours break triangulation; keep the first. The drills kept so far are found by a grid of 5 mm cells, not by trying each.
-  const CELL = 5
-  const grid = new Map<string, (typeof holes)[number][]>()
-  let widest = 0
+  // Overlapping contours break triangulation; keep the first. The drills kept so far are found by a grid (`CellGrid`), not by trying each.
+  const kept = new CellGrid(5)
   for (const h of holes) {
     const rh = reach(h)
     if (!insideBoard(h.x, h.y, rh)) continue
-    const span = Math.ceil((rh + widest + 0.02) / CELL)
-    const cx = Math.floor(h.x / CELL)
-    const cy = Math.floor(h.y / CELL)
-    let clash = false
-    for (let i = cx - span; i <= cx + span && !clash; i++) {
-      for (let j = cy - span; j <= cy + span && !clash; j++) clash = !!grid.get(`${i},${j}`)?.some((o) => Math.hypot(o.x - h.x, o.y - h.y) < reach(o) + rh + 0.02)
-    }
-    if (clash) continue
+    const near = { minX: h.x - rh - 0.02, minY: h.y - rh - 0.02, maxX: h.x + rh + 0.02, maxY: h.y + rh + 0.02 }
+    if (kept.some(near, (k) => Math.hypot(accepted[k].x - h.x, accepted[k].y - h.y) < reach(accepted[k]) + rh + 0.02)) continue
+    kept.add(accepted.length, { minX: h.x - rh, minY: h.y - rh, maxX: h.x + rh, maxY: h.y + rh })
     accepted.push(h)
-    widest = Math.max(widest, rh)
-    const key = `${cx},${cy}`
-    grid.set(key, [...(grid.get(key) ?? []), h])
   }
   const cutInGeometry = accepted.length <= DRILLS_IN_GEOMETRY
   if (cutInGeometry) for (const h of accepted) shapeOf(h.x, h.y).holes.push(h.slot ? capsule(h.slot[0], h.slot[1], h.r) : circlePath(h.x, h.y, h.r))
@@ -468,12 +459,11 @@ export function buildBoard(project: Project, fills: ZoneFill[], shared: SharedMa
 
   // Plated barrels for pad and mounting holes, and for vias unless they're tented: then mask
   // dips into the hole and closes it, so they read as small dimples rather than open holes.
-  const viaAt = tented
   const barrels: THREE.BufferGeometry[] = []
   const plugs: THREE.BufferGeometry[] = []
   for (const h of accepted) {
     if (h.bare) continue
-    if (viaAt.has(`${h.x},${h.y}`)) {
+    if (tented.has(`${h.x},${h.y}`)) {
       for (const z of [t / 2 - 0.06, -t / 2 + 0.06]) {
         const g = new THREE.CircleGeometry(h.r, 2 * curveSegmentsFor(2 * h.r))
         if (z < 0) g.rotateX(Math.PI)

@@ -52,7 +52,7 @@ export interface StillLayer {
 }
 
 /** How long a pan or a zoom has to stop before the still layers are drawn again at the view. */
-export const STILL_SETTLE_MS = 250
+const STILL_SETTLE_MS = 250
 
 export interface ViewportPointerEvent {
   world: Vec2

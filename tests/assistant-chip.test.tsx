@@ -41,9 +41,10 @@ describe("what it is doing", () => {
     expect(assistantState(activity({ tool: "connect" }), "p1", NOW)).toEqual({ kind: "here", phase: "Wiring" })
   })
 
-  it("is at work elsewhere on another project, or on the account's list", () => {
-    expect(assistantState(activity(), "p2", NOW)).toEqual({ kind: "elsewhere", project: true })
-    expect(assistantState(activity({ tool: "list_projects", projectId: null }), "p1", NOW)).toEqual({ kind: "elsewhere", project: false })
+  it("is at work elsewhere on another project, on the account's list, or making a project", () => {
+    expect(assistantState(activity(), "p2", NOW)).toEqual({ kind: "elsewhere", on: "project" })
+    expect(assistantState(activity({ tool: "list_projects", projectId: null }), "p1", NOW)).toEqual({ kind: "elsewhere", on: "projects" })
+    expect(assistantState(activity({ tool: "create_project", projectId: null }), "p1", NOW)).toEqual({ kind: "elsewhere", on: "new" })
   })
 
   it("is idle a minute after its latest call, since that call or a later connection", () => {
@@ -57,7 +58,8 @@ describe("what it is doing", () => {
 
   it("says it in a few words", () => {
     expect(stateText({ kind: "here", phase: "Routing" }, NOW)).toBe("Routing in this project")
-    expect(stateText({ kind: "elsewhere", project: true }, NOW)).toBe("Working on another project")
+    expect(stateText({ kind: "elsewhere", on: "project" }, NOW)).toBe("Working on another project")
+    expect(stateText({ kind: "elsewhere", on: "new" }, NOW)).toBe("Making a new project")
     expect(stateText({ kind: "idle", since: NOW - 5 * 60_000, connected: false }, NOW)).toBe("Last used 5 min ago")
     expect(stateText({ kind: "idle", since: NOW - 3 * 3_600_000, connected: true }, NOW)).toBe("Connected 3 h ago")
     // The host's clock may be ahead of this one.

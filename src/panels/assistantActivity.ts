@@ -27,8 +27,8 @@ export function assistantClient(activity: Pick<AssistantActivity, "client" | "cl
 export type AssistantState =
   /** At work on the project open here; `phase` is its latest tool's ("Routing"). */
   | { kind: "here"; phase: string }
-  /** At work on another project, or on the account's list (`project` false). */
-  | { kind: "elsewhere"; project: boolean }
+  /** At work on another project, on the account's list (`projects`), or making a project (`new`). */
+  | { kind: "elsewhere"; on: "project" | "projects" | "new" }
   /** Not at work: last seen at `since`, connecting (`connected`) or calling a tool. */
   | { kind: "idle"; since: number; connected: boolean }
 
@@ -37,7 +37,7 @@ export function assistantState(activity: AssistantActivity, projectId: string | 
   const { calledAt, connectedAt } = activity
   if (calledAt !== null && now - calledAt < WORKING_MS) {
     if (activity.projectId && activity.projectId === projectId) return { kind: "here", phase: toolPhase(activity.tool ?? "") }
-    return { kind: "elsewhere", project: !!activity.projectId }
+    return { kind: "elsewhere", on: activity.projectId ? "project" : activity.tool === "create_project" ? "new" : "projects" }
   }
   const since = Math.max(calledAt ?? 0, connectedAt ?? 0)
   if (!since) return null
@@ -63,7 +63,7 @@ export function stateText(state: AssistantState, now: number): string {
     case "here":
       return `${state.phase} in this project`
     case "elsewhere":
-      return state.project ? "Working on another project" : "Looking through your projects"
+      return state.on === "project" ? "Working on another project" : state.on === "new" ? "Making a new project" : "Looking through your projects"
     case "idle":
       return `${state.connected ? "Connected" : "Last used"} ${ago(state.since, now)}`
   }

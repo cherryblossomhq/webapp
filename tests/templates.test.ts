@@ -83,7 +83,7 @@ describe("templates", () => {
     expect(EXAMPLES.find((e) => e.id === id)?.project, `import examples/${id}.json in examples.ts`).toBeDefined()
     await expect(exampleFile(built(id))).toMatchFileSnapshot(
       `../src/model/examples/${id}.json`,
-      "the shipped example is out of date: npm run examples -w @cherryblossom/editor",
+      "the shipped example is out of date: npm run examples",
     )
   })
 })

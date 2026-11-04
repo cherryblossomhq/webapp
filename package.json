@@ -34,9 +34,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:corpus": "vitest run tests/corpus",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium",
     "examples": "vitest run tests/templates.test.ts -t \"ships as built\" -u",
+    "library-models": "KICAD_FETCH=1 vitest run tests/library-models.generate.test.ts",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
@@ -72,6 +74,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "circuit-json-to-connectivity-map": "^0.0.23",
     "circuit-to-svg": "^0.0.452",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^7.0.0",

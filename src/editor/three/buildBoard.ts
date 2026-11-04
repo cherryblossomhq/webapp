@@ -158,10 +158,54 @@ function holePath(pad: WorldPad): THREE.Path {
   return ends ? capsule(ends[0], ends[1], r) : circlePath(at.x, at.y, r)
 }
 
-/** Extruded slab with only its top (or bottom) cap and walls; z0 is the face it sits on. */
+/** Extruded slab, both caps and walls; z0 is the face it sits on. */
 function slab(shape: THREE.Shape, depth: number, z0: number, down: boolean, curveSegments = 20): THREE.BufferGeometry {
   const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments })
   g.translate(0, 0, down ? z0 - depth : z0)
+  return g
+}
+
+/**
+ * A piece of exposed copper `depth` proud of the face at `z0` (under it when `down`): its outer face and its walls, without the face against the
+ * board, which is never seen, and each corner kept once for the triangles that share it. As extruded slabs (`slab`), CERN's Macbeth's copper was
+ * 2.3 million vertices for the page to send to the graphics process.
+ */
+function copperSlab(shape: THREE.Shape, depth: number, z0: number, down: boolean, curveSegments = 20): THREE.BufferGeometry {
+  const zOut = down ? z0 - depth : z0 + depth
+  const pos: number[] = []
+  const nor: number[] = []
+  const idx: number[] = []
+  // The outer face: the shape's own triangulation, as the slab's cap had it, facing away from the board.
+  const cap = new THREE.ShapeGeometry(shape, curveSegments)
+  const at = cap.attributes.position
+  for (let i = 0; i < at.count; i++) {
+    pos.push(at.getX(i), at.getY(i), zOut)
+    nor.push(0, 0, down ? -1 : 1)
+  }
+  const tri = cap.index!.array
+  for (let i = 0; i < tri.length; i += 3) idx.push(tri[i], down ? tri[i + 2] : tri[i + 1], down ? tri[i + 1] : tri[i + 2])
+  cap.dispose()
+  // The walls round the outline and its holes, each piece a quad facing out of the copper (as `ringWalls`).
+  const [za, zb] = down ? [zOut, z0] : [z0, zOut]
+  const { shape: outer, holes } = shape.extractPoints(curveSegments)
+  for (const [ring, hole] of [[outer, false], ...holes.map((h) => [h, true] as const)] as const) {
+    const pts = ring.length > 2 && Math.hypot(ring[0].x - ring[ring.length - 1].x, ring[0].y - ring[ring.length - 1].y) < 1e-9 ? ring.slice(0, -1) : ring
+    let area = 0
+    for (let i = 0; i < pts.length; i++) area += pts[i].x * pts[(i + 1) % pts.length].y - pts[(i + 1) % pts.length].x * pts[i].y
+    const out = area > 0 !== hole
+    for (let i = 0; i < pts.length; i++) {
+      const [a, b] = out ? [pts[i], pts[(i + 1) % pts.length]] : [pts[(i + 1) % pts.length], pts[i]]
+      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
+      const n = pos.length / 3
+      pos.push(a.x, a.y, za, b.x, b.y, za, b.x, b.y, zb, a.x, a.y, zb)
+      for (let k = 0; k < 4; k++) nor.push((b.y - a.y) / len, -(b.x - a.x) / len, 0)
+      idx.push(n, n + 1, n + 2, n, n + 2, n + 3)
+    }
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3))
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3))
+  g.setIndex(idx)
   return g
 }
 
@@ -181,7 +225,9 @@ function padCurveSegments(pad: WorldPad): number {
 /** Geometries as one, or null for none. */
 function merged(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
   if (!geoms.length) return null
-  const one = mergeGeometries(geoms.map((g) => (g.index ? g.toNonIndexed() : g)), false)
+  // Indexed when they all are (the copper's), its shared corners kept once.
+  const indexed = geoms.every((g) => g.index)
+  const one = mergeGeometries(indexed ? geoms : geoms.map((g) => (g.index ? g.toNonIndexed() : g)), false)
   for (const g of geoms) g.dispose()
   return one
 }
@@ -401,8 +447,8 @@ export function boardShapes(project: Project, fills: ZoneFill[]): BoardShapes {
       const sides = isNpth(p) ? p.ring! : p.layers
       const segments = padCurveSegments(p)
       for (const shape of padShapes(p)) {
-        if (sides.includes("top")) copper.push(slab(shape, PAD_DEPTH, topZ, false, segments))
-        if (sides.includes("bottom")) copper.push(slab(shape, PAD_DEPTH, bottomZ, true, segments))
+        if (sides.includes("top")) copper.push(copperSlab(shape, PAD_DEPTH, topZ, false, segments))
+        if (sides.includes("bottom")) copper.push(copperSlab(shape, PAD_DEPTH, bottomZ, true, segments))
       }
     }
   }
@@ -410,8 +456,8 @@ export function boardShapes(project: Project, fills: ZoneFill[]): BoardShapes {
   for (const h of holesMounting) {
     const ring = circleShape(h.x, h.y, h.diameter / 2)
     ring.holes.push(circlePath(h.x, h.y, h.drill / 2))
-    copper.push(slab(ring, PAD_DEPTH, topZ, false))
-    copper.push(slab(ring, PAD_DEPTH, bottomZ, true))
+    copper.push(copperSlab(ring, PAD_DEPTH, topZ, false))
+    copper.push(copperSlab(ring, PAD_DEPTH, bottomZ, true))
   }
   for (const v of project.vias) {
     // A through via has a hole in its ring; a blind one is closed on the side it does not reach, so its ring has no hole to show.
@@ -420,7 +466,7 @@ export function boardShapes(project: Project, fills: ZoneFill[]): BoardShapes {
       if (!viaSide(v, side)) continue
       const ring = circleShape(v.x, v.y, v.diameter / 2)
       if (hole) ring.holes.push(circlePath(v.x, v.y, v.drill / 2))
-      copper.push(slab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom", curveSegmentsFor(v.diameter)))
+      copper.push(copperSlab(ring, PAD_DEPTH, side === "top" ? topZ : bottomZ, side === "bottom", curveSegmentsFor(v.diameter)))
     }
   }
 

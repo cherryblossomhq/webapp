@@ -53,7 +53,7 @@ if (process.env.NODE_ENV === "development") {
 }
 
 export { App, type AppProps } from "./App"
-export type { ManagedAiHost } from "./ai/managedAi"
+export type { AssistantActivity, ManagedAiHost } from "./ai/managedAi"
 export type { AccountUser, EditorAccount } from "./store/account"
 export type { PartsIndexSource, SupplierPartsSource } from "./ai/supplierParts"
 export type { ModelFileStore } from "./store/modelFiles"

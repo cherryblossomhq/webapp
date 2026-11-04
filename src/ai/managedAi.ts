@@ -25,10 +25,27 @@ export interface ManagedAiHost {
   assistantsUrl?: string
   /** Each assistant's own steps on that page, by client; one without links to the page. */
   assistantGuides?: Partial<Record<AssistantClient, string>>
+  /**
+   * What the user's own assistant last did through MCP, live: `listener` gets null until one has
+   * connected, then each change. Returns the way to stop. Absent, Sakura's panel shows no status.
+   */
+  watchAssistant?: (listener: (activity: AssistantActivity | null) => void) => () => void
 }
 
 /** The assistants the notice on Free names, each by the setup steps the host has for it. */
 export type AssistantClient = "claude" | "chatgpt" | "claudeCode" | "codex" | "cursor"
+
+/** The user's own assistant as the MCP server last saw it. Times are the host's clock, in ms. */
+export interface AssistantActivity {
+  /** What it called itself when it last connected (MCP's `clientInfo.name`, `claude-code`...), and the `title` it gave, if any. */
+  client: string | null
+  clientTitle: string | null
+  connectedAt: number | null
+  /** Its latest tool call: when, which of Sakura's tools, and the project it named (null for the account's own tools). */
+  calledAt: number | null
+  tool: string | null
+  projectId: string | null
+}
 
 let host: ManagedAiHost | null = null
 

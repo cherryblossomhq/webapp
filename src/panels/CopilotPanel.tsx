@@ -7,6 +7,7 @@ import { useCopilot, type Entry } from "../store/copilotStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { Button, IconButton } from "../ui/controls"
+import { AssistantChip } from "./AssistantChip"
 import { OwnAiNotice } from "./OwnAiNotice"
 
 const SUGGESTIONS = [
@@ -144,6 +145,7 @@ export function CopilotPanel() {
       </div>
 
       <div className="shrink-0 border-t border-line p-3">
+        <AssistantChip projectId={projectId} />
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}

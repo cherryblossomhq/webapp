@@ -16,6 +16,7 @@ import {
   PROJECT_FILE_FORMAT,
   PROJECT_FILE_VERSION,
   ProjectFileError,
+  projectFileWriter,
   serializeProject,
   summarizeProject,
 } from "../src/model/projectFile"
@@ -127,6 +128,25 @@ const v1 = (project: Partial<Project>) => ({
   project: { name: "v1", description: "", labels: [], wires: [], ...project },
 })
 const resistor = { id: "r", partId: "resistor", ref: "R1", props: {}, sch: { x: 0, y: 0, rot: 0 } }
+
+describe("the workers' project file, written again only where an edit changed it", () => {
+  it("is serializeProject's, character for character, through edits that change one value and keep the rest", () => {
+    const write = projectFileWriter()
+    for (const { project } of EXAMPLES) {
+      // A zone with KiCad's kept fill (written compactly) and a part with units, so every stored form is in it.
+      const ring = [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }]
+      const kept: Project = { ...project, zones: project.zones.map((z) => ({ ...z, kept: { layers: [{ layer: "top" as const, rings: [ring] }], sig: "" } })) }
+      const steps: Project[] = [
+        kept,
+        { ...kept, traces: kept.traces.map((t, i) => (i === 0 ? { ...t, width: t.width + 0.1 } : t)) },
+        { ...kept, name: `${kept.name} again`, vias: [] },
+        { ...kept, zones: [] },
+        { ...kept, kicad: undefined },
+      ]
+      for (const p of steps) expect(write(p)).toBe(serializeProject(p))
+    }
+  })
+})
 
 describe("version 1, before the discrete symbols were drawn at KiCad's proportions", () => {
   // Written by the editor as it was then, each with the netlist it had: a sheet of every discrete

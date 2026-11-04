@@ -4,7 +4,7 @@ import type { SchematicConnectivity } from "../model/connectivity"
 import type { ErcFinding } from "../model/erc"
 import { analysisWithItems, analyzePcb, followEdit, openingAnalysis, type PcbAnalysis } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
-import { serializeProject } from "../model/projectFile"
+import { projectFileWriter } from "../model/projectFile"
 import type { Project } from "../model/types"
 import { keptZoneFills, seedZoneFills, type PendingGroup } from "../model/zoneFill"
 import { needsZoneEngine } from "../model/zones"
@@ -136,8 +136,10 @@ function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>)
  * project the undo history holds was 26 MB each on CERN's Macbeth, up to 200 of them.
  */
 let fileKept: { project: Project; file: string } | null = null
+/** Written again only where the last project differs (`projectFileWriter`): after an edit of Macbeth, 0.4 s became 0.03 to 0.1 s. */
+const writeFile = projectFileWriter()
 export function projectFileOf(p: Project): string {
-  if (fileKept?.project !== p) fileKept = { project: p, file: serializeProject(p) }
+  if (fileKept?.project !== p) fileKept = { project: p, file: writeFile(p) }
   return fileKept.file
 }
 

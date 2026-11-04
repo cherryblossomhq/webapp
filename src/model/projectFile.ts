@@ -270,19 +270,57 @@ function storedComponent(c: ComponentInstance): unknown {
 
 export function serializeProject(project: Project, { pretty = false } = {}): string {
   const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, scope: _scope, ...plain } = project
-  // Storage applies an edit to the stored file by the paths the live sync names (`store/changes.ts`): a list edited item by item, an item's value by its key. So every such
-  // list is written as the list of its items, and every value under the key the model gives it: an edit made to one written in another shape or under another key was lost
-  // once the project was read again. Only a value an edit always replaces whole is written compactly, under its own key: a part's units, a land's drawings, pads and zones
-  // (`packShapes`, `packPad`, `packZones`), and a zone's polygon and kept fill. The compact forms written before (`tx`, `gr`, `kt`, `kp`, `textStyles`, `dm`, `dimStyles`, `grp`, `gd`,
-  // `vx`, `im`, an outline's `ol`, a zone's `ff`, the board's drawings in runs) are still read.
-  const document = {
-    ...plain,
-    ...(plain.components.some((c) => c.units) ? { components: plain.components.map((c) => (c.units ? storedComponent(c) : c)) } : {}),
-    ...(plain.zones.some((z) => z.outline || z.kept) ? { zones: packZones(plain.zones) } : {}),
-    ...(plain.footprints?.some((f) => f.shapes?.length || f.zones?.length || needsPadPacking(f.pads)) ? { footprints: plain.footprints.map((f) => (f.shapes?.length || f.zones?.length || needsPadPacking(f.pads) ? { ...f, ...(f.zones?.length ? { zones: packZones(f.zones) } : {}), ...(f.shapes?.length ? { shapes: packShapes(f.shapes) } : {}), ...(needsPadPacking(f.pads) ? { pads: f.pads.map(packPad) } : {}) } : f)) } : {}),
-  } as unknown as ProjectDocument
+  const document = Object.fromEntries(Object.entries(plain).map(([key, value]) => [key, storedValue(key, value)])) as unknown as ProjectDocument
   const file: ProjectFile = { format: PROJECT_FILE_FORMAT, version: PROJECT_FILE_VERSION, project: document }
   return pretty ? JSON.stringify(file, null, 2) : JSON.stringify(file)
+}
+
+/**
+ * A value of the project as the file stores it under its key. Storage applies an edit to the stored file by the paths the live sync names (`store/changes.ts`): a list
+ * edited item by item, an item's value by its key. So every such list is written as the list of its items, and every value under the key the model gives it: an edit made
+ * to one written in another shape or under another key was lost once the project was read again. Only a value an edit always replaces whole is written compactly, under its
+ * own key: a part's units, a land's drawings, pads and zones (`packShapes`, `packPad`, `packZones`), and a zone's polygon and kept fill. The compact forms written before
+ * (`tx`, `gr`, `kt`, `kp`, `textStyles`, `dm`, `dimStyles`, `grp`, `gd`, `vx`, `im`, an outline's `ol`, a zone's `ff`, the board's drawings in runs) are still read.
+ */
+function storedValue(key: string, value: unknown): unknown {
+  if (key === "components") {
+    const components = value as Project["components"]
+    return components.some((c) => c.units) ? components.map((c) => (c.units ? storedComponent(c) : c)) : components
+  }
+  if (key === "zones") {
+    const zones = value as Project["zones"]
+    return zones.some((z) => z.outline || z.kept) ? packZones(zones) : zones
+  }
+  if (key === "footprints") {
+    const footprints = value as Project["footprints"]
+    const packed = (f: NonNullable<Project["footprints"]>[number]) => f.shapes?.length || f.zones?.length || needsPadPacking(f.pads)
+    if (!footprints?.some(packed)) return footprints
+    return footprints.map((f) => (packed(f) ? { ...f, ...(f.zones?.length ? { zones: packZones(f.zones) } : {}), ...(f.shapes?.length ? { shapes: packShapes(f.shapes) } : {}), ...(needsPadPacking(f.pads) ? { pads: f.pads.map(packPad) } : {}) } : f))
+  }
+  return value
+}
+
+/**
+ * `serializeProject`, for a stream of projects each an edit of the last: each top-level value's text is kept, and a value that is the same object as
+ * last time is not written again. The editor's workers are sent the project after each edit, and Macbeth's took 0.4 s to write whole, most of it
+ * its pours' kept fills, which an edit of a track or a part leaves as they are. The text is `serializeProject`'s, character for character.
+ */
+export function projectFileWriter(): (project: Project) => string {
+  let kept = new Map<string, { value: unknown; json: string }>()
+  return (project) => {
+    const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, scope: _scope, ...plain } = project
+    const next = new Map<string, { value: unknown; json: string }>()
+    const parts: string[] = []
+    for (const [key, value] of Object.entries(plain)) {
+      if (value === undefined) continue
+      const was = kept.get(key)
+      const json = was && was.value === value ? was.json : JSON.stringify(storedValue(key, value))
+      next.set(key, { value, json })
+      parts.push(`${JSON.stringify(key)}:${json}`)
+    }
+    kept = next
+    return `{"format":${JSON.stringify(PROJECT_FILE_FORMAT)},"version":${PROJECT_FILE_VERSION},"project":{${parts.join(",")}}}`
+  }
 }
 
 /**

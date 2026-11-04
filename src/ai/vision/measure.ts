@@ -343,22 +343,20 @@ export function measurePcb(project: Project): PcbMeasure {
   const bd = project.board
 
   const offBoard: string[] = []
-  const boxes: { ref: string; side: string; box: Box }[] = []
   for (const c of placed) {
     const cy = pcbCourtyard(c)
-    if (!cy) continue
-    boxes.push({ ref: c.ref, side: c.pcb.side, box: cy })
-    if (partOutsideBoard(project, c, cy)) offBoard.push(c.ref)
+    if (cy && partOutsideBoard(project, c, cy)) offBoard.push(c.ref)
   }
-  // The same test as the overlap check in the PCB analysis, so the two always agree.
+  // The overlaps run_checks reports, so the two always agree: a part turned to 72 degrees is tested by its turned courtyard, not
+  // the box around it, which overlaps a neighbour's long before the part does (an assistant was told of overlaps Checks never had).
+  const byId = new Map(placed.map((c) => [c.id, c]))
   const overlaps: Clash[] = []
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      if (boxes[i].side !== boxes[j].side) continue
-      const a = shrink(boxes[i].box, 0.05)
-      const b = shrink(boxes[j].box, 0.05)
-      if (boxesOverlap(a, b)) overlaps.push({ a: boxes[i].ref, b: boxes[j].ref, box: mid(a, b) })
-    }
+  for (const v of pcb.violations) {
+    if (v.kind !== "overlap") continue
+    const [a, b] = (v.items ?? []).map((k) => byId.get(k.slice(2)))
+    const ca = a && pcbCourtyard(a)
+    const cb = b && pcbCourtyard(b)
+    if (a && b) overlaps.push({ a: a.ref, b: b.ref, box: ca && cb ? mid(shrink(ca, 0.05), shrink(cb, 0.05)) : { minX: v.at.x, minY: v.at.y, maxX: v.at.x, maxY: v.at.y } })
   }
 
   const netNames = new Map(conn.nets.map((n) => [n.id, n.name]))
@@ -377,7 +375,7 @@ export function measurePcb(project: Project): PcbMeasure {
     vias: project.vias.length,
     pours: project.zones.length,
     // What run_checks calls an error, less what has a line of its own above.
-    errors: pcb.violations.filter((v) => v.severity === "error" && v.kind !== "unrouted" && v.kind !== "outside-board").length,
+    errors: pcb.violations.filter((v) => v.severity === "error" && v.kind !== "unrouted" && v.kind !== "outside-board" && v.kind !== "overlap").length,
     warnings: pcb.violations.filter((v) => v.severity === "warning" && v.kind !== "overlap").length,
     bounds: pcbContent(project),
   }

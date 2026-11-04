@@ -691,6 +691,9 @@ function improvePlacement(
   placed.forEach((u, i) => origins.set(u, pos[i]))
 }
 
+/** The parts `autoPlacePcb` places: on the board, with a footprint, and not placed yet. The PCB view draws none of them. */
+export const unplacedParts = (project: Project) => resolvedComponents(project).filter((c) => onBoard(c) && !!c.footprint && !c.pcb.placed)
+
 /**
  * Place every physical part that is not on the board yet; with `all`, re-pack the whole board
  * instead. Re-packing starts the layout over: copper that isn't locked is cleared, since it would
@@ -701,14 +704,15 @@ function improvePlacement(
  * Each chip's decoupling capacitors go beside the supply pins they serve first; a chip being
  * placed then moves with its capacitors as one block. A switching regulator or an LDO takes its
  * whole power stage along the same way (`model/powerStage.ts`); `powerStage: false` leaves that
- * out, which is how the measurements compare against placement without it.
+ * out, which is how the measurements compare against placement without it. `only` places those of
+ * the unplaced parts alone, and leaves the others off the board as they were.
  */
-export function autoPlacePcb(project: Project, all = false, options: { powerStage?: boolean } = {}): Project {
+export function autoPlacePcb(project: Project, all = false, options: { powerStage?: boolean; only?: ReadonlySet<string> } = {}): Project {
   const physical = resolvedComponents(project).filter((c) => onBoard(c) && !!c.footprint)
   const held = all ? heldByLockedCopper(project, physical) : new Set<string>()
   // A part that isn't on the board yet is placed even if it is locked: a lock keeps a part where it
   // is, and a pasted copy of a locked part is nowhere. (Pasting clears the lock too.)
-  const movable = physical.filter((c) => (all || !c.pcb.placed) && (!c.pcb.locked || !c.pcb.placed) && !held.has(c.id))
+  const movable = physical.filter((c) => (all || !c.pcb.placed) && (!c.pcb.locked || !c.pcb.placed) && !held.has(c.id) && (!options.only || options.only.has(c.id)))
   if (!movable.length) return project
   const base: Project = all ? { ...project, traces: project.traces.filter((t) => t.locked), vias: project.vias.filter((v) => v.locked) } : project
   const moving = new Set(movable.map((c) => c.id))

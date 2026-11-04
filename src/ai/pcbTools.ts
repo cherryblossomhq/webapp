@@ -163,7 +163,11 @@ const boardBox = (p: Project): Box => ({
   maxY: p.board.y + p.board.height / 2,
 })
 
-/** Problems a part standing where it is has: sticking out, on a mounting hole, or over another part. */
+/**
+ * Problems a part standing where it is has: sticking out, or on a mounting hole. Over another part is the overlap check's to say,
+ * once every part has moved (`Checks now report`), by the turned courtyard: the box around a part at 72 degrees overlapped
+ * neighbours the part did not, and the call said so where Checks did not.
+ */
 function standingProblems(project: Project, c: ComponentInstance): string[] {
   const box = pcbCourtyard(c)
   if (!box) return []
@@ -175,15 +179,6 @@ function standingProblems(project: Project, c: ComponentInstance): string[] {
     const r = h.diameter / 2
     if (boxesOverlap(box, { minX: h.x - r, maxX: h.x + r, minY: h.y - r, maxY: h.y + r })) out.push("covers a mounting hole")
   }
-  const shrink = (b: Box): Box => ({ minX: b.minX + 0.05, maxX: b.maxX - 0.05, minY: b.minY + 0.05, maxY: b.maxY - 0.05 })
-  const over = project.components
-    .filter((o) => o.id !== c.id && o.pcb.placed && o.pcb.side === c.pcb.side)
-    .filter((o) => {
-      const ob = pcbCourtyard(o)
-      return !!ob && boxesOverlap(shrink(box), shrink(ob))
-    })
-    .map((o) => o.ref)
-  if (over.length) out.push(`overlaps ${over.join(", ")}`)
   return out
 }
 

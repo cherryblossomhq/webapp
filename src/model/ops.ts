@@ -42,7 +42,7 @@ import type {
 } from "./types"
 
 export { DEFAULT_RULES }
-export { autoPlacePcb, repackCopper, repackPcb } from "./autoplace"
+export { autoPlacePcb, repackCopper, repackPcb, unplacedParts } from "./autoplace"
 
 /**
  * Width for new traces on a net: the width the net was given by name (`rules.netWidths`), else its net class's (X10), else the default.

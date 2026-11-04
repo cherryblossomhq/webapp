@@ -5,7 +5,7 @@ import type { Box } from "../../lib/geometry"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { PCB } from "../../editor/theme"
 import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
-import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
+import { pcbCourtyard, pcbCourtyardRing, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
 import { nonCopperFills, type OtherFill } from "../../model/nonCopperFill"
 import { withPartZones } from "../../model/partZones"
@@ -267,10 +267,11 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   }
 
   if (has("courtyards")) {
+    // Turned with the part, as the overlap check reads it: the box around a part at 72 degrees overlaps neighbours the part doesn't.
     for (const c of placed) {
-      const cy = pcbCourtyard(c)
-      if (!cy || !shownSet.has(c.pcb.side)) continue
-      body += `<rect x="${n(cy.minX)}" y="${n(cy.minY)}" width="${n(cy.maxX - cy.minX)}" height="${n(cy.maxY - cy.minY)}" fill="none" stroke="${PCB.courtyard}" stroke-width="${n(1.2 * px)}"/>`
+      const ring = pcbCourtyardRing(c)
+      if (!ring || !shownSet.has(c.pcb.side)) continue
+      body += `<polygon points="${ring.map((q) => `${n(q.x)},${n(q.y)}`).join(" ")}" fill="none" stroke="${PCB.courtyard}" stroke-width="${n(1.2 * px)}"/>`
     }
     // The drawings on the other layers (courtyard, fabrication, mask, paste, adhesive, user) come with the courtyards: muted, and off by default like them.
     const colors = { courtyard: PCB.courtyard, fab: PCB.shapeFab, mask: PCB.shapeMask, paste: PCB.shapePaste, adhesive: PCB.shapeAdhesive, user: PCB.shapeUser } as const

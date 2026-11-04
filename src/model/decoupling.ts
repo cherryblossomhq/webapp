@@ -15,8 +15,9 @@ import { onBoard } from "./partFlags"
 //   bigger ones are bulk storage that belongs on the rail rather than at a pin;
 // - its pins land on two different nets and one of them is ground;
 // - the other net reaches a supply pin of a chip: a power pin, or the input or output of a
-//   regulator. A chip is a part in the ICs or Power category with three pins or more, or a bare
-//   RF module in Modules; a dev board in Modules, which carries its own decoupling, is not one;
+//   regulator. A chip is a part in the ICs or Power category with three pins or more, a bare
+//   RF module in Modules, or an LED with a supply pin (an addressable one, the WS2812B); a dev
+//   board in Modules, which carries its own decoupling, is not one;
 // - when that supply reaches several chips, the one drawn nearest the capacitor in the
 //   schematic is the one it serves, since that is where its designer put it; unless the
 //   capacitor already sits at the supply pin of another of them on the board, which then wins.
@@ -57,15 +58,21 @@ const isCapacitor = (part: PartDef) =>
   part.pins.length === 2 && (part.valueProp === "capacitance" || (!!part.jumpers && part.category === "Passives" && part.refPrefix === "C"))
 
 /**
- * A part decoupling capacitors serve: an IC, a regulator, or a bare RF module such as the
- * ESP32-WROOM, which has its supply pin and nothing else. Not a dev board, which carries its own
- * decoupling, nor a battery or passive. Given the instance, one marked not on the board is not a chip here.
+ * A part decoupling capacitors serve: an IC, a regulator, a bare RF module such as the
+ * ESP32-WROOM, which has its supply pin and nothing else, or an LED with a supply pin of its own:
+ * an addressable one (WS2812B, SK6812, APA102) is a chip in a lens and wants its 100 nF beside it.
+ * Left out, the capacitor beside each LED was paired with whatever IC shared the rail, and Checks
+ * reported it far from that one. Not a dev board, which carries its own decoupling, nor a battery
+ * or passive. Given the instance, one marked not on the board is not a chip here.
  */
 export const isChip = (part: PartDef | undefined, c?: ComponentInstance): part is PartDef =>
   !!part &&
   isPhysical(part) &&
   (!c || onBoard(c)) &&
-  (part.category === "ICs" || part.category === "Power" || (part.category === "Modules" && !!part.keywords?.includes("rf"))) &&
+  (part.category === "ICs" ||
+    part.category === "Power" ||
+    (part.category === "Modules" && !!part.keywords?.includes("rf")) ||
+    (part.category === "Diodes" && part.pins.some((p) => p.kind === "power"))) &&
   part.pins.length >= 3
 
 /** Pins that take a chip's supply: power pins, and a regulator's input and output. */

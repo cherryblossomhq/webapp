@@ -7,7 +7,7 @@ import { DIMENSION_KINDS, DIMENSION_NAMES, DIMENSION_TOOL_KEY } from "../editor/
 import { uid } from "../lib/id"
 import { autoroute } from "../model/autoroute"
 import { decouplingSummary } from "../model/decoupling"
-import { repackCopper, repackPcb } from "../model/ops"
+import { autoPlacePcb, repackCopper, repackPcb, unplacedParts } from "../model/ops"
 import { worldShapes } from "../model/shapeItems"
 import { worldTexts } from "../model/texts"
 import { routeAroundStitching, stitchVias } from "../model/stitch"
@@ -160,6 +160,43 @@ function toggleGroundPour(): string {
     return res.project
   })
   return added ? `Poured ${net} on both layers with ${added} stitching vias` : `Poured ${net} on both layers`
+}
+
+/** Place the parts that aren't on the board yet, as `layout_pcb` does, leaving the placed ones where they are. */
+function placeUnplaced(): string {
+  const before = projectApi().project!
+  const next = autoPlacePcb(before)
+  if (next === before) return "Every part is on the board"
+  projectApi().commit(() => next)
+  const placed = unplacedParts(before).length - unplacedParts(next).length
+  return `Placed ${placed} part${placed === 1 ? "" : "s"} on the board`
+}
+
+/**
+ * Parts on the schematic and not on the board, which the PCB view doesn't draw: opening it places only those this tab added,
+ * since someone else's (a collaborator's, or an assistant's over MCP placing them a call at a time) may be on their way. A
+ * viewer is told, and can't place them.
+ */
+function UnplacedNote({ refs, viewer, held, onPlace }: { refs: string[]; viewer: boolean; held: string | null; onPlace: () => void }) {
+  if (!refs.length) return null
+  const shown = refs.length > 4 ? `${refs.slice(0, 3).join(", ")} and ${refs.length - 3} more` : refs.length > 1 ? `${refs.slice(0, -1).join(", ")} and ${refs[refs.length - 1]}` : refs[0]
+  return (
+    <div role="status" data-unplaced className="pointer-events-auto flex items-center gap-2 rounded-[8px] border border-line bg-surface/95 py-1 pl-2.5 pr-1 text-[12px] text-ink-2 shadow-float">
+      <span>
+        {shown} {refs.length === 1 ? "isn't" : "aren't"} on the board yet
+      </span>
+      {!viewer && (
+        <button
+          className="rounded-[6px] px-2 py-0.5 font-medium text-ink hover:bg-chrome disabled:opacity-45"
+          title={held ?? "Places them beside the parts they connect to, as Layout does; the parts on the board stay where they are"}
+          disabled={!!held}
+          onClick={onPlace}
+        >
+          {refs.length === 1 ? "Place it" : "Place them"}
+        </button>
+      )}
+    </div>
+  )
 }
 
 /** Re-pack every part that isn't locked, decoupling capacitors beside their chips. */
@@ -429,6 +466,10 @@ export function PcbToolbar() {
   const runRepack = () => {
     void withBoard("repack", repack).then((done) => setStatus(done.ok ? done.value : done.message))
   }
+  const unplaced = useMemo(() => (project ? unplacedParts(project).map((c) => c.ref) : []), [project])
+  const runPlace = () => {
+    void withBoard("layout_pcb", placeUnplaced).then((done) => setStatus(done.ok ? done.value : done.message))
+  }
 
   return (
     <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-col items-start gap-2">
@@ -580,6 +621,7 @@ export function PcbToolbar() {
         {tool === "dimension" && <DimensionOptions />}
       </div>
       <BoardHeldNote note={held} />
+      <UnplacedNote refs={unplaced} viewer={viewer} held={held} onPlace={runPlace} />
       {status && (
         <div role="status" className="pointer-events-auto rounded-[8px] border border-line bg-surface/95 px-2.5 py-1 text-[12px] text-ink-2 shadow-float">
           {status}

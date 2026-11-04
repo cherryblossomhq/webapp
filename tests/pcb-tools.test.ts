@@ -156,8 +156,8 @@ describe("place_parts", () => {
     expect(off.result).toContain("sticks out of the board outline")
     const u1 = comp(placed, "U1").pcb
     const over = place(placed, [{ ref: "C1", x: u1.x, y: u1.y }])
-    expect(over.result).toContain("overlaps U1")
-    expect(over.result).toMatch(/Checks now report: .*overlaps/)
+    // Said by the overlap check once every part has moved, which tests a turned part by its turned courtyard.
+    expect(over.result).toMatch(/Checks now report: .*(C1 overlaps U1|U1 overlaps C1)/)
   })
 
   describe("never leaves a short behind", () => {

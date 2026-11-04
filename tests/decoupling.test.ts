@@ -88,6 +88,23 @@ describe("decoupling pairs", () => {
     expect(described(s.project)).toEqual(["C1 -> U1 5V 1", "C2 -> U1 3V3 5"])
   })
 
+  it("serves an addressable LED's supply as a chip's", () => {
+    // An assistant's WS2812B chain: the 100 nF beside each LED was paired with the one IC on 5 V, and Checks said it was far from that.
+    const s = sheet()
+    s.add("atmega328p", 0, 0)
+    s.add("ws2812b", 30, 0)
+    s.add("ws2812b", 45, 0)
+    s.add("capacitor", 30, 4, { capacitance: "100nF" })
+    s.add("capacitor", 45, 4, { capacitance: "100nF" })
+    s.net("5V", "U1.4", "U1.6", "D1.VDD", "D2.VDD", "C1.1", "C2.1")
+    s.net("GND", "U1.3", "U1.5", "D1.VSS", "D2.VSS", "C1.2", "C2.2")
+    expect(described(s.project)).toEqual(["C1 -> D1 5V 1", "C2 -> D2 5V 1"])
+    // Placed beside their LEDs, and not reported.
+    const placed = autoPlacePcb(s.project)
+    expect(decouplingGaps(placed).map((g) => `${g.cap.ref} ${g.chip.ref} ${g.gap < 2}`).sort()).toEqual(["C1 D1 true", "C2 D2 true"])
+    expect(analyzePcb(placed, computeConnectivity(placed)).violations.filter((v) => v.kind === "decoupling")).toEqual([])
+  })
+
   it("skips dev boards, which carry their own decoupling", () => {
     const s = sheet()
     s.add("esp32_devkit_v1", 0, 0)

@@ -10,6 +10,7 @@ import { schematicSvg } from "../src/ai/vision/schematicSvg"
 import { createProject, updateComponent } from "../src/model/ops"
 import { PCB } from "../src/editor/theme"
 import { getPcbAnalysis } from "../src/store/analysis"
+import { pcbCourtyard } from "../src/model/instances"
 import type { Project } from "../src/model/types"
 import type { ChatMessage } from "../src/ai/managedAi"
 
@@ -238,6 +239,33 @@ describe("what the numbers say", () => {
     expect(m.offBoard).toContain(c.ref)
     expect(describePcb(m).join("\n")).toMatch(/off the board: .*/)
     expect(m.bounds.maxX).toBeGreaterThan(400)
+  })
+
+  it("tests a part turned to 72 degrees by its turned courtyard, as the checks do", () => {
+    // An assistant was told of overlaps between parts at 72 degrees that didn't touch: look compared the boxes around them, Checks the parts.
+    const p0 = placed(circuit())
+    const [r1, r2] = ["R1", "R2"].map((r) => p0.components.find((c) => c.ref === r)!)
+    const flat = pcbCourtyard({ ...r1, pcb: { ...r1.pcb, x: 0, y: 0, rot: 0 } })!
+    const across = Math.min(flat.maxX - flat.minX, flat.maxY - flat.minY)
+    const long = Math.max(flat.maxX - flat.minX, flat.maxY - flat.minY)
+    const turn = flat.maxX - flat.minX > flat.maxY - flat.minY ? 72 : 162
+    const at = (gap: number) =>
+      [r1, r2].reduce((p, c, i) => updateComponent(p, c.id, { pcb: { x: i * gap, y: 0, rot: turn, side: "top", placed: true } }), p0)
+    // Side by side along x, 0.3 mm apart square to their length: the boxes around them overlap, the parts don't.
+    const apart = at((across + 0.3) / Math.cos((18 * Math.PI) / 180))
+    const [a, b] = ["R1", "R2"].map((r) => pcbCourtyard(apart.components.find((c) => c.ref === r)!)!)
+    expect(a.maxX - b.minX, "the boxes overlap").toBeGreaterThan(0.1)
+    expect(long).toBeGreaterThan(across)
+    const pair = (m: ReturnType<typeof measurePcb>) => m.overlaps.map((o) => [o.a, o.b].sort().join("/"))
+    expect(pair(measurePcb(apart))).not.toContain("R1/R2")
+    expect(getPcbAnalysis(apart).violations.filter((v) => v.kind === "overlap" && v.message.includes("R1") && v.message.includes("R2"))).toEqual([])
+    // A real overlap at the same angle is still one, in both.
+    const over = at(across / 2)
+    expect(pair(measurePcb(over))).toContain("R1/R2")
+    expect(getPcbAnalysis(over).violations.some((v) => v.kind === "overlap" && v.message.includes("R1") && v.message.includes("R2"))).toBe(true)
+    // The picture draws the turned courtyard, not the box around it.
+    const svg = pcbSvg(apart, measurePcb(apart).bounds, { width: 400, height: 400 }, { side: "top", extras: new Set<PcbExtra>(["courtyards"]) }, measurePcb(apart))
+    expect(svg).toContain(`<polygon points=`)
   })
 
   it("reports a finished board as clean", () => {

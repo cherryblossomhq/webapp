@@ -17,7 +17,7 @@ import {
 import { findPart } from "../../model/library"
 import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
-import { addTrace, autoPlacePcb, netTraceWidth, removeItems, updateComponent } from "../../model/ops"
+import { addTrace, autoPlacePcb, netTraceWidth, removeItems, unplacedParts, updateComponent } from "../../model/ops"
 import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../../model/board"
 import { addOutlinePaths, addOutlineShape, addSlot, moveOutlineArcMid, moveOutlineVertex, nearestOutlineSeg, outlineSelectionId, parseOutlineSelectionId, pathVertices, removeOutlinePath, slotPath, splitOutlineSeg, toggleOutlineArc, translateOutlinePath } from "../../model/outlineOps"
 import { pathsSvgPath, segEnd, segStart, type ShapePath } from "../../model/shapes"
@@ -42,7 +42,7 @@ import type { ZoneFill } from "../../model/pour"
 import type { ComponentInstance, CopperLayer, Project, ReferenceImage, Vec2 } from "../../model/types"
 import { getConnectivity, getLiveAnalysis, useFillTick } from "../../store/analysis"
 import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
-import { projectApi, useProjectStore } from "../../store/projectStore"
+import { isCreatedHere, projectApi, useProjectStore } from "../../store/projectStore"
 import { copperShown, selectionIds, uiApi, useUi } from "../../store/uiStore"
 import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { clampLayer, copperLayers, layerLabel, layerOfKicadName, viaLayers } from "../../model/stack"
@@ -270,12 +270,14 @@ export function PcbEditor() {
   const designators = getDesignators(project)
   useImages(project.images)
 
-  // Place parts that were added in the schematic since the last visit. Not for a viewer, who can't.
+  // Place the parts this tab added in the schematic since the last visit. Not someone else's: an assistant over MCP places
+  // parts one call at a time, and a tab that placed every unplaced part as its PCB view opened put all the ones it hadn't
+  // reached yet on the board between two of its calls. Those wait, and the toolbar offers to place them. Not for a viewer, who can't.
   useEffect(() => {
     const p = projectApi().project
-    if (p && projectApi().role !== "viewer" && resolvedComponents(p).some((c) => !c.pcb.placed && onBoard(c))) {
-      projectApi().commit((x) => autoPlacePcb(x))
-    }
+    if (!p || projectApi().role === "viewer") return
+    const mine = new Set(unplacedParts(p).filter((c) => isCreatedHere(c.id)).map((c) => c.id))
+    if (mine.size) projectApi().commit((x) => autoPlacePcb(x, false, { only: mine }))
   }, [])
 
   useEffect(() => {

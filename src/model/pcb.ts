@@ -1215,7 +1215,7 @@ export function analyzePcb(
         const b = sides(q)
         const top = courtyardsOverlap(a.top, b.top) && !allowed?.(p.c, q.c, "top")
         if (!top && !(courtyardsOverlap(a.bottom, b.bottom) && !allowed?.(p.c, q.c, "bottom"))) continue
-        push({ severity: "warning", kind: "overlap", message: `${p.c.ref} overlaps ${q.c.ref}`, at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 } })
+        push({ severity: "warning", kind: "overlap", message: `${p.c.ref} overlaps ${q.c.ref}`, at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 }, items: [`c:${p.c.id}`, `c:${q.c.id}`] })
         continue
       }
       if (p.c.pcb.side !== q.c.pcb.side) continue
@@ -1231,6 +1231,7 @@ export function analyzePcb(
         kind: "overlap",
         message: `${p.c.ref} overlaps ${q.c.ref}`,
         at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 },
+        items: [`c:${p.c.id}`, `c:${q.c.id}`],
       })
     }
   }

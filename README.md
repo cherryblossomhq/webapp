@@ -30,9 +30,9 @@
 <br>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="The Cherry Blossom editor showing the ESP32 robot controller's PCB: screw terminals, the DevKit's headers, a motor driver and tact switches on a 100 mm board, routed on both layers under a top-side pour, with Sakura on the left and the Inspector on the right" width="100%">
+  <img src="docs/images/hero.jpg" alt="The Cherry Blossom editor showing an ESP32 robot controller in 3D: an ESP32 DevKit, a motor driver, an OLED module, screw terminals and tact switches on a green board, with the parts library on the left and the Checks panel on the right" width="100%">
   <br>
-  <sub>The ESP32 robot controller example on the PCB: 45 parts, 112 of 112 connections routed, poured, with one decoupling warning.</sub>
+  <sub>The ESP32 robot controller example in the 3D view: 45 parts, routed and poured, with one decoupling warning in Checks.</sub>
 </p>
 
 > [!NOTE]

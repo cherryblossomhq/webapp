@@ -18,7 +18,8 @@ export type BoardBuildReply = { job: number; shapes: BoardShapesData } | { job: 
 
 /**
  * The fills of the outer layers, the ones the 3D board shows, as flat arrays: per fill its layer and polygons, per polygon its rings, per ring its
- * points, and the points' x and y. As objects, a big board's millions of points took the page's thread a second to copy.
+ * points, and the points' x and y. They are moved to the worker, where a big board's hundreds of thousands of points as objects would be copied
+ * one by one on the page's thread.
  */
 export interface PackedFills {
   layers: CopperLayer[]

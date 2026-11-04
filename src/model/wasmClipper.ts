@@ -1,3 +1,4 @@
+/// <reference path="./clipper2-wasm.d.ts" />
 import { FillRule, JoinType, type Paths64 } from "@countertype/clipper2-ts"
 import factory, { type Clipper2Module, type WasmPaths64 } from "clipper2-wasm/dist/es/clipper2z.js"
 import type { FastClipper } from "./zoneGeom"

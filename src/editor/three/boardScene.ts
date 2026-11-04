@@ -259,7 +259,7 @@ export class BoardScene {
         else if ("shapes" in e.data) disposeShapes(shapesFrom(e.data.shapes))
       }
       // What it was making is made on the page.
-      worker.onerror = () => {
+      worker.onerror = worker.onmessageerror = () => {
         workersOff = true
         const build = this.building
         this.building = null

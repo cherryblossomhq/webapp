@@ -40,13 +40,10 @@ const projectPath = (id: string) => `${basePath}/p/${id}`
 
 /**
  * The view a project's address opens on, `?view=pcb` or `?view=3d`. The schematic needs none: a
- * project opens on it anyway, so its address is the bare one.
+ * project opens on it anyway, so its address is the bare one, though `?view=sch` says it too.
  */
-const VIEWS: readonly View[] = ["schematic", "pcb", "3d"]
-const viewInAddress = (): View | undefined => {
-  const asked = new URLSearchParams(window.location.search).get("view")
-  return VIEWS.find((v) => v === asked)
-}
+const VIEWS = new Map<string, View>([["sch", "schematic"], ["schematic", "schematic"], ["pcb", "pcb"], ["3d", "3d"]])
+const viewInAddress = (): View | undefined => VIEWS.get(new URLSearchParams(window.location.search).get("view") ?? "")
 const viewQuery = (search: string, view: View) => {
   const query = new URLSearchParams(search)
   if (view === "schematic") query.delete("view")
@@ -56,8 +53,8 @@ const viewQuery = (search: string, view: View) => {
 }
 
 export const openProjectRoute = (id: string) => navigate(projectPath(id))
-/** A project's address in full: its link, to copy and send, opening on `view`. */
-export const projectLink = (id: string, view: View = "schematic") => `${window.location.origin}${projectPath(id)}${viewQuery("", view)}`
+/** A project's address in full: its link, to copy and send. */
+export const projectLink = (id: string) => `${window.location.origin}${projectPath(id)}`
 /** The host's projects page, when it has one (`AppProps.account`); the editor's own dashboard otherwise. */
 let projectsUrl: string | undefined
 
@@ -248,8 +245,8 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
     }
   }, [route, storage])
 
-  // The address follows the view shown, so it links to what is on screen, as the Share dialog's
-  // link does. Only once the project is open: until then the address still says what to open on.
+  // The address follows the view shown, so it links to what is on screen. Only once the project is
+  // open: until then the address still says what to open on.
   useEffect(() => {
     if (!shown || (viewInAddress() ?? "schematic") === view) return
     const { pathname, search, hash } = window.location

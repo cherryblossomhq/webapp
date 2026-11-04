@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import type { Occt, OcctResult } from "occt-import-js"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { connectSupplierParts } from "../src/ai/supplierParts"
 import { modelLibrary } from "../src/editor/three/files/library"
 import * as THREE from "three"
 import { meshesOf, missingNote, stepFile } from "../src/export/step3d"
 import { EXAMPLES } from "../src/model/examples"
 import { placedComponents } from "../src/editor/three/buildBoard"
 import { kicadModel, setModel, supplierModel } from "../src/model/models3d"
+import { connectPartModels } from "../src/store/partModels"
 import type { Project } from "../src/model/types"
 
 // The 3D view reads a STEP file in a Web Worker (`files/step.worker.ts`), which node has none of: this
@@ -45,7 +45,7 @@ let occt: Occt
 beforeAll(async () => {
   occt = await (require("occt-import-js") as () => Promise<Occt>)()
 })
-afterEach(() => connectSupplierParts(null))
+afterEach(() => connectPartModels(null))
 
 const read = (text: string): OcctResult => {
   const r = occt.ReadStepFile(new TextEncoder().encode(text), null)
@@ -90,22 +90,15 @@ const cubeBytes = () => {
  */
 function host(o: { supplier?: (id: string, format: "obj" | "step") => Promise<ArrayBuffer>; kicad?: (id: string) => Promise<ArrayBuffer> | undefined } = {}) {
   const asked: string[] = []
-  connectSupplierParts({
-    search: async () => ({ query: "", candidates: [], source: "easyeda", fetchedAt: "", attribution: "" }),
-    part: async () => null,
-    ...(o.supplier && {
-      model: (id: string, format: "obj" | "step") => {
-        asked.push(`${id}.${format}`)
-        return o.supplier!(id, format)
-      },
-    }),
-    index: {
-      search: async () => ({ query: "", hits: [], credits: [], fetchedAt: "" }) as never,
-      part: async () => null,
-      model: async (id) => {
-        asked.push(id)
-        return (await o.kicad?.(id)) ?? cubeBytes()
-      },
+  connectPartModels({
+    supplier: (id, format) => {
+      if (!o.supplier) return Promise.reject(new Error("Supplier models aren't available here."))
+      asked.push(`${id}.${format}`)
+      return o.supplier(id, format)
+    },
+    kicad: async (id) => {
+      asked.push(id)
+      return (await o.kicad?.(id)) ?? cubeBytes()
     },
   })
   return asked

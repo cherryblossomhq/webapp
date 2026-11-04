@@ -4,7 +4,6 @@ import { createRequire } from "node:module"
 import type { Occt } from "occt-import-js"
 import * as THREE from "three"
 import { afterEach, beforeAll, describe, expect, it } from "vitest"
-import { connectSupplierParts } from "../src/ai/supplierParts"
 import { ModelLibrary } from "../src/editor/three/files/library"
 import { occtMeshes, meshDataGroup, looksMetallic } from "../src/editor/three/files/meshData"
 import { objMaterial, parseObj, readObj } from "../src/editor/three/files/obj"
@@ -14,6 +13,7 @@ import { createProject } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { landTransform, moveModel, supplierModelOn } from "../src/model/supplier/model"
 import type { Model3D } from "../src/model/types"
+import { connectPartModels } from "../src/store/partModels"
 
 const require = createRequire(import.meta.url)
 const OCCT_FILES = require.resolve("occt-import-js").replace(/dist[\\/]occt-import-js\.js$/, "test/testfiles/")
@@ -84,18 +84,14 @@ describe("model files", () => {
   })
 })
 
-/** A supplier source whose model files are an OBJ triangle, or whatever `answer` says. */
+/** Part models whose supplier files are an OBJ triangle, or whatever `answer` says. */
 const TRIANGLE = new TextEncoder().encode("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").buffer as ArrayBuffer
 function supplierAnswering(answer: () => Promise<ArrayBuffer>) {
-  connectSupplierParts({
-    search: async () => ({ query: "", candidates: [], source: "easyeda", fetchedAt: "", attribution: "" }),
-    part: async () => null,
-    model: answer,
-  })
+  connectPartModels({ supplier: answer, kicad: async () => Promise.reject(new Error("not KiCad's")) })
 }
 
 describe("the model library", () => {
-  afterEach(() => connectSupplierParts(null))
+  afterEach(() => connectPartModels(null))
   const model = supplierModel({ id: "d".repeat(32), title: "Chip", center: { x: 0, y: 0 }, bottom: 0, rotation: { x: 0, y: 0, z: 0 } })
 
   it("tries a file that failed again when it is loaded, rather than keeping the failure", async () => {

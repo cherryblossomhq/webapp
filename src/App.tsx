@@ -8,6 +8,7 @@ import { Editor } from "./pages/Editor"
 import { AccountContext, type EditorAccount } from "./store/account"
 import { useCopilot } from "./store/copilotStore"
 import { browserModelFiles, connectModelFiles, type ModelFileStore } from "./store/modelFiles"
+import { connectPartModels, type PartModelSource } from "./store/partModels"
 import { browserPresence } from "./store/presence"
 import { localSharing } from "./store/sharing"
 import { connectProjectStorage, settleSaves, useProjectStore } from "./store/projectStore"
@@ -111,6 +112,12 @@ export interface AppProps {
    */
   modelFiles?: ModelFileStore
   /**
+   * Where the 3D models parts come with are fetched from: the supplier's and KiCad's, the built-in
+   * parts' included. Without it those parts show only their pads. Unlike `supplierParts`, it is
+   * what looking at a project takes, so a host gives it to someone signed out too.
+   */
+  partModels?: PartModelSource
+  /**
    * The signed-in account, for a host that has one: who it is, shown at the right of the top bar,
    * and the host's pages for projects, settings and signing out. The host's projects page replaces
    * the editor's dashboard. Without it, as in the harness, the editor is its own home.
@@ -132,7 +139,7 @@ let promptHandled = false
 
 type Load = { state: "loading" } | { state: "ready" } | { state: "missing" } | { state: "failed"; message: string }
 
-export function App({ managedAi, storage: given, initialPrompt, supplierParts, modelFiles, account, basePath: base = "" }: AppProps) {
+export function App({ managedAi, storage: given, initialPrompt, supplierParts, modelFiles, partModels, account, basePath: base = "" }: AppProps) {
   // During render rather than in an effect: the copilot panel's effects run before this
   // component's, and its first account fetch needs the host's token already. Only when the
   // prop changes, so a host installed through the development hook isn't undone by a re-render.
@@ -155,6 +162,7 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
     })
   connectProjectStorage(storage)
   connectModelFiles(modelFiles ?? (defaultModelFiles ??= browserModelFiles()))
+  connectPartModels(partModels)
   projectsUrl = account?.projectsUrl
   basePath = base
 

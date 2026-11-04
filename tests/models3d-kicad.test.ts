@@ -3,7 +3,8 @@ import * as THREE from "three"
 import { beforeAll, describe, expect, it } from "vitest"
 import { fetchModelBytes } from "../src/editor/three/files/library"
 import { placementMatrix } from "../src/editor/three/files/placement"
-import { connectSupplierParts } from "../src/ai/supplierParts"
+import { connectPartModels } from "../src/store/partModels"
+import { useProjectStore } from "../src/store/projectStore"
 import { addDraftToProject, draftFromIndexPart } from "../src/model/indexPart"
 import type { Imported } from "../src/model/kicad/library"
 import { createProject } from "../src/model/ops"
@@ -110,21 +111,26 @@ describe("kicad models in the document", () => {
     expect(kept[0].model).toEqual(good)
   })
 
-  it("is fetched from the parts index, as the STEP file it is", async () => {
-    const asked: string[] = []
+  it("is fetched from the host's part models as the STEP file it is, naming the open project", async () => {
+    const asked: unknown[][] = []
     const bytes = new TextEncoder().encode("ISO-10303-21;").buffer as ArrayBuffer
-    connectSupplierParts({
-      search: async () => ({ query: "", candidates: [], source: "easyeda", fetchedAt: "", attribution: "" }),
-      part: async () => null,
-      index: { search: async () => ({}) as never, part: async () => null, model: async (id) => (asked.push(id), bytes) },
+    connectPartModels({
+      supplier: async () => Promise.reject(new Error("not the supplier's")),
+      kicad: async (id, _signal, projectId) => (asked.push([id, projectId]), bytes),
     })
     const m = kicadModel(kicad())!
     expect(await fetchModelBytes(m)).toBe(bytes)
-    expect(asked).toEqual([ID])
+    // Someone signed out has the file only through the project shared with them by link.
+    useProjectStore.setState({ project: { ...createProject(), id: "p_shared" } })
+    expect(await fetchModelBytes(m)).toBe(bytes)
+    useProjectStore.setState({ project: null })
+    expect(asked).toEqual([
+      [ID, undefined],
+      [ID, "p_shared"],
+    ])
     await expect(fetchModelBytes(m, "obj")).rejects.toThrow(/no obj file/)
-    connectSupplierParts({ search: async () => ({}) as never, part: async () => null })
+    connectPartModels(null)
     await expect(fetchModelBytes(m)).rejects.toThrow(/aren't available/)
-    connectSupplierParts(null)
   })
 })
 

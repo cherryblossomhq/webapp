@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from "react"
 import type * as THREE from "three"
-import { supplierParts } from "../../../ai/supplierParts"
 import { modelFileKey } from "../../../model/models3d"
 import type { Model3D, Model3DFormat } from "../../../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFiles } from "../../../store/modelFiles"
+import { partModels } from "../../../store/partModels"
 import { projectApi, useProjectStore } from "../../../store/projectStore"
 
 // The model files the 3D view has read, for the page: a file is fetched and read once however many
@@ -13,23 +13,28 @@ import { projectApi, useProjectStore } from "../../../store/projectStore"
 /** The format the 3D view draws: a supplier model's mesh, since its STEP is the slow, exact copy. */
 export const drawnFormat = (m: Model3D): Model3DFormat => (m.source === "supplier" ? "obj" : m.format)
 
-/** A file's bytes from wherever the host keeps it, in the format asked for. */
+/**
+ * A file's bytes from wherever the host keeps it, in the format asked for. Every fetch names the
+ * open project: a user's file on a shared project is often kept in another account, and someone
+ * signed out has the supplier's and KiCad's only through a project shared by link.
+ */
 export async function fetchModelBytes(m: Model3D, format: Model3DFormat = drawnFormat(m), signal?: AbortSignal): Promise<ArrayBuffer> {
   let bytes: ArrayBuffer | null
+  const projectId = projectApi().project?.id
   if (m.source === "supplier") {
-    const source = supplierParts()
-    if (!source?.model) throw new Error("Supplier models aren't available here.")
+    const source = partModels()
+    if (!source) throw new Error("Supplier models aren't available here.")
     if (format !== "obj" && format !== "step") throw new Error(`The supplier has no ${format} file of this model.`)
-    bytes = await source.model(m.id, format, signal)
+    bytes = await source.supplier(m.id, format, signal, projectId)
   } else if (m.source === "kicad") {
-    const index = supplierParts()?.index
-    if (!index?.model) throw new Error("KiCad's 3D models aren't available here.")
+    const source = partModels()
+    if (!source) throw new Error("KiCad's 3D models aren't available here.")
     if (format !== "step") throw new Error(`KiCad's library has no ${format} file of this model.`)
-    bytes = await index.model(m.id, signal)
+    bytes = await source.kicad(m.id, signal, projectId)
   } else {
     const store = modelFiles()
     if (!store) throw new Error("Model files aren't available here.")
-    bytes = await store.get(m.id, signal, projectApi().project?.id)
+    bytes = await store.get(m.id, signal, projectId)
     if (!bytes) throw new Error(`${m.name} isn't in this account, or in the account of anyone this project is shared with. Add the file again.`)
   }
   if (bytes.byteLength > MAX_MODEL_FILE_BYTES) throw new Error(`${m.name} is over ${MAX_MODEL_FILE_BYTES / 1024 / 1024} MB.`)

@@ -4,7 +4,7 @@ import type { PartIndexKicadModel, SupplierModel3D } from "@cherryblossom/api-co
 import type { ComponentInstance, Model3D, Model3DFormat, ModelAssignment, Project } from "./types"
 
 // 3D models in the document: which file a part is drawn with on a footprint. The files
-// themselves are the host's (`store/modelFiles.ts`, `SupplierPartsSource.model`); the project
+// themselves are the host's (`store/modelFiles.ts`, `store/partModels.ts`); the project
 // names them and says where they sit on the footprint.
 
 export const MODEL_FORMATS: readonly Model3DFormat[] = ["step", "obj", "wrl", "stl", "glb"]

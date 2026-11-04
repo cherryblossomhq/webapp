@@ -3,7 +3,9 @@ import type { DatasheetResponse, DatasheetSection, PartIndexPart, PartIndexSearc
 // Where the editor gets supplier part data: pins and land patterns from a supplier's records, so
 // the copilot builds a part from data instead of from memory. The host provides it, as it does the
 // managed-AI session and project storage: the website's is `/api/v1/parts` with the signed-in
-// user's token. Without one (the harness, a test) the copilot falls back to memory and says so.
+// user's token. Without one (the harness, a
+// test) the copilot falls back to memory and says so. The 3D models parts come with are fetched
+// apart from this (`store/partModels.ts`), since drawing them takes no account.
 
 /**
  * The parts index: parts our own database stores (KiCad's libraries now), searched as the user
@@ -14,11 +16,6 @@ export interface PartsIndexSource {
   search(query: string, options: { limit?: number; full?: boolean }, signal?: AbortSignal): Promise<PartIndexSearchResponse>
   /** One part whole by its index id; null when it isn't stored whole. Failures throw as `part` does. */
   part(id: string, signal?: AbortSignal): Promise<PartIndexPart | null>
-  /**
-   * A KiCad 3D model's STEP file, by `PartIndexKicadModel.id`. Absent in a host that can't: parts
-   * with a KiCad model, the built-in ones included, then show only their pads. Failures throw as `part` does.
-   */
-  model?(id: string, signal?: AbortSignal): Promise<ArrayBuffer>
 }
 
 export interface SupplierPartsSource {
@@ -35,12 +32,6 @@ export interface SupplierPartsSource {
    * as `part` does, including "no datasheet" for a part whose record links none.
    */
   datasheet?(lcsc: string, request: { section?: DatasheetSection; page?: number; offset?: number }, signal?: AbortSignal): Promise<DatasheetResponse>
-  /**
-   * The supplier's 3D model of a part, by the model id a part's record names
-   * (`SupplierPart.model3d.id`): `obj`, a mesh, to draw, and `step`, exact, to export. Absent in a
-   * host that can't: those parts then show only their pads. Failures throw as `part` does.
-   */
-  model?(id: string, format: "obj" | "step", signal?: AbortSignal): Promise<ArrayBuffer>
   /** The parts index; a host without one leaves it out, and the library panel searches only the built-in library. */
   index?: PartsIndexSource
 }

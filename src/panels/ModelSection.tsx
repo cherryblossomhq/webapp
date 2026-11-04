@@ -8,6 +8,7 @@ import { fileModel, MODEL_FILE_ACCEPT, modelAssignment, modelFormatOf, modelOrig
 import { supplierModelOn } from "../model/supplier/model"
 import type { ComponentInstance, Model3D, PartDef, Project } from "../model/types"
 import { MAX_MODEL_FILE_BYTES, modelFileId, modelFiles } from "../store/modelFiles"
+import { partModels } from "../store/partModels"
 import { projectApi } from "../store/projectStore"
 import { Button, Field } from "../ui/controls"
 import { CommitInput, LengthInput, Section } from "../ui/form"
@@ -99,6 +100,8 @@ export function ModelControls({
   const [query, setQuery] = useState<string | null>(null)
   const [hits, setHits] = useState<PartCandidate[] | null>(null)
   const source = supplierParts()
+  // The supplier's model is looked up through the one and drawn through the other.
+  const supplierModels = !!source && !!partModels()
 
   const edit = (patch: Partial<Model3D>) => model && onChange({ ...model, ...patch })
   const run = async (what: string, work: () => Promise<void>) => {
@@ -180,12 +183,12 @@ export function ModelControls({
             <FileUp size={14} /> {busy === "file" ? "Adding..." : model?.source === "file" || model?.source === "kicad" ? "Replace" : "Add file"}
           </Button>
         </Tooltip>
-        {source?.model && lcsc && model?.source !== "supplier" && (
+        {supplierModels && lcsc && model?.source !== "supplier" && (
           <Button onClick={() => takeSupplierModel(lcsc)} disabled={!!busy}>
             {busy === lcsc ? "Loading..." : `${lcsc}'s model`}
           </Button>
         )}
-        {source?.model && !lcsc && query === null && (
+        {supplierModels && !lcsc && query === null && (
           <Button onClick={() => setQuery(searchText)} disabled={!!busy}>
             <Search size={14} /> Find
           </Button>

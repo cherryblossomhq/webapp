@@ -55,6 +55,7 @@ export type { ManagedAiHost } from "./ai/managedAi"
 export type { AccountUser, EditorAccount } from "./store/account"
 export type { PartsIndexSource, SupplierPartsSource } from "./ai/supplierParts"
 export type { ModelFileStore } from "./store/modelFiles"
+export type { PartModelSource } from "./store/partModels"
 export type {
   ChangesEvent,
   OutgoingBatch,

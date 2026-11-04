@@ -877,9 +877,9 @@ export interface Model3D {
   /**
    * `file`: one the user added, by the SHA-256 of its bytes (hex), kept by the host's
    * `ModelFileStore`. `supplier`: the supplier's model of the part, by the supplier's model id,
-   * through the host's `SupplierPartsSource.model`; it has a mesh (`obj`) to draw and a STEP to export.
+   * through the host's `PartModelSource.supplier`; it has a mesh (`obj`) to draw and a STEP to export.
    * `kicad`: a STEP file in KiCad's 3D library, by `<release>/<path>`, through the host's
-   * `PartsIndexSource.model`; it is drawn and exported from that one file.
+   * `PartModelSource.kicad`; it is drawn and exported from that one file.
    */
   source: "file" | "supplier" | "kicad"
   id: string

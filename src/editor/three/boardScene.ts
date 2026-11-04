@@ -66,44 +66,8 @@ interface Tween {
 // Made on the page, CERN's Macbeth's board held it for seconds each time, and the drawing of its faces then kept the graphics process from drawing
 // the view: the worker makes both (`boardBuild.worker.ts`), and the page puts the meshes together.
 
-let builder: Worker | null = null
-let builderOff = false
-let jobs = 0
-const building = new Map<number, (reply: BoardBuildReply) => void>()
-
-function boardWorker(): Worker | null {
-  if (builder || builderOff || typeof Worker !== "function" || typeof OffscreenCanvas !== "function") return builder
-  try {
-    builder = new Worker(new URL("./boardBuild.worker.ts", import.meta.url), { type: "module" })
-    builder.onmessage = (e: MessageEvent<BoardBuildReply>) => {
-      building.get(e.data.job)?.(e.data)
-      building.delete(e.data.job)
-    }
-    // A worker that cannot start, or stops, is not asked again: what it was making is made on the page.
-    builder.onerror = () => {
-      builderOff = true
-      builder?.terminate()
-      builder = null
-      for (const [job, done] of building) done({ job, error: "The 3D board's worker stopped." })
-      building.clear()
-    }
-  } catch {
-    builderOff = true
-  }
-  return builder
-}
-
-/** A board's shapes: a big one's made in the worker, and on the page when the worker fails; a small one's on the page at once. */
-function buildShapes(project: Project, fills: ZoneFill[]): BoardShapes | Promise<BoardShapes> {
-  const worker = bigBoard(project) ? boardWorker() : null
-  if (!worker) return boardShapes(project, fills)
-  const job = ++jobs
-  const packed = packFills(fills)
-  return new Promise<BoardBuildReply>((done) => {
-    building.set(job, done)
-    worker.postMessage({ job, file: projectFileOf(project), fills: packed } satisfies BoardBuildRequest, [packed.polygons.buffer, packed.rings.buffer, packed.points.buffer, packed.xy.buffer])
-  }).then((reply) => ("shapes" in reply ? shapesFrom(reply.shapes) : boardShapes(project, fills)))
-}
+/** A worker that could not start, or stopped, is not started again: big boards are then made on the page. */
+let workersOff = false
 
 /** Owns the renderer, camera, lights and floor; rebuilds board and part meshes when the project changes. */
 export class BoardScene {
@@ -227,7 +191,7 @@ export class BoardScene {
     if (!project) {
       // A board still being made is not shown.
       this.boardAsked++
-      this.boardWanted = null
+      this.stopBuilding()
       this.clearBoard()
       this.clearParts()
       this.last = null
@@ -275,38 +239,70 @@ export class BoardScene {
     return this.board?.placedCount ?? 0
   }
 
-  /** A big board being made in the worker; the board asked for since, made when it is done (the last asked for only); the asks, counted. */
+  /**
+   * The scene's worker for big boards, and the build it is making: a newer build, or the scene's end, stops it (and ends the worker, whose next
+   * build starts another), so no build that will not be shown is waited for, an edit's or that of a view closed at once (React's development
+   * mode opens each view twice).
+   */
+  private builder: Worker | null = null
+  private building: { ask: number; done: (reply: BoardBuildReply | null) => void } | null = null
+  /** The build to wait for (`boardReady`), and the builds asked for, counted. */
   private boardBuilding: Promise<void> | null = null
-  private boardWanted: { project: Project; fills: ZoneFill[] } | null = null
   private boardAsked = 0
 
-  /** Make the board's meshes, a big board's shapes in the worker; the board shown stays until they come. */
-  private buildBoard(project: Project, fills: ZoneFill[], later = false) {
-    const ask = ++this.boardAsked
-    if (this.boardBuilding) {
-      this.boardWanted = { project, fills }
-      return
+  private boardWorker(): Worker | null {
+    if (this.builder || workersOff || typeof Worker !== "function" || typeof OffscreenCanvas !== "function") return this.builder
+    try {
+      const worker = new Worker(new URL("./boardBuild.worker.ts", import.meta.url), { type: "module" })
+      worker.onmessage = (e: MessageEvent<BoardBuildReply>) => {
+        if (this.building?.ask === e.data.job) this.building.done(e.data)
+        else if ("shapes" in e.data) disposeShapes(shapesFrom(e.data.shapes))
+      }
+      // What it was making is made on the page.
+      worker.onerror = () => {
+        workersOff = true
+        const build = this.building
+        this.building = null
+        worker.terminate()
+        this.builder = null
+        build?.done({ job: build.ask, error: "The 3D board's worker stopped." })
+      }
+      this.builder = worker
+    } catch {
+      workersOff = true
     }
-    const shapes = buildShapes(project, fills)
-    if (!(shapes instanceof Promise)) return this.showBoard(project, shapes, later)
-    this.boardBuilding = shapes.then(
-      (made) => this.boardMade(ask, project, made),
-      () => this.boardMade(ask, project, null),
-    )
-    this.onBoardBuilding?.(true)
+    return this.builder
   }
 
-  /** A worker's board come: shown if it is still the one asked for, else the one asked for since is made. */
-  private boardMade(ask: number, project: Project, made: BoardShapes | null) {
-    this.boardBuilding = null
-    const next = this.boardWanted
-    this.boardWanted = null
-    if (made && ask === this.boardAsked && !this.disposed) this.showBoard(project, made, true)
-    else {
-      if (made) disposeShapes(made)
-      if (next && !this.disposed) this.buildBoard(next.project, next.fills, true)
-    }
-    if (!this.boardBuilding) this.onBoardBuilding?.(false)
+  private stopBuilding() {
+    const build = this.building
+    if (!build) return
+    this.building = null
+    this.builder?.terminate()
+    this.builder = null
+    build.done(null)
+    this.onBoardBuilding?.(false)
+  }
+
+  /** Make the board's meshes, a big board's shapes in the worker: the board shown stays until they come, and on the page if the worker fails. */
+  private buildBoard(project: Project, fills: ZoneFill[]) {
+    const ask = ++this.boardAsked
+    this.stopBuilding()
+    const worker = bigBoard(project) ? this.boardWorker() : null
+    if (!worker) return this.showBoard(project, boardShapes(project, fills), false)
+    const packed = packFills(fills)
+    const reply = new Promise<BoardBuildReply | null>((done) => (this.building = { ask, done }))
+    worker.postMessage({ job: ask, file: projectFileOf(project), fills: packed } satisfies BoardBuildRequest, [packed.polygons.buffer, packed.rings.buffer, packed.points.buffer, packed.xy.buffer])
+    const shown: Promise<void> = reply.then((r) => {
+      if (this.boardBuilding === shown) this.boardBuilding = null
+      // Stopped (null), or a newer build asked for.
+      if (!r || ask !== this.boardAsked || this.disposed) return
+      this.building = null
+      this.showBoard(project, "shapes" in r ? shapesFrom(r.shapes) : boardShapes(project, fills), true)
+      this.onBoardBuilding?.(false)
+    })
+    this.boardBuilding = shown
+    this.onBoardBuilding?.(true)
   }
 
   /** Put a board's meshes in the scene; when they come after `setProject` (`later`), frame its bounds and shadow and compile its shaders again. */
@@ -741,6 +737,8 @@ export class BoardScene {
     // Set first: the teardown below (clearing the selection) would otherwise schedule a frame
     // that renders with a renderer that no longer has a context.
     this.disposed = true
+    this.stopBuilding()
+    this.builder?.terminate()
     if (this.frame) cancelAnimationFrame(this.frame)
     if (this.modelsFrame) cancelAnimationFrame(this.modelsFrame)
     this.stopModels()

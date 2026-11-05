@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { analysisWithItems, analyzePcb, followEdit } from "../src/model/pcb"
 import type { Project } from "../src/model/types"
+import { DRAG_FOLLOW_ITEMS, getLiveAnalysis, stopZoneFills } from "../src/store/analysis"
+import { useProjectStore } from "../src/store/projectStore"
+import { twoResistors } from "./zones-fixtures"
 
 // A drag on a big board takes the analysis it began with and moves only the copper of what moved (`followEdit`, `getLiveAnalysis`): analysing the
 // whole board for every frame took 18 s a frame on CERN's Macbeth. An edit does too, until the checks made off the page's thread come.
@@ -76,5 +79,44 @@ describe("an analysis that follows an edit, and one made elsewhere", () => {
     const made = analysisWithItems(p, sch, results)
     expect(made.items.map((it) => it.id)).toEqual(items.map((it) => it.id))
     expect(made.violations).toBe(results.violations)
+  })
+})
+
+describe("a drag on a big board, as the views ask for it", () => {
+  // A drag starts from what the views were shown. Its checks or its pours' fills may still be coming from the workers, and the drag used to
+  // analyse the board it began with on the page then, the fills too: minutes on CERN's Macbeth, before the part moved.
+  it("starts from the analysis shown, and analyses nothing on the page", () => {
+    vi.stubGlobal(
+      "Worker",
+      class {
+        onmessage: unknown = null
+        onerror: unknown = null
+        postMessage() {}
+        terminate() {}
+      },
+    )
+    const api = () => useProjectStore.getState()
+    try {
+      stopZoneFills()
+      const small = twoResistors()
+      const vias = Array.from({ length: 4100 }, (_, i) => ({ id: `v${i}`, x: -19 + (i % 80) * 0.48, y: -14 + Math.floor(i / 80) * 0.55, diameter: 0.3, drill: 0.15 }))
+      api().open({ ...small, vias })
+      const base = api().project!
+      const shown = getLiveAnalysis(base)
+      expect(shown.opening).toBe(true)
+      expect(shown.items.length).toBeGreaterThan(DRAG_FOLLOW_ITEMS)
+      api().beginTransient()
+      expect(getLiveAnalysis(base)).toBe(shown)
+      api().setTransient((p) => ({ ...p, components: p.components.map((c, i) => (i === 0 ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 1 } } : c)) }))
+      const frame = getLiveAnalysis(api().project!)
+      // The opening analysis it began with, the part's copper where it is now: no analysis of the board was made for it.
+      expect(frame.opening).toBe(true)
+      expect(frame.violations).toBe(shown.violations)
+      api().cancelTransient()
+    } finally {
+      stopZoneFills()
+      api().close()
+      vi.unstubAllGlobals()
+    }
   })
 })

@@ -137,7 +137,7 @@ function adopted(job: Job, reply: Extract<ZoneFillReply, { fills: ZoneFill[] }>)
  */
 let fileKept: { project: Project; file: string } | null = null
 /** Written again only where the last project differs (`projectFileWriter`): after an edit of Macbeth, 0.4 s became 0.03 to 0.1 s. */
-const writeFile = projectFileWriter()
+let writeFile = projectFileWriter()
 export function projectFileOf(p: Project): string {
   if (fileKept?.project !== p) fileKept = { project: p, file: writeFile(p) }
   return fileKept.file
@@ -316,6 +316,8 @@ export function stopZoneFills(): void {
   if (checker) checker.terminate()
   checker = null
   fileKept = null
+  // The writer keeps each value's text too: the project's whole file again.
+  writeFile = projectFileWriter()
   lastShown = null
 }
 
@@ -340,7 +342,9 @@ export function getLiveAnalysis(p: Project): PcbAnalysis {
   const exact = pcbCache.get(p)
   if (exact) return shown(p, exact)
   // A drag on a smaller board keeps the last fill until the drop (`getPcbAnalysis`), and starts no refill of a project it is only passing through.
-  if (base !== null) return getPcbAnalysis(p)
+  // A big board's drag starts from what was shown (below): its checks or fills may still be on their way, and analysing it here then held the page
+  // for the whole analysis, its pours' fills too, as the drag began.
+  if (base !== null && !(big && p === base)) return getPcbAnalysis(p)
   const tick = useFillTick.getState().tick
   const hit = liveCache.get(p)
   if (hit && hit.tick === tick) return shown(p, hit.value)

@@ -139,6 +139,16 @@ describe("place_parts", () => {
     expect(comp(again, "L1").pcb).toMatchObject({ x: 14, y: 9, locked: true })
   })
 
+  it("moves a part off another when asked to put it beside a pin, however close it already is", () => {
+    // On U1's VIN pad it is as close to U1.VIN as can be, and over U1: staying put there is not clear.
+    const vin = pad(placed, "U1", "3")
+    const over = place(placed, [{ ref: "C1", x: vin.x, y: vin.y }]).project
+    expect(problems(over).some((v) => v.message.includes("C1"))).toBe(true)
+    const out = place(over, [{ ref: "C1", near: "U1.VIN" }])
+    expect(out.result).not.toContain("so it stays")
+    expect(problems(out.project).filter((v) => v.message.includes("C1"))).toEqual([])
+  })
+
   it("refuses what it can't do, with the fix in the message", () => {
     const unplaced = buckDesign()
     expect(place(unplaced, [{ ref: "C1", near: "U1.VIN" }]).result).toContain("U1 is not on the PCB yet")

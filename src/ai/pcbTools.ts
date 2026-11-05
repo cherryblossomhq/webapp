@@ -182,6 +182,10 @@ function standingProblems(project: Project, c: ComponentInstance): string[] {
   return out
 }
 
+/** Whether the overlap check has the part over another, as Checks reports it (by the turned courtyard). */
+const overlapsAnother = (project: Project, c: ComponentInstance) =>
+  getPcbAnalysis(project).violations.some((v) => v.kind === "overlap" && !!v.items?.includes(`c:${c.id}`))
+
 const sideIsBlocked = (o: ComponentInstance, side: PcbSide) => o.pcb.side === side || pcbPads(o).some((p) => p.layers.length > 1)
 
 const placePartsTool: PcbToolSpec = {
@@ -481,8 +485,17 @@ function placeNear(
   }
   const cost = (part: ComponentInstance) => anchors.reduce((sum, a) => sum + a.weight * (gapsOf(part, a)?.gap ?? Infinity), 0)
   // Already as close as the search can get, and standing clear: stay put rather than shuffle to a worse spot
-  // (copper that stays can make the search's best spot worse than where the part already is).
-  if (c.pcb.placed && c.pcb.side === side && !direction && (item.rotation === undefined || item.rotation === c.pcb.rot) && cost(c) <= cost(placed) + 1e-6 && !standingProblems(project, c).length) {
+  // (copper that stays can make the search's best spot worse than where the part already is). A part over
+  // another is not clear, however close it is: on the pin's own pad it is as close as can be.
+  if (
+    c.pcb.placed &&
+    c.pcb.side === side &&
+    !direction &&
+    (item.rotation === undefined || item.rotation === c.pcb.rot) &&
+    cost(c) <= cost(placed) + 1e-6 &&
+    !standingProblems(project, c).length &&
+    !overlapsAnother(project, c)
+  ) {
     placed = c
   }
   const gapTo = (a: NearAnchor) => gapsOf(placed, a)

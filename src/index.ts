@@ -24,7 +24,8 @@ if (process.env.NODE_ENV === "development") {
     import("./ai/supplierParts"),
     import("./store/partModels"),
     import("./store/accountStore"),
-  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, partModels, accountStore]) => {
+    import("./model/projectFile"),
+  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, partModels, accountStore, projectFile]) => {
     Object.assign(window, {
       __cherryblossom: {
         projectApi: projectStore.projectApi,
@@ -33,8 +34,12 @@ if (process.env.NODE_ENV === "development") {
         // Where the open project is saved, so a check by hand can make its saves fail (`push` rejecting) on the real app.
         projectStorage: projectStore.projectStorage,
         uiApi: uiStore.uiApi,
+        // Reads a project file, so a browser test can open a board bigger than the harness's browser storage holds (a speed test on a big board).
+        parseProjectFile: projectFile.parseProjectFile,
         getConnectivity: analysis.getConnectivity,
         getPcbAnalysis: analysis.getPcbAnalysis,
+        // What the views are shown, which says whether the checks or the pours are still to come (a speed test waits for them).
+        getLiveAnalysis: analysis.getLiveAnalysis,
         schematicPins: instances.schematicPins,
         pcbPads: instances.pcbPads,
         // Lets a browser test stand in for the host's session against a mocked /api/v1. This hook comes after the page has loaded, often after Sakura's

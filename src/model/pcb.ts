@@ -919,8 +919,10 @@ export function followEdit(from: PcbAnalysis, base: Project, project: Project, s
     }
     const now = fresh.get(it.id)
     if (!now) {
-      // The copper of a part that changed and has not this item any more (another land) goes with it.
+      // The copper of a part that changed and has not this item any more (another land, or none: unplaced, off the board) goes with it, and so do
+      // the connections to make that ended on it.
       if (!ownMoved(it)) items.push(it)
+      else if (it.kind === "pad") gone.add(`${it.pad.x},${it.pad.y}`)
       continue
     }
     if (it.kind === "pad" && now.kind === "pad" && (it.pad.x !== now.pad.x || it.pad.y !== now.pad.y)) moves.set(`${it.pad.x},${it.pad.y}`, { x: now.pad.x, y: now.pad.y })
@@ -1210,8 +1212,6 @@ export function analyzePcb(
     }
   }
 
-  const waiting = unfilled.size ? { connectionsPending: [...unfilled] } : {}
-
   // Clearance between copper on different nets (or unassigned copper vs a net).
   // Two nets are checked at the larger of their classes' clearances (a board with no classes: the rules' one), so the search looks as far as the largest.
   const classes = classIndex(project.rules)
@@ -1383,34 +1383,32 @@ export function analyzePcb(
   }
   pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1])
   for (const [i, j] of pairs) {
-    {
-      const p = placed[i]
-      const q = placed[j]
-      if (p.drawn || q.drawn) {
-        const sides = (x: typeof p) => x.drawn ?? (x.c.pcb.side === "bottom" ? { top: [], bottom: [pcbCourtyardRing(x.c)!] } : { top: [pcbCourtyardRing(x.c)!], bottom: [] })
-        const a = sides(p)
-        const b = sides(q)
-        const top = courtyardsOverlap(a.top, b.top) && !allowed?.(p.c, q.c, "top")
-        if (!top && !(courtyardsOverlap(a.bottom, b.bottom) && !allowed?.(p.c, q.c, "bottom"))) continue
-        push({ severity: "warning", kind: "overlap", message: `${p.c.ref} overlaps ${q.c.ref}`, at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 }, items: [`c:${p.c.id}`, `c:${q.c.id}`] })
-        continue
-      }
-      if (p.c.pcb.side !== q.c.pcb.side) continue
-      if (!boxesOverlap(inflate(p.box, -0.05), inflate(q.box, -0.05))) continue
-      // A part at an angle that is not a quarter turn has a turned courtyard, whose box overlaps more than it does.
-      if (!isQuarterTurn(p.c.pcb.rot) || !isQuarterTurn(q.c.pcb.rot)) {
-        const ra = pcbCourtyardRing(p.c)
-        const rb = pcbCourtyardRing(q.c)
-        if (ra && rb && convexOverlap(ra, rb) <= 0.1) continue
-      }
-      push({
-        severity: "warning",
-        kind: "overlap",
-        message: `${p.c.ref} overlaps ${q.c.ref}`,
-        at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 },
-        items: [`c:${p.c.id}`, `c:${q.c.id}`],
-      })
+    const p = placed[i]
+    const q = placed[j]
+    if (p.drawn || q.drawn) {
+      const sides = (x: typeof p) => x.drawn ?? (x.c.pcb.side === "bottom" ? { top: [], bottom: [pcbCourtyardRing(x.c)!] } : { top: [pcbCourtyardRing(x.c)!], bottom: [] })
+      const a = sides(p)
+      const b = sides(q)
+      const top = courtyardsOverlap(a.top, b.top) && !allowed?.(p.c, q.c, "top")
+      if (!top && !(courtyardsOverlap(a.bottom, b.bottom) && !allowed?.(p.c, q.c, "bottom"))) continue
+      push({ severity: "warning", kind: "overlap", message: `${p.c.ref} overlaps ${q.c.ref}`, at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 }, items: [`c:${p.c.id}`, `c:${q.c.id}`] })
+      continue
     }
+    if (p.c.pcb.side !== q.c.pcb.side) continue
+    if (!boxesOverlap(inflate(p.box, -0.05), inflate(q.box, -0.05))) continue
+    // A part at an angle that is not a quarter turn has a turned courtyard, whose box overlaps more than it does.
+    if (!isQuarterTurn(p.c.pcb.rot) || !isQuarterTurn(q.c.pcb.rot)) {
+      const ra = pcbCourtyardRing(p.c)
+      const rb = pcbCourtyardRing(q.c)
+      if (ra && rb && convexOverlap(ra, rb) <= 0.1) continue
+    }
+    push({
+      severity: "warning",
+      kind: "overlap",
+      message: `${p.c.ref} overlaps ${q.c.ref}`,
+      at: { x: (p.c.pcb.x + q.c.pcb.x) / 2, y: (p.c.pcb.y + q.c.pcb.y) / 2 },
+      items: [`c:${p.c.id}`, `c:${q.c.id}`],
+    })
   }
 
   // Rule areas that keep tracks, vias, pads or parts out.
@@ -1444,7 +1442,18 @@ export function analyzePcb(
 
   manufacturability(project, items, find, push, kicad)
 
-  return { items, island, islandNet, traceNet, viaNet, ratsnest, violations, zoneFills, ...(pending.length ? { zonesPending: pending } : {}), ...waiting }
+  return {
+    items,
+    island,
+    islandNet,
+    traceNet,
+    viaNet,
+    ratsnest,
+    violations,
+    zoneFills,
+    ...(pending.length ? { zonesPending: pending } : {}),
+    ...(unfilled.size ? { connectionsPending: [...unfilled] } : {}),
+  }
 }
 
 // ---------- Holes against copper (a project from KiCad) ----------
@@ -1502,8 +1511,7 @@ function holeClearanceViolations(
     const reach = { minX: h.box.minX - need, minY: h.box.minY - need, maxX: h.box.maxX + need, maxY: h.box.maxY + need }
     for (const j of grid.near(reach).sort((a, b) => rank[a] - rank[b])) {
       const it = items[j]
-      if (it.box.minX > h.box.maxX + need) continue
-      if (j === h.item || it.box.maxX < h.box.minX - need || it.box.maxY < h.box.minY - need || it.box.minY > h.box.maxY + need) continue
+      if (j === h.item || !boxesOverlap(it.box, reach)) continue
       if (!it.layers.some((l) => h.layers.includes(l))) continue
       // Its own copper: the pad itself (and a pad stack's other layers), the via's other items, the pads of its number on its part.
       if (hole.kind === "pad" && it.kind === "pad" && it.pad.componentId === hole.pad.componentId && (it.id.startsWith(`${hole.id}@`) || (it.pad.padNumber ?? null) === (hole.pad.padNumber ?? null))) continue

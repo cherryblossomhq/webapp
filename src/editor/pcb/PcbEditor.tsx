@@ -15,8 +15,7 @@ import {
   type Box,
 } from "../../lib/geometry"
 import { findPart } from "../../model/library"
-import { pcbCourtyard, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
-import { holeCentre } from "../../model/padDistance"
+import { pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
 import { addTrace, autoPlacePcb, netTraceWidth, removeItems, unplacedParts, updateComponent } from "../../model/ops"
 import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../../model/board"
 import { addOutlinePaths, addOutlineShape, addSlot, moveOutlineArcMid, moveOutlineVertex, nearestOutlineSeg, outlineSelectionId, parseOutlineSelectionId, pathVertices, removeOutlinePath, slotPath, splitOutlineSeg, toggleOutlineArc, translateOutlinePath } from "../../model/outlineOps"
@@ -39,8 +38,8 @@ import { dimensionShapes } from "../../model/dimensions"
 import { formatLength, nextPreferredWidth } from "../../model/rules"
 import { designatorStrokes, getDesignators, SILK_WIDTH, type Designator } from "../../model/silk"
 import type { ZoneFill } from "../../model/pour"
-import type { ComponentInstance, CopperLayer, Project, ReferenceImage, Vec2 } from "../../model/types"
-import { getConnectivity, getLiveAnalysis, useFillTick } from "../../store/analysis"
+import type { ComponentInstance, CopperLayer, Project, ReferenceImage, Vec2, Via } from "../../model/types"
+import { DRAG_FOLLOW_ITEMS, getConnectivity, getLiveAnalysis, useFillTick } from "../../store/analysis"
 import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
 import { isCreatedHere, projectApi, useProjectStore } from "../../store/projectStore"
 import { copperShown, selectionIds, uiApi, useUi } from "../../store/uiStore"
@@ -50,7 +49,7 @@ import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../mo
 import { makeArcTrace, makeVia, moveArcPoint, nextCopperLayer } from "../../model/layerOps"
 import { traceD } from "./traceGraphics"
 import { hitIndex, netCopper } from "./hitIndex"
-import { fadedPaths, mergedPaths, padPaths, viaPaths, type PathPiece } from "./boardPaths"
+import { byOpacity, fadedPaths, mergedPaths, padPaths, viaPaths, type PathPiece } from "./boardPaths"
 import { CanvasHint } from "../schematic/SchematicEditor"
 import { PointMark, ShapeDraw, shapeLayerColor } from "./ShapeGraphics"
 import { worldPoints } from "../../model/pcbPoints"
@@ -258,34 +257,10 @@ function keepDrawing(kept: Map<string, KeptDrawing>, name: string, key: unknown[
 type Faded = [opacity: number, el: ReactNode]
 
 /**
- * Elements drawn in one group for each opacity, the fainter under the rest. An opacity of its own on each element makes it a piece of its own
- * that the page sorts into layers again on every frame anything changes: the 18,000 faint drawings and back-side parts of CERN's Macbeth took a
- * quarter of a second a frame to move the pointer over, where the same elements in a few groups take nothing.
- */
-function byOpacity(items: Faded[]): ReactNode {
-  const groups = new Map<number, ReactNode[]>()
-  for (const [o, el] of items) {
-    const list = groups.get(o)
-    if (list) list.push(el)
-    else groups.set(o, [el])
-  }
-  return [...groups]
-    .sort((a, b) => a[0] - b[0])
-    .map(([o, els]) => (
-      <g key={o} opacity={o === 1 ? undefined : o}>
-        {els}
-      </g>
-    ))
-}
-
-/**
  * The pixel size the kept drawing is made at: the view's, to the nearest step of a factor of the square root of two, so a zoom makes its elements
  * again once a step (and in between only moves and scales them, `StillLayer`).
  */
 const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale) / Math.log(Math.SQRT2))
-
-/** The copper items past which a drag keeps the board's drawing (and its analysis, `getLiveAnalysis`) as it began. */
-const KEEP_DRAWING_IN_DRAG = 4000
 
 export function PcbEditor() {
   const project = useProjectStore((s) => s.project)!
@@ -335,7 +310,7 @@ export function PcbEditor() {
   const pours = usePourPaths(pcb.zoneFills)
   const pinNames = usePinNames(project.components)
   const designators = getDesignators(project)
-  useImages(project.images)
+  const imagesRead = useImages(project.images)
 
   // Place the parts this tab added in the schematic since the last visit. Not someone else's: an assistant over MCP places
   // parts one call at a time, and a tab that placed every unplaced part as its PCB view opened put all the ones it hadn't
@@ -743,9 +718,12 @@ export function PcbEditor() {
   const onPointerMove = (e: ViewportPointerEvent) => {
     const native = e.native as React.PointerEvent
     const m = modeRef.current
-    const { at } = snapTarget(e.world, native.altKey)
+    // Snapping to the copper under the pointer is for where a click lands. A drag (of a part, a corner, a marquee) snaps its own way, and picking
+    // there would index the board again on every frame of it, the project being a new one each frame.
+    const drawing = drawsAtCursor(uiApi().pcbTool, m)
+    const { at } = m.kind === "idle" || drawing ? snapTarget(e.world, native.altKey) : { at: native.altKey ? { x: round(e.world.x, 3), y: round(e.world.y, 3) } : snapPoint(e.world, PCB_GRID) }
     cursorRef.current = at
-    if (drawsAtCursor(uiApi().pcbTool, m)) setCursor(at)
+    if (drawing) setCursor(at)
     uiApi().setCursor(at)
     if (m.kind === "marquee") {
       setMode({ ...m, current: e.world })
@@ -1083,6 +1061,13 @@ export function PcbEditor() {
   // Every copper layer is opaque; the active one is in front, so gaps in its pour show the others, which lie in stack order (the back first) behind it.
   const stack = copperLayers(project.board)
   const copperOn = (l: CopperLayer) => copperShown({ layers, hiddenCopper }, l)
+  /** A via's ring as the board draws it, or null when none of its layers is shown: one that does not run the whole stack (X5) in the colour of the layer it starts on, dashed. */
+  const viaLook = (v: Via): { ringColor: string; partial: boolean } | null => {
+    const span = viaLayers(project.board, v)
+    if (!span.some((l) => copperOn(l))) return null
+    const partial = v.kind !== undefined
+    return { ringColor: partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via, partial }
+  }
   const layerOrder: CopperLayer[] = layer === "top" && stack.length === 2 ? ["bottom", "top"] : [...[...stack].reverse().filter((l) => l !== layer), layer]
   const front = copperOn(layer) ? layer : [...layerOrder].reverse().find((l) => copperOn(l)) ?? layer
   // An explicit highlight (from the net list) dims everything else; hover only outlines.
@@ -1127,7 +1112,7 @@ export function PcbEditor() {
   // what they show changes, at the zoom step of `drawingPx`: a pan, a zoom within a step and a move of the pointer give React the same elements, so
   // it compares nothing of a board of 100,000 of them (CERN's Macbeth took 1.5 s for each step of a pan, and for each move of the pointer).
   const boardDrawing = (px: number): ReactNode =>
-    keepDrawing(drawings.current, dragKept ? "board!" : "board", [project, pcb, keptSelection, heldNet, layer, layers, hiddenCopper, hiddenShapeLayers, px], () => {
+    keepDrawing(drawings.current, dragKept ? "board!" : "board", [project, pcb, keptSelection, heldNet, layer, layers, hiddenCopper, hiddenShapeLayers, px, imagesRead], () => {
       const netOf = (it: CopperItem) => (it.kind === "pad" ? it.netId : null)
       const dim = (net: string | null | undefined) => (dimOthers && net !== highlightNet ? 0.3 : 1)
       return (
@@ -1199,12 +1184,9 @@ export function PcbEditor() {
               )}
               {viaPaths(
                 project.vias.flatMap((v) => {
+                  const look = viaLook(v)
                   const net = pcb.viaNet.get(v.id) ?? null
-                  const span = viaLayers(project.board, v)
-                  if (!span.some((l) => copperOn(l))) return []
-                  // A via that does not run the whole stack (X5) is drawn in the colour of the layer it starts on, with a dashed ring: blind and buried, and a micro via a ring of its own.
-                  const partial = v.kind !== undefined
-                  return [{ opacity: dim(net), via: v, ringColor: partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via, partial, lit: !!heldNet && net === heldNet }]
+                  return look ? [{ opacity: dim(net), via: v, ...look, lit: !!heldNet && net === heldNet }] : []
                 }),
                 px,
               )}
@@ -1300,7 +1282,8 @@ export function PcbEditor() {
     keepDrawing(drawings.current, "passing", [project, pcb, passingNet, layer, layers, hiddenCopper, px], () => {
       if (!passingNet) return null
       // As few paths as the board's own copper (`boardPaths.tsx`), from the net's own copper (`netCopper`): pointing at a pad of a ground net lights
-      // thousands of pieces of copper.
+      // thousands of pieces of copper. It is drawn over the whole board, so only the front layer's copper is drawn again (it is on top anyway): the
+      // other layers' tracks get their glow and their pads their lit outline, and none of their copper covers what lies above it.
       const net = netCopper(project, pcb, passingNet) ?? { traces: [], pads: [], vias: [] }
       return (
         <g>
@@ -1312,13 +1295,13 @@ export function PcbEditor() {
               if (tr.layer !== l) continue
               const d = traceD(tr)
               glows.push({ style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d })
-              copper.push({ style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d })
+              if (l === front) copper.push({ style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d })
             }
             return (
               <g key={l}>
                 {mergedPaths([...glows, ...copper])}
                 {padPaths(
-                  net.pads.flatMap((it) => (it.layers.length === 1 && it.layers[0] === l ? [{ opacity: 1, pad: it.pad, id: it.id, color: l === front ? PCB.pad : PCB.padBack, highlight: true }] : [])),
+                  net.pads.flatMap((it) => (it.layers.length === 1 && it.layers[0] === l ? [{ opacity: 1, pad: it.pad, id: it.id, color: PCB.pad, highlight: true, outline: l !== front }] : [])),
                   px,
                 )}
               </g>
@@ -1329,7 +1312,10 @@ export function PcbEditor() {
             px,
           )}
           {viaPaths(
-            net.vias.filter((v) => viaLayers(project.board, v).some((l) => copperOn(l))).map((v) => ({ opacity: 1, via: { ...v, kind: undefined }, ringColor: PCB.via, partial: false, lit: true })),
+            net.vias.flatMap((v) => {
+              const look = viaLook(v)
+              return look ? [{ opacity: 1, via: v, ...look, lit: true }] : []
+            }),
             px,
           )}
           {layers.ratsnest &&
@@ -1343,6 +1329,12 @@ export function PcbEditor() {
   const selectionDrawing = (px: number): ReactNode =>
     keepDrawing(drawings.current, "selection", [project, pcb, selection, hoveredPart, layer, layers, hiddenCopper, hiddenShapeLayers, px], () => {
       if (!selection.length && !hoveredPart) return null
+      // Drawn over the board as the lit net is (`passingHighlight`): a selected track of a layer behind the front one is its glow alone, and nothing
+      // on a copper layer that is hidden is drawn.
+      const onShownCopper = (name: string) => {
+        const l = layerOfKicadName(name)
+        return !!l && copperOn(l)
+      }
       return (
         <g>
           {layerOrder.map((l) =>
@@ -1353,8 +1345,8 @@ export function PcbEditor() {
                     const d = traceD(tr)
                     return (
                       <g key={tr.id}>
-                        <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={0.95} />
-                        <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
+                        <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.95} />
+                        {l === front && <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />}
                       </g>
                     )
                   })
@@ -1369,13 +1361,13 @@ export function PcbEditor() {
               </g>
             ))}
           {shown
-            .filter((x) => selected.has(x.select ?? x.id))
+            .filter((x) => selected.has(x.select ?? x.id) && (shapeKindOf(x.shape.layer) !== "copper" || onShownCopper(x.shape.layer)))
             .map((x) => {
               const copper = shapeKindOf(x.shape.layer) === "copper"
               return <ShapeDraw key={x.id} shape={x.shape} color={copper ? copperColor(layerOfKicadName(x.shape.layer) ?? layer) : shapeLayerColor(x.shape.layer)} px={px} selected />
             })}
           {shownTexts
-            .filter((tx) => selected.has(tx.id))
+            .filter((tx) => selected.has(tx.id) && (textLayerKind(tx.layer) !== "copper" || onShownCopper(tx.layer)))
             .map((tx) => (
               <TextDraw key={tx.id} t={tx} project={project} px={px} selected />
             ))}
@@ -1403,9 +1395,10 @@ export function PcbEditor() {
         </g>
       )
     })
-  // A drag on a big board keeps the drawing it began with (the parts it moves are seen where they were too) and draws them over it where they are:
-  // drawing the whole board again took seconds a frame on one of 1,566 parts.
-  const dragKept = mode.kind === "drag" && pcb.items.length > KEEP_DRAWING_IN_DRAG
+  // A drag of parts on a big board keeps the drawing it began with (the parts it moves are seen where they were too) and draws them over it where they
+  // are: drawing the whole board again took seconds a frame on one of 1,566 parts. A drag that moves drawings, texts or a group's other things draws
+  // the board again, so they are seen where they are.
+  const dragKept = mode.kind === "drag" && pcb.items.length > DRAG_FOLLOW_ITEMS && !mode.gids.length && !mode.texts.length && !mode.more.length
   const movedParts = dragKept && mode.kind === "drag" ? new Set(mode.ids) : null
   const movingDrawing = (px: number): ReactNode => {
     if (!movedParts?.size) return null
@@ -1414,9 +1407,10 @@ export function PcbEditor() {
     const ends = new Set(pads.map((it) => `${it.pad.x},${it.pad.y}`))
     return (
       <g>
-        {pads.map((it) => (
-          <PadShape key={it.id} pad={it.pad} color={it.layers.includes(front) ? PCB.pad : PCB.padBack} highlight={false} px={px} />
-        ))}
+        {padPaths(
+          pads.map((it) => ({ opacity: 1, pad: it.pad, id: it.id, color: it.layers.includes(front) ? PCB.pad : PCB.padBack, highlight: false })),
+          px,
+        )}
         {layers.silk &&
           moved.map((c) => (
             <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : 0.55}>
@@ -1436,15 +1430,13 @@ export function PcbEditor() {
   const boardMarks = (px: number): ReactNode =>
     keepDrawing(drawings.current, dragKept ? "marks!" : "marks", [project, pcb, heldNet, layers, px], () => (
       <g>
-        {/* Courtyards / selection */}
+        {/* Courtyards (a selected or hovered part's are drawn over the board, `selectionDrawing`) */}
         {placed.map((c) => {
           const cy = pcbCourtyard(c)
           if (!cy) return null
-          const isSel = false
-          const isHover = false
           // A part marked do not populate keeps a dashed courtyard, so it reads as fitted on the board but not on the build.
           const dnp = !!c.flags?.dnp
-          if (!isSel && !isHover && !layers.courtyard && !dnp) return null
+          if (!layers.courtyard && !dnp) return null
           return (
             <rect
               key={`cy${c.id}`}
@@ -1452,10 +1444,9 @@ export function PcbEditor() {
               y={cy.minY}
               width={cy.maxX - cy.minX}
               height={cy.maxY - cy.minY}
-              fill={isSel ? PCB.selectSoft : "none"}
-              stroke={isSel || isHover ? PCB.select : PCB.courtyard}
-              strokeOpacity={isSel ? 1 : isHover ? 0.7 : 1}
-              strokeWidth={(isSel ? 1.6 : 1.2) * px}
+              fill="none"
+              stroke={PCB.courtyard}
+              strokeWidth={1.2 * px}
               strokeDasharray={dnp ? `${5 * px} ${3 * px}` : undefined}
             />
           )
@@ -1510,7 +1501,7 @@ export function PcbEditor() {
       follows: "view",
       // Pin names on pads and net names along traces once there is room to read them.
       draw: (d, view) =>
-        keepDrawing(drawings.current, dragKept ? "labels!" : "labels", [project, pcb, pinNames, front, showLabels, d], () =>
+        keepDrawing(drawings.current, dragKept ? "labels!" : "labels", [project, pcb, pinNames, front, showLabels, d, view], () =>
           showLabels ? (
             <>
               <TraceLabels project={project} items={pcb.items} traceNet={pcb.traceNet} netName={netName} scale={d.scale} front={front} view={view} />
@@ -1795,45 +1786,6 @@ function padHoverText(project: Project, pad: WorldPad, pinNames: PinNames, net: 
   const name = pad.pin ? pinNames.get(`${pad.componentId}:${pad.pin}`) : undefined
   const pin = name && name !== pad.padNumber ? `${pad.padNumber} ${name}` : (pad.padNumber ?? "")
   return `${ref}.${pin}${net ? `  ${net}` : ""}`
-}
-
-function PadShape({ pad, color, highlight, px }: { pad: WorldPad; color: string; highlight: boolean; px: number }) {
-  const stroke = highlight ? "#ffffff" : "none"
-  const sw = highlight ? 1.6 * px : 0
-  let shape
-  if (pad.shape === "circle") shape = <circle cx={pad.x} cy={pad.y} r={pad.width / 2} fill={color} stroke={stroke} strokeWidth={sw} />
-  else if (pad.rings && pad.rings.length > 1)
-    // A custom pad with a hole in it or in pieces: every ring, even-odd.
-    shape = <path d={pad.rings.map((ring) => `M${ring.map((p) => `${p.x},${p.y}`).join("L")}Z`).join("")} fillRule="evenodd" fill={color} stroke={stroke} strokeWidth={sw} />
-  else if (pad.shape === "polygon" && pad.points)
-    shape = <polygon points={pad.points.map((p) => `${p.x},${p.y}`).join(" ")} fill={color} stroke={stroke} strokeWidth={sw} />
-  else {
-    // A pad that has its own shape is drawn as it is; the plain one keeps the slight rounding it has always been drawn with.
-    const rr = pad.shape === "pill" ? Math.min(pad.width, pad.height) / 2 : pad.x7 ? (pad.corner ?? 0) : Math.min(pad.width, pad.height) * 0.12
-    shape = <rect x={pad.x - pad.width / 2} y={pad.y - pad.height / 2} width={pad.width} height={pad.height} rx={rr} fill={color} stroke={stroke} strokeWidth={sw} />
-  }
-  return (
-    <g>
-      {shape}
-      {pad.holeDiameter && <HoleShape pad={pad} d={pad.holeDiameter} px={px} />}
-    </g>
-  )
-}
-
-/** A pad's drill: a circle, or a rounded slot. */
-function HoleShape({ pad, d, px }: { pad: WorldPad; d: number; px: number }) {
-  const strokeWidth = Math.min(d * 0.12, Math.max(0.05, 1.2 * px))
-  const ends = slotEnds(pad)
-  const at = holeCentre(pad)
-  if (!ends) return <circle cx={at.x} cy={at.y} r={d / 2} fill={PCB.hole} stroke={PCB.plating} strokeWidth={strokeWidth} />
-  const [a, b] = ends
-  // Two round-capped strokes: the plating ring, then the drill inside it, as the circle draws them.
-  return (
-    <g strokeLinecap="round">
-      <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={PCB.plating} strokeWidth={d + strokeWidth} />
-      <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={PCB.hole} strokeWidth={d - strokeWidth} />
-    </g>
-  )
 }
 
 const CHAR_W = 0.62

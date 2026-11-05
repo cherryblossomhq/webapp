@@ -1,5 +1,4 @@
-import { boxesOverlap, normalizeAngle, pointSegmentDistance, round, type Box } from "../lib/geometry"
-import { isInner } from "../model/stack"
+import { boxesOverlap, normalizeAngle, round, type Box } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { boardObstacles, exitCorridors } from "../model/autoplace"
 import { boxOnBoard, outlineGeometry } from "../model/outline"
@@ -592,7 +591,7 @@ const setNetWidthTool: PcbToolSpec = {
 const clearRoutingTool: PcbToolSpec = {
   name: "clear_routing",
   description:
-    "Delete copper: traces and vias that are not pour stitching. With no arguments, every unlocked one. nets limits it to those nets, refs to copper touching those parts' pads. Locked copper (drawn by hand) stays unless include_locked is true. Use it before route_pcb after moving parts or changing a net's width, so the traces are made again. Inner-layer traces and blind, buried, micro or inner-joining vias stay (the router cannot remake them).",
+    "Delete copper: traces and vias that are not pour stitching. With no arguments, every unlocked one. nets limits it to those nets, refs to copper touching those parts' pads. Locked copper (drawn by hand) stays unless include_locked is true. Use it before route_pcb after moving parts or changing a net's width, so the traces are made again. Blind, buried and micro vias stay (the router makes through vias only).",
   input_schema: {
     type: "object",
     properties: {
@@ -624,11 +623,9 @@ const clearRoutingTool: PcbToolSpec = {
       return (nets.length > 0 && ids.has(netOf.get(item.id) ?? "")) || (touching?.some((t) => t.id === item.id) ?? false)
     }
     const includeLocked = input.include_locked === true
-    // Inner layers are not the router's (X1): what is on them, and what joins it, is the user's.
-    const innerSegments = analysis.items.filter((it) => it.kind === "segment" && it.layers.some(isInner))
-    const joinsInner = (v: Project["vias"][number]) => innerSegments.some((it) => it.kind === "segment" && it.box.minX <= v.x + v.diameter / 2 && it.box.maxX >= v.x - v.diameter / 2 && it.box.minY <= v.y + v.diameter / 2 && it.box.maxY >= v.y - v.diameter / 2 && pointSegmentDistance(v, it.a, it.b) <= it.width / 2 + v.diameter / 2 + 1e-6)
-    const traces = project.traces.filter((t) => !isInner(t.layer) && wanted(t, analysis.traceNet, onParts?.traces) && (includeLocked || !t.locked))
-    const vias = project.vias.filter((v) => !v.net && v.kind === undefined && !joinsInner(v) && wanted(v, analysis.viaNet, onParts?.vias) && (includeLocked || !v.locked))
+    // The router remakes traces on every layer and through vias; a blind, buried or micro via is the user's.
+    const traces = project.traces.filter((t) => wanted(t, analysis.traceNet, onParts?.traces) && (includeLocked || !t.locked))
+    const vias = project.vias.filter((v) => !v.net && v.kind === undefined && wanted(v, analysis.viaNet, onParts?.vias) && (includeLocked || !v.locked))
     const lockedKept = includeLocked ? 0 : project.traces.filter((t) => t.locked && wanted(t, analysis.traceNet, onParts?.traces)).length
     if (!traces.length && !vias.length) {
       return ok(project, `There is no ${includeLocked ? "" : "unlocked "}copper to clear${nets.length || refs.length ? " there" : ""}.`, "No copper to clear")

@@ -358,7 +358,32 @@ describe("the project file", () => {
 })
 
 describe("the autorouter on a board of more than two layers", () => {
-  it("leaves the inner layers as they are, and keeps its vias off the foreign copper there", () => {
+  it("goes under a wall on both outer layers through an inner one, with through vias", () => {
+    const nets = [...NETS, '(net 3 "C")']
+    const text = board({
+      layers: L4,
+      nets,
+      body: [
+        footprint({ ref: "R1", at: "3 5", pads: [smd("1", "-1 0", "1"), smd("2", "1 0", "2")] }),
+        footprint({ ref: "R2", at: "17 5", pads: [smd("1", "-1 0", "1"), smd("2", "1 0", "2")] }),
+        // net C walls the board in two on both outer layers, edge to edge
+        seg("10 0", "10 10", "F.Cu", "3", 0.3),
+        seg("10 0", "10 10", "B.Cu", "3", 0.3),
+      ],
+    })
+    const r = importKicadBoard(text)
+    if (r.status !== "imported") throw new Error(r.message)
+    const routed = autoroute(r.project)
+    expect(routed.remaining).toBe(0)
+    const added = routed.project.traces.filter((t) => !r.project.traces.some((o) => o.id === t.id))
+    expect(added.some((t) => t.layer === "in1" || t.layer === "in2")).toBe(true)
+    expect(routed.addedVias).toBeGreaterThanOrEqual(4)
+    for (const v of routed.project.vias) expect(v.kind).toBeUndefined()
+    const errors = analyze(routed.project).violations.filter((v) => v.severity === "error")
+    expect(errors.filter((e) => e.kind === "clearance" || e.kind === "short")).toEqual([])
+  })
+
+  it("keeps the copper already on the inner layers, and keeps its vias off the foreign copper there", () => {
     const text = board({
       layers: L4,
       nets: NETS,
@@ -374,7 +399,7 @@ describe("the autorouter on a board of more than two layers", () => {
     const before = r.project
     const routed = autoroute(before)
     const after = routed.project
-    expect(after.traces.filter((t) => t.layer === "in1" || t.layer === "in2")).toEqual(before.traces)
+    for (const t of before.traces) expect(after.traces).toContainEqual(t)
     // every via the router put down is at least the clearance away from the inner track
     for (const v of after.vias.filter((x) => !before.vias.some((o) => o.id === x.id))) expect(Math.abs(v.x - 14) - v.diameter / 2 - 0.15).toBeGreaterThanOrEqual(0.2 - 1e-6)
     const errors = analyze(after).violations.filter((v) => v.severity === "error")

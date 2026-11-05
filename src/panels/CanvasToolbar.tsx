@@ -475,10 +475,9 @@ export function PcbToolbar() {
               const res = routeAroundStitching(projectApi().project!, (p) => autoroute(p))
               renewBoardNow()
               if (res.addedTraces || res.addedVias) projectApi().commit(() => res.project)
-              const outer = copperLayers(res.project.board).length > 2 ? " (outer layers only)" : ""
               if (!res.routed && !res.remaining) setStatus("Nothing left to route")
-              else if (res.remaining) setStatus(`Routed ${res.routed} connections${outer}; ${res.remaining} need routing by hand`)
-              else setStatus(`Routed ${res.routed} connections with ${res.addedVias} vias${outer}`)
+              else if (res.remaining) setStatus(`Routed ${res.routed} connections; ${res.remaining} need routing by hand`)
+              else setStatus(`Routed ${res.routed} connections with ${res.addedVias} vias`)
             } finally {
               setRouting(false)
               resolve()

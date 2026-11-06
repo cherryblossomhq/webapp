@@ -5,23 +5,32 @@ import { OMITTED } from "./vision/messages"
 /**
  * A Sakura chat as it is stored (`store/chats.ts`): what the panel shows (`entries`) and what the model was told
  * (`messages`, with the conversation's id), so a chat opened again reads as it did and carries on where it stopped.
- * `{ "format": "cherryblossom.chat", "version", "conversationId", "entries", "messages" }`, JSON. Storage keeps it as
- * text and never reads it, as it keeps a project file.
+ *
+ * **It is stored in parts, so a save sends what changed, not the whole chat.** Part 0 is the header,
+ * `{ "format": "cherryblossom.chat", "version", "conversationId" }`; each part after it is one request, from a message
+ * the user sent to the next, `{ "entries", "messages" }`. Carrying a chat on adds a part and changes its last, and the
+ * store sends those two (`persist` in `store/copilotStore.ts`). A request that is over changes only when something in
+ * it does: a plan applied later, a picture the conversation let go of, its tool results shortened to fit. Each part is
+ * JSON text, which storage keeps and never reads, as it keeps a project file.
  *
  * What is stored is less than the tab held:
+ * - **No entry ids.** They are the tab's own (`nextEntryId`), and numbered again when a chat is opened; stored, they
+ *   would make every part of a chat opened again differ from what storage has.
  * - **No pictures.** A `look` picture is a base64 PNG of up to 640 KB, and a chat carried on later takes a new one
  *   anyway. Each becomes the line an old picture becomes in the conversation (`OMITTED`).
- * - **No reasoning but the last turn's.** A provider needs the thinking of the turn a tool loop is in (a stopped
- *   request's), not of turns that ended.
- * - **At most `MAX_CHAT_FILE_BYTES`.** Past it, the oldest tool results are shortened to a line, then the oldest
- *   requests leave what the model is told (the panel still shows them), then the oldest of what the panel shows goes.
- *   Every tool call keeps a result, so the conversation stays one a provider takes.
+ * - **No reasoning but each request's last.** A provider needs the thinking of the turn a tool loop is in (a stopped
+ *   request's), not of every round of a request that ended. Keeping each request's last, rather than the chat's
+ *   last alone, is what leaves a request's part as it was when the next one starts.
+ * - **At most `MAX_CHAT_FILE_BYTES` in all.** Past it, the oldest tool results are shortened to a line, then the oldest
+ *   requests leave what the model is told (the panel still shows them), then the panel's oldest requests go. A request
+ *   emptied so keeps its part, so the parts after it keep their numbers and aren't sent again. Every tool call keeps a
+ *   result, so the conversation stays one a provider takes.
  */
 
 export const CHAT_FILE_FORMAT = "cherryblossom.chat"
 export const CHAT_FILE_VERSION = 1
 
-/** The bytes of a chat file's JSON: under the account's cap (the hosted app's `MAX_CHAT_BYTES`), with room. */
+/** The bytes of a chat file's JSON, its parts together: under the account's cap (the hosted app's `MAX_CHAT_BYTES`), with room. */
 export const MAX_CHAT_FILE_BYTES = 2_000_000
 
 /** What a tool result shortened to fit says, to the model reading the chat later. */
@@ -40,6 +49,15 @@ export interface ChatContents {
   conversation: ChatConversation
 }
 
+/** An entry as it is stored: without the tab's id. */
+type StoredEntry = { [K in Entry["kind"]]: Omit<Extract<Entry, { kind: K }>, "id"> }[Entry["kind"]]
+
+/** One request's part. */
+interface Request {
+  entries: StoredEntry[]
+  messages: ChatMessage[]
+}
+
 const encoder = new TextEncoder()
 const bytes = (text: string) => encoder.encode(text).byteLength
 
@@ -51,7 +69,20 @@ export function chatTitle(entries: Entry[]): string {
   return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE - 1).trimEnd()}…` : line
 }
 
-/** The conversation as it is stored: no pictures, and the reasoning of the last turn alone. The tab's copy is left as it is. */
+/** Items split where each request starts. */
+function byRequest<T>(items: T[], starts: (item: T) => boolean): T[][] {
+  const out: T[][] = []
+  for (const item of items) {
+    if (!out.length || starts(item)) out.push([])
+    out[out.length - 1].push(item)
+  }
+  return out
+}
+
+/** A message the user typed, which starts a request (a picture `look` took is a user message too, in parts). */
+const typed = (m: ChatMessage) => m.role === "user" && typeof m.content === "string"
+
+/** One request's messages as they are stored: no pictures, and the reasoning of its last turn alone. The tab's copy is left as it is. */
 function storedMessages(messages: ChatMessage[]): ChatMessage[] {
   let lastAssistant = -1
   messages.forEach((m, i) => m.role === "assistant" && (lastAssistant = i))
@@ -73,75 +104,78 @@ function storedMessages(messages: ChatMessage[]): ChatMessage[] {
   })
 }
 
-/** Where the request after the first starts: the next message the user typed. -1 when the first is the only one. */
-function nextRequest(messages: ChatMessage[]): number {
-  for (let i = 1; i < messages.length; i++) {
-    const m = messages[i]
-    if (m.role === "user" && typeof m.content === "string") return i
-  }
-  return -1
-}
+/** A chat as its file's parts, fitted to `max` bytes in all as the module's comment says. */
+export function serializeChat(entries: Entry[], conversation: ChatConversation, max = MAX_CHAT_FILE_BYTES): string[] {
+  const shown = byRequest(
+    entries.map(({ id: _, ...entry }): StoredEntry => entry),
+    (e) => e.kind === "user",
+  )
+  const told = byRequest(conversation.messages, typed).map(storedMessages)
+  // Paired by number: a request refused before the model heard it has entries and no messages, and every part after
+  // it pairs a request's entries with the next one's messages. Storage only needs the pairing to stay put, and it does.
+  const requests: Request[] = Array.from({ length: Math.max(shown.length, told.length) }, (_, i) => ({ entries: shown[i] ?? [], messages: told[i] ?? [] }))
+  const head = JSON.stringify({ format: CHAT_FILE_FORMAT, version: CHAT_FILE_VERSION, conversationId: conversation.id })
+  const write = () => [head, ...requests.map((r) => JSON.stringify(r))]
+  const parts = write()
+  let over = parts.reduce((n, part) => n + bytes(part), 0) - max
+  if (over <= 0) return parts
 
-/** A chat as its file, fitted to `max` bytes as the module's comment says. */
-export function serializeChat(entries: Entry[], conversation: ChatConversation, max = MAX_CHAT_FILE_BYTES): string {
-  let messages = storedMessages(conversation.messages)
-  let shown = entries
-  const write = () => JSON.stringify({ format: CHAT_FILE_FORMAT, version: CHAT_FILE_VERSION, conversationId: conversation.id, entries: shown, messages })
-  let text = write()
-  let over = bytes(text) - max
-  if (over <= 0) return text
-
-  // Sizes counted once and kept up to date, rather than the whole chat written again after every cut.
-  const size = (value: unknown) => bytes(JSON.stringify(value)) + 1
+  // Counted exactly without writing the parts again: a value's JSON is the same text inside its part.
+  const size = (value: unknown) => bytes(JSON.stringify(value))
   const shortened = size(TRIMMED_RESULT)
-  messages = messages.map((m) => {
-    if (over <= 0 || m.role !== "tool") return m
-    const saved = size(m.content) - shortened
-    if (saved <= 0) return m
-    over -= saved
-    return { ...m, content: TRIMMED_RESULT }
-  })
-  while (over > 0 && messages.length) {
-    const cut = nextRequest(messages)
-    const dropped = cut === -1 ? messages : messages.slice(0, cut)
-    over -= dropped.reduce((n, m) => n + size(m), 0)
-    messages = cut === -1 ? [] : messages.slice(cut)
+  for (const r of requests) {
+    if (over <= 0) break
+    r.messages = r.messages.map((m) => {
+      if (over <= 0 || m.role !== "tool") return m
+      const saved = size(m.content) - shortened
+      if (saved <= 0) return m
+      over -= saved
+      return { ...m, content: TRIMMED_RESULT }
+    })
   }
-  let first = 0
-  while (over > 0 && first < shown.length) over -= size(shown[first++])
-  shown = shown.slice(first)
-  text = write()
-  // Counted rather than measured: what is left over is what the count missed (separators), taken from what is shown.
-  while (bytes(text) > max && shown.length) {
-    shown = shown.slice(Math.max(1, Math.ceil(shown.length / 10)))
-    text = write()
+  for (const r of requests) {
+    if (over <= 0) break
+    over -= size(r.messages) - 2
+    r.messages = []
   }
-  return text
+  for (const r of requests) {
+    if (over <= 0) break
+    over -= size(r.entries) - 2
+    r.entries = []
+  }
+  return write()
 }
 
 const ENTRY_KINDS = new Set<Entry["kind"]>(["user", "assistant", "tool", "error", "plan"])
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
+const isRequest = (v: unknown): v is { entries: unknown[]; messages: unknown[] } => isRecord(v) && Array.isArray(v.entries) && Array.isArray(v.messages)
 
-/**
- * A chat file read back, or null when it isn't one this editor can read. What was under way when it was written (a
- * tool call running, a plan being applied) is over by now, and reads so.
- */
-export function parseChat(text: string): ChatContents | null {
-  let file: unknown
+function read(text: string): unknown {
   try {
-    file = JSON.parse(text)
+    return JSON.parse(text)
   } catch {
     return null
   }
-  if (!isRecord(file) || file.format !== CHAT_FILE_FORMAT || typeof file.version !== "number" || file.version > CHAT_FILE_VERSION) return null
-  if (typeof file.conversationId !== "string" || !Array.isArray(file.entries) || !Array.isArray(file.messages)) return null
-  const entries = file.entries
-    .filter((e): e is Entry => isRecord(e) && ENTRY_KINDS.has(e.kind as Entry["kind"]))
-    .map((e): Entry => {
+}
+
+/**
+ * A chat file read back from its parts, or null when it isn't one this editor can read. Entries are numbered from 1,
+ * for the store to number again as its own. What was under way when it was written (a tool call running, a plan being
+ * applied) is over by now, and reads so.
+ */
+export function parseChat(parts: string[]): ChatContents | null {
+  const [head, ...requests] = parts.map(read)
+  if (!isRecord(head) || head.format !== CHAT_FILE_FORMAT || typeof head.version !== "number" || head.version > CHAT_FILE_VERSION) return null
+  if (typeof head.conversationId !== "string" || !requests.every(isRequest)) return null
+  const entries = requests
+    .flatMap((r) => r.entries)
+    .filter((e): e is StoredEntry => isRecord(e) && ENTRY_KINDS.has(e.kind as Entry["kind"]))
+    .map((stored, i): Entry => {
+      const e = { ...stored, id: i + 1 } as Entry
       if (e.kind === "tool" && e.status === "running") return { ...e, status: "error" }
       if (e.kind === "plan" && e.status === "applying") return { ...e, status: "cancelled" }
       return e
     })
-  const messages = file.messages.filter((m): m is ChatMessage => isRecord(m) && typeof m.role === "string")
-  return { entries, conversation: { id: file.conversationId, messages } }
+  const messages = requests.flatMap((r) => r.messages).filter((m): m is ChatMessage => isRecord(m) && typeof m.role === "string")
+  return { entries, conversation: { id: head.conversationId, messages } }
 }

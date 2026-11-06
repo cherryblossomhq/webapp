@@ -32,6 +32,8 @@ export interface ChatThread {
   createdAt: number
   /** Storage's `updatedAt` for the chat as this tab has it; null until it is first stored. */
   savedAt: number | null
+  /** The chat file's parts as storage has them at `savedAt`: what the next save leaves out. Null until it is first stored. */
+  stored: string[] | null
 }
 
 interface CopilotState {
@@ -113,7 +115,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     const chatId = crypto.randomUUID()
     set((s) => ({
       active: { ...s.active, [projectId]: chatId },
-      threads: { ...s.threads, [chatId]: { projectId, entries: [], createdAt: Date.now(), savedAt: null } },
+      threads: { ...s.threads, [chatId]: { projectId, entries: [], createdAt: Date.now(), savedAt: null, stored: null } },
     }))
     return chatId
   }
@@ -121,14 +123,32 @@ export const useCopilot = create<CopilotState>((set, get) => {
   /** The chat that holds an entry: entry ids are this tab's, never reused. */
   const chatWith = (entryId: number) => Object.keys(get().threads).find((id) => get().threads[id].entries.some((e) => e.id === entryId)) ?? null
 
-  /** Store a chat as it is now, once it has a request in it. Best effort: a chat that doesn't store stays in this tab. */
+  /**
+   * Store a chat as it is now, once it has a request in it: the parts of its file that changed since storage last had
+   * it, which carrying a chat on keeps to the request added. The whole chat when this tab doesn't know what storage has,
+   * or storage has moved on (`stale`). Best effort: a chat that doesn't store stays in this tab.
+   */
   const persist = (chatId: string): Promise<void> => {
     const write = async () => {
       const thread = get().threads[chatId]
       if (!thread || !thread.entries.some((e) => e.kind === "user")) return
-      const content = serializeChat(thread.entries, conversationOf(chatId) ?? { id: chatId, messages: [] })
-      const outcome = await chatSource().save(thread.projectId, { id: chatId, title: chatTitle(thread.entries), content, createdAt: thread.createdAt })
-      if (outcome.ok) set((s) => (s.threads[chatId] ? { threads: { ...s.threads, [chatId]: { ...s.threads[chatId], savedAt: outcome.updatedAt } } } : {}))
+      const parts = serializeChat(thread.entries, conversationOf(chatId) ?? { id: chatId, messages: [] })
+      const had = thread.savedAt !== null ? thread.stored : null
+      if (had && had.length === parts.length && parts.every((part, i) => part === had[i])) return
+      const save = (base: number | null, under: string[]) =>
+        chatSource().save(thread.projectId, {
+          id: chatId,
+          title: chatTitle(thread.entries),
+          createdAt: thread.createdAt,
+          base,
+          count: parts.length,
+          parts: parts.flatMap((content, index) => (content === under[index] ? [] : [{ index, content }])),
+        })
+      let outcome = had ? await save(thread.savedAt, had) : await save(null, [])
+      if (!outcome.ok && outcome.reason === "stale" && had) outcome = await save(null, [])
+      if (!outcome.ok) return
+      const { updatedAt } = outcome
+      set((s) => (s.threads[chatId] ? { threads: { ...s.threads, [chatId]: { ...s.threads[chatId], savedAt: updatedAt, stored: parts } } } : {}))
     }
     const next = (saving.get(chatId) ?? Promise.resolve()).then(write).catch(() => {})
     saving.set(chatId, next)
@@ -328,7 +348,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
         }))
       try {
         const stored = await chatSource().load(projectId, chatId)
-        const contents = stored && parseChat(stored.content)
+        const contents = stored && parseChat(stored.parts)
         if (!stored || !contents) {
           done(null)
           return stored ? "This chat can't be read here. Reload the page to get the latest editor." : "That chat is gone."
@@ -336,7 +356,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
         restoreConversation(chatId, contents.conversation)
         // Numbered again: entry ids are this tab's own.
         const entries = contents.entries.map((e) => ({ ...e, id: nextEntryId++ }))
-        done({ projectId, entries, createdAt: stored.createdAt, savedAt: stored.updatedAt })
+        done({ projectId, entries, createdAt: stored.createdAt, savedAt: stored.updatedAt, stored: stored.parts })
         return null
       } catch {
         done(null)

@@ -6,8 +6,10 @@ import { connectManagedAi, type ChatMessage } from "../src/ai/managedAi"
 import { OMITTED } from "../src/ai/vision/messages"
 import { createProject } from "../src/model/ops"
 import { useAccount } from "../src/store/accountStore"
+import { memoryChats, type ChatSource, type ChatWrite } from "../src/store/chats"
 import { activeEntries, chatSaves, useCopilot, type Entry } from "../src/store/copilotStore"
-import { useProjectStore } from "../src/store/projectStore"
+import { connectProjectStorage, useProjectStore } from "../src/store/projectStore"
+import type { ProjectStorage } from "../src/store/storage"
 import { DEFAULT_SETTINGS } from "../src/store/settings"
 import { useUi } from "../src/store/uiStore"
 
@@ -20,31 +22,62 @@ const user = (text: string, id = 1): Entry => ({ kind: "user", id, text })
 const conversation = (messages: ChatMessage[]): ChatConversation => ({ id: "trace-1", messages })
 const picture = "data:image/png;base64," + "A".repeat(4000)
 
+const head = (conversationId = "x", version = 1) => JSON.stringify({ format: CHAT_FILE_FORMAT, version, conversationId })
+const bytes = (parts: string[]) => parts.reduce((n, part) => n + new TextEncoder().encode(part).byteLength, 0)
+
 describe("the chat file", () => {
-  it("leaves the pictures and all but the last turn's reasoning out, and reads back what it wrote", () => {
+  it("is a header and a part per request, leaves the pictures and all but each request's last reasoning out, and reads back what it wrote", () => {
     const messages: ChatMessage[] = [
       { role: "user", content: "add an LED" },
       { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "look", arguments: "{}" } }], reasoning_details: [{ type: "reasoning.text", text: "old" }] },
       { role: "tool", tool_call_id: "c1", content: "Looked." },
       { role: "user", content: [{ type: "text", text: "The picture." }, { type: "image_url", image_url: { url: picture } }, { type: "image_url", image_url: { url: picture } }] },
-      { role: "assistant", content: "Done.", reasoning_details: [{ type: "reasoning.text", text: "last" }] },
+      { role: "assistant", content: "Done.", reasoning_details: [{ type: "reasoning.text", text: "first's last" }] },
+      { role: "user", content: "thanks" },
+      { role: "assistant", content: "Welcome.", reasoning_details: [{ type: "reasoning.text", text: "second's last" }] },
     ]
-    const entries: Entry[] = [user("add an LED"), { kind: "tool", id: 2, toolId: "c1", label: "Looked", status: "ok", changed: false }, { kind: "assistant", id: 3, text: "Done." }]
-    const text = serializeChat(entries, conversation(messages))
-    expect(text).not.toContain("base64")
-    expect(JSON.parse(text)).toMatchObject({ format: CHAT_FILE_FORMAT, version: 1, conversationId: "trace-1" })
+    const entries: Entry[] = [
+      user("add an LED"),
+      { kind: "tool", id: 2, toolId: "c1", label: "Looked", status: "ok", changed: false },
+      { kind: "assistant", id: 3, text: "Done." },
+      user("thanks", 4),
+      { kind: "assistant", id: 5, text: "Welcome." },
+    ]
+    const parts = serializeChat(entries, conversation(messages))
+    expect(parts).toHaveLength(3)
+    expect(parts.join("")).not.toContain("base64")
+    expect(JSON.parse(parts[0])).toEqual({ format: CHAT_FILE_FORMAT, version: 1, conversationId: "trace-1" })
+    // Entry ids are the tab's own, and stay out of the file.
+    expect(JSON.parse(parts[2])).toEqual({ entries: entries.slice(3).map(({ id: _, ...e }) => e), messages: messages.slice(5) })
 
-    const read = parseChat(text)!
+    const read = parseChat(parts)!
     expect(read.entries).toEqual(entries)
     expect(read.conversation.id).toBe("trace-1")
     expect(read.conversation.messages[1]).not.toHaveProperty("reasoning_details")
     expect(read.conversation.messages[3]).toEqual({ role: "user", content: [{ type: "text", text: "The picture." }, { type: "text", text: OMITTED }] })
-    expect(read.conversation.messages[4]).toMatchObject({ reasoning_details: [{ text: "last" }] })
+    expect(read.conversation.messages[4]).toMatchObject({ reasoning_details: [{ text: "first's last" }] })
+    expect(read.conversation.messages[6]).toMatchObject({ reasoning_details: [{ text: "second's last" }] })
     // The tab's own copy keeps its pictures.
     expect(JSON.stringify(messages)).toContain("base64")
+    // Read back and written again, it is the same parts: a chat opened later sends nothing it didn't change.
+    expect(serializeChat(read.entries, read.conversation)).toEqual(parts)
   })
 
-  it("fits a long chat: the oldest tool results go first, then the oldest requests, and every call keeps its result", () => {
+  it("leaves a request's part as it was when the next one starts", () => {
+    const first: ChatMessage[] = [
+      { role: "user", content: "add an LED" },
+      { role: "assistant", content: "Added D1.", reasoning_details: [{ type: "reasoning.text", text: "thinking" }] },
+    ]
+    const before = serializeChat([user("add an LED"), { kind: "assistant", id: 2, text: "Added D1." }], conversation(first))
+    const after = serializeChat(
+      [user("add an LED"), { kind: "assistant", id: 2, text: "Added D1." }, user("now a resistor", 3)],
+      conversation([...first, { role: "user", content: "now a resistor" }]),
+    )
+    expect(after.slice(0, 2)).toEqual(before)
+    expect(after).toHaveLength(3)
+  })
+
+  it("fits a long chat: the oldest tool results go first, then the oldest requests, every call keeps its result, and no part moves", () => {
     const request = (n: number): ChatMessage[] => [
       { role: "user", content: `request ${n}` },
       { role: "assistant", content: null, tool_calls: [{ id: `c${n}`, type: "function", function: { name: "get_design", arguments: "{}" } }] },
@@ -56,40 +89,44 @@ describe("the chat file", () => {
     const full = serializeChat(entries, conversation(messages), Infinity)
 
     // Room for two results of four: the two oldest are shortened, and nothing else changes.
-    const two = parseChat(serializeChat(entries, conversation(messages), full.length - 30_000))!
+    const fitted = serializeChat(entries, conversation(messages), bytes(full) - 30_000)
+    expect(bytes(fitted)).toBeLessThanOrEqual(bytes(full) - 30_000)
+    const two = parseChat(fitted)!
     const results = two.conversation.messages.filter((m) => m.role === "tool").map((m) => m.content)
     expect(results.map((r) => r === TRIMMED_RESULT)).toEqual([true, true, false, false])
     expect(two.entries).toHaveLength(4)
+    expect(fitted.slice(3)).toEqual(full.slice(3))
 
     // Room for less than the requests themselves: the oldest leave what the model is told, whole, starting at a request.
-    const small = parseChat(serializeChat(entries, conversation(messages), 1_200))!
-    const kept = small.conversation.messages
+    const tight = serializeChat(entries, conversation(messages), 1_200)
+    expect(bytes(tight)).toBeLessThanOrEqual(1_200)
+    expect(tight).toHaveLength(full.length)
+    const kept = parseChat(tight)!.conversation.messages
     expect(kept[0]).toEqual({ role: "user", content: expect.stringMatching(/^request \d$/) })
     expect(kept.length).toBeLessThan(messages.length)
     const calls = kept.flatMap((m) => (m.role === "assistant" ? (m.tool_calls ?? []).map((c) => c.id) : []))
     const answered = new Set(kept.flatMap((m) => (m.role === "tool" ? [m.tool_call_id] : [])))
     expect(calls.every((id) => answered.has(id))).toBe(true)
-    expect(serializeChat(entries, conversation(messages), 1_200).length).toBeLessThanOrEqual(1_200)
   })
 
   it("reads nothing but a chat file of its version or older, and what was under way when it was written is over", () => {
-    expect(parseChat("not json")).toBeNull()
-    expect(parseChat(JSON.stringify({ format: "cherryblossom.project", version: 1 }))).toBeNull()
-    expect(parseChat(JSON.stringify({ format: CHAT_FILE_FORMAT, version: 99, conversationId: "x", entries: [], messages: [] }))).toBeNull()
-    const read = parseChat(
+    expect(parseChat([])).toBeNull()
+    expect(parseChat(["not json"])).toBeNull()
+    expect(parseChat([JSON.stringify({ format: "cherryblossom.project", version: 1 })])).toBeNull()
+    expect(parseChat([head("x", 99)])).toBeNull()
+    expect(parseChat([head(), "{}"])).toBeNull()
+    expect(parseChat([head(), "not json"])).toBeNull()
+    const read = parseChat([
+      head(),
       JSON.stringify({
-        format: CHAT_FILE_FORMAT,
-        version: 1,
-        conversationId: "x",
         entries: [
           { kind: "tool", id: 1, toolId: "c1", label: "Routing", status: "running", changed: false },
           { kind: "plan", id: 2, plan: { blocks: [], left: [] }, status: "applying" },
-          { kind: "plan", id: 3, plan: { blocks: [], left: [] }, status: "pending" },
-          { kind: "mystery", id: 4 },
         ],
         messages: [],
       }),
-    )!
+      JSON.stringify({ entries: [{ kind: "plan", id: 3, plan: { blocks: [], left: [] }, status: "pending" }, { kind: "mystery", id: 4 }], messages: [] }),
+    ])!
     expect(read.entries.map((e) => ("status" in e ? e.status : e.kind))).toEqual(["error", "cancelled", "pending"])
   })
 
@@ -125,6 +162,9 @@ let sent: Sent[] = []
 let replies: string[] = []
 let projectId = ""
 let unwatch = () => {}
+/** Where the chats are kept, as the website's account would keep them, and every save sent to it. */
+let source: ChatSource
+let writes: ChatWrite[] = []
 
 const store = () => useCopilot.getState()
 const shown = () => (activeEntries(store(), projectId) ?? []).map((e) => (e.kind === "user" || e.kind === "assistant" ? `${e.kind}: ${e.text}` : e.kind))
@@ -161,11 +201,16 @@ beforeEach(() => {
   const project = createProject("chats")
   useProjectStore.getState().open(project)
   projectId = project.id
+  source = memoryChats()
+  writes = []
+  const recorded: ChatSource = { ...source, save: (id, chat) => (writes.push(chat), source.save(id, chat)) }
+  connectProjectStorage({ chats: recorded } as unknown as ProjectStorage)
   unwatch = store().watchChats(projectId)
 })
 
 afterEach(() => {
   unwatch()
+  connectProjectStorage(null)
   vi.unstubAllGlobals()
   connectManagedAi(null)
 })
@@ -252,5 +297,58 @@ describe("Sakura's chats", () => {
     expect(await store().openChat(projectId, chatId)).toBe("That chat is gone.")
     expect(store().active[projectId]).toBeUndefined()
     expect(store().opening).toBeNull()
+  })
+
+  it("saves what changed: the request added and its answer, never the requests before", async () => {
+    await ask("add an LED", "Added D1.")
+    // A new chat is written whole: its header and its first request.
+    expect(writes.map((w) => [w.base === null, w.count, w.parts.map((p) => p.index)])).toEqual([
+      [true, 2, [0, 1]],
+      [false, 2, [1]],
+    ])
+    writes = []
+    await ask("now a resistor", "Added R1.")
+    await ask("and a capacitor", "Added C1.")
+    expect(writes.map((w) => [w.base === null, w.count, w.parts.map((p) => p.index)])).toEqual([
+      [false, 3, [2]],
+      [false, 3, [2]],
+      [false, 4, [3]],
+      [false, 4, [3]],
+    ])
+    const chatId = store().active[projectId]
+    expect((await source.load(projectId, chatId))!.parts).toEqual(store().threads[chatId].stored)
+
+    // Opened again in a new tab and carried on: still only the request added.
+    reloadTab()
+    writes = []
+    expect(await store().openChat(projectId, chatId)).toBeNull()
+    await ask("and a diode", "Added D2.")
+    expect(writes.map((w) => w.parts.map((p) => p.index))).toEqual([[4], [4]])
+    const stored = (await source.load(projectId, chatId))!
+    expect(parseChat(stored.parts)!.entries.filter((e) => e.kind === "user").map((e) => e.kind === "user" && e.text)).toEqual([
+      "add an LED",
+      "now a resistor",
+      "and a capacitor",
+      "and a diode",
+    ])
+  })
+
+  it("writes a chat whole when it was carried on elsewhere since this tab saved it: the last write wins", async () => {
+    await ask("add an LED", "Added D1.")
+    const chatId = store().active[projectId]
+    // Another tab or device writes the chat meanwhile.
+    const elsewhere = serializeChat([user("something else")], conversation([{ role: "user", content: "something else" }]))
+    expect(await source.save(projectId, { id: chatId, title: "something else", createdAt: 0, base: null, count: 2, parts: elsewhere.map((content, index) => ({ index, content })) })).toMatchObject({ ok: true })
+    writes = []
+    await ask("now a resistor", "Added R1.")
+    // Refused as stale, then written whole, then carried on from there.
+    expect(writes.map((w) => [w.base === null, w.parts.map((p) => p.index)])).toEqual([
+      [false, [2]],
+      [true, [0, 1, 2]],
+      [false, [2]],
+    ])
+    const stored = (await source.load(projectId, chatId))!
+    expect(stored.parts).toEqual(store().threads[chatId].stored)
+    expect(parseChat(stored.parts)!.entries.map((e) => e.kind === "user" && e.text).filter(Boolean)).toEqual(["add an LED", "now a resistor"])
   })
 })

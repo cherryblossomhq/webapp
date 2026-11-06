@@ -158,7 +158,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
 
   const projectId = project.id
   const key = chat ?? projectId
-  const conversation = conversations.get(key) ?? { messages: [], id: crypto.randomUUID() }
+  // A chat's conversation is known by the chat's id (a UUID) from its first save, before the model is first asked.
+  const conversation = conversations.get(key) ?? { messages: [], id: chat ?? crypto.randomUUID() }
   conversations.set(key, conversation)
   const history = conversation.messages
   const startLength = history.length

@@ -1,5 +1,6 @@
+import type { ToolVersions } from "../ai/toolKit"
 import { PROJECT_FILE_VERSION } from "../model/projectFile"
-import { versionLabel, type VersionInfo } from "./history"
+import { versionLabel, type HistorySource, type HistoryState, type VersionInfo } from "./history"
 import { projectApi, projectStorage, settleSaves } from "./projectStore"
 import { openStoredProject } from "./storage"
 
@@ -61,5 +62,66 @@ export async function restorePreview(): Promise<ActionResult> {
     return { ok: true }
   } catch {
     return { ok: false, message: "Couldn't restore. Check the connection and try again." }
+  }
+}
+
+/** How long Sakura waits for the history to answer before its tool says so: offline, a subscription never does. */
+const READ_LIMIT_MS = 20_000
+
+/** The history as it is now, read once from its subscription. */
+function readHistory(source: HistorySource, projectId: string, limit: number): Promise<HistoryState | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let stop: (() => void) | undefined
+    const end = () => {
+      clearTimeout(timer)
+      stop?.()
+      stop = undefined
+    }
+    const timer = setTimeout(() => {
+      settled = true
+      end()
+      reject(new Error("The version history didn't answer. Check the connection and try again."))
+    }, READ_LIMIT_MS)
+    stop = source.watch(
+      projectId,
+      limit,
+      (state) => {
+        if (settled) return
+        settled = true
+        end()
+        resolve(state)
+      },
+      (error) => {
+        if (settled) return
+        settled = true
+        end()
+        reject(error)
+      },
+    )
+    // It answered before `watch` returned the way to stop it.
+    if (settled) end()
+  })
+}
+
+/**
+ * The open project's history for Sakura's tools (`ToolContext.versions`): what this tab has sent lands first, so a checkpoint,
+ * or the copy kept before a restore, holds Sakura's latest changes; and what Sakura names or keeps says it was Sakura. None
+ * where storage keeps no history (this browser's).
+ */
+export function copilotVersions(projectId: string): ToolVersions | undefined {
+  const source = projectStorage()?.history
+  if (!source) return undefined
+  return {
+    list: (limit) => readHistory(source, projectId, limit),
+    async name(name, versionId) {
+      await settleSaves()
+      return source.name(projectId, name, versionId, "sakura")
+    },
+    open: (versionId) => source.open(projectId, versionId),
+    async keep(versionId) {
+      await settleSaves()
+      return source.keep(projectId, versionId, "sakura")
+    },
   }
 }

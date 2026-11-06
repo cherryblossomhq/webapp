@@ -88,6 +88,18 @@ describe("the history panel", () => {
     expect(host.querySelector("[aria-label='Named version']")).not.toBeNull()
   })
 
+  it("says which checkpoints Sakura or an AI assistant saved, and which copy one kept before restoring", async () => {
+    const { memory, id, first } = await setup()
+    memory.snapshot(id, { kind: "named", name: "Before re-routing", by: person("Ada"), via: "sakura" })
+    memory.snapshot(id, { kind: "restore", restoredFromAt: first.at, by: person("Ada"), via: "assistant" })
+    act(() => root.render(<HistoryPanel />))
+    await flush()
+    expect(rowOf("Before re-routing")!.textContent).toContain("· Ada with Sakura")
+    expect(rowOf("Before restoring")!.textContent).toContain("· Ada's AI assistant")
+    // A name given by hand says nothing of the kind.
+    expect(rowOf("Sent to fab v2")!.textContent).not.toContain("·")
+  })
+
   it("lets an editor name the current state, and a viewer not", async () => {
     const { memory, id } = await setup("editor")
     act(() => root.render(<HistoryPanel />))

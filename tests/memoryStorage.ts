@@ -82,7 +82,7 @@ export function memoryStorage() {
     for (const w of historyWatchers) if (w.id === id) w.listener(stateOf(id, w.limit))
   }
   /** A version of a project as it is now, as the server keeps one before an edit after a pause. */
-  const snapshot = (id: string, extra: Partial<Pick<VersionInfo, "kind" | "name" | "summary" | "by" | "editors" | "restoredFromAt">> = {}) => {
+  const snapshot = (id: string, extra: Partial<Pick<VersionInfo, "kind" | "name" | "summary" | "by" | "via" | "editors" | "restoredFromAt">> = {}) => {
     const row = rows.get(id)!
     const version: StoredVersion = {
       id: `v${versionCount++}`,
@@ -93,6 +93,7 @@ export function memoryStorage() {
       name: null,
       restoredFromAt: null,
       by: null,
+      via: null,
       editors: [],
       formatVersion: row.formatVersion,
       size: row.content.length,
@@ -116,17 +117,31 @@ export function memoryStorage() {
       const v = versions.find((x) => x.id === versionId && x.designId === id)
       return v ? { content: v.content, formatVersion: v.formatVersion, revision: v.revision, at: v.at } : null
     },
-    async name(id, name, versionId) {
+    async name(id, name, versionId, via) {
+      calls.push({ op: "history.name", id, name })
       const row = rows.get(id)
       if (!row) return { ok: false, reason: "not_found" }
       if (row.role === "viewer") return { ok: false, reason: "forbidden" }
       if (!name.trim()) return { ok: false, reason: "invalid" }
-      const v = versionId ? versions.find((x) => x.id === versionId && x.designId === id) : snapshot(id)
+      // The project as it is now already has a row when nothing has changed since one was kept, as on the server.
+      const newest = versions.filter((x) => x.designId === id).sort((a, b) => b.at - a.at)[0]
+      const v = versionId ? versions.find((x) => x.id === versionId && x.designId === id) : newest && newest.revision >= row.revision ? newest : snapshot(id)
       if (!v) return { ok: false, reason: "not_found" }
       v.kind = "named"
       v.name = name.trim()
+      v.via = via ?? null
       tell(id)
       return { ok: true, versionId: v.id }
+    },
+    async keep(id, versionId, via) {
+      calls.push({ op: "history.keep", id })
+      const row = rows.get(id)
+      const v = versions.find((x) => x.id === versionId && x.designId === id)
+      if (!row || !v) return { ok: false, reason: "not_found" }
+      if (row.role === "viewer") return { ok: false, reason: "forbidden" }
+      const newest = versions.filter((x) => x.designId === id).sort((a, b) => b.at - a.at)[0]
+      if (newest.revision >= row.revision) return { ok: true, kept: newest.id }
+      return { ok: true, kept: snapshot(id, { kind: "restore", restoredFromAt: v.at, via: via ?? null }).id }
     },
     async unname(id, versionId) {
       const row = rows.get(id)

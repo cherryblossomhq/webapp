@@ -2,7 +2,7 @@ import { create } from "zustand"
 
 /**
  * The board lease, the editor's side: whole-board actions (Sakura's `layout_pcb`, `route_pcb`,
- * `clear_routing` and `tidy_schematic`, the toolbar's Re-pack, Autoroute and Tidy, Clean up) take it
+ * `clear_routing`, `tidy_schematic` and `restore_version`, the toolbar's Re-pack, Autoroute and Tidy, Clean up) take it
  * first, so two people, or one person's two tabs, don't rewrite the board at once. The server side
  * is the hosted app's (a lease that runs out after a minute unless renewed); the host's
  * `LockSource` is how this talks to it.
@@ -53,6 +53,7 @@ const ACTION_PHRASES: Record<string, string> = {
   autoroute: "routing the board",
   clear_routing: "clearing the routing",
   tidy_schematic: "tidying the schematic",
+  restore_version: "restoring a version",
   tidy: "tidying the schematic",
   cleanup: "cleaning up the schematic",
   repack: "re-packing the board",
@@ -252,6 +253,7 @@ export async function withBoard<T>(action: string, fn: () => T | Promise<T>): Pr
  * the board or sheet at once. `place_parts` (named parts), `set_board`, `set_pour` (one net),
  * `set_net_width`, `group_parts` and `edit_block` stay out: each touches what the call names.
  * `clear_routing` with nets or refs, and `tidy_schematic` with named blocks, are scoped the same way.
+ * `restore_version` rewrites the whole project, so it waits for a routing to finish rather than undo half of it.
  */
 export function wholeBoardAction(name: string, input: unknown): string | null {
   const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
@@ -265,6 +267,8 @@ export function wholeBoardAction(name: string, input: unknown): string | null {
       return some(i.nets) || some(i.refs) ? null : "clear_routing"
     case "tidy_schematic":
       return some(i.blocks) ? null : "tidy_schematic"
+    case "restore_version":
+      return "restore_version"
     default:
       return null
   }

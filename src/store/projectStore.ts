@@ -7,6 +7,7 @@ import { registerProjectFootprints } from "../model/footprints"
 import { PROJECT_FILE_VERSION } from "../model/projectFile"
 import { ensureTextFont, textFontMissing } from "../model/textFont"
 import type { Project } from "../model/types"
+import type { UndoReport } from "../ai/toolKit"
 import { projectChanges } from "./changes"
 import { forgetKeptEdits, keepEdits, takeKeptEdits } from "./keptEdits"
 import type { ProjectRole, ProjectStorage, RemoteBatch } from "./storage"
@@ -35,7 +36,14 @@ function settled(project: Project): Project {
 export interface HistoryStep {
   undo: Change[]
   redo: Change[]
+  /** Made by Sakura rather than by the user's own hand, which Sakura's `undo` may take back (`undoOwn`). */
+  by?: "sakura"
+  /** What the step did, as Sakura's transcript says it ("Routed 14 nets"), for what its `undo` reports. */
+  label?: string
 }
+
+/** A step made for the user rather than by them: whose, and what it did. */
+export type StepMark = Required<Pick<HistoryStep, "by" | "label">>
 
 /**
  * An older version of the project shown in place of it, read-only (`startPreview`). The live
@@ -79,8 +87,8 @@ interface ProjectState {
   /** Open a project loaded from storage at `stored.revision`; without `stored`, one that isn't stored yet. */
   open: (p: Project, stored?: { revision: number; formatVersion?: number; role?: ProjectRole }) => void
   close: () => void
-  /** Apply an undoable change. */
-  commit: (fn: (p: Project) => Project) => void
+  /** Apply an undoable change; `mark` when Sakura made it. */
+  commit: (fn: (p: Project) => Project, mark?: StepMark) => void
   /**
    * Apply a change that is not a step of the user's own: a background check's verdict on a part,
    * or the editor tidying up after someone else's edit (a designator both of them took at once).
@@ -99,6 +107,11 @@ interface ProjectState {
   cancelTransient: () => void
   undo: () => void
   redo: () => void
+  /**
+   * Undo the newest steps while they are `by`'s own, at most `count`: Sakura's `undo` tool, which takes back its own changes
+   * as the user's Undo would (they stay redoable). It never undoes a step of the user's own, and stops at one.
+   */
+  undoOwn: (by: StepMark["by"], count: number) => UndoReport
 }
 
 /**
@@ -250,7 +263,7 @@ function patchStep(s: HistoryStep, fn: (p: Project) => Project, project: Project
   }
   const undo = patchPuts(s.undo)
   const redo = patchPuts(s.redo)
-  return undo === s.undo && redo === s.redo ? s : { undo, redo }
+  return undo === s.undo && redo === s.redo ? s : { ...s, undo, redo }
 }
 
 /**
@@ -390,15 +403,16 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
     clearHistory: () => set({ past: [], future: [] }),
 
-    commit: (fn) => {
+    commit: (fn, mark) => {
       const { project, past, future, transientBase } = get()
       if (!project || readOnly()) return
       const made = fn(project)
       if (made === project) return
       const next = settleEdit(project, made)
       // A change that lands mid-drag (the copilot works in the background) ends the drag where it
-      // is: rebuilding the drag from its starting snapshot afterwards would drop the change.
-      const steps = [transientBase && transientBase !== project ? step(transientBase, project) : null, step(project, next)].filter(
+      // is: rebuilding the drag from its starting snapshot afterwards would drop the change. The drag is the user's own step.
+      const change = step(project, next)
+      const steps = [transientBase && transientBase !== project ? step(transientBase, project) : null, change && mark ? { ...change, ...mark } : change].filter(
         (s): s is HistoryStep => !!s,
       )
       set({
@@ -486,6 +500,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const [s, ...rest] = future
       const next = applyStep(project, s.redo)
       set({ project: next, past: [...past, s], future: rest })
+    },
+    undoOwn: (by, count) => {
+      const undone: string[] = []
+      while (undone.length < count) {
+        const { past, transientBase, role } = get()
+        if (transientBase) return { undone, stopped: "dragging" }
+        if (role === "viewer" || editingPaused(get())) return { undone, stopped: "paused" }
+        const top = past[past.length - 1]
+        if (!top) return { undone, stopped: "none" }
+        if (top.by !== by) return { undone, stopped: "user" }
+        get().undo()
+        if (get().past.length === past.length) return { undone, stopped: "paused" }
+        undone.push(top.label ?? "")
+      }
+      return { undone, stopped: null }
     },
   }
 })

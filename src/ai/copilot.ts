@@ -1,4 +1,5 @@
 import { copilotAccess, copilotModel, limitOffer, useAccount, type LimitOffer } from "../store/accountStore"
+import { copilotVersions } from "../store/historyActions"
 import { editingPaused, editingResumes, useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
@@ -30,7 +31,7 @@ const PAUSE_WAIT_MS = 120_000
 const PAUSED_RESULT =
   "Editing is paused because the user's latest changes haven't reached storage yet (offline, or the server isn't answering), so this change was not applied. Don't call more tools: tell the user to ask again once the strip under the top bar is gone."
 
-const SYSTEM_PROMPT = `You are Sakura, the design copilot inside Cherry Blossom, a browser-based schematic and PCB editor. You change the user's open project only through the tools; every tool call is applied immediately and can be undone by the user.
+const SYSTEM_PROMPT = `You are Sakura, the design copilot inside Cherry Blossom, a browser-based schematic and PCB editor. You change the user's open project only through the tools; every tool call is applied immediately and can be undone by the user, and by you with undo.
 
 ${DESIGN_GUIDE}
 
@@ -106,6 +107,8 @@ export interface ToolSet {
   check?: (project: Project) => string | null
   /** Asked after each round of tool calls: a message ends the request there, and is shown. */
   halt?: () => string | null
+  /** With `oneUndoStep`: what the step did, as Sakura's `undo` names it. */
+  label?: string
 }
 
 export interface RunOptions {
@@ -254,7 +257,16 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
           held = lease
           leases.add(lease)
         }
-        const context: ToolContext = { parts: supplierParts(), signal, looks, selection: () => useUi.getState().selection, start: project, sheet: { shown: () => useUi.getState().sheet, show: (path) => useUi.getState().setSheet(path) } }
+        const context: ToolContext = {
+          parts: supplierParts(),
+          signal,
+          looks,
+          selection: () => useUi.getState().selection,
+          start: project,
+          sheet: { shown: () => useUi.getState().sheet, show: (path) => useUi.getState().setSheet(path) },
+          versions: copilotVersions(projectId),
+          undo: (steps) => useProjectStore.getState().undoOwn("sakura", steps),
+        }
         // A request's own tool set works on the project alone and runs at once; the whole kit's tools
         // with lookups await them first, then make their change to the project as it is then: an
         // edit the user made meanwhile stays.
@@ -273,8 +285,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
         if (changed && together) working = outcome.project
         else if (changed) {
           const base = outcome.base
-          // Commit only onto the project the change was made to; a newer edit can't be overwritten.
-          const apply = () => useProjectStore.getState().commit((p) => (p === base ? outcome.project : p))
+          // Commit only onto the project the change was made to; a newer edit can't be overwritten. Marked as Sakura's, so its `undo` may take it back.
+          const apply = () => useProjectStore.getState().commit((p) => (p === base ? outcome.project : p), { by: "sakura", label: outcome.summary })
           apply()
           // Refused with the project as it was: editing is paused, or was a moment ago. Wait for it, then make the change as meant.
           if (useProjectStore.getState().project === base && (await editingResumes(PAUSE_WAIT_MS, signal))) apply()
@@ -288,7 +300,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
           }
         }
         history.push({ role: "tool", tool_call_id: call.id, content: outcome.result })
-        onEvent({ type: "tool_end", id: call.id, name, summary: outcome.summary, isError: outcome.isError, changed })
+        // An undo changed the project itself, with nothing to commit, and is still a change in the transcript.
+        onEvent({ type: "tool_end", id: call.id, name, summary: outcome.summary, isError: outcome.isError, changed: changed || (outcome.applied === true && !outcome.isError) })
         held?.release()
         if (held) leases.delete(held)
       }
@@ -338,7 +351,7 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
       if (outOfSteps) stopped()
       onEvent({ type: "error", message: problem })
     } else if (working !== project) {
-      useProjectStore.getState().commit(() => working)
+      useProjectStore.getState().commit(() => working, { by: "sakura", label: tools?.label ?? "Sakura's changes" })
       // Refused while editing is paused: nothing was kept, and saying it was done would be wrong.
       if (useProjectStore.getState().project === project) {
         failed = true

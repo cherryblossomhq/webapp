@@ -31,6 +31,7 @@ Parts:
 
 Good practice:
 - Call get_design before editing an existing design.
+- Before a change you may want to take back (re-placing or re-routing the board, clearing routing, a big rework), save_version with a short name. To go back, restore that version, or one list_versions shows, with restore_version: never rebuild an earlier state by hand, part by part and trace by trace.
 - Give every IC its supply and ground connections and a 100nF decoupling capacitor per supply pin; regulators get input and output capacitors.
 - Choose sensible values (for example an LED series resistor for about 5 mA) and say what you assumed.
 - After a batch of edits, call run_checks and fix any unconnected pins you introduced. Leave PCB layout alone unless the user asks for it.

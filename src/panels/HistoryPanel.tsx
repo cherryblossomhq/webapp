@@ -1,6 +1,6 @@
 import { PanelLeftClose, Tag } from "lucide-react"
 import { useEffect, useState } from "react"
-import { changeLines, versionLabel, versionTime, type HistoryState, type VersionInfo, type VersionPerson } from "../store/history"
+import { changeLines, versionBy, versionLabel, versionTime, type HistoryState, type VersionInfo, type VersionPerson } from "../store/history"
 import { leavePreview, previewVersion } from "../store/historyActions"
 import { projectStorage, useProjectStore } from "../store/projectStore"
 import { uiApi } from "../store/uiStore"
@@ -9,7 +9,8 @@ import { Button, IconButton } from "../ui/controls"
 
 // Version history as a column on the left, like the sheet tree: the project as it is now, then the copies kept as it was edited, newest first, each with
 // when, who and what changed since the one before. A click shows a version in the canvas, read-only (`PreviewBanner` is the way back, and the restore).
-// Editors can name the current state, or any version, and a named version is kept for good.
+// Editors can name the current state, or any version, and a named version is kept for good. A checkpoint Sakura or the user's own AI assistant saved
+// (`save_version`), or kept before restoring one (`restore_version`), says so under its time.
 
 const PAGE = 50
 
@@ -183,7 +184,12 @@ export function HistoryPanel() {
                   {v.kind === "named" && <Tag size={12} className="shrink-0 text-brand" aria-label="Named version" />}
                   <span className="min-w-0 truncate">{versionLabel(v)}</span>
                 </span>
-                {(v.name || v.kind === "restore") && <span className={`text-[11.5px] ${selected ? "opacity-80" : "text-ink-3"}`}>{versionTime(v.at, now)}</span>}
+                {(v.name || v.kind === "restore") && (
+                  <span className={`text-[11.5px] ${selected ? "opacity-80" : "text-ink-3"}`}>
+                    {versionTime(v.at, now)}
+                    {v.via && ` · ${versionBy(v)}`}
+                  </span>
+                )}
                 <Changes version={v} />
                 <People people={v.kind === "restore" && v.by ? [v.by] : v.editors} />
               </button>

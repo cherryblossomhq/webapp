@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "f015a2a761ce96ad630ea0f210db960d4bbcbb9c"
+const BASE_SHA = "e80dab71ce61e0a1503ff15b3993e927ac54d1ef"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -19,8 +19,10 @@ const BASE_SHA = "f015a2a761ce96ad630ea0f210db960d4bbcbb9c"
  * get_wiring and draw_wiring, which an assistant laying out a power board had none of.
  * Then 211 longer: set_clearance_rule for a part whose own pins sit closer than its class allows, or one pair of nets, which an assistant
  * on a mains board had no way to set.
+ * Then 325 longer: save a version before a change that may be taken back and restore it to go back, never rebuild by hand, and that
+ * Sakura can undo its own changes; on October 31 most of a session's replies were Sakura rebuilding earlier states by hand.
  */
-const BASE_CHARS = 11195
+const BASE_CHARS = 11520
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -64,6 +66,11 @@ const DESIGN_PARTS_GROWTH = 330
  * which it learned only by placing the part. The budget below was raised by exactly this.
  */
 const CLEARANCE_RULES_GROWTH = 1180
+/**
+ * What going back asked for, in bytes (2165): `save_version`, `list_versions`, `restore_version` and `undo`, the checkpoints and undo a
+ * session that rebuilt earlier states by hand 110 times in 212 replies had none of. The budget below was raised by exactly this.
+ */
+const VERSION_TOOLS_GROWTH = 2165
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -97,6 +104,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH).toBeLessThan(2100)
   })
 })

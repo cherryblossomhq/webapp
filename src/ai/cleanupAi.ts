@@ -220,6 +220,7 @@ export function applySession(plan: ProposedPlan): ApplySession {
     tools: {
       definitions,
       oneUndoStep: true,
+      label: "Grouped and tidied the schematic (Clean up with AI)",
       // The plan is applied whole, grouped and tidied, or not at all.
       check: (project) => planProblem(project, plan) ?? (tidied ? null : "Sakura did not tidy the sheet, so nothing was changed."),
       run: (project, name, input, context) => {

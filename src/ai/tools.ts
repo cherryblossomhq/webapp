@@ -74,6 +74,7 @@ import { createPartTool, findPartTool, getPartDataTool, verifyPartsTool } from "
 import { designDrawings, drawingsMore, drawingToolLabel, drawingToolSpecs } from "./drawingTools"
 import { arrangeBlocksTool } from "./arrangeTool"
 import { drawWiringTool, editNetTool, getWiringTool } from "./wiringTools"
+import { VERSION_TOOLS } from "./versionTools"
 import { fail, ok, pinList, stringProps, type JsonSchema, type ToolContext, type ToolInput, type ToolOutcome, type ToolSpec } from "./toolKit"
 
 export type { JsonSchema, ToolContext, ToolInput, ToolOutcome } from "./toolKit"
@@ -2172,6 +2173,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   setBoardTool,
   setRulesTool,
   ...pcbToolSpecs,
+  ...VERSION_TOOLS,
 ]
 
 const specByName = new Map(TOOL_SPECS.map((t) => [t.name, t]))
@@ -2390,6 +2392,14 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return "Routing the board"
     case "set_pour":
       return `Pouring ${String(i.net ?? "copper")}`
+    case "save_version":
+      return `Saving the version "${String(i.name ?? "")}"`
+    case "list_versions":
+      return "Reading the version history"
+    case "restore_version":
+      return "Restoring a version"
+    case "undo":
+      return typeof i.steps === "number" && i.steps > 1 ? `Undoing ${i.steps} changes` : "Undoing the last change"
     default:
       return drawingToolLabel(name, i) ?? pcbToolLabel(name, i) ?? name
   }
@@ -2440,6 +2450,13 @@ export function toolPhase(name: string): string {
     case "set_clearance_rule":
     case "draw_trace":
       return "Routing"
+    case "list_versions":
+      return "Reading"
+    case "save_version":
+      return "Saving a version"
+    case "restore_version":
+    case "undo":
+      return "Going back"
     default:
       return "Working"
   }

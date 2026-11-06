@@ -137,7 +137,6 @@ export function CopilotPanel() {
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-surface">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line pl-3.5 pr-1.5">
-        <img src="/logo.svg" alt="" className="size-4 shrink-0" />
         <h2 className="text-[13px] font-[650] text-ink">Sakura</h2>
         {account && model && <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />}
         <div className="ml-auto flex items-center">

@@ -120,6 +120,12 @@ export const useCopilot = create<CopilotState>((set, get) => {
     return chatId
   }
 
+  /** Whether the chat a project's panel shows is still being read: nothing is sent to it until it is. Another chat being read meanwhile doesn't hold the one shown up. */
+  const openingShown = (projectId: string) => {
+    const { opening, active } = get()
+    return opening !== null && active[projectId] === opening
+  }
+
   /** The chat that holds an entry: entry ids are this tab's, never reused. */
   const chatWith = (entryId: number) => Object.keys(get().threads).find((id) => get().threads[id].entries.some((e) => e.id === entryId)) ?? null
 
@@ -209,7 +215,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       set((s) => ({ seeds: Object.fromEntries(Object.entries(s.seeds).filter(([id]) => id !== projectId)) }))
     },
     send: (projectId, text) => {
-      if (get().runningProject || get().opening) return
+      if (get().runningProject || openingShown(projectId)) return
       const chatId = ensureChat(projectId)
       const controller = new AbortController()
       update(chatId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text }])
@@ -219,7 +225,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       void runCopilot(text, { signal: controller.signal, onEvent: (e) => apply(chatId, e), chat: chatId })
     },
     startCleanup: (projectId) => {
-      if (get().runningProject || get().opening) return
+      if (get().runningProject || openingShown(projectId)) return
       const chatId = ensureChat(projectId)
       const open = useProjectStore.getState().project
       if (open?.id === projectId && !loosePartRefs(open).length) {
@@ -258,7 +264,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
       const chatId = chatWith(entryId)
       const entry = chatId ? get().threads[chatId].entries.find((e) => e.kind === "plan" && e.id === entryId) : undefined
       const project = useProjectStore.getState().project
-      if (!chatId || entry?.kind !== "plan" || entry.status !== "pending" || project?.id !== projectId) return
+      // A chat being read again from storage is replaced when it comes, run and all.
+      if (!chatId || get().opening === chatId || entry?.kind !== "plan" || entry.status !== "pending" || project?.id !== projectId) return
       const setStatus = (status: PlanStatus) =>
         update(chatId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId ? { ...e, status } : e)))
       // The sheet may have been edited since the plan was made: it is checked again before anything runs.
@@ -318,7 +325,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     },
     cancelPlan: (_projectId, entryId) => {
       const chatId = chatWith(entryId)
-      if (!chatId) return
+      if (!chatId || get().opening === chatId) return
       update(chatId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId && e.status === "pending" ? { ...e, status: "cancelled" } : e)))
       void persist(chatId)
     },
@@ -388,7 +395,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
 /** Show the copilot and send it a request for the open project. False when it is busy. */
 export function askCopilot(text: string): boolean {
   const projectId = useProjectStore.getState().project?.id
-  if (!projectId || useCopilot.getState().runningProject || useCopilot.getState().opening) return false
+  const { runningProject, opening, active } = useCopilot.getState()
+  if (!projectId || runningProject || (opening !== null && active[projectId] === opening)) return false
   useUi.getState().setCopilotOpen(true)
   useCopilot.getState().send(projectId, text)
   return true

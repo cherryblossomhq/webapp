@@ -116,13 +116,19 @@ export function CopilotPanel() {
     setDraft("")
   }
 
+  // Each pick and new chat counts, so a chat that fails to open after another was picked says nothing over that one.
+  const picks = useRef(0)
   const pick = (chatId: string) => {
     setHistoryOpen(false)
     setNotice(null)
-    void openChat(projectId, chatId).then(setNotice)
+    const n = ++picks.current
+    void openChat(projectId, chatId).then((why) => {
+      if (n === picks.current) setNotice(why)
+    })
   }
 
   const startNew = () => {
+    picks.current++
     setNotice(null)
     newChat(projectId)
     inputRef.current?.focus()

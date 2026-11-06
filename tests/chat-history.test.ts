@@ -284,6 +284,27 @@ describe("Sakura's chats", () => {
     expect(store().threads[second].entries.map((e) => e.kind === "assistant" && e.text).filter(Boolean)).toEqual(["Two."])
   })
 
+  it("takes a message in a new chat while another chat is still being read", async () => {
+    await ask("add an LED", "Added D1.")
+    const led = store().active[projectId]
+    reloadTab()
+    // Storage is slow to give the chat back: the user starts a new chat meanwhile.
+    let release: () => void = () => {}
+    const slow: ChatSource = { ...source, load: (id, chatId) => new Promise((resolve) => (release = () => resolve(source.load(id, chatId)))) }
+    connectProjectStorage({ chats: slow } as unknown as ProjectStorage)
+    const opened = store().openChat(projectId, led)
+    expect(store().opening).toBe(led)
+    store().newChat(projectId)
+    await ask("say hi", "Hi.")
+    expect(shown()).toEqual(["user: say hi", "assistant: Hi."])
+    release()
+    expect(await opened).toBeNull()
+    expect(store().opening).toBeNull()
+    // The chat read late is kept, and the one shown stays shown.
+    expect(store().threads[led].entries.map((e) => e.kind)).toEqual(["user", "assistant"])
+    expect(shown()).toEqual(["user: say hi", "assistant: Hi."])
+  })
+
   it("deletes a chat for good, and says so when it is opened from an old list", async () => {
     await ask("add an LED", "Added D1.")
     const chatId = store().active[projectId]

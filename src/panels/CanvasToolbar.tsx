@@ -478,7 +478,7 @@ export function PcbToolbar() {
           <IconButton label="Select and move" shortcut="S" active={tool === "select"} onClick={() => setTool("select")}>
             <MousePointer2 size={16} />
           </IconButton>
-          <IconButton label="Route trace" shortcut="X" disabled={viewer} active={tool === "route"} onClick={() => setTool("route")}>
+          <IconButton label="Route trace" shortcut="W" disabled={viewer} active={tool === "route"} onClick={() => setTool("route")}>
             <Route size={16} />
           </IconButton>
           <IconButton label="Place via" shortcut="V" disabled={viewer} active={tool === "via"} onClick={() => setTool("via")}>

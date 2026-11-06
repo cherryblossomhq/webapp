@@ -951,7 +951,7 @@ export function PcbEditor() {
       else if (!viewer && key === DIMENSION_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "dimension" ? "select" : "dimension")
       else if (!viewer && key === TEXT_TOOL_KEY.toLowerCase() && !e.altKey) uiApi().setPcbTool(tool === "text" ? "select" : "text")
       else if (!viewer && drawKey) uiApi().setPcbTool(tool === drawKey ? "select" : drawKey)
-      else if (key === "x" && !viewer) uiApi().setPcbTool("route")
+      else if (key === "w" && !viewer) uiApi().setPcbTool("route")
       else if (key === "v") uiApi().setPcbTool(tool === "select" && !viewer ? "via" : "select")
       else if (key === "s") uiApi().setPcbTool("select")
       else if (key === "l") uiApi().setActiveLayer(nextCopperLayer(projectApi().project!, activeLayerNow(), e.shiftKey ? -1 : 1))

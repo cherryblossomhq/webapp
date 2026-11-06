@@ -4,6 +4,7 @@ import { editingPaused, editingResumes, useProjectStore } from "../store/project
 import { useUi } from "../store/uiStore"
 import { ManagedAiError, streamChat, type ChatMessage, type FailureKind } from "./managedAi"
 import type { Project } from "../model/types"
+import type { ChatConversation } from "./chatFile"
 import { acquireBoard, wholeBoardAction, type BoardLease } from "../store/boardLease"
 import { supplierParts } from "./supplierParts"
 import { createRepeatGuard } from "./repeatGuard"
@@ -66,16 +67,23 @@ export type CopilotEvent =
   | { type: "error"; message: string; kind?: FailureKind; offer?: LimitOffer }
   | { type: "done"; stopReason: string | null }
 
-interface Conversation {
-  messages: ChatMessage[]
-  /** Groups the conversation's requests into one trace; also the provider's cache affinity key. */
-  id: string
+/**
+ * What the model has been told in each chat, by the chat's id (`RunOptions.chat`). `id` groups the conversation's
+ * requests into one trace and is the provider's cache affinity key.
+ */
+const conversations = new Map<string, ChatConversation>()
+
+/** Forget a chat's conversation: its next request starts a new one. */
+export function clearHistory(chat: string) {
+  conversations.delete(chat)
 }
 
-const conversations = new Map<string, Conversation>()
+/** A chat's conversation as it is now, to store; null when it has none. */
+export const conversationOf = (chat: string): ChatConversation | null => conversations.get(chat) ?? null
 
-export function clearHistory(projectId: string) {
-  conversations.delete(projectId)
+/** Carry on a stored chat: its next request continues this conversation. */
+export function restoreConversation(chat: string, conversation: ChatConversation) {
+  conversations.set(chat, { id: conversation.id, messages: [...conversation.messages] })
 }
 
 function parseArguments(raw: string): { input: unknown } | { error: string } {
@@ -116,10 +124,12 @@ export interface RunOptions {
   onEvent: (e: CopilotEvent) => void
   /** The tools on offer; all of them when absent. */
   tools?: ToolSet
+  /** The chat this request belongs to (`store/chats.ts`), whose conversation it continues; the open project's id when absent. */
+  chat?: string
 }
 
 /** Send one user message and run the tool loop until the model finishes, errors or is stopped. */
-export async function runCopilot(prompt: string, { signal, onEvent, tools }: RunOptions): Promise<void> {
+export async function runCopilot(prompt: string, { signal, onEvent, tools, chat }: RunOptions): Promise<void> {
   const finish = (stopReason: string | null) => onEvent({ type: "done", stopReason })
   const project = useProjectStore.getState().project
   if (!project) {
@@ -147,8 +157,9 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools }: Run
   }
 
   const projectId = project.id
-  const conversation = conversations.get(projectId) ?? { messages: [], id: crypto.randomUUID() }
-  conversations.set(projectId, conversation)
+  const key = chat ?? projectId
+  const conversation = conversations.get(key) ?? { messages: [], id: crypto.randomUUID() }
+  conversations.set(key, conversation)
   const history = conversation.messages
   const startLength = history.length
   history.push({ role: "user", content: prompt })

@@ -17,7 +17,7 @@ import { clearHistory } from "../src/ai/copilot"
 import { connectManagedAi } from "../src/ai/managedAi"
 import type { Project } from "../src/model/types"
 import { useAccount } from "../src/store/accountStore"
-import { useCopilot, type Entry } from "../src/store/copilotStore"
+import { activeEntries, useCopilot, type Entry } from "../src/store/copilotStore"
 import { useCleanup } from "../src/editor/schematic/cleanupAction"
 import { cleanupSummary } from "../src/model/cleanup"
 import { useProjectStore } from "../src/store/projectStore"
@@ -63,7 +63,7 @@ let requests: Request[] = []
 let script: (() => Response)[] = []
 
 const PLAN = { blocks: BLOCKS("USB INPUT").map(([name, refs]) => ({ name, refs })) }
-const thread = (id: string) => useCopilot.getState().threads[id] ?? []
+const thread = (id: string) => activeEntries(useCopilot.getState(), id) ?? []
 const planEntry = (id: string) => thread(id).find((e): e is Extract<Entry, { kind: "plan" }> => e.kind === "plan")
 const settled = () =>
   vi.waitFor(() => {
@@ -84,7 +84,7 @@ beforeEach(() => {
   connectManagedAi({ getAccessToken: async () => "token-1" })
   useAccount.setState({ status: "ready", account: pro, error: null })
   useUi.setState({ settings: { ...DEFAULT_SETTINGS } })
-  useCopilot.setState({ threads: {}, runningProject: null, controller: null, cleanup: null })
+  useCopilot.setState({ threads: {}, active: {}, runningProject: null, runningChat: null, controller: null, cleanup: null })
   vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
     requests.push({ body: JSON.parse(String(init.body)) as Request["body"] })
     const next = script.shift()

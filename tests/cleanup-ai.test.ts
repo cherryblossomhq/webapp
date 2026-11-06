@@ -15,7 +15,7 @@ import { findPart } from "../src/model/library"
 import { normalizeProject } from "../src/model/projectFile"
 import type { Project } from "../src/model/types"
 import { useAccount } from "../src/store/accountStore"
-import { useCopilot, type Entry } from "../src/store/copilotStore"
+import { activeEntries, useCopilot, type Entry } from "../src/store/copilotStore"
 import { useProjectStore } from "../src/store/projectStore"
 import { DEFAULT_SETTINGS } from "../src/store/settings"
 import { useUi } from "../src/store/uiStore"
@@ -75,7 +75,7 @@ const applyCalls: Call[] = [
   { name: "tidy_schematic", input: { whole_sheet: true } },
 ]
 
-const thread = (id: string) => useCopilot.getState().threads[id] ?? []
+const thread = (id: string) => activeEntries(useCopilot.getState(), id) ?? []
 const settled = () =>
   vi.waitFor(() => {
     expect(useCopilot.getState().runningProject).toBeNull()
@@ -113,7 +113,7 @@ beforeEach(() => {
   connectManagedAi({ getAccessToken: async () => "token-1" })
   useAccount.setState({ status: "ready", account: pro, error: null })
   useUi.setState({ settings: { ...DEFAULT_SETTINGS } })
-  useCopilot.setState({ threads: {}, runningProject: null, controller: null, cleanup: null })
+  useCopilot.setState({ threads: {}, active: {}, runningProject: null, runningChat: null, controller: null, cleanup: null })
   vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
     requests.push({ body: JSON.parse(String(init.body)) as Request["body"] })
     const next = script.shift()

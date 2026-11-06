@@ -1,13 +1,15 @@
 import { creditWeightNote, describeManagedModel, modelNameWithWeight } from "@cherryblossom/ai-models"
-import { AlertTriangle, ArrowUp, ArrowUpRight, Boxes, Check, CornerDownRight, Loader2, LogIn, PanelLeftClose, RotateCcw, Sparkles, Square } from "lucide-react"
+import { AlertTriangle, ArrowUp, ArrowUpRight, Boxes, Check, CornerDownRight, History, Loader2, LogIn, MessageSquare, PanelLeftClose, Search, Sparkles, Square, SquarePen, Trash2 } from "lucide-react"
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { managedAiHost, type FailureKind } from "../ai/managedAi"
 import { copilotAccess, copilotModel, useAccount, type CopilotAccess, type LimitOffer } from "../store/accountStore"
-import { useCopilot, type Entry } from "../store/copilotStore"
+import type { ChatSummary } from "../store/chats"
+import { activeEntries, useCopilot, type Entry } from "../store/copilotStore"
 import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
-import { Button, IconButton } from "../ui/controls"
+import { Button, IconButton, useDismiss } from "../ui/controls"
 import { AssistantChip } from "./AssistantChip"
+import { ago } from "./assistantActivity"
 import { OwnAiNotice } from "./OwnAiNotice"
 
 const SUGGESTIONS = [
@@ -25,9 +27,17 @@ export function CopilotPanel() {
   const preferred = useUi((s) => s.settings.model)
   const status = useAccount((s) => s.status)
   const account = useAccount((s) => s.account)
-  const entries = useCopilot((s) => (projectId ? s.threads[projectId] : undefined)) ?? EMPTY
+  const entries = useCopilot((s) => (projectId ? activeEntries(s, projectId) : undefined)) ?? EMPTY
+  const activeChat = useCopilot((s) => (projectId ? s.active[projectId] : undefined)) ?? null
   const runningProject = useCopilot((s) => s.runningProject)
-  const { send, stop, clear } = useCopilot.getState()
+  const runningChat = useCopilot((s) => s.runningChat)
+  const opening = useCopilot((s) => s.opening !== null && s.opening === activeChat)
+  const { send, stop, newChat, openChat } = useCopilot.getState()
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // Why a chat didn't open, until another is picked.
+  const [notice, setNotice] = useState<string | null>(null)
+  const historyRef = useRef<HTMLDivElement>(null)
+  useDismiss(historyRef, historyOpen, () => setHistoryOpen(false))
   // A request handed over from the website's hero starts in the composer, for the user to send.
   const [draft, setDraft] = useState(() => (projectId ? (useCopilot.getState().seeds[projectId] ?? "") : ""))
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -39,6 +49,10 @@ export function CopilotPanel() {
 
   useEffect(() => {
     if (projectId) useCopilot.getState().takeSeed(projectId)
+  }, [projectId])
+
+  useEffect(() => {
+    if (projectId) return useCopilot.getState().watchChats(projectId)
   }, [projectId])
 
   const access = account ? copilotAccess(account) : null
@@ -64,7 +78,7 @@ export function CopilotPanel() {
   const planGated = access === "upgrade" || access === "unavailable"
   const running = runningProject !== null
 
-  const runningHere = !!projectId && runningProject === projectId
+  const runningHere = runningChat !== null && runningChat === activeChat
   const last = entries[entries.length - 1]
   const limitOffered = last?.kind === "error" && !!last.offer
 
@@ -96,9 +110,21 @@ export function CopilotPanel() {
 
   const submit = (text = draft) => {
     const trimmed = text.trim()
-    if (!trimmed || running || gate) return
+    if (!trimmed || running || gate || opening) return
     send(projectId, trimmed)
     setDraft("")
+  }
+
+  const pick = (chatId: string) => {
+    setHistoryOpen(false)
+    setNotice(null)
+    void openChat(projectId, chatId).then(setNotice)
+  }
+
+  const startNew = () => {
+    setNotice(null)
+    newChat(projectId)
+    inputRef.current?.focus()
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -109,15 +135,22 @@ export function CopilotPanel() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-surface">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-surface">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line pl-3.5 pr-1.5">
         <img src="/logo.svg" alt="" className="size-4 shrink-0" />
         <h2 className="text-[13px] font-[650] text-ink">Sakura</h2>
         {account && model && <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />}
         <div className="ml-auto flex items-center">
-          <IconButton label="New conversation" disabled={running || !entries.length} onClick={() => clear(projectId)}>
-            <RotateCcw size={15} />
+          <IconButton label="New chat" disabled={!entries.length && !opening} onClick={startNew}>
+            <SquarePen size={15} />
           </IconButton>
+          {/* Not positioned: the list opens across the panel, under its header. */}
+          <div ref={historyRef}>
+            <IconButton label="Chat history" active={historyOpen} aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}>
+              <History size={15} />
+            </IconButton>
+            {historyOpen && <ChatHistory projectId={projectId} activeChat={activeChat} onPick={pick} />}
+          </div>
           <IconButton label="Hide Sakura" shortcut="⌘L" onClick={() => useUi.getState().setCopilotOpen(false)}>
             <PanelLeftClose size={16} />
           </IconButton>
@@ -125,8 +158,24 @@ export function CopilotPanel() {
       </div>
 
       <div ref={scrollRef} className="scroll-thin min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        {entries.length === 0 ? (
-          <EmptyState gate={gate} unreachable={status === "error"} onPick={submit} />
+        {notice && (
+          <div role="alert" className="mb-2.5 flex items-start gap-1.5 rounded-[var(--radius-ctl)] bg-danger-soft px-2.5 py-2 text-[12px] text-danger">
+            <AlertTriangle size={13} className="mt-px shrink-0" />
+            <span className="min-w-0 break-words">{notice}</span>
+          </div>
+        )}
+        {opening && entries.length === 0 ? (
+          <div className="flex items-center gap-2 pt-2 text-[12px] text-ink-3" aria-live="polite">
+            <Loader2 size={13} className="animate-spin" />
+            Opening chat
+          </div>
+        ) : entries.length === 0 ? (
+          <EmptyState
+            gate={gate}
+            unreachable={status === "error"}
+            onPick={submit}
+            recent={<RecentChats projectId={projectId} onPick={pick} onAll={() => setHistoryOpen(true)} />}
+          />
         ) : (
           <div className="flex flex-col gap-2.5">
             {entries.map((entry) => (
@@ -151,7 +200,7 @@ export function CopilotPanel() {
             ref={inputRef}
             value={draft}
             rows={1}
-            disabled={!!gate}
+            disabled={!!gate || opening}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder={gate === "signin" ? "Sign in to use Sakura" : gate ? "Not included in your plan" : "Describe a circuit or a change"}
@@ -165,7 +214,7 @@ export function CopilotPanel() {
           ) : (
             <IconButton
               label="Send"
-              disabled={!draft.trim() || running || !!gate}
+              disabled={!draft.trim() || running || !!gate || opening}
               onClick={() => submit()}
               className="shrink-0 !bg-ink !text-surface hover:!bg-ink/85 disabled:!bg-chrome-2 disabled:!text-ink-3"
             >
@@ -175,7 +224,9 @@ export function CopilotPanel() {
         </div>
         <p className="mt-1.5 text-[11px] text-ink-3">
           {running && !runningHere
-            ? "Sakura is busy in another project."
+            ? runningProject === projectId
+              ? "Sakura is busy in another chat."
+              : "Sakura is busy in another project."
             : "Enter to send, Shift+Enter for a new line. Changes can be undone."}
         </p>
       </div>
@@ -184,6 +235,120 @@ export function CopilotPanel() {
 }
 
 const EMPTY: Entry[] = []
+
+/** The project's chats, newest first, to pick one to read again or carry on. A chat is deleted on a second press. */
+function ChatHistory({ projectId, activeChat, onPick }: { projectId: string; activeChat: string | null; onPick: (chatId: string) => void }) {
+  const chats = useCopilot((s) => s.chats[projectId]) ?? null
+  const runningChat = useCopilot((s) => s.runningChat)
+  const [query, setQuery] = useState("")
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const words = query.trim().toLowerCase()
+  const shown = chats?.filter((c) => c.title.toLowerCase().includes(words)) ?? []
+  const now = Date.now()
+  return (
+    <div
+      role="dialog"
+      aria-label="Chat history"
+      className="absolute inset-x-2 top-11 z-30 flex max-h-[min(440px,70vh)] flex-col overflow-hidden rounded-[10px] border border-line bg-surface shadow-menu"
+    >
+      <div className="flex shrink-0 items-center gap-2 border-b border-line px-2.5">
+        <Search size={13} className="shrink-0 text-ink-3" />
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search chats"
+          aria-label="Search chats"
+          className="h-9 min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-3"
+        />
+      </div>
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1">
+        {chats === null ? (
+          <p className="px-2 py-3 text-[12px] text-ink-3">Loading chats…</p>
+        ) : shown.length === 0 ? (
+          <p className="px-2 py-3 text-[12px] text-ink-3">{words ? "No chat matches." : "No chats yet. What you ask Sakura in this project is kept here."}</p>
+        ) : (
+          <ul aria-label="Chats">
+            {shown.map((chat) => (
+              <li key={chat.id} className={`group flex items-center rounded-[6px] pr-1 ${chat.id === activeChat ? "bg-chrome" : "hover:bg-chrome"}`}>
+                <button
+                  onClick={() => onPick(chat.id)}
+                  aria-current={chat.id === activeChat || undefined}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+                >
+                  <ChatIcon running={chat.id === runningChat} />
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">{chat.title}</span>
+                  <span className="shrink-0 text-[11px] text-ink-3">{ago(chat.updatedAt, now)}</span>
+                </button>
+                {chat.id !== runningChat &&
+                  (confirming === chat.id ? (
+                    <button
+                      autoFocus
+                      onClick={() => {
+                        setConfirming(null)
+                        void useCopilot.getState().deleteChat(projectId, chat.id)
+                      }}
+                      onBlur={() => setConfirming(null)}
+                      className="h-6 shrink-0 rounded-[5px] px-1.5 text-[11.5px] font-medium text-danger hover:bg-danger-soft"
+                    >
+                      Delete
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setConfirming(chat.id)}
+                      aria-label="Delete chat"
+                      title="Delete chat"
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 opacity-0 hover:bg-chrome-2 hover:text-ink focus:opacity-100 group-hover:opacity-100"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  ))}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const ChatIcon = ({ running }: { running: boolean }) =>
+  running ? <Loader2 size={13} className="shrink-0 animate-spin text-ink-3" /> : <MessageSquare size={13} className="shrink-0 text-ink-3" />
+
+const RECENT = 3
+
+/** The newest chats under a new one's welcome, to carry one on in a click. */
+function RecentChats({ projectId, onPick, onAll }: { projectId: string; onPick: (chatId: string) => void; onAll: () => void }) {
+  const chats: ChatSummary[] = useCopilot((s) => s.chats[projectId]) ?? EMPTY_CHATS
+  const runningChat = useCopilot((s) => s.runningChat)
+  if (!chats.length) return null
+  const now = Date.now()
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-ink-3">Recent chats</span>
+        {chats.length > RECENT && (
+          <button onClick={onAll} className="text-[12px] text-ink-3 hover:text-ink">
+            View all ({chats.length})
+          </button>
+        )}
+      </div>
+      {chats.slice(0, RECENT).map((chat) => (
+        <button
+          key={chat.id}
+          onClick={() => onPick(chat.id)}
+          className="flex items-center gap-2 rounded-[var(--radius-ctl)] px-2 py-1.5 text-left transition-colors hover:bg-chrome"
+        >
+          <ChatIcon running={chat.id === runningChat} />
+          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">{chat.title}</span>
+          <span className="shrink-0 text-[11px] text-ink-3">{ago(chat.updatedAt, now)}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+const EMPTY_CHATS: ChatSummary[] = []
 
 /**
  * The plan's models by their product names, with what a weighted one costs in
@@ -290,7 +455,7 @@ function GateNotice({ gate }: { gate: Exclude<Gate, null> }) {
   return <Notice title="Sakura isn't enabled for your account yet">Your boards are still here to edit by hand and export.</Notice>
 }
 
-function EmptyState({ gate, unreachable, onPick }: { gate: Gate; unreachable: boolean; onPick: (s: string) => void }) {
+function EmptyState({ gate, unreachable, onPick, recent }: { gate: Gate; unreachable: boolean; onPick: (s: string) => void; recent: ReactNode }) {
   return (
     <div className="flex flex-col gap-4 pt-2">
       <div>
@@ -300,6 +465,7 @@ function EmptyState({ gate, unreachable, onPick }: { gate: Gate; unreachable: bo
         </p>
       </div>
       {gate && <GateNotice gate={gate} />}
+      {recent}
       {!gate && unreachable && (
         <div className="flex items-center gap-2 rounded-[var(--radius-ctl)] bg-danger-soft px-2.5 py-2 text-[12px] text-danger">
           <AlertTriangle size={13} className="shrink-0" />

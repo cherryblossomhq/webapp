@@ -2,6 +2,7 @@ import { applyChanges, type Change } from "@cherryblossom/project-changes"
 import { uid } from "../lib/id"
 import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject, summarizeProject, type ProjectSummary } from "../model/projectFile"
 import type { Project } from "../model/types"
+import type { ChatSource } from "./chats"
 import type { HistorySource } from "./history"
 import type { LockSource } from "./boardLease"
 import type { PresenceSource } from "./presence"
@@ -66,6 +67,8 @@ export interface ProjectStorage {
   history?: HistorySource
   /** The board lease: one tab at a time runs a whole-board action (route, re-place, tidy). Absent where projects are one person's: every action goes ahead. */
   locks?: LockSource
+  /** Sakura's chats, each user's own per project. Absent, they are kept in the page until it closes. */
+  chats?: ChatSource
 }
 
 /** What someone may do to a project: the owner and editors edit it, viewers look. */

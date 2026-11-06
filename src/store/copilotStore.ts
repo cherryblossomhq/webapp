@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { applySession, CLEANUP_APPLY_PROMPT, CLEANUP_PROMPT, CLEANUP_REQUEST, checkPlan, loosePartRefs, planningSession, type ProposedPlan } from "../ai/cleanupAi"
-import { clearHistory, runCopilot, type CopilotEvent } from "../ai/copilot"
+import { chatTitle, parseChat, serializeChat } from "../ai/chatFile"
+import { clearHistory, conversationOf, restoreConversation, runCopilot, type CopilotEvent } from "../ai/copilot"
 import type { FailureKind } from "../ai/managedAi"
 import type { LimitOffer } from "./accountStore"
 import { openCleanup } from "../editor/schematic/cleanupAction"
@@ -8,7 +9,8 @@ import { hasParts } from "../model/cleanup"
 import { announceTidy } from "../editor/schematic/tidyAction"
 import { toolActivityLabel, toolPhase } from "../ai/tools"
 import { acquireBoard, type BoardLease } from "./boardLease"
-import { useProjectStore } from "./projectStore"
+import { memoryChats, type ChatSource, type ChatSummary } from "./chats"
+import { projectStorage, useProjectStore } from "./projectStore"
 import { useUi } from "./uiStore"
 
 export type Entry =
@@ -23,9 +25,27 @@ export type Entry =
 /** Where a plan is: waiting, being applied, done, turned down, or out of date (the sheet or the conversation moved on). */
 export type PlanStatus = "pending" | "applying" | "applied" | "cancelled" | "stale"
 
+/** A chat opened in this tab: what the panel shows of it, and how it stands with storage. */
+export interface ChatThread {
+  projectId: string
+  entries: Entry[]
+  createdAt: number
+  /** Storage's `updatedAt` for the chat as this tab has it; null until it is first stored. */
+  savedAt: number | null
+}
+
 interface CopilotState {
-  threads: Record<string, Entry[]>
+  /** The chats opened in this tab, by chat id. */
+  threads: Record<string, ChatThread>
+  /** The chat each project's panel shows, by project id. None is a new chat, made by its first message. */
+  active: Record<string, string>
+  /** The user's chats on each project, newest first, as storage lists them (`watchChats`); null while loading. */
+  chats: Record<string, ChatSummary[] | null>
+  /** A chat being read from storage to be shown. */
+  opening: string | null
   runningProject: string | null
+  /** The chat the running request belongs to: its events land there whichever chat is shown. */
+  runningChat: string | null
   /** What Sakura is doing in a word or two while it runs ("Routing", "Thinking"): what collaborators see beside this user. Null when idle. */
   activity: string | null
   controller: AbortController | null
@@ -43,36 +63,97 @@ interface CopilotState {
   applyPlan: (projectId: string, entryId: number) => void
   cancelPlan: (projectId: string, entryId: number) => void
   stop: () => void
-  clear: (projectId: string) => void
+  /** Show a new chat on a project. The one shown before stays in the history. */
+  newChat: (projectId: string) => void
+  /** Show one of a project's chats, read from storage unless this tab has it. Says why when it can't. */
+  openChat: (projectId: string, chatId: string) => Promise<string | null>
+  deleteChat: (projectId: string, chatId: string) => Promise<void>
+  /** Follow the list of a project's chats while the panel shows it. */
+  watchChats: (projectId: string) => () => void
 }
 
 let nextEntryId = 1
+
+/** Where chats are kept when the host keeps none (the harness, the tests): this page, until it closes. */
+const pageChats = memoryChats()
+const chatSource = (): ChatSource => projectStorage()?.chats ?? pageChats
+
+const without = <T,>(record: Record<string, T>, key: string): Record<string, T> => {
+  if (!(key in record)) return record
+  const { [key]: _, ...rest } = record
+  return rest
+}
+
+/** What a project's panel shows: the entries of its active chat. */
+export function activeEntries(state: Pick<CopilotState, "active" | "threads">, projectId: string): Entry[] | undefined {
+  const chatId = state.active[projectId]
+  return chatId ? state.threads[chatId]?.entries : undefined
+}
+
+/** Saves of each chat, one after another, so an older one never lands last. */
+const saving = new Map<string, Promise<void>>()
+
+/** Every chat save under way, for the tests. */
+export const chatSaves = () => Promise.all(saving.values())
 
 /** A plan still waiting when something else is said is out of date: it was made for a conversation that has moved on. */
 const staleAll = (entries: Entry[]): Entry[] => entries.map((e) => (e.kind === "plan" && e.status === "pending" ? { ...e, status: "stale" } : e))
 
 export const useCopilot = create<CopilotState>((set, get) => {
-  const update = (projectId: string, fn: (entries: Entry[]) => Entry[]) =>
-    set((s) => ({ threads: { ...s.threads, [projectId]: fn(s.threads[projectId] ?? []) } }))
+  const update = (chatId: string, fn: (entries: Entry[]) => Entry[]) =>
+    set((s) => {
+      const thread = s.threads[chatId]
+      return thread ? { threads: { ...s.threads, [chatId]: { ...thread, entries: fn(thread.entries) } } } : {}
+    })
 
-  const apply = (projectId: string, e: CopilotEvent) => {
+  /** The chat a project's panel shows, made now when it shows a new one. */
+  const ensureChat = (projectId: string): string => {
+    const shown = get().active[projectId]
+    if (shown && get().threads[shown]) return shown
+    const chatId = crypto.randomUUID()
+    set((s) => ({
+      active: { ...s.active, [projectId]: chatId },
+      threads: { ...s.threads, [chatId]: { projectId, entries: [], createdAt: Date.now(), savedAt: null } },
+    }))
+    return chatId
+  }
+
+  /** The chat that holds an entry: entry ids are this tab's, never reused. */
+  const chatWith = (entryId: number) => Object.keys(get().threads).find((id) => get().threads[id].entries.some((e) => e.id === entryId)) ?? null
+
+  /** Store a chat as it is now, once it has a request in it. Best effort: a chat that doesn't store stays in this tab. */
+  const persist = (chatId: string): Promise<void> => {
+    const write = async () => {
+      const thread = get().threads[chatId]
+      if (!thread || !thread.entries.some((e) => e.kind === "user")) return
+      const content = serializeChat(thread.entries, conversationOf(chatId) ?? { id: chatId, messages: [] })
+      const outcome = await chatSource().save(thread.projectId, { id: chatId, title: chatTitle(thread.entries), content, createdAt: thread.createdAt })
+      if (outcome.ok) set((s) => (s.threads[chatId] ? { threads: { ...s.threads, [chatId]: { ...s.threads[chatId], savedAt: outcome.updatedAt } } } : {}))
+    }
+    const next = (saving.get(chatId) ?? Promise.resolve()).then(write).catch(() => {})
+    saving.set(chatId, next)
+    void next.then(() => saving.get(chatId) === next && saving.delete(chatId))
+    return next
+  }
+
+  const apply = (chatId: string, e: CopilotEvent) => {
     switch (e.type) {
       case "text":
-        update(projectId, (entries) => {
+        update(chatId, (entries) => {
           const last = entries[entries.length - 1]
           if (last?.kind === "assistant") return [...entries.slice(0, -1), { ...last, text: last.text + e.delta }]
           return [...entries, { kind: "assistant", id: nextEntryId++, text: e.delta }]
         })
         break
       case "tool_start":
-        update(projectId, (entries) => [
+        update(chatId, (entries) => [
           ...entries,
           { kind: "tool", id: nextEntryId++, toolId: e.id, label: toolActivityLabel(e.name, e.input), status: "running", changed: false },
         ])
         set({ activity: toolPhase(e.name) })
         break
       case "tool_end":
-        update(projectId, (entries) =>
+        update(chatId, (entries) =>
           entries.map((x) =>
             x.kind === "tool" && x.toolId === e.id
               ? { ...x, label: e.summary, status: e.isError ? "error" : "ok", changed: e.changed }
@@ -82,17 +163,22 @@ export const useCopilot = create<CopilotState>((set, get) => {
         set({ activity: "Thinking" })
         break
       case "error":
-        update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind, ...(e.offer && { offer: e.offer }) }])
+        update(chatId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind, ...(e.offer && { offer: e.offer }) }])
         break
       case "done":
-        set({ runningProject: null, controller: null, activity: null })
+        set({ runningProject: null, runningChat: null, controller: null, activity: null })
+        void persist(chatId)
         break
     }
   }
 
   return {
     threads: {},
+    active: {},
+    chats: {},
+    opening: null,
     runningProject: null,
+    runningChat: null,
     activity: null,
     controller: null,
     seeds: {},
@@ -103,20 +189,24 @@ export const useCopilot = create<CopilotState>((set, get) => {
       set((s) => ({ seeds: Object.fromEntries(Object.entries(s.seeds).filter(([id]) => id !== projectId)) }))
     },
     send: (projectId, text) => {
-      if (get().runningProject) return
+      if (get().runningProject || get().opening) return
+      const chatId = ensureChat(projectId)
       const controller = new AbortController()
-      update(projectId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text }])
-      set({ runningProject: projectId, controller, activity: "Thinking" })
-      void runCopilot(text, { signal: controller.signal, onEvent: (e) => apply(projectId, e) })
+      update(chatId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text }])
+      set({ runningProject: projectId, runningChat: chatId, controller, activity: "Thinking" })
+      // Listed at once, under its first request, and kept should the tab close before Sakura is done.
+      void persist(chatId)
+      void runCopilot(text, { signal: controller.signal, onEvent: (e) => apply(chatId, e), chat: chatId })
     },
     startCleanup: (projectId) => {
-      if (get().runningProject) return
+      if (get().runningProject || get().opening) return
+      const chatId = ensureChat(projectId)
       const open = useProjectStore.getState().project
       if (open?.id === projectId && !loosePartRefs(open).length) {
         // Nothing to propose. With parts, all in blocks already, the free flow's own question is asked
         // (tidy the sheet?); with none there is nothing to do.
         const parts = hasParts(open)
-        update(projectId, (entries) => [
+        update(chatId, (entries) => [
           ...staleAll(entries),
           { kind: "user", id: nextEntryId++, text: CLEANUP_REQUEST },
           {
@@ -128,30 +218,35 @@ export const useCopilot = create<CopilotState>((set, get) => {
           },
         ])
         if (parts) openCleanup()
+        void persist(chatId)
         return
       }
       const controller = new AbortController()
       const session = planningSession()
-      update(projectId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text: CLEANUP_REQUEST }])
-      set({ runningProject: projectId, controller, cleanup: "planning", activity: "Planning blocks" })
-      void runCopilot(CLEANUP_PROMPT, { signal: controller.signal, onEvent: (e) => apply(projectId, e), tools: session.tools }).then(() => {
+      update(chatId, (entries) => [...staleAll(entries), { kind: "user", id: nextEntryId++, text: CLEANUP_REQUEST }])
+      set({ runningProject: projectId, runningChat: chatId, controller, cleanup: "planning", activity: "Planning blocks" })
+      void persist(chatId)
+      void runCopilot(CLEANUP_PROMPT, { signal: controller.signal, onEvent: (e) => apply(chatId, e), tools: session.tools, chat: chatId }).then(() => {
         const plan = session.plan()
-        if (plan && !controller.signal.aborted) update(projectId, (entries) => [...entries, { kind: "plan", id: nextEntryId++, plan, status: "pending" }])
+        if (plan && !controller.signal.aborted) update(chatId, (entries) => [...entries, { kind: "plan", id: nextEntryId++, plan, status: "pending" }])
         set({ cleanup: null })
+        void persist(chatId)
       })
     },
     applyPlan: (projectId, entryId) => {
       if (get().runningProject) return
-      const entry = (get().threads[projectId] ?? []).find((e) => e.kind === "plan" && e.id === entryId)
+      const chatId = chatWith(entryId)
+      const entry = chatId ? get().threads[chatId].entries.find((e) => e.kind === "plan" && e.id === entryId) : undefined
       const project = useProjectStore.getState().project
-      if (entry?.kind !== "plan" || entry.status !== "pending" || project?.id !== projectId) return
+      if (!chatId || entry?.kind !== "plan" || entry.status !== "pending" || project?.id !== projectId) return
       const setStatus = (status: PlanStatus) =>
-        update(projectId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId ? { ...e, status } : e)))
+        update(chatId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId ? { ...e, status } : e)))
       // The sheet may have been edited since the plan was made: it is checked again before anything runs.
       const checked = checkPlan(project, { blocks: entry.plan.blocks.map((b) => ({ name: b.name, refs: b.refs })) })
       if (!("plan" in checked) || checked.plan.blocks.length !== entry.plan.blocks.length) {
         setStatus("stale")
-        update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: "The sheet changed since this plan was made. Run Clean up with AI again." }])
+        update(chatId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: "The sheet changed since this plan was made. Run Clean up with AI again." }])
+        void persist(chatId)
         return
       }
       const controller = new AbortController()
@@ -159,34 +254,37 @@ export const useCopilot = create<CopilotState>((set, get) => {
       let failed = false
       setStatus("applying")
       const applyId = nextEntryId
-      update(projectId, (entries) => [...entries, { kind: "user", id: nextEntryId++, text: "Apply the plan" }])
-      set({ runningProject: projectId, controller, cleanup: "applying", activity: "Tidying" })
+      update(chatId, (entries) => [...entries, { kind: "user", id: nextEntryId++, text: "Apply the plan" }])
+      set({ runningProject: projectId, runningChat: chatId, controller, cleanup: "applying", activity: "Tidying" })
       // Tidying the whole sheet is a whole-board action: held under the board lease from here to the end.
       const begin = (lease: BoardLease) => {
         if (!lease.ok) {
           setStatus("cancelled")
-          update(projectId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: lease.message }])
-          set({ runningProject: null, controller: null, cleanup: null, activity: null })
+          update(chatId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: lease.message }])
+          set({ runningProject: null, runningChat: null, controller: null, cleanup: null, activity: null })
+          void persist(chatId)
           return
         }
         void runCopilot(CLEANUP_APPLY_PROMPT, {
           signal: controller.signal,
           onEvent: (e) => {
             if (e.type === "error") failed = true
-            apply(projectId, e)
+            apply(chatId, e)
           },
           tools: session.tools,
+          chat: chatId,
         }).then(() => {
           setStatus(failed || controller.signal.aborted ? "cancelled" : "applied")
           // Nothing was kept, so the chat must not say it was: Sakura's report is dropped (the panel's line says what happened) and her steps show as not kept.
           if (failed || controller.signal.aborted) {
-            update(projectId, (entries) =>
+            update(chatId, (entries) =>
               entries.flatMap((e): Entry[] =>
                 e.id <= applyId ? [e] : e.kind === "assistant" ? [] : e.kind === "tool" ? [{ ...e, status: "error", changed: false, label: `Not kept: ${e.label}` }] : [e],
               ),
             )
           }
           set({ cleanup: null })
+          void persist(chatId)
           // The sheet is new: the toolbar says so and the view shows all of it.
           const now = useProjectStore.getState().project
           if (now && !failed && !controller.signal.aborted && now !== project) {
@@ -198,20 +296,79 @@ export const useCopilot = create<CopilotState>((set, get) => {
       if (leased instanceof Promise) void leased.then(begin)
       else begin(leased)
     },
-    cancelPlan: (projectId, entryId) =>
-      update(projectId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId && e.status === "pending" ? { ...e, status: "cancelled" } : e))),
-    stop: () => get().controller?.abort(),
-    clear: (projectId) => {
-      clearHistory(projectId)
-      set((s) => ({ threads: { ...s.threads, [projectId]: [] } }))
+    cancelPlan: (_projectId, entryId) => {
+      const chatId = chatWith(entryId)
+      if (!chatId) return
+      update(chatId, (entries) => entries.map((e) => (e.kind === "plan" && e.id === entryId && e.status === "pending" ? { ...e, status: "cancelled" } : e)))
+      void persist(chatId)
     },
+    stop: () => get().controller?.abort(),
+    newChat: (projectId) => {
+      const shown = get().active[projectId]
+      // A chat nothing was said in is never listed: it goes rather than lingering in the tab.
+      const unused = shown && !get().threads[shown]?.entries.length && get().runningChat !== shown
+      set((s) => ({ active: without(s.active, projectId), threads: unused ? without(s.threads, shown) : s.threads }))
+    },
+    openChat: async (projectId, chatId) => {
+      const have = get().threads[chatId]
+      const listed = get().chats[projectId]?.find((c) => c.id === chatId)
+      // Carried on in another tab or on another device since this tab last had it: read again, unless it runs here.
+      const behind = !!have && !!listed && have.savedAt !== null && listed.updatedAt > have.savedAt && get().runningChat !== chatId
+      if (have && !behind) {
+        set((s) => ({ active: { ...s.active, [projectId]: chatId } }))
+        return null
+      }
+      set((s) => ({ active: { ...s.active, [projectId]: chatId }, opening: chatId }))
+      const done = (thread: ChatThread | null) =>
+        set((s) => ({
+          opening: s.opening === chatId ? null : s.opening,
+          threads: thread ? { ...s.threads, [chatId]: thread } : s.threads,
+          // Not opened: the panel goes back to a new chat, unless another was picked meanwhile.
+          active: !thread && s.active[projectId] === chatId && !s.threads[chatId] ? without(s.active, projectId) : s.active,
+        }))
+      try {
+        const stored = await chatSource().load(projectId, chatId)
+        const contents = stored && parseChat(stored.content)
+        if (!stored || !contents) {
+          done(null)
+          return stored ? "This chat can't be read here. Reload the page to get the latest editor." : "That chat is gone."
+        }
+        restoreConversation(chatId, contents.conversation)
+        // Numbered again: entry ids are this tab's own.
+        const entries = contents.entries.map((e) => ({ ...e, id: nextEntryId++ }))
+        done({ projectId, entries, createdAt: stored.createdAt, savedAt: stored.updatedAt })
+        return null
+      } catch {
+        done(null)
+        return "Couldn't open that chat. Check the connection and try again."
+      }
+    },
+    deleteChat: async (projectId, chatId) => {
+      if (get().runningChat === chatId) return
+      clearHistory(chatId)
+      set((s) => ({
+        threads: without(s.threads, chatId),
+        active: s.active[projectId] === chatId ? without(s.active, projectId) : s.active,
+        chats: { ...s.chats, [projectId]: s.chats[projectId]?.filter((c) => c.id !== chatId) ?? null },
+      }))
+      // A save under way would bring it back.
+      await saving.get(chatId)
+      await chatSource().remove(projectId, chatId)
+    },
+    watchChats: (projectId) =>
+      chatSource().watch(
+        projectId,
+        (chats) => set((s) => ({ chats: { ...s.chats, [projectId]: chats } })),
+        // The list stays as it was; the chats in this tab work regardless.
+        () => set((s) => ({ chats: { ...s.chats, [projectId]: s.chats[projectId] ?? [] } })),
+      ),
   }
 })
 
 /** Show the copilot and send it a request for the open project. False when it is busy. */
 export function askCopilot(text: string): boolean {
   const projectId = useProjectStore.getState().project?.id
-  if (!projectId || useCopilot.getState().runningProject) return false
+  if (!projectId || useCopilot.getState().runningProject || useCopilot.getState().opening) return false
   useUi.getState().setCopilotOpen(true)
   useCopilot.getState().send(projectId, text)
   return true

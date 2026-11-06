@@ -95,6 +95,16 @@ export function activeEntries(state: Pick<CopilotState, "active" | "threads">, p
 /** Saves of each chat, one after another, so an older one never lands last. */
 const saving = new Map<string, Promise<void>>()
 
+/**
+ * While Sakura works, the chat is saved again at the first tool call to end this long after its last save: a request
+ * can run for minutes, editing the project as it goes, and a tab closed or crashed meanwhile would otherwise keep only
+ * the message that started it. Each such save rewrites the request's own part alone.
+ */
+export const CHECKPOINT_MS = 15_000
+
+/** When each chat was last saved, for `CHECKPOINT_MS`. */
+const lastSaved = new Map<string, number>()
+
 /** Every chat save under way, for the tests. */
 export const chatSaves = () => Promise.all(saving.values())
 
@@ -135,6 +145,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
    * or storage has moved on (`stale`). Best effort: a chat that doesn't store stays in this tab.
    */
   const persist = (chatId: string): Promise<void> => {
+    lastSaved.set(chatId, Date.now())
     const write = async () => {
       const thread = get().threads[chatId]
       if (!thread || !thread.entries.some((e) => e.kind === "user")) return
@@ -187,6 +198,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
           ),
         )
         set({ activity: "Thinking" })
+        if (Date.now() - (lastSaved.get(chatId) ?? 0) >= CHECKPOINT_MS) void persist(chatId)
         break
       case "error":
         update(chatId, (entries) => [...entries, { kind: "error", id: nextEntryId++, text: e.message, failure: e.kind, ...(e.offer && { offer: e.offer }) }])
@@ -373,6 +385,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     deleteChat: async (projectId, chatId) => {
       if (get().runningChat === chatId) return
       clearHistory(chatId)
+      lastSaved.delete(chatId)
       set((s) => ({
         threads: without(s.threads, chatId),
         active: s.active[projectId] === chatId ? without(s.active, projectId) : s.active,

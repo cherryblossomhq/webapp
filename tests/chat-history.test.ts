@@ -1,13 +1,13 @@
 import type { MeResponse } from "@cherryblossom/api-contract"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { CHAT_FILE_FORMAT, chatTitle, parseChat, serializeChat, TRIMMED_RESULT, type ChatConversation } from "../src/ai/chatFile"
+import { CHAT_FILE_FORMAT, chatTitle, parseChat, serializeChat, TRIMMED_RESULT, UNFINISHED_RESULT, type ChatConversation } from "../src/ai/chatFile"
 import { clearHistory } from "../src/ai/copilot"
 import { connectManagedAi, type ChatMessage } from "../src/ai/managedAi"
 import { OMITTED } from "../src/ai/vision/messages"
 import { createProject } from "../src/model/ops"
 import { useAccount } from "../src/store/accountStore"
 import { memoryChats, type ChatSource, type ChatWrite } from "../src/store/chats"
-import { activeEntries, chatSaves, useCopilot, type Entry } from "../src/store/copilotStore"
+import { activeEntries, chatSaves, CHECKPOINT_MS, useCopilot, type Entry } from "../src/store/copilotStore"
 import { connectProjectStorage, useProjectStore } from "../src/store/projectStore"
 import type { ProjectStorage } from "../src/store/storage"
 import { DEFAULT_SETTINGS } from "../src/store/settings"
@@ -75,6 +75,23 @@ describe("the chat file", () => {
     )
     expect(after.slice(0, 2)).toEqual(before)
     expect(after).toHaveLength(3)
+  })
+
+  it("gives a call still running when it was saved a result, so a chat kept mid-request carries on", () => {
+    const call = (id: string) => ({ id, type: "function" as const, function: { name: "route_pcb", arguments: "{}" } })
+    const messages: ChatMessage[] = [
+      { role: "user", content: "route it" },
+      { role: "assistant", content: null, tool_calls: [call("c1"), call("c2"), call("c3")] },
+      { role: "tool", tool_call_id: "c1", content: "Routed 12 of 14." },
+    ]
+    const read = parseChat(serializeChat([user("route it")], conversation(messages)))!
+    expect(read.conversation.messages.slice(2)).toEqual([
+      { role: "tool", tool_call_id: "c1", content: "Routed 12 of 14." },
+      { role: "tool", tool_call_id: "c2", content: UNFINISHED_RESULT },
+      { role: "tool", tool_call_id: "c3", content: UNFINISHED_RESULT },
+    ])
+    // The tab's own conversation is the request as it stands: its results come as its calls end.
+    expect(messages).toHaveLength(3)
   })
 
   it("fits a long chat: the oldest tool results go first, then the oldest requests, every call keeps its result, and no part moves", () => {
@@ -146,6 +163,9 @@ const account: MeResponse = {
   usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
   onDemand: { available: true, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
 }
+
+const sse = (...chunks: object[]) =>
+  new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } })
 
 const reply = (text: string) =>
   new Response(
@@ -282,6 +302,51 @@ describe("Sakura's chats", () => {
     await chatSaves()
     expect(shown()).toEqual(["user: first", "assistant: One."])
     expect(store().threads[second].entries.map((e) => e.kind === "assistant" && e.text).filter(Boolean)).toEqual(["Two."])
+  })
+
+  it("saves a long request as it goes, so a tab closed midway keeps what Sakura did", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      const turns: ((r: Response) => void)[] = []
+      vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+        sent.push({ messages: JSON.parse(String(init.body)).messages, trace: "" })
+        return new Promise<Response>((resolve) => turns.push(resolve))
+      })
+      const lookAround = (id: string) =>
+        sse(
+          { choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "get_design", arguments: "{}" } }] } }] },
+          { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+        )
+      store().send(projectId, "route the board")
+      const chatId = store().active[projectId]
+      await vi.waitFor(() => expect(turns).toHaveLength(1))
+      await chatSaves()
+      const saves = writes.length
+      // A first round soon after: not saved again.
+      turns[0](lookAround("c1"))
+      await vi.waitFor(() => expect(turns).toHaveLength(2))
+      await chatSaves()
+      expect(writes).toHaveLength(saves)
+      // A round past the checkpoint's time: saved as it stands, the request's own part alone.
+      vi.setSystemTime(Date.now() + CHECKPOINT_MS)
+      turns[1](lookAround("c2"))
+      await vi.waitFor(() => expect(turns).toHaveLength(3))
+      await chatSaves()
+      expect(writes).toHaveLength(saves + 1)
+      expect(writes.at(-1)!.parts.map((p) => p.index)).toEqual([1])
+      expect(store().runningChat).toBe(chatId)
+
+      // The tab is gone: storage has the request so far, a conversation the model takes.
+      const kept = parseChat((await source.load(projectId, chatId))!.parts)!
+      expect(kept.entries.map((e) => e.kind)).toEqual(["user", "tool", "tool"])
+      const roles = kept.conversation.messages.map((m) => m.role)
+      expect(roles).toEqual(["user", "assistant", "tool", "assistant", "tool"])
+      turns[2](reply("Done."))
+      await vi.waitFor(() => expect(store().runningProject).toBeNull())
+      await chatSaves()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("takes a message in a new chat while another chat is still being read", async () => {

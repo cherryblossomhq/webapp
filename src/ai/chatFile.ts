@@ -25,6 +25,9 @@ import { OMITTED } from "./vision/messages"
  *   requests leave what the model is told (the panel still shows them), then the panel's oldest requests go. A request
  *   emptied so keeps its part, so the parts after it keep their numbers and aren't sent again. Every tool call keeps a
  *   result, so the conversation stays one a provider takes.
+ *
+ * And one thing more: **a result for every tool call**, `UNFINISHED_RESULT` for one whose result hadn't come when a
+ * request still running was saved, so a chat kept from a tab closed mid-request carries on like any other.
  */
 
 export const CHAT_FILE_FORMAT = "cherryblossom.chat"
@@ -35,6 +38,9 @@ export const MAX_CHAT_FILE_BYTES = 2_000_000
 
 /** What a tool result shortened to fit says, to the model reading the chat later. */
 export const TRIMMED_RESULT = "[This result was left out of the saved chat to save space. Call the tool again if you need it.]"
+
+/** The result of a call that hadn't run yet when the chat was saved mid-request, and so never did if the tab closed then. */
+export const UNFINISHED_RESULT = "Error: The request ended before this call's result was kept. Read the design again before relying on it."
 
 const MAX_TITLE = 80
 
@@ -82,11 +88,33 @@ function byRequest<T>(items: T[], starts: (item: T) => boolean): T[][] {
 /** A message the user typed, which starts a request (a picture `look` took is a user message too, in parts). */
 const typed = (m: ChatMessage) => m.role === "user" && typeof m.content === "string"
 
-/** One request's messages as they are stored: no pictures, and the reasoning of its last turn alone. The tab's copy is left as it is. */
+/**
+ * Every tool call with a result after it, as a provider requires. A chat saved while a turn's tools run (Sakura's
+ * checkpoints, `persist` in `store/copilotStore.ts`) has calls still waiting for theirs; stored so, a tab closed then
+ * would leave a chat no request could carry on.
+ */
+function withEveryResult(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    out.push(m)
+    if (m.role !== "assistant" || !m.tool_calls?.length) continue
+    const answered = new Set<string>()
+    for (let next = messages[i + 1]; next?.role === "tool"; next = messages[i + 1]) {
+      answered.add(next.tool_call_id)
+      out.push(next)
+      i++
+    }
+    for (const call of m.tool_calls) if (!answered.has(call.id)) out.push({ role: "tool", tool_call_id: call.id, content: UNFINISHED_RESULT })
+  }
+  return out
+}
+
+/** One request's messages as they are stored: no pictures, the reasoning of its last turn alone, and a result for every call. The tab's copy is left as it is. */
 function storedMessages(messages: ChatMessage[]): ChatMessage[] {
   let lastAssistant = -1
   messages.forEach((m, i) => m.role === "assistant" && (lastAssistant = i))
-  return messages.map((m, i): ChatMessage => {
+  return withEveryResult(messages).map((m): ChatMessage => {
     if (m.role === "user" && Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")) {
       const parts: UserContentPart[] = []
       for (const part of m.content) {
@@ -96,7 +124,7 @@ function storedMessages(messages: ChatMessage[]): ChatMessage[] {
       }
       return { role: "user", content: parts }
     }
-    if (m.role === "assistant" && m.reasoning_details && i !== lastAssistant) {
+    if (m.role === "assistant" && m.reasoning_details && m !== messages[lastAssistant]) {
       const { reasoning_details: _, ...rest } = m
       return rest
     }

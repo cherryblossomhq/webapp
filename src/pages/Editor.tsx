@@ -1,5 +1,5 @@
 import { ListChecks, Package, PanelRightClose, SlidersHorizontal, Sparkles } from "lucide-react"
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react"
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react"
 import { PcbEditor } from "../editor/pcb/PcbEditor"
 import { SchematicEditor } from "../editor/schematic/SchematicEditor"
 import { stopCleanup } from "../editor/schematic/cleanupAction"
@@ -27,9 +27,11 @@ import { followLeader, guestName, guestUserId, startPresence, stopFollowing, use
 import { projectApi, projectStorage, useProjectStore } from "../store/projectStore"
 import { sheetUses } from "../model/sheets"
 import { clampLayer } from "../model/stack"
+import { COPILOT_WIDTH } from "../store/settings"
 import { uiApi, useUi, type SidePanel } from "../store/uiStore"
 import { IconButton, Segmented } from "../ui/controls"
 import { ReadOnly } from "../ui/form"
+import { PanelResizer } from "../ui/PanelResizer"
 import { Tooltip } from "../ui/Tooltip"
 
 // three.js is large, and the copilot is only needed once its panel opens; load each when it does.
@@ -127,6 +129,9 @@ function useCollaboration() {
   }, [])
 }
 
+/** The canvas keeps at least this much room when Sakura's panel is dragged wider. */
+const MIN_CANVAS = 360
+
 /** Below the canvas toolbars and the 3D view cube, in the upper half of the edge. */
 const EDGE_TABS_TOP = "top-[max(128px,22%)]"
 
@@ -140,6 +145,11 @@ export function Editor() {
   const copilotOpen = useUi((s) => s.copilotOpen)
   const viewer = useProjectStore((s) => s.role === "viewer")
   const historyOpen = useUi((s) => s.historyOpen) && !!projectStorage()?.history
+  // Sakura's width: the saved one, or where the pointer has it while its edge is dragged.
+  const savedWidth = useUi((s) => s.settings.copilotWidth)
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const copilotWidth = dragWidth ?? savedWidth
+  const mainRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -221,13 +231,25 @@ export function Editor() {
         {historyOpen && <HistoryPanel />}
         {libraryOpen && <LibraryPanel />}
         {copilotOpen && (
-          <aside aria-label="Sakura" className="flex w-[340px] shrink-0 flex-col border-r border-line bg-surface">
+          <aside aria-label="Sakura" className="relative flex max-w-[60vw] shrink-0 flex-col border-r border-line bg-surface" style={{ width: copilotWidth }}>
             <Suspense fallback={<Loading />}>
               <CopilotPanel />
             </Suspense>
+            <PanelResizer
+              label="Resize Sakura"
+              width={copilotWidth}
+              min={COPILOT_WIDTH.min}
+              max={(drawn) => Math.min(COPILOT_WIDTH.max, drawn + (mainRef.current?.clientWidth ?? 0) - MIN_CANVAS)}
+              initial={COPILOT_WIDTH.initial}
+              onResize={setDragWidth}
+              onDone={(w) => {
+                setDragWidth(null)
+                useUi.getState().updateSettings({ copilotWidth: w })
+              }}
+            />
           </aside>
         )}
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main ref={mainRef} className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {view === "schematic" && (
               <>

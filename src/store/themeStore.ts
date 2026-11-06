@@ -15,7 +15,8 @@ function readPref(): ThemePref {
   }
 }
 
-const resolve = (pref: ThemePref): Scheme => (pref === "system" ? (media()?.matches ? "dark" : "light") : pref)
+const systemScheme = (): Scheme => (media()?.matches ? "dark" : "light")
+const resolve = (pref: ThemePref): Scheme => (pref === "system" ? systemScheme() : pref)
 
 function apply(scheme: Scheme) {
   if (typeof document === "undefined") return
@@ -26,7 +27,10 @@ function apply(scheme: Scheme) {
 
 interface ThemeState {
   pref: ThemePref
+  /** What is showing. */
   scheme: Scheme
+  /** What the OS asks for, which "system" follows. */
+  system: Scheme
   setPref: (pref: ThemePref) => void
 }
 
@@ -37,6 +41,7 @@ export const useTheme = create<ThemeState>((set) => {
   return {
     pref,
     scheme,
+    system: systemScheme(),
     setPref: (pref) => {
       try {
         if (pref === "system") localStorage.removeItem(THEME_KEY)
@@ -46,7 +51,7 @@ export const useTheme = create<ThemeState>((set) => {
       }
       const scheme = resolve(pref)
       apply(scheme)
-      set({ pref, scheme })
+      set({ pref, scheme, system: systemScheme() })
     },
   }
 })
@@ -57,7 +62,7 @@ export function watchTheme() {
     const pref = readPref()
     const scheme = resolve(pref)
     apply(scheme)
-    useTheme.setState({ pref, scheme })
+    useTheme.setState({ pref, scheme, system: systemScheme() })
   }
   const mq = media()
   mq?.addEventListener("change", sync)
@@ -71,8 +76,17 @@ export function watchTheme() {
   }
 }
 
-/** Light and dark flip; from "system" this picks the opposite of what is showing. */
-export const toggleTheme = () => {
-  const { scheme, setPref } = useTheme.getState()
-  setPref(scheme === "dark" ? "light" : "dark")
+const flip = (s: Scheme): Scheme => (s === "dark" ? "light" : "dark")
+
+/**
+ * The theme a click on the theme button picks: from "system" the opposite of what the OS shows,
+ * then the other one, then back to "system". The first click always changes the colours, and the
+ * only click that doesn't is the one onto "system" from the scheme the OS already shows.
+ */
+export const nextThemePref = (pref: ThemePref, system: Scheme): ThemePref =>
+  pref === "system" ? flip(system) : pref === system ? "system" : flip(pref)
+
+export const cycleTheme = () => {
+  const { pref, setPref } = useTheme.getState()
+  setPref(nextThemePref(pref, systemScheme()))
 }

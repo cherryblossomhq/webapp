@@ -18,7 +18,6 @@ import { LibraryPanel } from "../panels/LibraryPanel"
 import { PartEditor } from "../panels/PartEditor"
 import { PreviewBanner } from "../panels/PreviewBanner"
 import { SaveNotice } from "../panels/SaveNotice"
-import { SettingsDialog } from "../panels/SettingsDialog"
 import { SheetTabs } from "../panels/SheetTabs"
 import { TopBar } from "../panels/TopBar"
 import { useEditorAccount } from "../store/account"
@@ -317,7 +316,6 @@ export function Editor() {
           </div>
         </aside>
       </div>
-      <SettingsDialog />
       <PartEditor />
     </div>
   )

@@ -114,7 +114,6 @@ interface UiState {
    */
   focusRequest: { x: number; y: number; box?: Box; fit?: boolean; view: View; n: number } | null
   settings: Settings
-  settingsOpen: boolean
   /**
    * The project part open in the part editor (`panels/PartEditor.tsx`), by id, or null; `remove` opens it on the question whether to remove it.
    * Opening one stops placing a part: a save gives the part a new id, and the one in hand would be placed under the old.
@@ -162,7 +161,6 @@ interface UiState {
   setCursor: (c: { x: number; y: number } | null) => void
   focus: (view: View, x: number, y: number, box?: Box, fit?: boolean) => void
   updateSettings: (s: Partial<Settings>) => void
-  setSettingsOpen: (open: boolean) => void
   openPartEditor: (partId: string | null, opts?: { remove?: boolean }) => void
   toggleFolded: (id: string) => void
   setDrawDefaults: (kind: keyof DrawDefaults, patch: Partial<DrawDefaults["text"]>) => void
@@ -199,7 +197,6 @@ export const useUi = create<UiState>((set, get) => ({
   cursor: null,
   focusRequest: null,
   settings: loadSettings(),
-  settingsOpen: false,
   partEditor: null,
   folded: {},
   notice: null,
@@ -261,7 +258,6 @@ export const useUi = create<UiState>((set, get) => ({
     saveSettings(settings)
     set({ settings })
   },
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   openPartEditor: (id, opts) => set(id ? { partEditor: { id, ...(opts?.remove && { remove: true as const }) }, placing: null } : { partEditor: null }),
   toggleFolded: (id) => set({ folded: { ...get().folded, [id]: !get().folded[id] } }),
   setDrawDefaults: (kind, patch) => {

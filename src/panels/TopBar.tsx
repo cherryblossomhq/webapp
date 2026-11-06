@@ -1,4 +1,4 @@
-import { ChevronLeft, Eye, History, Redo2, Settings, Undo2 } from "lucide-react"
+import { ChevronLeft, Eye, History, Redo2, Undo2 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { goHome } from "../App"
 import { useEditorAccount } from "../store/account"
@@ -133,9 +133,6 @@ export function TopBar() {
         </Tooltip>
         <ExportMenu />
         <ThemeButton />
-        <IconButton label="Settings" onClick={() => useUi.getState().setSettingsOpen(true)}>
-          <Settings size={17} />
-        </IconButton>
         <AccountMenu />
       </div>
       {sharing && <ShareDialog onClose={() => setSharing(false)} />}

@@ -74,11 +74,11 @@ const CLEARANCE_RULES_GROWTH = 1180
  */
 const VERSION_TOOLS_GROWTH = 2165
 /**
- * What routing power in traces asked for, in bytes (895): `route_pcb` takes `nets` (299), to route current-carrying nets first, and
+ * What routing power in traces asked for, in bytes (910): `route_pcb` takes `nets` and says a pad joins its pour by a trace too (314), to route current-carrying nets first, and
  * `draw_trace` takes `from` and `to` pins (596), since it took only coordinates and no tool says where a pad's centre is, so an
  * assistant poured its supply nets as polygons instead. The budget below was raised by exactly this.
  */
-const POWER_ROUTING_GROWTH = 895
+const POWER_ROUTING_GROWTH = 910
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 

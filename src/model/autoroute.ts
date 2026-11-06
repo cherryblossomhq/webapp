@@ -9,7 +9,7 @@ import { outlineGeometry, rasterizeInside } from "./outline"
 import { areaDistance, needsZoneEngine, zoneArea, zoneLayers } from "./zones"
 import { withPartZones } from "./partZones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
-import { fillTester, type ZoneFill } from "./pour"
+import type { ZoneFill } from "./pour"
 import { classIndex, hasClearanceRules, hasNetClasses, type ClassIndex } from "./netClasses"
 import { copperLayers } from "./stack"
 import type { CopperLayer, Project, Trace, Vec2, Via } from "./types"
@@ -674,14 +674,16 @@ class Router {
 
   /**
    * A* from the source copper to the target copper on two layers. When `toPour` is set, the
-   * goal is instead any cell on the pour's layer index where a via fits inside the fill.
+   * goal is instead any cell inside a pour's fill where a via fits, on either layer that has one
+   * (`inFill`, by layer index): a trace on the fill's own layer ends in it, one on the other layer
+   * ends in a via into it, whichever is nearer.
    */
   route(
     netName: string,
     source: Shape[],
     target: Shape[] | null,
     width: number,
-    toPour?: { layer: number; inFill: (p: Vec2) => boolean },
+    toPour?: { inFill: (((p: Vec2) => boolean) | null)[] },
   ): RoutedPath | null {
     if (performance.now() > this.deadline) return null
     const net = this.netId(netName)
@@ -707,11 +709,12 @@ class Router {
       const li = node >= n ? 1 : 0
       const i = node - li * n
       if (target) return this.stampTgt[li][i] === tgtStamp
-      if (!toPour || li !== toPour.layer || !this.viaAllowed(i, net, vp)) return false
-      let hit = fillMemo.get(i)
+      const inFill = toPour?.inFill[li]
+      if (!inFill || !this.viaAllowed(i, net, vp)) return false
+      let hit = fillMemo.get(node)
       if (hit === undefined) {
-        hit = toPour.inFill({ x: this.cx(i % nx), y: this.cy(Math.floor(i / nx)) })
-        fillMemo.set(i, hit)
+        hit = inFill({ x: this.cx(i % nx), y: this.cy(Math.floor(i / nx)) })
+        fillMemo.set(node, hit)
       }
       return hit
     }
@@ -1432,7 +1435,7 @@ function attempt(
     return paths.length
   }
 
-  /** Pads of poured nets that the pour does not reach get a short trace and a via into it. */
+  /** Pads of poured nets that the pour does not reach get a short trace into it, on its layer or through a via. */
   const fanout = (only?: Set<string>, stillOpen: Vec2[] = []) => {
     if (!pourNets.size || late()) return 0
     const analysis = analyze()
@@ -1444,7 +1447,10 @@ function attempt(
     const paths: RoutedPath[] = []
     for (const [netId, entry] of islandsByNet(analysis)) {
       if ((only && !only.has(netId)) || !pourNets.has(netId) || (wanted && !wanted.has(netId))) continue
-      const fills = analysis.zoneFills.filter((f) => f.netId === netId)
+      // The pieces of the net's fill on the outer layers (a pour on an inner layer is no place for a via to reach).
+      const zones = new Set(analysis.zoneFills.filter((f) => f.netId === netId).map((f) => f.zoneId))
+      const pieces = analysis.items.filter((it): it is Extract<CopperItem, { kind: "zone" }> => it.kind === "zone" && zones.has(it.zoneId) && outerIndex(it.layers[0]) >= 0)
+      if (!pieces.length) continue
       for (const [root, shapes] of entry.shapes) {
         if (late()) break
         const pad = shapes.find((s): s is Extract<Shape, { kind: "pad" }> => s.kind === "pad")
@@ -1453,19 +1459,18 @@ function attempt(
         if (mode.fine && shapes.some((s) => s.kind === "via")) continue
         // A pad in a scrap of pour that joins nothing is as open as one outside it (fine-pitch mode).
         if (poured.has(root) && !(mode.fine && pad.layers.length === 1 && openEnds.some((e) => samePoint(e, pad.pad)))) continue
-        for (const fill of fills) {
-          // A pour on an inner layer is no place for a via to reach: the router vias to the outer pours only.
-          if (outerIndex(fill.layer) < 0) continue
-          const li = outerIndex(fill.layer)
-          if (pad.layers.includes(fill.layer) && pad.layers.length === 1) continue
-          const testers = fill.polygons.map(fillTester)
-          const inFill = (q: Vec2) => testers.some((t) => t(q))
-          const path = widest(netId, widthsFor(netId), (w) => getRouter().route(netId, shapes, null, w, { layer: li, inFill }))
-          if (path) {
-            paths.push(path)
-            routed++
-            break
-          }
+        // One search for the nearest piece of fill on either layer, but the one the pad is in (a scrap): a pad on a pour's own layer
+        // joins it by a trace on that layer, rather than by a trace over it to the next pad, and any pad joins the
+        // other layer's by a via, whichever is nearer.
+        const inFill = [0, 1].map((li) => {
+          const tests = pieces.filter((it) => outerIndex(it.layers[0]) === li && analysis.island.get(it.id) !== root).map((it) => it.contains)
+          return tests.length ? (q: Vec2) => tests.some((t) => t(q)) : null
+        })
+        if (!inFill.some(Boolean)) continue
+        const path = widest(netId, widthsFor(netId), (w) => getRouter().route(netId, shapes, null, w, { inFill }))
+        if (path) {
+          paths.push(path)
+          routed++
         }
       }
     }

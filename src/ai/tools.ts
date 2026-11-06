@@ -1862,7 +1862,7 @@ export function narrowedAdvice(res: AutorouteResult): string {
 const routePcbTool: ToolSpec = {
   name: "route_pcb",
   description:
-    "Autoroute open ratsnest connections on the two outer layers with vias, keeping existing traces. Lay out the PCB first. nets routes only those nets: route current-carrying nets first, at their set_net_width, so they take the room before the signals, then call again with no nets for the rest. Pads of poured nets drop a via into the pour. Stitching vias are stitched again after routing.",
+    "Autoroute open ratsnest connections on the two outer layers with vias, keeping existing traces. Lay out the PCB first. nets routes only those nets: route current-carrying nets first, at their set_net_width, so they take the room before the signals, then call again with no nets for the rest. Pads of poured nets join the pour by a short trace or a via. Stitching vias are stitched again after routing.",
   input_schema: {
     type: "object",
     properties: { nets: { type: "array", items: { type: "string" }, description: "Only these nets, e.g. [\"VIN\", \"VOUT\"]; every net when omitted" } },

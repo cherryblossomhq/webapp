@@ -100,10 +100,10 @@ describe("Sakura's checkpoints", () => {
     const events = await run("add LEDs, then go back")
     const results = toolResults()
 
-    // The checkpoint is named in the history, as Sakura's, holding D1: this tab's edit landed before it was named.
+    // The checkpoint is named in the history, holding D1: this tab's edit landed before it was named.
     expect(results[1]).toMatch(/^Saved the project as it is now as "One LED" \(version_id v0\)/)
     const checkpoint = memory.versions.find((v) => v.id === "v0")!
-    expect(checkpoint).toMatchObject({ kind: "named", name: "One LED", via: "sakura" })
+    expect(checkpoint).toMatchObject({ kind: "named", name: "One LED" })
     expect(JSON.parse(checkpoint.content).project.components.map((c: { ref: string }) => c.ref)).toEqual(["R1", "D1"])
 
     // undo took back D3 alone, and said so; it is a change in the transcript though nothing was committed for it.
@@ -115,7 +115,7 @@ describe("Sakura's checkpoints", () => {
     expect(results[5]).toMatch(/^Restored the project to the version of .*kept as version v1: restore_version with that id goes back to it, or undo takes this restore back\./)
     expect(refs()).toEqual(["R1", "D1"])
     const backup = memory.versions.find((v) => v.id === "v1")!
-    expect(backup).toMatchObject({ kind: "restore", via: "sakura" })
+    expect(backup).toMatchObject({ kind: "restore" })
     expect(JSON.parse(backup.content).project.components.map((c: { ref: string }) => c.ref)).toEqual(["R1", "D1", "D2"])
     expect(memory.project(id).components.map((c: { ref: string }) => c.ref)).toEqual(["R1", "D1"])
 

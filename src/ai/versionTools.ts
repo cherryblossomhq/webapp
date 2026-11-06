@@ -1,6 +1,6 @@
 import type { Project } from "../model/types"
 import { projectChanges } from "../store/changes"
-import { changeLines, versionBy, type NameOutcome, type VersionInfo } from "../store/history"
+import { changeLines, type NameOutcome, type VersionInfo } from "../store/history"
 import { openStoredProject } from "../store/storage"
 import { fail, ok, type ToolContext, type ToolSpec, type UndoReport } from "./toolKit"
 
@@ -43,7 +43,7 @@ const iso = (at: number) => new Date(at).toISOString()
 
 /** A version as list_versions lists it. */
 function versionRow(v: VersionInfo, now: number) {
-  const by = versionBy(v)
+  const by = v.by && (v.by.name || v.by.email || "Someone")
   const changes = changeLines(v.summary).map((l) => l.text)
   return {
     version_id: v.id,

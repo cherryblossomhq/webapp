@@ -88,16 +88,68 @@ describe("the history panel", () => {
     expect(host.querySelector("[aria-label='Named version']")).not.toBeNull()
   })
 
-  it("says which checkpoints Sakura or an AI assistant saved, and which copy one kept before restoring", async () => {
-    const { memory, id, first } = await setup()
-    memory.snapshot(id, { kind: "named", name: "Before re-routing", by: person("Ada"), via: "sakura" })
-    memory.snapshot(id, { kind: "restore", restoredFromAt: first.at, by: person("Ada"), via: "assistant" })
+  it("renames, forks and deletes a version from its menu, and leaves the project as it is", async () => {
+    const { memory, id, second } = await setup("editor")
     act(() => root.render(<HistoryPanel />))
     await flush()
-    expect(rowOf("Before re-routing")!.textContent).toContain("· Ada with Sakura")
-    expect(rowOf("Before restoring")!.textContent).toContain("· Ada's AI assistant")
-    // A name given by hand says nothing of the kind.
-    expect(rowOf("Sent to fab v2")!.textContent).not.toContain("·")
+    const menu = (label: string) => click(button(new RegExp(`^More actions for ${label}$`)))
+    const type = async (text: string) => {
+      const input = host.querySelector("input[aria-label='Version name']") as HTMLInputElement
+      await act(async () => {
+        input.focus()
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      })
+      await flush()
+    }
+
+    // Rename: typed over the title, kept on Enter.
+    await menu("Sent to fab v2")
+    await click(button("Rename"))
+    expect((host.querySelector("input[aria-label='Version name']") as HTMLInputElement).value).toBe("Sent to fab v2")
+    await type("Fab v2 final")
+    expect(memory.versions.find((v) => v.id === second.id)).toMatchObject({ kind: "named", name: "Fab v2 final" })
+    expect(rowOf("Fab v2 final")).toBeDefined()
+
+    // Fork: a new project of the version, with a link to open it; the open project is untouched.
+    const before = api().project
+    await menu("Fab v2 final")
+    await click(button("Fork to a new project"))
+    await flush()
+    const forkId = [...memory.rows.keys()].find((k) => k !== id)!
+    expect(memory.calls).toContainEqual({ op: "create", name: "Robot (Fab v2 final)" })
+    expect(memory.project(forkId).wires).toHaveLength(2)
+    expect(host.querySelector("[role=status]")!.textContent).toContain("Forked as “Robot (Fab v2 final)”.")
+    expect(host.querySelector("[role=status] a")!.getAttribute("href")).toContain(`/p/${forkId}`)
+    expect(api().project).toBe(before)
+
+    // Delete: asked once more, then gone; the project stays.
+    await menu("Fab v2 final")
+    await click(button("Delete…"))
+    expect(host.textContent).toContain("Delete this version? It can't be brought back.")
+    await click(button("Delete"))
+    await flush()
+    expect(memory.versions.find((v) => v.id === second.id)).toBeUndefined()
+    expect(rowOf("Fab v2 final")).toBeUndefined()
+    expect(memory.project(id).wires).toHaveLength(2)
+
+    // An empty rename takes a name off.
+    memory.snapshot(id, { kind: "named", name: "Checkpoint" })
+    await flush()
+    await menu("Checkpoint")
+    await click(button("Rename"))
+    await type("")
+    expect(memory.versions.at(-1)).toMatchObject({ kind: "auto", name: null })
+  })
+
+  it("offers a viewer only the fork", async () => {
+    await setup("viewer")
+    act(() => root.render(<HistoryPanel />))
+    await flush()
+    await click(button(/^More actions for Sent to fab v2$/))
+    const items = [...host.querySelectorAll("[role=menuitem]")].map((b) => b.textContent)
+    expect(items).toEqual(["Fork to a new project"])
   })
 
   it("lets an editor name the current state, and a viewer not", async () => {

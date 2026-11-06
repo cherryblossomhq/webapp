@@ -11,7 +11,9 @@ import type { Project, Trace, Vec2 } from "./types"
 // - an end held by a pad, a via, a junction of several tracks, an arc or a segment in line with it stays where it is, and a 45° jog joins it to the
 //   segment (square when two 45° jogs would cross);
 // - an end that nothing joins moves with the segment;
-// - another track that ends on the middle of the segment keeps its end on it, its last segment's angle too.
+// - another track that ends on the middle of the segment keeps its end on it, its last segment's angle too;
+// - where another track ends, or a via or pad sits, on the middle of a segment an end slides along, the end stops there as at a corner something
+//   meets, and jogs from it, so the copper is never pulled out from under it.
 // A segment cannot be pulled through itself: past that it stops. A corner of a track can be dragged on its own, and the tracks that end there go
 // with it. A track keeps its lock as it was: reshaping one does not lock it, so Sakura and routing see it as they did before.
 
@@ -68,6 +70,59 @@ export interface SegmentDrag {
   ends: [End, End]
   /** Other tracks ending on the middle of the segment: each such end, where it is, and the point before it on its track. */
   tees: { at: TracePoint; was: Vec2; far: Vec2 }[]
+  /**
+   * Corners put in (`withCuts`) before the drag is worked out, where something holds the middle of a segment an end may slide along. Every index
+   * of the plan is one of the tracks with these in.
+   */
+  cuts: Cut[]
+}
+
+/** A corner put in segment `after` of a track (between its points `after` and `after + 1`) at `at`. */
+interface Cut {
+  trace: string
+  after: number
+  at: Vec2
+}
+
+/** The project with the corners of `cuts` put in, each segment's in the order they come along it. */
+function withCuts(project: Project, cuts: readonly Cut[]): Project {
+  if (!cuts.length) return project
+  const by = new Map<string, Map<number, Vec2[]>>()
+  for (const c of cuts) {
+    const m = by.get(c.trace) ?? new Map<number, Vec2[]>()
+    m.set(c.after, [...(m.get(c.after) ?? []), c.at])
+    by.set(c.trace, m)
+  }
+  return { ...project, traces: project.traces.map((u) => (by.has(u.id) ? { ...u, points: u.points.flatMap((p, i) => [p, ...(by.get(u.id)!.get(i) ?? [])]) } : u)) }
+}
+
+/**
+ * Where another track ends, or a via or a pad sits, on the middle of a segment an end of segment `index` of `t` may slide along (the track's other
+ * segments, and those of a track carrying on from an end): a corner goes in there, so the end stops at it as at any corner something meets.
+ */
+function cutsFor(project: Project, items: readonly CopperItem[], t: Trace, index: number): Cut[] {
+  const ends = [t.points[index], t.points[index + 1]]
+  const slid = project.traces.filter(
+    (u) => u.layer === t.layer && !u.arc && u.points.length >= 2 && (u.id === t.id || ends.some((p) => near(u.points[0], p) || near(u.points[u.points.length - 1], p))),
+  )
+  const holds: Vec2[] = []
+  for (const u of project.traces) if (u.layer === t.layer && u.points.length >= 2) holds.push(u.points[0], u.points[u.points.length - 1])
+  for (const it of items) {
+    if (!it.layers.includes(t.layer)) continue
+    if (it.kind === "via") holds.push(it.at)
+    else if (it.kind === "pad") holds.push({ x: it.pad.x, y: it.pad.y })
+  }
+  const cuts: Cut[] = []
+  for (const u of slid) {
+    for (let k = 0; k < u.points.length - 1; k++) {
+      if (u.id === t.id && k === index) continue
+      const p = u.points[k]
+      const q = u.points[k + 1]
+      const on = holds.filter((h) => !near(h, p) && !near(h, q) && onSegment(h, p, q)).sort((h1, h2) => len(sub(h1, p)) - len(sub(h2, p)))
+      for (const h of on) if (!cuts.some((c) => c.trace === u.id && c.after === k && near(c.at, h))) cuts.push({ trace: u.id, after: k, at: h })
+    }
+  }
+  return cuts
 }
 
 /** The straight tracks of a layer other than `skip` that end at `p`, and whether anything else of theirs touches it. */
@@ -111,12 +166,17 @@ function plainCorner(project: Project, items: readonly CopperItem[], u: Trace, i
  * How a drag of segment `index` of a straight track moves the copper around it, or null when there is no such segment. `items` are the board's copper
  * items (`PcbAnalysis.items`): their pads and vias hold the ends that sit on them.
  */
-export function planSegmentDrag(project: Project, traceId: string, index: number, items: readonly CopperItem[]): SegmentDrag | null {
-  const t = project.traces.find((x) => x.id === traceId)
-  if (!t || t.arc || !Number.isInteger(index) || index < 0 || index >= t.points.length - 1) return null
+export function planSegmentDrag(given: Project, traceId: string, seg: number, items: readonly CopperItem[]): SegmentDrag | null {
+  const t0 = given.traces.find((x) => x.id === traceId)
+  if (!t0 || t0.arc || !Number.isInteger(seg) || seg < 0 || seg >= t0.points.length - 1) return null
+  if (len(sub(t0.points[seg + 1], t0.points[seg])) < MIN_LEN) return null
+  // Worked out on the tracks with their cuts in, as `dragSegment` applies it.
+  const cuts = cutsFor(given, items, t0, seg)
+  const project = withCuts(given, cuts)
+  const index = seg + cuts.filter((c) => c.trace === traceId && c.after < seg).length
+  const t = project.traces.find((x) => x.id === traceId)!
   const a = t.points[index]
   const b = t.points[index + 1]
-  if (len(sub(b, a)) < MIN_LEN) return null
   const n = unit({ x: a.y - b.y, y: b.x - a.x })
   const byId = new Map(project.traces.map((u) => [u.id, u]))
   const last = t.points.length - 1
@@ -159,7 +219,7 @@ export function planSegmentDrag(project: Project, traceId: string, index: number
       tees.push({ at: { trace: u.id, index: i }, was: q, far: u.points[j] })
     }
   }
-  return { trace: t.id, index, a, b, ends: [end(index, -1), end(index + 1, 1)], tees }
+  return { trace: t.id, index, a, b, ends: [end(index, -1), end(index + 1, 1)], tees, cuts }
 }
 
 /** The jogs to put in at each end of the segment and the points of tracks to move, for the segment moved `o` square to itself; null when it would turn the segment round. */
@@ -261,11 +321,14 @@ export function dragSegment(project: Project, plan: SegmentDrag, delta: Vec2): P
     if (Math.abs(lo) < NEAR) return project
     shape = at(lo)!
   }
-  const t = project.traces.find((x) => x.id === plan.trace)
+  // The plan's indices are those of the tracks with its cuts in. A cut track the drag moves nothing of is left as it was; on one it moves, a cut
+  // still in line goes again with the simplifying.
+  const cut = withCuts(project, plan.cuts)
+  const t = cut.traces.find((x) => x.id === plan.trace)
   if (!t) return project
   const changes = new Map<string, Vec2[]>()
   for (const [id, m] of shape.moves) {
-    const u = project.traces.find((x) => x.id === id)
+    const u = cut.traces.find((x) => x.id === id)
     if (u) changes.set(id, u.points.map((p, i) => m.get(i) ?? p))
   }
   // The jogs go in between the segment's ends, which stay where they were.

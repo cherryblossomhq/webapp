@@ -74,6 +74,22 @@ describe("dragging a segment", () => {
     expect(pts(drag(q, "t", 2, P(0, -3)), "t")).toEqual([[-5, 0], [0, 0], [1, -1], [9, -1], [10, 0]])
   })
 
+  it("stops an end where a track tees into, or a via sits on, the middle of the segment it slides along", () => {
+    // A branch routed from the middle of the neighbour: the end stops at it and jogs, so the branch stays on the track.
+    const p = board(tr("t", [[0, 0], [0, 10], [10, 10]]), tr("branch", [[0, 8], [-5, 8]]))
+    const out = drag(p, "t", 1, P(0, -5))
+    expect(pts(out, "t")).toEqual([[0, 0], [0, 8], [3, 5], [10, 5]])
+    expect(out.traces.find((t) => t.id === "branch")).toBe(p.traces.find((t) => t.id === "branch"))
+    // Short of the branch, or growing, the neighbour just slides, and the corner put in to stop at goes again.
+    expect(pts(drag(p, "t", 1, P(0, -1)), "t")).toEqual([[0, 0], [0, 9], [10, 9]])
+    expect(pts(drag(p, "t", 1, P(0, 2)), "t")).toEqual([[0, 0], [0, 12], [10, 12]])
+    // A via on the middle of the next track along holds it the same way; that track is left as it was until the end gets there.
+    const q = board(tr("a", [[0, 10], [10, 10]]), tr("b", [[0, 10], [0, 0]]))
+    expect(pts(drag(q, "a", 0, P(0, -2), [via(0, 5)]), "b")).toEqual([[0, 8], [0, 0]])
+    expect(pts(drag(q, "a", 0, P(0, -7), [via(0, 5)]), "b")).toEqual([[2, 3], [0, 5], [0, 0]])
+    expect(pts(drag(q, "a", 0, P(0, 2), [via(0, 5)]), "b")).toEqual([[0, 12], [0, 0]])
+  })
+
   it("moves a diagonal segment between two straight ones", () => {
     const p = board(tr("t", [[0, 0], [2, 0], [5, 3], [7, 3]]))
     expect(pts(drag(p, "t", 1, P(1, 0)), "t")).toEqual([[0, 0], [3, 0], [6, 3], [7, 3]])

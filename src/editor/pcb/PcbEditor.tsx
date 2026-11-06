@@ -48,6 +48,7 @@ import { clampLayer, copperLayers, layerLabel, layerOfKicadName, viaLayers } fro
 import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../model/arcTracks"
 import { makeArcTrace, makeVia, moveArcPoint, nextCopperLayer } from "../../model/layerOps"
 import { traceD } from "./traceGraphics"
+import { dragSegment, dragVertex, planSegmentDrag, planVertexDrag, snapSegmentMove, type SegmentDrag, type VertexDrag } from "../../model/traceDrag"
 import { hitIndex, netCopper } from "./hitIndex"
 import { byOpacity, fadedPaths, mergedPaths, padPaths, viaPaths, type PathPiece } from "./boardPaths"
 import { CanvasHint } from "../schematic/SchematicEditor"
@@ -85,7 +86,8 @@ export const PCB_GRID = 0.25
 type Hit =
   | { type: "pad"; pad: WorldPad; netId: string | null }
   | { type: "via"; id: string; at: Vec2 }
-  | { type: "trace"; id: string; point: Vec2; layer: CopperLayer }
+  /** `seg` is the segment the point is on (its first point's index); an arc track's is 0. */
+  | { type: "trace"; id: string; point: Vec2; layer: CopperLayer; seg: number }
   | { type: "component"; id: string }
   /** A drawing on the board; `id` is its selection id (`g:<graphic id>`). */
   | { type: "shape"; id: string }
@@ -120,6 +122,10 @@ type Mode =
   | { kind: "route"; layer: CopperLayer; points: Vec2[]; netId: string | null; diagonalFirst: boolean; width?: number; /** X4: the next piece is an arc track; `mid` is the point on it that has been clicked (null before that). */ arc?: { mid: Vec2 | null } }
   /** Dragging one of the three points of a selected arc track. */
   | { kind: "arcEdit"; id: string; index: 0 | 1 | 2; moved: boolean }
+  /** Dragging a segment of a straight track square to itself, its neighbours following (`model/traceDrag.ts`). */
+  | { kind: "segmentDrag"; plan: SegmentDrag; start: Vec2; moved: boolean }
+  /** Dragging a corner of a selected straight track. */
+  | { kind: "vertexDrag"; plan: VertexDrag; moved: boolean }
 
 /** Whether a tool, or what is under way, draws something at the pointer (a route, a drawing, a zone, a via to place): only then does a move draw the editor again. */
 const drawsAtCursor = (tool: string, m: Mode) =>
@@ -163,12 +169,12 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     if (isArcTrace(t)) {
       // X4: an arc track is picked by its curve.
       const arc = arcOf(t.points)
-      if (pointArcDistance(at, arc) <= t.width / 2 + tol * 0.5) return { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer }
+      if (pointArcDistance(at, arc) <= t.width / 2 + tol * 0.5) return { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer, seg: 0 }
       continue
     }
     for (let s = 0; s < t.points.length - 1; s++) {
       if (pointSegmentDistance(at, t.points[s], t.points[s + 1]) <= t.width / 2 + tol * 0.5) {
-        return { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[s], t.points[s + 1]), layer: t.layer }
+        return { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[s], t.points[s + 1]), layer: t.layer, seg: s }
       }
     }
   }
@@ -264,6 +270,7 @@ const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale
 
 export function PcbEditor() {
   const project = useProjectStore((s) => s.project)!
+  const dragBase = useProjectStore((s) => s.transientBase)
   const selection = useUi((s) => s.selection)
   const tool = useUi((s) => s.pcbTool)
   const layer = clampLayer(project.board, useUi((s) => s.activeLayer))
@@ -609,6 +616,18 @@ export function PcbEditor() {
         return
       }
     }
+    // The corners of a selected straight track are handles too: a corner goes where it is dragged, the tracks that end there with it.
+    const line0 = tsel.length === 1 && !native.shiftKey ? p.traces.find((t) => t.id === tsel[0] && !isArcTrace(t)) : undefined
+    if (line0 && !lockedInSelection(p, [`t:${line0.id}`]).length) {
+      const reach = tol() * 1.3
+      const k = line0.points.findIndex((pt) => Math.hypot(pt.x - e.world.x, pt.y - e.world.y) <= reach)
+      const plan = k >= 0 ? planVertexDrag(p, line0.id, k) : null
+      if (plan) {
+        projectApi().beginTransient()
+        setMode({ kind: "vertexDrag", plan, moved: false })
+        return
+      }
+    }
     // The corners and arc middles of a selected piece of the outline are handles that win over what lies under them.
     const sel0 = uiApi().selection.map(parseOutlineSelectionId).find((x) => x !== null)
     const outlinePaths = p.board.outline?.paths
@@ -669,6 +688,17 @@ export function PcbEditor() {
       if (!native.shiftKey) uiApi().clearSelection()
       setMode({ kind: "marquee", start: e.world, current: e.world, additive: native.shiftKey })
       return
+    }
+    // A straight track in no group is reshaped where it is pressed, as Altium drags one: the segment moves square to itself and its neighbours follow.
+    if (h?.type === "trace" && !native.shiftKey && !touchesGroup(p, [id])) {
+      const t = p.traces.find((x) => x.id === h.id)
+      const plan = t && !isArcTrace(t) ? planSegmentDrag(p, t.id, h.seg, pcb.items) : null
+      if (plan) {
+        if (!uiApi().selection.includes(id)) uiApi().select([id])
+        projectApi().beginTransient()
+        setMode({ kind: "segmentDrag", plan, start: e.world, moved: false })
+        return
+      }
     }
     // Ctrl or Cmd picks the one object, inside its group; otherwise a group is picked whole, as KiCad picks one.
     const alone = native.ctrlKey || native.metaKey
@@ -760,6 +790,21 @@ export function PcbEditor() {
       if (!m.moved) setMode({ ...m, moved: true })
       return
     }
+    if (m.kind === "segmentDrag") {
+      const raw = { x: e.world.x - m.start.x, y: e.world.y - m.start.y }
+      // A press that wanders a pixel or two is a click: snapping puts the segment's line on the grid, which would move one that is off it.
+      if (!m.moved && Math.hypot(raw.x, raw.y) < tol() * 0.5) return
+      const delta = native.altKey ? { x: round(raw.x, 3), y: round(raw.y, 3) } : snapSegmentMove(m.plan, raw, PCB_GRID)
+      projectApi().setTransient((base) => dragSegment(base, m.plan, delta))
+      if (!m.moved) setMode({ ...m, moved: true })
+      return
+    }
+    if (m.kind === "vertexDrag") {
+      const to = native.altKey ? { x: round(e.world.x, 3), y: round(e.world.y, 3) } : snapPoint(e.world, PCB_GRID)
+      projectApi().setTransient((base) => dragVertex(base, m.plan, to))
+      if (!m.moved) setMode({ ...m, moved: true })
+      return
+    }
     if (m.kind === "zoneEdit") {
       const free = native.altKey
       if (m.what === "move") {
@@ -822,8 +867,8 @@ export function PcbEditor() {
       const base = m.additive ? uiApi().selection : []
       uiApi().select(expandToGroups(project, [...new Set([...base, ...ids])]))
       setMode({ kind: "idle" })
-    } else if (m.kind === "drag" || m.kind === "resize" || m.kind === "outline" || m.kind === "zoneEdit" || m.kind === "arcEdit") {
-      if ((m.kind === "drag" || m.kind === "outline" || m.kind === "zoneEdit" || m.kind === "arcEdit") && !m.moved) projectApi().cancelTransient()
+    } else if (m.kind === "drag" || m.kind === "resize" || m.kind === "outline" || m.kind === "zoneEdit" || m.kind === "arcEdit" || m.kind === "segmentDrag" || m.kind === "vertexDrag") {
+      if (m.kind !== "resize" && !m.moved) projectApi().cancelTransient()
       else projectApi().endTransient()
       setMode({ kind: "idle" })
     }
@@ -878,7 +923,7 @@ export function PcbEditor() {
           setMode({ kind: "idle" })
         } else if (m.kind === "draw" || m.kind === "dim" || m.kind === "zone") {
           setMode({ kind: "idle" })
-        } else if (m.kind === "drag" || m.kind === "resize" || m.kind === "outline" || m.kind === "zoneEdit" || m.kind === "arcEdit") {
+        } else if (m.kind === "drag" || m.kind === "resize" || m.kind === "outline" || m.kind === "zoneEdit" || m.kind === "arcEdit" || m.kind === "segmentDrag" || m.kind === "vertexDrag") {
           projectApi().cancelTransient()
           setMode({ kind: "idle" })
         } else if (m.kind === "slot") {
@@ -1053,8 +1098,17 @@ export function PcbEditor() {
   const outlinePaths = project.board.outline?.paths
   const selectedOutline = selection.map(parseOutlineSelectionId).find((x) => x !== null) ?? null
   const selectedArcs = selectionIds(selection, "t").length === 1 ? project.traces.filter((t) => selected.has(`t:${t.id}`) && isArcTrace(t)) : []
+  const selectedLines = selectionIds(selection, "t").length === 1 ? project.traces.filter((t) => selected.has(`t:${t.id}`) && !isArcTrace(t)) : []
+  // Over a straight track the pointer shows the way a drag moves the segment under it: square to it.
+  const hoveredSegment = (() => {
+    if (mode.kind === "segmentDrag") return { a: mode.plan.a, b: mode.plan.b }
+    if (mode.kind !== "idle" || tool !== "select" || hover?.type !== "trace") return null
+    const t = project.traces.find((x) => x.id === hover.id)
+    if (!t || isArcTrace(t) || touchesGroup(project, [`t:${t.id}`]) || !t.points[hover.seg + 1]) return null
+    return { a: t.points[hover.seg], b: t.points[hover.seg + 1] }
+  })()
   const r = Math.min(project.board.cornerRadius, project.board.width / 2, project.board.height / 2)
-  const cursorCss = tool === "route" || mode.kind === "route" || isDrawTool(tool) || tool === "text" || tool === "dimension" || tool === "zone" || tool === "keepout" || tool === "placement" ? "crosshair" : tool === "via" ? "cell" : hover?.type === "boardHandle" ? "nwse-resize" : "default"
+  const cursorCss = tool === "route" || mode.kind === "route" || isDrawTool(tool) || tool === "text" || tool === "dimension" || tool === "zone" || tool === "keepout" || tool === "placement" ? "crosshair" : tool === "via" ? "cell" : hover?.type === "boardHandle" ? "nwse-resize" : mode.kind === "vertexDrag" ? "move" : hoveredSegment ? acrossCursor(hoveredSegment.a, hoveredSegment.b) : "default"
   // What the render below draws from, made again only when what it depends on changes: hovering or selecting draws the editor again, and on a
   // board of 1,566 parts each of these went through thousands of things every time.
   const placed = useMemo(() => resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c)), [project])
@@ -1397,10 +1451,23 @@ export function PcbEditor() {
     })
   // A drag of parts on a big board keeps the drawing it began with (the parts it moves are seen where they were too) and draws them over it where they
   // are: drawing the whole board again took seconds a frame on one of 1,566 parts. A drag that moves drawings, texts or a group's other things draws
-  // the board again, so they are seen where they are.
-  const dragKept = mode.kind === "drag" && pcb.items.length > DRAG_FOLLOW_ITEMS && !mode.gids.length && !mode.texts.length && !mode.more.length
+  // the board again, so they are seen where they are. A drag that reshapes tracks keeps it too, and draws the tracks it changed over it.
+  const reshaping = mode.kind === "segmentDrag" || mode.kind === "vertexDrag"
+  const dragKept = pcb.items.length > DRAG_FOLLOW_ITEMS && ((mode.kind === "drag" && !mode.gids.length && !mode.texts.length && !mode.more.length) || reshaping)
   const movedParts = dragKept && mode.kind === "drag" ? new Set(mode.ids) : null
+  const reshapedTraces = dragKept && reshaping && dragBase ? (() => {
+    const before = new Set(dragBase.traces)
+    return project.traces.filter((t) => !before.has(t) && copperOn(t.layer))
+  })() : []
   const movingDrawing = (px: number): ReactNode => {
+    if (reshapedTraces.length)
+      return (
+        <g>
+          {reshapedTraces.map((tr) => (
+            <path key={tr.id} d={traceD(tr)} fill="none" stroke={copperColor(tr.layer)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
+          ))}
+        </g>
+      )
     if (!movedParts?.size) return null
     const moved = placed.filter((c) => movedParts.has(c.id))
     const pads = pcb.items.filter((it): it is Extract<CopperItem, { kind: "pad" }> => it.kind === "pad" && movedParts.has(it.pad.componentId))
@@ -1594,6 +1661,16 @@ export function PcbEditor() {
                     ))}
                   </g>
                 ))}
+              {/* The corners of a selected straight track, each dragged on its own */}
+              {tool === "select" &&
+                mode.kind !== "segmentDrag" &&
+                selectedLines.map((tr) => (
+                  <g key={`line${tr.id}`}>
+                    {tr.points.map((q, i) => (
+                      <rect key={i} x={q.x - 3 * px} y={q.y - 3 * px} width={6 * px} height={6 * px} fill={PCB.select} stroke={PCB.outside} strokeWidth={px} />
+                    ))}
+                  </g>
+                ))}
               {/* The slot being cut */}
               {tool === "slot" && cursor && mode.kind === "slot" && (
                 <path d={pathsSvgPath([slotPath(mode.a, cursor, uiSlotWidth)])} fill={PCB.select} fillOpacity={0.25} stroke={PCB.select} strokeWidth={px} />
@@ -1706,6 +1783,8 @@ export function PcbEditor() {
         />
       ) : tool === "route" ? (
         <CanvasHint dark items={[["Click", "a pad to start routing"], ["L", "next layer (Shift: previous)"]]} />
+      ) : (mode.kind === "segmentDrag" || mode.kind === "vertexDrag") && mode.moved ? (
+        <CanvasHint dark items={[["Alt", "off the grid"], ["Esc", "cancel"]]} />
       ) : note ? (
         <CanvasHint dark items={[[isDrawTool(tool) ? "Not drawn" : "Locked", note]]} />
       ) : info ? (
@@ -1732,6 +1811,12 @@ export function PcbEditor() {
       ) : null}
     </div>
   )
+}
+
+/** The resize cursor square to the segment from `a` to `b` (y is up on the board and down on screen), to the nearest eighth of a turn. */
+function acrossCursor(a: Vec2, b: Vec2): string {
+  const k = ((Math.round(Math.atan2(b.y - a.y, b.x - a.x) / (Math.PI / 4)) % 4) + 4) % 4
+  return ["ns-resize", "nwse-resize", "ew-resize", "nesw-resize"][k]
 }
 
 /** The hint line of a drawing tool, by how many clicks it has so far. */

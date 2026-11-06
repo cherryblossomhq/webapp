@@ -11,6 +11,7 @@ import { Button, IconButton, useDismiss } from "../ui/controls"
 import { AssistantChip } from "./AssistantChip"
 import { ago } from "./assistantActivity"
 import { OwnAiNotice } from "./OwnAiNotice"
+import { UsageMenu } from "./UsageMenu"
 
 const SUGGESTIONS = [
   "Add a 3.3 V regulator with input and output caps",
@@ -138,7 +139,12 @@ export function CopilotPanel() {
     <div className="relative flex min-h-0 flex-1 flex-col bg-surface">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line pl-3.5 pr-1.5">
         <h2 className="text-[13px] font-[650] text-ink">Sakura</h2>
-        {account && model && <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />}
+        {account && model && (
+          <div className="flex min-w-0 items-center gap-1">
+            <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />
+            <UsageMenu account={account} />
+          </div>
+        )}
         <div className="ml-auto flex items-center">
           <IconButton label="New chat" disabled={!entries.length && !opening} onClick={startNew}>
             <SquarePen size={15} />
@@ -365,7 +371,7 @@ function ModelPicker({ models, value, disabled }: { models: string[]; value: str
       value={value}
       disabled={disabled}
       onChange={(e) => useUi.getState().updateSettings({ model: e.target.value })}
-      className="h-7 min-w-0 truncate rounded-[6px] border border-transparent bg-transparent px-1 text-[12px] text-ink-2 outline-none hover:border-line focus:border-select disabled:opacity-60"
+      className="h-7 min-w-0 truncate rounded-[6px] border border-line bg-transparent px-1.5 text-[12px] text-ink-2 outline-none hover:border-ink-3 hover:text-ink focus:border-select disabled:opacity-60"
     >
       {models.map((id) => (
         <option key={id} value={id}>

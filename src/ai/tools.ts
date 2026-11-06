@@ -1852,11 +1852,18 @@ export function unroutedAdvice(res: AutorouteResult): string {
 }
 
 /** What to tell the model about nets that were given a width and had connections routed narrower: quietly thinner copper on a supply is a fault. */
-export function narrowedAdvice(res: AutorouteResult): string {
+/**
+ * What to do about nets routed narrower than their width. Routing them first only helps while the other nets' traces are not down yet:
+ * after a whole-board route that means clearing every net, and after a route of those nets alone the same call again gives the same.
+ */
+export function narrowedAdvice(res: AutorouteResult, routedAlone = false): string {
   if (!res.narrowed?.length) return ""
   const nets = res.narrowed.map((n) => `${n.net} (${n.widths.length} at ${[...new Set(n.widths)].sort((a, b) => b - a).map((w) => `${w} mm`).join(" or ")}, not ${n.width} mm)`)
-  const names = res.narrowed.map((n) => n.net)
-  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, clear_routing ${names.join(", ")} and route_pcb with nets [${names.join(", ")}] before the rest, so they take the room first; or draw_trace from pin to pin at the width; or make room (place_parts, set_board). Else tell the user.`
+  const names = res.narrowed.map((n) => n.net).join(", ")
+  const first = routedAlone
+    ? `routing ${names} again gives the same unless other nets' traces took the room (then clear_routing with no nets, and route_pcb with nets [${names}] before the rest)`
+    : `clear_routing with no nets, then route_pcb with nets [${names}] before the rest, so they take the room first`
+  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, ${first}; or draw_trace from pin to pin at the width; or make room (place_parts, set_board). Else tell the user.`
 }
 
 const routePcbTool: ToolSpec = {
@@ -1887,7 +1894,7 @@ const routePcbTool: ToolSpec = {
       : ids && res.finePitchOpen
         ? ` ${res.remaining} connection(s)${of} could not be routed, ${res.finePitchOpen} of them at fine-pitch pads: route_pcb with no nets retries those with escape stubs and thinner traces.`
         : unroutedAdvice(res)
-    const tail = narrowedAdvice(res) + unrouted
+    const tail = narrowedAdvice(res, !!ids) + unrouted
     const rest = ids ? getPcbAnalysis(res.project).ratsnest.filter((r) => !ids.includes(r.netId)).length : 0
     return ok(
       res.project,

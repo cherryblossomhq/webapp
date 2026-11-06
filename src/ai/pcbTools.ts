@@ -1021,7 +1021,9 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       return what ? `${input.remove === true ? "Removing" : "Setting"} the clearance between ${what}` : "Reading the clearance rules"
     }
     case "draw_trace":
-      return `Drawing a trace of ${String(input.net ?? input.from ?? "a net")}`
+      return input.net === undefined && input.from !== undefined
+        ? `Drawing a trace from ${String(input.from)}${input.to !== undefined ? ` to ${String(input.to)}` : ""}`
+        : `Drawing a trace of ${String(input.net ?? "a net")}`
     case "pcb_text":
       return input.remove === true ? "Removing a board text" : typeof input.text === "string" ? `Putting "${input.text}" on the board` : "Changing a board text"
     default:

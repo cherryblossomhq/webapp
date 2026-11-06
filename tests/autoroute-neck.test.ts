@@ -84,8 +84,12 @@ describe("a trace wider than its pads", () => {
     expect(out.result).toMatch(/Narrower than their net's width, for want of room at that width: L1 \(1 at [0-9.]+ mm, not 9 mm\)/)
     expect(out.result).not.toMatch(/L2 \(/)
     // What to do is route that net first or draw it, not stand a polygon pour in for the trace.
-    expect(out.result).toContain("route_pcb with nets [L1] before the rest")
+    // Every other net is routed by now, so routing L1 first means clearing them all, not L1 alone.
+    expect(out.result).toContain("clear_routing with no nets, then route_pcb with nets [L1] before the rest")
     expect(out.result).toContain("draw_trace from pin to pin")
     expect(out.result).not.toContain("set_pour")
+    // Routed alone it was first already: the same call again gives the same.
+    const alone = runTool(p, "route_pcb", { nets: ["L1"] })
+    expect(alone.result).toContain("routing L1 again gives the same unless other nets' traces took the room")
   })
 })

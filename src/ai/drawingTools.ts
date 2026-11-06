@@ -13,6 +13,8 @@ import {
   removeDrawings,
   reorderDrawings,
   rotateDrawing,
+  SCH_UNIT_MM,
+  TEXT_SIZE_RANGE,
   TEXT_SIZES,
   updateDrawings,
   type NewDrawing,
@@ -32,7 +34,18 @@ import { fail, ok, type JsonSchema, type ToolInput, type ToolSpec } from "./tool
 const snapSch = (n: number) => round(snap(n, SCH_GRID))
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined)
 const SIZE_BY_NAME = new Map<string, number>(TEXT_SIZES.map((s) => [s.id, s.size]))
-const sizeName = (size: number) => TEXT_SIZES.find((s) => s.size === size)?.id ?? String(size)
+const toMm = (size: number) => round(size * SCH_UNIT_MM, 3)
+/** A text's size as get_design reports it: by name when it is one of the named sizes, else in mm, the fields draw and edit_drawings take. */
+const sizeReport = (size: number) => {
+  const named = TEXT_SIZES.find((s) => Math.abs(s.size - size) < 1e-6)
+  return named ? { size: named.id } : { size_mm: toMm(size) }
+}
+/** The size a call asks for: size_mm when given (within the Inspector's range), else a named size. */
+function sizeFrom(input: ToolInput): number | undefined {
+  const mm = num(input.size_mm)
+  if (mm !== undefined && mm > 0) return Math.min(TEXT_SIZE_RANGE.max, Math.max(TEXT_SIZE_RANGE.min, mm / SCH_UNIT_MM))
+  return typeof input.size === "string" ? SIZE_BY_NAME.get(input.size) : undefined
+}
 const RADIUS_BY_NAME = new Map<string, number>(CORNER_RADII.map((c) => [c.id, c.radius]))
 const ARROWS = ["none", "start", "end", "both"]
 
@@ -49,7 +62,12 @@ const STYLE_PROPS: Record<string, JsonSchema> = {
 /** The text, line and box fields both tools take. */
 const SHAPE_PROPS: Record<string, JsonSchema> = {
   text: { type: "string", description: "text: what it says; \\n starts a new line" },
-  size: { type: "string", enum: TEXT_SIZES.map((s) => s.id), description: `text: ${TEXT_SIZES.map((s) => `${s.id} ${s.size}`).join(", ")} units tall; normal by default` },
+  size: {
+    type: "string",
+    enum: TEXT_SIZES.map((s) => s.id),
+    description: `text: ${TEXT_SIZES.map((s) => `${s.id} ${s.size} units (${toMm(s.size)} mm)`).join(", ")} tall; normal by default`,
+  },
+  size_mm: { type: "number", description: "text: its height in mm, for a size between the named ones (the user's own, in mm or mil); takes the place of size" },
   align: { type: "string", enum: ["left", "center", "right"], description: "text: which end of its lines x is at; left by default" },
   bold: { type: "boolean" },
   italic: { type: "boolean" },
@@ -129,7 +147,7 @@ function shapeFrom(project: Project, s: ToolInput, at: string): NewDrawing | str
       text,
       x: snapSch(s.x as number),
       y: snapSch(s.y as number),
-      size: SIZE_BY_NAME.get(String(s.size ?? "normal")) ?? SIZE_BY_NAME.get("normal")!,
+      size: sizeFrom(s) ?? SIZE_BY_NAME.get("normal")!,
       ...(typeof s.align === "string" && { align: s.align as DrawingText["align"] }),
       bold: s.bold === true,
       italic: s.italic === true,
@@ -218,7 +236,7 @@ export function designDrawings(project: Project) {
     switch (d.type) {
       case "text": {
         const flags = { ...(d.align && { align: d.align }), ...(d.bold && { bold: true }), ...(d.italic && { italic: true }), ...(d.mono && { mono: true }), ...(d.border && { border: true }), ...(d.rot && { rotation: d.rot }), ...(d.hidden && { hidden: true }) }
-        return { id: d.id, type: d.type, text: d.text, x: d.x, y: d.y, size: sizeName(d.size), ...flags, ...style, box }
+        return { id: d.id, type: d.type, text: d.text, x: d.x, y: d.y, ...sizeReport(d.size), ...flags, ...style, box }
       }
       case "line":
         return { id: d.id, type: d.type, points: d.points, ...(d.closed && { closed: true }), ...(d.arrows && { arrows: d.arrows }), ...(d.ruleArea && { rule_area: { dnp: !!d.ruleArea.dnp, not_in_bom: !!d.ruleArea.excludeFromBom, not_on_board: !!d.ruleArea.notOnBoard, not_simulated: !!d.ruleArea.excludeFromSim } }), ...style }
@@ -303,7 +321,8 @@ const editDrawingsTool: ToolSpec = {
       let n: SchematicDrawing = applyStyle(d, input.fill === "none" ? { ...style, fill: undefined } : style)
       if (n.type === "text") {
         if (typeof input.text === "string" && input.text.trim()) n.text = input.text.replace(/\s+$/, "")
-        if (typeof input.size === "string" && SIZE_BY_NAME.has(input.size)) n.size = SIZE_BY_NAME.get(input.size)!
+        const size = sizeFrom(input)
+        if (size !== undefined) n.size = size
         if (typeof input.align === "string") n.align = input.align as DrawingText["align"]
         for (const k of ["bold", "italic", "mono", "border"] as const) if (typeof input[k] === "boolean") n[k] = input[k] as boolean
         if (input.rotation === 0 || input.rotation === 90) n.rot = input.rotation

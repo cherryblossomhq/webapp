@@ -303,6 +303,23 @@ describe("Sakura's drawing tools", () => {
     expect(out.result).toContain("shapes[2]: a line needs at least two points")
   })
 
+  it("sizes a text in mm as well as by name, and reports a size between the named ones in mm", () => {
+    let p = step(sheet(), "draw", { shapes: [{ type: "text", text: "2.5 mm", x: 0, y: -2, size_mm: 2.5 }, { type: "text", text: "named", x: 0, y: -4, size_mm: 1.27 }] }).project
+    const [custom, named] = p.drawings! as DrawingText[]
+    expect(custom.size * SCH_UNIT_MM).toBeCloseTo(2.5, 4)
+    expect(named.size).toBe(0.1)
+    const listed = design(p).drawings!
+    expect(listed[0]).toMatchObject({ size_mm: 2.5 })
+    expect(listed[0]).not.toHaveProperty("size")
+    expect(listed[1]).toMatchObject({ size: "small" })
+    expect(listed[1]).not.toHaveProperty("size_mm")
+    // size_mm wins over a name, and stays within the Inspector's range.
+    p = step(p, "edit_drawings", { ids: [custom.id], size: "title", size_mm: 1000 }).project
+    expect((p.drawings![0] as DrawingText).size).toBe(10)
+    p = step(p, "edit_drawings", { ids: [named.id], size_mm: 0.01 }).project
+    expect((p.drawings![1] as DrawingText).size).toBe(0.02)
+  })
+
   it("edits, moves, turns, reorders and deletes drawings by id", () => {
     let p = step(sheet(), "draw", { shapes: [{ type: "text", text: "note", x: 0, y: -2 }, { type: "rect", x: 0, y: 0, width: 2, height: 1 }] }).project
     const [note, box] = p.drawings!

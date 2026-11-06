@@ -7,7 +7,7 @@
   ],
   "sizes": {
     "systemPrompt": 11733,
-    "toolDefinitions": 55230,
+    "toolDefinitions": 55696,
     "toolCount": 44
   },
   "hashes": {
@@ -334,7 +334,7 @@
     "esp32-robot/unplaced/step.board-solid": "342b599c92191ed2e82325a027301f1a998dfda7566619405f8bd3a0fa7c7fab",
     "global/sakura.request-settings": "01d9ed903bf7e9cdd8888fed9b70fe020d47a98a4353e528cfeb4c0ec46fc215",
     "global/sakura.system-prompt": "ed2f09f52a00c1405bc4360f54a1af75c7333fc4537c00726f3ac5818a24d01d",
-    "global/sakura.tool-definitions": "9dd51d0c7706483e9a1ca575518989def1dd13ab823f362e64ec2fbc3b0e782c",
+    "global/sakura.tool-definitions": "f0d7114f5c68aa5273f92750f51196114c98c13955522f2067e98a965cd46f9d",
     "mcu/flipped/3d.board-texture-drawing": "8e2f1b3a06e038d6afe9a03cee4350f7619fa50c6300e199f6474bb94a1cb52b",
     "mcu/flipped/checks.drc": "55b8562e54e26fb835a7410d149886dd69300b99dadeed58e657192ab2b335c2",
     "mcu/flipped/checks.erc": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",

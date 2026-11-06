@@ -32,7 +32,7 @@ export interface Settings {
 }
 
 /** How wide Sakura's panel can be dragged, and how wide it starts. */
-export const COPILOT_WIDTH = { min: 280, max: 800, initial: 340 }
+export const COPILOT_WIDTH = { min: 280, max: 800, initial: 368 }
 
 export const clampCopilotWidth = (w: number) => Math.round(Math.min(COPILOT_WIDTH.max, Math.max(COPILOT_WIDTH.min, w)))
 

@@ -1,4 +1,3 @@
-import { creditWeightNote, describeManagedModel, modelNameWithWeight } from "@cherryblossom/ai-models"
 import { AlertTriangle, ArrowUp, ArrowUpRight, Boxes, Check, CornerDownRight, History, Loader2, LogIn, MessageSquare, PanelLeftClose, Search, Sparkles, Square, SquarePen, Trash2 } from "lucide-react"
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { managedAiHost, type FailureKind } from "../ai/managedAi"
@@ -9,6 +8,7 @@ import { useProjectStore } from "../store/projectStore"
 import { useUi } from "../store/uiStore"
 import { Button, IconButton, useDismiss } from "../ui/controls"
 import { AssistantChip } from "./AssistantChip"
+import { ModelPicker } from "./ModelPicker"
 import { ago } from "./assistantActivity"
 import { OwnAiNotice } from "./OwnAiNotice"
 import { UsageMenu } from "./UsageMenu"
@@ -350,33 +350,6 @@ function RecentChats({ projectId, onPick, onAll }: { projectId: string; onPick: 
 }
 
 const EMPTY_CHATS: ChatSummary[] = []
-
-/**
- * The plan's models by their product names, with what a weighted one costs in
- * credits ("Sakura 2 High (4× credits)"); just the name when there is one.
- */
-function ModelPicker({ models, value, disabled }: { models: string[]; value: string; disabled: boolean }) {
-  if (models.length < 2) {
-    return <span className="truncate text-[11.5px] text-ink-3">{modelNameWithWeight(value)}</span>
-  }
-  const { tagline } = describeManagedModel(value)
-  return (
-    <select
-      aria-label="Model"
-      title={[tagline, creditWeightNote(value)].filter(Boolean).join(". ")}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => useUi.getState().updateSettings({ model: e.target.value })}
-      className="h-7 min-w-0 truncate rounded-[6px] border border-line bg-transparent px-1.5 text-[12px] text-ink-2 outline-none hover:border-ink-3 hover:text-ink focus:border-select disabled:opacity-60"
-    >
-      {models.map((id) => (
-        <option key={id} value={id}>
-          {modelNameWithWeight(id)}
-        </option>
-      ))}
-    </select>
-  )
-}
 
 const signIn = () => managedAiHost()?.signIn?.()
 

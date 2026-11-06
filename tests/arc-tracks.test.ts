@@ -20,15 +20,16 @@ function sample(points: Vec2[], n = 4000): Vec2[] {
 }
 
 const brutePointArc = (p: Vec2, pts: Vec2[]) => Math.min(...pts.map((q) => Math.hypot(p.x - q.x, p.y - q.y)))
-const bruteSegArc = (a: Vec2, b: Vec2, pts: Vec2[]) => {
-  let best = Infinity
-  for (let i = 0; i <= 600; i++) {
-    const t = i / 600
-    const q = P(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-    best = Math.min(best, brutePointArc(q, pts))
-  }
-  return best
+/** A point to a straight segment, exactly. */
+const pointSegment = (p: Vec2, a: Vec2, b: Vec2) => {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const l2 = dx * dx + dy * dy
+  const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0
+  return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t)
 }
+// Only the curve is sampled: the segment's side is exact, so the oracle is both tighter and hundreds of times cheaper than sampling the two.
+const bruteSegArc = (a: Vec2, b: Vec2, pts: Vec2[]) => Math.min(...pts.map((q) => pointSegment(q, a, b)))
 
 const ANGLES = [0, 15, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 270, 300, 330, 359]
 const SWEEPS = [20, 60, 90, 135, 179, 180, 181, 270, 340].flatMap((d) => [d, -d])

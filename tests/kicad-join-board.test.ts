@@ -38,7 +38,7 @@ function grTexts(pcb: string): { text: string; layer: string }[] {
 describe("B1: an editor-drawn board of 4 or more layers keeps its silkscreen text in the KiCad export", () => {
   for (const tpl of TEMPLATES) {
     it(`${tpl.id}: the texts of the 2-layer and the 4-layer export are the same`, async () => {
-      const two: Project = tpl.build()
+      const two: Project = built(tpl.id)
       const four = setCopperLayerCount(two, 4).project
       const a = grTexts(pcbOf((await kicadFiles(two)).files))
       const b = grTexts(pcbOf((await kicadFiles(four)).files))
@@ -48,7 +48,7 @@ describe("B1: an editor-drawn board of 4 or more layers keeps its silkscreen tex
   }
 
   it("the 4-layer file puts a text where the Gerber plots it: the editor's place in the file's frame, its size and side", async () => {
-    const tpl = TEMPLATES[0].build()
+    const tpl = built(TEMPLATES[0].id)
     const four = setCopperLayerCount(tpl, 4).project
     const withBottom: Project = { ...four, texts: [...(four.texts ?? []), { id: "tb", text: "UNDER", x: 12.5, y: 7.25, size: 1.5, rot: 90, side: "bottom" }] }
     const pcb = pcbOf((await kicadFiles(withBottom)).files)
@@ -171,13 +171,13 @@ describe("B4: our own export, project file included, is accepted by our own proj
 
   for (const id of ["blinker", "mcu"]) {
     it(`${id}: the three files import (2 layers, through the converter)`, async () => {
-      const r = await roundTrip(TEMPLATES.find((t) => t.id === id)!.build())
+      const r = await roundTrip(built(id))
       expect(r.status === "imported" ? "imported" : `refused: ${r.message}`).toBe("imported")
     }, 120000)
   }
 
   it("blinker on 4 layers: the three files import (written natively)", async () => {
-    const four = setCopperLayerCount(TEMPLATES.find((t) => t.id === "blinker")!.build(), 4).project
+    const four = setCopperLayerCount(built("blinker"), 4).project
     const r = await roundTrip(four)
     expect(r.status === "imported" ? "imported" : `refused: ${r.message}`).toBe("imported")
   }, 120000)

@@ -7,7 +7,7 @@ import { analyzePcb } from "../src/model/pcb"
 import { EXAMPLES } from "../src/model/examples"
 import { TEMPLATES } from "../src/model/templates"
 import type { Project } from "../src/model/types"
-import { built } from "./built"
+import { freshlyBuilt as built } from "./built"
 
 /** JSON with one line per part, wire, trace and via, so a regenerated example diffs readably. */
 function exampleFile(p: Project): string {

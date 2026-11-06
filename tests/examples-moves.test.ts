@@ -14,8 +14,10 @@ import { netlist, netlistDiff } from "./sakura-session"
 //   - the only change is a pin meeting a loose wire or an unnamed net (what drawing does), or
 //   - it is refused, with a sentence, and the sheet is as it was.
 // `raw` is what the same drag does with no check (the stretch and the reseat alone): those are the
-// drops the check is for. FUZZ_STATS=1 prints the table.
+// drops the check is for, and only counted when FUZZ_STATS=1 prints the table (nothing asserts on
+// it, and computing it doubles the cost of every drag).
 
+const STATS = !!process.env.FUZZ_STATS
 const NUDGES = [0.1, 0.2, 0.5, 1].flatMap((n) => [{ x: n, y: 0 }, { x: -n, y: 0 }, { x: 0, y: n }, { x: 0, y: -n }])
 
 // The netlist rule on the shipped examples and on the ones drawn before Tidy; the nudge rate on
@@ -33,10 +35,12 @@ describe.each(BOARDS)("%s", (_id, project, rated) => {
     for (const c of project.components) {
       for (const delta of [...NUDGES, { x: 3, y: 2 }, { x: -6, y: 4 }]) {
         table.drags++
-        const { ids, bands } = dragPlan(project, { components: [c.id], labels: [], wires: [] })
-        const raw = cleanupWires(moveSchematicItems(project, ids, delta, bands))
-        const rawChanged = netlistDiff(base, netlist(raw)).length > 0
-        if (rawChanged) table.rawChangedANet++
+        let rawChanged = false
+        if (STATS) {
+          const { ids, bands } = dragPlan(project, { components: [c.id], labels: [], wires: [] })
+          rawChanged = netlistDiff(base, netlist(cleanupWires(moveSchematicItems(project, ids, delta, bands)))).length > 0
+          if (rawChanged) table.rawChangedANet++
+        }
         const res = dragSelection(project, { components: [c.id], labels: [], wires: [] }, delta)
         if (!res.ok) {
           table.refused++
@@ -49,7 +53,7 @@ describe.each(BOARDS)("%s", (_id, project, rated) => {
         else table.same++
       }
     }
-    if (process.env.FUZZ_STATS) console.info(_id, JSON.stringify(table))
+    if (STATS) console.info(_id, JSON.stringify(table))
     expect(JSON.stringify(project), "the sheet is as it was").toBe(before)
     expect(table.drags).toBe(table.same + table.connected + table.refused)
     expect(table.drags).toBeGreaterThan(0)

@@ -6,9 +6,10 @@ import { useAccount } from "../store/accountStore"
 import { IconButton, useDismiss } from "../ui/controls"
 
 /**
- * The button beside Sakura's model that opens the account's AI usage: this period's credits, today's
- * actions, gift credits and pay-as-you-go, as `GET /api/v1/me` has them. Opening it fetches them
- * again, since every request Sakura makes spends some. Changing any of it is the host's usage page.
+ * The button in Sakura's header, after the chat history, that opens the account's AI usage: this
+ * period's credits, today's actions, gift credits and pay-as-you-go, as `GET /api/v1/me` has them.
+ * Opening it fetches them again, since every request Sakura makes spends some. Changing any of it
+ * is the host's usage page.
  */
 export function UsageMenu({ account }: { account: MeResponse }) {
   const [open, setOpen] = useState(false)
@@ -18,7 +19,7 @@ export function UsageMenu({ account }: { account: MeResponse }) {
     if (!open) void useAccount.getState().load(true)
     setOpen(!open)
   }
-  // Not positioned: the card opens across the panel, under its header, as the chat history does.
+  // Not positioned: the card opens under the panel's header, at its right, as the chat history opens across it.
   return (
     <div ref={ref} className="shrink-0">
       <IconButton label="AI usage" active={open} aria-expanded={open} onClick={toggle}>
@@ -40,7 +41,7 @@ function Usage({ account }: { account: MeResponse }) {
     <div
       role="dialog"
       aria-label="AI usage"
-      className="absolute left-2 top-11 z-30 flex w-[272px] max-w-[calc(100%-16px)] flex-col gap-3 rounded-[10px] border border-line bg-surface p-3 shadow-menu"
+      className="absolute right-2 top-11 z-30 flex w-[272px] max-w-[calc(100%-16px)] flex-col gap-3 rounded-[10px] border border-line bg-surface p-3 shadow-menu"
     >
       <div className="text-[12.5px] font-[650] text-ink">{plan.name} plan</div>
       <Meter

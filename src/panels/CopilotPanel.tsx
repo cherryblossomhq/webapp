@@ -139,12 +139,7 @@ export function CopilotPanel() {
     <div className="relative flex min-h-0 flex-1 flex-col bg-surface">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line pl-3.5 pr-1.5">
         <h2 className="text-[13px] font-[650] text-ink">Sakura</h2>
-        {account && model && (
-          <div className="flex min-w-0 items-center gap-1">
-            <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />
-            <UsageMenu account={account} />
-          </div>
-        )}
+        {account && model && <ModelPicker models={account.plan.allowedModels} value={model} disabled={running} />}
         <div className="ml-auto flex items-center">
           <IconButton label="New chat" disabled={!entries.length && !opening} onClick={startNew}>
             <SquarePen size={15} />
@@ -156,6 +151,7 @@ export function CopilotPanel() {
             </IconButton>
             {historyOpen && <ChatHistory projectId={projectId} activeChat={activeChat} onPick={pick} />}
           </div>
+          {account && model && <UsageMenu account={account} />}
           <IconButton label="Hide Sakura" shortcut="⌘L" onClick={() => useUi.getState().setCopilotOpen(false)}>
             <PanelLeftClose size={16} />
           </IconButton>

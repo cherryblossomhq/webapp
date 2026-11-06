@@ -13,7 +13,7 @@ import type { Project, Trace, Vec2 } from "./types"
 // - an end that nothing joins moves with the segment;
 // - another track that ends on the middle of the segment keeps its end on it, its last segment's angle too.
 // A segment cannot be pulled through itself: past that it stops. A corner of a track can be dragged on its own, and the tracks that end there go
-// with it. Every track the drag reshapes is locked, as copper drawn by hand is, so routing the board again keeps it.
+// with it. A track keeps its lock as it was: reshaping one does not lock it, so Sakura and routing see it as they did before.
 
 const NEAR = 1e-6
 /** The shortest segment a drag leaves (coordinates are kept to 1e-4). */
@@ -224,7 +224,7 @@ function shaped(plan: SegmentDrag, o: number, square: boolean): { jogs: [Vec2 | 
   return { jogs, moves }
 }
 
-/** A project with the tracks of `changes` reshaped (each simplified, locked, and gone when nothing of it is left). */
+/** A project with the tracks of `changes` reshaped (each simplified, and gone when nothing of it is left). */
 function reshaped(project: Project, changes: Map<string, Vec2[]>): Project {
   if (!changes.size) return project
   const traces: Trace[] = []
@@ -235,7 +235,7 @@ function reshaped(project: Project, changes: Map<string, Vec2[]>): Project {
       continue
     }
     const points = simplifyPolyline(pts.map((p) => ({ x: round(p.x), y: round(p.y) })))
-    if (points.length >= 2) traces.push({ ...t, points, locked: true })
+    if (points.length >= 2) traces.push({ ...t, points })
   }
   return { ...project, traces, updatedAt: Date.now() }
 }

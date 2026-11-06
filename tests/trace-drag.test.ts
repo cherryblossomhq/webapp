@@ -105,13 +105,16 @@ describe("dragging a segment", () => {
     expect(a[1]).toBeCloseTo(3.5, 2)
   })
 
-  it("slides the end of another track that carries on from an end, and locks both", () => {
+  it("slides the end of another track that carries on from an end, and locks neither", () => {
     const p = board(tr("a", [[0, 0], [5, 0]]), tr("b", [[5, 0], [5, 5]]), tr("far", [[20, 20], [30, 20]]))
     const out = drag(p, "a", 0, P(0, 1))
     expect(pts(out, "a")).toEqual([[0, 1], [5, 1]])
     expect(pts(out, "b")).toEqual([[5, 1], [5, 5]])
-    expect(out.traces.find((t) => t.id === "a")!.locked).toBe(true)
-    expect(out.traces.find((t) => t.id === "b")!.locked).toBe(true)
+    expect(out.traces.find((t) => t.id === "a")!.locked).toBeUndefined()
+    expect(out.traces.find((t) => t.id === "b")!.locked).toBeUndefined()
+    // A locked track stays locked.
+    const held = board(tr("a", [[0, 0], [5, 0]], { locked: true }))
+    expect(drag(held, "a", 0, P(0, 1)).traces[0].locked).toBe(true)
     // A track the drag does not touch is the same object.
     expect(out.traces.find((t) => t.id === "far")).toBe(p.traces.find((t) => t.id === "far"))
   })

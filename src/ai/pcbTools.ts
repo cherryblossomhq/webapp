@@ -821,31 +821,95 @@ const setClearanceRuleTool: PcbToolSpec = {
 
 // ---------- draw_trace ----------
 
+/** A pin's pads on the board, with its net's name: where draw_trace starts or ends, or why it can't. */
+function traceEnd(project: Project, spec: unknown, key: string): { spec: string; pads: WorldPad[]; net: string | undefined } | string {
+  if (typeof spec !== "string" || !spec.trim()) return `${key} is a pin such as "J1.1" or "U1.VIN"`
+  const ref = resolvePinSpec(project, spec)
+  if (!ref) return `There is no pin ${spec.trim()}: give REF.PIN with the pin's number or name, as get_design lists them`
+  const c = project.components.find((x) => x.id === ref.componentId)!
+  if (!c.pcb.placed || !onBoard(c)) return `${c.ref} is not on the board`
+  const pads = pcbPads(c).filter((p) => p.pin === ref.pin && p.plated !== false)
+  if (!pads.length) return `${spec.trim()} has no pad on the board`
+  const conn = getConnectivity(project)
+  const netId = conn.pinNet.get(pinKey(c.id, ref.pin))
+  return { spec: spec.trim(), pads, net: conn.nets.find((n) => n.id === netId && n.pins.length > 0)?.name }
+}
+
+/** From a to b straight along the longer axis, then at 45 degrees into b; one segment when they are in line or on a diagonal. */
+function dogleg(a: Vec2, b: Vec2): Vec2[] {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const ax = Math.abs(dx)
+  const ay = Math.abs(dy)
+  if (ax < 1e-6 || ay < 1e-6 || Math.abs(ax - ay) < 1e-6) return [a, b]
+  const run = Math.abs(ax - ay)
+  const bend = ax > ay ? { x: a.x + Math.sign(dx) * run, y: a.y } : { x: a.x, y: a.y + Math.sign(dy) * run }
+  return [a, bend, b]
+}
+
+const at = (p: Vec2) => `(${round(p.x, 3)}, ${round(p.y, 3)})`
+
 const drawTraceTool: PcbToolSpec = {
   name: "draw_trace",
   description:
-    "Draw a trace by hand on one copper layer through points (mm, y up), at the net's width unless width is given, locked so routing keeps it. It must touch its net's copper (start on a pad's centre, a via or a trace of it) and is refused if it would short, crowd other copper or leave the board. via_at_end ends it on a via, to go on on another layer.",
+    "Draw a trace by hand on one copper layer, at the net's width unless width is given, locked so routing keeps it: how to carry a current-carrying net where route_pcb went narrower or you want the path yourself. from and to are pins (\"J1.1\", \"U1.VIN\"): the trace starts and ends on their pads' centres, and its net is theirs. points are its corners in between (mm, y up); from and to with no points run straight, then at 45 degrees into to. Without from or to, points must start or end on its net's copper (a pad's centre, a via or a trace of it). Refused if it would short, crowd other copper or leave the board; the error names what is in the way. via_at_end ends it on a via, to go on on another layer.",
   input_schema: {
     type: "object",
     properties: {
-      net: { type: "string" },
-      points: { type: "array", items: { type: "number" }, minItems: 4, description: "x1, y1, x2, y2, ..." },
-      layer: { type: "string", description: "top (default), bottom, in1, ..." },
+      from: { type: "string", description: "Pin it starts on, e.g. \"J1.1\"" },
+      to: { type: "string", description: "Pin it ends on, e.g. \"D1.K\"" },
+      points: { type: "array", items: { type: "number" }, description: "Corners x1, y1, x2, y2, ... in mm, after from and before to" },
+      net: { type: "string", description: "Needed only without from and to" },
+      layer: { type: "string", description: "top, bottom, in1, ...; default the layer of a surface-mount pin's pad, else top" },
       width: { type: "number" },
       via_at_end: { type: "boolean" },
     },
-    required: ["net", "points"],
   },
   run: (project, input) => {
-    const net = String(input.net ?? "").trim()
+    const ends: { spec: string; pads: WorldPad[]; net: string | undefined }[] = []
+    const from = input.from === undefined ? null : traceEnd(project, input.from, "from")
+    const to = input.to === undefined ? null : traceEnd(project, input.to, "to")
+    for (const e of [from, to]) {
+      if (typeof e === "string") return fail(project, e)
+      if (e) ends.push(e)
+    }
+    for (const e of ends) if (!e.net) return fail(project, `${e.spec} is on no net: connect it on the schematic first`)
+    const pinNets = [...new Set(ends.map((e) => e.net!))]
+    if (pinNets.length > 1) return fail(project, `${ends[0].spec} is on ${ends[0].net} and ${ends[1].spec} on ${ends[1].net}: a trace joins pins of one net`)
+    const asked = typeof input.net === "string" ? input.net.trim() : ""
+    if (asked && pinNets.length && asked !== pinNets[0]) return fail(project, `${ends[0].spec} is on ${pinNets[0]}, not ${asked}`)
+    const net = asked || pinNets[0] || ""
     const { named, has, hint } = netNames(project)
+    if (!net) return fail(project, "Give from and to (pins), or net and points")
     if (!has(net)) return fail(project, `No net named ${net}.${hint(net)}`)
-    const nums = input.points as unknown[]
-    if (nums.length % 2 || !nums.every((n) => typeof n === "number" && Number.isFinite(n))) return fail(project, "points needs x, y pairs: at least two points")
-    const points: Vec2[] = Array.from({ length: nums.length / 2 }, (_, i) => ({ x: nums[2 * i] as number, y: nums[2 * i + 1] as number }))
+
+    const nums = input.points === undefined ? [] : (input.points as unknown[])
+    if (!Array.isArray(nums) || nums.length % 2 || !nums.every((n) => typeof n === "number" && Number.isFinite(n))) return fail(project, "points needs x, y pairs")
+    const corners: Vec2[] = Array.from({ length: nums.length / 2 }, (_, i) => ({ x: nums[2 * i] as number, y: nums[2 * i + 1] as number }))
+
     const layers = copperLayers(project.board) as string[]
-    const layer = (typeof input.layer === "string" ? input.layer : "top") as CopperLayer
+    // A surface-mount pin decides the layer when none is given; a through-hole one is on every layer.
+    const single = ends.find((e) => e.pads.every((p) => p.layers.length === 1))
+    const layer = (typeof input.layer === "string" ? input.layer : (single?.pads[0].layers[0] ?? "top")) as CopperLayer
     if (!layers.includes(layer)) return fail(project, `layer must be one of ${layers.join(", ")}`)
+    for (const e of ends) {
+      if (!e.pads.some((p) => p.layers.includes(layer))) {
+        return fail(project, `${e.spec}'s pad is on ${[...new Set(e.pads.flatMap((p) => p.layers))].join(" and ")} only, not ${layer}: draw on that layer, or end the other part of the trace on a via (via_at_end) and go on from it`)
+      }
+    }
+    // Of a pin with several pads, the one on the layer nearest where the trace goes next.
+    const padFor = (e: (typeof ends)[number], toward: Vec2 | undefined): Vec2 => {
+      const on = e.pads.filter((p) => p.layers.includes(layer))
+      const best = toward ? on.reduce((a, b) => (Math.hypot(b.x - toward.x, b.y - toward.y) < Math.hypot(a.x - toward.x, a.y - toward.y) ? b : a)) : on[0]
+      return { x: best.x, y: best.y }
+    }
+    const fromEnd = from && typeof from !== "string" ? from : null
+    const toEnd = to && typeof to !== "string" ? to : null
+    const start = fromEnd ? padFor(fromEnd, corners[0] ?? (toEnd ? toEnd.pads[0] : undefined)) : null
+    const finish = toEnd ? padFor(toEnd, corners.at(-1) ?? start ?? undefined) : null
+    const points = start && finish && !corners.length ? dogleg(start, finish) : [...(start ? [start] : []), ...corners, ...(finish ? [finish] : [])]
+    if (points.length < 2) return fail(project, "Give from and to, or points with at least two corners in all")
+
     const rules = project.rules
     const width = typeof input.width === "number" ? round(input.width, 4) : netTraceWidth(rules, net)
     if (!(width >= rules.minTraceWidth - 1e-9)) return fail(project, `${width} mm is below the ${len(rules.minTraceWidth)} mm minimum trace width of the design rules`)
@@ -858,16 +922,18 @@ const drawTraceTool: PcbToolSpec = {
     const after = getPcbAnalysis(next)
     const netId = named.find((n) => n.name === net)!.id
     const on = after.traceNet.get(drawn.trace.id)
-    if (on === "short") return fail(project, `Not drawn: it would short ${net} to another net. ${errorsAdded(project, next, ["short"]).slice(0, 3).join(" ")}`)
-    if (on !== netId) return fail(project, `Not drawn: it touches no copper of ${net}${on ? "" : " (nothing at all)"}. Start or end it on a pad's centre, a via or a trace of ${net}.`)
+    const route = `${start ? `from ${fromEnd!.spec} ${at(start)}` : ""}${start && finish ? " " : ""}${finish ? `to ${toEnd!.spec} ${at(finish)}` : ""}`
+    const where = route ? ` (${route}, through ${drawn.trace.points.map(at).join(", ")})` : ""
+    if (on === "short") return fail(project, `Not drawn${where}: it would short ${net} to another net. ${errorsAdded(project, next, ["short"]).slice(0, 3).join(" ")} Give points that go round it.`)
+    if (on !== netId) return fail(project, `Not drawn: it touches no copper of ${net}${on ? "" : " (nothing at all)"}. Start or end it on a pin (from, to), or on a pad's centre, a via or a trace of ${net}.`)
     const bad = errorsAdded(project, next, COPPER_ERRORS)
-    if (bad.length) return fail(project, `Not drawn: ${bad.slice(0, 4).join(" ")}${bad.length > 4 ? ` And ${bad.length - 4} more.` : ""} Move its points clear, or narrow it.`)
+    if (bad.length) return fail(project, `Not drawn${where}: ${bad.slice(0, 4).join(" ")}${bad.length > 4 ? ` And ${bad.length - 4} more.` : ""} Give points that go round it, or narrow it.`)
     const open = (a: typeof after) => a.ratsnest.filter((r) => r.netId === netId).length
     const length = drawn.trace.points.reduce((sum, p, i, all) => (i ? sum + Math.hypot(p.x - all[i - 1].x, p.y - all[i - 1].y) : 0), 0)
     const left = open(after)
     return ok(
       next,
-      `Drew a ${len(width)} mm trace of ${net} on ${layer}, ${mm(length)} mm long (id ${drawn.trace.id}), locked${input.via_at_end === true ? `, with a via at (${end.x}, ${end.y})` : ""}. ${net} has ${left ? `${left} open connection(s) left` : "no open connections left"}.`,
+      `Drew a ${len(width)} mm trace of ${net} on ${layer}${route ? ` ${route}` : ""}, ${mm(length)} mm long (id ${drawn.trace.id}), locked${input.via_at_end === true ? `, with a via at (${end.x}, ${end.y})` : ""}. ${net} has ${left ? `${left} open connection(s) left` : "no open connections left"}.`,
       `Drew a ${len(width)} mm trace of ${net}`,
     )
   },
@@ -955,7 +1021,7 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       return what ? `${input.remove === true ? "Removing" : "Setting"} the clearance between ${what}` : "Reading the clearance rules"
     }
     case "draw_trace":
-      return `Drawing a trace of ${String(input.net ?? "a net")}`
+      return `Drawing a trace of ${String(input.net ?? input.from ?? "a net")}`
     case "pcb_text":
       return input.remove === true ? "Removing a board text" : typeof input.text === "string" ? `Putting "${input.text}" on the board` : "Changing a board text"
     default:

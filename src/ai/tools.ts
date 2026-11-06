@@ -1855,25 +1855,44 @@ export function unroutedAdvice(res: AutorouteResult): string {
 export function narrowedAdvice(res: AutorouteResult): string {
   if (!res.narrowed?.length) return ""
   const nets = res.narrowed.map((n) => `${n.net} (${n.widths.length} at ${[...new Set(n.widths)].sort((a, b) => b - a).map((w) => `${w} mm`).join(" or ")}, not ${n.width} mm)`)
-  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, clear_routing the net and make room (place_parts, set_board) before route_pcb, or carry it in copper with set_pour polygon; else tell the user.`
+  const names = res.narrowed.map((n) => n.net)
+  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, clear_routing ${names.join(", ")} and route_pcb with nets [${names.join(", ")}] before the rest, so they take the room first; or draw_trace from pin to pin at the width; or make room (place_parts, set_board). Else tell the user.`
 }
 
 const routePcbTool: ToolSpec = {
   name: "route_pcb",
   description:
-    "Autoroute every open ratsnest connection on the two outer layers with vias, keeping existing traces. Lay out the PCB first. Pads of poured nets drop a via into the pour. Stitching vias are stitched again after routing.",
-  input_schema: { type: "object", properties: {} },
-  run: (project) => {
+    "Autoroute open ratsnest connections on the two outer layers with vias, keeping existing traces. Lay out the PCB first. nets routes only those nets: route current-carrying nets first, at their set_net_width, so they take the room before the signals, then call again with no nets for the rest. Pads of poured nets drop a via into the pour. Stitching vias are stitched again after routing.",
+  input_schema: {
+    type: "object",
+    properties: { nets: { type: "array", items: { type: "string" }, description: "Only these nets, e.g. [\"VIN\", \"VOUT\"]; every net when omitted" } },
+  },
+  run: (project, input) => {
     if (!resolvedComponents(project).some((c) => c.pcb.placed && onBoard(c))) {
       return fail(project, noFootprintAdvice(project) ?? noneOnBoardAdvice(project) ?? "No parts are on the PCB yet; run layout_pcb first")
     }
-    const res = routeAroundStitching(project, (p) => autoroute(p))
-    if (!res.routed && !res.remaining) return ok(project, "Every connection is already routed.", "Nothing to route")
-    const tail = narrowedAdvice(res) + (res.remaining ? unroutedAdvice(res) : "")
+    const asked = Array.isArray(input.nets) ? [...new Set((input.nets as unknown[]).map((n) => String(n).trim()).filter(Boolean))] : []
+    const named = getConnectivity(project).nets.filter((n) => n.pins.length > 0)
+    const missing = asked.filter((name) => !named.some((n) => n.name === name))
+    if (missing.length) {
+      return fail(project, `No net named ${missing.join(", ")}. Nets: ${named.filter((n) => n.named).map((n) => n.name).slice(0, 20).join(", ") || "none named yet"}.`)
+    }
+    const ids = asked.length ? named.filter((n) => asked.includes(n.name)).map((n) => n.id) : undefined
+    const of = asked.length ? ` of ${asked.join(", ")}` : ""
+    const res = routeAroundStitching(project, (p) => autoroute(p, ids ? { nets: ids } : {}))
+    if (!res.routed && !res.remaining) return ok(project, `Every connection${of} is already routed.`, "Nothing to route")
+    // Asked for some nets only, the router makes no fine-pitch retry (it would route the others first), so that is not yet tried.
+    const unrouted = !res.remaining
+      ? ""
+      : ids && res.finePitchOpen
+        ? ` ${res.remaining} connection(s)${of} could not be routed, ${res.finePitchOpen} of them at fine-pitch pads: route_pcb with no nets retries those with escape stubs and thinner traces.`
+        : unroutedAdvice(res)
+    const tail = narrowedAdvice(res) + unrouted
+    const rest = ids ? getPcbAnalysis(res.project).ratsnest.filter((r) => !ids.includes(r.netId)).length : 0
     return ok(
       res.project,
-      `Routed ${res.routed} connection(s) with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${copperLayers(project.board).length > 2 ? " The router uses the two outer layers only; the inner layers are as they were." : ""}${tail}`,
-      res.remaining ? `Routed ${res.routed}, ${res.remaining} left` : `Routed ${res.routed} connections`,
+      `Routed ${res.routed} connection(s)${of} with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${copperLayers(project.board).length > 2 ? " The router uses the two outer layers only; the inner layers are as they were." : ""}${tail}${rest ? ` ${rest} connection(s) of other nets are still open: route_pcb routes them.` : ""}`,
+      res.remaining ? `Routed ${res.routed}${of}, ${res.remaining} left` : `Routed ${res.routed} connections${of}`,
     )
   },
 }
@@ -2389,7 +2408,7 @@ export function toolActivityLabel(name: string, input: unknown): string {
     case "set_design_rules":
       return "Setting the design rules"
     case "route_pcb":
-      return "Routing the board"
+      return Array.isArray(i.nets) && i.nets.length ? `Routing ${i.nets.map(String).join(", ")}` : "Routing the board"
     case "set_pour":
       return `Pouring ${String(i.net ?? "copper")}`
     case "save_version":

@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "e80dab71ce61e0a1503ff15b3993e927ac54d1ef"
+const BASE_SHA = "bdba4cfa88cde49a8a089ea7908af2c96038ac01"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -21,8 +21,10 @@ const BASE_SHA = "e80dab71ce61e0a1503ff15b3993e927ac54d1ef"
  * on a mains board had no way to set.
  * Then 325 longer: save a version before a change that may be taken back and restore it to go back, never rebuild by hand, and that
  * Sakura can undo its own changes; on October 31 most of a session's replies were Sakura rebuilding earlier states by hand.
+ * Then 280 longer: route current-carrying nets first with route_pcb nets, draw what still goes narrower with draw_trace from pin to pin, and
+ * carry current in traces, not polygon pours; an assistant poured a rectifier board's bus and phases as strips.
  */
-const BASE_CHARS = 11520
+const BASE_CHARS = 11800
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -71,6 +73,12 @@ const CLEARANCE_RULES_GROWTH = 1180
  * session that rebuilt earlier states by hand 110 times in 212 replies had none of. The budget below was raised by exactly this.
  */
 const VERSION_TOOLS_GROWTH = 2165
+/**
+ * What routing power in traces asked for, in bytes (895): `route_pcb` takes `nets` (299), to route current-carrying nets first, and
+ * `draw_trace` takes `from` and `to` pins (596), since it took only coordinates and no tool says where a pad's centre is, so an
+ * assistant poured its supply nets as polygons instead. The budget below was raised by exactly this.
+ */
+const POWER_ROUTING_GROWTH = 895
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -104,6 +112,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH).toBeLessThan(2100)
   })
 })

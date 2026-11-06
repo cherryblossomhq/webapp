@@ -88,12 +88,56 @@ describe("draw_trace", () => {
     expect(refused.project).toBe(mains)
   })
 
+  it("runs from pin to pin, on their net, with no coordinates to know", () => {
+    const out = runTool(board(), "draw_trace", { from: "J1.1", to: "J2.1", width: 3 })
+    expect(out.isError, out.result).toBe(false)
+    expect(out.result).toMatch(/^Drew a 3 mm trace of L1 on top from J1\.1 \(-12, 3\.75\) to J2\.1 \(12, 3\.75\), 24\.00 mm long/)
+    expect(out.result).toContain("L1 has no open connections left")
+    expect(out.project.traces.at(-1)).toMatchObject({ layer: "top", width: 3, locked: true, points: [{ x: -12, y: 3.75 }, { x: 12, y: 3.75 }] })
+  })
+
+  it("bends at 45 degrees into to, or goes through the corners given", () => {
+    // J2 5 mm higher: straight for 19 mm, then 5 mm at 45 degrees.
+    const p = board()
+    const higher = { ...p, components: p.components.map((c) => (c.ref === "J2" ? { ...c, pcb: { ...c.pcb, y: 8.75 } } : c)) }
+    const bent = runTool(higher, "draw_trace", { from: "J1.1", to: "J2.1" })
+    expect(bent.isError, bent.result).toBe(false)
+    expect(bent.project.traces.at(-1)!.points).toEqual([{ x: -12, y: 3.75 }, { x: 7, y: 3.75 }, { x: 12, y: 8.75 }])
+    const through = runTool(board(), "draw_trace", { from: "J1.1", points: [0, 8], to: "J2.1" })
+    expect(through.isError, through.result).toBe(false)
+    expect(through.project.traces.at(-1)!.points).toEqual([{ x: -12, y: 3.75 }, { x: 0, y: 8 }, { x: 12, y: 3.75 }])
+  })
+
+  it("is refused between pins of two nets, on a net the pins are not on, or from a pin that is not there", () => {
+    const p = board()
+    expect(runTool(p, "draw_trace", { from: "J1.1", to: "J2.2" }).result).toContain("J1.1 is on L1 and J2.2 on L2: a trace joins pins of one net")
+    expect(runTool(p, "draw_trace", { from: "J1.1", to: "J2.1", net: "L2" }).result).toContain("J1.1 is on L1, not L2")
+    expect(runTool(p, "draw_trace", { from: "J9.1", to: "J2.1" }).result).toContain("There is no pin J9.1")
+    const short = runTool(p, "draw_trace", { from: "J1.1", to: "J2.1", points: [-12, -3.75] })
+    expect(short.isError).toBe(true)
+    // Where it ran, so the next try can go round.
+    expect(short.result).toContain("from J1.1 (-12, 3.75) to J2.1 (12, 3.75), through (-12, 3.75), (-12, -3.75), (12, 3.75)): it would short L1")
+  })
+
   it("can end on a via to carry on on the other layer", () => {
     const first = runTool(board(), "draw_trace", { net: "L1", points: [-12, 3.75, 0, 3.75], width: 1, via_at_end: true })
     expect(first.result).toContain("with a via at (0, 3.75)")
     const second = runTool(first.project, "draw_trace", { net: "L1", points: [0, 3.75, 12, 3.75], layer: "bottom", width: 1 })
     expect(second.isError, second.result).toBe(false)
     expect(second.result).toContain("L1 has no open connections left")
+  })
+})
+
+describe("route_pcb nets", () => {
+  it("routes only the nets asked, and says what is left for the next call", () => {
+    const out = runTool(board(), "route_pcb", { nets: ["L1"] })
+    expect(out.isError, out.result).toBe(false)
+    expect(out.result).toMatch(/^Routed 1 connection\(s\) of L1 /)
+    expect(out.result).toContain("1 connection(s) of other nets are still open: route_pcb routes them.")
+    const rest = runTool(out.project, "route_pcb", {})
+    expect(rest.result).toMatch(/^Routed 1 connection\(s\) with/)
+    expect(runTool(rest.project, "route_pcb", { nets: ["L1"] }).result).toBe("Every connection of L1 is already routed.")
+    expect(runTool(board(), "route_pcb", { nets: ["L9"] }).result).toContain("No net named L9. Nets: ")
   })
 })
 

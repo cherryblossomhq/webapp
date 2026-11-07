@@ -25,14 +25,15 @@ export function FeedbackButton() {
   const [topic, setTopic] = useState<FeedbackTopic>()
   const [message, setMessage] = useState("")
   const [status, setStatus] = useState<Status>("idle")
-  // Whether anything was sent while it was open: closing after that is not a dismissal.
+  // Whether anything was sent while it was open: closing after that, or while it is on its way, is
+  // not a dismissal.
   const sent = useRef(false)
   const ref = useRef<HTMLDivElement>(null)
   const field = useRef<HTMLTextAreaElement>(null)
 
   const close = () => {
     setOpen(false)
-    if (!sent.current) sink?.dismissed?.()
+    if (!sent.current && status !== "sending") sink?.dismissed?.()
   }
   useDismiss(ref, open, close)
 
@@ -50,7 +51,8 @@ export function FeedbackButton() {
 
   const show = () => {
     sent.current = false
-    if (status !== "sending") setStatus("idle")
+    // A failure stays: a send that failed after the form was closed says so when it opens again.
+    if (status === "sent") setStatus("idle")
     setOpen(true)
     sink.opened?.()
   }

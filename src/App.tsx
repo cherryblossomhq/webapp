@@ -7,6 +7,7 @@ import { Dashboard } from "./pages/Dashboard"
 import { Editor } from "./pages/Editor"
 import { AccountContext, type EditorAccount } from "./store/account"
 import { useCopilot } from "./store/copilotStore"
+import { connectFeedback, type FeedbackSink } from "./store/feedback"
 import { browserModelFiles, connectModelFiles, type ModelFileStore } from "./store/modelFiles"
 import { connectPartModels, type PartModelSource } from "./store/partModels"
 import { browserPresence } from "./store/presence"
@@ -124,6 +125,11 @@ export interface AppProps {
    */
   account?: EditorAccount
   /**
+   * Where the top bar's Feedback form sends what is typed in it: the website's is a survey in its
+   * analytics. Without it there is no Feedback button.
+   */
+  feedback?: FeedbackSink
+  /**
    * Where the host mounts the editor, with no trailing slash: the editor's own dashboard is this
    * path and a project is `<basePath>/p/<id>`, so the host serves both. The site's root when absent.
    */
@@ -139,7 +145,7 @@ let promptHandled = false
 
 type Load = { state: "loading" } | { state: "ready" } | { state: "missing" } | { state: "failed"; message: string }
 
-export function App({ managedAi, storage: given, initialPrompt, supplierParts, modelFiles, partModels, account, basePath: base = "" }: AppProps) {
+export function App({ managedAi, storage: given, initialPrompt, supplierParts, modelFiles, partModels, account, feedback, basePath: base = "" }: AppProps) {
   // During render rather than in an effect: the copilot panel's effects run before this
   // component's, and its first account fetch needs the host's token already. Only when the
   // prop changes, so a host installed through the development hook isn't undone by a re-render.
@@ -163,6 +169,7 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
   connectProjectStorage(storage)
   connectModelFiles(modelFiles ?? (defaultModelFiles ??= browserModelFiles()))
   connectPartModels(partModels)
+  connectFeedback(feedback)
   projectsUrl = account?.projectsUrl
   basePath = base
 

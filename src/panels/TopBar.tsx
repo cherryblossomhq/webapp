@@ -10,6 +10,7 @@ import { Tooltip } from "../ui/Tooltip"
 import { AccountMenu } from "./AccountMenu"
 import { Collaborators, OfflinePill } from "./Collaborators"
 import { ExportMenu } from "./ExportMenu"
+import { FeedbackButton } from "./FeedbackButton"
 import { ThemeButton } from "./ThemeButton"
 import { checkTotals, useChecks } from "./ChecksPanel"
 import { ShareButton, ShareDialog } from "./ShareDialog"
@@ -132,6 +133,7 @@ export function TopBar() {
           </button>
         </Tooltip>
         <ExportMenu />
+        <FeedbackButton />
         <ThemeButton />
         <AccountMenu />
       </div>

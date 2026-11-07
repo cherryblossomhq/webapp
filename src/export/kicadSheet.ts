@@ -1,13 +1,15 @@
-import { round, mm6 } from "../lib/geometry"
+import { round, mm6, type Box } from "../lib/geometry"
 import { labelJustify } from "../model/labelShapes"
 import { SCH_LIGHT } from "../editor/theme"
-import { textFrame, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
+import { LINE_HEIGHT, TEXT_PAD, textFrame, textLines, textSize, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
 import { isExact, lookOfText } from "../model/sheetItems"
 import type { ComponentInstance, DrawingColor, LabelField, NetLabel, SchematicDrawing, SheetFill, SheetStroke, TextLook, Vec2 } from "../model/types"
 import { escapeNetName, quote } from "../lib/kicadQuote"
 import { encodeBase64 } from "../lib/imageFacts"
 import { imageBytes } from "../store/imageFiles"
+import { findPart } from "../model/library"
 import { referenceOf } from "./kicadBlocks"
+import { KICAD_LINE_PITCH, kicadTextWidth } from "./kicadFont"
 
 /** A picture's PNG as base64, from the file store's bytes on this page; null when they are not here. */
 const pictureBase64 = (file: string): string | null => {
@@ -47,10 +49,14 @@ const subUuidOf = (n: number, k: number) => uuidIn(1, n * 0x100000 + k)
 const busLabelUuidOf = (i: number) => uuidIn(2, i)
 const labelUuidOf = (i: number) => uuidIn(3, i)
 
-/** `(effects (font (size ...) ...) (justify ...) (href ...) (hide yes))` of a text's look; the page's text size is 1.27 mm. */
-function effects(look: TextLook | undefined, justify?: { h?: string; v?: string }): string {
+/**
+ * `(effects (font (size ...) ...) (justify ...) (href ...) (hide yes))` of a text's look; the page's text size is 1.27 mm. KiCad's `size` is the
+ * glyphs' height and then their width, which is the height unless `glyphWidth` (editor units) is given.
+ */
+function effects(look: TextLook | undefined, justify?: { h?: string; v?: string }, glyphWidth?: number): string {
   const size = round((look?.size ?? 0.1) * MM, 4)
-  const font = [`(size ${mm6(size)} ${mm6(size)})`]
+  const width = glyphWidth === undefined ? size : round(glyphWidth * MM, 4)
+  const font = [`(size ${mm6(size)} ${mm6(width)})`]
   if (look?.thickness) font.push(`(thickness ${L(look.thickness)})`)
   if (look?.bold) font.push("bold")
   if (look?.italic) font.push("italic")
@@ -108,12 +114,39 @@ function fieldNode(f: LabelField, l: Vec2, toPage: ToPage): string {
 /** The editor's named colours as the light sheet draws them, which is how they leave the editor. */
 const named = (c: DrawingColor | undefined) => SCH_LIGHT.drawing[c ?? "ink"]
 
+/** A drawing as it is written: a text of the drawing tools can have glyphs narrower than they are tall (`glyphWidth`, editor units). */
+export type SheetItem = SchematicDrawing & { glyphWidth?: number }
+
+/**
+ * How a text of the drawing tools is written to take the room it takes on the editor's sheet. KiCad's stroke font is
+ * wider than the editor measures its text (capitals about 0.94 of their height, where the editor counts 0.58), so a
+ * text whose longest line KiCad would draw longer is written with narrower glyphs: it stays off its neighbours, and a
+ * text box does not wrap its lines out of the bottom of the box. KiCad's lines are also further apart (1.61 of the
+ * height, the editor's 1.3), which no setting changes in a KiCad 9 sheet, so `across` is how much more room its lines
+ * take across them.
+ */
+export function editorTextFit(d: Extract<SchematicDrawing, { type: "text" }>): { glyphWidth?: number; across: number } {
+  const lines = textLines(d)
+  const across = (lines.length - 1) * d.size * (KICAD_LINE_PITCH - LINE_HEIGHT)
+  const kicad = Math.max(...lines.map((l) => kicadTextWidth(l, d.size)))
+  const room = textSize(d).width
+  // A little under the editor's width, so a line KiCad measures to the box's edge is not wrapped onto the next.
+  return kicad > room ? { glyphWidth: round((d.size * room * 0.98) / kicad, 5), across } : { across }
+}
+
+/** What a text of the drawing tools covers on KiCad's page: its frame on the editor's sheet, with its lines as far apart as KiCad draws them. */
+export function writtenTextBounds(d: Extract<SchematicDrawing, { type: "text" }>): Box {
+  const b = textFrame(d)
+  const { across } = editorTextFit(d)
+  return d.rot === 90 ? { ...b, maxX: b.maxX + across } : { ...b, minY: b.minY - across }
+}
+
 /**
  * A drawing the drawing tools made, said the way a KiCad file says it: exact strokes, fills and text, which is
  * what `itemNode` writes. A drawing that already is exact is itself. An arrowhead is a small filled triangle of
  * its own, since KiCad's lines have none; a text with a border or a background is a text box.
  */
-export function exactForm(d: SchematicDrawing, n: () => string): SchematicDrawing[] {
+export function exactForm(d: SchematicDrawing, n: () => string): SheetItem[] {
   if (isExact(d)) return [d]
   // Ink is KiCad's own default colour (none written), so it turns light in KiCad's dark theme; only a named colour is written.
   const color = d.color && d.color !== "ink" ? named(d.color) : undefined
@@ -140,12 +173,18 @@ export function exactForm(d: SchematicDrawing, n: () => string): SchematicDrawin
   if (d.type === "rect") return [{ id: d.id, type: "rect", x: d.x, y: d.y, width: d.width, height: d.height, ...(d.radius ? { radius: d.radius } : {}), stroke, ...(paint ? { paint } : {}) }]
   if (d.type === "text") {
     const look = { ...lookOfText(d), color }
+    const fit = editorTextFit(d)
+    const narrow = fit.glyphWidth === undefined ? {} : { glyphWidth: fit.glyphWidth }
     if (d.border || d.fill) {
       const f = textFrame(d)
-      const pad = d.size * 0.45
-      return [{ id: d.id, type: "textbox", text: d.text, x: f.minX, y: f.maxY, w: f.maxX - f.minX, h: f.maxY - f.minY, rot: d.rot === 90 ? 90 : 0, margins: [pad, pad, pad, pad], look: { ...look, h: "left", v: "top" }, stroke: d.border ? stroke : { width: 0, color }, ...(paint ? { paint } : {}) }]
+      const pad = d.size * TEXT_PAD
+      // The box grows the way its lines run on from its top-left corner: down, or right for a text turned to read upwards.
+      const turned = d.rot === 90
+      const w = f.maxX - f.minX + (turned ? fit.across : 0)
+      const h = f.maxY - f.minY + (turned ? 0 : fit.across)
+      return [{ id: d.id, type: "textbox", text: d.text, x: f.minX, y: f.maxY, w, h, rot: turned ? 90 : 0, margins: [pad, pad, pad, pad], look: { ...look, h: "left", v: "top" }, stroke: d.border ? stroke : { width: 0, color }, ...(paint ? { paint } : {}), ...narrow }]
     }
-    return [{ ...d, size: d.size, valign: "top", align: d.align ?? "left", stroke: { color } }]
+    return [{ ...d, size: d.size, valign: "top", align: d.align ?? "left", stroke: { color }, ...narrow }]
   }
   return [d]
 }
@@ -196,7 +235,7 @@ function roundedRectangle(g: { x0: number; y0: number; x1: number; y1: number; r
 export const roundedFill = (d: SchematicDrawing) => d.type === "rect" && !!d.radius && d.radius > 0 && !!(d.paint ?? (d as { fill?: unknown }).fill)
 
 /** A drawing as KiCad writes it for the sheet: a text, a text box, a line or shape, a picture, a table, a junction dot or a no-connect flag. */
-export function itemNode(item: SchematicDrawing, toPage: ToPage, n: number): string {
+export function itemNode(item: SheetItem, toPage: ToPage, n: number): string {
   const xy = (p: Vec2) => {
     const q = toPage(p)
     return `(xy ${mm6(q.x)} ${mm6(q.y)})`
@@ -209,10 +248,10 @@ export function itemNode(item: SchematicDrawing, toPage: ToPage, n: number): str
   const fillOf = (d: { paint?: SheetFill }) => fillNode(d.paint)
   switch (item.type) {
     case "text":
-      return `  (text ${quote(item.text)}\n    ${sim(item.excludeFromSim)}\n    (at ${at(item)} ${item.rot ?? 0})\n    ${effects(lookOfText(item))}\n    ${uuid}\n  )`
+      return `  (text ${quote(item.text)}\n    ${sim(item.excludeFromSim)}\n    (at ${at(item)} ${item.rot ?? 0})\n    ${effects(lookOfText(item), undefined, item.glyphWidth)}\n    ${uuid}\n  )`
     case "textbox": {
       const m = item.margins ? `\n    (margins ${item.margins.map((v) => L(v)).join(" ")})` : ""
-      return `  (text_box ${quote(item.text)}\n    ${sim(item.excludeFromSim)}\n    (at ${at(item)} ${item.rot})\n    (size ${L(item.w)} ${L(item.h)})${m}\n    ${strokeNode(item.stroke)}\n    ${fillOf(item)}\n    ${effects(item.look)}\n    ${uuid}\n  )`
+      return `  (text_box ${quote(item.text)}\n    ${sim(item.excludeFromSim)}\n    (at ${at(item)} ${item.rot})\n    (size ${L(item.w)} ${L(item.h)})${m}\n    ${strokeNode(item.stroke)}\n    ${fillOf(item)}\n    ${effects(item.look, undefined, item.glyphWidth)}\n    ${uuid}\n  )`
     }
     case "line":
       // S8: a rule area is KiCad 9's `(rule_area (polyline ...))`: its polygon is closed by the reader, so the first point is not written again. Its flags are not in the KiCad 9 file (`model/ruleAreas.ts` puts them on the symbols inside).
@@ -423,4 +462,68 @@ export function localizePower(sch: string, texts: Set<string>): string {
     return placed.includes(`(lib_id "${lib}")`) ? `${block}${copy}` : copy
   })
   return out
+}
+
+/** The library symbols the converter writes for the editor's power and ground ports, named by the way they reach from their pin. */
+const PORT_LIB = /^Custom:(ground|vcc)_(up|down|left|right)$/
+const LIB_BLOCK = /\n {4}\(symbol "([^"]+)"\n[\s\S]*?\n {4}\)(?=\n)/g
+/** Each way as an angle, which is also KiCad's angle for a pin that reaches that way into its symbol. */
+const ANGLE = { right: 0, up: 90, left: 180, down: 270 } as const
+const AWAY = { up: "down", down: "up", left: "right", right: "left" } as const
+
+/** The lines of the editor's drawing of the ground or power port, in millimetres from its pin (y up, as a library symbol is), turned to reach `way` from the pin. */
+function portLines(kind: "ground" | "vcc", way: keyof typeof ANGLE): Vec2[][] {
+  const symbol = findPart(kind === "ground" ? "ground" : "power")!.symbol
+  const pin = symbol.ports[0]
+  const turn = ((ANGLE[way] - ANGLE[AWAY[pin.dir]]) * Math.PI) / 180
+  const [cos, sin] = [Math.round(Math.cos(turn)), Math.round(Math.sin(turn))]
+  return symbol.primitives.flatMap((p) => (p.type === "path" ? [p.points.map((q) => ({ x: round(((q.x - pin.x) * cos - (q.y - pin.y) * sin) * MM, 4), y: round(((q.x - pin.x) * sin + (q.y - pin.y) * cos) * MM, 4) }))] : []))
+}
+
+const polylineNode = (pts: Vec2[]) =>
+  [
+    "        (polyline",
+    "          (pts",
+    ...pts.map((q) => `            (xy ${mm6(q.x)} ${mm6(q.y)})`),
+    "          )",
+    "          (stroke",
+    "            (width 0)",
+    "            (type default)",
+    "          )",
+    "          (fill",
+    "            (type none)",
+    "          )",
+    "        )",
+  ].join("\n")
+
+/**
+ * The editor's power and ground ports drawn in the file as the editor draws them. The converter draws its own net symbols
+ * (tscircuit's) at a scale of their own: bars 6.6 mm wide at the end of a 5 mm stem that leans, about two and a half times
+ * the editor's, so ports set close together (grounds on neighbouring pins of a chip) were drawn over each other and over
+ * the labels between them. Each library symbol becomes the editor's drawing turned to reach the way its name says, with
+ * its pin at its origin and its pin's name hidden, as KiCad's own power symbols are; each placed one moves by as much as
+ * its pin did, so the pin stays where it was. The net's name is the placed symbol's value, written where the editor
+ * draws it (`applyPowerTexts`).
+ */
+export function redrawPowerPorts(sch: string): string {
+  const moved = new Map<string, Vec2>()
+  const libs = sch.replace(LIB_BLOCK, (block, lib: string) => {
+    const shape = PORT_LIB.exec(lib)
+    const pin = block.match(/\n {8}\(pin \S+ \S+\n {10}\(at (\S+) (\S+) (\S+)\)/)
+    if (!shape || !pin) return block
+    const bare = lib.slice(lib.indexOf(":") + 1)
+    const lines = portLines(shape[1] as "ground" | "vcc", shape[2] as keyof typeof ANGLE)
+    moved.set(lib, { x: Number(pin[1]), y: Number(pin[2]) })
+    return block
+      .replace(new RegExp(String.raw`(\n {6}\(symbol "${bare}_0_1")\n[\s\S]*?(\n {6}\))`), (_m, head: string, tail: string) => `${head}\n${lines.map(polylineNode).join("\n")}${tail}`)
+      .replace(pin[0], pin[0].replace(/\(at \S+ \S+ \S+\)$/, `(at 0 0 ${ANGLE[shape[2] as keyof typeof ANGLE]})`))
+      .replace(/(\n {10}\(length )[^)]*\)/, (_m, head: string) => `${head}0)`)
+      .replace(/(\n {6}\(pin_names\n {8}\(offset [^)]*\))(\n {6}\))/, "$1\n        (hide yes)$2")
+  })
+  if (!moved.size) return sch
+  // The converter places every port unturned: its origin moves to where its pin was (the library's y is up, the page's down).
+  return libs.replace(/(\n {2}\(symbol\n {4}\(lib_id "([^"]+)"\)\n {4}\(at )(\S+) (\S+) 0\)/g, (m, head: string, lib: string, x: string, y: string) => {
+    const by = moved.get(lib)
+    return by ? `${head}${Number(x) + by.x} ${Number(y) - by.y} 0)` : m
+  })
 }

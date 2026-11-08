@@ -1,10 +1,13 @@
 import { imp } from "./kicad-sheets-fixtures"
+import { board, footprint, pad } from "./kicad-board-fixtures"
+import { ALL } from "./kicad-test-helpers"
 import { readFileSync } from "node:fs"
 import { drawingBounds } from "../src/model/drawings"
 import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { customPartId, customPartProblems, registerProjectParts } from "../src/model/customParts"
 import { EXAMPLES } from "../src/model/examples"
+import { importKicadBoard } from "../src/model/kicad/board"
 import { schematicPins } from "../src/model/instances"
 import RETIRED from "../src/model/migrations/libraryParts.json"
 import { fileModel, setModel } from "../src/model/models3d"
@@ -1004,9 +1007,30 @@ describe("version 6: every sheet is a page", () => {
   })
 
   it("puts the page of a project read from KiCad where KiCad has it, its corner at the origin", () => {
-    const kicad = { ...v5, project: { ...v5.project, components: [part("c1", "R1", 5, -5)], wires: [], labels: [], sheets: [{ id: "root" }], sheetSymbols: undefined, properties: [{ key: "KiCad file version", value: "KiCad 9.0, file version 20250114" }] } }
+    const kicad = { ...v5, project: { ...v5.project, components: [part("c1", "R1", 5, -5)], wires: [], labels: [], sheets: [{ id: "root" }], sheetSymbols: undefined, properties: [{ key: "KiCad file version", value: "KiCad 9.0, file version 20250114" }], netNames: "kicad" } }
     const read = parseProjectFile(kicad, origin)
     expect(paperOf(read)).toEqual({ size: "A4", x: 0, y: 0 })
+    allHeld(read)
+  })
+
+  it("keeps a KiCad schematic import's page at the origin when a part is near its top-left edge", () => {
+    // The part's estimated reach pokes past the inner frame's left and top, which no size takes in: the page stays where KiCad has it.
+    const kicad = { ...v5, project: { ...v5.project, components: [part("c1", "R1", 0.5, -0.5)], wires: [], labels: [], sheets: [{ id: "root" }], sheetSymbols: undefined, netNames: "kicad" } }
+    expect(paperOf(parseProjectFile(kicad, origin))).toEqual({ size: "A4", x: 0, y: 0 })
+  })
+
+  it("places a KiCad board-only import's schematic like any other project's, on a page that holds it", () => {
+    const pads = [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0", net: '(net 2 "VIN")' })]
+    const parts = Array.from({ length: 8 }, (_, i) => footprint({ ref: `R${i + 1}`, at: `${i * 5} 0`, pads }))
+    const r = importKicadBoard(board({ nets: ['(net 0 "")', '(net 1 "GND")', '(net 2 "VIN")'], body: parts }), { built: ALL })
+    if (r.status !== "imported") throw new Error(r.status)
+    const doc = JSON.parse(serializeProject(r.project))
+    expect(doc.project.properties.some((p: { key: string }) => p.key === "KiCad file version")).toBe(true)
+    expect(doc.project.netNames).toBeUndefined()
+    doc.version = 5
+    delete doc.project.sheets
+    const read = parseProjectFile(doc, origin)
+    expect(paperOf(read).size).not.toBe("A0")
     allHeld(read)
   })
 

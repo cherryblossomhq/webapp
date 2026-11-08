@@ -184,9 +184,11 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * the bump is what keeps a version 4 reader, which would drop such a picture and save the loss back, from opening one.
  *
  * Version 6 makes every sheet a page (`SchematicSheet.paper`, `model/paper.ts`): the migration lists the root and gives each sheet the
- * smallest landscape A4 to A0 that holds its drawing, centred on it, or for a project read from KiCad at the origin, where KiCad has its page
- * (`migrations/sheetPaper.ts`). The first copy to open a project writes it whole, so the page is stored once and never worked out again; the bump
- * also keeps a version 5 reader, which would drop the pages and save the loss back, from opening one.
+ * smallest landscape A4 to A0 that holds its drawing, centred on it (`migrations/sheetPaper.ts`). A KiCad schematic import, recognised by
+ * `Project.netNames`, which only it sets, keeps its corner at the origin, where KiCad has its page, sized by the drawing's right and bottom;
+ * every other project, a board-only KiCad import included, is centred. The first copy to open a project writes it whole, so the page is
+ * stored once and never worked out again; the bump also keeps a version 5 reader, which would drop the pages and save the loss back, from
+ * opening one.
  */
 const MIGRATIONS: Record<number, (project: Json) => Json> = {
   0: ({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...project }) => project,

@@ -790,7 +790,7 @@ function defaultFields(d: NonNullable<Project["rules"]["defaultClass"]>) {
 // ---------- The page ----------
 
 /** The sheet's page as KiCad writes it: `(paper "A3")`, `(paper "A4" portrait)` or `(paper "User" 300 200)`, a custom page by its width and height in mm as it is turned. */
-export function kicadPaper(paper: SheetPaper): string {
+function kicadPaper(paper: SheetPaper): string {
   if (paper.size !== "User") return `(paper "${paper.size}"${paper.portrait ? " portrait" : ""})`
   const mm = paperMm(paper)
   return `(paper "User" ${round(mm.width, 4)} ${round(mm.height, 4)})`

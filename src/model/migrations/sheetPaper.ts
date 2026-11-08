@@ -1,7 +1,8 @@
 // The step from version 5 to 6 (see `projectFile.ts`): every sheet is a page. Each sheet gets the smallest landscape A4 to A0 that holds
-// its drawing, so a project opens with every drawing on its page; the first copy to open it writes it whole, so the page is stored once and
-// never worked out again. Plain JSON in and out: the sizes and the border are copied here from `model/paper.ts` as they were when this
-// shipped, and the drawing's box is estimated from the points the document stores.
+// its drawing, centred on it (a KiCad schematic import keeps its corner at the origin, where KiCad has it), so a project opens with every
+// drawing on its page; the first copy to open it writes it whole, so the page is stored once and never worked out again. Plain JSON in and
+// out: the sizes and the border are copied here from `model/paper.ts` as they were when this shipped, and the drawing's box is estimated
+// from the points the document stores.
 
 type Json = Record<string, unknown>
 type Box = { minX: number; minY: number; maxX: number; maxY: number }
@@ -115,14 +116,23 @@ function around(w: number, h: number, b: Box): { x: number; y: number } | null {
   return null
 }
 
-function paperFor(b: Box, kicad: boolean): Json {
+/**
+ * A KiCad schematic import's page: its corner at the origin, where KiCad has it, and the smallest size whose inner frame reaches the drawing's
+ * right and bottom. Its overflow past the left and top is the estimate's margin (`PART_REACH`), which no size can take in, and the title block
+ * is left out too: the estimate overshoots, and the page in KiCad was the user's own choice. A0 when none reaches.
+ */
+function kicadPaperFor(b: Box): Json {
+  if (!Number.isFinite(b.minX)) return { size: "A4", x: 0, y: 0 }
+  for (const [size, w, h] of SIZES) {
+    const { inner } = frames(w, h, 0, 0)
+    if (b.maxX <= inner.maxX + E && b.minY >= inner.minY - E) return { size, x: 0, y: 0 }
+  }
+  return { size: "A0", x: 0, y: 0 }
+}
+
+function paperFor(b: Box): Json {
   if (!Number.isFinite(b.minX)) return { ...DEFAULT_PAPER }
   for (const [size, w, h] of SIZES) {
-    if (kicad) {
-      // A sheet read from KiCad has its page where KiCad has it: the top-left corner at the origin.
-      if (holds(w, h, 0, 0, b)) return { size, x: 0, y: 0 }
-      continue
-    }
     const at = around(w, h, b)
     if (at) return { size, ...at }
   }
@@ -162,6 +172,9 @@ export function sheetPaper(project: Json): Json {
     const b = at(d.sheet)
     if (b) drawing(b, d)
   }
-  const kicad = list(project.properties).some((p) => p.key === "KiCad file version")
-  return { ...project, sheets: all.map((s) => ({ ...s, paper: paperFor(boxes.get(String(s.id))!, kicad) })) }
+  // Only the KiCad schematic import names nets as KiCad does (`Project.netNames`); a board-only import, which has the `KiCad file version`
+  // property too, laid its schematic out itself, so it is placed like any other project.
+  const kicad = project.netNames === "kicad" || project.netNames === "kicad6" || project.netNames === "kicad5"
+  const place = kicad ? kicadPaperFor : paperFor
+  return { ...project, sheets: all.map((s) => ({ ...s, paper: place(boxes.get(String(s.id))!) })) }
 }

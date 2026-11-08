@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "bdba4cfa88cde49a8a089ea7908af2c96038ac01"
+const BASE_SHA = "94355ad8ea3cda3f147a322bb7e2da840617ee4f"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -23,8 +23,10 @@ const BASE_SHA = "bdba4cfa88cde49a8a089ea7908af2c96038ac01"
  * Sakura can undo its own changes; on October 31 most of a session's replies were Sakura rebuilding earlier states by hand.
  * Then 280 longer: route current-carrying nets first with route_pcb nets, draw what still goes narrower with draw_trace from pin to pin, and
  * carry current in traces, not polygon pours; an assistant poured a rectifier board's bus and phases as strips.
+ * Then 924 longer: the bullet preferring connect with net_name became three, to wire a block's own paths with no name, name only the
+ * nets that travel, and group a path's parts in one block; Sakura named nearly every net, so its sheets were labels everywhere.
  */
-const BASE_CHARS = 11800
+const BASE_CHARS = 12724
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { MeResponse } from "@cherryblossom/api-contract"
+import { runCopilot } from "../src/ai/copilot"
+import { connectManagedAi } from "../src/ai/managedAi"
 import { runTool } from "../src/ai/tools"
 import type { ToolContext } from "../src/ai/toolKit"
 import { getConnectivity } from "../src/store/analysis"
@@ -6,7 +9,10 @@ import { createProject } from "../src/model/ops"
 import { isHierarchical, mergeSheetView, sheetUses, sheetView, syncCopies } from "../src/model/sheets"
 import { addDrawings } from "../src/model/drawings"
 import { kicadFiles } from "../src/export/kicad"
+import { DEFAULT_PAPER, holds, paperOf, sheetDrawingBox } from "../src/model/paper"
 import type { Project } from "../src/model/types"
+import { useAccount } from "../src/store/accountStore"
+import { connectProjectStorage, useProjectStore } from "../src/store/projectStore"
 
 // Sakura builds sheets: add_sheet (new, or another use), edit_sheet, add_hier_label, wire_sheet_pin and show_sheet, one undo step each (a tool call
 // returns a whole new project, which the copilot commits once), with a clear refusal for what can't be done.
@@ -222,7 +228,7 @@ describe("get_design lists the hierarchy", () => {
     let p = withPower()
     p = good(p, "edit_sheet", { sheet: "POWER", add_pins: [{ name: "EN", shape: "input" }] })
     const d = JSON.parse(run(p, "get_design", {}).result)
-    expect(d.sheets[0]).toEqual({ path: "/" })
+    expect(d.sheets[0]).toEqual({ path: "/", page: A4_PAGE })
     expect(d.sheets[1]).toMatchObject({ path: "/POWER/", box: { w: 10, h: 8 }, pins: ["EN (input)"] })
   })
 })
@@ -262,5 +268,115 @@ describe("Sakura's sheets with a bus", () => {
     expect(view.drawings?.some((d) => d.type === "bus")).toBe(true)
     expect(view.drawings?.some((d) => d.type === "text")).toBe(true)
     expect(refused(p, "tidy_schematic", { sheet: "POWER", whole_sheet: true })).toMatch(/sheet with buses/)
+  })
+})
+
+/**
+ * The default page as get_design reports it: A4 landscape (297 by 210 mm) centred on the origin, its corner on the grid at (-11.7, 8.3), the inner frame
+ * 12 mm in from the edge and the 108 by 32 mm title block in its bottom-right corner, in sheet units of 12.7 mm. What a drawing stays inside is rounded
+ * inwards and the title block outwards.
+ */
+const A4_PAGE = {
+  size: "A4",
+  orientation: "landscape",
+  inside: { min_x: -10.75, min_y: -7.29, max_x: 10.74, max_y: 7.35 },
+  title_block: { min_x: 2.23, min_y: -7.3, max_x: 10.75, max_y: -4.77 },
+}
+
+describe("Every sheet is a page", () => {
+  it("get_design reports the page of a one-sheet project at the top, and of each sheet of a project with several", () => {
+    expect(JSON.parse(run(createProject("t"), "get_design", {}).result).page).toEqual(A4_PAGE)
+    let p = withPower()
+    p = good(p, "edit_sheet", { sheet: "POWER", page_size: "custom", page_width_mm: 500, page_height_mm: 300 })
+    const d = JSON.parse(run(p, "get_design", {}).result)
+    expect(d.page).toBeUndefined()
+    expect(d.sheets.map((s: { page: { size: string } }) => s.page.size)).toEqual(["A4", "custom"])
+    expect(d.sheets[1].page).toMatchObject({ width_mm: 500, height_mm: 300, orientation: "landscape" })
+  })
+
+  it("edit_sheet sets the size and orientation of the root of a one-sheet project, its corner staying put, by name or as the sheet shown", () => {
+    const p = createProject("t")
+    const out = run(p, "edit_sheet", { sheet: "Main", page_size: "A3", orientation: "portrait" })
+    expect(out.isError, out.result).toBe(false)
+    expect(paperOf(out.project)).toEqual({ size: "A3", portrait: true, x: DEFAULT_PAPER.x, y: DEFAULT_PAPER.y })
+    expect(out.result).toMatch(/page A3 portrait/)
+    expect(out.result).toContain('"size":"A3","orientation":"portrait"')
+    expect(paperOf(good(p, "edit_sheet", { page_size: "USLetter" }))).toMatchObject({ size: "USLetter" })
+  })
+
+  it("edit_sheet sets a custom size, turned to the orientation asked", () => {
+    const p = good(createProject("t"), "edit_sheet", { page_size: "custom", page_width_mm: 500, page_height_mm: 300 })
+    expect(paperOf(p)).toMatchObject({ size: "User", width: 500, height: 300 })
+    expect(paperOf(good(p, "edit_sheet", { page_size: "custom", page_width_mm: 500, page_height_mm: 300, orientation: "portrait" }))).toMatchObject({ width: 300, height: 500 })
+    // a page already custom takes one side alone
+    expect(paperOf(good(p, "edit_sheet", { page_width_mm: 600 }))).toMatchObject({ size: "User", width: 600, height: 300 })
+  })
+
+  it("edit_sheet fit_page makes the page the smallest of its family that holds the drawing", () => {
+    let p = createProject("t")
+    p = good(p, "add_component", { part_id: "resistor", x: 100, y: 100 })
+    p = good(p, "add_component", { part_id: "resistor", x: 130, y: 100 })
+    expect(holds(paperOf(p), sheetDrawingBox(p)!)).toBe(false)
+    const fitted = good(p, "edit_sheet", { fit_page: true })
+    expect(holds(paperOf(fitted), sheetDrawingBox(fitted)!)).toBe(true)
+    expect(paperOf(fitted).size).toBe("A3")
+    expect(run(createProject("t"), "edit_sheet", { fit_page: true }).result).toMatch(/sheet is empty/)
+  })
+
+  it("edit_sheet refuses an unknown size, a custom page without both sides, a side out of range, and the symbol's arguments on the root", () => {
+    const p = createProject("t")
+    expect(refused(p, "edit_sheet", { page_size: "B5" })).toMatch(/page_size must be one of A5, A4, .*custom/)
+    expect(refused(p, "edit_sheet", { page_size: "User" })).toMatch(/page_size must be one of/)
+    expect(refused(p, "edit_sheet", { page_size: "custom", page_width_mm: 500 })).toMatch(/needs both page_width_mm and page_height_mm/)
+    expect(refused(p, "edit_sheet", { page_width_mm: 500, page_height_mm: 300 })).toMatch(/for a custom page/)
+    expect(refused(p, "edit_sheet", { page_size: "custom", page_width_mm: 50, page_height_mm: 300 })).toMatch(/between 100 and 3048 mm/)
+    expect(refused(p, "edit_sheet", { sheet: "Main", page_size: "A3", name: "X" })).toMatch(/Main is the root sheet/)
+  })
+})
+
+describe("A page edit with a rename", () => {
+  const account: MeResponse = {
+    user: { id: "user_1", email: "a@b.c", name: "A" },
+    plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/large"] },
+    limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
+    usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+    onDemand: { available: true, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
+  }
+  const sse = (...chunks: object[]) =>
+    new Response([...chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`), "data: [DONE]\n\n"].join(""), { status: 200, headers: { "content-type": "text/event-stream" } })
+  let replies: (() => Response)[] = []
+
+  beforeEach(() => {
+    connectManagedAi({ getAccessToken: async () => "token-1", getDistinctId: () => "distinct-1" })
+    useAccount.setState({ status: "idle", account: null, error: null })
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).endsWith("/api/v1/me")) return Response.json(account)
+      return replies.shift()!()
+    })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    connectManagedAi(null)
+    useProjectStore.getState().close()
+    connectProjectStorage(null)
+  })
+
+  it("is one undo step", async () => {
+    connectProjectStorage(null)
+    const api = () => useProjectStore.getState()
+    api().open(withPower())
+    const args = { sheet: "POWER", name: "SUPPLY", page_size: "A3", orientation: "portrait" }
+    replies = [
+      () => sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "edit_sheet", arguments: JSON.stringify(args) } }] } }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+      () => sse({ choices: [{ delta: { content: "Done." } }] }, { choices: [{ delta: {}, finish_reason: "stop" }] }),
+    ]
+    await runCopilot("rename the power sheet and make it A3 portrait", { onEvent: () => {} })
+    const sheetOf = () => api().project!.sheetSymbols![0]
+    expect(sheetOf().name).toBe("SUPPLY")
+    expect(paperOf(api().project!, sheetOf().child)).toMatchObject({ size: "A3", portrait: true })
+    expect(api().past.map((s) => s.label)).toEqual(["Changed sheet POWER"])
+    api().undo()
+    expect(sheetOf().name).toBe("POWER")
+    expect(paperOf(api().project!, sheetOf().child)).toEqual(DEFAULT_PAPER)
   })
 })

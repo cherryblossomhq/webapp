@@ -264,7 +264,7 @@ export function designDrawings(project: Project) {
 const drawTool: ToolSpec = {
   name: "draw",
   description:
-    "Draw on the schematic, as the user does with the toolbar's drawing tools: text (a sheet title, a note, a callout), lines and arrows, polygons and rectangles. Drawings are graphics only: they connect nothing, and blocks already frame their parts. Schematic units, y up, on a 0.1 grid. Several shapes in one call; each result gives the drawing's id for edit_drawings.",
+    "Draw on the schematic, as the user does with the toolbar's drawing tools: text (a note, a callout; the title block already names the sheet), lines and arrows, polygons and rectangles. Drawings are graphics only: they connect nothing, and blocks already frame their parts. Schematic units, y up, on a 0.1 grid. Several shapes in one call; each result gives the drawing's id for edit_drawings.",
   input_schema: {
     type: "object",
     properties: { shapes: { type: "array", items: SHAPE, minItems: 1 }, sheet: SHEET_ARG },

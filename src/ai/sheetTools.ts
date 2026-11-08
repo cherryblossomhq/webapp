@@ -1,9 +1,26 @@
-import { round } from "../lib/geometry"
+import { round, type Box } from "../lib/geometry"
 import { kicadRulesShown } from "../model/kicadJoin"
 import { addLabel } from "../model/ops"
-import { addMissingPins, addSheet, addSheetPin, addSheetUse, freeSheetSpot, moveSheetSymbols, removalNote, removeSheetPin, removeSheetSymbols, resizeSheetSymbol, setSheetSymbol, sheetEditProblems } from "../model/sheetOps"
+import { PAPER_SIZES, USER_PAPER_RANGE, innerBox, isPortrait, paperMm, paperName, paperOf, sheetDrawingBox, titleBlockBox } from "../model/paper"
+import {
+  addMissingPins,
+  addSheet,
+  addSheetPin,
+  addSheetUse,
+  fitSheetPaper,
+  freeSheetSpot,
+  moveSheetSymbols,
+  removalNote,
+  removeSheetPin,
+  removeSheetSymbols,
+  resizeSheetSymbol,
+  setSheetPaper,
+  setSheetSymbol,
+  sheetEditProblems,
+  type PaperPatch,
+} from "../model/sheetOps"
 import { ROOT_SHEET, isHierarchical, mergeSheetView, sheetUses, sheetView, syncCopies, useAt, type SheetUse } from "../model/sheets"
-import type { LabelShape, Project, SheetSymbol } from "../model/types"
+import type { LabelShape, Project, SheetPaper, SheetSymbol } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { fail, ok, type JsonSchema, type ToolContext, type ToolInput, type ToolOutcome, type ToolSpec } from "./toolKit"
 
@@ -171,14 +188,82 @@ const addSheetTool: ToolSpec = {
   },
 }
 
+// ---------- the page ----------
+
+/** A box for a model, to two decimals: rounded inwards for what the drawing stays inside, outwards for what it stays clear of, so a point within the numbers is on the page. */
+function boxReport(b: Box, inwards: boolean) {
+  const lo = (v: number) => (inwards ? Math.ceil(v * 100 - 1e-6) : Math.floor(v * 100 + 1e-6)) / 100
+  const hi = (v: number) => (inwards ? Math.floor(v * 100 + 1e-6) : Math.ceil(v * 100 - 1e-6)) / 100
+  return { min_x: lo(b.minX), min_y: lo(b.minY), max_x: hi(b.maxX), max_y: hi(b.maxY) }
+}
+
+/** A sheet's page as `get_design` and `edit_sheet` report it: the size as `edit_sheet` takes it, the orientation, and in sheet units what a drawing stays inside and the title block it stays clear of. */
+export function pageReport(paper: SheetPaper) {
+  const mm = paperMm(paper)
+  return {
+    ...(paper.size === "User" ? { size: "custom", width_mm: round(mm.width, 1), height_mm: round(mm.height, 1) } : { size: paper.size }),
+    orientation: isPortrait(paper) ? "portrait" : "landscape",
+    inside: boxReport(innerBox(paper), true),
+    title_block: boxReport(titleBlockBox(paper), false),
+  }
+}
+
+/** The sizes `edit_sheet` takes: KiCad's named ones, and `custom` for KiCad's `User`. */
+const PAGE_SIZES = [...PAPER_SIZES.filter((s) => s !== "User"), "custom"]
+const PAGE_KEYS = ["page_size", "page_width_mm", "page_height_mm", "orientation", "fit_page"]
+/** What `edit_sheet` changes about the symbol a sheet is drawn as on its parent, which the root has none of. */
+const SYMBOL_KEYS = ["name", "x", "y", "w", "h", "add_pins", "remove_pins", "delete"]
+
+/** The page of the sheet a use shows changed as `edit_sheet` asks: size and orientation first, then fitted to the drawing within that family. */
+function editPage(project: Project, use: SheetUse, input: ToolInput): { project: Project; done: string[] } | { error: string } {
+  const was = paperOf(project, use.sheet)
+  const size = text(input.page_size)
+  const custom = size === "custom" || (size === undefined && was.size === "User")
+  const width = num(input.page_width_mm)
+  const height = num(input.page_height_mm)
+  const portrait = input.orientation === undefined ? undefined : input.orientation === "portrait"
+  if ((width !== undefined || height !== undefined) && !custom) return { error: "page_width_mm and page_height_mm are for a custom page: give page_size custom with both." }
+  if (size === "custom" && was.size !== "User" && (width === undefined || height === undefined)) return { error: "A custom page needs both page_width_mm and page_height_mm." }
+  const { min, max } = USER_PAPER_RANGE
+  for (const [key, v] of [["page_width_mm", width], ["page_height_mm", height]] as const) {
+    if (v !== undefined && (v < min || v > max)) return { error: `${key} must be between ${min} and ${max} mm.` }
+  }
+  const patch: PaperPatch = {}
+  if (size !== undefined) patch.size = custom ? "User" : (size as PaperPatch["size"])
+  if (portrait !== undefined) patch.portrait = portrait
+  // A custom page given both sides and an orientation is turned to it: KiCad's custom page has no orientation but its sides.
+  if (width !== undefined && height !== undefined && portrait !== undefined && height > width !== portrait) [patch.width, patch.height] = [height, width]
+  else [patch.width, patch.height] = [width, height]
+  const done: string[] = []
+  let next = project
+  if (Object.values(patch).some((v) => v !== undefined)) {
+    next = setSheetPaper(project, use.sheet, patch)
+    const paper = paperOf(next, use.sheet)
+    done.push(`page ${paperName(paper)} ${isPortrait(paper) ? "portrait" : "landscape"}`)
+  }
+  if (input.fit_page === true) {
+    if (!sheetDrawingBox(sheetView(next, use.path))) done.push("the sheet is empty, so the page was not fitted")
+    else {
+      next = fitSheetPaper(next, use.path)
+      done.push(`page fitted to the drawing: ${paperName(paperOf(next, use.sheet))}`)
+    }
+  }
+  return { project: next, done }
+}
+
 const editSheetTool: ToolSpec = {
   name: "edit_sheet",
   description:
-    "Change a sheet symbol: rename, move (x, y lower-left), resize (w, h), add_pins, remove_pins, or delete. Deleting the last use of a sheet deletes its contents; undo restores. A refused call changes nothing.",
+    "Change a sheet's page (any sheet, the root included): page_size, orientation, page_width_mm and page_height_mm (custom only), fit_page (the smallest page of its family that holds the drawing). Or change a sheet symbol: rename, move (x, y lower-left), resize (w, h), add_pins, remove_pins, or delete. Deleting the last use of a sheet deletes its contents; undo restores. A refused call changes nothing.",
   input_schema: {
     type: "object",
     properties: {
-      sheet: sheetProp,
+      sheet: { type: "string", description: "Sheet name or path, e.g. /Power/ (default the sheet shown; required for the symbol)" },
+      page_size: { type: "string", enum: PAGE_SIZES },
+      page_width_mm: { type: "number" },
+      page_height_mm: { type: "number" },
+      orientation: { type: "string", enum: ["landscape", "portrait"] },
+      fit_page: { type: "boolean" },
       name: { type: "string" },
       x: { type: "number" },
       y: { type: "number" },
@@ -192,68 +277,80 @@ const editSheetTool: ToolSpec = {
       remove_pins: { type: "array", items: { type: "string" } },
       delete: { type: "boolean" },
     },
-    required: ["sheet"],
   },
-  run: (project, input) => {
-    const r = symbolArg(project, input)
+  run: (project, input, _prepared, ctx) => {
+    const forSymbol = SYMBOL_KEYS.some((k) => input[k] !== undefined)
+    // The page is any sheet's, the root's included; the symbol only a sheet drawn on another has.
+    const r: { use: SheetUse; sym?: SheetSymbol } | { error: string } = forSymbol ? symbolArg(project, input) : sheetArg(project, input.sheet, ctx)
     if ("error" in r) return fail(project, r.error)
     const { use, sym } = r
-    if (input.delete === true) {
-      const others = Object.keys(input).filter((k) => k !== "sheet" && k !== "delete")
-      if (others.length) return fail(project, `Delete can't be combined with ${others.join(", ")}: say one or the other.`)
-      const next = removeSheetSymbols(project, [sym.id])
-      return ok(next, removalNote(project, [sym.id]) ?? `Deleted the sheet ${sym.name}.`, `Deleted sheet ${sym.name}`)
-    }
     let next = project
     const done: string[] = []
-    const name = text(input.name)
-    if (name !== undefined) {
-      if (!name) return fail(project, "name is empty")
-      if (nameTaken(project, sym.sheet, name, sym.id)) return fail(project, `${useAt(project, use.parent ?? "").human} already has a sheet called ${name}. Names are unique on a sheet: pick another.`)
-      next = setSheetSymbol(next, sym.id, { name })
-      done.push(`renamed to ${name}`)
-    }
-    const w = num(input.w)
-    const h = num(input.h)
-    if ((w !== undefined && w < GRID * 4) || (h !== undefined && h < GRID * 2)) return fail(project, "The sheet's w and h are too small: use at least 0.4 by 0.2.")
-    if (w !== undefined || h !== undefined) {
-      next = resizeSheetSymbol(next, sym.id, w ?? sym.w, h ?? sym.h)
-      done.push(`resized to ${w ?? sym.w} by ${h ?? sym.h}`)
-    }
-    const x = num(input.x)
-    const y = num(input.y)
-    if (x !== undefined || y !== undefined) {
-      const to = { x: onGrid(x ?? sym.x), y: onGrid(y ?? sym.y) }
-      // S11: on a sheet joined by KiCad's rules the symbol may be off the grid, and it lands on the grid point asked for to six digits.
-      const digits = kicadRulesShown(next) ? 6 : 4
-      next = moveSheetSymbols(next, [sym.id], { x: round(to.x - sym.x, digits), y: round(to.y - sym.y, digits) })
-      done.push(`moved to x ${to.x}, y ${to.y}`)
-    }
-    // The wires follow the pins of a sheet that is resized or moved; what that still cannot keep (a wire that would run onto another net) is refused, with nothing changed.
-    if (w !== undefined || h !== undefined || x !== undefined || y !== undefined) {
-      const problems = sheetEditProblems(project, next, sym.sheet, getConnectivity)
-      if (problems.length) {
-        const shown = problems.slice(0, 3).join("; ") + (problems.length > 3 ? `; and ${problems.length - 3} more` : "")
-        return fail(project, `Didn't ${w !== undefined || h !== undefined ? "resize" : "move"} the sheet ${sym.name}: ${shown}. Nothing was changed. Resize or move it where the wires at its pins can follow, or delete those wires first.`)
+    if (sym) {
+      if (input.delete === true) {
+        const others = Object.keys(input).filter((k) => k !== "sheet" && k !== "delete")
+        if (others.length) return fail(project, `Delete can't be combined with ${others.join(", ")}: say one or the other.`)
+        const gone = removeSheetSymbols(project, [sym.id])
+        return ok(gone, removalNote(project, [sym.id]) ?? `Deleted the sheet ${sym.name}.`, `Deleted sheet ${sym.name}`)
+      }
+      const name = text(input.name)
+      if (name !== undefined) {
+        if (!name) return fail(project, "name is empty")
+        if (nameTaken(project, sym.sheet, name, sym.id)) return fail(project, `${useAt(project, use.parent ?? "").human} already has a sheet called ${name}. Names are unique on a sheet: pick another.`)
+        next = setSheetSymbol(next, sym.id, { name })
+        done.push(`renamed to ${name}`)
+      }
+      const w = num(input.w)
+      const h = num(input.h)
+      if ((w !== undefined && w < GRID * 4) || (h !== undefined && h < GRID * 2)) return fail(project, "The sheet's w and h are too small: use at least 0.4 by 0.2.")
+      if (w !== undefined || h !== undefined) {
+        next = resizeSheetSymbol(next, sym.id, w ?? sym.w, h ?? sym.h)
+        done.push(`resized to ${w ?? sym.w} by ${h ?? sym.h}`)
+      }
+      const x = num(input.x)
+      const y = num(input.y)
+      if (x !== undefined || y !== undefined) {
+        const to = { x: onGrid(x ?? sym.x), y: onGrid(y ?? sym.y) }
+        // S11: on a sheet joined by KiCad's rules the symbol may be off the grid, and it lands on the grid point asked for to six digits.
+        const digits = kicadRulesShown(next) ? 6 : 4
+        next = moveSheetSymbols(next, [sym.id], { x: round(to.x - sym.x, digits), y: round(to.y - sym.y, digits) })
+        done.push(`moved to x ${to.x}, y ${to.y}`)
+      }
+      // The wires follow the pins of a sheet that is resized or moved; what that still cannot keep (a wire that would run onto another net) is refused, with nothing changed.
+      if (w !== undefined || h !== undefined || x !== undefined || y !== undefined) {
+        const problems = sheetEditProblems(project, next, sym.sheet, getConnectivity)
+        if (problems.length) {
+          const shown = problems.slice(0, 3).join("; ") + (problems.length > 3 ? `; and ${problems.length - 3} more` : "")
+          return fail(project, `Didn't ${w !== undefined || h !== undefined ? "resize" : "move"} the sheet ${sym.name}: ${shown}. Nothing was changed. Resize or move it where the wires at its pins can follow, or delete those wires first.`)
+        }
+      }
+      const have = () => next.sheetSymbols!.find((s) => s.id === sym.id)!
+      for (const n of (input.remove_pins as string[] | undefined) ?? []) {
+        const pin = have().pins.find((p) => p.name.trim() === n.trim())
+        if (!pin) return fail(project, `${sym.name} has no pin ${n}. Its pins: ${have().pins.map((p) => p.name).join(", ") || "none"}`)
+        next = removeSheetPin(next, sym.id, pin.id)
+        done.push(`pin ${n} removed`)
+      }
+      for (const spec of (input.add_pins as { name: string; shape?: LabelShape; side?: Side }[] | undefined) ?? []) {
+        const pinName = spec.name.trim()
+        if (!pinName) return fail(project, "A pin needs a name")
+        if (have().pins.some((p) => p.name.trim() === pinName)) return fail(project, `${sym.name} already has a pin ${pinName}.`)
+        const shape = spec.shape ?? "bidirectional"
+        next = addSheetPin(next, sym.id, pinName, shape, spec.side ?? (shape === "output" ? "right" : "left"))
+        done.push(`pin ${pinName} added`)
       }
     }
-    const have = () => next.sheetSymbols!.find((s) => s.id === sym.id)!
-    for (const n of (input.remove_pins as string[] | undefined) ?? []) {
-      const pin = have().pins.find((p) => p.name.trim() === n.trim())
-      if (!pin) return fail(project, `${sym.name} has no pin ${n}. Its pins: ${have().pins.map((p) => p.name).join(", ") || "none"}`)
-      next = removeSheetPin(next, sym.id, pin.id)
-      done.push(`pin ${n} removed`)
+    const forPage = PAGE_KEYS.some((k) => input[k] !== undefined)
+    if (forPage) {
+      const page = editPage(next, use, input)
+      if ("error" in page) return fail(project, page.error)
+      next = page.project
+      done.push(...page.done)
     }
-    for (const spec of (input.add_pins as { name: string; shape?: LabelShape; side?: Side }[] | undefined) ?? []) {
-      const pinName = spec.name.trim()
-      if (!pinName) return fail(project, "A pin needs a name")
-      if (have().pins.some((p) => p.name.trim() === pinName)) return fail(project, `${sym.name} already has a pin ${pinName}.`)
-      const shape = spec.shape ?? "bidirectional"
-      next = addSheetPin(next, sym.id, pinName, shape, spec.side ?? (shape === "output" ? "right" : "left"))
-      done.push(`pin ${pinName} added`)
-    }
-    if (!done.length) return fail(project, "Nothing to change: give name, x, y, w, h, add_pins, remove_pins or delete.")
-    return ok(next, `${sym.name}: ${done.join(", ")}.`, `Changed sheet ${sym.name}`)
+    if (!done.length) return fail(project, "Nothing to change: give page_size, orientation, page_width_mm, page_height_mm, fit_page, name, x, y, w, h, add_pins, remove_pins or delete.")
+    // The page as it now is, in get_design's terms, so the next placement can keep inside it without reading the design again.
+    const page = forPage ? ` Page: ${JSON.stringify(pageReport(paperOf(next, use.sheet)))}` : ""
+    return ok(next, `${use.name}: ${done.join(", ")}.${page}`, `Changed sheet ${use.name}`)
   },
 }
 

@@ -64,7 +64,8 @@ import { hasPartZones, isWholeBoardPour, keepoutFlags, zoneLayers } from "../mod
 import { areaReport, partSheet, placementAreas, placementProblems, placementWords } from "../model/placementAreas"
 import type { ComponentInstance, CopperLayer, DesignRules, FieldPlace, Mirror, PartDef, PinDef, PinRef, Project, Rotation, SchematicBlock, SurfaceFinish, ZonePlacement } from "../model/types"
 import { getConnectivity, getErc, getPcbAnalysis } from "../store/analysis"
-import { SHEET_ARG, SHEET_PROPERTY, onSheet, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
+import { paperOf } from "../model/paper"
+import { SHEET_ARG, SHEET_PROPERTY, onSheet, pageReport, resolveSheet, sheetEditTools, sheetWiringTools, shownUse } from "./sheetTools"
 import { isHierarchical, sheetUses, sheetView, syncEdited, useAt, type SheetUse } from "../model/sheets"
 import { splitIgnored } from "../model/erc"
 import { looseIslands, takenCount, withoutTaken, wiringAt, type Taken } from "../model/unwire"
@@ -284,7 +285,7 @@ export const DESIGN_BUDGET = 45_000
 const getDesign: ToolSpec = {
   name: "get_design",
   description:
-    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary, and the variants (the one shown and what each changes on which parts) when the project has any. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels. block or refs reads only those parts, with the nets that touch them: a design too big for one answer lists its parts and nets by name only, to read again so.",
+    "Read the open project: every component (real parts only; power and ground symbols are listed apart as power_symbols and are not counted) with its part id, value, footprint, schematic position, each pin's net and, when it has any, its flags (do not populate, not in the BOM or position file, not on the board, board only, virtual, net ties), plus the net list, each sheet's page (the area inside its border, the title block), the schematic's blocks with their parts and frames, the schematic's drawings (texts, lines, shapes, pictures and tables, with their ids), board size, the board's own drawings and texts (counts per layer and on parts, copper drawings listed, parts with no pins) when there are any, and a check summary, and the variants (the one shown and what each changes on which parts) when the project has any. Parts from KiCad symbols also list their mirror, fields, units, pin types and pin functions. Call this before editing an existing design; get_wiring gives the coordinates of pin ends, wires and labels. block or refs reads only those parts, with the nets that touch them: a design too big for one answer lists its parts and nets by name only, to read again so.",
   input_schema: {
     type: "object",
     properties: {
@@ -413,7 +414,17 @@ const getDesign: ToolSpec = {
     const looseText = wiringList({ wires: loose.reduce((a, i) => a + i.wires.length, 0), labels: loose.reduce((a, i) => a + i.labels.length, 0), ports: loose.reduce((a, i) => a + i.ports.length, 0) })
     const design = {
       project: project.name,
-      ...(hier ? { sheets: sheetUses(project).map((u) => ({ path: u.human, ...(u.symbol ? { box: { x: u.symbol.x, y: u.symbol.y, w: u.symbol.w, h: u.symbol.h }, ...(u.symbol.pins.length ? { pins: u.symbol.pins.map((p) => `${p.name} (${p.shape})`) } : {}) } : {}) })), ...(only ? { showing_sheet: only.human } : {}) } : {}),
+      // Every sheet is a page: what its drawing stays inside and clear of, in its own units.
+      ...(hier
+        ? {
+            sheets: sheetUses(project).map((u) => ({
+              path: u.human,
+              ...(u.symbol ? { box: { x: u.symbol.x, y: u.symbol.y, w: u.symbol.w, h: u.symbol.h }, ...(u.symbol.pins.length ? { pins: u.symbol.pins.map((p) => `${p.name} (${p.shape})`) } : {}) } : {}),
+              page: pageReport(paperOf(project, u.sheet)),
+            })),
+            ...(only ? { showing_sheet: only.human } : {}),
+          }
+        : { page: pageReport(paperOf(project)) }),
       board_mm: { width: project.board.width, height: project.board.height, thickness: project.board.thickness, center_x: project.board.x, center_y: project.board.y, ...outlineReport(project.board), ...layersReport(project) },
       design_rules_mm: ruleSummary(project.rules, project),
       components,
@@ -2397,7 +2408,7 @@ export function toolActivityLabel(name: string, input: unknown): string {
     case "add_sheet":
       return `Adding the sheet ${String(i.name ?? i.reuse ?? "")}`.trim()
     case "edit_sheet":
-      return `${i.delete === true ? "Deleting" : "Editing"} the sheet ${String(i.sheet ?? "")}`
+      return `${i.delete === true ? "Deleting" : "Editing"} the sheet ${String(i.sheet ?? "")}`.trim()
     case "add_hier_label":
       return `Taking ${String(i.name ?? "a net")} out of ${String(i.sheet ?? "a sheet")}`
     case "wire_sheet_pin":

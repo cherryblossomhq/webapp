@@ -362,7 +362,7 @@ export function addSheetPin(project: Project, symbolId: string, name: string, sh
 }
 
 /** How far from a sheet symbol's edge a click still lands on it. */
-export const EDGE_REACH = GRID * 2.5
+const EDGE_REACH = GRID * 2.5
 
 /**
  * The place on a sheet symbol's edges nearest to `p` that a pin can have: on the grid, a grid step in from each corner at least, with the edge it is on.

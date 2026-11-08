@@ -1,7 +1,7 @@
 import { CircuitBoard, Eye, EyeOff, FilePlus2, FlipHorizontal2, FlipVertical2, Group, MousePointer2, Pencil, Plus, RotateCw, Spline, Trash2, Ungroup } from "lucide-react"
 import { useState } from "react"
 import { groupSelected, ungroupSelected } from "../editor/schematic/blockActions"
-import { moveSelectedToNewSheet } from "../editor/schematic/sheetActions"
+import { deleteSelectedHere, moveSelectedToNewSheet } from "../editor/schematic/sheetActions"
 import { normalizeAngle, type Box } from "../lib/geometry"
 import { addToBlock, blockOf, createBlock, nextBlockName, removeFromBlocks, renameBlock } from "../model/blocks"
 import { pinKey } from "../model/connectivity"
@@ -194,10 +194,10 @@ export function Inspector() {
           <Button
             variant="danger"
             onClick={() => {
-              // In the schematic the parts, wires and labels are those of the sheet shown (a sheet used twice loses the part in every use).
-              const edit = uiApi().view === "schematic" ? commitHere : projectApi().commit
-              edit((p) => {
-                let out = removeGraphics(removeItems(p, { components: comps, wires, labels, traces, vias, blocks, drawings: drawn }), drawings)
+              // In the schematic, what the Del key deletes, on the sheet shown (a sheet used twice loses the part in every use).
+              if (uiApi().view === "schematic") return deleteSelectedHere()
+              projectApi().commit((p) => {
+                let out = removeGraphics(removeItems(p, { components: comps, traces, vias }), drawings)
                 if (zoneIds.length) out = removeZones(out, zoneIds)
                 out = removeBoardTexts(out, texts.flatMap((t) => (t.kind === "board" ? [(t.source as { id: string }).id] : [])))
                 for (const t of texts.filter((x) => x.kind === "user").sort((a, b) => b.index - a.index)) out = removePartText(out, t.owner, t.index)

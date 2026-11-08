@@ -1,12 +1,15 @@
 import { labelBox } from "../../model/labels"
 import { sheetPinGeometry } from "../../model/labelShapes"
-import { addSheetInFreeSpace, addSheetPin, addSheetUse, removalNote, removeSheetSymbols, syncSheetEntry, type SheetSide } from "../../model/sheetOps"
+import { lockedBlockOf } from "../../model/blocks"
+import { removeItems } from "../../model/ops"
+import { addSheetInFreeSpace, addSheetPin, addSheetUse, removalNote, removeSheetPin, removeSheetSymbols, syncSheetEntry, type SheetSide } from "../../model/sheetOps"
 import { moveToNewSheet, type MoveToSheetResult } from "../../model/sheetRefactor"
 import { commitOnUse, hasUse, sheetIdOf, useAt, usesOfSheet } from "../../model/sheets"
 import type { LabelShape, Project, Vec2 } from "../../model/types"
 import { projectApi } from "../../store/projectStore"
-import { onShownSheet, shownPath } from "../../store/sheetScope"
+import { onShownSheet, shownPath, shownProject } from "../../store/sheetScope"
 import { selectionIds, uiApi } from "../../store/uiStore"
+import { selectedItems } from "./clipboard"
 
 // Making sheets by hand: a new empty one from the tabs' +, the selection moved onto one of its own (the Inspector's button), another use of one, deleting
 // one, and entries and ports kept in step. Each is one undo step. And the ways between a sheet entry and its port, and between global labels.
@@ -92,6 +95,34 @@ export function deleteSheetSymbols(ids: string[], onShown?: (view: Project) => P
   const cut = segments.findIndex((s, i) => i > 0 && ids.includes(s))
   if (cut > 0) uiApi().setSheet(segments.slice(0, cut).join("/"))
   if (note) uiApi().showNotice(note)
+}
+
+/**
+ * What is selected on the sheet shown deleted, as one undo step: parts, wires, labels, blocks' frames, drawings, sheet entries, and sheet symbols with what
+ * `deleteSheetSymbols` says went with them. The `Del` key and the Inspector's Delete selection both run it. Parts of a locked block are refused, with a note.
+ */
+export function deleteSelectedHere() {
+  const sel = uiApi().selection
+  if (!sel.length) return
+  const locked = lockedBlockOf(shownProject(), selectedItems(shownProject(), sel).components)
+  if (locked) {
+    uiApi().showNotice(`${locked} is locked: unlock the group to delete its parts.`)
+    return
+  }
+  const entries = selectionIds(sel, "e").map((key) => key.split(":"))
+  deleteSheetSymbols(selectionIds(sel, "h"), (v) =>
+    entries.reduce(
+      (q, [symbolId, pinId]) => removeSheetPin(q, symbolId, pinId),
+      removeItems(v, {
+        components: selectionIds(sel, "c"),
+        wires: selectionIds(sel, "w"),
+        labels: selectionIds(sel, "l"),
+        blocks: selectionIds(sel, "b"),
+        drawings: selectionIds(sel, "d"),
+      }),
+    ),
+  )
+  uiApi().clearSelection()
 }
 
 /** A list of names in words: `A`, `A and B`, `A, B and C`. */

@@ -43,7 +43,6 @@ import {
   dragPlan,
   moveSchematicItems,
   nextRef,
-  removeItems,
   type RubberBand,
 } from "../../model/ops"
 import { guardDrop, mirrorSelection, pasteItems, placeComponent, rotateSelection, setFieldPlace, type Clipboard } from "../../model/schematicEdit"
@@ -67,8 +66,8 @@ import { ComponentSymbol, SymbolBody, dashArray } from "./SymbolView"
 import { FlagMarks, KicadLabelView } from "./SheetItemsView"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { SheetSymbolView } from "./SheetSymbolView"
-import { addSheetEntry, commitPort, deleteSheetSymbols, revealLabel, revealPort } from "./sheetActions"
-import { addSheet, moveSheetPin, moveSheetSymbols, removeSheetPin, sheetPinSpot, type SheetSide } from "../../model/sheetOps"
+import { addSheetEntry, commitPort, deleteSelectedHere, revealLabel, revealPort } from "./sheetActions"
+import { addSheet, edgeSpot, moveSheetPin, moveSheetSymbols, sheetPinSpot, type SheetSide } from "../../model/sheetOps"
 import { hasUse, sheetIdOf, symbolsOnSheet, useAt } from "../../model/sheets"
 
 type Hit =
@@ -210,13 +209,6 @@ function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null 
 const HIT_PREFIX = { component: "c", label: "l", wire: "w", drawing: "d", block: "b", sheet: "h", field: "c" } as const
 
 const hitId = (h: Hit | null) => (!h ? null : h.type === "pin" ? `c:${h.pin.componentId}` : h.type === "entry" ? `e:${h.symbolId}:${h.pinId}` : `${HIT_PREFIX[h.type]}:${h.id}`)
-
-/** The entries of a selection, by symbol and pin. */
-const selectedEntries = (sel: string[]) =>
-  selectionIds(sel, "e").map((key) => {
-    const [symbolId, pinId] = key.split(":")
-    return { symbolId, pinId }
-  })
 
 const LABEL_WORDS: Record<LabelChoice, string> = { net: "net label", global: "global label", port: "port" }
 
@@ -617,7 +609,9 @@ export function SchematicEditor() {
     if (tool === "entry") {
       const spot = entrySpotAt(p, world)
       if (!spot) {
-        uiApi().showNotice("Click on the edge of a sheet symbol.")
+        // On an edge with another entry at the place nearest the click, that is why.
+        const taken = sheetSymbolsOf(p).some((sym) => edgeSpot(sym, world))
+        uiApi().showNotice(taken ? "Another entry is there: click a free place on the edge." : "Click on the edge of a sheet symbol.")
         return
       }
       uiApi().clearNotice()
@@ -1089,26 +1083,7 @@ export function SchematicEditor() {
       if (key === "delete" || key === "backspace") {
         if (!sel.length) return
         e.preventDefault()
-        const locked = lockedBlockOf(shownProject(), selectedItems(shownProject(), sel).components)
-        if (locked) {
-          uiApi().showNotice(`${locked} is locked: unlock the group to delete its parts.`)
-          return
-        }
-        // One undo step, and the canvas says what a sheet symbol took with it.
-        const entries = selectedEntries(sel)
-        deleteSheetSymbols(selectionIds(sel, "h"), (v) =>
-          entries.reduce(
-            (q, x) => removeSheetPin(q, x.symbolId, x.pinId),
-            removeItems(v, {
-              components: selectionIds(sel, "c"),
-              wires: selectionIds(sel, "w"),
-              labels: selectionIds(sel, "l"),
-              blocks: selectionIds(sel, "b"),
-              drawings: selectionIds(sel, "d"),
-            }),
-          ),
-        )
-        uiApi().clearSelection()
+        deleteSelectedHere()
         return
       }
       // T tidies; the Text tool is Shift+T, as the Rectangle is Shift+R. A viewer's

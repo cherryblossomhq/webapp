@@ -13,6 +13,7 @@ import { LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "../sr
 import { SchematicEditor } from "../src/editor/schematic/SchematicEditor"
 import type { Project } from "../src/model/types"
 import { SheetTabs } from "../src/panels/SheetTabs"
+import { Inspector } from "../src/panels/Inspector"
 import { ReadOnly } from "../src/ui/form"
 import { projectApi, useProjectStore } from "../src/store/projectStore"
 import { commitHere, shownProject } from "../src/store/sheetScope"
@@ -450,6 +451,24 @@ describe("the sheet symbol's entries", () => {
     expect(projectApi().project!.sheetSymbols![0].pins).toEqual([])
     expect(projectApi().project!.labels.some((l) => l.kind === "hierarchical")).toBe(false)
     prompt.mockRestore()
+  })
+})
+
+describe("deleting sheet entries", () => {
+  it("from the Inspector's Delete selection takes every selected entry, as the Del key does, as one undo step", () => {
+    const { project } = drawnHere()
+    const id = project.sheetSymbols![0].id
+    projectApi().open(addSheetPin(addSheetPin(addSheetPin(project, id, "A"), id, "B"), id, "C"))
+    act(() => uiApi().setView("schematic"))
+    const pins = projectApi().project!.sheetSymbols![0].pins
+    act(() => uiApi().select([`e:${id}:${pins[0].id}`, `e:${id}:${pins[1].id}`]))
+    mount(<Inspector />)
+    expect(host.textContent).toContain("2 sheet entries")
+    click(button(/Delete selection/))
+    expect(projectApi().project!.sheetSymbols![0].pins.map((q) => q.name)).toEqual(["C"])
+    expect(uiApi().selection).toEqual([])
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols![0].pins.map((q) => q.name)).toEqual(["A", "B", "C"])
   })
 })
 

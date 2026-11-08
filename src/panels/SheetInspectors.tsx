@@ -1,6 +1,6 @@
 import { commitHere, shownPath } from "../store/sheetScope"
-import { ArrowDownToLine, ArrowUp, ArrowUpFromLine, BringToFront, Copy, FolderOpen, Plus, RotateCw, SendToBack, Trash2 } from "lucide-react"
-import { useState } from "react"
+import { ArrowDownToLine, ArrowUp, ArrowUpFromLine, BringToFront, Copy, FolderOpen, Plus, RotateCw, Scan, SendToBack, Trash2 } from "lucide-react"
+import { useMemo, useState } from "react"
 import { addSheetEntry, commitPort, deleteSheetSymbols, revealEntry, revealPort, reuseSheet } from "../editor/schematic/sheetActions"
 
 import { useSch } from "../editor/theme"
@@ -11,14 +11,29 @@ import { BusTooLarge, parseBusName, typedLabelName } from "../model/busNames"
 import { setBlockLocked, setLabelStyle } from "../model/schematicEdit"
 import { BUS_WIDTH, lookOfText, textLines } from "../model/sheetItems"
 import { SCH_TEXT } from "../model/symbols"
-import { addMissingPins, missingPins, removeSheetPin, renameSheetUse, setSheetPin, setSheetSymbol, type SheetSide } from "../model/sheetOps"
+import { isPortrait, ownTitleBlock, PAPER_LABEL, PAPER_SIZES, paperMm, paperOf, titleBlockOf, USER_PAPER_RANGE } from "../model/paper"
+import { formatLength } from "../model/rules"
+import {
+  addMissingPins,
+  fitSheetPaper,
+  missingPins,
+  removeSheetPin,
+  renameSheetUse,
+  setSheetPaper,
+  setSheetPin,
+  setSheetSymbol,
+  setTitleField,
+  type PaperPatch,
+  type SheetSide,
+  type TitleField,
+} from "../model/sheetOps"
 import { sheetUses, useAt, usesOfSheet } from "../model/sheets"
 import { projectApi } from "../store/projectStore"
 import { uiApi, useUi } from "../store/uiStore"
-import type { DirectiveShape, RuleAreaMark, SheetPin, SheetSymbol, DrawingStyle, DrawingTable, LabelShape, NetLabel, Project, SchematicBlock, SchematicDrawing, SheetStroke, TextLook } from "../model/types"
+import type { DirectiveShape, PaperSize, RuleAreaMark, SheetPin, SheetSymbol, DrawingStyle, DrawingTable, LabelShape, NetLabel, Project, SchematicBlock, SchematicDrawing, SheetStroke, TextLook } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { Button, Field, Segmented } from "../ui/controls"
-import { ColorField, CommitInput, Group, Row, Section, Switch } from "../ui/form"
+import { ColorField, CommitInput, Group, LengthInput, Row, RuleGroup, Section, Switch, useLengthUnit } from "../ui/form"
 import { cap, Swatches } from "./DrawingInspector"
 
 // The Inspector for labels (a net label, a global label or a port, in Altium's words: its text, what it joins, its shape, and
@@ -623,9 +638,16 @@ export function SheetEntryInspector({ sym, pin, project }: { sym: SheetSymbol; p
   )
 }
 
+const ORIENTATIONS = [
+  { value: "landscape", label: "Landscape" },
+  { value: "portrait", label: "Portrait" },
+] as const
+
 /**
  * The sheet shown, when nothing on it is selected: what Altium's Properties panel shows of a document. Its name (the root's own, or its
- * symbol's), how many uses it has, and the way up to the sheet above.
+ * symbol's), how many uses it has, the way up to the sheet above, its page and its title block. The page and the title block are edits of the
+ * whole project (`projectApi().commit`), not of the sheet shown: the page is stored on the sheet, which every use shares, and the title block's
+ * fields are the project's name and properties, or a KiCad sub-sheet's own entries.
  */
 export function ShownSheetInspector({ project, path }: { project: Project; path: string }) {
   const use = useAt(project, shownPath(project, path))
@@ -646,6 +668,85 @@ export function ShownSheetInspector({ project, path }: { project: Project; path:
         <CommitInput value={use.name} onCommit={(v) => projectApi().commit((p) => renameSheetUse(p, use.path, v))} />
       </Field>
       {uses > 1 && <p className="text-[12px] text-ink-2">Used {uses} times. Each use has its own references and its own place on the board; an edit on one is made on every use.</p>}
+      <PageFields project={project} sheet={use.sheet} path={use.path} />
+      <TitleBlockFields project={project} sheet={use.sheet} path={use.path} />
     </Section>
+  )
+}
+
+/** The page of the sheet: its size (a named one, or a custom width and height), its orientation, and Fit to drawing. */
+function PageFields({ project, sheet, path }: { project: Project; sheet: string; path: string }) {
+  const unit = useLengthUnit()
+  const paper = paperOf(project, sheet)
+  const mm = paperMm(paper)
+  const set = (patch: PaperPatch) => projectApi().commit((p) => setSheetPaper(p, sheet, patch))
+  // Only a side typed here is held to the range: a custom page imported from KiCad outside it is kept as it came.
+  const side = (key: "width" | "height") => (v: number | null) => {
+    if (v === null) return
+    if (v >= USER_PAPER_RANGE.min && v <= USER_PAPER_RANGE.max) set({ [key]: v })
+    else uiApi().showNotice(`A side of a custom page is ${formatLength(USER_PAPER_RANGE.min, unit, true)} to ${formatLength(USER_PAPER_RANGE.max, unit, true)}.`)
+  }
+  return (
+    <RuleGroup title="Page">
+      <div className="space-y-2.5">
+        <Field label="Size">
+          <select className="field h-8" value={paper.size} onChange={(e) => set({ size: e.target.value as PaperSize })}>
+            {PAPER_SIZES.map((s) => (
+              <option key={s} value={s}>
+                {PAPER_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {paper.size === "User" && (
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Width">
+              <LengthInput ariaLabel="Page width" value={mm.width} onCommit={side("width")} />
+            </Field>
+            <Field label="Height">
+              <LengthInput ariaLabel="Page height" value={mm.height} onCommit={side("height")} />
+            </Field>
+          </div>
+        )}
+        <Group label="Orientation">
+          <Segmented size="sm" value={isPortrait(paper) ? "portrait" : "landscape"} options={[...ORIENTATIONS]} onChange={(v) => set({ portrait: v === "portrait" })} />
+        </Group>
+        <div className="flex flex-wrap gap-1.5">
+          <Button onClick={() => projectApi().commit((p) => fitSheetPaper(p, path))} title="The smallest page of this family that holds the drawing, placed around it">
+            <Scan size={14} /> Fit to drawing
+          </Button>
+        </div>
+      </div>
+    </RuleGroup>
+  )
+}
+
+/**
+ * The title block's fields: Title, Revision, Company and Drawn by to type in (`setTitleField` says where each is kept), and what the sheet
+ * fills in itself (Sheet N of M, the size, the date) to read.
+ */
+function TitleBlockFields({ project, sheet, path }: { project: Project; sheet: string; path: string }) {
+  const block = useMemo(() => titleBlockOf(project, path), [project, path])
+  const own = !!ownTitleBlock(project, sheet)
+  const field = (label: string, key: TitleField, value: string | undefined) => (
+    <Field label={label}>
+      <CommitInput value={value ?? ""} onCommit={(v) => projectApi().commit((p) => setTitleField(p, sheet, key, v))} />
+    </Field>
+  )
+  return (
+    <RuleGroup title="Title block">
+      <div className="space-y-2.5">
+        {field("Title", "title", block.title)}
+        {field("Revision", "revision", block.revision)}
+        {field("Company", "company", block.company)}
+        {field("Drawn by", "drawnBy", block.drawnBy)}
+        <div className="space-y-1">
+          <Row label="Sheet" value={`${block.number} of ${block.count}`} />
+          <Row label="Size" value={block.size} />
+          {block.date && <Row label="Date" value={block.date} />}
+        </div>
+        {own && <p className="text-[12px] text-ink-2">This sheet keeps the title block it had in KiCad: its title, revision and company are its own. Drawn by is the project's.</p>}
+      </div>
+    </RuleGroup>
   )
 }

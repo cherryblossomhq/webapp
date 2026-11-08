@@ -4,8 +4,6 @@ import { useImages } from "../../store/useImages"
 import {
   boxContains,
   boxesOverlap,
-  emptyBox,
-  expandBox,
   normBox,
   orthogonalElbow,
   pointInBox,
@@ -66,6 +64,8 @@ import { ComponentSymbol, SymbolBody, dashArray } from "./SymbolView"
 import { FlagMarks, KicadLabelView } from "./SheetItemsView"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { SheetSymbolView } from "./SheetSymbolView"
+import { PageView } from "./PageView"
+import { pageView, paperOf, titleBlockOf } from "../../model/paper"
 import { addSheetEntry, commitPort, deleteSelectedHere, revealLabel, revealPort } from "./sheetActions"
 import { addSheet, edgeSpot, moveSheetPin, moveSheetSymbols, sheetPinSpot, type SheetSide } from "../../model/sheetOps"
 import { hasUse, sheetIdOf, symbolsOnSheet, useAt } from "../../model/sheets"
@@ -109,30 +109,6 @@ type Editing = { kind: "text"; id: string | null; at: Vec2; value: string } | { 
 const DRAW_TOOLS = new Set<SchTool>(["block", "text", "line", "rect", "sheet", "bus", "busentry"])
 
 const TOOL_KEYS: Record<string, SchTool> = { v: "select", w: "wire", l: "label", b: "block", p: "line", u: "bus", "/": "busentry" }
-
-function contentBounds(p: Project): Box | null {
-  const b = emptyBox()
-  for (const c of p.components) {
-    const sb = schematicBounds(c)
-    expandBox(b, { x: sb.minX, y: sb.minY })
-    expandBox(b, { x: sb.maxX, y: sb.maxY })
-  }
-  for (const w of p.wires) for (const pt of w.points) expandBox(b, pt)
-  for (const l of p.labels) {
-    const lb = labelBox(l)
-    expandBox(b, { x: lb.minX, y: lb.minY })
-    expandBox(b, { x: lb.maxX, y: lb.maxY })
-  }
-  for (const s of sheetSymbolsOf(p)) {
-    expandBox(b, { x: s.x, y: s.y })
-    expandBox(b, { x: s.x + s.w, y: s.y + s.h })
-  }
-  for (const box of [...blockFrames(p).map((f) => f.box), ...(p.drawings ?? []).map(drawingBounds)]) {
-    expandBox(b, { x: box.minX, y: box.minY })
-    expandBox(b, { x: box.maxX, y: box.maxY })
-  }
-  return Number.isFinite(b.minX) ? b : null
-}
 
 /** On a block's frame line, give or take `tol`. */
 const onFrame = (p: Vec2, b: Box, tol: number) =>
@@ -310,15 +286,21 @@ export function SchematicEditor() {
     const delta = from && to ? { x: round(to.x - from.x), y: round(to.y - from.y) } : { x: 0, y: 0 }
     return framesDuringDrag(dragBase, mode.ids.components, delta)
   }, [project, mode, dragBase])
-  // Fit once on mount; later edits keep the user's view.
-  const [fitBox] = useState(() => contentBounds(project) ?? { minX: -3, minY: -2, maxX: 3, maxY: 2 })
+  // Fit the page once on mount; later edits keep the user's view.
+  const [fitBox] = useState(() => pageView(project))
+  // The page and its title block, as one object while neither changes, so a drag doesn't redraw them.
+  const shownUse = useAt(whole, sheet)
+  const paper = paperOf(whole, shownUse.sheet)
+  const block = titleBlockOf(whole, shownUse.path)
+  const pageKey = JSON.stringify([paper, block])
+  const page = useMemo(() => ({ paper, block }), [pageKey])
 
   // Another sheet shown is fitted to the window, as a project is when it is opened.
   const shownBefore = useRef(sheet)
   useEffect(() => {
     if (shownBefore.current === sheet) return
     shownBefore.current = sheet
-    vpRef.current?.fit(contentBounds(shownProject(projectApi().project!, sheet)) ?? { minX: -3, minY: -2, maxX: 3, maxY: 2 })
+    vpRef.current?.fit(pageView(shownProject(projectApi().project!, sheet)))
   }, [sheet])
 
   const selected = useMemo(() => new Set(selection), [selection])
@@ -340,8 +322,7 @@ export function SchematicEditor() {
         const vp = vpRef.current
         if (!r.changed || !vp) return
         if (r.whole) {
-          const b = contentBounds(r.project)
-          if (b) vp.fit(b)
+          vp.fit(pageView(r.project))
           return
         }
         const frame = blockFrames(r.project).find((f) => f.id === r.blockId)?.box
@@ -1094,10 +1075,7 @@ export function SchematicEditor() {
         if (!viewer) uiApi().setSchTool("text")
       } else if (key === "t") startTidy()
       else if (toolKey && (toolKey === "select" || !viewer)) uiApi().setSchTool(toolKey)
-      else if (key === "f") {
-        const b = contentBounds(shownProject())
-        if (b) vpRef.current?.fit(b)
-      }
+      else if (key === "f") vpRef.current?.fit(pageView(shownProject()))
     }
     const onKeyUp = (e: KeyboardEvent) => {
       shiftRef.current = e.shiftKey
@@ -1161,7 +1139,7 @@ export function SchematicEditor() {
       <Viewport
         ref={vpRef}
         initialScale={110}
-        minScale={12}
+        minScale={3}
         maxScale={900}
         grid={SCH_GRID}
         gridColor={sch.grid}
@@ -1214,6 +1192,7 @@ export function SchematicEditor() {
           const px = 1 / t.scale
           return (
             <>
+              <PageView page={page} px={px} />
               {/* Blocks, under everything they frame */}
               {frames.map((f) => (
                 <BlockView

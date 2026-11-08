@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "94355ad8ea3cda3f147a322bb7e2da840617ee4f"
+const BASE_SHA = "681fabec8eca9fa540fc2b8e8f6cd129272e3b61"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -25,8 +25,10 @@ const BASE_SHA = "94355ad8ea3cda3f147a322bb7e2da840617ee4f"
  * carry current in traces, not polygon pours; an assistant poured a rectifier board's bus and phases as strips.
  * Then 924 longer: the bullet preferring connect with net_name became three, to wire a block's own paths with no name, name only the
  * nets that travel, and group a path's parts in one block; Sakura named nearly every net, so its sheets were labels everywhere.
+ * Then 127 longer: each sheet is a page (get_design page) to keep the drawing inside and clear of the title block, which a whole-sheet tidy
+ * lays out on and edit_sheet changes; less the drawn sheet title, which the title block now says.
  */
-const BASE_CHARS = 12724
+const BASE_CHARS = 12851
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -81,6 +83,11 @@ const VERSION_TOOLS_GROWTH = 2165
  * assistant poured its supply nets as polygons instead. The budget below was raised by exactly this.
  */
 const POWER_ROUTING_GROWTH = 910
+/**
+ * What the page of each sheet asked for, in bytes (584): `edit_sheet` takes page_size, orientation, page_width_mm, page_height_mm and fit_page on any
+ * sheet, the root included, and get_design says it reads each sheet's page. The budget below was raised by exactly this.
+ */
+const PAGE_GROWTH = 584
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -114,6 +121,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH).toBeLessThan(2100)
   })
 })

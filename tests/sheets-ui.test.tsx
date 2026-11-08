@@ -9,6 +9,7 @@ import { addComponent, addLabel, addWire, createProject } from "../src/model/ops
 import { schematicPins } from "../src/model/instances"
 import { moveSelectedToNewSheet } from "../src/editor/schematic/sheetActions"
 import { sheetUses } from "../src/model/sheets"
+import { DEFAULT_PAPER } from "../src/model/paper"
 import { LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
 import { SchematicEditor } from "../src/editor/schematic/SchematicEditor"
 import type { Project } from "../src/model/types"
@@ -164,8 +165,8 @@ describe("the panel of the sheet shown", () => {
     const project = open()
     act(() => uiApi().setSheet("/h1"))
     mount(<ShownSheetInspector project={project} path="/h1" />)
-    const values = [...host.querySelectorAll("input")].map((i) => i.value)
-    expect(values).toEqual(["Power"])
+    const name = [...host.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent === "Name")!.querySelector("input")!
+    expect(name.value).toBe("Power")
     click(button(/Up to Main/))
     expect(uiApi().sheet).toBe("")
   })
@@ -226,7 +227,7 @@ describe("editing the sheet shown", () => {
     commitHere((v) => addWire(v, [{ x: 0, y: 0 }, { x: 1, y: 0 }]).project)
     expect(projectApi().project!.wires).toHaveLength(1)
     expect(projectApi().project!.wires[0].sheet).toBeUndefined()
-    expect(projectApi().project!.sheets).toBeUndefined()
+    expect(projectApi().project!.sheets).toEqual([{ id: "root", paper: DEFAULT_PAPER }])
   })
 })
 

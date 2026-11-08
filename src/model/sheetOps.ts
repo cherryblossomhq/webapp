@@ -8,7 +8,8 @@ import { labelBox } from "./labels"
 import { moveProblems } from "./merges"
 import { addLabel, removeItems, stretchEnd } from "./ops"
 import { MAIN_SHEET_NAME, ROOT_SHEET, hasUse, sheetIdOf, sheetsOf, sheetUses, sheetView, symbolsOnSheet, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
-import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
+import { DEFAULT_PAPER, fitPaper, isPortrait, ownTitleBlock, paperMm, paperOf, sheetDrawingBox, TITLE_PROPERTIES, titleProperty } from "./paper"
+import type { LabelShape, NetLabel, PaperSize, Project, Rotation, SchematicSheet, SheetPaper, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
 
 // S1: editing the sheets of a schematic: adding a sheet (a sheet symbol on a sheet, with the sheet it stands for), using a sheet again,
 // moving, resizing and deleting sheet symbols, and their pins. Every function takes and returns a whole project and works by ids, so it
@@ -49,11 +50,12 @@ export interface BoxLike {
 /** A sheet and the sheet symbol that stands for it, drawn on the use of a sheet at `parent`, in a box of the sheet. */
 export function addSheet(project: Project, parent: string, box: BoxLike, name?: string): { project: Project; symbol: SheetSymbol } {
   const parentSheet = useAt(project, parent).sheet
-  const sheets = project.sheets?.length ? project.sheets : [{ id: ROOT_SHEET }]
+  // Every sheet written has its page, the root's too when the project did not list it.
+  const sheets = sheetsOf(project).map((s) => (s.paper ? s : { ...s, paper: paperOf(project, s.id) }))
   const id = nextId(sheetIds({ ...project, sheets }), "s")
   const symbolId = nextId(symbolIds(project), "h")
   const title = name?.trim() || freshName(project, "Sheet")
-  const sheet: SchematicSheet = { id }
+  const sheet: SchematicSheet = { id, paper: DEFAULT_PAPER }
   const symbol: SheetSymbol = {
     id: symbolId,
     sheet: parentSheet,
@@ -297,6 +299,47 @@ export function renameSheetUse(project: Project, path: string, name: string): Pr
   return touch({ ...project, sheets: sheets.map((s) => (s === root ? renamed : s)) })
 }
 
+/** The sheet's page replaced, the root's included: every use of the sheet shares it. */
+function withPaper(project: Project, sheetId: string, paper: SheetPaper): Project {
+  const was = paperOf(project, sheetId)
+  if (JSON.stringify(was) === JSON.stringify(paper) && sheetsOf(project).find((s) => s.id === sheetId)?.paper) return project
+  return touch({ ...project, sheets: sheetsOf(project).map((s) => (s.id === sheetId ? { ...s, paper } : s)) })
+}
+
+/** What may be changed about a page by hand: its size, its orientation, and a custom page's width and height in mm. */
+export interface PaperPatch {
+  size?: PaperSize
+  portrait?: boolean
+  width?: number
+  height?: number
+}
+
+/**
+ * A sheet's page with a new size, orientation or custom size; its top-left corner stays where it is. A named size turned is `portrait`; a custom
+ * page is turned by swapping its width and height, and keeps the size it had when it becomes custom.
+ */
+export function setSheetPaper(project: Project, sheetId: string, patch: PaperPatch): Project {
+  const was = paperOf(project, sheetId)
+  const size = patch.size ?? was.size
+  const portrait = patch.portrait ?? isPortrait(was)
+  let next: SheetPaper
+  if (size === "User") {
+    const mm = paperMm(was)
+    let width = patch.width ?? mm.width
+    let height = patch.height ?? mm.height
+    if (patch.portrait !== undefined && patch.width === undefined && patch.height === undefined && height > width !== portrait) [width, height] = [height, width]
+    next = { size: "User", width, height, x: was.x, y: was.y }
+  } else next = { size, ...(portrait ? { portrait: true as const } : {}), x: was.x, y: was.y }
+  return withPaper(project, sheetId, next)
+}
+
+/** The page of the sheet a use shows made the smallest of its family that holds the drawing, placed around it (Fit to drawing). Unchanged for an empty sheet. */
+export function fitSheetPaper(project: Project, path: string): Project {
+  const use = useAt(project, path)
+  const box = sheetDrawingBox(sheetView(project, use.path))
+  return box ? withPaper(project, use.sheet, fitPaper(box, paperOf(project, use.sheet))) : project
+}
+
 /**
  * A sheet symbol made bigger or smaller: the pins on the far edges go with them, and a pin past an edge that came in is held on it. The wires and labels at a pin
  * follow it, as they do when the symbol is moved, so no pin is cut off the net it was on.
@@ -517,4 +560,39 @@ export function removalNote(p: Project, ids: string[]): string | null {
   if (!parts && !sheets) return null
   const names = (p.sheetSymbols ?? []).filter((s) => ids.includes(s.id)).map((s) => s.name)
   return `Deleted ${names.length > 1 ? "the sheets" : "the sheet"} ${names.join(", ")}${parts ? ` with ${parts} part${parts > 1 ? "s" : ""}` : ""}${sheets > 0 ? `, and ${sheets} sheet${sheets > 1 ? "s" : ""} that nothing else uses` : ""}. Undo brings ${parts > 1 || sheets > 1 ? "them" : "it"} back.`
+}
+
+/** A field of the title block that can be typed in: the title, or one the project's properties hold (`TITLE_PROPERTIES`). */
+export type TitleField = "title" | keyof typeof TITLE_PROPERTIES
+
+/**
+ * A field of the title block of a sheet set, where the sheet takes it from. A KiCad sub-sheet with a title block of its own shows its own Title,
+ * Rev and Company, and the export writes those for it, so they are edited there; an emptied entry goes, but the last one stays empty, so the sheet
+ * keeps a title block of its own. Anywhere else the title is the project's name (never emptied), and Revision, Company and Drawn by are the project
+ * property each shows (`titleProperty`), or the first whose key matches, or a new one under the field's key; an emptied field takes every property
+ * it matches, so the field reads as it was left.
+ */
+export function setTitleField(project: Project, sheetId: string, field: TitleField, typed: string): Project {
+  const value = typed.trim()
+  const own = ownTitleBlock(project, sheetId)
+  const entry = field === "title" ? "Title" : TITLE_PROPERTIES[field].kicad
+  if (own && entry) {
+    const at = own.findIndex((e) => e.key === entry)
+    if ((own[at]?.value ?? "") === value) return project
+    const entries = at < 0 ? [...own, { key: entry, value }] : value || own.length === 1 ? own.map((e, i) => (i === at ? { ...e, value } : e)) : own.filter((_, i) => i !== at)
+    return touch({ ...project, sheets: sheetsOf(project).map((s) => (s.id === sheetId ? { ...s, titleBlock: entries } : s)) })
+  }
+  if (field === "title") return value && value !== project.name ? touch({ ...project, name: value }) : project
+  const { pattern, key } = TITLE_PROPERTIES[field]
+  const list = project.properties ?? []
+  const matches = (p: { key: string }) => pattern.test(p.key.trim())
+  const shown = titleProperty(project, pattern)
+  if ((shown?.value ?? "") === value && (value || !list.some(matches))) return project
+  let next: typeof list
+  if (!value) next = list.filter((p) => !matches(p))
+  else {
+    const at = shown ? list.indexOf(shown) : list.findIndex(matches)
+    next = at < 0 ? [...list, { key, value }] : list.map((p, i) => (i === at ? { ...p, value } : p))
+  }
+  return touch({ ...project, properties: next.length ? next : undefined })
 }

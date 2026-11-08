@@ -1,5 +1,6 @@
 import { orientPoint, type Box } from "../../lib/geometry"
 import { paintDrawing, type PaintNode } from "../../editor/schematic/drawingPaint"
+import { paintOutside, paintPage } from "../../editor/schematic/pagePaint"
 import { SCH_LIGHT } from "../../editor/theme"
 import { BLOCK_TITLE, blockFrames, type BlockFrame } from "../../model/blocks"
 import { labelBox } from "../../model/labels"
@@ -16,6 +17,8 @@ import type { PixelSize } from "./limits"
 import type { Clash, SchematicMeasure } from "./measure"
 import { anchorFromAxes, attrs, esc, justifyAnchor, MONO, n, orientText, pts, SANS, svgDocument, text } from "./svg"
 import { resolvedComponents } from "../../model/ruleAreas"
+import { paperOf, titleBlockOf } from "../../model/paper"
+import { useAt } from "../../model/sheets"
 
 // The schematic as the editor draws it, on the light sheet whatever the user's theme (cream paper,
 // blue wires, red symbols: the one palette every model has seen), as an SVG string. The symbol and
@@ -231,7 +234,10 @@ function outline(c: Clash, px: number, grow = 0.06): string {
 export function schematicSvg(project: Project, box: Box, size: PixelSize, m: SchematicMeasure): string {
   const px = (box.maxX - box.minX) / size.width
   const conn = getConnectivity(project)
-  let body = ""
+  // The page under everything, as the canvas draws it: only the part of it in the box shows.
+  const use = useAt(project, project.scope ?? "")
+  const paper = paperOf(project, use.sheet)
+  let body = [paintOutside(paper, sch), ...paintPage(paper, titleBlockOf(project, use.path), sch, px)].map(node).join("")
   for (const f of blockFrames(project)) body += block(f, px)
   for (const d of project.drawings ?? []) if (!isDot(d)) body += paintDrawing(d, sch, px).map(node).join("")
   for (const w of project.wires) {

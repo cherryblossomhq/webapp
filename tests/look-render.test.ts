@@ -8,7 +8,7 @@ import { dataUrl, OMITTED, pictureMessage, pruneImages } from "../src/ai/vision/
 import { DEFAULT_PCB_EXTRAS, pcbSvg, type PcbExtra } from "../src/ai/vision/pcbSvg"
 import { schematicSvg } from "../src/ai/vision/schematicSvg"
 import { createProject, updateComponent } from "../src/model/ops"
-import { PCB } from "../src/editor/theme"
+import { PCB, SCH_LIGHT } from "../src/editor/theme"
 import { getPcbAnalysis } from "../src/store/analysis"
 import { pcbCourtyard } from "../src/model/instances"
 import type { Project } from "../src/model/types"
@@ -312,6 +312,18 @@ describe("the schematic picture", () => {
     const p = overlapR2(circuit())
     expect(draw(p).svg).toContain("stroke-dasharray")
     expect(draw(circuit()).svg).not.toContain("rgba(207,58,61,0.12)")
+  })
+
+  it("draws the page under the drawing, its title block filled in, and frames the drawing as before", () => {
+    // The circuit's page moved so its title block is beside the parts: in the box, it shows; the box is the drawing's whatever the page.
+    const p = circuit()
+    const near: Project = { ...p, sheets: [{ id: "root", paper: { size: "A5", x: -8, y: 10 } }] }
+    const far: Project = { ...p, sheets: [{ id: "root", paper: { size: "A0", x: 500, y: 500 } }] }
+    expect(frame(near, "schematic", {}).box).toEqual(frame(far, "schematic", {}).box)
+    const box = { minX: -8, maxX: 12, minY: -5, maxY: 10 }
+    const size = fitSize(20 / 15)
+    expect(schematicSvg(near, box, size, measureSchematic(near))).toContain(">Title: look<")
+    expect(schematicSvg(far, box, size, measureSchematic(far))).toContain(`fill="${SCH_LIGHT.outside}" fill-rule="evenodd"`)
   })
 
   it("escapes what the user typed", () => {

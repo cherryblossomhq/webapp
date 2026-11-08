@@ -4,7 +4,11 @@ import { useTheme } from "../store/themeStore"
 // Canvas colours mirror the CSS tokens in index.css; SVG attributes need literal values.
 export interface SchPalette {
   paper: string
+  /** The canvas outside a sheet's page: a step darker than the paper, as Altium shades it. */
+  outside: string
   grid: string
+  /** The page's border, zones and title block. */
+  frame: string
   /** Symbol body and pin lines. */
   outline: string
   /** Designators. */
@@ -42,7 +46,9 @@ export interface SchPalette {
 // names. Selection is green so it never reads as a wire.
 export const SCH_LIGHT: SchPalette = {
   paper: "#f8f7f1",
+  outside: "#e9e7de",
   grid: "#b4b2a8",
+  frame: "#7a5a52",
   outline: "#840000",
   ink: "#24211c",
   ink2: "#00605e",
@@ -80,7 +86,9 @@ export const SCH_LIGHT: SchPalette = {
 // step off the paper, and bright copper wires so nets read first.
 export const SCH_DARK: SchPalette = {
   paper: "#171419",
+  outside: "#0e0c0f",
   grid: "#3a353a",
+  frame: "#8a8088",
   outline: "#e6e1d8",
   ink: "#e6e1d8",
   ink2: "#a5a39d",

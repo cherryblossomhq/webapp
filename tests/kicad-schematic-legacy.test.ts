@@ -72,7 +72,7 @@ describe("the records of a legacy schematic", () => {
     expect(l.page).toMatchObject({ type: "A4", portrait: false, sheet: [1, 1], title: "Test", date: "2020-01-02", rev: "B", company: "Acme", encoding: "utf-8" })
     expect(l.page!.comments[0]).toBe("one")
     const k = readKicadSchematic(legacyToKicadText(l)).schematic
-    expect(k.paper).toBe("A4")
+    expect(k.paper).toEqual({ size: "A4" })
     expect(k.titleBlock).toEqual([
       { key: "Title", value: "Test" },
       { key: "Date", value: "2020-01-02" },
@@ -84,9 +84,10 @@ describe("the records of a legacy schematic", () => {
 
   it("a custom page, and a portrait page", () => {
     const user = HEAD().replace("$Descr A4 11693 8268", "$Descr User 5000 4000")
-    expect(readKicadSchematic(legacyToKicadText(readLegacySchematicText(user + END))).schematic.paper).toBe("User")
+    expect(readKicadSchematic(legacyToKicadText(readLegacySchematicText(user + END))).schematic.paper).toEqual({ size: "User", width: 127, height: 101.6 })
     const portrait = HEAD().replace("$Descr A4 11693 8268", "$Descr A3 16535 11693 portrait")
     expect(readLegacySchematicText(portrait + END).page).toMatchObject({ type: "A3", portrait: true })
+    expect(readKicadSchematic(legacyToKicadText(readLegacySchematicText(portrait + END))).schematic.paper).toEqual({ size: "A3", portrait: true })
   })
 
   it("a component: library name, reference, unit, convert, timestamp, place, fields with place, size, look and visibility", () => {

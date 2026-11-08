@@ -96,8 +96,8 @@ describe("the board writer and the sheets", () => {
     expect(pcb).toContain('"/Power/VIN"')
     expect(pcb).toContain('"/Other/VIN"')
   })
-  it("the project file is at version 5 (the whole KiCad import is the one step from 2 to 3)", () => {
-    expect(PROJECT_FILE_VERSION).toBe(5)
+  it("the project file is at version 6 (the whole KiCad import is the one step from 2 to 3)", () => {
+    expect(PROJECT_FILE_VERSION).toBe(6)
   })
 })
 

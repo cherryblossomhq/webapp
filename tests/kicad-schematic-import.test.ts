@@ -257,7 +257,7 @@ describe("the accounting of every node", () => {
     expect(a.pending.size).toBe(0)
     expect(a.pending.get("S5")).toBeUndefined()
     expect(a.imported).toBeGreaterThan(0)
-    expect(a.notNeeded.get("sheet size of KiCad's drawing frame")).toBe(1)
+    expect(a.importedPaths.get("paper")).toBe(1)
   })
 
   it("a plain file puts its extension nodes where they belong: derived or built, not pending", () => {
@@ -344,6 +344,7 @@ describe("every node counted as imported is one the builder writes", () => {
     version: (r) => r.project.properties?.some((p) => p.key === "KiCad file version" && p.value.includes("20250114")) === true,
     generator: (r) => r.project.properties?.some((p) => p.key === "Imported from") === true,
     generator_version: (r) => r.project.properties?.some((p) => p.value.startsWith("KiCad 8.0")) === true,
+    paper: (r) => JSON.stringify(r.project.sheets?.map((s) => s.paper)) === JSON.stringify([{ size: "A4", x: 0, y: 0 }]),
     uuid: () => true, // the sheet's id: the first part of every instance path, used to link footprints (`link.ts`), not stored
     title_block: (r) => r.project.name === "T",
     "title_block>title": (r) => r.project.name === "T",
@@ -549,7 +550,7 @@ describe("what each flag and field of the file needs, so that nothing imported i
   })
 
   it("a page number is read past: the editor has none, and the export numbers the pages in the order of the tree", () => {
-    expect(imported(importKicadSchematic(schematic().replace(`(page "1")`, `(page "7")`))).project.sheets).toBeUndefined()
+    expect(imported(importKicadSchematic(schematic().replace(`(page "1")`, `(page "7")`))).project.sheets).toEqual([{ id: "root", paper: { size: "A4", x: 0, y: 0 } }])
   })
 })
 

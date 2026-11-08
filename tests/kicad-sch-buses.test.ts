@@ -306,13 +306,13 @@ describe("S3: the project file", () => {
     },
   }
 
-  it("reads a document with no buses unchanged, and saves it as the current version", () => {
-    expect(migrateProjectFile(v12)).toEqual(v12.project)
+  it("reads a document with no buses unchanged but for the page version 6 gives its sheet, and saves it as the current version", () => {
+    expect(migrateProjectFile(v12)).toEqual({ ...v12.project, sheets: [{ id: "root", paper: { size: "A4", x: -11, y: 7 } }] })
     const read = parseProjectFile(v12, { id: "x" })
     expect(read.busAliases).toBeUndefined()
     expect(read.drawings).toBeUndefined()
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(5)
+    expect(PROJECT_FILE_VERSION).toBe(6)
   })
 
   it("keeps a bus, an entry and an alias through a save and a load, and drops a malformed one without losing the rest", () => {

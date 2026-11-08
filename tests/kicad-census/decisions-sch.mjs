@@ -22,7 +22,7 @@ export const RULES_SCH = [
   // ---- the file ----
   rule("version|generator|generator_version", "native", "-", { effort: "S", note: "the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)" }),
   rule("uuid", "native", "-", { effort: "S", note: "the sheet's id, the first part of every instance path" }),
-  rule("paper", "not-needed", "-", { note: "sheet size of KiCad's drawing frame" }),
+  rule("paper", "native", "SchematicSheet.paper", { effort: "S", note: "the sheet's page: a named size, turned by portrait, or User with its width and height in mm" }),
   rule("page", "not-needed", "-", { note: "a KiCad 6 nightly's page number and count of the sheet (2020): the export numbers the pages in tree order" }),
   rule("title_block(?:>.*)?", "native", "Project.properties", { effort: "S" }),
   rule("embedded_fonts", "extend", "-", { ext: "X19", note: "the fonts the schematic embeds" }),
@@ -172,7 +172,7 @@ export const TOKENS_SCH = [
   token("iref", "extend", "S2", "the old intersheet reference field of a global label (KiCad 5 formats)"),
   token("local", "extend", "S5", "local power symbols (KiCad 9: a power symbol that stays on its sheet)"),
   token("unconnected", "native", "", "the old name of the no_connect pin type (renamed at stamp 20210123): read as no_connect"),
-  token("portrait", "not-needed", "", "page orientation"),
+  token("portrait", "native", "", "page orientation (SchematicSheet.paper)"),
 ]
 
 // ---- KiCad 4 and 5 schematics (`EESchema Schematic File Version 2 to 5`) ----
@@ -182,7 +182,7 @@ const line = (name, decision, ext, note) => ({ name, decision, ext, note })
 
 export const LEGACY_SCH = [
   line("EESchema Schematic File Version N", "native", "", "version 1 (12 files, old Latin-1 KiCad 2012 files), 2 (KiCad 4), 4 and 5 (KiCad 5); read as UTF-8, else as Latin-1 (3 files in the corpus)"),
-  line("LIBS:name, EELAYER n m, EELAYER END, $Descr size, Sheet n m, Title, Date, Rev, Comp, Comment1..9, encoding", "native", "", "page, sheet count and title block; the page size is not needed"),
+  line("LIBS:name, EELAYER n m, EELAYER END, $Descr size, Sheet n m, Title, Date, Rev, Comp, Comment1..9, encoding", "native", "", "page size, sheet count and title block"),
   line("$Comp ... $EndComp", "native", "", "one symbol instance"),
   line("L lib:name ref", "native", "", "the library symbol and the reference; without a `lib:` prefix (KiCad 4) the name is searched in the cache and the project libraries"),
   line("U unit convert timestamp", "extend", "S5", "the unit and De Morgan body style of a multi-unit symbol, and the timestamp that links the footprint (`(path /TIMESTAMP)`)"),

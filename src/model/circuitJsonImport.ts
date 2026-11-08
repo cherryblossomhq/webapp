@@ -9,6 +9,8 @@ import { pinStubPoint, schematicBounds, schematicPins } from "./instances"
 import { labelBox } from "./labels"
 import { outlineRadius } from "./board"
 import { createProject, labelPin } from "./ops"
+import { pageFor, sheetDrawingBox } from "./paper"
+import { ROOT_SHEET } from "./sheets"
 import { SCH_GRID } from "./symbols"
 import type {
   BoardText,
@@ -920,6 +922,10 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
     if (g) blockMembers.set(g, [...(blockMembers.get(g) ?? []), componentId])
   }
   for (const [g, ids] of blockMembers) project = createBlock(project, g.name!, ids).project
+
+  // The page: the smallest landscape A4 to A0 that holds the drawing, placed around it.
+  const drawing = sheetDrawingBox(project)
+  if (drawing) project = { ...project, sheets: [{ id: ROOT_SHEET, paper: pageFor(drawing) }] }
 
   // ---------- Board ----------
   const board = of<PcbBoard>("pcb_board")[0]

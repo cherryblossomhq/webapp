@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { pcbPads, slotEnds } from "../src/model/instances"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { holds, paperOf, sheetDrawingBox } from "../src/model/paper"
 import { EXTENSION_NAMES, formatSize, importKicadBoard, PROJECT_SIZE_LIMIT_BYTES, type KicadImportResult } from "../src/model/kicad/board"
 import { rotK } from "../src/model/kicad/board/geometry"
 import { board, footprint, pad } from "./kicad-board-fixtures"
@@ -21,6 +22,18 @@ const netOf = (r: Extract<KicadImportResult, { status: "imported" }>, ref: strin
   const c = r.project.components.find((x) => x.ref === ref)!
   return computeConnectivity(r.project).pinNet.get(pinKey(c.id, pin))
 }
+
+describe("the generated schematic", () => {
+  it("is on a page that holds it: the smallest landscape A4 to A0", () => {
+    const pads = [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0", net: '(net 2 "VIN")' })]
+    const parts = Array.from({ length: 30 }, (_, i) => footprint({ ref: `R${i + 1}`, at: `${(i % 6) * 5} ${Math.floor(i / 6) * 5}`, pads }))
+    const { project } = imported(board({ nets: ['(net 0 "")', '(net 1 "GND")', '(net 2 "VIN")'], body: parts }))
+    const paper = paperOf(project)
+    expect(["A4", "A3", "A2", "A1", "A0"]).toContain(paper.size)
+    expect(paper.portrait).toBeUndefined()
+    expect(holds(paper, sheetDrawingBox(project)!)).toBe(true)
+  })
+})
 
 describe("the gate", () => {
   const simple = board({ nets: ['(net 0 "")', '(net 1 "GND")'], body: [footprint({ pads: [pad({ number: "1", at: "-1 0", net: '(net 1 "GND")' }), pad({ number: "2", at: "1 0" })] })] })

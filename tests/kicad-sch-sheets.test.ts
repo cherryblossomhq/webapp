@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { commitOnUse, mergeSheetView, ROOT_SHEET, sheetUses, sheetView, syncCopies, usesOfSheet } from "../src/model/sheets"
-import { addWire, createProject } from "../src/model/ops"
+import { addComponent, addWire, createProject } from "../src/model/ops"
 import { kicadFiles } from "../src/export/kicad"
 import { runTool } from "../src/ai/tools"
 import { bomCsv } from "../src/export/bom"
 import { projectToCircuitJson } from "../src/export/circuitJson"
 import { setSheetSymbol } from "../src/model/sheetOps"
-import { imp, S1, S2 } from "./kicad-sheets-fixtures"
+import { files as sheetFiles, imp, S1, S2 } from "./kicad-sheets-fixtures"
 import { flattenHierarchy } from "../src/export/flatten"
 import { type Project } from "../src/model/types"
-import { LIB_GND, LIB_R, ROOT_UUID, schematic } from "./kicad-schematic-fixtures"
+import { divider, LIB_GND, LIB_R, ROOT_UUID, schematic } from "./kicad-schematic-fixtures"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 
 // S1: hierarchical sheets, end to end, from the files KiCad writes.
@@ -496,3 +496,73 @@ describe("S1 nodes are held", () => {
   })
 })
 }
+
+// ---------- the page: KiCad's paper, read and written back where KiCad has it ----------
+
+describe("a sheet's page in KiCad", () => {
+  const onPaper = (paper: string) => divider().replace('(paper "A4")', paper)
+  const load1 = (text: string) => {
+    const r = importKicadSchematic(text)
+    if (r.status !== "imported") throw new Error(r.message)
+    return r.project
+  }
+  const exported = async (p: Project) => Object.entries((await kicadFiles(p)).files).find(([n]) => n.endsWith(".kicad_sch"))![1]
+  const cases = [
+    { file: '(paper "A3")', paper: { size: "A3", x: 0, y: 0 } },
+    { file: '(paper "A4" portrait)', paper: { size: "A4", portrait: true, x: 0, y: 0 } },
+    { file: '(paper "User" 300 200)', paper: { size: "User", width: 300, height: 200, x: 0, y: 0 } },
+  ]
+
+  it.each(cases)("$file is imported with its page at (0, 0), where KiCad has it, and written back on it in the same place", async ({ file, paper }) => {
+    const project = load1(onPaper(file))
+    expect(project.sheets).toEqual([{ id: ROOT_SHEET, paper }])
+    // R1 is at (50.8, 50.8) mm in the file: 4 units right of the page's corner and 4 down.
+    expect(project.components.find((c) => c.ref === "R1")!.sch).toMatchObject({ x: 4, y: -4 })
+    const text = await exported(project)
+    expect(text.match(/\(paper[^()]*\)/g)).toEqual([file])
+    expect(text).toMatch(/\(lib_id "Device:R"\)\n\s*\(at 50\.8 50\.8 0\)/)
+    const back = load1(text)
+    expect(back.sheets).toEqual(project.sheets)
+    // the parts (the converter draws power symbols as ports of its own, which come back as other symbols)
+    const places = (p: Project) => p.components.filter((c) => /^R\d$/.test(c.ref)).map((c) => [c.ref, c.sch.x, c.sch.y]).sort()
+    expect(places(back)).toEqual(places(project))
+  })
+
+  it("a page KiCad gives no name of the editor's: GERBER is a custom page 32 inches square, an unknown name A4, and a file with none A4", () => {
+    expect(load1(onPaper('(paper "GERBER")')).sheets![0].paper).toEqual({ size: "User", width: 812.8, height: 812.8, x: 0, y: 0 })
+    expect(load1(onPaper('(paper "B5")')).sheets![0].paper).toEqual({ size: "A4", x: 0, y: 0 })
+    expect(load1(onPaper("")).sheets![0].paper).toEqual({ size: "A4", x: 0, y: 0 })
+  })
+
+  it("an editor-drawn project, its page centred on the origin, is written with a part at its offset from the page's corner in mm", async () => {
+    const drawn = addComponent(createProject("Drawn"), "resistor", { ref: "R1", sch: { x: 1, y: -1, rot: 0 }, props: { resistance: "10k" } }).project
+    // A4 landscape about the origin has its top-left corner at (-11.7, 8.3): R1 is 12.7 units right of it and 9.3 down.
+    expect(drawn.sheets).toEqual([{ id: ROOT_SHEET, paper: { size: "A4", x: -11.7, y: 8.3 } }])
+    const text = await exported(drawn)
+    expect(text.match(/\(paper[^()]*\)/g)).toEqual(['(paper "A4")'])
+    expect(text).toMatch(/\(lib_id "[^"]*resistor[^"]*"\)\n\s*\(at 161\.29 118\.11 0\)/)
+    // a page moved elsewhere moves the part in the file with it: the corner, not the drawing, is KiCad's origin
+    const moved = await exported({ ...drawn, sheets: [{ id: ROOT_SHEET, paper: { size: "A3", portrait: true, x: -3, y: 2 } }] })
+    expect(moved.match(/\(paper[^()]*\)/g)).toEqual(['(paper "A3" portrait)'])
+    expect(moved).toMatch(/\(lib_id "[^"]*resistor[^"]*"\)\n\s*\(at 50\.8 38\.1 0\)/)
+    const back = load1(text)
+    expect(back.components.map((c) => [c.ref, c.sch.x, c.sch.y])).toEqual([["R1", 12.7, -9.3]])
+  })
+
+  it("writes each sheet's file on its own page", async () => {
+    const files = sheetFiles([{ uuid: S1, name: "Power", y: 60.96 }])
+    files.set("root.kicad_sch", files.get("root.kicad_sch")!.replace('(paper "A4")', '(paper "A3")'))
+    files.set("child.kicad_sch", files.get("child.kicad_sch")!.replace('(paper "A4")', '(paper "User" 250 180)'))
+    const r = importKicadSchematic({ files, root: "root.kicad_sch" })
+    if (r.status !== "imported") throw new Error(r.message)
+    expect(r.project.sheets?.map((x) => [x.id, x.paper])).toEqual([
+      [ROOT_SHEET, { size: "A3", x: 0, y: 0 }],
+      ["s1", { size: "User", width: 250, height: 180, x: 0, y: 0 }],
+    ])
+    const out = schFiles(await kicadFiles(r.project))
+    expect(out.get("child.kicad_sch")!.match(/\(paper[^()]*\)/g)).toEqual(['(paper "User" 250 180)'])
+    expect(out.get([...out.keys()].find((n) => n !== "child.kicad_sch")!)!.match(/\(paper[^()]*\)/g)).toEqual(['(paper "A3")'])
+    // R9 on the sheet below is at (50.8, 50.8) mm of its own page, as KiCad had it
+    expect(out.get("child.kicad_sch")).toMatch(/\(lib_id "Device:R"\)\n\s*\(at 50\.8 50\.8 0\)/)
+  })
+})

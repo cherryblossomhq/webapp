@@ -1025,7 +1025,8 @@ function buildPass(
   for (const f of files) {
     const sch = f.schematic
     const def = sheetId.get(f.path)!
-    const entry: SchematicSheet = { id: def }
+    // KiCad's page has its top-left corner at the file's origin, which the editor's (0, 0) is, so the page stays where KiCad has it. A file with no paper is on A4, as KiCad reads it.
+    const entry: SchematicSheet = { id: def, paper: { ...(sch.paper ?? { size: "A4" }), x: 0, y: 0 } }
     // A single pasted schematic is read as `schematic.kicad_sch`, which is no name of the user's. The file's path from the root schematic's folder (as KiCad's Sheetfile has it); one outside that folder keeps its name alone.
     const rootDir = tree.root.includes("/") ? tree.root.slice(0, tree.root.lastIndexOf("/") + 1) : ""
     if (def === ROOT_SHEET) { if (f.path !== "schematic.kicad_sch") entry.file = f.path.slice(f.path.lastIndexOf("/") + 1) } else entry.file = f.path.startsWith(rootDir) ? f.path.slice(rootDir.length) : f.path.slice(f.path.lastIndexOf("/") + 1)
@@ -1123,16 +1124,14 @@ function buildPass(
   if (unnamedVariants) {
     report.entries.push({ code: "variant-not-held", severity: "not-brought", object: `${unnamedVariants} variant${unnamedVariants > 1 ? "s" : ""} with no name`, why: "A variant is chosen by its name, so one with none is not kept.", count: unnamedVariants })
   }
+  // Every sheet is listed with its page, the root of a one-sheet project included; a sheet no symbol uses is not a sheet of the project.
   const hierarchical = sheetSymbols.length > 0
-  // A one-sheet project lists its root only to say what is not the default: that it joins by KiCad's rules.
-  const rootEntry = sheets.find((x) => x.id === ROOT_SHEET)
-  const listRoot = !hierarchical && !!(rootEntry?.kicadRules || rootEntry?.file)
   project = {
     ...project,
     components,
     wires,
     labels,
-    ...(hierarchical ? { sheets, sheetSymbols } : listRoot ? { sheets: [rootEntry!] } : {}),
+    ...(hierarchical ? { sheets, sheetSymbols } : { sheets: sheets.filter((x) => x.id === ROOT_SHEET) }),
     netNames: root.legacy ? ("kicad5" as const) : root.version !== null && root.version <= 20211123 ? ("kicad6" as const) : ("kicad" as const),
     ...(busAliases.length ? { busAliases } : {}),
     ...(blocks.length ? { blocks } : {}),

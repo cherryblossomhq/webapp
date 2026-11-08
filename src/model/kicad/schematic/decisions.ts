@@ -31,7 +31,7 @@ export const PATH_RULES: PathRule[] = [
   {"source":"^(sheet>instances>project>path>page|sheet_instances>path>page)$","decision":"not-needed","note":"page numbers: the export numbers the pages in the order of the tree"},
   {"source":"^(version|generator|generator_version)$","decision":"native","note":"the reader's switches (KiCad 6 keeps instances in a root symbol_instances list, 7 and later inside each symbol)"},
   {"source":"^(uuid)$","decision":"native","note":"the sheet's id, the first part of every instance path"},
-  {"source":"^(paper)$","decision":"not-needed","note":"sheet size of KiCad's drawing frame"},
+  {"source":"^(paper)$","decision":"native","note":"the sheet's page: a named size, turned by portrait, or User with its width and height in mm"},
   {"source":"^(page)$","decision":"not-needed","note":"a KiCad 6 nightly's page number and count of the sheet (2020): the export numbers the pages in tree order"},
   {"source":"^(title_block(?:>.*)?)$","decision":"native"},
   {"source":"^(embedded_fonts)$","decision":"extend","ext":"X19","note":"the fonts the schematic embeds"},
@@ -154,5 +154,5 @@ export const TOKEN_RULES: TokenRule[] = [
   {"names":["iref"],"decision":"extend","ext":"S2","note":"the old intersheet reference field of a global label (KiCad 5 formats)"},
   {"names":["local"],"decision":"extend","ext":"S5","note":"local power symbols (KiCad 9: a power symbol that stays on its sheet)"},
   {"names":["unconnected"],"decision":"native","note":"the old name of the no_connect pin type (renamed at stamp 20210123): read as no_connect"},
-  {"names":["portrait"],"decision":"not-needed","note":"page orientation"},
+  {"names":["portrait"],"decision":"native","note":"page orientation (SchematicSheet.paper)"},
 ]

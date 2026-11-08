@@ -9,6 +9,8 @@ import { normalizeOverrides, normalizeProjectVariants } from "../../variants"
 import { derivedCopperNets } from "../../pcb"
 import { pinStubPoint, schematicBounds, schematicPins } from "../../instances"
 import { createProject } from "../../ops"
+import { pageFor, sheetDrawingBox } from "../../paper"
+import { ROOT_SHEET } from "../../sheets"
 import { SCH_GRID } from "../../symbols"
 import { pathsBox } from "../../shapes"
 import type { EmbeddedFont, ProjectFonts, BoardDimension, BoardGraphic, CopperLayer, BoardOutline, BoardText, ComponentInstance, CustomPartSpec, FootprintDef, ModelAssignment, NetLabel, PadDef, PartCategory, PartFlags, PcbGroup, PcbPoint, PinDef, Project, ReferenceImage, Rotation, Trace, Vec2, Via, Wire, Zone } from "../../types"
@@ -1355,7 +1357,10 @@ function layoutSchematic(project: Project, padNets: Map<string, Map<string, stri
       labels.push({ id: uid("l"), name: labelText.get(net) ?? net, x: round(stub.x), y: round(stub.y), rot })
     }
   }
-  return { project: { ...project, components, wires, labels } }
+  const laid = { ...project, components, wires, labels }
+  // The page: the smallest landscape A4 to A0 that holds the drawing, placed around it.
+  const drawing = sheetDrawingBox(laid)
+  return { project: drawing ? { ...laid, sheets: [{ id: ROOT_SHEET, paper: pageFor(drawing) }] } : laid }
 }
 
 /**

@@ -232,11 +232,11 @@ describe("every case slice 3a refused naming S11 is imported, flagged, with KiCa
     expect(entry[0].severity).toBe("note")
   })
 
-  it("a sheet with no such case is built as before: no flag, no sheet list, four digits", () => {
+  it("a sheet with no such case is built as before: no flag, the root listed with its page alone, four digits", () => {
     const text = schematic({ libs: [LIB_R], symbols: [R1, R2], wires: ["80 120 80 130"] })
     const r = run(text)
     expect(r.flagged).toBe(false)
-    expect(r.project.sheets).toBeUndefined()
+    expect(r.project.sheets).toEqual([{ id: "root", paper: { size: "A4", x: 0, y: 0 } }])
   })
 
   it("without S11 named built, each case is the need it was: refused naming S11", () => {
@@ -253,7 +253,7 @@ describe("the flag is the project's, saved and loaded, and a sheet drawn in the 
     const imported = importKicadSchematic(text, { built: BUILT })
     if (imported.status !== "imported") throw new Error("not imported")
     const back = parseProjectFile(serializeProject(imported.project), { id: "x" })
-    expect(back.sheets).toEqual([{ id: "root", kicadRules: true }])
+    expect(back.sheets).toEqual([{ id: "root", paper: { size: "A4", x: 0, y: 0 }, kicadRules: true }])
     expect(editorGroups(back)).toEqual([])
   })
 

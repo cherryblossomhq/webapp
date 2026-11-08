@@ -7,6 +7,8 @@ import { powerNetName } from "../model/instances"
 import { useFillsOf, zoneFillsOf } from "../model/pcb"
 import { ownFlagComponents, withRuleAreaFlags, withRuleAreaFlagsOnly } from "../model/ruleAreas"
 import { hasPartZones, kicadWritesZones } from "../model/zones"
+import { paperOf, titleBlockOf } from "../model/paper"
+import { round } from "../lib/geometry"
 import type { ComponentInstance, Project, SymbolDrawing } from "../model/types"
 import { applyZones } from "./kicadZones"
 import { slugify } from "./bundle"
@@ -21,13 +23,13 @@ import { applyBoardObjects } from "./kicadObjects"
 import { applyDrawings } from "./kicadShapes"
 import { applyTexts } from "./kicadTexts"
 import { isKicadBoardProject, writeKicadBoard } from "./kicadBoard"
-import { rootFileStem, sheetTitleBlock, sheetFileNames, sheetSymbolNode, retarget, sheetUuid, sharedSheetNotes, spreadInstances, symbolUuid, symbolsOf, sheetFlagsWritten, writeVariants, unitsOfOtherUses, VARIANT_FILE_VERSION } from "./kicadSheets"
+import { rootFileStem, sheetFileNames, sheetSymbolNode, retarget, sheetUuid, sharedSheetNotes, spreadInstances, symbolUuid, symbolsOf, sheetFlagsWritten, writeVariants, unitsOfOtherUses, VARIANT_FILE_VERSION } from "./kicadSheets"
 import { uuidFrom } from "./kicadUuid"
 import { ROOT_SHEET, isHierarchical, sheetsOf, sheetView, useAt, usesOfSheet } from "../model/sheets"
 import { mayHaveBuses } from "../model/busConnectivity"
 import { variantExportNotes, variantNames } from "../model/variants"
 import { addBlockGroups, addBusItems, addSheetItems, localizePower, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
-import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, kicadCustomRules, kicadDruText, noConnectPins, symbolFields, titleBlock, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
+import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, kicadCustomRules, kicadDruText, noConnectPins, symbolFields, applyPaper, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
 // the user asks for them: it and the packages it needs (the KiCad file writer and tscircuit's
@@ -145,6 +147,18 @@ async function converterBoard(project: Project, converted: string): Promise<Boar
   return { text: models.text, notes: [...zones.notes, ...padded.notes, ...drawings.notes, ...outline.notes, ...texts.notes, ...models.notes], afterNotes: objects.notes, native: false }
 }
 
+/** The title block the converter writes for the use at `path`: the page's own (`titleBlockOf`), less what KiCad's drawing sheet fills in itself (the sheet's name, its number and the size). */
+function converterTitleBlock(project: Project, path: string) {
+  const t = titleBlockOf(project, path)
+  return { title: t.title, ...(t.date ? { date: t.date } : {}), ...(t.revision ? { revision: t.revision } : {}), ...(t.company ? { company: t.company } : {}), comments: t.comments }
+}
+
+/**
+ * Where the converter puts the editor's origin so the page's top-left corner is KiCad's (0, 0), as KiCad has its page. The converter maps a point it is given
+ * by `translate(origin) ∘ scale(15, -15)`, and the schematic is scaled by 12.7 / 15 first, so an editor point (x, y) lands at (origin.x + 12.7 x, origin.y - 12.7 y) mm.
+ */
+const pageOrigin = (paper: { x: number; y: number }) => ({ x: round(-paper.x * EDITOR_MM_PER_UNIT, 6), y: round(paper.y * EDITOR_MM_PER_UNIT, 6) })
+
 /** Whether the project was made from KiCad's files (the import marks it with the file version of what it read). */
 const fromKicadFiles = (p: Pick<Project, "properties">) => !!p.properties?.some((x) => x.key === "KiCad file version")
 
@@ -257,14 +271,17 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   // S1: a project with sheets writes a schematic for each sheet, from a view of its first use; one without writes the one it has.
   const hierarchical = isHierarchical(project) && project.scope === undefined
   const sheetIds = hierarchical ? sheetsOf(project).map((x) => x.id) : [ROOT_SHEET]
-  const viewOf = (sheet: string) => (hierarchical ? sheetView(project, usesOfSheet(project, sheet)[0]?.path ?? "") : project)
+  // The use each sheet's file is written from: a sheet's first use in a hierarchy, else the use the project is (the root, or the sheet a view shows).
+  const pathOf = (sheet: string) => (hierarchical ? (usesOfSheet(project, sheet)[0]?.path ?? "") : (project.scope ?? ""))
+  const viewOf = (sheet: string) => (hierarchical ? sheetView(project, pathOf(sheet)) : project)
+  const paperOfFile = (sheet: string) => paperOf(project, useAt(project, pathOf(sheet)).sheet)
   const converters = new Map<string, { sch: InstanceType<typeof CircuitJsonToKicadSchConverter>; view: Project; data: ReturnType<typeof projectToCircuitJson>; circuit: AnyCircuitElement[] }>()
   for (const id of sheetIds) {
     const view = viewOf(id)
     const data = hierarchical ? projectToCircuitJson(view, { nameAllNets: true, forKicad: true, keepVariants: asKicad10, extraUnits: unitsOfOtherUses(project, id), copper: false }) : { elements, notes, symbols, powerTexts }
     const scaled = hierarchical ? scaleSchematic(data.elements) : circuit
-    // A project that came from KiCad files keeps its sheets where they were: the page's own origin is the editor's, so every item is at the millimetre it had, on KiCad's grid, not moved to the middle of a page.
-    const conv = new CircuitJsonToKicadSchConverter(scaled, { titleBlock: (hierarchical && id !== ROOT_SHEET ? sheetTitleBlock(project, id) : null) ?? titleBlock(project), ...(fromKicadFiles(project) ? { schematicSheets: [{ circuitOrigin: { x: 0, y: 0 } }] } : {}) })
+    // Every item keeps its place on the page: the page's corner is on the 0.1 grid, so an item on the grid lands on KiCad's 1.27 mm grid, and a sheet imported from KiCad (its page at the editor's origin) is at the millimetre it had.
+    const conv = new CircuitJsonToKicadSchConverter(scaled, { titleBlock: converterTitleBlock(project, pathOf(id)), schematicSheets: [{ circuitOrigin: pageOrigin(paperOfFile(id)) }] })
     conv.runUntilFinished()
     converters.set(id, { sch: conv, view, data, circuit: scaled })
   }
@@ -301,7 +318,8 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   const sharedTexts = drawingByRef.size ? sharedTexts0.map((t) => applyLibraryIdentity(t, (ref) => drawingByRef.get(ref))) : sharedTexts0
   for (const [i, id] of sheetIds.entries()) {
     const made = converters.get(id)!
-    const text = sharedTexts[i]
+    // Each file is on its sheet's own page, not the size the converter picked for the drawing.
+    const text = applyPaper(sharedTexts[i], paperOfFile(id))
     if (!hierarchical) {
       sheetTexts.set(id, text)
       continue

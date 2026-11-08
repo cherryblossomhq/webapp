@@ -2,6 +2,8 @@ import type { SharedFlag } from "../../partFlags"
 import { newReport, type ImportReport } from "../board/report"
 import { convertOverbar, decodeNetName } from "../board/read"
 import { decodeBytes, flagOf, kid, kids, KicadReadError, nameOf, numAt, parseSexpr, strAt, type List } from "../board/sexpr"
+import { isPaperSize } from "../../paper"
+import type { SheetPaper } from "../../types"
 import type {
   BusEntry,
   LegacyInfo,
@@ -538,6 +540,28 @@ const TYPED_ROOT = new Set([
   "embedded_files",
 ])
 
+/** GERBER, KiCad's 32 inch square page for photoplotters: the editor has no size of that name, so it is a custom page of that size. */
+const GERBER_MM = 812.8
+
+/**
+ * `(paper "A3")`, `(paper "A4" portrait)` or `(paper "User" 300 200)`. KiCad never writes `portrait` on a custom page, and reads it
+ * there as swapping the sides, as here. A name KiCad does not know is A4, the page KiCad gives a new schematic.
+ */
+function readPaperNode(node: List | undefined): Omit<SheetPaper, "x" | "y"> | null {
+  if (!node) return null
+  const name = strAt(node, 1) ?? ""
+  const portrait = node.slice(2).includes("portrait")
+  if (name === "GERBER") return { size: "User", width: GERBER_MM, height: GERBER_MM }
+  if (name === "User") {
+    const w = numAt(node, 2, NaN)
+    const h = numAt(node, 3, NaN)
+    if (!(w > 0) || !(h > 0)) return { size: "A4" }
+    return portrait ? { size: "User", width: h, height: w } : { size: "User", width: w, height: h }
+  }
+  if (!isPaperSize(name)) return { size: "A4" }
+  return { size: name, ...(portrait ? { portrait: true as const } : {}) }
+}
+
 function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): KicadSchematic {
   const versionNode = kid(tree, "version")
   const stampNumber = versionNode ? numAt(versionNode, 1, NaN) : NaN
@@ -619,7 +643,7 @@ function readSchematic(tree: List, report: ImportReport, legacy?: LegacyInfo): K
     generator: strAt(gen, 1) ?? null,
     generatorVersion: strAt(kid(tree, "generator_version"), 1) ?? null,
     uuid: strAt(kid(tree, "uuid"), 1) ?? "",
-    paper: strAt(kid(tree, "paper"), 1) ?? null,
+    paper: readPaperNode(kid(tree, "paper")),
     titleBlock,
     libSymbols,
     symbols,

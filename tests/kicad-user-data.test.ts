@@ -54,7 +54,7 @@ describe("a text, a text box and a table cell left out of simulation stay out of
 })
 
 describe("what KiCad keeps for itself is read past in a saved project", () => {
-  it("loads a project that has a sheet's uuid and page, a sheet symbol's uuid and pages, a pin's uuid and the castellated flag, and ignores them", () => {
+  it("loads a project that has a sheet's uuid and page number, a sheet symbol's uuid and pages, a pin's uuid and the castellated flag, and ignores them, keeping the sheet's paper", () => {
     const ex = EXAMPLES[0].project
     const doc = JSON.parse(
       serializeProject({
@@ -65,7 +65,7 @@ describe("what KiCad keeps for itself is read past in a saved project", () => {
     )
     const raw = doc.project
     raw.sheets = [
-      { id: "root", page: "4", uuid: "u-root" },
+      { id: "root", page: "4", uuid: "u-root", paper: { size: "A3", x: 0, y: 0 } },
       { id: "s1", page: "5", uuid: "u-s1", titleBlock: [{ key: "Title", value: "Power stage" }], file: "power.kicad_sch" },
     ]
     raw.sheetSymbols[0].uuid = "u-h1"
@@ -73,7 +73,7 @@ describe("what KiCad keeps for itself is read past in a saved project", () => {
     raw.sheetSymbols[0].pins[0].uuid = "u-p1"
     raw.board = { ...raw.board, stack: { copper: [{ id: "top" }, { id: "bottom" }], castellated: true } }
     const read = parseProjectFile(JSON.stringify(doc), origin)
-    expect(read.sheets).toEqual([{ id: "root" }, { id: "s1", titleBlock: [{ key: "Title", value: "Power stage" }], file: "power.kicad_sch" }])
+    expect(read.sheets).toEqual([{ id: "root", paper: { size: "A3", x: 0, y: 0 } }, { id: "s1", titleBlock: [{ key: "Title", value: "Power stage" }], file: "power.kicad_sch" }])
     expect(read.sheetSymbols![0]).not.toHaveProperty("uuid")
     expect(read.sheetSymbols![0]).not.toHaveProperty("pages")
     expect(read.sheetSymbols![0].pins[0]).not.toHaveProperty("uuid")

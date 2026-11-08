@@ -92,21 +92,23 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
  * drawings existed. The picture of the shipped examples is the one main draws since it frames their blocks and paints drawings (the golden outputs
  * in `tests/golden` hold the same picture); the frozen examples have no blocks, so theirs is still the first. Since the library held basic parts
  * only (file version 4), the shipped examples' chips are their own parts: the same Circuit JSON and picture, a note that says parts made for the
- * project have no library link, and get_design naming each chip by its part's id.
+ * project have no library link, and get_design naming each chip by its part's id. Since every sheet is a page (file version 6), the picture paints
+ * the page and get_design reports it, and the shipped examples are tidied onto theirs, which moved their schematics; the frozen examples' Circuit
+ * JSON, which has no page, is what it was.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
   // its routed copper changed once a through-hole pad joined a pour by its copper and not only by its centre (`joinsFill`), and with it the board in its Circuit JSON
-  "esp32-robot": { circuit: "0593aeab245aa91c", notes: "1c3eb23971c052c9", svg: "c494fdf7fd9da98c", design: "0d556351697db72d" },
-  node: { circuit: "8c25f23fa2131473", notes: "1c3eb23971c052c9", svg: "80a9fd3babf7591e", design: "10131824a2130a1a" },
-  blinker: { circuit: "51cb1a459952ff8e", notes: "1c3eb23971c052c9", svg: "d47e7e1b0e8856f5", design: "f36466f25da0aa02" },
-  regulator: { circuit: "322e01a20d7dfc72", notes: "1c3eb23971c052c9", svg: "70e18bc28b56ec8e", design: "2ebca66d732e60a2" },
-  mcu: { circuit: "beea3a0b6b98297f", notes: "1c3eb23971c052c9", svg: "38e3d9a1edc04938", design: "da2a35ea9a601755" },
-  "frozen-esp32-robot": { circuit: "730bfa45500b69ff", notes: "ecde5db8bdf09607", svg: "299271660a4155b1", design: "7f38678ff141de94" },
-  "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "4b107b7ad8115ed8", design: "42abfae5421666e4" },
-  "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "c87ee948dc652b73", design: "ee03b0c27a4e4c41" },
-  "frozen-regulator": { circuit: "fcb711afa8d98b8e", notes: "ecde5db8bdf09607", svg: "38d9477f5e779253", design: "1cdb315050a8f11f" },
+  "esp32-robot": { circuit: "45ec49bca9c0878a", notes: "1c3eb23971c052c9", svg: "77f0488437816220", design: "20c059c85ad4e9ce" },
+  node: { circuit: "f674a00db0cad354", notes: "1c3eb23971c052c9", svg: "35ce782ffd47a8dc", design: "e08957f5d1cd4957" },
+  blinker: { circuit: "d0de030633fd1584", notes: "1c3eb23971c052c9", svg: "23e33b2748a01c91", design: "1e71ce5fbd65c239" },
+  regulator: { circuit: "028e450ab3e9ae35", notes: "1c3eb23971c052c9", svg: "a12701ea013f02c0", design: "a0e0fd6f05254bbc" },
+  mcu: { circuit: "e250b8e1798ac8db", notes: "1c3eb23971c052c9", svg: "ea17ffaaf15a3946", design: "6f7a68f071d98908" },
+  "frozen-esp32-robot": { circuit: "730bfa45500b69ff", notes: "ecde5db8bdf09607", svg: "5625527337c0fdfa", design: "e324505f9497df97" },
+  "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "37dcf934825ccd5d", design: "bb294a819509f723" },
+  "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "d832e75b40094bcd", design: "1d94adacefed092a" },
+  "frozen-regulator": { circuit: "fcb711afa8d98b8e", notes: "ecde5db8bdf09607", svg: "1969635755327601", design: "b429b401e5ddd143" },
   // get_design now says its one stray supply port (#PWR1, touching nothing) reaches no part: `loose_wiring`.
-  "frozen-mcu": { circuit: "847672861b48a2b6", notes: "ecde5db8bdf09607", svg: "26075a811bfaf2f1", design: "673701354994462c" },
+  "frozen-mcu": { circuit: "847672861b48a2b6", notes: "ecde5db8bdf09607", svg: "7f6b9cf60e75ae82", design: "e0f759f247e30682" },
 }
 
 describe("the editor's own projects", () => {

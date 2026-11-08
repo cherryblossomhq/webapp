@@ -7,6 +7,7 @@ import { withPartsFrom } from "../src/model/customParts"
 import { pcbPads } from "../src/model/instances"
 import { findPart } from "../src/model/library"
 import { createProject } from "../src/model/ops"
+import { holds, paperOf, sheetDrawingBox } from "../src/model/paper"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
 import type { Rotation } from "../src/model/types"
 
@@ -147,6 +148,16 @@ describe("projectFromCircuitJson", () => {
     expect(byRef.U1.props).toEqual({ mpn: "XC6206P332MR", lcsc: "C5446" })
     // Its land is the board's own, carried in the project.
     expect(project.footprints?.map((f) => f.name)).toEqual([byRef.U1.footprint])
+  })
+
+  it("puts the drawing on a page that holds it, wherever tscircuit drew it", () => {
+    // tscircuit's schematic drawn far right of the origin, off the A4 page a new project has there
+    const far = board(parts, connections, extra).map((e) => (e.type === "schematic_component" ? { ...e, center: { x: (e.center as { x: number }).x + 60, y: (e.center as { y: number }).y } } : e))
+    const { project } = projectFromCircuitJson(far, { name: "Blinky" })
+    const paper = paperOf(project)
+    expect(paper.size).toBe("A4")
+    expect(holds(paper, sheetDrawingBox(project)!)).toBe(true)
+    expect([paper.x * 10, paper.y * 10].every((v) => Math.abs(v - Math.round(v)) < 1e-9)).toBe(true)
   })
 
   it("puts every pad exactly where it was, on whichever side and however turned", () => {

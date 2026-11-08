@@ -197,11 +197,11 @@ describe("X23: saving and loading", () => {
     return setActiveVariant(p, "Lite")
   }
 
-  it("keeps the variants, the shown one, the units and the points, in a file that is still version 5 (no version of their own)", () => {
+  it("keeps the variants, the shown one, the units and the points, in a file of the current version, 6 (no version of their own)", () => {
     const p = full()
     const text = serializeProject(p)
     expect(JSON.parse(text).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(5)
+    expect(PROJECT_FILE_VERSION).toBe(6)
     const back = parseProjectFile(text, ORIGIN)
     expect(back.variants).toEqual({ list: [{ name: "Lite", description: "No sensor" }, { name: "Full" }], active: "Lite" })
     expect(part(back, "R1").variants).toEqual({ Lite: { dnp: true } })

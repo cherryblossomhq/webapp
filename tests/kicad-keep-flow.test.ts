@@ -203,6 +203,33 @@ describe("a KiCad 8 schematic", () => {
   })
 })
 
+describe("a sheet's page in the user's own files", () => {
+  const sch = ["(kicad_sch", "\t(version 20250114)", '\t(generator "eeschema")', '\t(uuid "aaaaaaaa-0000-4000-8000-0000000000ff")', '\t(paper "A3")', "\t(lib_symbols)", ")", ""].join("\n")
+  const kept = async () => {
+    const p = await importKept([
+      { path: "blink.kicad_pcb", data: text },
+      { path: "blink.kicad_sch", data: sch },
+    ])
+    if (typeof p === "string") throw new Error(p)
+    return p
+  }
+
+  it("is the file's: an untouched sheet keeps its bytes when the board changes", async () => {
+    const p = await kept()
+    expect(p.sheets?.map((x) => x.paper)).toEqual([{ size: "A3", x: 0, y: 0 }])
+    const first = p.components.find((c) => c.ref === "R1")!
+    const out = await kicadFiles({ ...p, components: p.components.map((c) => (c === first ? { ...c, pcb: { ...c.pcb, x: c.pcb.x + 2 } } : c)) })
+    expect(out.files["blink.kicad_sch"]).toBe(sch)
+  })
+
+  it("a page changed in the editor is the one change written into the sheet's file", async () => {
+    const p = await kept()
+    const out = await kicadFiles({ ...p, sheets: p.sheets!.map((x) => ({ ...x, paper: { size: "A2" as const, x: 0, y: 0 } })) })
+    expect(out.kept?.find((k) => k.file === "blink.kicad_sch")?.mode).toBe("patched")
+    expect(out.files["blink.kicad_sch"]).toBe(sch.replace('(paper "A3")', '(paper "A2")'))
+  })
+})
+
 describe("the user's folder", () => {
   it("comes back whole: the footprint library and 3D models in their folders, KiCad's local settings, and no backups", async () => {
     const { store } = memoryFiles()

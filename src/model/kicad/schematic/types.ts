@@ -1,3 +1,4 @@
+import type { SheetPaper } from "../../types"
 import type { List } from "../board/sexpr"
 
 // A KiCad schematic as typed data, for every file version from KiCad 6 on. Coordinates are KiCad's
@@ -244,7 +245,8 @@ export interface KicadSchematic {
   generatorVersion: string | null
   /** The sheet's own uuid: the first part of every instance path of KiCad 7 and later. */
   uuid: string
-  paper: string | null
+  /** The `(paper ...)` node: a size of KiCad's (turned or not), or `User` with its width and height in mm. Null when the file has none. */
+  paper: Omit<SheetPaper, "x" | "y"> | null
   /** Title block entries in file order: `Title`, `Date`, `Rev`, `Company`, `Comment1`... */
   titleBlock: { key: string; value: string }[]
   libSymbols: LibSymbol[]

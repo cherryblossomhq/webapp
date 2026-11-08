@@ -4,13 +4,14 @@ import { mountingHoles } from "../model/board"
 import { FOOTPRINT_LIBRARY } from "../model/footprints"
 import { MOUNTING_HOLE_MARK } from "../model/kicad/mountingHoles"
 import { findPart } from "../model/library"
+import { paperMm } from "../model/paper"
 import { componentModel } from "../model/models3d"
 import { classValuesOfClass, hasNetClasses } from "../model/netClasses"
 import { kicadAttributes, onBoard } from "../model/partFlags"
 import { partSheet } from "../model/placementAreas"
 import { isHierarchical } from "../model/sheets"
 import { zoneClearance } from "../model/rules"
-import type { ComponentInstance, PinType, Project } from "../model/types"
+import type { ComponentInstance, PinType, Project, SheetPaper } from "../model/types"
 import { quoteFlat as quote } from "../lib/kicadQuote"
 import { stableUuid } from "./kicadUuid"
 import { isObject } from "../lib/guards"
@@ -786,33 +787,17 @@ function defaultFields(d: NonNullable<Project["rules"]["defaultClass"]>) {
   }
 }
 
-// ---------- Title block ----------
+// ---------- The page ----------
 
-export interface TitleBlock {
-  title: string
-  date?: string
-  revision?: string
-  company?: string
-  comments: { index: number; text: string }[]
+/** The sheet's page as KiCad writes it: `(paper "A3")`, `(paper "A4" portrait)` or `(paper "User" 300 200)`, a custom page by its width and height in mm as it is turned. */
+export function kicadPaper(paper: SheetPaper): string {
+  if (paper.size !== "User") return `(paper "${paper.size}"${paper.portrait ? " portrait" : ""})`
+  const mm = paperMm(paper)
+  return `(paper "User" ${round(mm.width, 4)} ${round(mm.height, 4)})`
 }
 
-/** The schematic's title block: the name, the revision and company if the project's properties have them, and the description and the rest as comments. */
-export function titleBlock(project: Project): TitleBlock {
-  const props = project.properties ?? []
-  const take = (pattern: RegExp) => props.find((p) => p.value && pattern.test(p.key.trim()))
-  const revision = take(/^rev(ision)?$/i)
-  const company = take(/^(company|organi[sz]ation)$/i)
-  const rest = props.filter((p) => p.value && p !== revision && p !== company).map((p) => `${p.key}: ${p.value}`)
-  const lines = [...(project.description ? [project.description] : []), ...rest].slice(0, 9)
-  const saved = Number.isFinite(project.updatedAt) && project.updatedAt > 0 ? new Date(project.updatedAt) : null
-  return {
-    title: project.name,
-    ...(saved && Number.isFinite(saved.getTime()) ? { date: saved.toISOString().slice(0, 10) } : {}),
-    ...(revision ? { revision: revision.value } : {}),
-    ...(company ? { company: company.value } : {}),
-    comments: lines.map((text, i) => ({ index: i + 1, text })),
-  }
-}
+/** A sheet's file with the converter's `(paper ...)` (a size it picked for the drawing, written bare) replaced by the sheet's own page. */
+export const applyPaper = (text: string, paper: SheetPaper) => text.replace(/\(paper\b[^()]*\)/, kicadPaper(paper))
 
 /** The first file version that has `(power local)`: KiCad 10's. */
 export const LOCAL_POWER_VERSION = 20250227

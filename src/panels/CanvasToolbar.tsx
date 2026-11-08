@@ -1,4 +1,4 @@
-import { Ban, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
+import { Ban, BetweenHorizontalStart, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { imageFacts } from "../lib/imageFacts"
 import { addImage } from "../model/boardObjects"
@@ -15,7 +15,9 @@ import type { Project } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { heldNote, renewBoardNow, useBoardLease, withBoard } from "../store/boardLease"
 import { projectApi, useProjectStore } from "../store/projectStore"
-import { useUi, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
+import { useUi, type LabelChoice, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
+import { useAt } from "../model/sheets"
+import { shownPath } from "../store/sheetScope"
 import { copperLayers, layerLabel } from "../model/stack"
 import { copperColor } from "../editor/theme"
 import { onTidy, onTidyBusy, startTidy } from "../editor/schematic/tidyAction"
@@ -50,6 +52,7 @@ const SCH_BUS_TOOLS: ToolChoice<SchTool>[] = [
 const SCH_FRAME_TOOLS: ToolChoice<SchTool>[] = [
   { value: "block", label: "Block", shortcut: "B", hint: "Drag around parts to frame them as a named block", icon: <SquareDashed size={16} /> },
   { value: "sheet", label: "Sheet", hint: "Drag out a sheet: a rectangle that stands for another page of the schematic, opened by double-clicking it", icon: <Network size={16} /> },
+  { value: "entry", label: "Sheet entry", hint: "Click the edge of a sheet symbol to add an entry, with its port inside the sheet", icon: <BetweenHorizontalStart size={16} /> },
 ]
 const SCH_DRAW_TOOLS: ToolChoice<SchTool>[] = [
   { value: "line", label: "Line", shortcut: "P", hint: "Lines, arrows and polygons; click back on the first corner to close one", icon: <PenLine size={16} /> },
@@ -90,7 +93,7 @@ export function SchematicToolbar() {
         <IconButton label="Wire" shortcut="W" disabled={viewer} active={tool === "wire"} onClick={() => setTool("wire")}>
           <Spline size={16} />
         </IconButton>
-        <IconButton label="Net label" shortcut="L" disabled={viewer} active={tool === "label"} onClick={() => setTool("label")}>
+        <IconButton label="Label" shortcut="L" hint="A net label, a global label or a port: Tab switches" disabled={viewer} active={tool === "label"} onClick={() => setTool("label")}>
           <Tag size={16} />
         </IconButton>
         <ToolGroup label="Bus tools" active={tool} onPick={setTool} disabled={viewer} tools={SCH_BUS_TOOLS} />
@@ -107,12 +110,38 @@ export function SchematicToolbar() {
         </IconButton>
         <CleanupButton />
       </div>
+      {tool === "label" && !viewer && <LabelOptions />}
       <BoardHeldNote note={held} />
       {status && (
         <div role="status" className="pointer-events-auto rounded-[8px] border border-line bg-surface/95 px-2.5 py-1 text-[12px] text-ink-2 shadow-float">
           {status}
         </div>
       )}
+    </div>
+  )
+}
+
+/** What the label tool places: a net label, a global label or a port, which Main can't have (it has no sheet above). Tab cycles them. */
+function LabelOptions() {
+  const chosen = useUi((s) => s.labelKind)
+  const setKind = useUi((s) => s.setLabelKind)
+  const sheet = useUi((s) => s.sheet)
+  const project = useProjectStore((s) => s.project)
+  const onRoot = !project || useAt(project, shownPath(project, sheet)).parent === null
+  const value: LabelChoice = chosen === "port" && onRoot ? "net" : chosen
+  return (
+    <div className={`${shell} gap-1.5 px-2`}>
+      <span className="text-[12px] text-ink-2">Place a</span>
+      <Segmented
+        size="sm"
+        value={value}
+        onChange={setKind}
+        options={[
+          { value: "net", label: "Net label", title: "Joins the labels of its name on this sheet", shortcut: "Tab" },
+          { value: "global", label: "Global label", title: "Joins the global labels of its name on every sheet", shortcut: "Tab" },
+          { value: "port", label: "Port", title: onRoot ? "Main has no sheet above it: a port joins the entry of its name on the sheet symbol above" : "Joins the entry of its name on the sheet symbol above; the entry is added too", disabled: onRoot },
+        ]}
+      />
     </div>
   )
 }

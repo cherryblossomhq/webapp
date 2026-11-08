@@ -1,11 +1,13 @@
 import { followSheetNames } from "./placementAreas"
-import { round } from "../lib/geometry"
+import { boxesOverlap, emptyBox, expandBox, round, type Box } from "../lib/geometry"
+import { drawingBounds } from "./drawings"
 import { schematicBounds } from "./instances"
 import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { kicadRulesShown, settleKicadSheet } from "./kicadJoin"
+import { labelBox } from "./labels"
 import { moveProblems } from "./merges"
-import { removeItems, stretchEnd } from "./ops"
-import { MAIN_SHEET_NAME, ROOT_SHEET, hasUse, sheetsOf, sheetUses, sheetView, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
+import { addLabel, removeItems, stretchEnd } from "./ops"
+import { MAIN_SHEET_NAME, ROOT_SHEET, hasUse, sheetIdOf, sheetsOf, sheetUses, sheetView, symbolsOnSheet, syncCopies, useAt, usesOfSheet, type SheetUse } from "./sheets"
 import type { LabelShape, NetLabel, Project, Rotation, SchematicSheet, SheetPin, SheetSymbol, Vec2, Wire } from "./types"
 
 // S1: editing the sheets of a schematic: adding a sheet (a sheet symbol on a sheet, with the sheet it stands for), using a sheet again,
@@ -330,8 +332,14 @@ export function sheetEditProblems(before: Project, after: Project, sheet: string
 
 const SIDE_ROT: Record<"left" | "right" | "top" | "bottom", Rotation> = { right: 0, top: 90, left: 180, bottom: 270 }
 
+/** An edge of a sheet symbol. */
+export type SheetSide = keyof typeof SIDE_ROT
+
+/** S11: the digits a sheet symbol's pins keep: six on a sheet joined by KiCad's rules, so what was at one point stays at one, else the editor's four. */
+const pinDigits = (project: Project, sym: SheetSymbol) => (project.sheets?.some((s) => s.id === sym.sheet && s.kicadRules) ? 6 : 4)
+
 /** The first free place along an edge of a symbol, a grid step in from the corner and a grid step apart. */
-function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT, digits = 4): Vec2 {
+function freeSpot(sym: SheetSymbol, side: SheetSide, digits = 4): Vec2 {
   const rot = SIDE_ROT[side]
   const taken = sym.pins.filter((p) => p.rot === rot)
   const horizontal = side === "top" || side === "bottom"
@@ -344,14 +352,63 @@ function freeSpot(sym: SheetSymbol, side: keyof typeof SIDE_ROT, digits = 4): Ve
   return side === "left" ? { x: sym.x, y: sym.y } : side === "right" ? { x: sym.x + sym.w, y: sym.y } : side === "top" ? { x: sym.x, y: sym.y + sym.h } : { x: sym.x, y: sym.y }
 }
 
-/** A pin on a sheet symbol, on the edge named, at the first free place along it. */
-export function addSheetPin(project: Project, symbolId: string, name: string, shape: LabelShape = "bidirectional", side: keyof typeof SIDE_ROT = "left", at?: Vec2): Project {
+/** A pin on a sheet symbol, on the edge named, at the first free place along it (or at `at`, on that edge). */
+export function addSheetPin(project: Project, symbolId: string, name: string, shape: LabelShape = "bidirectional", side: SheetSide = "left", at?: Vec2): Project {
   const sym = project.sheetSymbols?.find((s) => s.id === symbolId)
   if (!sym || !name.trim()) return project
-  // S11: a sheet joined by KiCad's rules keeps its points to six digits.
-  const spot = at ?? freeSpot(sym, side, kicadRulesShown(project) ? 6 : 4)
+  const spot = at ?? freeSpot(sym, side, pinDigits(project, sym))
   const pin: SheetPin = { id: nextId(sym.pins.map((p) => p.id), "p"), name: name.trim(), shape, x: spot.x, y: spot.y, rot: SIDE_ROT[side] }
   return touch({ ...project, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === symbolId ? { ...s, pins: [...s.pins, pin] } : s)) })
+}
+
+/** How far from a sheet symbol's edge a click still lands on it. */
+export const EDGE_REACH = GRID * 2.5
+
+/**
+ * The place on a sheet symbol's edges nearest to `p` that a pin can have: on the grid, a grid step in from each corner at least, with the edge it is on.
+ * Null when `p` is further than `reach` from every such place (or an edge is too short to have one).
+ */
+export function edgeSpot(sym: SheetSymbol, p: Vec2, { reach = EDGE_REACH, digits = 4 }: { reach?: number; digits?: number } = {}): { side: SheetSide; at: Vec2 } | null {
+  // Along an edge from `from` of `length`: the grid point nearest `v` with a grid step to each end.
+  const along = (from: number, length: number, v: number): number | null => {
+    const lo = Math.ceil(round((from + GRID) / GRID, 6)) * GRID
+    const hi = Math.floor(round((from + length - GRID) / GRID, 6)) * GRID
+    return hi < lo - 1e-9 ? null : round(Math.min(hi, Math.max(lo, Math.round(v / GRID) * GRID)), 4)
+  }
+  const ys = along(sym.y, sym.h, p.y)
+  const xs = along(sym.x, sym.w, p.x)
+  const spots: { side: SheetSide; at: Vec2 }[] = []
+  if (ys !== null) spots.push({ side: "left", at: { x: sym.x, y: ys } }, { side: "right", at: { x: sym.x + sym.w, y: ys } })
+  if (xs !== null) spots.push({ side: "bottom", at: { x: xs, y: sym.y } }, { side: "top", at: { x: xs, y: sym.y + sym.h } })
+  let best: { side: SheetSide; at: Vec2 } | null = null
+  let dist = reach
+  for (const s of spots) {
+    const d = Math.hypot(s.at.x - p.x, s.at.y - p.y)
+    if (d <= dist) [best, dist] = [s, d]
+  }
+  return best && { side: best.side, at: { x: round(best.at.x, digits), y: round(best.at.y, digits) } }
+}
+
+/** Where a pin of a sheet symbol (`pinId`, or a new one for null) would go for a point: its `edgeSpot`, unless another pin of the symbol is there. */
+export function sheetPinSpot(project: Project, symbolId: string, pinId: string | null, to: Vec2, reach = EDGE_REACH): { side: SheetSide; at: Vec2 } | null {
+  const sym = project.sheetSymbols?.find((s) => s.id === symbolId)
+  const spot = sym && edgeSpot(sym, to, { reach, digits: pinDigits(project, sym) })
+  if (!sym || !spot) return null
+  return sym.pins.some((q) => q.id !== pinId && Math.hypot(q.x - spot.at.x, q.y - spot.at.y) < GRID / 2) ? null : spot
+}
+
+/**
+ * A pin of a sheet symbol slid along its edges to the place nearest `to` (`edgeSpot`, at any distance): round a corner it changes side and turns with it.
+ * A place another pin of the symbol has is skipped (the project comes back as it was). The wires and labels at the pin follow it, as they do a moved symbol.
+ */
+export function moveSheetPin(project: Project, symbolId: string, pinId: string, to: Vec2): Project {
+  const sym = project.sheetSymbols?.find((s) => s.id === symbolId)
+  const pin = sym?.pins.find((q) => q.id === pinId)
+  const spot = sheetPinSpot(project, symbolId, pinId, to, Infinity)
+  if (!sym || !pin || !spot || (samePlace(spot.at, pin) && SIDE_ROT[spot.side] === pin.rot)) return project
+  const { wires, labels } = followPins(project, [{ sheet: sym.sheet, from: { x: pin.x, y: pin.y }, to: spot.at }], pinDigits(project, sym))
+  const moved: SheetPin = { ...pin, ...spot.at, rot: SIDE_ROT[spot.side] }
+  return settleKicadSheet(project, touch({ ...project, wires, labels, sheetSymbols: project.sheetSymbols!.map((s) => (s.id === symbolId ? { ...s, pins: s.pins.map((q) => (q.id === pinId ? moved : q)) } : s)) }))
 }
 
 /** A pin changed: its name, its shape. */
@@ -382,6 +439,68 @@ export function addMissingPins(project: Project, symbolId: string): Project {
   let next = project
   for (const m of missingPins(project, symbolId)) next = addSheetPin(next, symbolId, m.name, m.shape, m.shape === "output" ? "right" : "left")
   return next
+}
+
+/** The box of what is drawn on a sheet (a view of one use of it), its ports left out: they stand in columns beside it. Null for an empty sheet. */
+function drawnBox(view: Project): Box | null {
+  const b = emptyBox()
+  const add = (box: Box) => {
+    expandBox(b, { x: box.minX, y: box.minY })
+    expandBox(b, { x: box.maxX, y: box.maxY })
+  }
+  for (const c of view.components) add(schematicBounds(c))
+  for (const w of view.wires) for (const q of w.points) expandBox(b, q)
+  for (const l of view.labels) if (l.kind !== "hierarchical") add(labelBox(l))
+  for (const d of view.drawings ?? []) add(drawingBounds(d))
+  for (const s of symbolsOnSheet(view, useAt(view, view.scope ?? "").sheet)) add({ minX: s.x, minY: s.y, maxX: s.x + s.w, maxY: s.y + s.h })
+  return Number.isFinite(b.minX) ? b : null
+}
+
+/** How far a port's point stands from the drawing, and how far apart ports are down their column. */
+const PORT_GAP = GRID * 4
+const PORT_STEP = GRID * 2
+
+/**
+ * A port (a hierarchical label) of a name on a sheet, where nothing is: in a column left of the sheet's drawing pointing left, or for an output right of
+ * it pointing right, down from the drawing's top, clear of the sheet's other labels; on an empty sheet, down from the origin.
+ */
+function placePort(project: Project, sheetId: string, name: string, shape: LabelShape): Project {
+  const use = usesOfSheet(project, sheetId)[0]
+  const box = use ? drawnBox(sheetView(project, use.path)) : null
+  const out = shape === "output"
+  const rot: Rotation = out ? 0 : 180
+  const x = box ? snap(out ? box.maxX + PORT_GAP : box.minX - PORT_GAP) : 0
+  const others = project.labels.filter((l) => sheetIdOf(l) === sheetId).map((l) => labelBox(l))
+  const clear = (y: number) => {
+    const b = labelBox({ id: "", name, x, y, rot, kind: "hierarchical", shape })
+    return !others.some((o) => boxesOverlap({ minX: b.minX - GRID / 2, minY: b.minY - GRID / 2, maxX: b.maxX + GRID / 2, maxY: b.maxY + GRID / 2 }, o))
+  }
+  let y = box ? snap(box.maxY) : 0
+  while (!clear(y)) y = round(y - PORT_STEP, 4)
+  const made = addLabel(project, name, { x, y }, rot, { kind: "hierarchical", shape })
+  return { ...made.project, labels: made.project.labels.map((l) => (l.id === made.label.id ? { ...l, sheet: sheetId } : l)) }
+}
+
+/**
+ * Altium's Synchronize Sheet Entries and Ports, adding only: every sheet symbol that stands for `sheetId` gets an entry of the name where it has none (an
+ * output on the right, the rest on the left), and the sheet gets a port of the name where it has none (`placePort`). Says what it added: the names of the
+ * symbols that got the entry, and whether the port was placed. Runs on the whole project, never on a view of one sheet: a port made for another sheet
+ * inside a view would be put back on the view's sheet.
+ */
+export function syncSheetEntry(project: Project, sheetId: string, name: string, shape: LabelShape): { project: Project; entries: string[]; port: boolean } {
+  if (project.scope !== undefined) throw new Error("syncSheetEntry runs on the whole project, not on a view of one sheet")
+  const text = name.trim()
+  if (!text || sheetId === ROOT_SHEET) return { project, entries: [], port: false }
+  let next = project
+  const entries: string[] = []
+  for (const sym of project.sheetSymbols ?? []) {
+    if (sym.child !== sheetId || sym.pins.some((p) => p.name.trim() === text)) continue
+    next = addSheetPin(next, sym.id, text, shape, shape === "output" ? "right" : "left")
+    entries.push(sym.name)
+  }
+  const port = !project.labels.some((l) => l.kind === "hierarchical" && sheetIdOf(l) === sheetId && l.name.trim() === text)
+  if (port) next = placePort(next, sheetId, text, shape)
+  return { project: next, entries, port }
 }
 
 /** Whether a path names a use of a sheet the project has: what the editor checks before it shows one. */

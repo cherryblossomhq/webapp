@@ -5,6 +5,7 @@ import { blockFrames, componentTextBoxes } from "../model/blocks"
 import { drawingBounds } from "../model/drawings"
 import { pcbCourtyard, pcbPads, schematicBounds } from "../model/instances"
 import { labelBox } from "../model/labels"
+import { sheetPinGeometry } from "../model/labelShapes"
 import type { Project, Vec2 } from "../model/types"
 import { usePresence, type Collaborator } from "../store/presence"
 import { useUi, type View } from "../store/uiStore"
@@ -60,6 +61,11 @@ export function selectionBoxes(view: View, project: Project, selection: string[]
       else if (kind === "d") {
         const d = project.drawings?.find((x) => x.id === id)
         box = d ? drawingBounds(d) : null
+      } else if (kind === "e") {
+        // A sheet entry, `e:<symbol id>:<pin id>`: the box of its flag.
+        const [symbolId, pinId] = id.split(":")
+        const pin = project.sheetSymbols?.find((s) => s.id === symbolId)?.pins.find((p) => p.id === pinId)
+        box = pin ? sheetPinGeometry(pin).box : null
       }
     } else if (view === "pcb") {
       if (kind === "c") {

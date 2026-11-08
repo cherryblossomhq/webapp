@@ -13,7 +13,6 @@ import { clearImportedNoConnect, importedNoConnectCount } from "../model/importM
 import { cleanFlags, setFlags } from "../model/partFlags"
 import { areaNames, areasOfPart, partInAreas, partSheet } from "../model/placementAreas"
 import { isExact } from "../model/sheetItems"
-import { typedNetName } from "../model/busNames"
 import { removeItems, updateComponent } from "../model/ops"
 import { partSourceLine } from "../model/partSource"
 import { removeDimensions, removeImages } from "../model/boardObjects"
@@ -51,7 +50,7 @@ import { PartTextsSection, TextInspector } from "./TextPanels"
 import { removeBoardTexts, removePartText } from "../model/textOps"
 import { parseTextId, worldTexts } from "../model/texts"
 import { landSelectionOwner, selectedGraphicIds } from "./shapeInspector"
-import { BlockLock, ExactDrawingInspector, ExactDrawingsInspector, LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "./SheetInspectors"
+import { BlockLock, ExactDrawingInspector, ExactDrawingsInspector, LabelInspector, SheetEntryInspector, SheetSymbolInspector, ShownSheetInspector } from "./SheetInspectors"
 
 /** How many zones are drawn inside a part's footprint, in words. */
 const zonesInPart = (c: ComponentInstance): string => {
@@ -121,24 +120,14 @@ export function Inspector() {
   }
   if (selection.length === 1 && labels.length === 1) {
     const l = project.labels.find((x) => x.id === labels[0])
-    // A label of KiCad's, or one in a project named as KiCad names its nets, keeps its case and has a kind, a shape and a style.
-    if (l && (l.kind || project.netNames)) return <LabelInspector l={l} project={project} />
-    if (l)
-      return (
-        <Section title="Net label">
-          <Field label="Name">
-            <CommitInput
-              mono
-              value={l.name}
-              onCommit={(v) => {
-                const name = typedNetName(v.trim().toUpperCase())
-                if (name) commitHere((p) => ({ ...p, labels: p.labels.map((x) => (x.id === l.id ? { ...x, name } : x)) }))
-              }}
-            />
-          </Field>
-          <p className="text-[12px] text-ink-2">Every label with the same name is the same net.</p>
-        </Section>
-      )
+    if (l) return <LabelInspector l={l} project={project} />
+  }
+  const entries = selectionIds(selection, "e")
+  if (selection.length === 1 && entries.length === 1) {
+    const [symbolId, pinId] = entries[0].split(":")
+    const sym = project.sheetSymbols?.find((x) => x.id === symbolId)
+    const pin = sym?.pins.find((x) => x.id === pinId)
+    if (sym && pin) return <SheetEntryInspector sym={sym} pin={pin} project={project} />
   }
   if (selection.length === 1 && traces.length === 1) {
     const t = project.traces.find((x) => x.id === traces[0])
@@ -180,13 +169,14 @@ export function Inspector() {
       [images.length, "image"],
       [zoneIds.length, "zone"],
       [sheetIds.length, "sheet"],
+      [entries.length, "sheet entry"],
     ].filter(([n]) => n) as [number, string][]
     // Blocks are drawn on the schematic, so they are only grouped there.
     const schematic = view === "schematic"
     const grouped = comps.some((id) => blockOf(project, id))
     return (
       <Section title={`${selection.length} selected`}>
-        <p className="text-[13px] text-ink-2">{counts.map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")}</p>
+        <p className="text-[13px] text-ink-2">{counts.map(([n, w]) => `${n} ${n === 1 ? w : w.endsWith("y") ? `${w.slice(0, -1)}ies` : `${w}s`}`).join(", ")}</p>
         {view === "pcb" && vias.length === selection.length && <ViaMachiningSection vias={project.vias.filter((v) => vias.includes(v.id))} project={project} />}
         {view === "pcb" && <GroupSection project={project} />}
         <div className="flex flex-wrap gap-1.5">

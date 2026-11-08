@@ -2,14 +2,13 @@ import { describe, expect, it } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { addComponent, createProject } from "../src/model/ops"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
-import { addSheet, addSheetUse, setSheetSymbol } from "../src/model/sheetOps"
+import { addSheet, addSheetUse, removalNote, setSheetSymbol } from "../src/model/sheetOps"
 import { commitOnUse, MAX_SHEET_DEPTH, MAX_SHEET_USES, refusedSheetSymbols, sheetUses } from "../src/model/sheets"
 import { type Project, type SheetSymbol } from "../src/model/types"
 import { projectApi } from "../src/store/projectStore"
 import { files, imp, S1 } from "./kicad-sheets-fixtures"
 import { runErc } from "../src/model/erc"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
-import { removalNote } from "../src/store/sheetScope"
 
 // Sheets from a file nobody checked: loops, depth, width, garbage numbers. A named refusal or a repair, never a hang or a crash.
 

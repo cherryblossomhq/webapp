@@ -1,16 +1,34 @@
-import { labelGeometry } from "../../model/labelShapes"
+import { sheetPinGeometry } from "../../model/labelShapes"
 import type { SheetSymbol } from "../../model/types"
 import { useSch } from "../theme"
 import { WorldText } from "../viewport"
 
-// S1 on the canvas: a sheet symbol (a rectangle with the sheet's name above it) and its pins, each a flag
-// whose shape says which way the signal goes, drawn as a hierarchical label is. Everything at the numbers the file gave.
+// S1 on the canvas: a sheet symbol (a rectangle with the sheet's name above it) and its entries (its pins), each a flag
+// whose shape says which way the signal goes, drawn as a port is. Everything at the numbers the file gave. An entry is
+// selected and dragged on its own (`e:<symbol id>:<pin id>`): drawn in the select colour, and lifted a little under the pointer.
 
 const LINE = 0.012
 const TEXT = 0.1
 
-/** A sheet symbol with its name and its pins. */
-export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym: SheetSymbol; selected: boolean; hovered: boolean; px: number; openable: boolean }) {
+/** A sheet symbol with its name and its entries. */
+export function SheetSymbolView({
+  sym,
+  selected,
+  hovered,
+  px,
+  openable,
+  selectedPins,
+  hoveredPin,
+}: {
+  sym: SheetSymbol
+  selected: boolean
+  hovered: boolean
+  px: number
+  openable: boolean
+  /** The ids of its entries that are selected. */
+  selectedPins: ReadonlySet<string>
+  hoveredPin: string | null
+}) {
   const sch = useSch()
   const border = sym.stroke?.color ?? sch.block
   const stroke = selected ? sch.select : border
@@ -41,13 +59,23 @@ export function SheetSymbolView({ sym, selected, hovered, px, openable }: { sym:
         </g>
       )}
       {sym.pins.map((p) => {
-        // A pin is the flag of a hierarchical label that points into the sheet: it starts at the edge and runs inward.
-        const inward = ((p.rot + 180) % 360) as 0 | 90 | 180 | 270
-        const g = labelGeometry({ id: p.id, name: p.name, x: p.x, y: p.y, rot: inward, kind: "hierarchical", shape: p.shape, ...(p.look ? { look: p.look } : {}) })
+        // An entry is the flag of a port that points into the sheet: it starts at the edge and runs inward.
+        const g = sheetPinGeometry(p)
+        const picked = selectedPins.has(p.id)
+        const lifted = !picked && hoveredPin === p.id
         return (
           <g key={p.id}>
-            {g.outline.length > 0 && <polygon points={g.outline.map((q) => `${q.x},${q.y}`).join(" ")} fill={sch.label} stroke={selected ? sch.select : sch.wire} strokeWidth={Math.max(LINE, px)} strokeLinejoin="round" />}
-            <WorldText x={g.text.x} y={g.text.y} text={p.name} size={g.text.size} extent={g.text.extent} vertical={g.text.vertical} fill={p.look?.color ?? sch.labelInk} weight={p.look?.bold ? 700 : 500} italic={p.look?.italic} markup />
+            {g.outline.length > 0 && (
+              <polygon
+                points={g.outline.map((q) => `${q.x},${q.y}`).join(" ")}
+                fill={picked ? sch.selectSoft : sch.label}
+                stroke={picked || selected || lifted ? sch.select : sch.wire}
+                strokeOpacity={lifted ? 0.6 : 1}
+                strokeWidth={Math.max(LINE, (picked ? 1.8 : lifted ? 1.6 : 1) * px)}
+                strokeLinejoin="round"
+              />
+            )}
+            <WorldText x={g.text.x} y={g.text.y} text={p.name} size={g.text.size} extent={g.text.extent} vertical={g.text.vertical} fill={picked ? sch.select : (p.look?.color ?? sch.labelInk)} weight={p.look?.bold || picked ? 700 : 500} italic={p.look?.italic} markup />
           </g>
         )
       })}

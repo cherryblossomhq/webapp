@@ -1,5 +1,5 @@
 import { EllipsisVertical, ExternalLink, PanelLeftClose, Pencil, Split, Tag, Trash2 } from "lucide-react"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState } from "react"
 import { projectLink } from "../App"
 import { useEditorAccount } from "../store/account"
 import { changeLines, versionLabel, versionTime, type HistoryState, type VersionInfo, type VersionPerson } from "../store/history"
@@ -7,7 +7,7 @@ import { deleteVersion, forkVersion, leavePreview, previewVersion } from "../sto
 import { projectStorage, useProjectStore } from "../store/projectStore"
 import { uiApi } from "../store/uiStore"
 import { Avatar } from "../ui/Avatar"
-import { Button, IconButton, useDismiss } from "../ui/controls"
+import { Button, IconButton, MenuItem, useDismiss } from "../ui/controls"
 
 // Version history as a column on the left, like the sheet tree: the project as it is now, then the copies kept as it was edited, newest first, each with
 // when, who and what changed since the one before. A click shows a version in the canvas, read-only (`PreviewBanner` is the way back, and the restore).
@@ -98,20 +98,6 @@ function RenameField({ name, onDone }: { name: string; onDone: (name: string | n
       }}
       className="h-7 w-full rounded-[var(--radius-ctl)] border border-select bg-field px-2 text-[12.5px] font-[600] text-ink outline-none"
     />
-  )
-}
-
-function MenuItem({ icon, danger, onClick, children }: { icon: ReactNode; danger?: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={`flex h-8 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left text-[13px] ${danger ? "text-danger hover:bg-danger-soft" : "text-ink hover:bg-chrome"}`}
-    >
-      <span className={danger ? "" : "text-ink-2"}>{icon}</span>
-      {children}
-    </button>
   )
 }
 

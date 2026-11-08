@@ -35,4 +35,3 @@ export const viewFor = (id: string, p: Project = projectApi().project!) => sheet
 /** Undoable edit of the sheet a part is on. */
 export const commitFor = (id: string, fn: (view: Project) => Project) => projectApi().commit((p) => commitOnUse(p, pathOfPart(p, id), fn))
 
-export { removalNote } from "../model/sheetOps"

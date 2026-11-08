@@ -28,6 +28,8 @@ import { symbolOf } from "./symbolDrawing"
 import { repairUnits } from "./units"
 import type {
   ComponentInstance,
+  LabelKind,
+  LabelShape,
   Mirror,
   NetLabel,
   PinRef,
@@ -200,9 +202,13 @@ export function addWire(project: Project, points: Vec2[]): { project: Project; w
   return { project: touch({ ...project, wires: kicadRulesShown(project) ? cutAtTs(all, wire) : all }), wire }
 }
 
-export function addLabel(project: Project, name: string, at: Vec2, rot: Rotation = 0): { project: Project; label: NetLabel } {
-  // In a project named as KiCad names its nets a label is a local one, KiCad's own.
-  const label: NetLabel = { id: uid("l"), name, x: round(at.x), y: round(at.y), rot, ...(project.netNames ? { kind: "local" as const } : {}) }
+/**
+ * A label at a point: a net label, or with `kind` a global label or a port (a hierarchical label), which has a shape (bidirectional unless given). In a project
+ * named as KiCad names its nets a net label is a local one, KiCad's own; in a project drawn here it has no kind.
+ */
+export function addLabel(project: Project, name: string, at: Vec2, rot: Rotation = 0, opts: { kind?: LabelKind; shape?: LabelShape } = {}): { project: Project; label: NetLabel } {
+  const kind = opts.kind && opts.kind !== "local" ? opts.kind : project.netNames ? ("local" as const) : undefined
+  const label: NetLabel = { id: uid("l"), name, x: round(at.x), y: round(at.y), rot, ...(kind ? { kind } : {}), ...(kind === "global" || kind === "hierarchical" ? { shape: opts.shape ?? "bidirectional" } : {}) }
   return { project: touch({ ...project, labels: [...project.labels, label] }), label }
 }
 

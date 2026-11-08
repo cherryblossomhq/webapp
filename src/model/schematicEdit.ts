@@ -418,13 +418,17 @@ export function placeComponent(
 
 // ---------- S2, S4: labels and groups ----------
 
-/** A label's kind, shape, size and style changed. A global label has a shape; a local one has none. */
+/**
+ * A label's kind, shape, size and style changed. A global label and a port have a shape; a net label has none. In a project drawn here a net label has no
+ * kind at all: `local` would draw it as KiCad's (`isKicadLabel`).
+ */
 export function setLabelStyle(project: Project, id: string, change: { name?: string; kind?: LabelKind; shape?: LabelShape; look?: Partial<TextLook> | null; turn?: Rotation }): Project {
   const l = project.labels.find((x) => x.id === id)
   if (!l) return project
   const next: NetLabel = { ...l }
   if (change.name !== undefined) next.name = change.name
-  if (change.kind) next.kind = change.kind
+  if (change.kind === "local" && !project.netNames) delete next.kind
+  else if (change.kind) next.kind = change.kind
   if (next.kind === "global" || next.kind === "hierarchical") next.shape = change.shape ?? next.shape ?? "bidirectional"
   else delete next.shape
   if (change.turn !== undefined) {

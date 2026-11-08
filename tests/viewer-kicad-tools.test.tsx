@@ -36,8 +36,8 @@ const click = (label: string) => act(() => void button(label)!.dispatchEvent(new
 
 describe("a viewer's toolbars", () => {
   // The tools on the bar, and the menus the rest are in (each group's chevron), with what each menu lists.
-  const SCHEMATIC = ["Wire", "Net label", "Text"]
-  const SCHEMATIC_GROUPS: Record<string, string[]> = { "Bus tools": ["Bus", "Bus entry"], "Block and sheet tools": ["Block", "Sheet"], "Drawing tools": ["Line", "Rectangle"] }
+  const SCHEMATIC = ["Wire", "Label", "Text"]
+  const SCHEMATIC_GROUPS: Record<string, string[]> = { "Bus tools": ["Bus", "Bus entry"], "Block and sheet tools": ["Block", "Sheet", "Sheet entry"], "Drawing tools": ["Line", "Rectangle"] }
   const PCB = ["Route trace", "Place via", "Re-pack parts", "Autoroute"]
   const PCB_GROUPS: Record<string, string[]> = {
     "Zone tools": ["Draw a copper zone", "Draw a keepout", "Draw a placement area"],

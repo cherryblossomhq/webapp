@@ -7,7 +7,10 @@ import { loadSettings, saveSettings, type Settings } from "./settings"
 
 export type View = "schematic" | "pcb" | "3d"
 /** The schematic's tools: editing, then the block tool, then the drawing tools. */
-export type SchTool = "select" | "wire" | "label" | "block" | "text" | "line" | "rect" | "sheet" | "bus" | "busentry"
+export type SchTool = "select" | "wire" | "label" | "block" | "text" | "line" | "rect" | "sheet" | "entry" | "bus" | "busentry"
+/** What the label tool places: a net label, a global label or a port (a hierarchical label, which needs a sheet above). */
+export type LabelChoice = "net" | "global" | "port"
+const LABEL_CHOICES: LabelChoice[] = ["net", "global", "port"]
 export type PcbTool = "select" | "route" | "via" | "line" | "arc" | "circle" | "rect" | "polygon" | "text" | "slot" | "dimension" | "zone" | "keepout" | "placement"
 export type SidePanel = "inspector" | "checks"
 
@@ -71,9 +74,11 @@ interface UiState {
   /** S1: the use of a sheet the schematic shows, as a path of sheet symbols (`model/sheets.ts`); the root is "". */
   sheet: string
   schTool: SchTool
+  /** What the label tool places, kept for the session; Tab cycles it. */
+  labelKind: LabelChoice
   pcbTool: PcbTool
   placing: Placing | null
-  /** Selection ids are prefixed: c: component, w: wire, l: label, b: schematic block, d: schematic drawing, t: trace, v: via, g: a drawing on the board, s: a drawing of a part's land (`s:<component id>:<index>`), m: a dimension, i: a reference image, h: a sheet symbol */
+  /** Selection ids are prefixed: c: component, w: wire, l: label, b: schematic block, d: schematic drawing, t: trace, v: via, g: a drawing on the board, s: a drawing of a part's land (`s:<component id>:<index>`), m: a dimension, i: a reference image, h: a sheet symbol, e: a sheet entry (`e:<symbol id>:<pin id>`) */
   selection: string[]
   highlightNet: string | null
   activeLayer: CopperLayer
@@ -121,15 +126,18 @@ interface UiState {
   partEditor: { id: string; remove?: true } | null
   /** Inspector sections folded away, by id, for the session. */
   folded: Record<string, boolean>
-  /** A line over the canvas saying why an edit was refused; `n` makes the same line show again. */
-  notice: { text: string; n: number } | null
-  showNotice: (text: string) => void
+  /** A line over the canvas saying why an edit was refused, or (`info`) what an edit did besides; `n` makes the same line show again. */
+  notice: { text: string; n: number; info?: true } | null
+  showNotice: (text: string, tone?: "info") => void
   clearNotice: () => void
   drawDefaults: DrawDefaults
   setView: (v: View) => void
   /** Show another use of a sheet. The selection and what is being placed or drawn do not go with it. */
   setSheet: (path: string) => void
   setSchTool: (t: SchTool) => void
+  setLabelKind: (k: LabelChoice) => void
+  /** The next kind of label (the one before with `back`), past Port where there is no sheet above (`port` false). */
+  cycleLabelKind: (back: boolean, port: boolean) => void
   setPcbTool: (t: PcbTool) => void
   startPlacing: (partId: string, preset?: PartPreset) => void
   rotatePlacing: () => void
@@ -172,6 +180,7 @@ export const useUi = create<UiState>((set, get) => ({
   view: "schematic",
   sheet: "",
   schTool: "select",
+  labelKind: "net",
   pcbTool: "select",
   placing: null,
   selection: [],
@@ -202,13 +211,19 @@ export const useUi = create<UiState>((set, get) => ({
   notice: null,
   drawDefaults: INITIAL_DRAW_DEFAULTS,
 
-  showNotice: (text) => set({ notice: { text, n: (get().notice?.n ?? 0) + 1 } }),
+  showNotice: (text, tone) => set({ notice: { text, n: (get().notice?.n ?? 0) + 1, ...(tone === "info" && { info: true as const }) } }),
   clearNotice: () => set({ notice: null }),
   // Selection doesn't carry across views; schematic wires and PCB traces are different objects.
   // Nor does a focus request, or a view opened later would go back to it instead of fitting.
   setView: (view) => set({ view, placing: null, highlightNet: null, ...(view !== get().view && { selection: [], focusRequest: null }) }),
   setSheet: (sheet) => set(sheet === get().sheet ? {} : { sheet, selection: [], highlightNet: null, placing: null, focusRequest: null }),
   setSchTool: (schTool) => set({ schTool, placing: null }),
+  setLabelKind: (labelKind) => set({ labelKind }),
+  cycleLabelKind: (back, port) => {
+    const choices = port ? LABEL_CHOICES : LABEL_CHOICES.filter((k) => k !== "port")
+    const at = choices.indexOf(get().labelKind)
+    set({ labelKind: choices[(Math.max(at, 0) + (back ? choices.length - 1 : 1)) % choices.length] })
+  },
   setPcbTool: (pcbTool) => set({ pcbTool }),
   startPlacing: (partId, preset) => set({ placing: { partId, rot: 0, ...preset }, schTool: "select", view: "schematic", ...(get().view !== "schematic" && { selection: [] }) }),
   rotatePlacing: () => {
@@ -268,5 +283,5 @@ export const useUi = create<UiState>((set, get) => ({
 
 export const uiApi = () => useUi.getState()
 
-export const selectionIds = (selection: string[], prefix: "c" | "w" | "l" | "b" | "d" | "t" | "v" | "g" | "m" | "i" | "z" | "h") =>
+export const selectionIds = (selection: string[], prefix: "c" | "w" | "l" | "b" | "d" | "t" | "v" | "g" | "m" | "i" | "z" | "h" | "e") =>
   selection.filter((s) => s.startsWith(`${prefix}:`)).map((s) => s.slice(2))

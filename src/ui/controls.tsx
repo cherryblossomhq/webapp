@@ -58,7 +58,8 @@ export function Segmented<T extends string>({
   size = "md",
 }: {
   value: T
-  options: { value: T; label: ReactNode; title?: string; hint?: string; shortcut?: string }[]
+  /** A `disabled` option is shown but can't be picked; its `title` says why. */
+  options: { value: T; label: ReactNode; title?: string; hint?: string; shortcut?: string; disabled?: boolean }[]
   onChange: (v: T) => void
   size?: "sm" | "md"
 }) {
@@ -71,9 +72,11 @@ export function Segmented<T extends string>({
             type="button"
             role="tab"
             aria-selected={o.value === value}
-            onClick={() => onChange(o.value)}
+            // Not `disabled`: a disabled button gets no pointer events, and its tooltip is what says why.
+            aria-disabled={o.disabled || undefined}
+            onClick={() => !o.disabled && onChange(o.value)}
             className={`${size === "sm" ? "h-6 px-2 text-[12px]" : "h-7 px-3 text-[13px]"} shrink-0 whitespace-nowrap rounded-[6px] font-medium transition-colors ${
-              o.value === value ? "bg-raised text-ink shadow-chip" : "text-ink-2 hover:text-ink"
+              o.value === value ? "bg-raised text-ink shadow-chip" : o.disabled ? "cursor-not-allowed text-ink-3 opacity-60" : "text-ink-2 hover:text-ink"
             }`}
           >
             {o.label}
@@ -88,6 +91,21 @@ export function Segmented<T extends string>({
         )
       })}
     </div>
+  )
+}
+
+/** A row of a menu (`role="menu"`): an icon and what it does; a dangerous one in red. */
+export function MenuItem({ icon, danger, onClick, children }: { icon: ReactNode; danger?: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={`flex h-8 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left text-[13px] ${danger ? "text-danger hover:bg-danger-soft" : "text-ink hover:bg-chrome"}`}
+    >
+      <span className={danger ? "" : "text-ink-2"}>{icon}</span>
+      {children}
+    </button>
   )
 }
 

@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 import { act, type ReactElement } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { computeConnectivity } from "../src/model/connectivity"
 import { runErc } from "../src/model/erc"
 import { addMissingPins, addSheet, addSheetPin, addSheetUse, missingPins, moveSheetSymbols, removeSheetSymbols, renameSheetUse, resizeSheetSymbol, setSheetSymbol } from "../src/model/sheetOps"
-import { addComponent, addWire, createProject } from "../src/model/ops"
+import { addComponent, addLabel, addWire, createProject } from "../src/model/ops"
 import { schematicPins } from "../src/model/instances"
 import { moveSelectedToNewSheet } from "../src/editor/schematic/sheetActions"
 import { sheetUses } from "../src/model/sheets"
-import { SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
+import { LabelInspector, SheetSymbolInspector, ShownSheetInspector } from "../src/panels/SheetInspectors"
+import { SchematicEditor } from "../src/editor/schematic/SchematicEditor"
+import type { Project } from "../src/model/types"
 import { SheetTabs } from "../src/panels/SheetTabs"
 import { ReadOnly } from "../src/ui/form"
 import { projectApi, useProjectStore } from "../src/store/projectStore"
@@ -35,11 +37,23 @@ const type = (input: HTMLInputElement, value: string, key: "Enter" | "Escape") =
     if (key === "Enter") input.blur()
   })
 
+/** Type into a field that keeps what is typed until it is left (the Inspector's), and leave it. */
+const typeInto = (input: HTMLInputElement, value: string) =>
+  act(() => {
+    input.focus()
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value)
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+    input.blur()
+  })
+const key = (k: string, init: KeyboardEventInit = {}, target: EventTarget = window) => act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init })))
+
 beforeEach(() => {
   host = document.createElement("div")
   document.body.appendChild(host)
   root = createRoot(host)
   uiApi().setSheet("")
+  uiApi().clearNotice()
+  uiApi().clearSelection()
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -216,7 +230,7 @@ describe("editing the sheet shown", () => {
 })
 
 describe("the sheet symbol's panel", () => {
-  it("opens the sheet, and adds the pins the sheet's labels have no pin for", () => {
+  it("opens the sheet, and adds the entries the sheet's ports have none for", () => {
     const project = open()
     const sym = project.sheetSymbols![0]
     mount(<SheetSymbolInspector sym={sym} project={project} />)
@@ -226,8 +240,8 @@ describe("the sheet symbol's panel", () => {
     const withLabel = { ...project, labels: [...project.labels, lone] }
     projectApi().open(withLabel)
     mount(<SheetSymbolInspector sym={sym} project={withLabel} />)
-    expect(button(/Pins for 1 label/)).toBeDefined()
-    click(button(/Pins for 1 label/))
+    expect(button(/Entries for 1 port/)).toBeDefined()
+    click(button(/Entries for 1 port/))
     expect(projectApi().project!.sheetSymbols![0].pins.map((p) => p.name)).toEqual(["VIN", "EXTRA"])
   })
 })
@@ -292,5 +306,199 @@ describe("the operations on sheets", () => {
   it("a sheet used twice has a use of each name", () => {
     const { project } = imp([{ uuid: S1, name: "A", y: 60.96 }, { uuid: S2, name: "B", y: 90 }])
     expect(sheetUses(project).map((u) => u.name)).toEqual(["Main", "A", "B"])
+  })
+})
+
+describe("the sheet tab menu", () => {
+  const tab = (name: string) => [...host.querySelectorAll<HTMLElement>("[role=tab]")].find((t) => t.textContent === name)!
+  const items = () => [...host.querySelectorAll("[role=menuitem]")].map((b) => b.textContent)
+  const item = (name: string) => [...host.querySelectorAll("[role=menuitem]")].find((b) => b.textContent === name)
+  const rightClick = (el: Element) => act(() => void el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })))
+
+  it("offers Rename alone on Main, and Rename, Open the sheet above, Use again and Delete on a sheet below it", () => {
+    open()
+    mount(<SheetTabs />)
+    rightClick(tab("Main"))
+    expect(host.querySelector("[role=menu]")).not.toBeNull()
+    expect(items()).toEqual(["Rename"])
+    rightClick(tab("Power"))
+    expect(items()).toEqual(["Rename", "Open the sheet above", "Use again", "Delete"])
+    // The keyboard opens it too.
+    key("Escape")
+    expect(host.querySelector("[role=menu]")).toBeNull()
+    key("F10", { shiftKey: true }, tab("Power"))
+    expect(items()).toHaveLength(4)
+  })
+
+  it("gives a viewer only Open the sheet above, and nothing on Main", () => {
+    open()
+    useProjectStore.setState({ role: "viewer" })
+    mount(<SheetTabs />)
+    rightClick(tab("Main"))
+    expect(host.querySelector("[role=menu]")).toBeNull()
+    act(() => uiApi().setSheet("/h1"))
+    rightClick(tab("Power"))
+    expect(items()).toEqual(["Open the sheet above"])
+    click(item("Open the sheet above"))
+    expect(uiApi().sheet).toBe("")
+    useProjectStore.setState({ role: "owner" })
+  })
+
+  it("renames in the tab's own field", () => {
+    open()
+    mount(<SheetTabs />)
+    rightClick(tab("Power"))
+    click(item("Rename"))
+    expect(host.querySelector<HTMLInputElement>("input[role=tab]")!.value).toBe("Power")
+    expect(host.querySelector("[role=menu]")).toBeNull()
+  })
+
+  it("uses the sheet again as one undo step, its tab ready to be named, the sheet shown kept", () => {
+    open()
+    mount(<SheetTabs />)
+    rightClick(tab("Power"))
+    click(item("Use again"))
+    const p = projectApi().project!
+    expect(p.sheetSymbols!.map((s) => s.child)).toEqual(["s1", "s1"])
+    expect(uiApi().sheet).toBe("")
+    expect(uiApi().renamingSheet).toBe(`/${p.sheetSymbols![1].id}`)
+    act(() => uiApi().setRenamingSheet(null))
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols).toHaveLength(1)
+  })
+
+  it("deletes the sheet with what is on it as one undo step, says so, and shows the sheet above when it was shown", () => {
+    open()
+    act(() => uiApi().setSheet("/h1"))
+    mount(<SheetTabs />)
+    rightClick(tab("Power"))
+    click(item("Delete"))
+    expect(projectApi().project!.sheetSymbols ?? []).toHaveLength(0)
+    expect(uiApi().sheet).toBe("")
+    expect(uiApi().notice?.text).toBe("Deleted the sheet Power with 1 part, and 1 sheet that nothing else uses. Undo brings it back.")
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols).toHaveLength(1)
+    expect(projectApi().project!.components.filter((c) => c.inst)).toHaveLength(1)
+  })
+})
+
+describe("the schematic's keys on sheets", () => {
+  beforeEach(() => {
+    ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  })
+  afterEach(() => act(() => uiApi().setSchTool("select")))
+
+  it("Del on a sheet symbol says what went with it", () => {
+    open()
+    mount(<SchematicEditor />)
+    act(() => uiApi().select(["h:h1"]))
+    key("Delete")
+    expect(projectApi().project!.sheetSymbols ?? []).toHaveLength(0)
+    expect(uiApi().notice?.text).toMatch(/^Deleted the sheet Power with 1 part/)
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols).toHaveLength(1)
+  })
+
+  it("Tab cycles what the label tool places, past Port on Main", () => {
+    open()
+    mount(<SchematicEditor />)
+    act(() => uiApi().setLabelKind("net"))
+    act(() => uiApi().setSchTool("label"))
+    key("Tab")
+    expect(uiApi().labelKind).toBe("global")
+    key("Tab")
+    expect(uiApi().labelKind).toBe("net")
+    act(() => uiApi().setSheet("/h1"))
+    key("Tab")
+    key("Tab")
+    expect(uiApi().labelKind).toBe("port")
+    key("Tab", { shiftKey: true })
+    expect(uiApi().labelKind).toBe("global")
+  })
+})
+
+/** A project drawn here: Main with a sheet Power (symbol h1, sheet s1) and a net label `name` on Power's sheet. */
+function drawnHere(name = "DATA"): { project: Project; label: string } {
+  const sheet = addSheet(createProject("t"), "", { minX: 0, minY: 0, maxX: 2, maxY: 1.2 }, "Power").project
+  const made = addLabel(sheet, name, { x: 0, y: 0 })
+  const project = { ...made.project, labels: made.project.labels.map((l) => (l.id === made.label.id ? { ...l, sheet: "s1" } : l)) }
+  projectApi().open(project)
+  return { project, label: made.label.id }
+}
+
+describe("the sheet symbol's entries", () => {
+  it("are added in an inline field, never a prompt, with the port inside, as one undo step", () => {
+    const prompt = vi.spyOn(window, "prompt")
+    const { project } = drawnHere()
+    mount(<SheetSymbolInspector sym={project.sheetSymbols![0]} project={project} />)
+    const field = host.querySelector<HTMLInputElement>("input[aria-label='New entry name']")!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "clk")
+      field.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    key("Enter", {}, field)
+    const p = projectApi().project!
+    expect(p.sheetSymbols![0].pins.map((q) => [q.name, q.rot])).toEqual([["CLK", 180]])
+    expect(p.labels.filter((l) => l.kind === "hierarchical").map((l) => [l.name, l.sheet])).toEqual([["CLK", "s1"]])
+    expect(uiApi().notice?.text).toBe("Added the port CLK inside Power.")
+    expect(prompt).not.toHaveBeenCalled()
+    act(() => projectApi().undo())
+    expect(projectApi().project!.sheetSymbols![0].pins).toEqual([])
+    expect(projectApi().project!.labels.some((l) => l.kind === "hierarchical")).toBe(false)
+    prompt.mockRestore()
+  })
+})
+
+describe("the Inspector of a plain label in a project drawn here", () => {
+  const tabNamed = (name: string) => [...host.querySelectorAll<HTMLElement>("[role=tab]")].find((t) => t.textContent === name)!
+
+  it("offers Joins and Shape, and keeps names in capitals", () => {
+    const { project, label } = drawnHere()
+    act(() => uiApi().setSheet("/h1"))
+    mount(<LabelInspector l={project.labels.find((l) => l.id === label)!} project={project} />)
+    expect(host.querySelector("h3")!.textContent).toBe("Net label")
+    expect([...host.querySelectorAll("[role=tab]")].map((t) => t.textContent)).toEqual(["This sheet", "Every sheet", "Parent sheet"])
+    expect(host.textContent).toContain("Shape")
+    typeInto(host.querySelector<HTMLInputElement>("input.mono")!, "clk out")
+    expect(projectApi().project!.labels[0].name).toBe("CLK_OUT")
+  })
+
+  it("switched to Parent sheet is a port, with its entry on the symbol, as one undo step; on Main it can't be", () => {
+    const { project, label } = drawnHere()
+    act(() => uiApi().setSheet("/h1"))
+    mount(<LabelInspector l={project.labels.find((l) => l.id === label)!} project={project} />)
+    click(tabNamed("Parent sheet"))
+    const p = projectApi().project!
+    expect(p.labels[0]).toMatchObject({ kind: "hierarchical", shape: "bidirectional" })
+    expect(p.sheetSymbols![0].pins.map((q) => q.name)).toEqual(["DATA"])
+    expect(uiApi().notice?.text).toBe("Added the entry DATA to Power.")
+    act(() => projectApi().undo())
+    expect(projectApi().project!.labels[0]).not.toHaveProperty("kind")
+    expect(projectApi().project!.sheetSymbols![0].pins).toEqual([])
+    // A label on Main has no sheet above to join.
+    const main = addLabel(projectApi().project!, "TOP", { x: 5, y: 5 })
+    projectApi().open(main.project)
+    act(() => uiApi().setSheet(""))
+    mount(<LabelInspector l={main.label} project={main.project} />)
+    expect(tabNamed("Parent sheet").getAttribute("aria-disabled")).toBe("true")
+    click(tabNamed("Parent sheet"))
+    expect(projectApi().project!.labels.find((l) => l.id === main.label.id)).not.toHaveProperty("kind")
+  })
+
+  it("a port's Go to the sheet entry shows the sheet above with the entry selected", () => {
+    const { label } = drawnHere()
+    act(() => uiApi().setSheet("/h1"))
+    const made = projectApi().project!
+    mount(<LabelInspector l={made.labels[0]} project={made} />)
+    click(tabNamed("Parent sheet"))
+    const p = projectApi().project!
+    mount(<LabelInspector l={p.labels.find((l) => l.id === label)!} project={p} />)
+    click(button(/Go to the sheet entry/))
+    expect(uiApi().sheet).toBe("")
+    expect(uiApi().selection).toEqual([`e:h1:${p.sheetSymbols![0].pins[0].id}`])
   })
 })

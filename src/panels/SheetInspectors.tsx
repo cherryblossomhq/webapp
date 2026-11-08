@@ -1,27 +1,30 @@
-import { commitHere, removalNote, shownPath } from "../store/sheetScope"
-import { ArrowUp, BringToFront, Copy, FolderOpen, Plus, RotateCw, SendToBack, Trash2 } from "lucide-react"
+import { commitHere, shownPath } from "../store/sheetScope"
+import { ArrowDownToLine, ArrowUp, ArrowUpFromLine, BringToFront, Copy, FolderOpen, Plus, RotateCw, SendToBack, Trash2 } from "lucide-react"
+import { useState } from "react"
+import { addSheetEntry, commitPort, deleteSheetSymbols, revealEntry, revealPort, reuseSheet } from "../editor/schematic/sheetActions"
 
 import { useSch } from "../editor/theme"
 import { setDirectiveClass, setDirectiveLength, setDirectiveShape, isNetclassFieldName } from "../model/directives"
 import { applyStyle, drawingKind, LINE_DASHES, LINE_WEIGHTS, removeDrawings, reorderDrawings, rotateDrawing, updateDrawings } from "../model/drawings"
 import { aliasLookup } from "../model/busConnectivity"
-import { BusTooLarge, isBusName, parseBusName, typedNetName } from "../model/busNames"
+import { BusTooLarge, parseBusName, typedLabelName } from "../model/busNames"
 import { setBlockLocked, setLabelStyle } from "../model/schematicEdit"
 import { BUS_WIDTH, lookOfText, textLines } from "../model/sheetItems"
 import { SCH_TEXT } from "../model/symbols"
-import { addMissingPins, addSheetPin, addSheetUse, missingPins, removeSheetPin, removeSheetSymbols, renameSheetUse, setSheetPin, setSheetSymbol } from "../model/sheetOps"
+import { addMissingPins, missingPins, removeSheetPin, renameSheetUse, setSheetPin, setSheetSymbol, type SheetSide } from "../model/sheetOps"
 import { sheetUses, useAt, usesOfSheet } from "../model/sheets"
 import { projectApi } from "../store/projectStore"
-import { uiApi } from "../store/uiStore"
-import type { DirectiveShape, RuleAreaMark, SheetSymbol, DrawingStyle, DrawingTable, LabelShape, NetLabel, Project, SchematicBlock, SchematicDrawing, SheetStroke, TextLook } from "../model/types"
+import { uiApi, useUi } from "../store/uiStore"
+import type { DirectiveShape, RuleAreaMark, SheetPin, SheetSymbol, DrawingStyle, DrawingTable, LabelShape, NetLabel, Project, SchematicBlock, SchematicDrawing, SheetStroke, TextLook } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { Button, Field, Segmented } from "../ui/controls"
 import { ColorField, CommitInput, Group, Row, Section, Switch } from "../ui/form"
 import { cap, Swatches } from "./DrawingInspector"
 
-// The Inspector for what the importer brings: a label of KiCad's (its kind, shape, size and style), the
-// drawings a KiCad sheet gave (text, text boxes, lines, shapes, pictures, tables, dots, flags: exact controls),
-// and a locked group. A part's flags are the Flags section of the part's Inspector (`Inspector.tsx`).
+// The Inspector for labels (a net label, a global label or a port, in Altium's words: its text, what it joins, its shape, and
+// where something draws it its text style), sheet symbols and their entries, the sheet shown, what the importer brings (the
+// drawings a KiCad sheet gave: text, text boxes, lines, shapes, pictures, tables, dots, flags, with exact controls) and a
+// locked group. A part's flags are the Flags section of the part's Inspector (`Inspector.tsx`).
 
 const MM = 12.7
 const mm = (units: number | undefined, fallback: number) => String(Math.round((units ?? fallback) * MM * 10000) / 10000)
@@ -62,41 +65,86 @@ const DASHES: { value: string; label: string }[] = [
   { value: "dash_dot_dot", label: "Dash dot dot" },
 ]
 
-/** A label from KiCad, or any label of a project named as KiCad names its nets. */
+/**
+ * Any label: its text (named as the project names what is typed, `typedLabelName`), what it joins (this sheet, every sheet, or the parent sheet's entry of its
+ * name: a net label, a global label, a port) and its shape. A label switched to a port gets its entry on every symbol of its sheet. The text style is offered
+ * where something draws it: a label with a kind, or any label of a KiCad project.
+ */
 export function LabelInspector({ l, project }: { l: NetLabel; project: Project }) {
+  const shown = useUi((s) => s.sheet)
   const conn = getConnectivity(project)
   const net = conn.nets.find((n) => n.id === conn.labelNet.get(l.id))
   const set = (change: Parameters<typeof setLabelStyle>[2]) => commitHere((p) => setLabelStyle(p, l.id, change))
   const kind = l.kind === "global" ? "global" : l.kind === "hierarchical" ? "hierarchical" : "local"
+  const kicad = !!project.netNames
+  const use = useAt(project, shownPath(project, shown))
+  // Main has no sheet above it: a label there can't become a port (one from a KiCad file may already be one).
+  const portOff = use.parent === null && kind !== "hierarchical"
+  const entry = kind === "hierarchical" ? use.symbol?.pins.find((q) => q.name.trim() === l.name.trim()) : undefined
+  const setKind = (v: typeof kind) => {
+    if (v === "hierarchical") commitPort((view) => setLabelStyle(view, l.id, { kind: v }), l.name, l.shape ?? "bidirectional")
+    else set({ kind: v })
+  }
   return (
-    <Section title={kind === "global" ? "Global label" : kind === "hierarchical" ? "Hierarchical label" : "Label"}>
+    <Section
+      title={kind === "global" ? "Global label" : kind === "hierarchical" ? "Port" : "Net label"}
+      navigation={
+        kind === "hierarchical" &&
+        use.symbol && (
+          <Button
+            onClick={() => revealEntry(use.path, l.name)}
+            disabled={!entry}
+            title={entry ? `Show the entry ${l.name} on ${use.symbol.name}, on the sheet above` : `${use.symbol.name} has no entry ${l.name} on the sheet above`}
+          >
+            <ArrowUpFromLine size={14} /> Go to the sheet entry
+          </Button>
+        )
+      }
+    >
       <Field label="Text">
-        <CommitInput mono value={l.name} onCommit={(v) => v.trim() && set({ name: isBusName(v.trim()) ? v.trim().replace(/\s+/g, " ") : typedNetName(v.trim()) })} />
+        <CommitInput
+          mono
+          value={l.name}
+          onCommit={(v) => {
+            const name = typedLabelName(project, v)
+            if (name) set({ name })
+          }}
+        />
       </Field>
       <Field label="Joins">
         <Segmented
           size="sm"
           value={kind}
           options={[
-            { value: "local", label: "This sheet", title: "A local label: the net is /NAME" },
-            { value: "global", label: "Every sheet", title: "A global label: the net is NAME" },
-            { value: "hierarchical", label: "Parent sheet", title: "A hierarchical label: joins the pin of the same name on the sheet symbol that stands for this sheet" },
+            { value: "local", label: "This sheet", title: kicad ? "A local label: the net is /NAME" : "A net label: labels of its name on this sheet are one net" },
+            { value: "global", label: "Every sheet", title: kicad ? "A global label: the net is NAME" : "A global label: labels of its name on every sheet are one net" },
+            {
+              value: "hierarchical",
+              label: "Parent sheet",
+              title: portOff ? "Main has no sheet above it to join" : "A port: joins the entry of its name on the sheet symbol that stands for this sheet",
+              disabled: portOff,
+            },
           ]}
-          onChange={(v) => set({ kind: v })}
+          onChange={setKind}
         />
       </Field>
-      {kind !== "local" && (
-        <Field label="Shape">
-          <select className="field h-8" value={l.shape ?? "bidirectional"} onChange={(e) => set({ shape: e.target.value as LabelShape })}>
-            {SHAPES.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
-      <TextStyle look={l.look} onChange={(look) => set({ look })} />
+      <Field label="Shape">
+        <select
+          className="field h-8"
+          value={kind === "local" ? "" : (l.shape ?? "bidirectional")}
+          disabled={kind === "local"}
+          title={kind === "local" ? "A net label has no direction: a global label and a port do" : undefined}
+          onChange={(e) => set({ shape: e.target.value as LabelShape })}
+        >
+          {kind === "local" && <option value="">None</option>}
+          {SHAPES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {(l.kind || kicad) && <TextStyle look={l.look} onChange={(look) => set({ look })} />}
       <div className="flex flex-wrap gap-1.5">
         <Button onClick={() => set({ turn: (((l.rot + 90) % 360) as NetLabel["rot"]) })} title="Turn a quarter">
           <RotateCw size={14} /> Turn
@@ -104,7 +152,15 @@ export function LabelInspector({ l, project }: { l: NetLabel; project: Project }
       </div>
       {net && <Row label="Net" value={net.name} mono />}
       {!net && <BusMembers text={l.name} project={project} />}
-      <p className="text-[12px] text-ink-2">{kind === "global" ? "Every global label with this text is one net, on every sheet." : kind === "hierarchical" ? "Joins the sheet pin of this name on the sheet symbol above, and the labels with this text on this sheet." : "Labels with this text on this sheet are one net, named /NAME."}</p>
+      <p className="text-[12px] text-ink-2">
+        {kind === "global"
+          ? "Every global label with this text is one net, on every sheet."
+          : kind === "hierarchical"
+            ? "Joins the sheet entry of this name on the sheet symbol above, and the labels with this text on this sheet."
+            : kicad
+              ? "Labels with this text on this sheet are one net, named /NAME."
+              : "Every label with this text on this sheet is the same net."}
+      </p>
     </Section>
   )
 }
@@ -404,7 +460,71 @@ export function BlockLock({ block }: { block: SchematicBlock }) {
   )
 }
 
-/** S1: a sheet symbol: its name, its flags and its pins. */
+const SIDES: { value: SheetSide; label: string }[] = [
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+  { value: "top", label: "Top" },
+  { value: "bottom", label: "Bottom" },
+]
+
+/** The shape of a sheet entry, as a choice. */
+function ShapeSelect({ pin, sym, label }: { pin: SheetPin; sym: SheetSymbol; label: string }) {
+  return (
+    <select className="field h-8 w-[120px]" value={pin.shape} aria-label={label} onChange={(e) => commitHere((p) => setSheetPin(p, sym.id, pin.id, { shape: e.target.value as LabelShape }))}>
+      {SHAPES.map((s) => (
+        <option key={s.value} value={s.value}>
+          {s.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** A sheet entry renamed, the name typed as the project names labels, so it meets its port. */
+const renameEntry = (project: Project, sym: SheetSymbol, pin: SheetPin, typed: string) => {
+  const name = typedLabelName(project, typed)
+  if (name) commitHere((p) => setSheetPin(p, sym.id, pin.id, { name }))
+}
+
+/** A new entry typed in place, on the side chosen; Enter adds it with its port inside the sheet. */
+function AddEntry({ sym, project }: { sym: SheetSymbol; project: Project }) {
+  const [name, setName] = useState("")
+  const [side, setSide] = useState<SheetSide>("left")
+  const add = () => {
+    const typed = typedLabelName(project, name)
+    if (!typed) return
+    addSheetEntry(sym.id, typed, side)
+    setName("")
+  }
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        className="field mono h-8 min-w-0 flex-1"
+        placeholder="New entry"
+        aria-label="New entry name"
+        value={name}
+        onChange={(e) => setName(typedLabelName(project, e.target.value, true))}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return
+          e.preventDefault()
+          add()
+        }}
+      />
+      <select className="field h-8 w-[88px]" aria-label="Side of the new entry" value={side} onChange={(e) => setSide(e.target.value as SheetSide)}>
+        {SIDES.map((x) => (
+          <option key={x.value} value={x.value}>
+            {x.label}
+          </option>
+        ))}
+      </select>
+      <Button onClick={add} disabled={!name.trim()} title="Add the entry, and its port inside the sheet (Enter)">
+        <Plus size={14} /> Add entry
+      </Button>
+    </div>
+  )
+}
+
+/** S1: a sheet symbol: its name, its flags and its entries. */
 export function SheetSymbolInspector({ sym, project }: { sym: SheetSymbol; project: Project }) {
   const uses = sheetUses(project)
   const mine = uses.filter((u) => u.symbol?.id === sym.id)
@@ -427,65 +547,34 @@ export function SheetSymbolInspector({ sym, project }: { sym: SheetSymbol; proje
           <Button onClick={open} disabled={!open} title="Show the sheet this symbol stands for (double-click it)">
             <FolderOpen size={14} /> Open
           </Button>
-          <Button
-            title="Draw this sheet again beside this symbol: the parts are copied, each with a reference of its own, and an edit to one is made to both"
-            onClick={() =>
-              commitHere((p) => {
-                const box = { minX: sym.x + sym.w + 0.4, minY: sym.y, maxX: sym.x + sym.w * 2 + 0.4, maxY: sym.y + sym.h }
-                const res = addSheetUse(p, p.scope ?? "", sym.child, box)
-                return res ? res.project : p
-              })
-            }
-          >
+          <Button title="Draw this sheet again beside this symbol: the parts are copied, each with a reference of its own, and an edit to one is made to both" onClick={() => reuseSheet(sym.id)}>
             <Copy size={14} /> Use again
           </Button>
-          <Button
-            variant="danger"
-            title="Delete the symbol; a sheet nothing else uses goes with it, and says so"
-            onClick={() => {
-              const note = removalNote(project, [sym.id])
-              commitHere((p) => removeSheetSymbols(p, [sym.id]))
-              uiApi().clearSelection()
-              if (note) uiApi().showNotice(note)
-            }}
-          >
+          <Button variant="danger" title="Delete the symbol; a sheet nothing else uses goes with it, and says so" onClick={() => deleteSheetSymbols([sym.id])}>
             <Trash2 size={14} /> Delete
           </Button>
         </div>
       </Section>
-      <Section title="Pins">
-        {sym.pins.length === 0 && <p className="text-[12px] text-ink-2">No pins: the sheet is joined to this one only by global labels and power symbols.</p>}
+      <Section title="Entries">
+        {sym.pins.length === 0 && <p className="text-[12px] text-ink-2">No entries: the sheet is joined to this one only by global labels and power symbols.</p>}
         {sym.pins.map((pin) => (
           <div key={pin.id} className="flex items-center gap-1.5">
-            <CommitInput mono value={pin.name} onCommit={(v) => v.trim() && commitHere((p) => setSheetPin(p, sym.id, pin.id, { name: v }))} />
-            <select className="field h-8 w-[120px]" value={pin.shape} aria-label={`Shape of ${pin.name}`} onChange={(e) => commitHere((p) => setSheetPin(p, sym.id, pin.id, { shape: e.target.value as LabelShape }))}>
-              {SHAPES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-            <Button onClick={() => commitHere((p) => removeSheetPin(p, sym.id, pin.id))} title="Remove the pin" aria-label={`Remove ${pin.name}`}>
+            <CommitInput mono ariaLabel={`Name of ${pin.name}`} value={pin.name} onCommit={(v) => renameEntry(project, sym, pin, v)} />
+            <ShapeSelect pin={pin} sym={sym} label={`Shape of ${pin.name}`} />
+            <Button onClick={() => commitHere((p) => removeSheetPin(p, sym.id, pin.id))} title="Remove the entry" aria-label={`Remove ${pin.name}`}>
               <Trash2 size={14} />
             </Button>
           </div>
         ))}
-        <div className="flex flex-wrap gap-1.5">
-          <Button
-            onClick={() => {
-              const name = window.prompt("Pin name (the hierarchical label inside the sheet that it joins)")?.trim()
-              if (name) commitHere((p) => addSheetPin(p, sym.id, name))
-            }}
-          >
-            <Plus size={14} /> Add pin
-          </Button>
-          {missing.length > 0 && (
+        <AddEntry sym={sym} project={project} />
+        {missing.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
             <Button onClick={() => commitHere((p) => addMissingPins(p, sym.id))} title={missing.map((m) => m.name).join(", ")}>
-              <Plus size={14} /> Pins for {missing.length} label{missing.length > 1 ? "s" : ""}
+              <Plus size={14} /> Entries for {missing.length} port{missing.length > 1 ? "s" : ""}
             </Button>
-          )}
-        </div>
-        <p className="text-[12px] text-ink-2">A pin joins the hierarchical label of its name inside the sheet.</p>
+          </div>
+        )}
+        <p className="text-[12px] text-ink-2">An entry joins the port of its name inside the sheet.</p>
       </Section>
       <Section title="Flags">
         {flag("dnp", "Do not populate", (v) => v)}
@@ -495,6 +584,42 @@ export function SheetSymbolInspector({ sym, project }: { sym: SheetSymbol; proje
         <p className="text-[12px] text-ink-2">A flag on a sheet is the flag of every part on it.</p>
       </Section>
     </div>
+  )
+}
+
+/** S1: one sheet entry: its name and shape, the symbol it is on, the way to its port inside the sheet, and Delete. */
+export function SheetEntryInspector({ sym, pin, project }: { sym: SheetSymbol; pin: SheetPin; project: Project }) {
+  const shown = useUi((s) => s.sheet)
+  const path = shownPath(project, shown)
+  return (
+    <Section
+      title="Sheet entry"
+      navigation={
+        <Button onClick={() => revealPort(path, sym.id, pin.id)} title={`Show the port ${pin.name} inside ${sym.name} (double-click the entry)`}>
+          <ArrowDownToLine size={14} /> Go to the port
+        </Button>
+      }
+    >
+      <Field label="Name">
+        <CommitInput mono value={pin.name} onCommit={(v) => renameEntry(project, sym, pin, v)} />
+      </Field>
+      <Field label="Shape">
+        <ShapeSelect pin={pin} sym={sym} label="Shape" />
+      </Field>
+      <Row label="On" value={sym.name} />
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          variant="danger"
+          onClick={() => {
+            commitHere((p) => removeSheetPin(p, sym.id, pin.id))
+            uiApi().clearSelection()
+          }}
+        >
+          <Trash2 size={14} /> Delete
+        </Button>
+      </div>
+      <p className="text-[12px] text-ink-2">Joins the port of its name inside the sheet, and what is wired to it here.</p>
+    </Section>
   )
 }
 

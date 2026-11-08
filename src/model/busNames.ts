@@ -320,6 +320,18 @@ export function typedNetName(text: string, typing = false): string {
   return out
 }
 
+/**
+ * The name a user typed for a label or a sheet entry, as the project keeps it: upper case in a project drawn here (so an entry `data` meets its port `DATA`),
+ * the case kept in a project named as KiCad names its nets (`netNames`). A bus name keeps its spaces, one between members; anything else goes through
+ * `typedNetName`. While the name is being typed (`typing`) nothing is trimmed.
+ */
+export function typedLabelName(project: { netNames?: unknown }, text: string, typing = false): string {
+  const cased = project.netNames ? text : text.toUpperCase()
+  if (typing) return typedNetName(cased, true)
+  const name = cased.trim()
+  return isBusName(name) ? name.replace(/\s+/g, " ") : typedNetName(name)
+}
+
 /** Whether a label names a bus at all (`SCH_CONNECTION::IsBusLabel`), whatever it carries. */
 export function isBusName(text: string, gen: BusGeneration = "kicad10"): boolean {
   if (!text.includes("[") && !text.includes("{")) return false

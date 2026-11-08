@@ -1,7 +1,7 @@
 import type { Box } from "../lib/geometry"
 import { SCH_TEXT } from "./symbols"
 import { textOnSheet } from "./symbolDrawing"
-import type { NetLabel, TextLook, Vec2 } from "./types"
+import type { NetLabel, Rotation, SheetPin, TextLook, Vec2 } from "./types"
 
 // S2: how a label from KiCad is laid out on the sheet. A local label is its text beside its point; a
 // global label is a flag (`SCH_GLOBALLABEL::CreateGraphicShape`, sch_label.cpp) whose shape says what
@@ -84,4 +84,10 @@ export function labelGeometry(l: NetLabel): LabelGeometry {
   const anchor = at(start + margin, 0)
   const { extent, vertical: v } = textOnSheet(angle, d.x < 0 || d.y < 0 ? "right" : "left", undefined, { rot: 0 })
   return { outline, text: { x: anchor.x, y: anchor.y, extent, vertical: v, size }, box: unionBox(box, textBox(anchor, extent, v, len, size)) }
+}
+
+/** A sheet entry (a pin of a sheet symbol), laid out: the flag of a port that starts at the symbol's edge and points into it. */
+export function sheetPinGeometry(p: SheetPin): LabelGeometry {
+  const inward = ((p.rot + 180) % 360) as Rotation
+  return labelGeometry({ id: p.id, name: p.name, x: p.x, y: p.y, rot: inward, kind: "hierarchical", shape: p.shape, ...(p.look ? { look: p.look } : {}) })
 }

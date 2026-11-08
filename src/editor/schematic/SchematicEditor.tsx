@@ -32,8 +32,9 @@ import {
   updateDrawings,
 } from "../../model/drawings"
 import { pinKey } from "../../model/connectivity"
+import { intersheetRefs, REF_TEXT, type IntersheetRefs } from "../../model/intersheetRefs"
 import { labelBox } from "../../model/labels"
-import { isKicadLabel } from "../../model/labelShapes"
+import { isKicadLabel, sheetPinGeometry } from "../../model/labelShapes"
 import { findPart } from "../../model/library"
 import { schematicBounds, schematicPins, type WorldPin } from "../../model/instances"
 import {
@@ -47,14 +48,14 @@ import {
 } from "../../model/ops"
 import { guardDrop, mirrorSelection, pasteItems, placeComponent, rotateSelection, setFieldPlace, type Clipboard } from "../../model/schematicEdit"
 import { SCH_GRID, SCH_TEXT } from "../../model/symbols"
-import { typedNetName } from "../../model/busNames"
+import { typedLabelName } from "../../model/busNames"
 import { componentFields, fieldBox, fieldPlaceOf, hasFieldPlaces, symbolOf } from "../../model/symbolDrawing"
-import type { DrawingText, FieldPlace, NetLabel, Project, Rotation, SchematicDrawing, Vec2 } from "../../model/types"
+import type { DrawingText, FieldPlace, NetLabel, Project, Rotation, SchematicDrawing, SheetSymbol, Vec2 } from "../../model/types"
 import { getConnectivity } from "../../store/analysis"
 import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
-import { commitHere, dragHere, dropHere, removalNote, shownPath, shownProject } from "../../store/sheetScope"
+import { commitHere, dragHere, dropHere, shownPath, shownProject } from "../../store/sheetScope"
 import { projectApi, useProjectStore } from "../../store/projectStore"
-import { PART_MIME, readPreset, selectionIds, uiApi, useUi, type SchTool } from "../../store/uiStore"
+import { PART_MIME, readPreset, selectionIds, uiApi, useUi, type LabelChoice, type SchTool } from "../../store/uiStore"
 import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { useSch } from "../theme"
 import { hasTextSelection, isTyping, toScreen, Viewport, WorldText, type ViewTransform, type ViewportHandle, type ViewportPointerEvent } from "../viewport"
@@ -66,8 +67,9 @@ import { ComponentSymbol, SymbolBody, dashArray } from "./SymbolView"
 import { FlagMarks, KicadLabelView } from "./SheetItemsView"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { SheetSymbolView } from "./SheetSymbolView"
-import { addSheet, moveSheetSymbols, removeSheetSymbols } from "../../model/sheetOps"
-import { hasUse, symbolsOnSheet, useAt } from "../../model/sheets"
+import { addSheetEntry, commitPort, deleteSheetSymbols, revealLabel, revealPort } from "./sheetActions"
+import { addSheet, moveSheetPin, moveSheetSymbols, removeSheetPin, sheetPinSpot, type SheetSide } from "../../model/sheetOps"
+import { hasUse, sheetIdOf, symbolsOnSheet, useAt } from "../../model/sheets"
 
 type Hit =
   | { type: "pin"; pin: WorldPin }
@@ -77,6 +79,8 @@ type Hit =
   | { type: "drawing"; id: string }
   | { type: "block"; id: string }
   | { type: "sheet"; id: string }
+  /** A sheet entry, by its flag or its point. */
+  | { type: "entry"; symbolId: string; pinId: string; at: Vec2 }
   | { type: "field"; id: string; name: string }
 
 type BoxTool = Extract<SchTool, "rect" | "block" | "sheet">
@@ -94,6 +98,11 @@ type Mode =
   | { kind: "field"; start: Vec2; id: string; name: string; from: FieldPlace; moved: boolean }
   /** A grab handle of the selected drawing being dragged. */
   | { kind: "handle"; id: string; index: number; base: SchematicDrawing; moved: boolean }
+  /** A sheet entry being slid along its symbol's edges. */
+  | { kind: "entry"; symbolId: string; pinId: string; moved: boolean }
+
+/** The name box of the label tool (where the label goes and which way it points), or of the entry tool (`entry`: the symbol and edge the entry goes on). */
+type LabelDraft = { at: Vec2; screen: Vec2; rot: Rotation; name: string; entry?: { symbolId: string; side: SheetSide } }
 
 /** Text being typed in place: a new text, one being edited, or a block's name. */
 type Editing = { kind: "text"; id: string | null; at: Vec2; value: string } | { kind: "block"; id: string; value: string }
@@ -147,6 +156,14 @@ function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null 
   for (let i = p.labels.length - 1; i >= 0; i--) {
     if (pointInBox(at, labelBox(p.labels[i]), tol * 0.5)) return { type: "label", id: p.labels[i].id }
   }
+  // A sheet entry lies inside its symbol's rectangle, so it is picked before the symbol; and at its point before the wire that ends there.
+  const symbols = sheetSymbolsOf(p)
+  for (let i = symbols.length - 1; i >= 0; i--) {
+    const s = symbols[i]
+    for (const pin of s.pins) {
+      if (Math.hypot(pin.x - at.x, pin.y - at.y) <= pinTol || pointInBox(at, sheetPinGeometry(pin).box, tol * 0.3)) return { type: "entry", symbolId: s.id, pinId: pin.id, at: { x: pin.x, y: pin.y } }
+    }
+  }
   // A directive label (S8) sits on a wire, a pin or a rule area's edge: its flag is picked before the wire under its anchor.
   for (let i = (p.drawings?.length ?? 0) - 1; i >= 0; i--) {
     const d = p.drawings![i]
@@ -175,9 +192,8 @@ function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null 
     if (pointInBox(at, frames[i].titleBox)) return { type: "block", id: frames[i].id }
   }
   // A sheet symbol is picked anywhere on its rectangle, under the parts drawn on top of it.
-  const sheets = sheetSymbolsOf(p)
-  for (let i = sheets.length - 1; i >= 0; i--) {
-    const s = sheets[i]
+  for (let i = symbols.length - 1; i >= 0; i--) {
+    const s = symbols[i]
     if (pointInBox(at, { minX: s.x, minY: s.y, maxX: s.x + s.w, maxY: s.y + s.h }, tol * 0.3)) return { type: "sheet", id: s.id }
   }
   for (let i = p.components.length - 1; i >= 0; i--) {
@@ -193,7 +209,26 @@ function hitTest(p: Project, at: Vec2, tol: number, pinTol: number): Hit | null 
 
 const HIT_PREFIX = { component: "c", label: "l", wire: "w", drawing: "d", block: "b", sheet: "h", field: "c" } as const
 
-const hitId = (h: Hit | null) => (!h ? null : h.type === "pin" ? `c:${h.pin.componentId}` : `${HIT_PREFIX[h.type]}:${h.id}`)
+const hitId = (h: Hit | null) => (!h ? null : h.type === "pin" ? `c:${h.pin.componentId}` : h.type === "entry" ? `e:${h.symbolId}:${h.pinId}` : `${HIT_PREFIX[h.type]}:${h.id}`)
+
+/** The entries of a selection, by symbol and pin. */
+const selectedEntries = (sel: string[]) =>
+  selectionIds(sel, "e").map((key) => {
+    const [symbolId, pinId] = key.split(":")
+    return { symbolId, pinId }
+  })
+
+const LABEL_WORDS: Record<LabelChoice, string> = { net: "net label", global: "global label", port: "port" }
+
+/** The sheet symbol whose edge a click of the entry tool is on, with the free place nearest it, or null. */
+function entrySpotAt(p: Project, at: Vec2): { sym: SheetSymbol; side: SheetSide; at: Vec2 } | null {
+  let best: { sym: SheetSymbol; side: SheetSide; at: Vec2 } | null = null
+  for (const sym of sheetSymbolsOf(p)) {
+    const spot = sheetPinSpot(p, sym.id, null, at)
+    if (spot && (!best || Math.hypot(spot.at.x - at.x, spot.at.y - at.y) < Math.hypot(best.at.x - at.x, best.at.y - at.y))) best = { sym, ...spot }
+  }
+  return best
+}
 
 let clipboard: Clipboard | null = null
 
@@ -233,7 +268,10 @@ export function SchematicEditor() {
   const [cursor, setCursor] = useState<Vec2 | null>(null)
   const [hover, setHover] = useState<Hit | null>(null)
   const [hoverHandle, setHoverHandle] = useState<number | null>(null)
-  const [labelDraft, setLabelDraft] = useState<{ at: Vec2; screen: Vec2; rot: Rotation; name: string } | null>(null)
+  // The pointer is on a sheet's name in a global label's references.
+  const [hoverRef, setHoverRef] = useState(false)
+  // The name box of the label tool, or of the entry tool (`entry`: the symbol and edge the new entry goes on).
+  const [labelDraft, setLabelDraft] = useState<LabelDraft | null>(null)
   const [editing, setEditingState] = useState<Editing | null>(null)
   // The edit being typed, read by the commit so a blur and an Enter can't both commit it.
   const editingRef = useRef<Editing | null>(null)
@@ -243,12 +281,29 @@ export function SchematicEditor() {
   }
   // Where the label tool was pressed. Its name box opens on release: opened on the press, the
   // focus the browser gives the canvas right after it would blur the box, which closes it.
-  const labelPress = useRef<{ at: Vec2; screen: Vec2; rot: Rotation } | null>(null)
+  const labelPress = useRef<Omit<LabelDraft, "name"> | null>(null)
   const shiftRef = useRef(false)
   // When the last drawing was finished, so the double-click that finished a line doesn't also open it.
   const finishedAt = useRef(0)
 
   const conn = useMemo(() => getConnectivity(project), [project])
+  // Port is off on a sheet with none above it: the tool places a net label there.
+  const onRoot = useAt(whole, shownPath(whole, sheet)).parent === null
+  const chosenKind = useUi((s) => s.labelKind)
+  const labelKind: LabelChoice = chosenKind === "port" && onRoot ? "net" : chosenKind
+  // The other sheets each global label's name is on, drawn after its flag.
+  const refs = useMemo(() => {
+    const path = shownPath(whole, sheet)
+    return project.labels.flatMap((l) => {
+      const r = intersheetRefs(whole, path, l)
+      return r ? [{ label: l, refs: r }] : []
+    })
+  }, [whole, sheet, project])
+  /** The use a click lands on in the references, with the name of the global label there. */
+  const refAt = (at: Vec2) => {
+    for (const { label, refs: r } of refs) for (const n of r.names) if (pointInBox(at, n.box)) return { use: n.use, name: label.name.trim() }
+    return null
+  }
   // The flags a symbol has with the active variant's, the sheet symbols' above it and the rule areas' put on it (the project keeps them where they are set): the cross and the frame are drawn for those too. Worked out on the whole project, so the sheet symbols above a sheet count.
   const resolvedById = useMemo(() => new Map(resolvedComponents(whole).map((x) => [x.id, x] as const)), [whole])
   const dragWhole = useProjectStore((s) => s.transientBase)
@@ -338,8 +393,10 @@ export function SchematicEditor() {
     return orthogonalElbow(last, to, m.horizontalFirst)
   }
 
-  const startWire = (from: Vec2, screen: Vec2, pin: WorldPin | null, fromDrag: boolean) => {
-    const horizontalFirst = pin ? pin.dir === "left" || pin.dir === "right" : true
+  /** A wire from a point; from a pin or a sheet entry it leaves along the way it points. */
+  const startWire = (from: Vec2, screen: Vec2, h: Hit | null, fromDrag: boolean) => {
+    const entryRot = h?.type === "entry" ? sheetSymbolsOf(project).find((s) => s.id === h.symbolId)?.pins.find((q) => q.id === h.pinId)?.rot : undefined
+    const horizontalFirst = h?.type === "pin" ? h.pin.dir === "left" || h.pin.dir === "right" : entryRot === undefined || entryRot === 0 || entryRot === 180
     setMode({ kind: "wire", points: [from], horizontalFirst, fromDrag, startScreen: screen })
   }
 
@@ -348,6 +405,7 @@ export function SchematicEditor() {
     const h = hitTest(p, at, tol, pinTol)
     if (!h) return false
     if (h.type === "pin") return !exclude.some((e) => samePoint(e, h.pin.pos))
+    if (h.type === "entry") return !exclude.some((e) => samePoint(e, h.at))
     if (h.type === "wire") return true
     if (h.type === "label") return true
     return false
@@ -357,6 +415,7 @@ export function SchematicEditor() {
     const { tol, pinTol } = tolerances()
     const h = hitTest(project, world, tol, pinTol)
     if (h?.type === "pin") return h.pin.pos
+    if (h?.type === "entry") return h.at
     return snapPoint(world, SCH_GRID)
   }
 
@@ -555,10 +614,20 @@ export function SchematicEditor() {
       return
     }
 
+    if (tool === "entry") {
+      const spot = entrySpotAt(p, world)
+      if (!spot) {
+        uiApi().showNotice("Click on the edge of a sheet symbol.")
+        return
+      }
+      uiApi().clearNotice()
+      labelPress.current = { at: spot.at, screen: e.screen, rot: 0, entry: { symbolId: spot.sym.id, side: spot.side } }
+      return
+    }
+
     if (tool === "wire") {
       const { tol, pinTol } = tolerances()
-      const h = hitTest(p, world, tol, pinTol)
-      startWire(snapped, e.screen, h?.type === "pin" ? h.pin : null, false)
+      startWire(snapped, e.screen, hitTest(p, world, tol, pinTol), false)
       return
     }
 
@@ -600,10 +669,29 @@ export function SchematicEditor() {
       setMode({ kind: "handle", ...grab, moved: false })
       return
     }
+    // A sheet named after a global label shows that sheet, with its global label of the name.
+    const ref = refAt(world)
+    if (ref) {
+      const l = projectApi().project!.labels.find((x) => x.kind === "global" && sheetIdOf(x) === ref.use.sheet && x.name.trim() === ref.name)
+      if (l) revealLabel(ref.use.path, l.id)
+      return
+    }
     const { tol, pinTol } = tolerances()
     const h = hitTest(p, world, tol, pinTol * 0.8)
     if (h?.type === "pin") {
-      startWire(h.pin.pos, e.screen, h.pin, true)
+      startWire(h.pin.pos, e.screen, h, true)
+      return
+    }
+    // A sheet entry is selected and slid along its symbol's edges; it never starts a wire.
+    if (h?.type === "entry") {
+      const id = hitId(h)!
+      if (native.shiftKey) {
+        uiApi().toggleSelect(id)
+        return
+      }
+      if (!uiApi().selection.includes(id)) uiApi().select([id])
+      projectApi().beginTransient()
+      setMode({ kind: "entry", symbolId: h.symbolId, pinId: h.pinId, moved: false })
       return
     }
     // The text of a field is moved on its own, and keeps the symbol where it is.
@@ -684,12 +772,21 @@ export function SchematicEditor() {
       if (!m.moved) setMode({ ...m, moved: true })
       return
     }
+    if (m.kind === "entry") {
+      // A place another entry has is passed over: the entry stays where it last was free.
+      const base = projectApi().transientBase
+      if (!base || !sheetPinSpot(base, m.symbolId, m.pinId, world, Infinity)) return
+      dragHere((v) => moveSheetPin(v, m.symbolId, m.pinId, world))
+      if (!m.moved) setMode({ ...m, moved: true })
+      return
+    }
     if (m.kind === "idle" && !placing) {
       const grab = tool === "select" ? handleAt(project, world) : null
       setHoverHandle(grab ? grab.index : null)
       const { tol, pinTol } = tolerances()
       const h = grab ? null : hitTest(project, world, tol, pinTol * 0.8)
       setHover((prev) => (sameHit(prev, h) ? prev : h))
+      setHoverRef(tool === "select" && refAt(world) !== null)
     }
   }
 
@@ -699,7 +796,7 @@ export function SchematicEditor() {
       labelPress.current = null
       if (e.native.type === "pointercancel") return
       const last = shownProject().labels.at(-1)?.name ?? ""
-      setLabelDraft({ ...press, name: bumpName(last) })
+      setLabelDraft({ ...press, name: press.entry ? "" : bumpName(last) })
       return
     }
     const m = modeRef.current
@@ -724,7 +821,7 @@ export function SchematicEditor() {
       setMode({ kind: "idle" })
       return
     }
-    if (m.kind === "drag") {
+    if (m.kind === "drag" || m.kind === "entry") {
       const { transientBase: wholeStart, project: wholeDropped } = projectApi()
       const start = wholeStart && shownProject(wholeStart)
       const dropped = wholeDropped && shownProject(wholeDropped)
@@ -732,7 +829,7 @@ export function SchematicEditor() {
         // A drag changes where things are, not what is connected. Dropped where it would join or
         // cut nets, it goes back to where it started and the canvas says why.
         uiApi().clearNotice()
-        const res = guardDrop(start, dropped, { components: m.picked }, { conn: getConnectivity })
+        const res = guardDrop(start, dropped, { components: m.kind === "drag" ? m.picked : [] }, { conn: getConnectivity })
         if (res.ok) dropHere(() => res.project)
         else {
           projectApi().cancelTransient()
@@ -798,6 +895,9 @@ export function SchematicEditor() {
         uiApi().select([`d:${h.id}`])
         uiApi().setSidePanel("inspector")
       }
+    } else if (h?.type === "entry") {
+      // An entry leads to its port inside the sheet.
+      revealPort(project.scope ?? "", h.symbolId, h.pinId)
     } else if (h?.type === "sheet") {
       // A sheet symbol opens the sheet it stands for.
       const path = `${project.scope ?? ""}/${h.id}`
@@ -852,7 +952,7 @@ export function SchematicEditor() {
         else if (m.kind === "line") finishLine(m.points, false, m.bus)
         else if (m.kind === "box") setMode({ kind: "idle" })
         else if (uiApi().placing) uiApi().stopPlacing()
-        else if (m.kind === "drag" || m.kind === "handle" || m.kind === "field") {
+        else if (m.kind === "drag" || m.kind === "handle" || m.kind === "field" || m.kind === "entry") {
           projectApi().cancelTransient()
           setMode({ kind: "idle" })
         } else {
@@ -884,7 +984,14 @@ export function SchematicEditor() {
         }
         return
       }
-      if (m.kind === "box" || m.kind === "handle") return
+      if (m.kind === "box" || m.kind === "handle" || m.kind === "entry") return
+      // Tab picks what the label tool places: a net label, a global label or a port (none on a sheet with nothing above it).
+      if (key === "tab" && uiApi().schTool === "label" && !mod) {
+        e.preventDefault()
+        const open = projectApi().project!
+        uiApi().cycleLabelKind(e.shiftKey, useAt(open, shownPath(open, uiApi().sheet)).parent !== null)
+        return
+      }
       if (mod && (key === "a" || key === "c") && hasTextSelection()) return
       if (mod && key === "a") {
         e.preventDefault()
@@ -987,21 +1094,20 @@ export function SchematicEditor() {
           uiApi().showNotice(`${locked} is locked: unlock the group to delete its parts.`)
           return
         }
-        commitHere((p) =>
-          removeSheetSymbols(
-            removeItems(p, {
+        // One undo step, and the canvas says what a sheet symbol took with it.
+        const entries = selectedEntries(sel)
+        deleteSheetSymbols(selectionIds(sel, "h"), (v) =>
+          entries.reduce(
+            (q, x) => removeSheetPin(q, x.symbolId, x.pinId),
+            removeItems(v, {
               components: selectionIds(sel, "c"),
               wires: selectionIds(sel, "w"),
               labels: selectionIds(sel, "l"),
               blocks: selectionIds(sel, "b"),
               drawings: selectionIds(sel, "d"),
             }),
-            selectionIds(sel, "h"),
           ),
         )
-        const gone = selectionIds(sel, "h")
-        const note = gone.length ? removalNote(projectApi().project!, gone) : null
-        if (note) uiApi().showNotice(note)
         uiApi().clearSelection()
         return
       }
@@ -1048,9 +1154,11 @@ export function SchematicEditor() {
           ? "crosshair"
           : hover?.type === "pin"
             ? "crosshair"
-            : hover?.type === "block" || hover?.type === "drawing"
+            : hover?.type === "block" || hover?.type === "drawing" || hover?.type === "entry"
               ? "move"
-              : "default"
+              : hoverRef
+                ? "pointer"
+                : "default"
 
   const highlightedPins = useMemo(() => {
     if (!activeNet) return []
@@ -1145,7 +1253,16 @@ export function SchematicEditor() {
 
               {/* Sheet symbols: the rectangles of the sheets below this one */}
               {sheetSymbolsOf(project).map((sym) => (
-                <SheetSymbolView key={sym.id} sym={sym} selected={selected.has(`h:${sym.id}`)} hovered={hover?.type === "sheet" && hover.id === sym.id} px={px} openable={hasUse(whole, `${project.scope ?? ""}/${sym.id}`)} />
+                <SheetSymbolView
+                  key={sym.id}
+                  sym={sym}
+                  selected={selected.has(`h:${sym.id}`)}
+                  hovered={hover?.type === "sheet" && hover.id === sym.id}
+                  px={px}
+                  openable={hasUse(whole, `${project.scope ?? ""}/${sym.id}`)}
+                  selectedPins={new Set(sym.pins.filter((q) => selected.has(`e:${sym.id}:${q.id}`)).map((q) => q.id))}
+                  hoveredPin={hover?.type === "entry" && hover.symbolId === sym.id ? hover.pinId : null}
+                />
               ))}
 
               {/* Drawings, under the circuit and in their own order (a junction dot and a no-connect flag are drawn over the wires, below) */}
@@ -1197,8 +1314,11 @@ export function SchematicEditor() {
                 <DrawingView key={d.id} drawing={d} px={px} />
               ))}
 
-              {/* Labels */}
+              {/* Labels, and the sheets a global label's name is on after its flag */}
               {project.labels.map((l) => (isKicadLabel(l) ? <KicadLabelView key={l.id} label={l} selected={selected.has(`l:${l.id}`)} px={px} /> : <LabelView key={l.id} label={l} selected={selected.has(`l:${l.id}`)} px={px} />))}
+              {refs.map(({ label, refs: r }) => (
+                <IntersheetRefsView key={`r${label.id}`} refs={r} />
+              ))}
 
               {/* Components */}
               {project.components.map((c) => {
@@ -1333,28 +1453,38 @@ export function SchematicEditor() {
           style={{ left: labelDraft.screen.x + 8, top: labelDraft.screen.y - 18 }}
           onSubmit={(e) => {
             e.preventDefault()
-            const name = labelDraft.name.trim()
-            if (name) commitHere((p) => addLabel(p, name, labelDraft.at, labelDraft.rot).project)
+            const name = typedLabelName(project, labelDraft.name)
+            const { at, rot, entry } = labelDraft
             setLabelDraft(null)
+            if (!name) return
+            if (entry) addSheetEntry(entry.symbolId, name, entry.side, at)
+            else if (labelKind === "port") commitPort((v) => addLabel(v, name, at, rot, { kind: "hierarchical" }).project, name, "bidirectional")
+            else commitHere((p) => addLabel(p, name, at, rot, labelKind === "global" ? { kind: "global" } : {}).project)
           }}
         >
+          <span className="px-1 text-[11.5px] font-medium text-ink-2">{labelDraft.entry ? "Sheet entry" : LABEL_WORDS[labelKind].replace(/^./, (c) => c.toUpperCase())}</span>
           <input
             autoFocus
+            aria-label={labelDraft.entry ? "Entry name" : `Name of the ${LABEL_WORDS[labelKind]}`}
             className="field mono h-7 w-36 py-0"
             value={labelDraft.name}
-            placeholder="Net name"
+            placeholder={labelDraft.entry ? "Entry name" : labelKind === "net" ? "Net name" : labelKind === "global" ? "Global name" : "Port name"}
             // The suggested name is selected, so typing replaces it.
             onFocus={(e) => e.currentTarget.select()}
-            onChange={(e) => setLabelDraft({ ...labelDraft, name: typedNetName(project.netNames ? e.target.value : e.target.value.toUpperCase(), true) })}
+            onChange={(e) => setLabelDraft({ ...labelDraft, name: typedLabelName(project, e.target.value, true) })}
             onKeyDown={(e) => {
               if (e.key === "Escape") setLabelDraft(null)
+              else if (e.key === "Tab" && !labelDraft.entry) {
+                e.preventDefault()
+                uiApi().cycleLabelKind(e.shiftKey, !onRoot)
+              }
             }}
             onBlur={() => setLabelDraft(null)}
           />
         </form>
       )}
 
-      <SchematicHint mode={mode} tool={tool} placing={!!placing} editing={editing} />
+      <SchematicHint mode={mode} tool={tool} placing={!!placing} editing={editing} labelKind={labelKind} />
     </div>
   )
 }
@@ -1503,6 +1633,12 @@ function BlockView({ frame, selected, hovered, renaming, px }: { frame: BlockFra
   )
 }
 
+/** The other sheets a global label's name is on, after its flag: `[Power, MCU]`, small and quiet. A click on a name shows that sheet. */
+function IntersheetRefsView({ refs }: { refs: IntersheetRefs }) {
+  const sch = useSch()
+  return <WorldText x={refs.at.x} y={refs.at.y} text={refs.text} size={REF_TEXT} extent={refs.extent} vertical={refs.vertical} fill={sch.ink3} weight={500} mono />
+}
+
 function LabelView({ label, selected, px }: { label: NetLabel; selected: boolean; px: number }) {
   const sch = useSch()
   const b = labelBox(label)
@@ -1543,16 +1679,18 @@ function LabelView({ label, selected, px }: { label: NetLabel; selected: boolean
   )
 }
 
-function SchematicHint({ mode, tool, placing, editing }: { mode: Mode; tool: SchTool; placing: boolean; editing: Editing | null }) {
+function SchematicHint({ mode, tool, placing, editing, labelKind }: { mode: Mode; tool: SchTool; placing: boolean; editing: Editing | null; labelKind: LabelChoice }) {
   let items: [string, string][] | null = null
   if (editing?.kind === "text") items = [["Enter", "done"], ["Shift+Enter", "new line"], ["Esc", "cancel"]]
   else if (editing) items = [["Enter", "rename"], ["Esc", "cancel"]]
   else if (placing) items = [["Click", "place"], ["R", "rotate"], ["X / Y", "mirror"], ["Shift", "place several"], ["Esc", "cancel"]]
   else if (mode.kind === "wire") items = [["Click", "add a corner"], ["Pin", "finish"], ["/", "flip bend"], ["Backspace", "undo corner"], ["Esc", "done"]]
+  else if (mode.kind === "entry") items = [["Drag", "along the edges and round the corners"], ["Esc", "cancel"]]
   else if (mode.kind === "line") items = [["Click", "add a corner"], ["Shift", "45°"], ["First corner", "close"], ["Double-click", "finish"], ["Backspace", "undo corner"]]
   else if (mode.kind === "box") items = mode.shape === "block" ? [["Release", "frame the parts inside"], ["Esc", "cancel"]] : [["Release", "finish"], ["Shift", "square"], ["Alt", "off the grid"]]
   else if (tool === "wire") items = [["Click", "start a wire at a pin or grid point"]]
-  else if (tool === "label") items = [["Click", "attach a net label to a pin or wire end"]]
+  else if (tool === "label") items = [["Click", `attach a ${LABEL_WORDS[labelKind]} to a pin or wire end`], ["Tab", "net label, global label or port"]]
+  else if (tool === "entry") items = [["Click", "the edge of a sheet symbol to add an entry"], ["Enter", "add it, with its port inside"]]
   else if (tool === "block") items = [["Drag", "around parts to frame them as a block"]]
   else if (tool === "text") items = [["Click", "place a text"], ["Click a text", "edit it"]]
   else if (tool === "line") items = [["Click", "start a line"], ["Drag", "draw one segment"], ["Shift", "45°"]]

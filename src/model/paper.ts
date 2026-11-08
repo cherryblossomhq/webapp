@@ -67,7 +67,7 @@ const US_LETTER: PaperSize[] = ["USLetter", "USLedger", "C", "D", "E"]
 const US_LEGAL: PaperSize[] = ["USLegal", "USLedger", "C", "D", "E"]
 
 /** The sizes a page grows through, smallest first: the one its size is in. `User` has none (it grows to just big enough). */
-export function paperFamily(size: PaperSize): PaperSize[] {
+function paperFamily(size: PaperSize): PaperSize[] {
   if (ISO.includes(size)) return ISO
   if (ANSI.includes(size)) return ANSI
   if (size === "USLegal") return US_LEGAL
@@ -132,7 +132,7 @@ export function titleBlockBox(paper: SheetPaper): Box {
   return { minX: inner.maxX - units(BORDER.titleWidth), maxX: inner.maxX, minY: inner.minY, maxY: inner.minY + units(BORDER.titleHeight) }
 }
 
-export interface ZoneMark {
+interface ZoneMark {
   /** A tick across the strip between the frames: from the outer frame to the inner one. */
   ticks: { a: { x: number; y: number }; b: { x: number; y: number } }[]
   /** The zone names, in the middle of their stretch of the strip. */
@@ -180,7 +180,7 @@ export function holds(paper: SheetPaper, box: Box): boolean {
 }
 
 /** The two rectangles of a page a drawing may fill whole: above the title block (the inner frame's width) and left of it (its height). */
-export function freeRegions(paper: SheetPaper): Box[] {
+function freeRegions(paper: SheetPaper): Box[] {
   const inner = innerBox(paper)
   const title = titleBlockBox(paper)
   return [
@@ -214,7 +214,7 @@ export function centredOn(size: Omit<SheetPaper, "x" | "y">, box: Box): SheetPap
 }
 
 /** The size of a custom page just big enough for a box (whole mm): above the title block or beside it, whichever is smaller. */
-export function userSizeFor(box: Box): { width: number; height: number } {
+function userSizeFor(box: Box): { width: number; height: number } {
   const frame = 2 * (BORDER.margin + BORDER.strip)
   const w = (box.maxX - box.minX) * SCH_UNIT_MM
   const h = (box.maxY - box.minY) * SCH_UNIT_MM
@@ -226,7 +226,7 @@ export function userSizeFor(box: Box): { width: number; height: number } {
 }
 
 /** What a fitted page keeps of the page it replaces: its family and orientation, or that it is custom. */
-export type PaperLike = Pick<SheetPaper, "size" | "portrait">
+type PaperLike = Pick<SheetPaper, "size" | "portrait">
 
 /**
  * The smallest page of a family that holds a box, placed so the box is centred in the region it fits (above the title block, else
@@ -273,7 +273,7 @@ export function paperOf(project: Pick<Project, "sheets">, sheetId: string = ROOT
 }
 
 /** The box of each thing drawn on the sheet a view shows: parts, wires, labels, sheet symbols, block frames and drawings. */
-export function sheetItemBoxes(view: Project): Box[] {
+function sheetItemBoxes(view: Project): Box[] {
   const out: Box[] = []
   for (const c of view.components) out.push(schematicBounds(c))
   for (const w of view.wires) {

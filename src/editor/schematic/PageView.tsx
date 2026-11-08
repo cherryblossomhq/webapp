@@ -8,5 +8,5 @@ import { paintOutside, paintPage } from "./pagePaint"
 export const PageView = memo(function PageView({ page, px }: { page: { paper: SheetPaper; block: TitleBlock }; px: number }) {
   const sch = useSch()
   const nodes = useMemo(() => [paintOutside(page.paper, sch), ...paintPage(page.paper, page.block, sch, px)], [page, sch, px])
-  return <g style={{ pointerEvents: "none" }}>{nodes.map((node, i) => createElement(node.tag, { key: i, ...node.attrs }, node.text))}</g>
+  return <g className="pointer-events-none">{nodes.map((node, i) => createElement(node.tag, { key: i, ...node.attrs }, node.text))}</g>
 })

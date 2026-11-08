@@ -78,7 +78,8 @@ describe("a whole-sheet tidy with a block it can't lay out", () => {
     expect(r.ok).toBe(true)
     expect(r.changed).toBe(true)
     expect(r.kept).toEqual([{ block: "SENSOR", why: "no room for U2: no room for a label of SCL" }])
-    expect(r.message).toBe("Tidied 15 parts into 4 blocks. Kept SENSOR as it was drawn: no room for U2: no room for a label of SCL.")
+    // SENSOR stays where Sakura drew it, 60 units down: further than the largest page of its family reaches, which the message says.
+    expect(r.message).toBe("Tidied 15 parts into 4 blocks. Kept SENSOR as it was drawn: no room for U2: no room for a label of SCL. The sheet grew from A4 to A0, the largest of its sizes, and still doesn't fit on it.")
     expect(netlistDiff(netlist(p), netlist(r.project))).toEqual([])
     // Byte for byte: its parts, its block, and all that is drawn for them alone.
     expect(drawingOf(r.project, ids)).toBe(drawingOf(p, ids))
@@ -93,7 +94,7 @@ describe("a whole-sheet tidy with a block it can't lay out", () => {
     const again = tidySchematic(r.project)
     expect(again.ok).toBe(true)
     expect(again.changed).toBe(false)
-    expect(again.message).toBe("Already tidy. Kept SENSOR as it was drawn: no room for U2: no room for a label of SCL.")
+    expect(again.message).toBe("Already tidy. Kept SENSOR as it was drawn: no room for U2: no room for a label of SCL. The sheet doesn't fit on A0, the largest of its sizes.")
     // The same with the parts in another order.
     const rev = tidySchematic({ ...p, components: [...p.components].reverse() })
     expect(netlistDiff(netlist(p), netlist(rev.project))).toEqual([])

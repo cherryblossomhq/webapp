@@ -180,14 +180,25 @@ export interface Frame {
 const ASPECT = Math.SQRT2
 
 /**
+ * The room frames are packed into: a width and height from the first frame's top-left corner, less a notch at its bottom-right
+ * corner (a page's title block) that no frame may cover.
+ */
+export interface PackTarget {
+  width: number
+  height: number
+  notch: { width: number; height: number }
+}
+
+/**
  * Frames in rows, in reading order, top-aligned with even gaps: the row width is chosen so the
  * whole sheet comes out as compact as it can and close to a landscape page, `aspectWeight`
  * saying how much the shape counts against the area. With `stack`, a frame
  * short enough goes under the one before it rather than beside it, so small drawings fill the
- * height a tall one gives their row. Returns each frame's top-left corner, with y up, the first at
- * (0, 0).
+ * height a tall one gives their row. With a `target` (the page of a whole-sheet tidy), an
+ * arrangement that fits in it beats one that doesn't, and the shape aimed for is the target's.
+ * Returns each frame's top-left corner, with y up, the first at (0, 0).
  */
-export function packRows(frames: Frame[], gap: number, stack = false, aspectWeight = 1.5): Map<string, { x: number; y: number }> {
+export function packRows(frames: Frame[], gap: number, stack = false, aspectWeight = 1.5, target?: PackTarget): Map<string, { x: number; y: number }> {
   const widths = frames.map((f) => f.width)
   const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, frames.length - 1)
   type Column = { frames: Frame[]; width: number; height: number }
@@ -203,6 +214,29 @@ export function packRows(frames: Frame[], gap: number, stack = false, aspectWeig
     }
   }
   const used = frames.reduce((a, f) => a + f.width * f.height, 0)
+  const aim = target ? target.width / target.height : ASPECT
+  /** Whether every frame of the rows is inside the target and clear of its notch. */
+  const fits = (rows: Row[]) => {
+    if (!target) return true
+    const notchX = target.width - target.notch.width
+    const notchY = -(target.height - target.notch.height)
+    let y = 0
+    for (const row of rows) {
+      let x = 0
+      for (const col of row.columns) {
+        let top = y
+        for (const f of col.frames) {
+          const bottom = top - f.height
+          if (x + f.width > target.width + 1e-6 || bottom < -target.height - 1e-6) return false
+          if (x + f.width > notchX + 1e-6 && bottom < notchY - 1e-6) return false
+          top = bottom - gap
+        }
+        x += col.width + gap
+      }
+      y -= row.height + gap
+    }
+    return true
+  }
   for (const limit of [...limits].sort((a, b) => a - b)) {
     const rows: Row[] = []
     let row: Row | null = null
@@ -228,7 +262,8 @@ export function packRows(frames: Frame[], gap: number, stack = false, aspectWeig
     const H = rows.reduce((a, r) => a + r.height, 0) + gap * (rows.length - 1)
     const area = W * H
     const aspect = W / H
-    const cost = area * (1 + aspectWeight * Math.abs(Math.log(aspect / ASPECT))) + (area - used) * 0.2
+    // An arrangement off the target loses to any on it; among those off it, the most compact still wins, for the page a size up.
+    const cost = area * (1 + aspectWeight * Math.abs(Math.log(aspect / aim))) + (area - used) * 0.2 + (fits(rows) ? 0 : 1e12)
     if (!best || cost < best.cost - 1e-9) best = { cost, rows }
   }
   const out = new Map<string, { x: number; y: number }>()

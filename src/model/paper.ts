@@ -246,28 +246,65 @@ export function fitPaper(box: Box, like: PaperLike, sizes: PaperSize[] = paperFa
   return centredOn({ size: sizes[sizes.length - 1] ?? like.size, ...portrait }, box)
 }
 
+/**
+ * The page one size up in its family with its top-left corner kept, for a drawing laid out on it that it does not hold (`boxes`); a custom page is made
+ * just big enough for them above its title block instead. Null when the page is the largest of its family, or a custom one can't grow to hold them.
+ */
+export function grownPaper(paper: SheetPaper, boxes: Box[]): SheetPaper | null {
+  if (paper.size !== "User") {
+    const size = nextSize(paper)
+    return size ? { size, ...(paper.portrait ? { portrait: true as const } : {}), x: paper.x, y: paper.y } : null
+  }
+  const frame = BORDER.margin + BORDER.strip
+  const now = paperMm(paper)
+  const maxX = Math.max(...boxes.map((b) => b.maxX))
+  const minY = Math.min(...boxes.map((b) => b.minY))
+  const width = Math.max(now.width, Math.ceil((maxX - paper.x) * SCH_UNIT_MM + frame + 1))
+  const height = Math.max(now.height, Math.ceil((paper.y - minY) * SCH_UNIT_MM + frame + BORDER.titleHeight + 1))
+  return width === now.width && height === now.height ? null : { size: "User", width, height, x: paper.x, y: paper.y }
+}
+
+/** The page a drawing that has none is given (one imported, or from before pages): the smallest landscape A4 to A0 that holds it, around it. */
+export const pageFor = (box: Box): SheetPaper => fitPaper(box, { size: "A4" }, ISO.slice(1))
+
 /** The sheet's page: the stored one, or the default for a sheet that has none. */
 export function paperOf(project: Pick<Project, "sheets">, sheetId: string = ROOT_SHEET): SheetPaper {
   return sheetsOf(project).find((s) => s.id === sheetId)?.paper ?? DEFAULT_PAPER
 }
 
+/** The box of each thing drawn on the sheet a view shows: parts, wires, labels, sheet symbols, block frames and drawings. */
+export function sheetItemBoxes(view: Project): Box[] {
+  const out: Box[] = []
+  for (const c of view.components) out.push(schematicBounds(c))
+  for (const w of view.wires) {
+    const b = emptyBox()
+    for (const p of w.points) expandBox(b, p)
+    if (Number.isFinite(b.minX)) out.push(b)
+  }
+  for (const l of view.labels) out.push(labelBox(l))
+  if (view.sheetSymbols?.length) for (const s of symbolsOnSheet(view, useAt(view, view.scope ?? "").sheet)) out.push({ minX: s.x, minY: s.y, maxX: s.x + s.w, maxY: s.y + s.h })
+  for (const f of blockFrames(view)) out.push(f.box)
+  for (const d of view.drawings ?? []) out.push(drawingBounds(d))
+  return out
+}
+
 /**
- * Everything drawn on the sheet a view shows: parts, wires, labels, sheet symbols, block frames and drawings. The one definition of
- * "the drawing" for fitting the view, Fit to drawing, Tidy's check and the tests. Null for an empty sheet.
+ * Everything drawn on the sheet a view shows, as one box (`sheetItemBoxes`). The one definition of "the drawing" for fitting the view,
+ * Fit to drawing and the migration's estimate. Null for an empty sheet.
  */
 export function sheetDrawingBox(view: Project): Box | null {
   const b = emptyBox()
-  const add = (box: Box) => {
+  for (const box of sheetItemBoxes(view)) {
     expandBox(b, { x: box.minX, y: box.minY })
     expandBox(b, { x: box.maxX, y: box.maxY })
   }
-  for (const c of view.components) add(schematicBounds(c))
-  for (const w of view.wires) for (const p of w.points) expandBox(b, p)
-  for (const l of view.labels) add(labelBox(l))
-  if (view.sheetSymbols?.length) for (const s of symbolsOnSheet(view, useAt(view, view.scope ?? "").sheet)) add({ minX: s.x, minY: s.y, maxX: s.x + s.w, maxY: s.y + s.h })
-  for (const f of blockFrames(view)) add(f.box)
-  for (const d of view.drawings ?? []) add(drawingBounds(d))
   return Number.isFinite(b.minX) ? b : null
+}
+
+/** Whether the sheet a view shows is on its page: everything drawn on it inside the inner frame and clear of the title block, each thing on its own (a drawing may fill the room beside the title block). */
+export function drawingOnPage(view: Project): boolean {
+  const paper = paperOf(view, useAt(view, view.scope ?? "").sheet)
+  return sheetItemBoxes(view).every((b) => holds(paper, b))
 }
 
 /** What a view fits to: the page, and any of the drawing that is off it. */

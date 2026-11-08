@@ -16,7 +16,9 @@ import { findPart } from "../library"
 import { componentFields, hasFieldPlaces } from "../symbolDrawing"
 import { naturalCompare } from "../../lib/natural"
 import { SCH_GRID } from "../symbols"
-import type { ComponentInstance, NetLabel, Project, Rotation, SchematicBlock, SchematicDrawing, Vec2, Wire } from "../types"
+import { grownPaper, holds, innerBox, paperName, paperOf, titleBlockBox } from "../paper"
+import { sheetsOf, useAt } from "../sheets"
+import type { ComponentInstance, NetLabel, Project, Rotation, SchematicBlock, SchematicDrawing, SheetPaper, Vec2, Wire } from "../types"
 import type { BlockDrawing } from "./block"
 import { layoutBlock } from "./clusters"
 import { cutAtBlock, deadRuns, type Cut } from "./cut"
@@ -420,36 +422,83 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   // ---------- Where each block goes ----------
   const frames = new Map<string, Box>()
   for (const [id, d] of drawings) frames.set(id, frameOf(project, blocks.find((b) => b.id === id)!, d, styles))
-  const offsets = new Map<string, Vec2>()
-  /** What a whole-sheet tidy keeps where it is: what is kept below the blocks goes below this too. */
-  let keptArea: Box | null = null
+  let offsets = new Map<string, Vec2>()
+  /** Where what reaches no part goes, below the blocks of a whole-sheet tidy: by `w:`, `l:` or `c:` and the id. */
+  let stowed = new Map<string, Vec2>()
+  const sheetId = useAt(project, project.scope ?? "").sheet
+  const pageWas = paperOf(project, sheetId)
+  let page = pageWas
+  /** What the user hears about the page: that it grew, or that even its largest size can't hold the sheet. */
+  let pageNote: string | null = null
   if (!options.blockId) {
     const order = flowOrder(withBlocks, scope.filter((b) => drawings.has(b.id)), info)
-    const packed = packRows(
-      order.map((f) => ({ id: f.id, width: round(frames.get(f.id)!.maxX - frames.get(f.id)!.minX), height: round(frames.get(f.id)!.maxY - frames.get(f.id)!.minY) })),
-      BLOCK_GAP,
-      // A short frame goes under the one before it where the row is tall enough, rather than
-      // alone on a row of its own.
-      true,
-    )
-    // Beside what is kept, where a block was: the tidied blocks go together beside all of it.
-    let corner: Vec2 | null = sheetCorner(project)
-    if (kept.length) {
-      const fixed = fixedDrawing(base, new Set(kept.map((k) => k.id)), new Set([...drawings.keys()].flatMap((id) => members.get(id)!.map((c) => c.id))), loose)
-      corner = besideKept(fixed, packed, frames)
-      if (!corner) return fail(project, `Tidy couldn't find room around ${kept.map((k) => k.name).join(" and ")}, which it had to keep as drawn; nothing was changed.`, kept.map((k) => k.why))
-      keptArea = fixed.box
-    }
-    for (const [id, at] of packed) {
-      const f = frames.get(id)!
-      offsets.set(id, { x: round(corner.x + at.x - f.minX), y: round(corner.y + at.y - f.maxY) })
-    }
-    // What a KiCad sheet drew (its text, shapes and pictures) stays where it is: what is tidied goes below those it would cover.
+    const sizes = order.map((f) => ({ id: f.id, width: round(frames.get(f.id)!.maxX - frames.get(f.id)!.minX), height: round(frames.get(f.id)!.maxY - frames.get(f.id)!.minY) }))
+    // What stays where it is: the kept blocks with the drawing that is theirs, and what a KiCad sheet drew.
+    const fixed = kept.length ? fixedDrawing(base, new Set(kept.map((k) => k.id)), new Set([...drawings.keys()].flatMap((id) => members.get(id)!.map((c) => c.id))), loose) : null
     const fixedDrawings = sheetFixed(project)
-    if (fixedDrawings.length && !kept.length) {
-      const dy = clearOfItems(fixedDrawings, [...offsets].map(([id, o]) => ({ f: frames.get(id)!, o })))
-      if (dy) for (const [id, o] of offsets) offsets.set(id, { x: o.x, y: round(o.y + dy) })
+    /** The sheet laid out on a page: where each block goes and where what reaches no part is stowed, and every box that must be on the page. */
+    const layOut = (paper: SheetPaper) => {
+      const inner = innerBox(paper)
+      const title = titleBlockBox(paper)
+      // From the inner frame's top-left, a gap in, on the grid.
+      const corner = { x: ceilGrid(inner.minX + BLOCK_GAP), y: floorGrid(inner.maxY - BLOCK_GAP) }
+      const target = {
+        width: inner.maxX - BLOCK_GAP - corner.x,
+        height: corner.y - inner.minY - BLOCK_GAP,
+        notch: { width: title.maxX - title.minX + BLOCK_GAP, height: title.maxY - title.minY + BLOCK_GAP },
+      }
+      // A short frame goes under the one before it where the row is tall enough, rather than alone on a row of its own.
+      const packed = packRows(sizes, BLOCK_GAP, true, undefined, target)
+      // Beside what is kept, where a block was: the tidied blocks go together beside all of it.
+      const at = fixed ? besideKept(fixed, packed, frames) : corner
+      if (!at) return null
+      const placed = new Map<string, Vec2>()
+      for (const [id, p] of packed) {
+        const f = frames.get(id)!
+        placed.set(id, { x: round(at.x + p.x - f.minX), y: round(at.y + p.y - f.maxY) })
+      }
+      // What a KiCad sheet drew (its text, shapes and pictures) stays where it is: what is tidied goes below those it would cover.
+      if (fixedDrawings.length && !fixed) {
+        const dy = clearOfItems(fixedDrawings, [...placed].map(([id, o]) => ({ f: frames.get(id)!, o })))
+        if (dy) for (const [id, o] of placed) placed.set(id, { x: o.x, y: round(o.y + dy) })
+      }
+      const shifted = (b: Box, o: Vec2): Box => ({ minX: b.minX + o.x, maxX: b.maxX + o.x, minY: b.minY + o.y, maxY: b.maxY + o.y })
+      const boxes = [...placed].map(([id, o]) => shifted(frames.get(id)!, o))
+      // What reaches no part keeps its drawing, in a row below the blocks and what is kept.
+      const stow = new Map<string, Vec2>()
+      if (loose.length) {
+        const area = emptyBox()
+        for (const b of [...boxes, ...(fixed ? [fixed.box] : [])]) {
+          expandBox(area, { x: b.minX, y: b.minY })
+          expandBox(area, { x: b.maxX, y: b.maxY })
+        }
+        if (Number.isFinite(area.minX)) stowLoose(base, loose, area, stow)
+      }
+      boxes.push(...stowedBoxes(base, loose, stow), ...(fixed?.boxes ?? []), ...fixedDrawings.map(drawingBounds))
+      return { placed, stow, boxes }
     }
+    // On the page as it is, else one size up at a time with the top-left corner kept, until it holds everything.
+    let laid = layOut(page)
+    if (!laid) return fail(project, `Tidy couldn't find room around ${kept.map((k) => k.name).join(" and ")}, which it had to keep as drawn; nothing was changed.`, kept.map((k) => k.why))
+    const onPage = (paper: SheetPaper, l: NonNullable<typeof laid>) => l.boxes.every((b) => holds(paper, b))
+    while (!onPage(page, laid)) {
+      // A page grows right and down from its corner: what is kept left of it or above it no size reaches.
+      const inner = innerBox(page)
+      if (laid.boxes.some((b) => b.minX < inner.minX - 1e-6 || b.maxY > inner.maxY + 1e-6)) {
+        pageNote = "Some of what stays as drawn is left of the page or above it, where no bigger page would reach; Fit to drawing in the Inspector puts the page around everything."
+        break
+      }
+      const bigger = grownPaper(page, laid.boxes)
+      if (!bigger) {
+        pageNote = page.size === pageWas.size && page.width === pageWas.width ? `The sheet doesn't fit on ${paperName(page)}, the largest of its sizes.` : `The sheet grew from ${paperName(pageWas)} to ${paperName(page)}, the largest of its sizes, and still doesn't fit on it.`
+        break
+      }
+      page = bigger
+      laid = layOut(page)!
+      if (onPage(page, laid)) pageNote = `The sheet grew from ${paperName(pageWas)} to ${paperName(page)} to hold it.`
+    }
+    offsets = laid.placed
+    stowed = laid.stow
   } else {
     const id = options.blockId
     const before = blockFrames(project).find((f) => f.id === id)
@@ -492,21 +541,6 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   }
   const wires: Wire[] = splitAtJunctions(newWires).map((points) => ({ id: ids.next("w"), points }))
 
-  // What reaches no part keeps its drawing, in a row below the blocks.
-  const stowed = new Map<string, Vec2>()
-  if (!options.blockId && loose.length) {
-    const area = emptyBox()
-    for (const [id, off] of offsets) {
-      const f = frames.get(id)!
-      expandBox(area, { x: f.minX + off.x, y: f.minY + off.y })
-      expandBox(area, { x: f.maxX + off.x, y: f.maxY + off.y })
-    }
-    if (keptArea) {
-      expandBox(area, { x: keptArea.minX, y: keptArea.minY })
-      expandBox(area, { x: keptArea.maxX, y: keptArea.maxY })
-    }
-    if (Number.isFinite(area.minX)) stowLoose(base, loose, area, stowed)
-  }
   const stow = <T extends Vec2>(p: T, by: Vec2 | undefined): T => (by ? { ...p, x: round(p.x + by.x), y: round(p.y + by.y) } : p)
 
   let next: Project = {
@@ -596,7 +630,11 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   const keptOut = kept.map((k) => ({ block: k.name, why: k.why.replace(/^Tidy: /, "") }))
   const keptSaid = keptNotes(keptOut)
 
-  if (sameDrawing(project, next)) return { project, changed: false, ok: true, message: ["Already tidy.", ...keptSaid].join(" "), renamed: {}, dropped: [], loose: NONE, problems: [], kept: keptOut }
+  const pageSaid = pageNote ? [pageNote] : []
+  // The page a whole-sheet tidy grew is the sheet's, every use of it sharing it.
+  const grew = page !== pageWas
+  if (grew) next = { ...next, sheets: sheetsOf(next).map((s) => (s.id === sheetId ? { ...s, paper: page } : s)) }
+  if (!grew && sameDrawing(project, next)) return { project, changed: false, ok: true, message: ["Already tidy.", ...keptSaid, ...pageSaid].join(" "), renamed: {}, dropped: [], loose: NONE, problems: [], kept: keptOut }
   const dropped = droppedNames(info, connAfter)
   // One block: wire to nowhere that hung off its drawing stays where it was drawn, and is counted.
   const stayed = options.blockId
@@ -610,6 +648,7 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   const notes = [
     options.blockId ? `Tidied ${scope[0].name}.` : `Tidied ${count} part${count === 1 ? "" : "s"} into ${drawings.size} block${drawings.size === 1 ? "" : "s"}.`,
     ...keptSaid,
+    ...pageSaid,
     ...tidyNotes(renamed, dropped, stayed, !options.blockId),
     ...(droppedDots ? [`${droppedDots} junction dot${droppedDots === 1 ? "" : "s"} of ${droppedDots === 1 ? "its" : "their"} own size or colour ${droppedDots === 1 ? "was" : "were"} left out where no wires meet any more.`] : []),
   ]
@@ -750,20 +789,28 @@ function frameOf(project: Project, block: SchematicBlock, d: BlockDrawing, style
   return blockFrames(temp)[0].box
 }
 
-/** The top-left corner of what is on the sheet now, so a tidied sheet stays where it was. */
-function sheetCorner(project: Project): Vec2 {
-  const b = emptyBox()
-  for (const c of project.components) {
-    const s = schematicBounds(c)
-    expandBox(b, { x: s.minX, y: s.minY })
-    expandBox(b, { x: s.maxX, y: s.maxY })
+/** Where the islands that reach no part are once stowed: each wire's, label's and port's box, moved as `stowLoose` moved it. */
+function stowedBoxes(project: Project, loose: Island[], stow: Map<string, Vec2>): Box[] {
+  const out: Box[] = []
+  const by = (key: string, b: Box) => {
+    const o = stow.get(key)
+    out.push(o ? { minX: b.minX + o.x, maxX: b.maxX + o.x, minY: b.minY + o.y, maxY: b.maxY + o.y } : b)
   }
-  for (const f of blockFrames(project)) {
-    expandBox(b, { x: f.box.minX, y: f.box.minY })
-    expandBox(b, { x: f.box.maxX, y: f.box.maxY })
+  const wires = new Map(project.wires.map((w) => [w.id, w]))
+  const labels = new Map(project.labels.map((l) => [l.id, l]))
+  const comps = new Map(project.components.map((c) => [c.id, c]))
+  for (const island of loose) {
+    for (const id of island.wires) {
+      const w = wires.get(id)
+      if (!w) continue
+      const b = emptyBox()
+      for (const p of w.points) expandBox(b, p)
+      by(`w:${id}`, b)
+    }
+    for (const id of island.labels) if (labels.has(id)) by(`l:${id}`, labelBox(labels.get(id)!))
+    for (const id of island.comps) if (comps.has(id)) by(`c:${id}`, schematicBounds(comps.get(id)!))
   }
-  if (!Number.isFinite(b.minX)) return { x: 0, y: 0 }
-  return { x: round(snap(b.minX, SCH_GRID)), y: round(snap(b.maxY, SCH_GRID)) }
+  return out
 }
 
 /** Where a block tidied on its own goes: its old corner, or the nearest spot clear of the rest. */

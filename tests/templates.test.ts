@@ -5,6 +5,8 @@ import { schematicBounds } from "../src/model/instances"
 import { labelBox } from "../src/model/labels"
 import { analyzePcb } from "../src/model/pcb"
 import { EXAMPLES } from "../src/model/examples"
+import { drawingOnPage } from "../src/model/paper"
+import { sheetUses, sheetView } from "../src/model/sheets"
 import { TEMPLATES } from "../src/model/templates"
 import type { Project } from "../src/model/types"
 import { freshlyBuilt as built } from "./built"
@@ -40,6 +42,15 @@ describe("templates", () => {
       for (let j = i + 1; j < boxes.length; j++) expect(boxesOverlap(box, boxes[j]), `${p.labels[i].name} on ${p.labels[j].name}`).toBe(false)
       for (const c of p.components) expect(boxesOverlap(box, inset(schematicBounds(c))), `${p.labels[i].name} on ${c.ref}`).toBe(false)
     })
+  })
+
+  it.each(EXAMPLES.map((e) => e.id))("%s ships with every sheet on a page that holds its drawing", (id) => {
+    const p = EXAMPLES.find((e) => e.id === id)!.project
+    for (const use of sheetUses(p)) {
+      const paper = p.sheets?.find((s) => s.id === use.sheet)?.paper
+      expect(paper, `${use.name} has a page`).toBeDefined()
+      expect(drawingOnPage(sheetView(p, use.path)), use.name).toBe(true)
+    }
   })
 
   it("wires the 555 blinker timing network", () => {

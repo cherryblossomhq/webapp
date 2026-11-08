@@ -35,13 +35,18 @@ import { boxesTouch, inflate, nodeKey, nodeX, nodeY, Space, type Item, type Item
 // with nothing overlapping and no wire crossing another, whatever the circuit; a part nothing near
 // can take goes further out, unwired, its nets reached by labels.
 //
+// - Small parts are wired to everything they share with the cluster. A chip, connector or module
+//   is wired only on a supply the block wires and on a link (`BlockContext.linked`): a net it meets
+//   another of the cluster's chips or connectors on, point to point. Its other nets reach the rest
+//   through the small parts wired to them, or labels.
 // - Supply rails are not wired: each pin on one gets a power or ground port, pointing up or down
 //   where the pin allows, on a short stub that turns aside where it must. Never a label. The
 //   exception is a supply the block wires (`wiredSupplyPins`): its pins are wired like a signal's,
 //   and each wired piece gets one port where a signal's would get a label.
 // - Other nets are wired between the cluster's own pins, as short as they can be; a net that also
-//   leaves the cluster, that has a name, or that couldn't be wired whole gets a label on each of
-//   its pieces. A net still waiting for parts keeps room for a label meanwhile.
+//   leaves the cluster, that has a name (other than one `connect` made up, `NET3`), or that
+//   couldn't be wired whole gets a label on each of its pieces. A net still waiting for parts
+//   keeps room for a label meanwhile.
 // - Pins side by side on one net are joined first by a short comb, which then takes one port or
 //   label for all of them.
 // - Some parts are drawn to a pattern about their chip first (templates): a crystal and its load
@@ -58,6 +63,8 @@ export interface BlockContext {
   facing?: (net: string) => Dir | null
   /** Supply pins, as "componentId:pin", wired like a signal's rather than given a port each. */
   wired?: (key: string) => boolean
+  /** Nets a chip, connector or module is wired on to another of the cluster's (`joinLinked`). */
+  linked?: (net: string) => boolean
   /** A net's other names, which it had before and keeps: each drawn as a label of its own. */
   aliases?: (net: string) => string[]
 }
@@ -169,6 +176,8 @@ const W_DIST = 0.3
 const MAX_UNWIRED = 400
 /** How far from what it connects to a part is looked for. */
 const REACH = 10
+/** The same for a chip, connector or module wired on a link: big, it often fits only further out. */
+const LINK_REACH = 20
 /** Spots tried for one part before taking the best so far. */
 const MAX_TRIES = 4
 /** Spots wired, whole or not, before taking the best so far. */
@@ -341,13 +350,23 @@ export class BlockLayout {
     const info = this.ctx.nets.nets.get(net)!
     if (info.rail) return { net, kind: this.ctx.wired?.(key) ? "signal" : "rail" }
     // A pin alone on an unnamed net is on nothing.
-    if (!info.named && info.pins.length === 1) return { net: null, kind: "free" }
+    if ((!info.named || info.madeUp) && info.pins.length === 1) return { net: null, kind: "free" }
     return { net, kind: "signal" }
   }
 
   /** A supply: its wired pieces end in a port, not a label. */
   private isSupply(net: string) {
     return !!this.ctx.nets.nets.get(net)!.rail
+  }
+
+  /** The nets a part is wired on: all of a small part's, a box part's wired supplies and links. */
+  private wiresOn(c: ComponentInstance, nets: string[]): string[] {
+    return isHelper(c) ? nets : nets.filter((n) => this.isSupply(n) || !!this.ctx.linked?.(n))
+  }
+
+  /** Once laid out: whether a net is drawn as one piece, every pin of it in the cluster wired together. */
+  wiredWhole(net: string): boolean {
+    return this.groups.get(net)?.length === 1
   }
 
   /**
@@ -391,8 +410,8 @@ export class BlockLayout {
     const info = this.ctx.nets.nets.get(net)!
     // While parts are placed, a name Tidy gave the net last time counts for nothing, so this tidy
     // places them as that one did; once all are placed, every group of a named net gets its label.
-    // Drawn as before, every name counts throughout.
-    return (final || this.style === "first" ? info.named : info.given) || this.ctx.external(net) || (this.groups.get(net)?.length ?? 0) > 1 || this.pending(net)
+    // Drawn as before, every name counts throughout. A name `connect` made up never does.
+    return (final || this.style === "first" ? info.named && !info.madeUp : info.given) || this.ctx.external(net) || (this.groups.get(net)?.length ?? 0) > 1 || this.pending(net)
   }
 
   /**
@@ -1114,10 +1133,8 @@ export class BlockLayout {
       this.rails.push({ net, wires: comb.wires })
       terminals.push({ net, at: comb.at, dir: run[0].dir, isTip: false })
     }
-    // Only small parts are wired in; chips and connectors reach each other through labels, but
-    // for a supply the block wires. One wire can take the way another needs, so a part wired on
-    // several nets tries each order.
-    const wiring = isHelper(c) ? touched : touched.filter((n) => this.isSupply(n))
+    // One wire can take the way another needs, so a part wired on several nets tries each order.
+    const wiring = this.wiresOn(c, touched)
     if (wiring.length && !this.noWire) {
       const orders = permutations(wiring)
       let best: { order: string[]; failed: number; cost: number } | null = null
@@ -1935,7 +1952,7 @@ export class BlockLayout {
    * With `partly`, a spot where one of its wires can't be drawn will do when no other can.
    */
   private placeAt(c: ComponentInstance, turns: Rotation[], partly: boolean): boolean {
-    const links = (isHelper(c) ? this.links(c) : this.links(c).filter((n) => this.isSupply(n))).filter((n) => this.groups.get(n)?.length)
+    const links = this.wiresOn(c, this.links(c)).filter((n) => this.groups.get(n)?.length)
     type Cand = { x: number; y: number; rot: Rotation; extra: number }
     const queue = new Buckets<Cand>()
     const bbox = this.bbox!
@@ -1946,7 +1963,8 @@ export class BlockLayout {
       const targets: Pt[] = []
       for (const n of links) for (const g of this.groups.get(n)!) for (const k of this.targetsOf(g).keys()) targets.push([nodeX(k), nodeY(k)])
       if (targets.length) {
-        const field = new DistanceField(targets, REACH + 4)
+        const reach = !isHelper(c) && links.some((n) => this.ctx.linked?.(n)) ? LINK_REACH : REACH
+        const field = new DistanceField(targets, reach + 4)
         for (const rot of turns) {
           const shape = partShape(c, rot)
           const fixed = this.fixedCost(c, shape)
@@ -1955,12 +1973,12 @@ export class BlockLayout {
             .map((n) => shape.pins.filter((p) => this.pinKind(c, p.pin).net === n).map((p) => [p.x + VEC[p.dir][0], p.y + VEC[p.dir][1]] as Pt))
             .filter((f) => f.length)
           const lead = byNet[0][0]
-          const limit = (REACH + 1) * byNet.length
+          const limit = (reach + 1) * byNet.length
           const span = bbox.maxX - bbox.minX + (bbox.maxY - bbox.minY)
           for (let gx = field.box.minX; gx <= field.box.maxX; gx++) {
             for (let gy = field.box.minY; gy <= field.box.maxY; gy++) {
               // The lead pin's own distance first: most spots are out of reach on it alone.
-              if (field.at(gx, gy) > REACH) continue
+              if (field.at(gx, gy) > reach) continue
               const ox = gx - lead[0]
               const oy = gy - lead[1]
               let dist = 0

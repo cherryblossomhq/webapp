@@ -1,7 +1,9 @@
 import { createBlock } from "../src/model/blocks"
+import { buildCustomPart } from "../src/model/customParts"
 import { pinStubPoint } from "../src/model/instances"
+import { registerPart } from "../src/model/library"
 import { addComponent, addWire, createProject, findPin, labelPin } from "../src/model/ops"
-import type { ComponentInstance, Project } from "../src/model/types"
+import type { ComponentInstance, CustomPartSpec, Project } from "../src/model/types"
 
 // Designs to tidy that nobody drew: circuits put together from the parts a board is made of (a
 // microcontroller with its crystal and reset, an LED bar on a shift register, a 555, a regulator,
@@ -108,6 +110,17 @@ export class Designer {
 
   decap(supply: string, value = "100nF") {
     this.between("capacitor", { value }, supply, "GND")
+  }
+
+  /** Turn a part's symbol over left to right, as `update_component` mirror does. */
+  mirror(c: ComponentInstance) {
+    this.project = { ...this.project, components: this.project.components.map((x) => (x.id === c.id ? { ...x, sch: { ...x.sch, mirror: "y" } } : x)) }
+  }
+
+  /** The module's parts, all of them, in one block. */
+  group(name: string) {
+    this.project = createBlock(this.project, name, this.module.map((c) => c.id)).project
+    this.module = []
   }
 
   block(name: string) {
@@ -280,5 +293,156 @@ export function largeDesign(parts: number): Project {
   for (let i = 0; d.project.components.filter((c) => c.partId !== "power" && c.partId !== "ground").length < parts; i++) {
     MODULES[names[i % names.length]](d, Math.floor(i / names.length))
   }
+  return d.project
+}
+
+/** A chip of the test's own, its pins on the sides given. */
+const chip = (id: string, name: string, pins: [string, string, "left" | "right" | "top" | "bottom", CustomPartSpec["pins"][number]["kind"]?][]) =>
+  registerPart(
+    buildCustomPart({
+      id,
+      name,
+      description: `${name}, for tidying`,
+      category: "ICs",
+      refPrefix: "U",
+      footprint: "soic8",
+      pins: pins.map(([number, pin, side, kind]) => ({ number, name: pin, side, ...(kind ? { kind } : {}) })),
+      props: { mpn: name },
+    }),
+  )
+chip("test_usb_esd", "USB ESD", [
+  ["1", "IO1", "left"],
+  ["3", "IO2", "left"],
+  ["5", "VBUS", "top", "power"],
+  ["2", "GND", "bottom", "ground"],
+])
+chip("test_adc", "ADC", [
+  ["4", "AIN0", "left", "input"],
+  ["5", "AIN1", "left", "input"],
+  ["9", "SDA", "right"],
+  ["10", "SCL", "right"],
+  ["8", "VDD", "top", "power"],
+  ["3", "GND", "bottom", "ground"],
+])
+
+/**
+ * Chips and connectors that meet point to point in one block, which Tidy wires to each other
+ * (`joinLinked`), and those it can't or mustn't: a bus over three chips, a chain of four, and
+ * terminals whose pins face away from their driver.
+ */
+export const LINKED_DESIGNS: Record<string, () => Project> = {
+  "a motor driver and its terminals": () => motorDriver(true),
+  "terminals facing away from their driver": () => motorDriver(false),
+  "a USB-C connector and its ESD chip": () => {
+    const d = new Designer("usb esd", rng(12))
+    const j = d.add("usb_c")
+    const e = d.add("test_usb_esd")
+    d.rail(j, "A4", "VBUS")
+    d.rail(e, "5", "VBUS")
+    d.rail(j, "A1", "GND")
+    d.rail(e, "2", "GND")
+    d.between("resistor", { value: "5.1k" }, [j, "A5"], "GND")
+    d.between("resistor", { value: "5.1k" }, [j, "B5"], "GND")
+    d.wire(j, "A6", e, "1")
+    d.wire(j, "A7", e, "3")
+    d.label(e, "1", "USB_DP")
+    d.label(e, "3", "USB_DM")
+    d.group("USB INPUT")
+    const u = d.add("ch340g")
+    d.rail(u, "16", "5V")
+    d.rail(u, "1", "GND")
+    d.label(u, "5", "USB_DP")
+    d.label(u, "6", "USB_DM")
+    d.decap("5V")
+    d.group("USB SERIAL")
+    return d.project
+  },
+  "an op-amp into an ADC": () => {
+    const d = new Designer("op-amp adc", rng(13))
+    const a = d.add("lm358")
+    const u = d.add("test_adc")
+    d.rail(a, "8", "5V")
+    d.rail(a, "4", "GND")
+    d.rail(u, "8", "5V")
+    d.rail(u, "3", "GND")
+    d.between("resistor", { value: "10k" }, [a, "2"], "GND")
+    d.between("resistor", { value: "100k" }, [a, "2"], [a, "1"])
+    d.label(a, "3", "SENSE")
+    d.wire(a, "1", u, "4")
+    d.label(u, "9", "SDA")
+    d.label(u, "10", "SCL")
+    d.decap("5V")
+    d.group("SENSOR")
+    return d.project
+  },
+  "an I2C bus over three chips": () => {
+    const d = new Designer("i2c bus", rng(14))
+    const m = d.add("attiny85")
+    const o = d.add("oled_096_i2c")
+    const u = d.add("test_adc")
+    for (const [c, sda, scl] of [
+      [m, "5", "7"],
+      [o, "4", "3"],
+      [u, "9", "10"],
+    ] as const) {
+      d.label(c, sda, "SDA")
+      d.label(c, scl, "SCL")
+    }
+    d.rail(m, "8", "3V3")
+    d.rail(m, "4", "GND")
+    d.rail(o, "2", "3V3")
+    d.rail(o, "1", "GND")
+    d.rail(u, "8", "3V3")
+    d.rail(u, "3", "GND")
+    d.between("resistor", { value: "4.7k" }, "3V3", "SDA")
+    d.between("resistor", { value: "4.7k" }, "3V3", "SCL")
+    d.group("I2C")
+    return d.project
+  },
+  "four shift registers in a chain": () => {
+    const d = new Designer("chain", rng(15))
+    const regs = [0, 1, 2, 3].map(() => d.add("sn74hc595"))
+    regs.forEach((u, i) => {
+      d.rail(u, "16", "5V")
+      d.rail(u, "8", "GND")
+      d.label(u, "11", "CLK")
+      d.label(u, "12", "LATCH")
+      if (i) d.wire(regs[i - 1], "9", u, "14")
+    })
+    d.label(regs[0], "14", "DATA")
+    d.group("OUTPUTS")
+    return d.project
+  },
+}
+
+/** A motor driver and two terminals in one block, wired to its outputs; the terminals turned to face it or not. */
+function motorDriver(facing: boolean): Project {
+  const d = new Designer(facing ? "motor" : "motor facing away", rng(11))
+  const u = d.add("tb6612fng")
+  for (const pin of ["13", "14", "24"]) d.rail(u, pin, "VM")
+  d.rail(u, "20", "5V")
+  for (const pin of ["3", "4", "9", "10", "18"]) d.rail(u, pin, "GND")
+  const a = d.add("screw_terminal_2")
+  const b = d.add("screw_terminal_2")
+  if (facing) {
+    d.mirror(a)
+    d.mirror(b)
+  }
+  d.wire(a, "1", u, "1")
+  d.wire(a, "2", u, "5")
+  d.wire(b, "1", u, "11")
+  d.wire(b, "2", u, "7")
+  for (const [pin, name] of [
+    ["21", "AIN1"],
+    ["22", "AIN2"],
+    ["23", "PWMA"],
+    ["17", "BIN1"],
+    ["16", "BIN2"],
+    ["15", "PWMB"],
+    ["19", "STBY"],
+  ]) d.label(u, pin, name)
+  d.decap("VM", "47uF")
+  d.decap("5V")
+  d.group("MOTOR")
   return d.project
 }

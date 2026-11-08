@@ -2,6 +2,7 @@ import { naturalCompare } from "../../lib/natural"
 import { bareName, computeConnectivity, pinKey, type SchematicConnectivity } from "../connectivity"
 import { isSchematicPart, powerNetName, schematicPins, unitOwners } from "../instances"
 import { findPart } from "../library"
+import { AUTO_NET_NAME } from "../merges"
 import { fieldsInFrame, hasFieldPlaces } from "../symbolDrawing"
 import type { ComponentInstance, NetStyle, Project } from "../types"
 import { portProblem, type PortVia, type RailKind } from "./shapes"
@@ -21,6 +22,11 @@ export interface TidyNet {
    * name Tidy gave, so a second tidy makes every choice the first one did.
    */
   given: boolean
+  /**
+   * Named only by a name `connect` made up (`NET3`, `madeUpNets`): drawn as an unnamed net, keeping
+   * the name only where it needs a label.
+   */
+  madeUp: boolean
   rail: RailKind | null
   /**
    * The power symbol brought in from KiCad that the net's ports are drawn as, when it has one: the
@@ -95,6 +101,7 @@ export function netInfo(project: Project): NetInfo {
   const refOf = new Map(project.components.map((c) => [c.id, c.ref]))
   const byComp = new Map(project.components.map((c) => [c.id, c]))
   const portIds = new Set(project.components.filter((c) => findPart(c.partId)?.powerNet).map((c) => c.id))
+  const madeUp = madeUpNets(conn)
   const kinds = new Map<string, Set<string>>()
   const ports = new Map<string, Set<string>>()
   /** The power symbols from KiCad on each net, by part, with the first one of each: what its ports are drawn as. */
@@ -128,7 +135,7 @@ export function netInfo(project: Project): NetInfo {
     // The name the net goes by in the editor, kept as it is: where a net has several names, Tidy
     // draws only this one and says which others it dropped.
     const base = baseName(byComp, pins)
-    const made = !net.named || /^Net-\(.+\)$/.test(net.name) || net.name === base || (net.name.startsWith(`${base}_`) && /^\d+$/.test(net.name.slice(base.length + 1)))
+    const made = !net.named || madeUp.has(id) || /^Net-\(.+\)$/.test(net.name) || net.name === base || (net.name.startsWith(`${base}_`) && /^\d+$/.test(net.name.slice(base.length + 1)))
     nets.set(id, {
       id,
       key: [...physical].sort()[0] ?? id,
@@ -136,6 +143,7 @@ export function netInfo(project: Project): NetInfo {
       name: bareName(net),
       named: net.named,
       given: !made,
+      madeUp: madeUp.has(id),
       // A pin alone on an unnamed net (a stub off a supply pin) is on nothing: never a rail, or
       // the port Tidy would draw there would name it and join it to whatever shares that name.
       // A name Tidy made up says nothing of what the net is: the pins and ports on it do.
@@ -150,6 +158,16 @@ export function netInfo(project: Project): NetInfo {
     })
   }
   return { pinNet, nets, conn }
+}
+
+/**
+ * The nets whose one name is one `connect` made up (`NET3`), by id. Such a name says nothing of its
+ * net, so Tidy draws the net as an unnamed one, keeps the name only where the net needs a label, and
+ * lets it go where it doesn't; the board's references follow the net (`renameNets`).
+ */
+export function madeUpNets(conn: SchematicConnectivity): Set<string> {
+  const several = new Set(conn.conflicts.map((c) => c.netId))
+  return new Set(conn.nets.filter((n) => n.named && !several.has(n.id) && AUTO_NET_NAME.test(n.name)).map((n) => n.id))
 }
 
 /** The imported power symbol a net's ports are drawn as: the one most of them are, the first by part id on a tie. */

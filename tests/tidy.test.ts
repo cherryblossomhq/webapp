@@ -7,6 +7,7 @@ import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { EXAMPLES } from "../src/model/examples"
 import { isPhysical, schematicPins } from "../src/model/instances"
 import { findPart } from "../src/model/library"
+import { AUTO_NET_NAME } from "../src/model/merges"
 import { addComponent, addWire, createProject, labelPin } from "../src/model/ops"
 import { normalizeProject, parseProjectFile, serializeProject } from "../src/model/projectFile"
 import { tidySchematic } from "../src/model/tidy"
@@ -19,7 +20,8 @@ import { onTidy, onTidyBusy, startTidy, stopTidy, tidySelected, viewForBlock, ty
 import { useProjectStore } from "../src/store/projectStore"
 import { useUi } from "../src/store/uiStore"
 import type { Project } from "../src/model/types"
-import { Designer, largeDesign, randomDesign, rng } from "./tidy-designs"
+import { clustersOf, isSeed, LINKED_SEEDS } from "../src/model/tidy/clusters"
+import { Designer, largeDesign, LINKED_DESIGNS, randomDesign, rng } from "./tidy-designs"
 import { frameProblems, offGrid, overlaps, pinsOnWires, wireProblems } from "./tidy-metrics"
 import { expectSameProject } from "./history"
 
@@ -38,6 +40,7 @@ const CASES: [string, () => Project][] = [
   ...["blinker", "imported", "sheet"].map((name): [string, () => Project] => [`v1 file ${name}`, () => parseProjectFile(JSON.parse(fixture(`./fixtures/project-v1/${name}.json`)).file, origin)]),
   ...BLOG.map((f): [string, () => Project] => [`blog board ${f.replace(/\.json$/, "")}`, () => parseProjectFile(fixture(`./fixtures/blog-boards/${f}`), origin)]),
   ...[1, 2, 3, 4, 5, 6, 7, 8].map((seed): [string, () => Project] => [`made-up design ${seed}`, () => randomDesign(seed, 2 + (seed % 5))]),
+  ...Object.entries(LINKED_DESIGNS).map(([name, make]): [string, () => Project] => [`made-up design: ${name}`, make]),
 ]
 
 /**
@@ -63,13 +66,16 @@ function netlist(p: Project) {
   return sets.sort((a, b) => (a.pins < b.pins ? -1 : 1))
 }
 
-/** Tidy may name an unnamed net, and settle a net with two names on the stronger; nothing else. */
+/**
+ * Tidy may name an unnamed net, settle a net with two names on the stronger, and let a name
+ * `connect` made up (`NET3`) go; nothing else.
+ */
 function expectSameNetlist(before: Project, after: Project, renamed: Record<string, string>) {
   const a = netlist(before)
   const b = netlist(after)
   expect(b.map((n) => n.pins)).toEqual(a.map((n) => n.pins))
   a.forEach((n, i) => {
-    if (n.name) expect(b[i].name).toBe(renamed[n.name] ?? n.name)
+    if (n.name && !(AUTO_NET_NAME.test(n.name) && !b[i].name)) expect(b[i].name).toBe(renamed[n.name] ?? n.name)
   })
 }
 
@@ -292,6 +298,67 @@ describe("names", () => {
     expect(t.ok).toBe(true)
     expect(Object.values(t.renamed)).toContain("U1_OUT")
     expect(t.project.labels.filter((l) => l.name === "U1_OUT").length).toBeGreaterThanOrEqual(2)
+  })
+
+  /**
+   * A 555's timing node (TRIG, THR and its capacitor) joined by `connect` with no name, so labelled
+   * NET1, its width set on NET1; with `leaves`, the node goes on to an LED in a block of its own.
+   */
+  function timingNode(leaves: boolean) {
+    let p = createProject("made-up")
+    const run = (tool: string, input: object) => {
+      const out = runTool(p, tool, input)
+      expect(out.isError, out.result).toBe(false)
+      p = out.project
+    }
+    for (const [part_id, ref, x] of [["ne555", "U1", 0], ["capacitor", "C1", 12], ["led", "D1", 24]] as const) run("add_component", { part_id, ref, x, y: 0 })
+    run("connect", { pins: ["U1.2", "U1.6", leaves ? "D1.1" : "C1.1"] })
+    run("connect", { pins: leaves ? ["U1.2", "C1.1"] : ["U1.3", "D1.1"] })
+    run("connect", { pins: ["U1.8", "U1.4"], net_name: "5V" })
+    run("connect", { pins: ["U1.1", "C1.2", "D1.2"], net_name: "GND" })
+    run("group_parts", { block: "TIMER", refs: leaves ? ["U1", "C1"] : ["U1", "C1", "D1"] })
+    if (leaves) run("group_parts", { block: "LED", refs: ["D1"] })
+    expect(p.labels.some((l) => l.name === "NET1")).toBe(true)
+    run("set_net_width", { widths: { NET1: 0.5 } })
+    return p
+  }
+  const netOf = (p: Project, ref: string, pin: string) => {
+    const conn = computeConnectivity(p)
+    const id = conn.pinNet.get(pinKey(p.components.find((c) => c.ref === ref)!.id, pin))
+    return conn.nets.find((n) => n.id === id)!
+  }
+
+  it("lets a name connect made up go where the net is wired whole, and the board's width follows the net", () => {
+    const before = timingNode(false)
+    const r = tidySchematic(before)
+    expect(r.ok).toBe(true)
+    expect(r.project.labels.filter((l) => /^NET\d+$/.test(l.name))).toEqual([])
+    expectSameNetlist(before, r.project, r.renamed)
+    const net = netOf(r.project, "U1", "2")
+    expect(net.named).toBe(false)
+    expect(r.project.rules.netWidths).toEqual({ [net.name]: 0.5 })
+    // No net was named: the message says nothing of names.
+    expect(r.message).not.toMatch(/Named/)
+    const again = runTool(r.project, "tidy_schematic", { whole_sheet: true })
+    expect(again.result).toMatch(/Already tidy\./)
+  })
+
+  it("keeps a name connect made up where the net leaves its block", () => {
+    const before = timingNode(true)
+    const r = tidySchematic(before)
+    expect(r.ok).toBe(true)
+    expect(netOf(r.project, "U1", "2").name).toBe("NET1")
+    const frames = blockFrames(r.project)
+    const inside = (name: string, l: { x: number; y: number }) => {
+      const b = frames.find((f) => f.name === name)!.box
+      return l.x >= b.minX && l.x <= b.maxX && l.y >= b.minY && l.y <= b.maxY
+    }
+    const labels = r.project.labels.filter((l) => l.name === "NET1")
+    expect(labels.some((l) => inside("TIMER", l))).toBe(true)
+    expect(labels.some((l) => inside("LED", l))).toBe(true)
+    expect(r.project.rules.netWidths).toEqual({ NET1: 0.5 })
+    expectSameNetlist(before, r.project, r.renamed)
+    expect(tidySchematic(r.project).changed).toBe(false)
   })
 })
 
@@ -735,6 +802,88 @@ describe("drawn as an engineer would", () => {
     const receiver = frames.find((f) => f.name === "RECEIVER")!.box
     // Some other frame shares its height on the sheet: it is not on a row of its own.
     expect(frames.some((f) => f.name !== "RECEIVER" && f.box.maxY > receiver.minY && f.box.minY < receiver.maxY)).toBe(true)
+  })
+})
+
+describe("chips and connectors that meet point to point", () => {
+  const tidied = (name: string) => {
+    const r = tidySchematic(LINKED_DESIGNS[name]())
+    expect(r.ok).toBe(true)
+    return r.project
+  }
+  /** Whether these pins ("U1.4") are joined by wire alone: no label, no port between. */
+  const wired = (p: Project, pins: string[]) => {
+    const bare = computeConnectivity({ ...p, labels: [], components: p.components.filter((c) => isPhysical(findPart(c.partId))) })
+    const nets = pins.map((s) => {
+      const [ref, pin] = s.split(".")
+      return bare.pinNet.get(pinKey(p.components.find((c) => c.ref === ref)!.id, pin))
+    })
+    return !!nets[0] && nets.every((n) => n === nets[0])
+  }
+  /** The labels on the net of a pin. */
+  const labelsOn = (p: Project, pin: string) => {
+    const conn = computeConnectivity(p)
+    const [ref, number] = pin.split(".")
+    const net = conn.pinNet.get(pinKey(p.components.find((c) => c.ref === ref)!.id, number))
+    return p.labels.filter((l) => conn.labelNet.get(l.id) === net)
+  }
+  /** The block's clusters, as Tidy splits it. */
+  const clusters = (p: Project) => {
+    const block = p.blocks![0]
+    return clustersOf(p.components.filter((c) => block.components.includes(c.id)), netInfo(p))
+  }
+
+  it("wires a motor driver's outputs to the terminals beside it", () => {
+    const p = tidied("a motor driver and its terminals")
+    for (const pair of [["U1.1", "J1.1"], ["U1.5", "J1.2"], ["U1.11", "J2.1"], ["U1.7", "J2.2"]]) {
+      expect(wired(p, pair), pair.join(" to ")).toBe(true)
+      expect(labelsOn(p, pair[0])).toEqual([])
+    }
+  })
+
+  it("wires a USB-C connector to its ESD chip, and labels the lines where they leave the block", () => {
+    const p = tidied("a USB-C connector and its ESD chip")
+    expect(wired(p, ["J1.A6", "U1.1"])).toBe(true)
+    expect(wired(p, ["J1.A7", "U1.3"])).toBe(true)
+    const frames = blockFrames(p)
+    const inside = (name: string, l: { x: number; y: number }) => {
+      const b = frames.find((f) => f.name === name)!.box
+      return l.x >= b.minX && l.x <= b.maxX && l.y >= b.minY && l.y <= b.maxY
+    }
+    for (const net of ["USB_DP", "USB_DM"]) {
+      const labels = p.labels.filter((l) => l.name === net)
+      expect(labels.filter((l) => inside("USB INPUT", l)), net).toHaveLength(1)
+      expect(labels.filter((l) => inside("USB SERIAL", l)), net).toHaveLength(1)
+    }
+  })
+
+  it("wires an op-amp's output into an ADC's input", () => {
+    expect(wired(tidied("an op-amp into an ADC"), ["U1.1", "U2.4"])).toBe(true)
+  })
+
+  it("keeps a bus over three chips labelled, joining none of them", () => {
+    const p = LINKED_DESIGNS["an I2C bus over three chips"]()
+    expect(clusters(p).filter((cl) => cl.links)).toEqual([])
+    const t = tidied("an I2C bus over three chips")
+    expect(wired(t, ["U1.5", "J1.4", "U2.9"])).toBe(false)
+    expect(labelsOn(t, "U1.5").length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("joins no more than three chips of a chain into one drawing", () => {
+    const seeds = clusters(LINKED_DESIGNS["four shift registers in a chain"]()).map((cl) => cl.parts.filter(isSeed).length)
+    expect(Math.max(...seeds)).toBe(LINKED_SEEDS)
+    expect(seeds.reduce((a, b) => a + b)).toBe(4)
+  })
+
+  it("labels terminals whose pins face away from their driver, drawn apart as before", () => {
+    const facing = LINKED_DESIGNS["terminals facing away from their driver"]()
+    // Joined, so the links are tried; they can't be wired whole, so the parts are drawn apart.
+    expect(clusters(facing).some((cl) => cl.links?.length === 4)).toBe(true)
+    const p = tidied("terminals facing away from their driver")
+    for (const pair of [["U1.1", "J1.1"], ["U1.5", "J1.2"], ["U1.11", "J2.1"], ["U1.7", "J2.2"]]) {
+      expect(wired(p, pair), pair.join(" to ")).toBe(false)
+      expect(labelsOn(p, pair[0]).length, pair[0]).toBeGreaterThanOrEqual(2)
+    }
   })
 })
 

@@ -20,11 +20,20 @@ import { isBoxPart } from "./shapes"
 // a regulator's input and output capacitors at its pins, a connector, a diode and a regulator in a
 // line, a chip's one or two decoupling capacitors at its supply pins. Chips joined that way are
 // one cluster, so the wires can be drawn.
+//
+// Chips and connectors that meet point to point (a driver's outputs and its motor connector, a USB
+// connector and the protection chip beside it) are one cluster too (`joinLinked`), so the path is
+// wired. Such a cluster is tried once; where one of its links can't be wired whole, the clusters it
+// was made from are drawn apart, the links labelled, as they would have been.
 
 export interface Cluster {
   /** The chip, connector or module it is drawn about; null for small parts serving none. */
   seed: ComponentInstance | null
   parts: ComponentInstance[]
+  /** The nets it wires from one chip or connector to another (`joinLinked`). */
+  links?: string[]
+  /** The clusters it was joined from, drawn on their own when its links can't all be wired whole. */
+  apart?: Cluster[]
 }
 
 /** By designator; the units of one part share it, so those go in the order of their units. */
@@ -39,6 +48,8 @@ export const isSeed = (c: ComponentInstance) => isBoxPart(findPart(c.partId))
 const WIRED_PARTS = 3
 /** Most chips and connectors on a supply wired in a block. */
 const WIRED_SEEDS = 2
+/** Most chips, connectors and modules in a cluster joined on its links. */
+export const LINKED_SEEDS = 3
 
 /**
  * The supply pins of a block drawn wired, as "componentId:pin". A supply (not ground) is wired
@@ -206,17 +217,17 @@ export function clustersOf(parts: ComponentInstance[], nets: NetInfo, wired: Set
     owner.set(c.id, pick.id)
   }
 
-  let out: Cluster[] = seeds.map((s) => ({ seed: s, parts: [s, ...small.filter((c) => owner.get(c.id) === s.id)] }))
+  const home: Cluster[] = seeds.map((s) => ({ seed: s, parts: [s, ...small.filter((c) => owner.get(c.id) === s.id)] }))
   // Parts alone between rails that no chip takes (bulk capacitors, a TVS diode) make one row.
   const railOnly = (chain: ComponentInstance[]) => chain.length === 1 && !signalNets(chain[0]).length
   const row = own.filter(railOnly).flat()
-  for (const chain of own) if (!railOnly(chain)) out.push({ seed: null, parts: chain })
-  if (row.length) out.push({ seed: null, parts: row })
+  for (const chain of own) if (!railOnly(chain)) home.push({ seed: null, parts: chain })
+  if (row.length) home.push({ seed: null, parts: row })
 
   // Clusters a wired supply runs between are one: a connector, its diode and the regulator after.
   const at = new Map<string, number>()
-  out.forEach((cl, i) => cl.parts.forEach((c) => at.set(c.id, i)))
-  const root = out.map((_, i) => i)
+  home.forEach((cl, i) => cl.parts.forEach((c) => at.set(c.id, i)))
+  const root = home.map((_, i) => i)
   const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])))
   const firstOn = new Map<string, number>()
   for (const k of [...wired].sort()) {
@@ -227,21 +238,76 @@ export function clustersOf(parts: ComponentInstance[], nets: NetInfo, wired: Set
     if (j === undefined) firstOn.set(net, i)
     else if (find(i) !== find(j)) root[Math.max(find(i), find(j))] = Math.min(find(i), find(j))
   }
-  if (root.some((r, i) => r !== i)) {
-    const merged = new Map<number, Cluster>()
-    out.forEach((cl, i) => {
-      const r = find(i)
-      const m = merged.get(r)
-      if (!m) merged.set(r, { seed: cl.seed, parts: [...cl.parts] })
-      else {
-        m.parts.push(...cl.parts)
-        // The chip with the most pins is the one it is drawn about.
-        if (cl.seed && (!m.seed || pinCount(cl.seed) > pinCount(m.seed))) m.seed = cl.seed
+  const merged = new Map<number, Cluster>()
+  /** Where each chip's own cluster went, by its place in `merged`. */
+  const into: number[] = []
+  const slot = new Map<number, number>()
+  home.forEach((cl, i) => {
+    const r = find(i)
+    const m = merged.get(r)
+    if (!m) {
+      slot.set(r, merged.size)
+      merged.set(r, { seed: cl.seed, parts: [...cl.parts] })
+    } else {
+      m.parts.push(...cl.parts)
+      // The chip with the most pins is the one it is drawn about.
+      if (cl.seed && (!m.seed || pinCount(cl.seed) > pinCount(m.seed))) m.seed = cl.seed
+    }
+    into[i] = slot.get(r)!
+  })
+  return joinLinked(home, [...merged.values()], into, nets)
+}
+
+/**
+ * Chips, connectors and modules that meet point to point, wired: a signal net whose pins in the
+ * block lie in the clusters of exactly two of them (each with the small parts that serve it) is a
+ * link between them. The clusters the two are in become one, wired on the link, as are two a wired
+ * supply already made one. A net on three or more (a bus) is no link and stays labelled. A cluster
+ * holds at most `LINKED_SEEDS` chips, connectors and modules, those a wired supply joined included;
+ * a join past that is not made. Links are taken in the order of their nets' keys and chosen from
+ * pin counts and the netlist alone, so a second tidy, and a copy under new ids, join the same.
+ *
+ * `home` holds each chip's own cluster and the chains, `clusters` what wired supplies made of
+ * them, and `into[i]` is the one `home[i]` is in.
+ */
+function joinLinked(home: Cluster[], clusters: Cluster[], into: number[], nets: NetInfo): Cluster[] {
+  // The chips' own clusters each net has pins in.
+  const on = new Map<string, Set<number>>()
+  home.forEach((cl, i) => {
+    for (const c of cl.parts) {
+      for (const p of findPart(c.partId)?.pins ?? []) {
+        const net = nets.pinNet.get(`${c.id}:${p.number}`)
+        if (net && !nets.nets.get(net)!.rail) on.set(net, (on.get(net) ?? new Set()).add(i))
       }
-    })
-    out = [...merged.values()]
+    }
+  })
+  const found: { net: string; key: string; a: number; b: number }[] = []
+  for (const [net, at] of on) {
+    const [a, b] = [...at]
+    if (at.size === 2 && home[a].seed && home[b].seed) found.push({ net, key: nets.nets.get(net)!.key, a: into[a], b: into[b] })
   }
-  return out
+  if (!found.length) return clusters
+  found.sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+  const root = clusters.map((_, i) => i)
+  const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])))
+  const seeds = clusters.map((cl) => cl.parts.filter(isSeed).length)
+  for (const { a, b } of found) {
+    const [ra, rb] = [find(a), find(b)]
+    if (ra === rb || seeds[ra] + seeds[rb] > LINKED_SEEDS) continue
+    const [lo, hi] = ra < rb ? [ra, rb] : [rb, ra]
+    root[hi] = lo
+    seeds[lo] += seeds[hi]
+  }
+  const members = new Map<number, number[]>()
+  clusters.forEach((_, i) => members.set(find(i), [...(members.get(find(i)) ?? []), i]))
+  return [...members].map(([r, list]) => {
+    const links = found.filter((f) => find(f.a) === r && find(f.b) === r).map((f) => f.net)
+    if (!links.length) return clusters[r]
+    const apart = list.map((i) => clusters[i])
+    // The chip with the most pins is the one it is drawn about.
+    const seed = apart.flatMap((cl) => (cl.seed ? [cl.seed] : [])).reduce((m, s) => (pinCount(s) > pinCount(m) ? s : m))
+    return { seed, parts: apart.flatMap((cl) => cl.parts), links, apart }
+  })
 }
 
 // ---------- A block of clusters ----------
@@ -289,25 +355,36 @@ export interface BlockLayoutContext extends Omit<BlockContext, "external"> {
   external: (net: string) => boolean
 }
 
-/** A block's drawing: each cluster laid out on its own, then the clusters in rows in reading order. */
+/**
+ * A block's drawing: each cluster laid out on its own, then the clusters in rows in reading order.
+ * A cluster joined on its links is drawn once, as it comes first; unless every link is wired whole,
+ * the clusters it was made from are drawn apart instead, the links labelled between them.
+ */
 export function layoutBlock(parts: ComponentInstance[], ctx: BlockLayoutContext): BlockDrawing {
   const wired = wiredSupplyPins(parts, ctx.nets)
-  const clusters = clustersOf(parts, ctx.nets, wired)
-  const clusterOf = new Map<string, number>()
-  clusters.forEach((cl, i) => cl.parts.forEach((c) => clusterOf.set(c.id, i)))
-  const drawings = clusters.map((cl, i) => {
-    const external = (net: string) =>
-      ctx.external(net) ||
-      ctx.nets.nets.get(net)!.pins.some((k) => {
-        const at = clusterOf.get(compOf(k))
-        return at !== undefined && at !== i
-      })
-    // A supply with other names is wired too, so they have wire to stand on.
-    const named = (key: string) => {
-      const net = ctx.nets.pinNet.get(key)
-      return !!net && (ctx.aliases?.(net).length ?? 0) > 0
+  const inBlock = new Set(parts.map((c) => c.id))
+  // A supply with other names is wired too, so they have wire to stand on.
+  const named = (key: string) => {
+    const net = ctx.nets.pinNet.get(key)
+    return !!net && (ctx.aliases?.(net).length ?? 0) > 0
+  }
+  const isWired = (key: string) => wired.has(key) || named(key)
+  /** A net leaves a cluster where it has pins outside the block, or in another cluster of it. */
+  const leaving = (cl: Cluster) => {
+    const mine = new Set(cl.parts.map((c) => c.id))
+    return (net: string) => ctx.external(net) || ctx.nets.nets.get(net)!.pins.some((k) => inBlock.has(compOf(k)) && !mine.has(compOf(k)))
+  }
+  const linked = (cl: Cluster): BlockDrawing | null => {
+    const layout = new BlockLayout(cl.parts, { ...ctx, external: leaving(cl), wired: isWired, linked: (net) => cl.links!.includes(net) }, "full")
+    try {
+      const d = layout.layout()
+      return cl.links!.every((net) => layout.wiredWhole(net)) ? d : null
+    } catch {
+      return null
     }
-    const isWired = (key: string) => wired.has(key) || named(key)
+  }
+  const apart = (cl: Cluster): BlockDrawing => {
+    const external = leaving(cl)
     // Drawn with templates first; a cluster that can't be drawn so is drawn without them, then as
     // Tidy drew before either, so nothing that tidied before now fails to. Then with a port at each
     // pin of a supply it wires instead of the wire: a wire joining a chip's supply pins can wall in
@@ -325,7 +402,21 @@ export function layoutBlock(parts: ComponentInstance[], ctx: BlockLayoutContext)
       }
     }
     throw error
-  })
+  }
+  const clusters: Cluster[] = []
+  const drawings: BlockDrawing[] = []
+  for (const cl of clustersOf(parts, ctx.nets, wired)) {
+    const whole = cl.links?.length ? linked(cl) : null
+    if (whole) {
+      clusters.push(cl)
+      drawings.push(whole)
+      continue
+    }
+    for (const one of cl.apart ?? [cl]) {
+      clusters.push(one)
+      drawings.push(apart(one))
+    }
+  }
   if (drawings.length === 1) return drawings[0]
 
   // Reading order of the clusters, as of blocks on a sheet.

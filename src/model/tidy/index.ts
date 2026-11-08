@@ -21,7 +21,7 @@ import type { BlockDrawing } from "./block"
 import { layoutBlock } from "./clusters"
 import { cutAtBlock, deadRuns, type Cut } from "./cut"
 import { flowOrder, packRows } from "./flow"
-import { isArranged, nameForNet, netInfo, type NetInfo } from "./nets"
+import { isArranged, madeUpNets, nameForNet, netInfo, type NetInfo } from "./nets"
 import { Room, type Terminal } from "./room"
 import { portInstance, portPrefix, portShape, reseat, tidyPinId, withoutTexts, withPortVias, type Dir, type PortVia, type RailKind } from "./shapes"
 
@@ -41,7 +41,8 @@ import { portInstance, portPrefix, portShape, reseat, tidyPinId, withoutTexts, w
 // a name there is no room for anywhere is the only one left out, and the message says so. An
 // unnamed net that has to be labelled is named after its most telling pin (the way boards imported
 // from tscircuit are), and a pour, via or trace width that named it by its old name follows the
-// new one.
+// new one. A name `connect` made up (`NET3`) counts as none: it stays only on the labels the net
+// needs, and what the board kept under it follows the net where it goes.
 
 export interface TidyOptions {
   /** Tidy only this block, where it is; the whole sheet when absent. */
@@ -575,11 +576,16 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   const before = physicalNetlist(project, info.conn)
   const after = physicalNetlist(next, connAfter)
   const renamed: Record<string, string> = {}
+  // A net that loses its made-up name (`NET3`) with its labels: what the board kept under that name follows it too.
+  const madeUp = new Set([...info.nets.values()].filter((n) => n.madeUp).map((n) => n.name))
+  const unnamed: Record<string, string> = {}
   for (const [k, x] of before) {
     const y = after.get(k)
-    if (y && candidates[x.net] === y.net && y.net !== x.net) renamed[x.net] = y.net
+    if (!y || y.net === x.net) continue
+    if (candidates[x.net] === y.net) renamed[x.net] = y.net
+    else if (madeUp.has(x.net) && !y.named) unnamed[x.net] = y.net
   }
-  if (Object.keys(renamed).length) next = renameNets(next, renamed)
+  if (Object.keys(renamed).length || Object.keys(unnamed).length) next = renameNets(next, { ...renamed, ...unnamed })
   const problems = compareNetlists(before, after, renamed, next)
   if (problems.length) return fail(project, "Tidy would have changed a connection, so nothing was changed.", withOffGridNote(project, problems))
   if (kept.length) {
@@ -1283,9 +1289,13 @@ function pinsKeptApart(project: Project): string[] {
   return out
 }
 
-/** Each physical pin's net, by name, for pins on a net that connects something or is named. */
+/**
+ * Each physical pin's net, by name, for pins on a net that connects something or is named. A name
+ * `connect` made up (`NET3`) counts as none: Tidy may let it go.
+ */
 export function physicalNetlist(project: Project, conn = computeConnectivity(project)): Map<string, { net: string; named: boolean }> {
   const byNet = new Map(conn.nets.map((n) => [n.id, n]))
+  const madeUp = madeUpNets(conn)
   const out = new Map<string, { net: string; named: boolean }>()
   const owners = unitOwners(project.components)
   const byComponent = new Map(project.components.map((c) => [c.id, c]))
@@ -1296,8 +1306,9 @@ export function physicalNetlist(project: Project, conn = computeConnectivity(pro
     for (const pin of schematicPins(c)) {
       const id = conn.pinNet.get(pinKey(c.id, pin.pin))
       const net = id ? byNet.get(id) : undefined
-      if (!net || (!net.named && net.pins.length < 2)) continue
-      out.set(pinKey(c.id, pin.pin), { net: net.name, named: net.named })
+      const named = !!net?.named && !madeUp.has(net.id)
+      if (!net || (!named && net.pins.length < 2)) continue
+      out.set(pinKey(c.id, pin.pin), { net: net.name, named })
     }
   }
   return out

@@ -107,9 +107,11 @@ type At = Record<string, { x: number; y: number; rotation?: number }>
 
 /**
  * The first request up to the grouping: board, parts and nets, as the log shows them. A part goes
- * where `at` says, else on its spot `apart` when `spread`, else where add_component puts it.
+ * where `at` says, else on its spot `apart` when `spread`, else where add_component puts it. With
+ * `paths`, the nets that only join neighbouring parts of a block (CC1, CC2, EN, BOOT, LED_A) are
+ * connected as the design guide now says, two pins at a time with no name, rather than named.
  */
-export function buildDesign(s: Session, { j1Rot = 0, at = {}, spread = true }: { j1Rot?: number; at?: At; spread?: boolean } = {}) {
+export function buildDesign(s: Session, { j1Rot = 0, at = {}, spread = true, paths = false }: { j1Rot?: number; at?: At; spread?: boolean; paths?: boolean } = {}) {
   const spot = (ref: string) => at[ref] ?? (spread ? apart(ref) : {})
   s.must("set_board", { width: 40, height: 30 })
   s.must("add_component", { part_id: U1_PART, ref: "U1", ...spot("U1") })
@@ -127,7 +129,10 @@ export function buildDesign(s: Session, { j1Rot = 0, at = {}, spread = true }: {
   for (const [ref, v] of [["C1", "10uF"], ["C2", "10uF"], ["C3", "100nF"], ["C4", "100nF"], ["C5", "1uF"]]) {
     s.must("add_component", { part_id: "capacitor", ref, props: { capacitance: v }, ...spot(ref) })
   }
-  const connect = (net: string, pins: string[]) => s.must("connect", { pins, net_name: net })
+  const connect = (net: string, pins: string[]) => {
+    if (!paths || !PATHS.includes(net)) return s.must("connect", { pins, net_name: net })
+    for (const pin of pins.slice(1)) s.must("connect", { pins: [pins[0], pin] })
+  }
   connect("GND", [...ESP_GND.map((n) => `U1.${n}`), "U2.1", "U2.7", "U2.SDO", "U3.GND", "J1.A1", "J1.B1", "J1.SHIELD", "R1.2", "R2.2", "C1.2", "C2.2", "C3.2", "C4.2", "C5.2", "SW1.2", "SW2.2"])
   connect("VBUS", ["J1.A4", "J1.B4", "U3.VIN", "U3.EN", "C1.1"])
   connect("3V3", ["U3.VOUT", "C2.1", "C3.1", "U1.3V3", "R3.1", "R4.1", "R5.1", "R6.1", "U2.VDD", "U2.VDDIO", "U2.CSB", "C4.1"])
@@ -143,6 +148,9 @@ export function buildDesign(s: Session, { j1Rot = 0, at = {}, spread = true }: {
   connect("LED_A", ["R7.2", "D1.A"])
   connect("GND", ["D1.K"])
 }
+
+/** The nets that join neighbouring parts of one block only: a path, wired. */
+export const PATHS = ["CC1", "CC2", "EN", "BOOT", "LED_A"]
 
 /** The five blocks, named as in the first request ("USB-C INPUT") or the Clean up plan ("USB INPUT"). */
 export const BLOCKS = (usb = "USB-C INPUT"): [string, string[]][] => [

@@ -577,7 +577,8 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
   const after = physicalNetlist(next, connAfter)
   const renamed: Record<string, string> = {}
   // A net that loses its made-up name (`NET3`) with its labels: what the board kept under that name follows it too.
-  const madeUp = new Set([...info.nets.values()].filter((n) => n.madeUp).map((n) => n.name))
+  // By the connectivity name the netlist compares (`/SHEET/NET1` on a child sheet), not the bare name a label types.
+  const madeUp = new Set([...info.nets].filter(([, n]) => n.madeUp).map(([id]) => connName.get(id)!))
   const unnamed: Record<string, string> = {}
   for (const [k, x] of before) {
     const y = after.get(k)

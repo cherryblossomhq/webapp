@@ -17,6 +17,8 @@ import { blockFrames, blocksWithout } from "./blocks"
 import { UnionFind, computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { drawingBounds, moveDrawing } from "./drawings"
 import { DEFAULT_RULES } from "./rules"
+import { DEFAULT_PAPER } from "./paper"
+import { ROOT_SHEET } from "./sheets"
 import { classValues, hasNetClasses } from "./netClasses"
 import { labelBox } from "./labels"
 import { rekeyAutoNets } from "./rekeyNets"
@@ -70,6 +72,7 @@ export function createProject(name = "Untitled project", description = ""): Proj
     texts: [],
     board: { width: 50, height: 40, x: 0, y: 0, thickness: 1.6, cornerRadius: 1 },
     rules: { ...DEFAULT_RULES },
+    sheets: [{ id: ROOT_SHEET, paper: DEFAULT_PAPER }],
   }
 }
 

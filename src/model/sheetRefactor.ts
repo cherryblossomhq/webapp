@@ -5,6 +5,7 @@ import { dirVector, powerNetName, schematicBounds, schematicPins } from "./insta
 import { findPart } from "./library"
 import { nextRef, partFollowers } from "./ops"
 import { addSheet, addSheetPin, freeSheetSpot, NEW_SHEET_H, NEW_SHEET_W } from "./sheetOps"
+import { centredOn, DEFAULT_PAPER, sheetDrawingBox } from "./paper"
 import { ROOT_SHEET, copyKey, sheetIdOf, sheetView, symbolsOnSheet, syncCopies, useAt, useOf, usesOfSheet } from "./sheets"
 import type { ComponentInstance, LabelKind, LabelShape, NetLabel, Project, Rotation, SheetSymbol, Vec2 } from "./types"
 
@@ -449,6 +450,9 @@ export function moveToNewSheet(project: Project, here: string, selection: SheetS
     const list = changes.slice(0, 4).join(", ")
     return { error: `Moving these to a new sheet would change the connections of ${list}${changes.length > 4 ? ` and ${changes.length - 4} more pins` : ""}, so nothing was moved. Select the wires between them too, or move fewer parts.` }
   }
+  // The new sheet's page: A4 landscape about what moved onto it.
+  const drawn = sheetDrawingBox(sheetView(next, childPath))
+  next = { ...next, sheets: next.sheets!.map((s) => (s.id === sid ? { ...s, paper: drawn ? centredOn({ size: "A4" }, drawn) : DEFAULT_PAPER } : s)) }
   return {
     project: { ...next, updatedAt: Date.now() },
     symbol,

@@ -12,8 +12,10 @@ import { findPart } from "./library"
 import { kicadSymbols } from "./migrations/kicadSymbols"
 import { libraryParts } from "./migrations/libraryParts"
 import { schematicUnits } from "./migrations/schematicUnits"
+import { sheetPaper } from "./migrations/sheetPaper"
 import { sheetsRoot } from "./migrations/sheetsRoot"
 import { normalizeModels } from "./models3d"
+import { readPaper } from "./paper"
 import { needsPadPacking, normalizePad, packPad } from "./padCodec"
 import { normalizeOutline, unpackOutline } from "./outlineCodec"
 import { syncOutlineBox } from "./outlineOps"
@@ -66,7 +68,7 @@ import type { LabelShape, Rotation, BoardDimension, BoardGraphic, PcbGroup, Refe
  */
 
 export const PROJECT_FILE_FORMAT = "cherryblossom.project"
-export const PROJECT_FILE_VERSION = 5
+export const PROJECT_FILE_VERSION = 6
 
 /** A project as stored: everything but where it is stored. */
 export type ProjectDocument = Omit<Project, "id" | "createdAt" | "updatedAt">
@@ -180,6 +182,11 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * Version 5 lets a schematic picture be a file in the host's file store (`DrawingImage.file`, with its size in pixels and
  * resolution) instead of base64 in the project (`data`), which a KiCad import now does. A version 4 document reads as it was;
  * the bump is what keeps a version 4 reader, which would drop such a picture and save the loss back, from opening one.
+ *
+ * Version 6 makes every sheet a page (`SchematicSheet.paper`, `model/paper.ts`): the migration lists the root and gives each sheet the
+ * smallest landscape A4 to A0 that holds its drawing, centred on it, or for a project read from KiCad at the origin, where KiCad has its page
+ * (`migrations/sheetPaper.ts`). The first copy to open a project writes it whole, so the page is stored once and never worked out again; the bump
+ * also keeps a version 5 reader, which would drop the pages and save the loss back, from opening one.
  */
 const MIGRATIONS: Record<number, (project: Json) => Json> = {
   0: ({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...project }) => project,
@@ -187,6 +194,7 @@ const MIGRATIONS: Record<number, (project: Json) => Json> = {
   2: (project) => STEPS_2_TO_3.reduce((doc, step) => step(doc), project),
   3: libraryParts,
   4: (project) => project,
+  5: sheetPaper,
 }
 
 
@@ -909,6 +917,9 @@ function normalizeSheets(raw: Partial<Project>): Pick<Project, "sheets" | "sheet
     const title = list<Record<string, unknown>>(s.titleBlock).filter((t): t is { key: string; value: string } => isObject(t) && typeof t.key === "string" && typeof t.value === "string")
     if (title.length) out.titleBlock = title.map((t) => ({ key: t.key, value: t.value }))
     if (s.kicadRules === true) out.kicadRules = true
+    // A malformed page is dropped, and the sheet is drawn on the default one.
+    const paper = readPaper(s.paper)
+    if (paper) out.paper = paper
     if (s.id === ROOT_SHEET) sheets.unshift(out)
     else sheets.push(out)
   }

@@ -2084,6 +2084,22 @@ export interface DefaultNetClass {
   diffPairGap?: number
 }
 
+/** A page size: KiCad's named sizes (ISO A5 to A0, ANSI A to E, the US paper sizes), or `User`, a width and height of its own. */
+export type PaperSize = "A5" | "A4" | "A3" | "A2" | "A1" | "A0" | "A" | "B" | "C" | "D" | "E" | "USLetter" | "USLegal" | "USLedger" | "User"
+
+/**
+ * The page a sheet is drawn on (`model/paper.ts`): a size, landscape unless `portrait`, and where its top-left corner is on the sheet, in sheet units (y up),
+ * always on the 0.1 grid. A `User` page has its own `width` and `height` in mm and no `portrait`: its orientation is which of the two is longer.
+ */
+export interface SheetPaper {
+  size: PaperSize
+  width?: number
+  height?: number
+  portrait?: true
+  x: number
+  y: number
+}
+
 /**
  * S1: a sheet of the schematic, drawn once. The root sheet is `ROOT_SHEET` (it needs no entry: a project with no `sheets` is one sheet);
  * every other is used by one or more sheet symbols (`SheetSymbol`) on a sheet above it. Its wires, labels, drawings and blocks are tagged
@@ -2098,6 +2114,8 @@ export interface SchematicSheet {
   file?: string
   /** The root's name, which the sheet tree and tabs show (`Main` when absent); a sheet below it is named by the symbol that uses it. */
   name?: string
+  /** The page the sheet is drawn on; `paperOf` (`model/paper.ts`) reads it, with A4 landscape about the origin for a sheet that has none. Every use of the sheet shares it. */
+  paper?: SheetPaper
   /** The sheet file's title block (Title, Date, Rev, Company, Comment1...), where it is not the root's, which the project's properties hold. */
   titleBlock?: { key: string; value: string }[]
   /**

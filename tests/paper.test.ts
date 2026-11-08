@@ -18,10 +18,10 @@ describe("sizes", () => {
   it("are KiCad's, landscape unless portrait, and a custom page is its own width and height", () => {
     expect(paperMm(A4)).toEqual({ width: 297, height: 210 })
     expect(paperMm({ ...A4, portrait: true })).toEqual({ width: 210, height: 297 })
-    expect(paperMm({ size: "USLedger", x: 0, y: 0 })).toEqual({ width: 431.8, height: 279.4 })
-    expect(paperMm({ size: "User", width: 300, height: 450, x: 0, y: 0 })).toEqual({ width: 300, height: 450 })
+    expect(paperMm({ size: "USLedger" })).toEqual({ width: 431.8, height: 279.4 })
+    expect(paperMm({ size: "User", width: 300, height: 450 })).toEqual({ width: 300, height: 450 })
     expect(PAPER_MM.A0).toEqual({ width: 1189, height: 841 })
-    expect(paperName({ size: "User", width: 300, height: 200, x: 0, y: 0 })).toBe("Custom 300 × 200 mm")
+    expect(paperName({ size: "User", width: 300, height: 200 })).toBe("Custom 300 × 200 mm")
   })
 
   it("starts a sheet on A4 landscape about the origin, its corner on the grid", () => {

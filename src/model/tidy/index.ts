@@ -478,8 +478,9 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
       return { placed, stow, boxes }
     }
     // On the page as it is, else one size up at a time with the top-left corner kept, until it holds everything.
+    const noRoomAround = () => fail(project, `Tidy couldn't find room around ${kept.map((k) => k.name).join(" and ")}, which it had to keep as drawn; nothing was changed.`, kept.map((k) => k.why))
     let laid = layOut(page)
-    if (!laid) return fail(project, `Tidy couldn't find room around ${kept.map((k) => k.name).join(" and ")}, which it had to keep as drawn; nothing was changed.`, kept.map((k) => k.why))
+    if (!laid) return noRoomAround()
     const onPage = (paper: SheetPaper, l: NonNullable<typeof laid>) => l.boxes.every((b) => holds(paper, b))
     while (!onPage(page, laid)) {
       // A page grows right and down from its corner: what is kept left of it or above it no size reaches.
@@ -490,11 +491,12 @@ function tidyRun(project: Project, options: TidyOptions, info: NetInfo): TidyRes
       }
       const bigger = grownPaper(page, laid.boxes)
       if (!bigger) {
-        pageNote = page.size === pageWas.size && page.width === pageWas.width ? `The sheet doesn't fit on ${paperName(page)}, the largest of its sizes.` : `The sheet grew from ${paperName(pageWas)} to ${paperName(page)}, the largest of its sizes, and still doesn't fit on it.`
+        pageNote = page === pageWas ? `The sheet doesn't fit on ${paperName(page)}, the largest of its sizes.` : `The sheet grew from ${paperName(pageWas)} to ${paperName(page)}, the largest of its sizes, and still doesn't fit on it.`
         break
       }
       page = bigger
-      laid = layOut(page)!
+      laid = layOut(page)
+      if (!laid) return noRoomAround()
       if (onPage(page, laid)) pageNote = `The sheet grew from ${paperName(pageWas)} to ${paperName(page)} to hold it.`
     }
     offsets = laid.placed

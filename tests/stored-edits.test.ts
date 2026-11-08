@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { packDimensions, packGroups } from "../src/model/dimCodec"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { setSheetPaper } from "../src/model/sheetOps"
 import { packTexts } from "../src/model/textCodec"
 import type { BoardGraphic, BoardText, Project, Trace, Via } from "../src/model/types"
 import { packVias } from "../src/model/viaCodec"
@@ -79,6 +80,8 @@ const EDITS: [string, (p: Project) => Project][] = [
   ["the board's outline changed", (p) => ({ ...p, board: { ...p.board, width: p.board.width + 1, outline: { ...p.board.outline!, paths: p.board.outline!.paths.map((r) => ({ ...r, segs: r.segs.map((s, i) => (i === 0 && s.kind === "line" ? { ...s, b: { x: s.b.x + 1, y: s.b.y } } : s)) })) } } })],
   ["a part's text moved", (p) => ({ ...p, components: p.components.map((c) => (c.texts ? { ...c, texts: c.texts.map((t, i) => (i === 0 ? { ...t, x: t.x + 0.5 } : t)) } : c)) })],
   ["a land's drawing changed", (p) => ({ ...p, footprints: p.footprints!.map((f) => (f.shapes ? { ...f, shapes: f.shapes.map((s) => ({ ...s, width: 0.2 })) } : f)) })],
+  ["a sheet's page made A3 portrait", (p) => setSheetPaper(p, "root", { size: "A3", portrait: true })],
+  ["a sheet's page made custom", (p) => setSheetPaper(p, "root", { size: "User", width: 500, height: 320 })],
 ]
 
 describe("an edit applied to the stored file", () => {

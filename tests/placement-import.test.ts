@@ -99,7 +99,7 @@ describe("the stored file", () => {
       rule("off", '(placement (enabled no) (component_class "X"))', right),
     ])
     const text = serializeProject(r.project)
-    expect(JSON.parse(text).version).toBe(5)
+    expect(JSON.parse(text).version).toBe(6)
     const back = parseProjectFile(text, { id: r.project.id })
     expect(back.zones.map((z) => z.placement)).toEqual(r.project.zones.map((z) => z.placement))
     expect(back.components.map((c) => [c.classes, c.sheetPath])).toEqual(r.project.components.map((c) => [c.classes, c.sheetPath]))

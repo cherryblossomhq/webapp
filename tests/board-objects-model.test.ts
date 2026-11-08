@@ -1,3 +1,4 @@
+import { DEFAULT_PAPER } from "../src/model/paper"
 import { describe, expect, it } from "vitest"
 import { dimensionDrawing, dimensionText, dimensionShapes, valueText, DEFAULT_EXTENSION_HEIGHT_IU } from "../src/model/dimensions"
 import { addDimension, createGroup, expandToGroups, groupSelection, leafMembers, lockedByGroup, moveDimension, newDimension, patchDimension, pruneGroups, remapPartGroups, removeDimensions, rotateDimension, setGroupLocked, topGroup, touchesGroup, ungroup, updateDimensions } from "../src/model/boardObjects"
@@ -275,7 +276,7 @@ describe("dimensions, groups and images are stored compactly and read back as th
   })
   it("a document of version 2 opens as it was written, with none of them, and migrates unchanged", () => {
     const v4 = { format: "cherryblossom.project", version: 2, project: { name: "old", description: "", components: [], wires: [], labels: [], traces: [], vias: [], zones: [], texts: [] } }
-    expect(migrateProjectFile(v4)).toEqual({ ...v4.project, sheets: [{ id: "root" }] })
+    expect(migrateProjectFile(v4)).toEqual({ ...v4.project, sheets: [{ id: "root", paper: DEFAULT_PAPER }] })
     const read = parseProjectFile(v4, { id: "x" })
     expect(read.dimensions).toBeUndefined()
     expect(read.groups).toBeUndefined()

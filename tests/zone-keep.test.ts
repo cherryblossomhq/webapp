@@ -191,7 +191,7 @@ describe("a zone keeps KiCad's own fill", () => {
   it("a stored project from before kept fills loads as it did", () => {
     const p = imported([zoneA(false)])
     const doc = JSON.parse(serializeProject(p))
-    expect(doc.version).toBe(5)
+    expect(doc.version).toBe(6)
     const back = parseProjectFile(doc, origin(p))
     expect(back.zones[0].kept).toBeUndefined()
     expect(back.zones[0].net).toBe("GND")

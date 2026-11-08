@@ -1,3 +1,4 @@
+import { DEFAULT_PAPER } from "../src/model/paper"
 import { describe, expect, it } from "vitest"
 import { gerberMask, gerberPaste } from "../src/export/gerber"
 import { kicadFiles } from "../src/export/kicad"
@@ -247,9 +248,9 @@ describe("project file (X10): net classes and their rules", () => {
     const read = parseProjectFile(v4doc, { id: "p" })
     expect(read.rules.netWidths).toEqual({ VCC: 0.8 })
     expect(read.rules).not.toHaveProperty("netClasses")
-    expect(migrateProjectFile(v4doc)).toEqual({ ...v4doc.project, sheets: [{ id: "root" }] })
+    expect(migrateProjectFile(v4doc)).toEqual({ ...v4doc.project, sheets: [{ id: "root", paper: DEFAULT_PAPER }] })
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(5)
+    expect(PROJECT_FILE_VERSION).toBe(6)
     // no field of X10 is written for a project that has none
     const written = JSON.parse(serializeProject(read)).project.rules
     for (const k of ["netClasses", "defaultClass", "viaSizes", "diffPairSizes", "minViaDrill", "minClearance", "maskMinWidth", "pasteRatio", "maxError", "maskBridgesInParts"]) expect(written).not.toHaveProperty(k)

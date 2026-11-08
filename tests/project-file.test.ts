@@ -10,6 +10,8 @@ import RETIRED from "../src/model/migrations/libraryParts.json"
 import { fileModel, setModel } from "../src/model/models3d"
 import { addComponent, connectPins, createProject, resolvePinSpec } from "../src/model/ops"
 import { partFindings } from "../src/model/partChecks"
+import { DEFAULT_PAPER, holds, paperOf, sheetDrawingBox } from "../src/model/paper"
+import { sheetUses, sheetView } from "../src/model/sheets"
 import {
   migrateProjectFile,
   parseProjectFile,
@@ -23,6 +25,12 @@ import {
 import type { CustomPartSpec, Project } from "../src/model/types"
 
 const origin = { id: "p1", createdAt: 1_000, updatedAt: 2_000 }
+
+/** A document with its sheets' pages left out: what the steps before version 6 are compared on (version 6 gives every sheet a page fitted to its drawing). */
+const pageless = <T extends { sheets?: unknown }>(doc: T): T => {
+  if (!Array.isArray(doc.sheets)) return doc
+  return { ...doc, sheets: doc.sheets.map(({ paper: _paper, ...sheet }: Record<string, unknown>) => sheet) }
+}
 
 const problem = (fn: () => unknown) => {
   try {
@@ -76,7 +84,7 @@ describe("the project file", () => {
     expect(again.project.futureField).toEqual({ a: 1 })
   })
 
-  it.each([6, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
+  it.each([7, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
     const file = JSON.parse(serializeProject(createProject()))
     file.version = version
     expect(problem(() => parseProjectFile(file, origin))).toBe("too_new")
@@ -276,9 +284,9 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
   })
   it("migrates to the current version unchanged, and is saved as the current version", () => {
     const migrated = migrateProjectFile(v2)
-    expect(migrated).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
+    expect(pageless(migrated)).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(5)
+    expect(PROJECT_FILE_VERSION).toBe(6)
   })
   it("a reader of version 2 would refuse a newer file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -313,8 +321,8 @@ const v3 = {
 describe("a version 3 file from the board track, with no drawings", () => {
   it("opens as it was written, with no drawings, and is saved as the current version", () => {
     const read = parseProjectFile(v3, origin)
-    // a version 3 file is read as is: it has no `sheets`, which is the same project as a root sheet alone
-    expect(migrateProjectFile(v3)).toEqual(v3.project)
+    // a version 3 file is read as is: it has no `sheets`, which is the same project as a root sheet alone, which version 6 lists with its page
+    expect(pageless(migrateProjectFile(v3))).toEqual({ ...v3.project, sheets: [{ id: "root" }] })
     expect(read.components[0].flags).toEqual({ mount: "smd", dnp: true, netTies: [["1", "2"]] })
     expect(read.traces).toEqual(v3.project.traces)
     expect(read.graphics).toBeUndefined()
@@ -581,7 +589,7 @@ const v8 = {
 
 describe("whole-board pours, before polygon zones, rule areas and zone settings", () => {
   it("opens as it was written and is saved as the current version, the pours untouched", () => {
-    expect(migrateProjectFile(v8)).toEqual({ ...v8.project, sheets: [{ id: "root" }] })
+    expect(pageless(migrateProjectFile(v8))).toEqual({ ...v8.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v8, origin)
     expect(read.zones).toEqual(v8.project.zones)
     const written = JSON.parse(serializeProject(read))
@@ -652,7 +660,7 @@ const v9 = {
 
 describe("pads before the pad model (X7)", () => {
   it("opens as it was written, zones and pads untouched, and is saved as the current version", () => {
-    expect(migrateProjectFile(v9)).toEqual({ ...v9.project, sheets: [{ id: "root" }] })
+    expect(pageless(migrateProjectFile(v9))).toEqual({ ...v9.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v9, origin)
     expect(read.zones).toHaveLength(1)
     expect(read.zones[0]).toMatchObject({ id: "z", net: "GND", priority: 1, connect: "thermal", thermalGap: 0.4 })
@@ -691,7 +699,7 @@ const v10 = {
 
 describe("a one-sheet project, before sheets (S1)", () => {
   it("is a project of one sheet: the migration lists the root and changes nothing else, and it is saved as the current version", () => {
-    expect(migrateProjectFile(v10)).toEqual({ ...v10.project, sheets: [{ id: "root" }] })
+    expect(pageless(migrateProjectFile(v10))).toEqual({ ...v10.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v10, origin)
     expect(read.sheetSymbols).toBeUndefined()
     expect(read.wires).toEqual(v10.project.wires)
@@ -738,16 +746,16 @@ const v13 = {
 describe("before variants (S9) and KiCad's joining rules (S11)", () => {
   it("is carried across with nothing added, and saved as the current version", () => {
     const migrated = migrateProjectFile(v13)
-    expect(migrated).toEqual(v13.project)
+    expect(pageless(migrated)).toEqual(v13.project)
     const read = parseProjectFile(v13, origin)
     expect(read.variants).toBeUndefined()
     expect(read.components.every((c) => c.variants === undefined)).toBe(true)
     // a page number stored then is read past
-    expect(read.sheets).toEqual([{ id: "root" }])
+    expect(pageless(read).sheets).toEqual([{ id: "root" }])
     const written = JSON.parse(serializeProject(read))
     expect(written.version).toBe(PROJECT_FILE_VERSION)
     expect(written.project).not.toHaveProperty("variants")
-    expect(written.project.sheets).toEqual([{ id: "root" }])
+    expect(pageless(written.project).sheets).toEqual([{ id: "root" }])
   })
 
   it("variants, a symbol's changes and a sheet's flag survive a save and a load exactly, and what is malformed is dropped", () => {
@@ -797,7 +805,7 @@ const v11 = {
 
 describe("before directive labels and rule areas (S8)", () => {
   it("is read as it is: nothing is filled in, a closed line is not a rule area, and it is saved as the current version", () => {
-    expect(migrateProjectFile(v11)).toEqual(v11.project)
+    expect(pageless(migrateProjectFile(v11))).toEqual({ ...v11.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v11, origin)
     expect(read.drawings).toEqual(v11.project.drawings)
     expect(read.rules.netClasses).toEqual([{ name: "Power", nets: ["SIG"], traceWidth: 0.5 }])
@@ -832,10 +840,10 @@ describe("version 3 is the whole KiCad import", () => {
   }
   const body = (p: Project) => JSON.parse(serializeProject(p)).project
 
-  it("a newly saved file says 5, two versions after it", () => {
-    expect(PROJECT_FILE_VERSION).toBe(5)
-    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(5)
-    expect(JSON.parse(serializeProject(rich())).version).toBe(5)
+  it("a newly saved file says 6, three versions after it", () => {
+    expect(PROJECT_FILE_VERSION).toBe(6)
+    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(6)
+    expect(JSON.parse(serializeProject(rich())).version).toBe(6)
   })
 
   it("reading a file of the current version changes nothing", () => {
@@ -843,19 +851,19 @@ describe("version 3 is the whole KiCad import", () => {
     expect(migrateProjectFile(file)).toEqual(file.project)
     expect(body(parseProjectFile(file, origin))).toEqual(file.project)
     const plain = JSON.parse(serializeProject(createProject("plain")))
-    expect(plain.project).not.toHaveProperty("sheets")
+    expect(plain.project.sheets).toEqual([{ id: "root", paper: DEFAULT_PAPER }])
     expect(migrateProjectFile(plain)).toEqual(plain.project)
   })
 
   it("a version 2 file goes to 3 unchanged, with the root sheet listed", () => {
-    expect(migrateProjectFile(v2)).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
+    expect(pageless(migrateProjectFile(v2))).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     const read = parseProjectFile(v2, origin)
     expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
-    expect(read.sheets).toEqual([{ id: "root" }])
+    expect(pageless(read).sheets).toEqual([{ id: "root" }])
   })
 
-  it("a file at 6, 14 or 15 is newer than this editor", () => {
-    for (const version of [6, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
+  it("a file at 7, 14 or 15 is newer than this editor", () => {
+    for (const version of [7, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
   })
 })
 
@@ -897,7 +905,7 @@ describe("version 4: the library holds basic parts only, and a project keeps the
     const twice = { ...file, project: { ...file.project, components: [...file.project.components, { ...file.project.components[0], id: "c_copy", ref: "U2" }] } }
     expect(migrateProjectFile(twice).parts).toEqual([ne555])
     const plain = { ...file, project: { ...file.project, components: file.project.components.filter((c: { partId: string }) => c.partId === "resistor"), models: undefined } }
-    expect(migrateProjectFile(plain)).toEqual(plain.project)
+    expect(pageless(migrateProjectFile(plain))).toEqual(pageless(plain.project))
   })
 
   it("keeps every chip the library had as a part that builds, under an id that is the hash of its definition", () => {
@@ -938,6 +946,100 @@ describe("version 5: a schematic picture in the file store", () => {
 
   it("a version 4 reader would refuse the file: the bump is what keeps a stored picture from being dropped", () => {
     expect(problem(() => parseProjectFile({ ...doc(5, { file: FILE, px: 2, py: 3 }), version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
-    expect(migrateProjectFile(doc(4, { data: PNG }))).toEqual(doc(4, { data: PNG }).project)
+    expect(pageless(migrateProjectFile(doc(4, { data: PNG })))).toEqual(pageless(doc(4, { data: PNG }).project))
+  })
+})
+
+describe("version 6: every sheet is a page", () => {
+  const part = (id: string, ref: string, x: number, y: number, inst?: string) => ({
+    id,
+    partId: "resistor",
+    ref,
+    props: { value: "10k" },
+    footprint: "r_0603",
+    sch: { x, y, rot: 0 },
+    pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false },
+    ...(inst ? { inst } : {}),
+  })
+  const symbol = (id: string, child: string, x: number) => ({ id, sheet: "root", child, x, y: 0, w: 2, h: 1.2, name: child.toUpperCase(), pins: [] })
+  /** Three sheets below the root, as version 5 wrote them: one empty, one drawn far from the origin, and one too wide for A4. */
+  const v5 = {
+    format: PROJECT_FILE_FORMAT,
+    version: 5,
+    project: {
+      name: "pages",
+      description: "",
+      components: [part("c1", "R1", 100, -50, "/h2"), part("c2", "R2", 104, -52, "/h2"), part("c3", "R3", 0, 0, "/h3"), part("c4", "R4", 25, -8, "/h3")],
+      wires: [{ id: "w1", sheet: "s3", points: [{ x: 0, y: 0.3 }, { x: 25, y: 0.3 }, { x: 25, y: -7.7 }] }],
+      labels: [{ id: "l1", sheet: "s2", name: "FAR", x: 104, y: -51.7, rot: 0 }],
+      sheets: [{ id: "root" }, { id: "s1" }, { id: "s2" }, { id: "s3" }],
+      sheetSymbols: [symbol("h1", "s1", 0), symbol("h2", "s2", 3), symbol("h3", "s3", 6)],
+      traces: [],
+      vias: [],
+      zones: [],
+      texts: [],
+    },
+  }
+  const onGrid = (v: number) => Math.abs(v * 10 - Math.round(v * 10)) < 1e-6
+  /** Every use's drawing is on its page, and every page's corner is on the grid. */
+  const allHeld = (p: Project, what = p.name) => {
+    for (const use of sheetUses(p)) {
+      const paper = paperOf(p, use.sheet)
+      expect(p.sheets?.find((s) => s.id === use.sheet)?.paper, `${what} ${use.name} stores its page`).toEqual(paper)
+      expect(onGrid(paper.x) && onGrid(paper.y), `${what} ${use.name} corner on the grid`).toBe(true)
+      const box = sheetDrawingBox(sheetView(p, use.path))
+      if (box) expect(holds(paper, box), `${what} ${use.name} holds ${JSON.stringify(box)} on ${JSON.stringify(paper)}`).toBe(true)
+    }
+  }
+
+  it("gives each sheet the smallest landscape page that holds its drawing, around it", () => {
+    const read = parseProjectFile(v5, origin)
+    allHeld(read)
+    const size = (id: string) => paperOf(read, id).size
+    expect([size("root"), size("s1"), size("s2"), size("s3")]).toEqual(["A4", "A4", "A4", "A3"])
+    // The empty sheet gets the page every new sheet has; the far one goes where its drawing is.
+    expect(paperOf(read, "s1")).toEqual(DEFAULT_PAPER)
+    expect(paperOf(read, "s2").x).toBeGreaterThan(80)
+    expect(JSON.parse(serializeProject(read)).version).toBe(6)
+  })
+
+  it("puts the page of a project read from KiCad where KiCad has it, its corner at the origin", () => {
+    const kicad = { ...v5, project: { ...v5.project, components: [part("c1", "R1", 5, -5)], wires: [], labels: [], sheets: [{ id: "root" }], sheetSymbols: undefined, properties: [{ key: "KiCad file version", value: "KiCad 9.0, file version 20250114" }] } }
+    const read = parseProjectFile(kicad, origin)
+    expect(paperOf(read)).toEqual({ size: "A4", x: 0, y: 0 })
+    allHeld(read)
+  })
+
+  it("lists the root of a one-sheet project, with its page", () => {
+    const one = { ...v5, project: { ...v5.project, components: [part("c1", "R1", 0, 0)], wires: [], labels: [], sheets: undefined, sheetSymbols: undefined } }
+    const read = parseProjectFile(one, origin)
+    expect(read.sheets).toEqual([{ id: "root", paper: { size: "A4", x: expect.any(Number), y: expect.any(Number) } }])
+    allHeld(read)
+  })
+
+  it("holds every shipped example's drawing, read as version 5 with no pages", () => {
+    for (const example of EXAMPLES) {
+      const doc = JSON.parse(serializeProject(example.project))
+      doc.version = 5
+      for (const s of doc.project.sheets ?? []) delete s.paper
+      allHeld(parseProjectFile(doc, origin), example.id)
+    }
+  })
+
+  it("is refused by an older reader: the bump keeps a version 5 editor from dropping the pages", () => {
+    const written = JSON.parse(serializeProject(parseProjectFile(v5, origin)))
+    expect(written.version).toBeGreaterThan(5)
+    expect(problem(() => parseProjectFile({ ...written, version: PROJECT_FILE_VERSION + 1 }, origin))).toBe("too_new")
+  })
+
+  it("draws a sheet whose stored page is malformed on the default one", () => {
+    const file = JSON.parse(serializeProject(createProject("bad pages")))
+    for (const paper of [{ size: "Z9", x: 0, y: 0 }, { size: "A3", x: "0", y: 0 }, { size: "User", x: 0, y: 0, width: 300 }, { size: "User", x: 0, y: 0, width: -1, height: 200 }, "A4"]) {
+      const read = parseProjectFile({ ...file, project: { ...file.project, sheets: [{ id: "root", paper }] } }, origin)
+      expect(read.sheets?.[0]).toEqual({ id: "root" })
+      expect(paperOf(read)).toEqual(DEFAULT_PAPER)
+    }
+    const custom = parseProjectFile({ ...file, project: { ...file.project, sheets: [{ id: "root", paper: { size: "User", width: 300, height: 200, x: 1, y: 2 } }] } }, origin)
+    expect(paperOf(custom)).toEqual({ size: "User", width: 300, height: 200, x: 1, y: 2 })
   })
 })

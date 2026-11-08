@@ -28,7 +28,6 @@ import { getConnectivity, getLiveAnalysis, getPcbAnalysis, useFillTick } from ".
 import { flagOrigins } from "../model/ruleAreas"
 import { projectApi, useProjectStore } from "../store/projectStore"
 import { commitFor, commitHere, viewFor } from "../store/sheetScope"
-import { isHierarchical } from "../model/sheets"
 import { selectionIds, uiApi, useUi } from "../store/uiStore"
 import { parseOutlineSelectionId } from "../model/outlineOps"
 import { OutlineInspector } from "./OutlineInspector"
@@ -216,8 +215,8 @@ export function Inspector() {
   }
   return (
     <>
-      {/* In a schematic of several sheets, the sheet shown first, as a document's properties come before its project's. */}
-      {view === "schematic" && isHierarchical(project) && <ShownSheetInspector project={project} path={sheet} />}
+      {/* In the schematic, the sheet shown first (its name, page and title block), as a document's properties come before its project's. */}
+      {view === "schematic" && <ShownSheetInspector project={project} path={sheet} />}
       <ProjectInspector project={project} />
     </>
   )

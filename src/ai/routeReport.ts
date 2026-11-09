@@ -51,9 +51,9 @@ function itemAt(analysis: PcbAnalysis, p: Vec2, netId?: string | null): CopperIt
  * One end of a connection, as a pin where it is a pad, else as the copper it is on and the nearest pad that copper joins
  * ("the copper of J1.A6 (D+) at (3, 1.4)"), so it can be given to draw_trace or found on the board.
  */
-export function endName(project: Project, analysis: PcbAnalysis, p: Vec2, netId?: string | null): { name: string; pin: string | null } {
+export function endName(project: Project, analysis: PcbAnalysis, p: Vec2, netId?: string | null): { name: string; pin: string | null; item?: string } {
   const it = itemAt(analysis, p, netId)
-  if (it?.kind === "pad") return { name: padName(project, it.pad), pin: padName(project, it.pad).split(" ")[0] }
+  if (it?.kind === "pad") return { name: padName(project, it.pad), pin: padName(project, it.pad).split(" ")[0], item: it.id }
   const root = it ? analysis.island.get(it.id) : undefined
   let near: WorldPad | null = null
   let d = Infinity
@@ -76,8 +76,9 @@ export function openList(project: Project, analysis: PcbAnalysis, open: Pick<Ope
   const rows = open.slice(0, limit).map((o) => {
     const a = endName(project, analysis, o.a, o.netId)
     const b = endName(project, analysis, o.b, o.netId)
-    // Two pieces of the net's copper that meet at a point without joining (a track ending on a pad of another layer) have one name.
-    if (a.name === b.name) return `${o.net}: ${a.name}, where two pieces of its copper meet without joining`
+    // Two pieces of the net's copper that meet at a point without joining (a track ending on a pad of another layer) have one name. Two
+    // pads of one number (a connector's shield tabs, all "S1") have one name too, but are two pads: they get their coordinates below.
+    if (a.name === b.name && a.item === b.item) return `${o.net}: ${a.name}, where two pieces of its copper meet without joining`
     const where = a.name.includes(" at (") || b.name.includes(" at (") ? "" : `, ${at(o.a)} to ${at(o.b)}`
     return `${o.net}: ${a.name} to ${b.name}${where}`
   })

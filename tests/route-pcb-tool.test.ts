@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest"
+import { openList } from "../src/ai/routeReport"
 import { runTool } from "../src/ai/tools"
 import { autoroute, compareResults, type AutorouteResult } from "../src/model/autoroute"
+import { computeConnectivity } from "../src/model/connectivity"
+import { importKicadBoard } from "../src/model/kicad/board"
 import { createProject } from "../src/model/ops"
+import { analyzePcb } from "../src/model/pcb"
 import type { Project } from "../src/model/types"
+import { board as kicadBoard, footprint, pad } from "./kicad-board-fixtures"
 
 // route_pcb as an assistant drives it. On a user's 15 x 10 mm USB-C to UART bridge (a CH343P in QFN-16 beside a 16-pin receptacle),
 // Sakura spent an evening of about 150 requests moving three capacitors 0.1 mm at a time and asking for "pour and route from scratch"
@@ -72,6 +77,27 @@ describe("route_pcb names what it leaves", () => {
     expect(res.tries).toBe(1)
     const out = runTool(board(), "route_pcb", {})
     expect(out.result).not.toContain("routings")
+  })
+
+  it("names two pads of one number as two pads, not as copper meeting without joining", () => {
+    // A KiCad board joins pads of one number only on a jumper footprint: a connector's two shield tabs, both "S1", are a connection.
+    const shield = (at: string) => pad({ number: "S1", at, size: "1 1", net: '(net 1 "GND")' })
+    const r = importKicadBoard(kicadBoard({ nets: ['(net 0 "")', '(net 1 "GND")'], body: [footprint({ ref: "J1", name: "Connector:Shield", at: "10 5", pads: [shield("-6 0"), shield("6 0")] })] }))
+    if (r.status !== "imported") throw new Error(r.message)
+    const analysis = analyzePcb(r.project, computeConnectivity(r.project))
+    expect(analysis.ratsnest).toHaveLength(1)
+    const text = openList(r.project, analysis, analysis.ratsnest.map((x) => ({ net: "GND", netId: x.netId, a: x.a, b: x.b })))
+    expect(text).not.toContain("meet without joining")
+    expect(text).toMatch(/^GND: J1\.S1 to J1\.S1, \(/)
+  })
+
+  it("repairs a board whose open net has a width of its own without failing", () => {
+    // 1.6 mm: its half and the preferred widths below it are widths no other net has, which the repair's router must still hold.
+    const p = walled(board(), [-3.75])
+    // One gap for two nets, L2 first: L1 is left open, and the repair searches it at each width below 1.6 mm.
+    const res = autoroute({ ...p, rules: { ...p.rules, netWidths: { L1: 1.6 } } }, { order: ["net:L2"], timeLimitMs: 6_000 })
+    expect(res.remaining).toBe(1)
+    expect(res.open).toEqual([expect.objectContaining({ net: "L1" })])
   })
 
   it("routes the board other ways while a connection stays open, and says so", () => {

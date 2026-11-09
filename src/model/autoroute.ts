@@ -1,14 +1,15 @@
-import { closestPointOnSegment, pointSegmentDistance, round, samePoint, simplifyPolyline, boxesOverlap, type Box } from "../lib/geometry"
+import { closestPointOnSegment, pointSegmentDistance, round, samePoint, segmentSegmentDistance, simplifyPolyline, boxesOverlap, type Box } from "../lib/geometry"
 import { uid } from "../lib/id"
 import { computeConnectivity, type SchematicConnectivity } from "./connectivity"
 import { findPart } from "./library"
-import { pcbPads, type WorldPad } from "./instances"
-import { padBox, padRingsOf } from "./padDistance"
+import { pcbPads, slotEnds, type WorldPad } from "./instances"
+import { holeCentre, padBox, padRingsOf } from "./padDistance"
 import { pointShapeDistance, type ShapeCopper } from "./shapes"
 import { outlineGeometry, rasterizeInside } from "./outline"
 import { areaDistance, needsZoneEngine, zoneArea, zoneLayers } from "./zones"
 import { withPartZones } from "./partZones"
 import { analyzePcb, edgeDistance, pointPadDistance, type CopperItem, type PcbAnalysis } from "./pcb"
+import { fromKicad, kicadHoleClearance } from "./checkRules"
 import type { ZoneFill } from "./pour"
 import { classIndex, hasClearanceRules, hasNetClasses, type ClassIndex } from "./netClasses"
 import { copperLayers } from "./stack"
@@ -21,6 +22,45 @@ export interface AutorouteOptions {
   powerWidth?: number
   /** Give up after this long (ms), for everything one call does, the fine-pitch retry included. Default 10 s. */
   timeLimitMs?: number
+  /**
+   * Net ids routed before every other net, in this order, in the one call: the way to say which nets take the room first without
+   * routing them in calls of their own (the call after cannot take up what the first laid, and on a crowded board it routed less).
+   */
+  order?: string[]
+  /**
+   * Keep routing the board again in other orders and with other via costs while there is time, and keep the best (`compareResults`):
+   * fewest connections open, least length narrower than its net's width, fewest vias, shortest. Without it that happens only while
+   * the best so far leaves a connection open or a net narrower; a board that routes whole at its widths is routed once, as it always was.
+   */
+  optimize?: boolean
+}
+
+/** A connection of a net with a width of its own that went in narrower for want of room, and where. */
+export interface NarrowSpan {
+  /** The width it took where it had no room for the net's. */
+  width: number
+  /** How long the narrower stretch is, in mm, and how long the connection is altogether. */
+  length: number
+  total: number
+  /** The connection's two ends (pad centres, or points on copper of the net). */
+  a: Vec2
+  b: Vec2
+  /** The narrower stretch: its first and last point, and the layer of its first piece. */
+  from: Vec2
+  to: Vec2
+  layer: CopperLayer
+}
+
+/** A connection the router left open. */
+export interface OpenConnection {
+  /** The net's name, and its id. */
+  net: string
+  netId: string
+  /** Its two ends: the closest points of the two pieces of copper of the net it would join (pad centres, mostly). */
+  a: Vec2
+  b: Vec2
+  /** One end is a fine-pitch pad (a neighbour on its part closer than 0.7 mm). */
+  fine: boolean
 }
 
 export interface AutorouteResult {
@@ -35,20 +75,31 @@ export interface AutorouteResult {
   finePitchOpen: number
   /** The thinnest trace width (mm) the fine-pitch retry went down to, or null when it did not run. */
   finePitchTried: number | null
-  /** Nets with a width of their own (`netWidths`, a class's) that have connections on the finished board routed narrower for want of room: absent when none do. A neck at a pad too small for the width is not one. */
-  narrowed?: { net: string; width: number; widths: number[] }[]
+  /**
+   * Nets with a width of their own (`netWidths`, a class's) that have connections on the finished board routed narrower for want of room:
+   * absent when none do. A neck at a pad too small for the width is not one. `spans` says where, one per connection.
+   */
+  narrowed?: { net: string; width: number; widths: number[]; spans: NarrowSpan[] }[]
+  /** The connections still open, as many as `remaining`. */
+  open: OpenConnection[]
+  /** How many whole routings of the board the call made (orders, via costs, fine-pitch modes) before keeping this one. */
+  tries: number
 }
 
 const FREE = -1
 const BLOCKED = -2
-const LAYERS: CopperLayer[] = ["top", "bottom"]
 /**
- * X1: the router routes the two outer layers of a board of any number (its grids, searches and vias are two layers deep) and leaves the inner ones
- * as they are. What is on an inner layer is an obstacle it keeps clear of where a via of its own would reach it: a through via has copper on every
- * layer, so a via is kept out of foreign inner copper by the same cells that keep it from the outer layers'. Inner copper is no place to start or
- * end a connection, and no track keeps out of it. A board of two layers is what it was.
+ * A grid of which net holds each cell (a net's index, or FREE, BLOCKED, CONTESTED, MIXED): two bytes a cell, four on a board of more than
+ * 30,000 nets. A big board of four layers has millions of cells per layer and grid, so the grids are most of what the router takes.
  */
-const outerIndex = (layer: CopperLayer): 0 | 1 | -1 => (layer === "top" ? 0 : layer === "bottom" ? 1 : -1)
+type Cells = Int16Array | Int32Array
+/**
+ * The router routes every copper layer of the board, front to back (`copperLayers`: `top`, `in1`, `in2`..., `bottom`), with one grid per layer,
+ * and changes layer by a through via, which has copper on every layer: a via is allowed where it is clear on all of them, and from it the search
+ * goes on on any other layer at the same cost. Inner copper is an obstacle and a place to start or end a connection like outer copper, and an
+ * inner pour takes a via like an outer one. Blind, buried and micro vias are not made. A board of two layers is routed as it always was: the same
+ * grids, the same moves in the same order.
+ */
 const DIRS: [number, number][] = [
   [1, 0],
   [1, 1],
@@ -58,6 +109,19 @@ const DIRS: [number, number][] = [
   [-1, -1],
   [0, -1],
   [1, -1],
+]
+const DIR_OFFSET_X = DIRS.map(([x]) => x)
+const DIR_OFFSET_Y = DIRS.map(([, y]) => y)
+/** For each diagonal move, the two orthogonal neighbours it passes between, as indexes into the search's east, south, west, north. */
+const DIAGONAL_SIDES: [number, number][] = [
+  [0, 0],
+  [0, 1],
+  [0, 0],
+  [2, 1],
+  [0, 0],
+  [2, 3],
+  [0, 0],
+  [0, 3],
 ]
 const TURN_COST = [0, 3, 9, 40, 1e9]
 const VIA_COST = 28
@@ -75,6 +139,14 @@ const ESCAPE_STUB_MIN = 0.35
 const ESCAPE_STUB_MAX = 2.5
 /** Copper this close to a connection that stayed open is taken up for one retry. */
 const RIPUP_REACH = 1.5
+/**
+ * A search at two widths (`Router.route` with `narrow`): what a cell at the narrower one costs on top of its length, and a change of width.
+ * A narrow stretch of length l is taken over a full-width detour shorter than 3l.
+ */
+const NARROW_EXTRA = 3
+const WIDTH_CHANGE = 2
+/** A narrower stretch out of a pad no wider than it, up to this long, is the way out of a fine-pitch row, not a narrowing (`Router.route`). */
+const ESCAPE_NECK = 0.6
 
 const POWER_NAME = /^(gnd|agnd|dgnd|pgnd|vcc|vdd|vss|vin|vbus|vbat|v\+|[0-9]+v[0-9]*|[0-9]+v|3v3|5v|12v|1v8|2v5)$/i
 
@@ -194,6 +266,8 @@ interface RoutedPath {
   vias: Vec2[]
   /** The net the path is on (a net id), for the size of its vias: a net's class sets it. */
   net?: string
+  /** The traces (by index) laid narrower than the width the search was for, where it had no room for it (`Router.route` with `narrow`). */
+  narrowIdx?: number[]
 }
 
 /** What the router asks of each net: the clearance, via diameter and via drill of its net class (a board with no classes: the rules'). */
@@ -215,11 +289,13 @@ interface Profile {
 
 /** A via size with the clearance of its class, for the cells where one of that size may be centred. */
 interface ViaProfile extends NetRule {
-  owner: Int32Array[]
+  owner: Cells[]
   /** Cells next to pads, where no via goes. */
   padKeep: Uint8Array
-  /** Cells where a new via's drill would be too close to an existing via's. */
-  holeKeep: Uint8Array
+  /** Cells where a new via's drill would be too close to an existing via's: how many vias keep each (a repair takes some up again). */
+  holeKeep: Uint16Array
+  /** In a router that can take copper up again, the keepouts of the run's own copper. */
+  laid?: Laid
 }
 
 /**
@@ -244,6 +320,11 @@ class RouteRules {
     const { clearance, viaDiameter, viaDrill, minClearance } = project.rules
     this.floor = minClearance !== undefined && minClearance > 0 ? minClearance : 0
     this.plain = { clearance, viaDiameter, viaDrill }
+  }
+
+  /** How many nets the board has, which sizes the router's grids. */
+  get netCount(): number {
+    return this.netNames.size
   }
 
   of(netId: string | null | undefined): NetRule {
@@ -294,24 +375,89 @@ function hasFinePitch(shapes: { shape: Shape }[]): boolean {
   return false
 }
 
-/** Two-layer grid router. Each net index owns the keepout cells around its copper. */
+/** A hole as copper keeps its distance from it: a round hole as a via of the hole's size, a slot as a segment as wide as the hole. */
+function holeShape(pad: WorldPad, layers: CopperLayer[]): Shape | null {
+  if (!pad.holeDiameter) return null
+  const ends = slotEnds(pad)
+  if (ends) return { kind: "segment", a: ends[0], b: ends[1], width: pad.holeDiameter, layers }
+  return { kind: "via", at: holeCentre(pad), diameter: pad.holeDiameter, layers }
+}
+
+/**
+ * Copper the run laid itself, kept apart from the rest so a repair can take it up again (`Router.laid`): per layer, how many laid items' keepouts
+ * cover each cell and their net (MIXED for more than one; it stays MIXED while any of them is left, which only keeps more out).
+ */
+interface Laid {
+  cnt: Uint16Array[]
+  net: Cells[]
+}
+const MIXED = -4
+/** What a search that may cross laid copper pays per cell of another net's laid keepout, before history. */
+const SOFT_PENALTY = 6
+/** History added along a crossing a repair could not keep, so the next try looks elsewhere. */
+const HISTORY_STEP = 3
+/** A crossing that would take up more laid connections than this is not tried. */
+const MAX_RIPPED = 8
+/** How often a repair tries one open connection. */
+const REPAIR_TRIES = 3
+/** A board routed whole but with a net narrower somewhere is routed in other ways (`VARIANTS`) for at most this many times what its first routing took, and at least `EXPLORE_MIN_MS`. */
+const EXPLORE_FACTOR = 4
+const EXPLORE_MIN_MS = 3_000
+/** Nor after this many variants in a row that did no better. */
+const NARROW_PATIENCE = 6
+/** The share of the time the first passes and their retries get under a limit of `REPAIR_SHARE_FROM_MS` or more; the rest is the repair's. */
+const GREEDY_SHARE = 0.7
+/** A shorter limit is the passes' whole (the editor's 10 s): on a big board they need all of it, and the repair runs on what they leave. */
+const REPAIR_SHARE_FROM_MS = 60_000
+/** The repair runs when this many connections at most are open, or this share of them; more is the passes' work, not a repair's. */
+const REPAIR_MAX_OPEN = 20
+const REPAIR_MAX_SHARE = 0.2
+/** Nor with less time than this left: its router alone takes a second or more to build on a big board. */
+const REPAIR_MIN_MS = 1_500
+
+/** Costs of a search that may cross copper the run laid: per cell of another net's, and a history per layer that grows where crossings failed. */
+interface SoftCost {
+  penalty: number
+  history: Float32Array[]
+}
+
+/** True when laid copper of a net other than `net` keeps the cell (on layer `li`) clear. */
+const laidOther = (laid: Laid | undefined, li: number, i: number, net: number): boolean => !!laid && laid.cnt[li][i] > 0 && laid.net[li][i] !== net
+
+/** Grid router over every copper layer. Each net index owns the keepout cells around its copper. */
 class Router {
   readonly g: number
   readonly nx: number
   readonly ny: number
+  /** The copper layers, front to back; a layer's index is its grid's. */
+  readonly layers: readonly CopperLayer[]
+  private readonly L: number
+  private readonly layerAt = new Map<CopperLayer, number>()
+  /**
+   * On a project from KiCad, how far copper of another net (or of none) keeps from a hole: KiCad's `min_hole_clearance` (`hole_clearance`),
+   * which Checks hold every hole to there. 0 elsewhere, where Checks have no such rule.
+   */
+  private readonly holeNeed: number
   private ox: number
   private oy: number
   private margin: number
-  /** Trace keepouts per width and class clearance, per layer. */
-  private owners = new Map<string, { profile: Profile; arr: Int32Array[] }>()
+  /** Trace keepouts per width and class clearance, per layer; `laid`, in a router that can take copper up again, those of the run's own copper. */
+  private owners = new Map<string, { profile: Profile; arr: Cells[]; laid?: Laid }>()
   /** Via keepouts per size and class clearance. */
   private viaProfiles = new Map<string, ViaProfile>()
   /** Escape stubs, as "ax,ay,bx,by": a search starts from the end of one, not from beside it. */
   stubKeys = new Set<string>()
   /** Escape corridors in front of fine-pitch pads, per layer: owning net, FREE or CONTESTED. */
-  private escape: Int32Array[]
+  private escape: Cells[]
   private stampSrc: Uint32Array[]
   private stampTgt: Uint32Array[]
+  /** The stamps of a search's second width (`route` with `narrow`), made the first time one runs. */
+  private stampSrc2: Uint32Array[] = []
+  private stampTgt2: Uint32Array[] = []
+  /** How many widths the search arrays hold at once: 1, or 2 once a search with `narrow` has run. */
+  private modes = 1
+  /** What a via costs a search, in cells of track: `VIA_COST`, or another for a variant of the run (`Variant.viaCost`). */
+  viaCost = VIA_COST
   private stamp = 0
   private cost: Float32Array
   private parent: Int32Array
@@ -332,8 +478,16 @@ class Router {
     readonly rr: RouteRules = new RouteRules(project, new Map()),
     /** The nets whose vias will be routed, so the keepouts for each via size are made (a board with no classes has one). */
     viaNets: (string | null)[] = [null],
+    /** Keep the copper it is given as laid (`addShape` with `laid`) and the copper it routes apart, so a repair can take it up again. */
+    readonly repairable = false,
   ) {
     const b = project.board
+    this.layers = copperLayers(b)
+    this.L = this.layers.length
+    this.layers.forEach((l, i) => this.layerAt.set(l, i))
+    this.holeNeed = fromKicad(project) ? kicadHoleClearance(project) : 0
+    const L = this.L
+    const perLayer = <T>(make: () => T): T[] => Array.from({ length: L }, make)
     const area = b.width * b.height
     // Fine-pitch rows leave a channel of about pitch - pad - 2 x clearance in front of each
     // pad; a coarse grid often has no cell centre in it, so they force the finest grid.
@@ -348,25 +502,28 @@ class Router {
     this.nx = Math.ceil(b.width / this.g) + 1
     this.ny = Math.ceil(b.height / this.g) + 1
     const n = this.nx * this.ny
+    const wide = rr.netCount > 30_000
+    const cells = (): Cells => (wide ? new Int32Array(n) : new Int16Array(n)).fill(FREE)
+    const laid = (): Laid | undefined => (repairable ? { cnt: perLayer(() => new Uint16Array(n)), net: perLayer(cells) } : undefined)
     for (const pr of profiles) {
       const key = this.profileKey(pr.width, pr)
-      if (!this.owners.has(key)) this.owners.set(key, { profile: pr, arr: [new Int32Array(n).fill(FREE), new Int32Array(n).fill(FREE)] })
+      if (!this.owners.has(key)) this.owners.set(key, { profile: pr, arr: perLayer(cells), laid: laid() })
     }
     for (const net of viaNets) {
       const v = rr.of(net)
       const key = this.viaKey(v)
       if (!this.viaProfiles.has(key)) {
-        this.viaProfiles.set(key, { ...v, owner: [new Int32Array(n).fill(FREE), new Int32Array(n).fill(FREE)], padKeep: new Uint8Array(n), holeKeep: new Uint8Array(n) })
+        this.viaProfiles.set(key, { ...v, owner: perLayer(cells), padKeep: new Uint8Array(n), holeKeep: new Uint16Array(n), laid: laid() })
       }
     }
-    this.escape = [new Int32Array(n).fill(FREE), new Int32Array(n).fill(FREE)]
-    this.stampSrc = [new Uint32Array(n), new Uint32Array(n)]
-    this.stampTgt = [new Uint32Array(n), new Uint32Array(n)]
-    this.cost = new Float32Array(n * 2)
-    this.parent = new Int32Array(n * 2)
-    this.dir = new Int8Array(n * 2)
-    this.seen = new Uint32Array(n * 2)
-    this.closed = new Uint32Array(n * 2)
+    this.escape = perLayer(cells)
+    this.stampSrc = perLayer(() => new Uint32Array(n))
+    this.stampTgt = perLayer(() => new Uint32Array(n))
+    this.cost = new Float32Array(n * L)
+    this.parent = new Int32Array(n * L)
+    this.dir = new Int8Array(n * L)
+    this.seen = new Uint32Array(n * L)
+    this.closed = new Uint32Array(n * L)
     this.deadline = performance.now() + timeLimitMs
     this.markEdge()
     this.markKeepouts()
@@ -382,9 +539,9 @@ class Router {
   private reserveEscapes(shapes: { shape: Shape; net: string | null }[]) {
     const byPart = new Map<string, { pad: WorldPad; net: number; li: number }[]>()
     for (const { shape, net } of shapes) {
-      if (shape.kind !== "pad" || shape.layers.length !== 1 || !net || outerIndex(shape.layers[0]) < 0) continue
+      if (shape.kind !== "pad" || shape.layers.length !== 1 || !net || this.layerIndex(shape.layers[0]) < 0) continue
       const list = byPart.get(shape.pad.componentId) ?? []
-      list.push({ pad: shape.pad, net: this.netId(net), li: outerIndex(shape.layers[0]) })
+      list.push({ pad: shape.pad, net: this.netId(net), li: this.layerIndex(shape.layers[0]) })
       byPart.set(shape.pad.componentId, list)
     }
     for (const pads of byPart.values()) {
@@ -433,6 +590,11 @@ class Router {
     return this.viaProfiles.get(this.viaKey(this.rr.of(net)))!
   }
 
+  /** The grid of a copper layer, -1 for a layer the board does not have. */
+  layerIndex(layer: CopperLayer): number {
+    return this.layerAt.get(layer) ?? -1
+  }
+
   netId(net: string | null): number {
     if (!net || net === "short") return BLOCKED
     let i = this.netIndex.get(net)
@@ -465,16 +627,10 @@ class Router {
         const d = g ? (onBoard && !onBoard[iy * this.nx + ix] ? -1 : g.nearest(at, reachLimit)) : edgeDistance(b, at)
         const i = iy * this.nx + ix
         for (const { profile, arr } of this.owners.values()) {
-          if (d < this.project.rules.edgeClearance + profile.width / 2 + this.margin) {
-            arr[0][i] = BLOCKED
-            arr[1][i] = BLOCKED
-          }
+          if (d < this.project.rules.edgeClearance + profile.width / 2 + this.margin) for (const layer of arr) layer[i] = BLOCKED
         }
         for (const vp of this.viaProfiles.values()) {
-          if (d < this.project.rules.edgeClearance + vp.viaDiameter / 2 + this.margin) {
-            vp.owner[0][i] = BLOCKED
-            vp.owner[1][i] = BLOCKED
-          }
+          if (d < this.project.rules.edgeClearance + vp.viaDiameter / 2 + this.margin) for (const layer of vp.owner) layer[i] = BLOCKED
         }
       }
     }
@@ -502,15 +658,12 @@ class Router {
           const i = iy * this.nx + ix
           if (z.keepout.tracks) {
             for (const { profile, arr } of this.owners.values()) {
-              if (d < profile.width / 2 + this.margin) for (const l of layers) if (outerIndex(l) >= 0) arr[outerIndex(l)][i] = BLOCKED
+              if (d < profile.width / 2 + this.margin) for (const l of layers) if (this.layerIndex(l) >= 0) arr[this.layerIndex(l)][i] = BLOCKED
             }
           }
           if (z.keepout.vias) {
             for (const vp of this.viaProfiles.values()) {
-              if (d < vp.viaDiameter / 2 + this.margin) {
-                vp.owner[0][i] = BLOCKED
-                vp.owner[1][i] = BLOCKED
-              }
+              if (d < vp.viaDiameter / 2 + this.margin) for (const layer of vp.owner) layer[i] = BLOCKED
             }
           }
         }
@@ -518,7 +671,7 @@ class Router {
     }
   }
 
-  private markArea(arr: Int32Array, box: Box, reach: number, s: Shape, net: number) {
+  private markArea(arr: Cells, box: Box, reach: number, s: Shape, net: number) {
     const x0 = Math.max(0, Math.floor((box.minX - reach - this.ox) / this.g))
     const x1 = Math.min(this.nx - 1, Math.ceil((box.maxX + reach - this.ox) / this.g))
     const y0 = Math.max(0, Math.floor((box.minY - reach - this.oy) / this.g))
@@ -537,8 +690,128 @@ class Router {
     }
   }
 
-  /** Mark keepouts around copper of `net`. Pads also keep vias out for every net. */
-  addShape(s: Shape, netName: string | null) {
+  private markLaidArea(laid: Laid, li: number, box: Box, reach: number, s: Shape, net: number, delta: 1 | -1) {
+    const x0 = Math.max(0, Math.floor((box.minX - reach - this.ox) / this.g))
+    const x1 = Math.min(this.nx - 1, Math.ceil((box.maxX + reach - this.ox) / this.g))
+    const y0 = Math.max(0, Math.floor((box.minY - reach - this.oy) / this.g))
+    const y1 = Math.min(this.ny - 1, Math.ceil((box.maxY + reach - this.oy) / this.g))
+    const cnt = laid.cnt[li]
+    const ln = laid.net[li]
+    const p = { x: 0, y: 0 }
+    for (let iy = y0; iy <= y1; iy++) {
+      p.y = this.cy(iy)
+      for (let ix = x0; ix <= x1; ix++) {
+        p.x = this.cx(ix)
+        if (shapeDistance(p, s) >= reach) continue
+        const i = iy * this.nx + ix
+        const c = cnt[i]
+        if (delta > 0) {
+          ln[i] = c === 0 || ln[i] === net ? net : MIXED
+          cnt[i] = c + 1
+        } else if (c > 0) {
+          cnt[i] = c - 1
+          if (c === 1) ln[i] = FREE
+        }
+      }
+    }
+  }
+
+  /** Lay (1) or take up (-1) the keepouts of copper the run laid, kept apart in a repairable router, with the reaches `addShape` gives other copper. */
+  private markLaid(s: Shape, netName: string | null, delta: 1 | -1) {
+    const net = this.netId(netName)
+    const box = shapeBox(s)
+    for (const layer of s.layers) {
+      const at = this.layerIndex(layer)
+      if (at < 0) continue
+      for (const { profile, laid } of this.owners.values()) if (laid) this.markLaidArea(laid, at, box, this.rr.gap(profile, netName, s) + profile.width / 2 + this.margin, s, net, delta)
+      for (const vp of this.viaProfiles.values()) {
+        if (!vp.laid) continue
+        const reach = Math.max(this.rr.gap(vp, netName, s) + vp.viaDiameter / 2, this.holeNeed ? this.holeNeed + vp.viaDrill / 2 : 0) + this.margin
+        this.markLaidArea(vp.laid, at, box, reach, s, net, delta)
+      }
+    }
+    if (this.holeNeed && s.kind === "via" && s.drill) {
+      const hole: Shape = { kind: "via", at: s.at, diameter: s.drill, layers: s.layers }
+      const hb = shapeBox(hole)
+      for (const layer of hole.layers) {
+        const at = this.layerIndex(layer)
+        if (at < 0) continue
+        for (const { profile, laid } of this.owners.values()) if (laid) this.markLaidArea(laid, at, hb, this.holeNeed + profile.width / 2 + this.margin, hole, net, delta)
+        for (const vp of this.viaProfiles.values()) if (vp.laid) this.markLaidArea(vp.laid, at, hb, this.holeNeed + vp.viaDiameter / 2 + this.margin, hole, net, delta)
+      }
+    }
+  }
+
+  /** Take up copper the run laid (`addShape` with `laid`), in a repairable router. */
+  removeLaid(s: Shape, netName: string | null) {
+    if (!this.repairable) return
+    this.markLaid(s, netName, -1)
+    this.markViaHole(s, netName, -1)
+  }
+
+  /** Make the search arrays hold `m` widths at once (`route` with `narrow`): its nodes are a cell, a layer and a width. */
+  private growModes(m: number) {
+    const n = this.nx * this.ny
+    const size = n * this.L * m
+    this.cost = new Float32Array(size)
+    this.parent = new Int32Array(size)
+    this.dir = new Int8Array(size)
+    this.seen = new Uint32Array(size)
+    this.closed = new Uint32Array(size)
+    this.stampSrc2 = Array.from({ length: this.L }, () => new Uint32Array(n))
+    this.stampTgt2 = Array.from({ length: this.L }, () => new Uint32Array(n))
+    this.modes = m
+  }
+
+  /** The grid spacing's half, by which every keepout is wider than its clearance. */
+  get keepMargin(): number {
+    return this.margin
+  }
+
+  /**
+   * Search the outer layers only: no move along an inner layer and no via to one (a search that starts on inner copper vias out of it).
+   * The first pass of a board of more than two layers routes so, at a board of two's speed, and what it leaves open is routed on every layer.
+   */
+  outerOnly = false
+
+  /** A history for `SoftCost`, one per layer, all zero. */
+  newHistory(): Float32Array[] {
+    return Array.from({ length: this.L }, () => new Float32Array(this.nx * this.ny))
+  }
+
+  /** Add `amount` of history along a routed path's traces, for the cells a search that crossed there went through. */
+  bumpHistory(history: Float32Array[], path: RoutedPath, amount: number) {
+    for (const t of path.traces) {
+      const li = this.layerIndex(t.layer)
+      if (li < 0) continue
+      for (let k = 1; k < t.points.length; k++) {
+        const a = t.points[k - 1]
+        const b = t.points[k]
+        const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / this.g))
+        for (let s = 0; s <= steps; s++) {
+          const [ix, iy] = this.cellOf({ x: a.x + ((b.x - a.x) * s) / steps, y: a.y + ((b.y - a.y) * s) / steps })
+          if (this.inGrid(ix, iy)) history[li][iy * this.nx + ix] += amount
+        }
+      }
+    }
+  }
+
+  /** The shapes `commit` lays for a routed path: a segment per piece of each trace, a through via at each via. */
+  pathShapes(netName: string, path: RoutedPath): Shape[] {
+    const out: Shape[] = []
+    for (const t of path.traces) for (let k = 0; k < t.points.length - 1; k++) out.push({ kind: "segment", a: t.points[k], b: t.points[k + 1], width: t.width, layers: [t.layer] })
+    const via = this.rr.of(netName)
+    for (const v of path.vias) out.push({ kind: "via", at: v, diameter: via.viaDiameter, drill: via.viaDrill, layers: [...this.layers] })
+    return out
+  }
+
+  /** Mark keepouts around copper of `net`. Pads also keep vias out for every net. In a repairable router, `laid` copper is kept apart, to be taken up again. */
+  addShape(s: Shape, netName: string | null, laid = false) {
+    if (laid && this.repairable) {
+      this.markLaid(s, netName, 1)
+      this.markViaHole(s, netName, 1)
+      return
+    }
     const net = this.netId(netName)
     const box = shapeBox(s)
     // Keepouts are the larger of the routing net's class clearance and this copper's (its net's class; no net is Default).
@@ -546,28 +819,22 @@ class Router {
     // A clearance rule for the routing net and this copper's, or for the part a pad is on, replaces the classes' (`RouteRules.gap`).
     const own = s.kind === "pad" && s.pad.clearance ? s.pad.clearance : 0
     for (const layer of s.layers) {
-      const at = outerIndex(layer)
-      // Copper on an inner layer keeps vias away (a via has copper there too) and keeps no track, which never goes there.
-      if (at >= 0) for (const { profile, arr } of this.owners.values()) this.markArea(arr[at], box, Math.max(own, this.rr.gap(profile, netName, s)) + profile.width / 2 + this.margin, s, net)
+      const at = this.layerIndex(layer)
+      if (at < 0) continue
+      for (const { profile, arr } of this.owners.values()) this.markArea(arr[at], box, Math.max(own, this.rr.gap(profile, netName, s)) + profile.width / 2 + this.margin, s, net)
       for (const vp of this.viaProfiles.values()) {
-        const reach = Math.max(own, this.rr.gap(vp, netName, s)) + vp.viaDiameter / 2 + this.margin
-        for (const li of at >= 0 ? [at] : [0, 1]) this.markArea(vp.owner[li], box, reach, s, s.kind === "pad" ? BLOCKED : net)
+        // A via's drill keeps KiCad's hole clearance from this copper too, where that reaches further than its own copper's clearance.
+        const reach = Math.max(Math.max(own, this.rr.gap(vp, netName, s)) + vp.viaDiameter / 2, this.holeNeed ? this.holeNeed + vp.viaDrill / 2 : 0) + this.margin
+        this.markArea(vp.owner[at], box, reach, s, s.kind === "pad" ? BLOCKED : net)
       }
     }
-    if (s.kind === "via" && this.strictVias) {
-      // A new via's drill keeps the hole clearance from this one's, even on the same net.
-      const theirs = this.rr.classed ? (s.drill ?? this.rr.of(netName).viaDrill) : undefined
-      for (const vp of this.viaProfiles.values()) {
-        const reach = (theirs === undefined ? vp.viaDrill : (vp.viaDrill + theirs) / 2) + this.project.rules.holeClearance + 1e-6
-        const x0 = Math.max(0, Math.floor((s.at.x - reach - this.ox) / this.g))
-        const x1 = Math.min(this.nx - 1, Math.ceil((s.at.x + reach - this.ox) / this.g))
-        const y0 = Math.max(0, Math.floor((s.at.y - reach - this.oy) / this.g))
-        const y1 = Math.min(this.ny - 1, Math.ceil((s.at.y + reach - this.oy) / this.g))
-        for (let iy = y0; iy <= y1; iy++) {
-          for (let ix = x0; ix <= x1; ix++) if (Math.hypot(this.cx(ix) - s.at.x, this.cy(iy) - s.at.y) < reach) vp.holeKeep[iy * this.nx + ix] = 1
-        }
-      }
+    // On a project from KiCad, copper of another net keeps the hole clearance from a hole, on every layer it goes through, and copper of every net
+    // from a hole with no net (an unplated one): KiCad's `hole_clearance`, which a pad's copper ring or a via's does not always cover.
+    if (this.holeNeed) {
+      const hole = s.kind === "pad" ? holeShape(s.pad, [...this.layers]) : s.kind === "via" && s.drill ? ({ kind: "via", at: s.at, diameter: s.drill, layers: s.layers } as Shape) : null
+      if (hole) this.markHole(hole, net)
     }
+    this.markViaHole(s, netName, 1)
     if (s.kind === "pad") {
       // Vias never go in or right next to pads, even on the same net.
       for (const vp of this.viaProfiles.values()) {
@@ -581,19 +848,66 @@ class Router {
     }
   }
 
-  /** True when a trace of `width` may be centred on the cell, as far as other nets' copper goes. */
-  cellFree(li: number, ix: number, iy: number, netName: string, width: number): boolean {
-    const arr = this.ownersFor(width, netName)?.arr
-    if (!arr || !this.inGrid(ix, iy)) return false
-    const v = arr[li][iy * this.nx + ix]
-    return v === FREE || v === this.netId(netName)
+  /** Fine-pitch mode: count (1) or take back (-1) the cells where a new via's drill would come within the hole clearance of this via's. */
+  private markViaHole(s: Shape, netName: string | null, delta: 1 | -1) {
+    if (s.kind !== "via" || !this.strictVias) return
+    // A new via's drill keeps the hole clearance from this one's, even on the same net.
+    const theirs = this.rr.classed ? (s.drill ?? this.rr.of(netName).viaDrill) : undefined
+    for (const vp of this.viaProfiles.values()) {
+      const reach = (theirs === undefined ? vp.viaDrill : (vp.viaDrill + theirs) / 2) + this.project.rules.holeClearance + 1e-6
+      const x0 = Math.max(0, Math.floor((s.at.x - reach - this.ox) / this.g))
+      const x1 = Math.min(this.nx - 1, Math.ceil((s.at.x + reach - this.ox) / this.g))
+      const y0 = Math.max(0, Math.floor((s.at.y - reach - this.oy) / this.g))
+      const y1 = Math.min(this.ny - 1, Math.ceil((s.at.y + reach - this.oy) / this.g))
+      for (let iy = y0; iy <= y1; iy++) {
+        for (let ix = x0; ix <= x1; ix++) {
+          if (Math.hypot(this.cx(ix) - s.at.x, this.cy(iy) - s.at.y) >= reach) continue
+          const i = iy * this.nx + ix
+          if (delta > 0) vp.holeKeep[i]++
+          else if (vp.holeKeep[i] > 0) vp.holeKeep[i]--
+        }
+      }
+    }
   }
 
-  viaAllowed(i: number, net: number, vp: ViaProfile): boolean {
+  /** Keep traces and vias of other nets (every net, for a hole of none) `holeNeed` from a hole's wall. */
+  private markHole(hole: Shape, net: number) {
+    const box = shapeBox(hole)
+    for (const layer of hole.layers) {
+      const at = this.layerIndex(layer)
+      if (at < 0) continue
+      for (const { profile, arr } of this.owners.values()) this.markArea(arr[at], box, this.holeNeed + profile.width / 2 + this.margin, hole, net)
+      for (const vp of this.viaProfiles.values()) this.markArea(vp.owner[at], box, this.holeNeed + vp.viaDiameter / 2 + this.margin, hole, net)
+    }
+  }
+
+  /** True when a trace of `width` may be centred on the cell, as far as other nets' copper goes. */
+  cellFree(li: number, ix: number, iy: number, netName: string, width: number): boolean {
+    const o = this.ownersFor(width, netName)
+    if (!o || !this.inGrid(ix, iy)) return false
+    const i = iy * this.nx + ix
+    const v = o.arr[li][i]
+    const net = this.netId(netName)
+    return (v === FREE || v === net) && !laidOther(o.laid, li, i, net)
+  }
+
+  /** A through via may be centred on the cell: clear on every layer, since it has copper on all of them. Laid copper of other nets is crossed when `soft`. */
+  viaAllowed(i: number, net: number, vp: ViaProfile, soft = false): boolean {
     if (vp.padKeep[i] || vp.holeKeep[i]) return false
-    const a = vp.owner[0][i]
-    const b = vp.owner[1][i]
-    return (a === FREE || a === net) && (b === FREE || b === net)
+    for (const layer of vp.owner) {
+      const v = layer[i]
+      if (v !== FREE && v !== net) return false
+    }
+    if (vp.laid && !soft) for (let li = 0; li < this.L; li++) if (laidOther(vp.laid, li, i, net)) return false
+    return true
+  }
+
+  /** What a soft search pays for a via at the cell: per layer where laid copper of another net keeps vias out. */
+  private viaSoftCost(i: number, net: number, vp: ViaProfile, soft: SoftCost): number {
+    if (!vp.laid) return 0
+    let c = 0
+    for (let li = 0; li < this.L; li++) if (laidOther(vp.laid, li, i, net)) c += soft.penalty + soft.history[li][i]
+    return c
   }
 
   /**
@@ -625,9 +939,10 @@ class Router {
     shapes: Shape[],
     width: number,
     net: number,
-    owner: Int32Array[],
+    owner: Cells[],
     seeds?: number[],
     necks?: Map<WorldPad, number>,
+    laid?: Laid,
   ): Box {
     const n = this.nx * this.ny
     const box: Box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
@@ -654,11 +969,11 @@ class Router {
           else ok = Math.hypot(p.x - s.at.x, p.y - s.at.y) <= s.diameter / 2 - width / 2 + 1e-6
           if (!ok) continue
           for (const layer of s.layers) {
-            const li = outerIndex(layer)
+            const li = this.layerIndex(layer)
             if (li < 0) continue
             const v = owner[li][i]
             // Inside a pad by half a trace width the new copper is covered by the pad itself; a trace wider than the pad, which a neck leaves it by, is not.
-            if ((s.kind !== "pad" || neck) && v !== FREE && v !== net) continue
+            if ((s.kind !== "pad" || neck) && ((v !== FREE && v !== net) || laidOther(laid, li, i, net))) continue
             if (target[li][i] !== this.stamp) seeds?.push(li * n + i)
             target[li][i] = this.stamp
           }
@@ -673,10 +988,18 @@ class Router {
   }
 
   /**
-   * A* from the source copper to the target copper on two layers. When `toPour` is set, the
-   * goal is instead any cell inside a pour's fill where a via fits, on either layer that has one
-   * (`inFill`, by layer index): a trace on the fill's own layer ends in it, one on the other layer
-   * ends in a via into it, whichever is nearer.
+   * A* from the source copper to the target copper on every layer. When `toPour` is set, the
+   * goal is instead any cell inside a pour's fill where a via fits, on any layer that has one
+   * (`inFill`, by layer index): a trace on the fill's own layer ends in it, one on another layer
+   * ends in a via into it, whichever is nearer. With `soft` (a repairable router), copper the run
+   * laid for other nets is crossed at a cost instead of kept clear of, and the path found is not
+   * committed: the caller takes up what it crosses first.
+   *
+   * With `narrow`, the search runs at two widths at once: `width` wherever a trace of it fits and `narrow` only where it does not, each
+   * cell at `narrow` costing `NARROW_EXTRA` more and each change of width `WIDTH_CHANGE`. A supply into a crowded corner then necks down
+   * for the stretch that has no room and is full width on either side of it, where routing it at `narrow` end to end made the whole
+   * connection thin (issue: a 0.4 mm VBUS laid at 0.25 mm from a decoupling capacitor to its pin, through two vias, for a gap of 0.3 mm).
+   * The pieces laid at `narrow` are listed in the result's `narrowIdx`. With `dry` the path is only looked for, not laid.
    */
   route(
     netName: string,
@@ -684,37 +1007,59 @@ class Router {
     target: Shape[] | null,
     width: number,
     toPour?: { inFill: (((p: Vec2) => boolean) | null)[] },
+    soft?: SoftCost,
+    narrow?: number,
+    /** Only look: the path found is not laid. */
+    dry = false,
   ): RoutedPath | null {
     if (performance.now() > this.deadline) return null
     const net = this.netId(netName)
-    const owner = this.ownersFor(width, netName)!.arr
+    const narrowKeep = narrow !== undefined && narrow < width - 1e-9 ? this.ownersFor(narrow, netName) : undefined
+    const M = narrowKeep ? 2 : 1
+    const widthOf = [width, narrow ?? width]
+    const keeps = [this.ownersFor(width, netName)!, narrowKeep ?? this.ownersFor(width, netName)!]
+    const owners = keeps.map((k) => k.arr)
+    const lays = keeps.map((k) => k.laid)
     const vp = this.viaProfileOf(netName)
     const nx = this.nx
     const n = nx * this.ny
-    this.stamp++
-    const srcStamp = this.stamp
+    const L = this.L
+    const NL = n * L
+    if (M > this.modes) this.growModes(M)
+    const stampSrc = [this.stampSrc, this.stampSrc2]
+    const stampTgt = [this.stampTgt, this.stampTgt2]
+    const srcStamps = [0, 0]
+    const tgtStamps = [0, 0]
     const seeds: number[] = []
-    const necks = new Map<WorldPad, number>()
-    this.stampShapes(this.stampSrc, source, width, net, owner, seeds, necks)
-    let tb: Box = { minX: 0, minY: 0, maxX: 0, maxY: 0 }
-    let tgtStamp = 0
-    if (target) {
+    const neckMaps = [new Map<WorldPad, number>(), new Map<WorldPad, number>()]
+    let tb: Box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+    for (let m = 0; m < M; m++) {
       this.stamp++
-      tgtStamp = this.stamp
-      tb = this.stampShapes(this.stampTgt, target, width, net, owner, undefined, necks)
-      if (!Number.isFinite(tb.minX)) return null
+      srcStamps[m] = this.stamp
+      const from: number[] = []
+      this.stampShapes(stampSrc[m], source, widthOf[m], net, owners[m], from, neckMaps[m], lays[m])
+      for (const node of from) seeds.push(m * NL + node)
+      if (target) {
+        this.stamp++
+        tgtStamps[m] = this.stamp
+        const b = this.stampShapes(stampTgt[m], target, widthOf[m], net, owners[m], undefined, neckMaps[m], lays[m])
+        tb = { minX: Math.min(tb.minX, b.minX), minY: Math.min(tb.minY, b.minY), maxX: Math.max(tb.maxX, b.maxX), maxY: Math.max(tb.maxY, b.maxY) }
+      }
     }
+    if (target && !Number.isFinite(tb.minX)) return null
     const fillMemo = new Map<number, boolean>()
     const isGoal = (node: number) => {
-      const li = node >= n ? 1 : 0
-      const i = node - li * n
-      if (target) return this.stampTgt[li][i] === tgtStamp
+      const m = node >= NL ? 1 : 0
+      const rest = node - m * NL
+      const li = (rest / n) | 0
+      const i = rest - li * n
+      if (target) return stampTgt[m][li][i] === tgtStamps[m]
       const inFill = toPour?.inFill[li]
       if (!inFill || !this.viaAllowed(i, net, vp)) return false
-      let hit = fillMemo.get(node)
+      let hit = fillMemo.get(rest)
       if (hit === undefined) {
         hit = inFill({ x: this.cx(i % nx), y: this.cy(Math.floor(i / nx)) })
-        fillMemo.set(node, hit)
+        fillMemo.set(rest, hit)
       }
       return hit
     }
@@ -726,110 +1071,144 @@ class Router {
       const dy = Math.max(tb.minY - iy, 0, iy - tb.maxY)
       return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy)
     }
-    const passable = (li: number, i: number) => {
-      const v = owner[li][i]
-      return v === FREE || v === net || this.stampSrc[li][i] === srcStamp || (target !== null && this.stampTgt[li][i] === tgtStamp)
+    const outerOnly = this.outerOnly && L > 2
+    const passable = (m: number, li: number, i: number) => {
+      const v = owners[m][li][i]
+      const laid = lays[m]
+      if ((v === FREE || v === net) && !(laid !== undefined && soft === undefined && laid.cnt[li][i] > 0 && laid.net[li][i] !== net)) return true
+      return stampSrc[m][li][i] === srcStamps[m] || (target !== null && stampTgt[m][li][i] === tgtStamps[m])
     }
 
     this.search++
     const s = this.search
     const heap = new MinHeap()
+    const seen = this.seen
+    const cost = this.cost
+    const parent = this.parent
+    const dirOf = this.dir
+    const closed = this.closed
+    const ny = this.ny
+    const cap = (this.strictVias ? FINE_MAX_EXPANSIONS : MAX_EXPANSIONS) * M
+    const viaCostBase = this.viaCost
     for (const node of seeds) {
-      this.seen[node] = s
-      this.cost[node] = 0
-      this.parent[node] = -1
-      this.dir[node] = -1
+      seen[node] = s
+      cost[node] = 0
+      parent[node] = -1
+      dirOf[node] = -1
       heap.push(node, h(node % n))
+    }
+    const relax = (next: number, c: number, from: number, d: number, i: number) => {
+      if (seen[next] === s && c >= cost[next]) return
+      seen[next] = s
+      cost[next] = c
+      parent[next] = from
+      dirOf[next] = d
+      heap.push(next, c + h(i))
     }
     let goal = -1
     let expansions = 0
+    // Whether each orthogonal neighbour may be entered (east, south, west, north: DIRS 0, 2, 4, 6), which the diagonal moves ask too.
+    const orth = [false, false, false, false]
     while (heap.size) {
       const node = heap.pop()
-      if (this.closed[node] === s) continue
-      this.closed[node] = s
-      if (isGoal(node) && this.parent[node] !== -1) {
+      if (closed[node] === s) continue
+      closed[node] = s
+      if (isGoal(node) && parent[node] !== -1) {
         goal = node
         break
       }
-      if (++expansions > (this.strictVias ? FINE_MAX_EXPANSIONS : MAX_EXPANSIONS)) break
+      if (++expansions > cap) break
       if ((expansions & 4095) === 0 && performance.now() > this.deadline) break
-      const li = node >= n ? 1 : 0
-      const i = node - li * n
+      const m = node >= NL ? 1 : 0
+      const rest = node - m * NL
+      const li = (rest / n) | 0
+      const i = rest - li * n
       const ix = i % nx
       const iy = (i - ix) / nx
-      const base = this.cost[node]
-      const d0 = this.dir[node]
-      for (let d = 0; d < 8; d++) {
-        const jx = ix + DIRS[d][0]
-        const jy = iy + DIRS[d][1]
-        if (!this.inGrid(jx, jy)) continue
-        const j = jy * nx + jx
-        if (!passable(li, j)) continue
-        // Diagonal moves must not squeeze between two blocked orthogonal cells.
-        if (d % 2 === 1 && !passable(li, iy * nx + jx) && !passable(li, jy * nx + ix)) continue
+      const base = cost[node]
+      const d0 = dirOf[node]
+      const esc = this.escape[li]
+      const laid = lays[m]
+      const off = m * NL
+      const stay = !(outerOnly && li > 0 && li < L - 1)
+      orth[0] = stay && ix + 1 < nx && passable(m, li, i + 1)
+      orth[1] = stay && iy + 1 < ny && passable(m, li, i + nx)
+      orth[2] = stay && ix > 0 && passable(m, li, i - 1)
+      orth[3] = stay && iy > 0 && passable(m, li, i - nx)
+      for (let d = 0; stay && d < 8; d++) {
+        let j: number
+        if ((d & 1) === 0) {
+          if (!orth[d >> 1]) continue
+          j = i + DIR_OFFSET_X[d] + DIR_OFFSET_Y[d] * nx
+        } else {
+          const jx = ix + DIR_OFFSET_X[d]
+          const jy = iy + DIR_OFFSET_Y[d]
+          if (jx < 0 || jy < 0 || jx >= nx || jy >= ny) continue
+          j = jy * nx + jx
+          if (!passable(m, li, j)) continue
+          // Diagonal moves must not squeeze between two blocked orthogonal cells.
+          if (!orth[DIAGONAL_SIDES[d][0]] && !orth[DIAGONAL_SIDES[d][1]]) continue
+        }
         let turn = 0
         if (d0 >= 0) {
           const diff = Math.abs(d - d0)
           turn = TURN_COST[Math.min(diff, 8 - diff)]
         }
-        const esc = this.escape[li][j]
-        const step = (d % 2 === 1 ? Math.SQRT2 : 1) + turn + (esc >= 0 && esc !== net ? ESCAPE_COST : 0)
-        const next = li * n + j
-        const c = base + step
-        if (this.seen[next] === s && c >= this.cost[next]) continue
-        this.seen[next] = s
-        this.cost[next] = c
-        this.parent[next] = node
-        this.dir[next] = d
-        heap.push(next, c + h(j))
+        const e = esc[j]
+        const len = (d & 1) === 1 ? Math.SQRT2 : 1
+        let step = len + turn + (e >= 0 && e !== net ? ESCAPE_COST : 0)
+        if (m === 1) step += len * NARROW_EXTRA
+        if (soft && laidOther(laid, li, j, net)) step += soft.penalty + soft.history[li][j]
+        relax(off + li * n + j, base + step, node, d, j)
       }
-      // Layer change through a via.
-      if (this.viaAllowed(i, net, vp)) {
-        const other = (1 - li) * n + i
-        if (passable(1 - li, i)) {
-          const c = base + VIA_COST
-          if (!(this.seen[other] === s && c >= this.cost[other])) {
-            this.seen[other] = s
-            this.cost[other] = c
-            this.parent[other] = node
-            this.dir[other] = -1
-            heap.push(other, c + h(i))
-          }
+      // The other width on the same cell, where a trace of it may be centred too.
+      if (M === 2 && passable(1 - m, li, i)) relax((1 - m) * NL + li * n + i, base + WIDTH_CHANGE, node, d0, i)
+      // Layer change through a (through) via, to any other layer at one cost.
+      const viaHere = this.viaAllowed(i, net, vp, soft !== undefined)
+      if (viaHere) {
+        const viaCost = viaCostBase + (soft ? this.viaSoftCost(i, net, vp, soft) : 0)
+        for (let lj = 0; lj < L; lj++) {
+          if (lj === li || (outerOnly && lj > 0 && lj < L - 1) || !passable(m, lj, i)) continue
+          relax(off + lj * n + i, base + viaCost, node, -1, i)
         }
       }
-      if (toPour && this.viaAllowed(i, net, vp) && isGoal((1 - li) * n + i)) {
-        const other = (1 - li) * n + i
-        this.seen[other] = s
-        this.cost[other] = base + VIA_COST
-        this.parent[other] = node
-        this.dir[other] = -1
-        goal = other
+      // A via here into a pour's fill on another layer ends the search.
+      let into = -1
+      for (let lj = 0; toPour && viaHere && into < 0 && lj < L; lj++) if (lj !== li && isGoal(off + lj * n + i)) into = off + lj * n + i
+      if (into >= 0) {
+        seen[into] = s
+        cost[into] = base + viaCostBase
+        parent[into] = node
+        dirOf[into] = -1
+        goal = into
         break
       }
     }
     if (goal < 0) return null
 
-    // Walk back into cells, then split into per-layer runs at vias.
+    // Walk back into cells, then split into runs: a new one at each via (a new layer) and at each change of width.
     const nodes: number[] = []
-    for (let cur = goal; cur !== -1; cur = this.parent[cur]) nodes.push(cur)
+    for (let cur = goal; cur !== -1; cur = parent[cur]) nodes.push(cur)
     nodes.reverse()
-    const runs: { layer: number; pts: Vec2[] }[] = []
+    const runs: { layer: number; mode: number; pts: Vec2[] }[] = []
     const vias: Vec2[] = []
     for (const node of nodes) {
-      const li = node >= n ? 1 : 0
-      const i = node - li * n
+      const m = node >= NL ? 1 : 0
+      const rest = node - m * NL
+      const li = (rest / n) | 0
+      const i = rest - li * n
       const p = { x: round(this.cx(i % nx), 4), y: round(this.cy(Math.floor(i / nx)), 4) }
       const last = runs[runs.length - 1]
-      if (!last || last.layer !== li) {
-        if (last) vias.push(p)
-        runs.push({ layer: li, pts: [p] })
+      if (!last || last.layer !== li || last.mode !== m) {
+        if (last && last.layer !== li) vias.push(p)
+        runs.push({ layer: li, mode: m, pts: [p] })
       } else last.pts.push(p)
     }
     // Pour fanouts end in a via on the far layer; drop that empty run.
     if (toPour && runs.length > 1 && runs[runs.length - 1].pts.length === 1) runs.pop()
 
     // Tie the ends to the copper they started from and landed on.
-    const snapEnd = (p: Vec2, shapes: Shape[], layer: CopperLayer): Vec2 => {
+    const snapEnd = (p: Vec2, shapes: Shape[], layer: CopperLayer, owner: Cells[]): Vec2 => {
       for (const sh of shapes) {
         if (!sh.layers.includes(layer)) continue
         if (sh.kind === "pad" && pointPadDistance(p, sh.pad) === 0) {
@@ -837,7 +1216,7 @@ class Router {
           // with classes, where the cell at the centre is in another net's keepout, the trace starts where the search did, still inside the pad.
           if (this.rr.classed) {
             const [cx, cy] = this.cellOf({ x: sh.pad.x, y: sh.pad.y })
-            const v = this.inGrid(cx, cy) ? owner[layer === "top" ? 0 : 1][cy * nx + cx] : FREE
+            const v = this.inGrid(cx, cy) ? owner[this.layerIndex(layer)][cy * nx + cx] : FREE
             if (v !== FREE && v !== net) return p
           }
           return { x: sh.pad.x, y: sh.pad.y }
@@ -853,34 +1232,63 @@ class Router {
     const first = runs[0]
     const lastRun = runs[runs.length - 1]
     // The pad an end leaves by a neck, found from the cell the search began or ended in, which is inside it.
-    const neckAt = (p: Vec2, shapes: Shape[], layer: CopperLayer): Neck | null => {
+    const neckAt = (p: Vec2, shapes: Shape[], layer: CopperLayer, necks: Map<WorldPad, number>): Neck | null => {
       for (const sh of shapes) if (sh.kind === "pad" && necks.has(sh.pad) && sh.layers.includes(layer) && pointPadDistance(p, sh.pad) === 0) return { pad: sh.pad, width: necks.get(sh.pad)! }
       return null
     }
-    const startNeck = neckAt(first.pts[0], source, LAYERS[first.layer])
-    const endNeck = target ? neckAt(lastRun.pts[lastRun.pts.length - 1], target, LAYERS[lastRun.layer]) : null
-    first.pts.unshift(snapEnd(first.pts[0], source, LAYERS[first.layer]))
-    if (target) lastRun.pts.push(snapEnd(lastRun.pts[lastRun.pts.length - 1], target, LAYERS[lastRun.layer]))
+    const startNeck = neckAt(first.pts[0], source, this.layers[first.layer], neckMaps[first.mode])
+    const endNeck = target ? neckAt(lastRun.pts[lastRun.pts.length - 1], target, this.layers[lastRun.layer], neckMaps[lastRun.mode]) : null
+    first.pts.unshift(snapEnd(first.pts[0], source, this.layers[first.layer], owners[first.mode]))
+    if (target) lastRun.pts.push(snapEnd(lastRun.pts[lastRun.pts.length - 1], target, this.layers[lastRun.layer], owners[lastRun.mode]))
 
+    // A narrower first or last stretch, of less than `ESCAPE_NECK`, from copper no wider than it (a pad of a fine-pitch row, or the neck out
+    // of one) is the way out of the row: the pads beside it leave no room for the width until the trace is past them, and it is no narrower
+    // than the copper it carries the current of.
+    const smallPadAt = (p: Vec2, shapes: Shape[], layer: CopperLayer, w: number) =>
+      shapes.some(
+        (sh) =>
+          sh.layers.includes(layer) &&
+          ((sh.kind === "pad" && pointPadDistance(p, sh.pad) <= this.g && Math.min(sh.pad.width, sh.pad.height) <= w + 1e-6) ||
+            (sh.kind === "segment" && sh.width <= w + 1e-6 && pointSegmentDistance(p, sh.a, sh.b) <= sh.width / 2 + 1e-6)),
+      )
+    // A connection between two pads of one part, each narrower than the width (a USB-C receptacle's two VBUS pads), carries no more than
+    // those pads do: what it lays narrower between them is no narrowing either.
+    const padAtEnd = (p: Vec2, shapes: Shape[], layer: CopperLayer) =>
+      shapes.find((sh): sh is Extract<Shape, { kind: "pad" }> => sh.kind === "pad" && sh.layers.includes(layer) && pointPadDistance(p, sh.pad) <= this.g)?.pad
+    const startPad = padAtEnd(first.pts[0], source, this.layers[first.layer])
+    const endPad = target ? padAtEnd(lastRun.pts[lastRun.pts.length - 1], target, this.layers[lastRun.layer]) : undefined
+    const slimPad = (pad: WorldPad | undefined) => !!pad && Math.min(pad.width, pad.height) < width - 1e-6
+    const withinPart = !!startPad && !!endPad && startPad.componentId === endPad.componentId && slimPad(startPad) && slimPad(endPad)
     const traces: Omit<Trace, "id">[] = []
+    const narrowIdx: number[] = []
     runs.forEach((run, k) => {
       const pts = simplifyPolyline(run.pts.filter((p, i) => i === 0 || !samePoint(p, run.pts[i - 1])))
       if (pts.length < 2) return
-      for (const piece of neckDown(pts, width, k === 0 ? startNeck : null, k === runs.length - 1 ? endNeck : null)) traces.push({ layer: LAYERS[run.layer], ...piece })
+      const w = widthOf[run.mode]
+      const layer = this.layers[run.layer]
+      const escape =
+        run.mode === 1 &&
+        polylineLength(pts) <= ESCAPE_NECK + 1e-9 &&
+        ((k === 0 && smallPadAt(pts[0], source, layer, w)) || (k === runs.length - 1 && target !== null && smallPadAt(pts[pts.length - 1], target, layer, w)))
+      for (const piece of neckDown(pts, w, k === 0 ? startNeck : null, k === runs.length - 1 ? endNeck : null)) {
+        // A neck at a pad too small for the width is the pad's own size, not a narrowing.
+        if (run.mode === 1 && !escape && !withinPart && Math.abs(piece.width - w) < 1e-9) narrowIdx.push(traces.length)
+        traces.push({ layer, ...piece })
+      }
     })
-    const result = { traces, vias, net: netName }
-    this.commit(netName, result)
+    const result: RoutedPath = { traces, vias, net: netName, ...(narrowIdx.length ? { narrowIdx } : {}) }
+    if (!soft && !dry) this.commit(netName, result)
     return result
   }
 
+  /** Lay a routed path's copper; a repairable router keeps it apart, as the run's own, to be taken up again (`uncommit`). */
   commit(netName: string, path: RoutedPath) {
-    for (const t of path.traces) {
-      for (let k = 0; k < t.points.length - 1; k++) {
-        this.addShape({ kind: "segment", a: t.points[k], b: t.points[k + 1], width: t.width, layers: [t.layer] }, netName)
-      }
-    }
-    const via = this.rr.of(netName)
-    for (const v of path.vias) this.addShape({ kind: "via", at: v, diameter: via.viaDiameter, drill: via.viaDrill, layers: [...copperLayers(this.project.board)] }, netName)
+    for (const s of this.pathShapes(netName, path)) this.addShape(s, netName, this.repairable)
+  }
+
+  /** Take up a path `commit` laid, in a repairable router. */
+  uncommit(netName: string, path: RoutedPath) {
+    for (const s of this.pathShapes(netName, path)) this.removeLaid(s, netName)
   }
 }
 
@@ -976,7 +1384,7 @@ function escapeStub(
 ): Omit<Trace, "id"> | null {
   const p = pad.pad
   const layer = pad.layers[0]
-  const li = outerIndex(layer) < 0 ? 0 : outerIndex(layer)
+  const li = Math.max(0, router.layerIndex(layer))
   const cx = mates.reduce((a, o) => a + o.pad.x, 0) / mates.length
   const cy = mates.reduce((a, o) => a + o.pad.y, 0) / mates.length
   const alongX = Math.abs(p.width - p.height) >= 0.1 ? p.width > p.height : Math.abs(p.x - cx) > Math.abs(p.y - cy)
@@ -1068,9 +1476,10 @@ function isPowerNet(sch: SchematicConnectivity, project: Project, netId: string)
   })
 }
 
-function obstacleShapes(analysis: PcbAnalysis, drills?: Map<string, number>): { shape: Shape; net: string | null }[] {
+function obstacleShapes(analysis: PcbAnalysis, drills?: Map<string, number>, skip?: (it: CopperItem) => boolean): { shape: Shape; net: string | null }[] {
   const out: { shape: Shape; net: string | null }[] = []
   for (const it of analysis.items) {
+    if (skip?.(it)) continue
     const shape = shapeOf(it, drills)
     if (!shape) continue
     const root = analysis.island.get(it.id)
@@ -1082,19 +1491,18 @@ function obstacleShapes(analysis: PcbAnalysis, drills?: Map<string, number>): { 
 }
 
 /** The board with `paths` laid on it; `laid` hears the ids each path's traces were given. */
-function apply(project: Project, paths: RoutedPath[], rr: RouteRules, laid?: (path: RoutedPath, traceIds: string[]) => void): Project {
+function apply(project: Project, paths: RoutedPath[], rr: RouteRules, laid?: (path: RoutedPath, traceIds: string[], viaIds: string[]) => void): Project {
   if (!paths.length) return project
   const traces: Trace[] = []
   const vias: Via[] = []
   for (const p of paths) {
     const ids = p.traces.map(() => uid("t"))
     p.traces.forEach((t, i) => traces.push({ ...t, id: ids[i] }))
-    laid?.(p, ids)
     // a via is the size of its net's class (the rules' for a board with no classes)
     const size = rr.of(p.net)
-    for (const v of p.vias) {
-      vias.push({ id: uid("v"), x: v.x, y: v.y, diameter: size.viaDiameter, drill: size.viaDrill })
-    }
+    const viaIds = p.vias.map(() => uid("v"))
+    p.vias.forEach((v, i) => vias.push({ id: viaIds[i], x: v.x, y: v.y, diameter: size.viaDiameter, drill: size.viaDrill }))
+    laid?.(p, ids, viaIds)
   }
   return { ...project, updatedAt: Date.now(), traces: [...project.traces, ...traces], vias: [...project.vias, ...vias] }
 }
@@ -1170,6 +1578,14 @@ function fineReport(project: Project, sch: SchematicConnectivity): { report: Fin
   return { report: any ? { stuck, feasible } : null, analysis }
 }
 
+/** What one attempt left: the result, the nets still open, how many of those are at fine-pitch pads, and how it was routed. */
+interface AttemptOutcome {
+  result: AutorouteResult
+  failed: string[]
+  fineOpen: number
+  mode: AttemptMode
+}
+
 interface AttemptMode {
   /** Fine-pitch mode: escape stubs, fine-pitch nets first, trace widths down to the board's minimum. */
   fine: boolean
@@ -1182,6 +1598,97 @@ interface AttemptMode {
 }
 
 /**
+ * Another way to route the board than the router's own: an order of the connections and a cost of vias. A greedy router lays one
+ * connection at a time and keeps what it laid, so which goes first decides what the later ones find, and on a crowded board a part
+ * moved 0.1 mm could leave a connection open that the same router in another order routes (a user's USB-C bridge: 26 of 37 layouts
+ * from its history routed whole in the one order). `autoroute` routes the board again in these, while there is time and the best so far
+ * is not clean, and keeps the best (`compareResults`).
+ */
+interface Variant {
+  /** Nets that hold a width (a width of their own, a supply's) before the signals, so they take the room at their width. */
+  wideFirst?: boolean
+  /** The nets that failed in the best so far go first, as the retries do. */
+  failedFirst?: boolean
+  /** Longest connections first, instead of shortest. */
+  longFirst?: boolean
+  /** Shortest first, but each length scaled by 0.4 to 1.6, the same for the same seed and connection: a shuffled order that stays close to shortest first. */
+  seed?: number
+  /** What a via costs, in cells of track (`VIA_COST` is the router's own): cheaper vias let a connection hop over the copper in its way, dearer ones keep it on its layer. */
+  viaCost?: number
+  /**
+   * A connection with no room for its net's width goes in narrower end to end, as the router did before it could neck down where it must:
+   * thinner copper takes less room, and on a crowded board that room is what another connection needs.
+   */
+  thinFallback?: boolean
+  /** On a board routed in fine-pitch mode, which of its four ways (`fineModes`: stubs staggered or not, wide or narrow) to route in; the best so far's when not said. */
+  fine?: number
+}
+
+const VARIANTS: Variant[] = [
+  { wideFirst: true },
+  { thinFallback: true, fine: 0 },
+  { wideFirst: true, failedFirst: true },
+  { seed: 1 },
+  { wideFirst: true, viaCost: 14 },
+  { thinFallback: true, fine: 1 },
+  { longFirst: true },
+  { wideFirst: true, seed: 2, fine: 2 },
+  { seed: 3, viaCost: 60 },
+  { thinFallback: true, failedFirst: true },
+  { wideFirst: true, seed: 4, viaCost: 14, fine: 1 },
+  { failedFirst: true, seed: 5, fine: 3 },
+  { wideFirst: true, longFirst: true, fine: 0 },
+  { thinFallback: true, seed: 6, fine: 3 },
+  { seed: 7, viaCost: 14 },
+  { wideFirst: true, seed: 8, viaCost: 60, fine: 2 },
+  { wideFirst: true, failedFirst: true, viaCost: 14, fine: 3 },
+  { thinFallback: true, viaCost: 14, fine: 2 },
+]
+
+/** A number in [0, 1) for a seed and a key, the same every time. */
+function jitter(seed: number, key: string): number {
+  let h = (2166136261 ^ Math.imul(seed, 0x9e3779b1)) >>> 0
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  h ^= h >>> 13
+  h = Math.imul(h, 0x5bd1e995)
+  h ^= h >>> 15
+  return (h >>> 0) / 4294967296
+}
+
+function polylineLength(points: Vec2[]): number {
+  let sum = 0
+  for (let i = 1; i < points.length; i++) sum += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+  return sum
+}
+
+/** How much of the board is narrower than its nets' widths, in mm. */
+export function narrowedLength(r: Pick<AutorouteResult, "narrowed">): number {
+  return (r.narrowed ?? []).reduce((sum, n) => sum + n.spans.reduce((a, sp) => a + sp.length, 0), 0)
+}
+
+/** Whether a routing leaves nothing to improve but its vias and length: everything routed, every net at its width. */
+function clean(r: AutorouteResult): boolean {
+  return r.remaining === 0 && !r.narrowed?.length
+}
+
+/**
+ * Which of two routings of the same board is better, negative when `a` is: fewer connections open, then less length narrower than its
+ * net's width (to 0.05 mm), then fewer vias, then less track (to 0.1 mm).
+ */
+export function compareResults(a: AutorouteResult, b: AutorouteResult): number {
+  if (a.remaining !== b.remaining) return a.remaining - b.remaining
+  const na = Math.round(narrowedLength(a) * 20)
+  const nb = Math.round(narrowedLength(b) * 20)
+  if (na !== nb) return na - nb
+  if (a.addedVias !== b.addedVias) return a.addedVias - b.addedVias
+  const length = (r: AutorouteResult) => Math.round(r.project.traces.reduce((sum, t) => sum + polylineLength(t.points), 0) * 10)
+  return length(a) - length(b)
+}
+
+/**
  * Route open ratsnest connections. Signal nets go first, shortest connections first; pads of
  * nets with a pour then drop a via into the pour when they are not already in it; whatever is
  * still open is routed last. Existing copper is kept and avoided. Connections left open at
@@ -1189,7 +1696,12 @@ interface AttemptMode {
  */
 export function autoroute(project: Project, opts: AutorouteOptions = {}): AutorouteResult {
   const sch = computeConnectivity(project)
-  const deadline = performance.now() + (opts.timeLimitMs ?? DEFAULT_BUDGET_MS)
+  const start = performance.now()
+  const budget = opts.timeLimitMs ?? DEFAULT_BUDGET_MS
+  const end = start + budget
+  // With a time limit, the passes and their retries get most of it and the repair the rest, which takes up and lays again copper for the
+  // connections still open (`repair` in `attempt`). A board that routes whole never gets to the repair, so it routes as it always did.
+  const deadline = Number.isFinite(budget) && budget >= REPAIR_SHARE_FROM_MS ? start + budget * GREEDY_SHARE : end
   // Open connections at fine-pitch pads: a grid router can't leave a pad that is off its grid by a
   // fraction of a cell, and wide copper joining a connector's outer pads can seal in the rest. Fine-
   // pitch mode adds escape stubs, routes those nets first and uses thinner traces, which retrying as
@@ -1199,12 +1711,23 @@ export function autoroute(project: Project, opts: AutorouteOptions = {}): Autoro
   const fineModes = (nets: Set<string>): AttemptMode[] =>
     [[true, false], [true, true], [false, false], [false, true]].map(([stagger, narrow]) => ({ fine: true, narrow, stagger, nets }))
   type Attempt = ReturnType<typeof attempt>
-  const tried: Attempt[] = []
-  const best = () => tried.reduce((a, b) => (b.result.remaining < a.result.remaining ? b : a))
+  // Only the best attempt is kept (the first of the fewest open): each holds its board, its analyses and, for the repair, its state, which on a
+  // big board of four layers is hundreds of megabytes an attempt.
+  let top: Attempt | null = null
+  let fineTried = false
+  let tries = 0
+  /** The longest one attempt took, which says whether another fits in the time left. */
+  let slowest = 0
+  const best = (): Attempt => top!
   /** Run one attempt; true once something routed completely. */
   const run = (priority: Set<string>, mode?: AttemptMode) => {
-    tried.push(attempt(project, sch, opts, priority, deadline, mode, firstAnalysis))
-    return tried[tried.length - 1].result.remaining === 0
+    const t0 = performance.now()
+    const a = attempt(project, sch, opts, priority, deadline, mode, firstAnalysis)
+    slowest = Math.max(slowest, performance.now() - t0)
+    tries++
+    if (a.mode.fine) fineTried = true
+    if (!top || a.result.remaining < top.result.remaining) top = a
+    return a.result.remaining === 0
   }
   const fineFrom = (nets: Set<string>) => {
     for (const mode of fineModes(nets)) {
@@ -1229,7 +1752,54 @@ export function autoroute(project: Project, opts: AutorouteOptions = {}): Autoro
     if (priority.size === before && k > 0) break
     run(priority, best().mode)
   }
-  return { ...best().result, finePitchTried: tried.some((t) => t.mode.fine) ? widthLadder(project).at(-1)! : null }
+  let out: AttemptOutcome = best()
+  const repairable = (r: AutorouteResult) => r.remaining > 0 && r.remaining <= Math.max(REPAIR_MAX_OPEN, REPAIR_MAX_SHARE * (r.routed + r.remaining))
+  /** The longest a repair took: one of a variant runs when that fits, which on a small board is far under `REPAIR_MIN_MS`. */
+  let slowestRepair = 0
+  if (repairable(out.result) && end - performance.now() >= REPAIR_MIN_MS) {
+    const t0 = performance.now()
+    const repaired = best().repair(end)
+    slowestRepair = performance.now() - t0
+    if (repaired.result.remaining <= out.result.remaining) out = repaired
+  }
+  top = null
+  // Other orders and via costs, while the best leaves a connection open or a net narrower (or, asked to optimize, while there is time), as
+  // long as another attempt fits in the time left. A board that routes clean in the router's own order never gets here, so it routes as it
+  // always did. Each variant routes in the mode the best did (fine-pitch stubs, if those were what routed it) or the fine-pitch mode it names, and is repaired when it leaves
+  // a few open; its repair needs a router of its own, so it runs only with time for one (as long as the longest so far, which on a small board
+  // is well under `REPAIR_MIN_MS`).
+  if (opts.optimize || !clean(out.result)) {
+    // A board left open gets the whole time limit. One routed whole with a net narrower somewhere is worth less of it: the search stops
+    // after `EXPLORE_FACTOR` times what the router's own routing took, or `NARROW_PATIENCE` variants in a row that did no better.
+    // With no time limit (the examples' build, which must come out the same on every machine) only `NARROW_PATIENCE` ends it.
+    const flowMs = performance.now() - start
+    const narrowUntil = Number.isFinite(budget) ? Math.min(end, performance.now() + Math.max(EXPLORE_MIN_MS, flowMs * EXPLORE_FACTOR)) : Infinity
+    let stale = 0
+    for (const v of VARIANTS) {
+      if (!opts.optimize && clean(out.result)) break
+      const narrowOnly = !opts.optimize && out.result.remaining === 0
+      if (narrowOnly && stale >= NARROW_PATIENCE) break
+      if ((narrowOnly ? narrowUntil : end) - performance.now() < slowest * 1.5 + 20) break
+      const t0 = performance.now()
+      const priority = v.failedFirst ? new Set(out.failed) : new Set<string>()
+      const mode = out.mode.fine && v.fine !== undefined ? fineModes(out.mode.nets)[v.fine] : out.mode
+      let a: AttemptOutcome & { repair?: (until: number) => AttemptOutcome } = attempt(project, sch, opts, priority, end, mode, firstAnalysis, v)
+      tries++
+      if (a.mode.fine) fineTried = true
+      if (repairable(a.result) && a.repair && end - performance.now() >= Math.min(REPAIR_MIN_MS, (slowestRepair || slowest * 2) * 1.5 + 50)) {
+        const r0 = performance.now()
+        const repaired = a.repair(end)
+        slowestRepair = Math.max(slowestRepair, performance.now() - r0)
+        if (repaired.result.remaining <= a.result.remaining) a = repaired
+      }
+      slowest = Math.max(slowest, performance.now() - t0)
+      if (compareResults(a.result, out.result) < 0) {
+        out = a
+        stale = 0
+      } else stale++
+    }
+  }
+  return { ...out.result, finePitchTried: fineTried ? widthLadder(project).at(-1)! : null, tries }
 }
 
 function attempt(
@@ -1241,7 +1811,9 @@ function attempt(
   mode: AttemptMode = { fine: false, narrow: false, stagger: false, nets: new Set() },
   /** The analysis of `project`, when the caller has it already. */
   first?: PcbAnalysis,
-): { result: AutorouteResult; failed: string[]; fineOpen: number; mode: AttemptMode } {
+  /** Another order and via cost to route in (`VARIANTS`); none is the router's own. */
+  variant?: Variant,
+): AttemptOutcome & { repair: (until: number) => AttemptOutcome } {
   const signalW = project.rules.traceWidth
   const powerW = Math.max(signalW, opts.powerWidth ?? 0.4)
   const netWidths = project.rules.netWidths ?? {}
@@ -1251,7 +1823,15 @@ function attempt(
   const classWidth = (name: string | undefined): number | undefined => (rr.classed && name !== undefined ? classes.classOf(name)?.traceWidth : undefined)
   // In fine-pitch mode, narrower widths down to the board's minimum are tried last.
   const ladder = mode.fine ? widthLadder(project) : []
-  const widths = [...new Set([signalW, powerW, ...Object.values(netWidths), ...(rr.classed ? (project.rules.netClasses ?? []).flatMap((c) => (c.traceWidth !== undefined ? [c.traceWidth] : [])) : []), ...ladder])]
+  /**
+   * The widths below a net's own it may go at where it has no room for it, widest last: a half and a quarter of it, then the rules'
+   * preferred widths, above `floor` (the supply width or the default).
+   */
+  const narrowerSteps = (own: number, floor: number) =>
+    [...new Set([round(own / 2, 2), round(own / 4, 2), ...project.rules.preferredWidths].filter((w) => w < own - 1e-9 && w > floor + 1e-9))].sort((a, b) => b - a)
+  const ownWidths = [...Object.values(netWidths), ...(rr.classed ? (project.rules.netClasses ?? []).flatMap((c) => (c.traceWidth !== undefined ? [c.traceWidth] : [])) : [])]
+  // Every width `widthsFor` can give a net, so a router built for every net (fine-pitch mode, the repair) has the keepouts of each.
+  const widths = [...new Set([signalW, powerW, ...ownWidths, ...ownWidths.flatMap((w) => narrowerSteps(w, signalW)), ...ladder])]
   // Widths to try for a net, widest first: its own width, the power width, then the default.
   // A connection that can't be made wide, e.g. into a small pad, falls back to the next. The
   // fine-pitch mode adds widths down to the board's minimum, but only for a signal net with no width of
@@ -1265,35 +1845,66 @@ function attempt(
   const widthsFor = (netId: string) => {
     const own = ownWidth(netId)
     const out = own !== undefined ? [own] : []
-    if (isPowerNet(sch, p, netId) && (own === undefined || own > powerW)) out.push(powerW)
+    const power = isPowerNet(sch, p, netId)
+    // A net with a width of its own that has no room for it goes as wide as there is room for, not straight down to the default: a half
+    // and a quarter of its width, then the rules' preferred widths, down to the supply width or the default (a 9 mm net across an 8 mm
+    // board went at 0.25 mm).
+    if (own !== undefined) out.push(...narrowerSteps(own, Math.max(signalW, power ? powerW : 0)))
+    if (power && (own === undefined || own > powerW)) out.push(powerW)
     if (!out.includes(signalW) && (own === undefined || own > signalW)) out.push(signalW)
     if (ladder.length && own === undefined && !isPowerNet(sch, p, netId)) out.push(...ladder.filter((w) => w < Math.min(...out) - 1e-9))
     return out
   }
   /**
-   * Connections of nets with a width of their own that went in narrower, for want of room: the width each took and, once laid, the ids of
-   * its traces at that width (its necks are no narrowing, unless the run is all neck). The result names only those still on the finished
-   * board: a rip-up can take one up and lay it again at full width, and leave its necks behind.
+   * Connections of nets with a width of their own that went in narrower, for want of room: the width each took, the connection's ends
+   * and, once laid, the ids of its traces and of those at the narrower width (a neck at a pad is none). The result names only those still
+   * on the finished board: a rip-up can take one up and lay it again at full width.
    */
-  const thin = new Map<RoutedPath, { netId: string; width: number; runIds: string[] }>()
-  const laid = (path: RoutedPath, traceIds: string[]) => {
+  const thin = new Map<RoutedPath, { netId: string; width: number; runIds: string[]; allIds: string[]; ends?: [Vec2, Vec2] }>()
+  /** Every connection this run laid, with the ids its copper was given: what a repair may take up again. */
+  const runPaths: { path: RoutedPath; traceIds: string[]; viaIds: string[] }[] = []
+  const laid = (path: RoutedPath, traceIds: string[], viaIds: string[]) => {
+    runPaths.push({ path, traceIds, viaIds })
     const t = thin.get(path)
     if (!t) return
-    const runs = traceIds.filter((_, i) => path.traces[i].width >= t.width - 1e-9)
+    const runs = path.narrowIdx?.length ? path.narrowIdx.map((i) => traceIds[i]) : traceIds.filter((_, i) => path.traces[i].width >= t.width - 1e-9)
     t.runIds = runs.length ? runs : traceIds
+    t.allIds = traceIds
   }
-  /** The connection routed at the first of `ws` it can be, widest first, or null. */
-  const widest = (netId: string, ws: number[], go: (w: number) => RoutedPath | null): RoutedPath | null => {
-    for (const w of ws) {
+  /** Nets whose width the router holds to where it can: a width of their own, or a supply's. They neck down only where they must. */
+  const holdsWidth = (netId: string) => ownWidth(netId) !== undefined || isPowerNet(sch, p, netId)
+  /**
+   * The connection routed at the first of `ws` it can be, widest first, or null. A net that holds its width and has no room for it all
+   * the way is searched at its width and a narrower one at once (`Router.route` with `narrow`): full width where it fits, narrower only
+   * for the stretch that has no room. That search finds every path a narrower width alone would, so when it fails nothing narrower helps.
+   */
+  const widest = (netId: string, ws: number[], go: (w: number, narrow?: number, dry?: boolean) => RoutedPath | null, ends?: [Vec2, Vec2]): RoutedPath | null => {
+    const own = ownWidth(netId)
+    for (let k = 0; k < ws.length; k++) {
+      const w = ws[k]
       const path = go(w)
-      if (!path) continue
-      const own = ownWidth(netId)
-      if (own !== undefined && w < own - 1e-9) thin.set(path, { netId, width: w, runIds: [] })
-      return path
+      if (path) {
+        if (own !== undefined && w < own - 1e-9) thin.set(path, { netId, width: w, runIds: [], allIds: [], ends })
+        return path
+      }
+      if (k === 0 && ws.length > 1 && holdsWidth(netId) && !variant?.thinFallback) {
+        // With widths between, the narrowest is looked for first without laying it: when even it finds no way, no width does, and a failed
+        // search is the costly kind. Then the widest that does is laid.
+        const last = ws[ws.length - 1]
+        if (ws.length > 2 && !go(w, last, true)) return null
+        for (const nw of ws.slice(1)) {
+          const mixed = go(w, nw)
+          if (!mixed) continue
+          if (own !== undefined && mixed.narrowIdx?.length) thin.set(mixed, { netId, width: nw, runIds: [], allIds: [], ends })
+          return mixed
+        }
+        return null
+      }
     }
     return null
   }
   const wanted = opts.nets ? new Set(opts.nets) : null
+  const orderRank = new Map((opts.order ?? []).map((id, k) => [id, k]))
   const pourNets = new Set(
     project.zones.map((z) => sch.nets.find((n) => n.name === z.net)?.id).filter((x): x is string => !!x),
   )
@@ -1349,10 +1960,17 @@ function attempt(
     return { profiles: [...profiles.values()], viaNets: list }
   }
   const everyNet = () => sch.nets.map((n) => n.id)
-  const routerFor = (analysis: PcbAnalysis, obstacles = obstacleShapes(analysis, rr.classed && mode.fine ? new Map(p.vias.map((v) => [v.id, v.drill])) : undefined), use?: { profiles: Profile[]; viaNets: (string | null)[] }) => {
-    if (mode.fine && live?.p === p) return live.router
+  // A board from KiCad holds every hole to KiCad's hole clearance, so the router needs the drill of each via already on it.
+  const kicadHoles = fromKicad(project) && kicadHoleClearance(project) > 0
+  const routerFor = (analysis: PcbAnalysis, obstacles = obstacleShapes(analysis, (rr.classed && mode.fine) || kicadHoles ? new Map(p.vias.map((v) => [v.id, v.drill])) : undefined), use?: { profiles: Profile[]; viaNets: (string | null)[] }) => {
+    if (mode.fine && live?.p === p) {
+      // Only a pass asks for the outer layers alone (`pass` sets it again): the steps after the first pass route on every layer.
+      live.router.outerOnly = false
+      return live.router
+    }
     const chosen = mode.fine || !use ? useFor(everyNet(), widths) : use
     const router = new Router(p, obstacles, chosen.profiles, deadline - performance.now(), mode.fine, rr, chosen.viaNets)
+    if (variant?.viaCost) router.viaCost = variant.viaCost
     for (const t of p.traces) if (stubIds.has(t.id)) router.stubKeys.add(stubKey(t))
     live = mode.fine ? { router, p } : null
     return router
@@ -1362,11 +1980,16 @@ function attempt(
     if (live) live.p = p
   }
 
-  const pass = (select: (netId: string) => boolean) => {
+  /** One pass over the open connections `select` picks; `outerOnly`, on the outer layers alone (`Router.outerOnly`). */
+  const pass = (select: (netId: string) => boolean, outerOnly = false) => {
     if (late()) return 0
     const analysis = analyze()
     let router: Router | undefined
-    const getRouter = () => (router ??= routerFor(analysis, undefined, useFor(lines.map((l) => l.netId), needed)))
+    const getRouter = () => {
+      router ??= routerFor(analysis, undefined, useFor(lines.map((l) => l.netId), needed))
+      router.outerOnly = outerOnly
+      return router
+    }
     const islands = islandsByNet(analysis)
     // Union-find over islands so later lines see copper added for earlier ones.
     const parent = new Map<number, number>()
@@ -1377,13 +2000,16 @@ function attempt(
     }
     const lines = analysis.ratsnest
       .filter((r) => select(r.netId) && (!wanted || wanted.has(r.netId)))
-      .map((r) => ({
-        ...r,
-        len: Math.hypot(r.a.x - r.b.x, r.a.y - r.b.y),
-        widths: widthsFor(r.netId),
-        first: priority.has(r.netId) || fineNets.has(r.netId),
-      }))
-      .sort((x, y) => Number(y.first) - Number(x.first) || x.len - y.len)
+      .map((r) => {
+        const widths = widthsFor(r.netId)
+        const len = Math.hypot(r.a.x - r.b.x, r.a.y - r.b.y)
+        const first = priority.has(r.netId) || fineNets.has(r.netId)
+        // The nets the caller put first, in its order; then the nets that failed before and the fine-pitch ones; then (a variant's) the wide ones.
+        const rank = orderRank.get(r.netId) ?? (first ? orderRank.size : variant?.wideFirst && widths[0] > signalW + 1e-9 ? orderRank.size + 1 : orderRank.size + 2)
+        const key = variant?.longFirst ? -len : variant?.seed ? len * (0.4 + 1.2 * jitter(variant.seed, `${r.netId}|${r.a.x},${r.a.y}|${r.b.x},${r.b.y}`)) : len
+        return { ...r, len, widths, first, rank, key }
+      })
+      .sort((x, y) => x.rank - y.rank || x.key - y.key)
     const needed = [...new Set(lines.flatMap((l) => l.widths))]
     const paths: RoutedPath[] = []
     for (const line of lines) {
@@ -1406,9 +2032,10 @@ function attempt(
         const zone: Box = { minX: Math.min(line.a.x, line.b.x) - 3, maxX: Math.max(line.a.x, line.b.x) + 3, minY: Math.min(line.a.y, line.b.y) - 3, maxY: Math.max(line.a.y, line.b.y) + 3 }
         if (at !== undefined && !addedBoxes.slice(at).some((b) => boxesOverlap(b, zone))) continue
       }
-      const path = widest(line.netId, line.widths, (w) => getRouter().route(line.netId, src, tgt, w))
+      const path = widest(line.netId, line.widths, (w, nw, dry) => getRouter().route(line.netId, src, tgt, w, undefined, undefined, nw, dry), [line.a, line.b])
       if (!path) {
-        failedAt.set(key, addedBoxes.length)
+        // A search kept to the outer layers says nothing of what every layer allows, so the passes after it try again.
+        if (!outerOnly) failedAt.set(key, addedBoxes.length)
         continue
       }
       paths.push(path)
@@ -1439,6 +2066,8 @@ function attempt(
   const fanout = (only?: Set<string>, stillOpen: Vec2[] = []) => {
     if (!pourNets.size || late()) return 0
     const analysis = analyze()
+    // By the router's layer index (`Router.layerIndex`), which is the board's copper layers in order.
+    const layers = copperLayers(p.board)
     let router: Router | undefined
     const getRouter = () => (router ??= routerFor(analysis, undefined, useFor(pourNets, [...new Set([...pourNets].flatMap(widthsFor))])))
     const poured = new Set<number>()
@@ -1447,9 +2076,10 @@ function attempt(
     const paths: RoutedPath[] = []
     for (const [netId, entry] of islandsByNet(analysis)) {
       if ((only && !only.has(netId)) || !pourNets.has(netId) || (wanted && !wanted.has(netId))) continue
-      // The pieces of the net's fill on the outer layers (a pour on an inner layer is no place for a via to reach).
+      // The pieces of the net's fill on every copper layer: a via has copper on every layer, so a pour on an inner layer (a plane)
+      // takes one as an outer pour does.
       const zones = new Set(analysis.zoneFills.filter((f) => f.netId === netId).map((f) => f.zoneId))
-      const pieces = analysis.items.filter((it): it is Extract<CopperItem, { kind: "zone" }> => it.kind === "zone" && zones.has(it.zoneId) && outerIndex(it.layers[0]) >= 0)
+      const pieces = analysis.items.filter((it): it is Extract<CopperItem, { kind: "zone" }> => it.kind === "zone" && zones.has(it.zoneId) && layers.includes(it.layers[0]))
       if (!pieces.length) continue
       for (const [root, shapes] of entry.shapes) {
         if (late()) break
@@ -1459,15 +2089,15 @@ function attempt(
         if (mode.fine && shapes.some((s) => s.kind === "via")) continue
         // A pad in a scrap of pour that joins nothing is as open as one outside it (fine-pitch mode).
         if (poured.has(root) && !(mode.fine && pad.layers.length === 1 && openEnds.some((e) => samePoint(e, pad.pad)))) continue
-        // One search for the nearest piece of fill on either layer, but the one the pad is in (a scrap): a pad on a pour's own layer
-        // joins it by a trace on that layer, rather than by a trace over it to the next pad, and any pad joins the
-        // other layer's by a via, whichever is nearer.
-        const inFill = [0, 1].map((li) => {
-          const tests = pieces.filter((it) => outerIndex(it.layers[0]) === li && analysis.island.get(it.id) !== root).map((it) => it.contains)
+        // One search for the nearest piece of fill on any layer, but the one the pad is in (a scrap): a pad on a pour's own layer
+        // joins it by a trace on that layer, rather than by a trace over it to the next pad, and any pad joins
+        // another layer's by a via, whichever is nearer.
+        const inFill = layers.map((layer) => {
+          const tests = pieces.filter((it) => it.layers[0] === layer && analysis.island.get(it.id) !== root).map((it) => it.contains)
           return tests.length ? (q: Vec2) => tests.some((t) => t(q)) : null
         })
         if (!inFill.some(Boolean)) continue
-        const path = widest(netId, widthsFor(netId), (w) => getRouter().route(netId, shapes, null, w, { inFill }))
+        const path = widest(netId, widthsFor(netId), (w, nw, dry) => getRouter().route(netId, shapes, null, w, { inFill }, undefined, nw, dry), [pad.pad, pad.pad])
         if (path) {
           paths.push(path)
           routed++
@@ -1539,7 +2169,8 @@ function attempt(
 
   // A supply net that failed before gets its pads into the pour first, before signals take their room.
   if (priority.size) fanout(priority)
-  pass((net) => !pourNets.has(net) || priority.has(net) || fineNets.has(net))
+  // The first pass keeps to the outer layers, as fast as a board of two; the passes after it route what it left on every layer.
+  pass((net) => !pourNets.has(net) || priority.has(net) || fineNets.has(net) || orderRank.has(net), copperLayers(project.board).length > 2)
   fanout()
   for (let i = 0; i < 2; i++) if (!pass(() => true)) break
   // Signals leaving a fine-pitch part can cut its ground pads off from the pour they were in
@@ -1586,7 +2217,7 @@ function attempt(
         const pa = pads.find((x) => samePoint(r.a, x.pad))
         const pb = pads.find((x) => samePoint(r.b, x.pad))
         if (!pa || !pb) continue
-        const path = widest(r.netId, widthsFor(r.netId), (w) => router.route(r.netId, padShapes(pa), padShapes(pb), w))
+        const path = widest(r.netId, widthsFor(r.netId), (w, nw, dry) => router.route(r.netId, padShapes(pa), padShapes(pb), w, undefined, undefined, nw, dry), [r.a, r.b])
         if (path) forced.push(path)
       }
       p = apply(p, forced, rr, laid)
@@ -1603,49 +2234,286 @@ function attempt(
     }
   }
 
-  let final = analyze(true)
-  if (mode.fine) {
-    // Copper the retries left connecting no pad (a trace and its vias cut loose by a rip-up) goes.
-    const alive = new Set<number>()
-    for (const it of final.items) if (it.kind === "pad" || it.kind === "zone") alive.add(final.island.get(it.id)!)
-    const deadTraces = new Set<string>()
-    const deadVias = new Set<string>()
-    for (const it of final.items) {
-      if (alive.has(final.island.get(it.id)!)) continue
-      if (it.kind === "segment") deadTraces.add(it.traceId)
-      if (it.kind === "via") deadVias.add(it.viaId)
+  /** The result as the board stands: copper the retries left connecting nothing taken up (fine-pitch mode), what is still open, what went in narrower. */
+  const finish = (): AttemptOutcome => {
+    let final = analyze(true)
+    if (mode.fine) {
+      // Copper the retries left connecting no pad (a trace and its vias cut loose by a rip-up) goes.
+      const alive = new Set<number>()
+      for (const it of final.items) if (it.kind === "pad" || it.kind === "zone") alive.add(final.island.get(it.id)!)
+      const deadTraces = new Set<string>()
+      const deadVias = new Set<string>()
+      for (const it of final.items) {
+        if (alive.has(final.island.get(it.id)!)) continue
+        if (it.kind === "segment") deadTraces.add(it.traceId)
+        if (it.kind === "via") deadVias.add(it.viaId)
+      }
+      const before = { traces: new Set(project.traces.map((t) => t.id)), vias: new Set(project.vias.map((v) => v.id)) }
+      const gone = (t: { id: string; locked?: boolean }, dead: Set<string>, old: Set<string>) => dead.has(t.id) && !old.has(t.id) && !t.locked
+      const traces = p.traces.filter((t) => !gone(t, deadTraces, before.traces))
+      const vias = p.vias.filter((v) => !gone(v, deadVias, before.vias))
+      if (traces.length !== p.traces.length || vias.length !== p.vias.length) {
+        addedTraces -= p.traces.length - traces.length
+        addedVias -= p.vias.length - vias.length
+        p = { ...p, traces, vias }
+        final = analyze(true)
+      }
     }
-    const before = { traces: new Set(project.traces.map((t) => t.id)), vias: new Set(project.vias.map((v) => v.id)) }
-    const gone = (t: { id: string; locked?: boolean }, dead: Set<string>, old: Set<string>) => dead.has(t.id) && !old.has(t.id) && !t.locked
-    const traces = p.traces.filter((t) => !gone(t, deadTraces, before.traces))
-    const vias = p.vias.filter((v) => !gone(v, deadVias, before.vias))
-    if (traces.length !== p.traces.length || vias.length !== p.vias.length) {
-      addedTraces -= p.traces.length - traces.length
-      addedVias -= p.vias.length - vias.length
-      p = { ...p, traces, vias }
-      final = analyze(true)
+    const open = final.ratsnest.filter((r) => !wanted || wanted.has(r.netId))
+    const finePads = final.items.filter((it): it is PadItem => it.kind === "pad")
+    const fineOpen = open.filter((r) => [r.a, r.b].some((at) => finePads.some((x) => samePoint(at, x.pad) && isFinePad(x, finePads)))).length
+    const byId = new Map(p.traces.map((t) => [t.id, t]))
+    const lengthOf = (ids: string[]) => ids.reduce((sum, id) => sum + polylineLength(byId.get(id)?.points ?? []), 0)
+    const narrowed = new Map<string, NarrowSpan[]>()
+    for (const t of thin.values()) {
+      const live = t.runIds.filter((id) => byId.has(id))
+      if (!live.length) continue
+      const firstPiece = byId.get(live[0])!
+      const lastPiece = byId.get(live[live.length - 1])!
+      const all = t.allIds.filter((id) => byId.has(id))
+      const ends = t.ends ?? [firstPiece.points[0], lastPiece.points[lastPiece.points.length - 1]]
+      const span: NarrowSpan = {
+        width: t.width,
+        length: round(lengthOf(live), 2),
+        total: round(Math.max(lengthOf(all), lengthOf(live)), 2),
+        a: ends[0],
+        b: ends[1],
+        from: firstPiece.points[0],
+        to: lastPiece.points[lastPiece.points.length - 1],
+        layer: firstPiece.layer,
+      }
+      narrowed.set(t.netId, [...(narrowed.get(t.netId) ?? []), span])
+    }
+    const narrower = [...narrowed].map(([netId, spans]) => ({ net: nameOf(netId) ?? netId, width: ownWidth(netId)!, widths: spans.map((x) => x.width), spans }))
+    const isFineEnd = (at: Vec2) => finePads.some((x) => samePoint(at, x.pad) && isFinePad(x, finePads))
+    const openList: OpenConnection[] = open.map((r) => ({ net: nameOf(r.netId) ?? r.netId, netId: r.netId, a: r.a, b: r.b, fine: isFineEnd(r.a) || isFineEnd(r.b) }))
+    return {
+      result: {
+        project: p,
+        routed,
+        remaining: open.length,
+        addedTraces,
+        addedVias,
+        finePitchOpen: fineOpen,
+        finePitchTried: mode.fine ? widthLadder(project).at(-1)! : null,
+        ...(narrower.length ? { narrowed: narrower } : {}),
+        open: openList,
+        tries: 1,
+      },
+      failed: [...new Set(open.map((r) => r.netId))],
+      fineOpen,
+      mode,
     }
   }
-  const open = final.ratsnest.filter((r) => !wanted || wanted.has(r.netId))
-  const finePads = final.items.filter((it): it is PadItem => it.kind === "pad")
-  const fineOpen = open.filter((r) => [r.a, r.b].some((at) => finePads.some((x) => samePoint(at, x.pad) && isFinePad(x, finePads)))).length
-  const onBoard = new Set(p.traces.map((t) => t.id))
-  const narrowed = new Map<string, number[]>()
-  for (const t of thin.values()) if (t.runIds.some((id) => onBoard.has(id))) narrowed.set(t.netId, [...(narrowed.get(t.netId) ?? []), t.width])
-  const narrower = [...narrowed].map(([netId, ws]) => ({ net: nameOf(netId) ?? netId, width: ownWidth(netId)!, widths: ws }))
-  return {
-    result: {
-      project: p,
-      routed,
-      remaining: open.length,
-      addedTraces,
-      addedVias,
-      finePitchOpen: fineOpen,
-      finePitchTried: mode.fine ? widthLadder(project).at(-1)! : null,
-      ...(narrower.length ? { narrowed: narrower } : {}),
-    },
-    failed: [...new Set(open.map((r) => r.netId))],
-    fineOpen,
-    mode,
+
+  /**
+   * The repair, after the passes, while there is time: each connection still open is searched again, crossing copper this run laid for other
+   * nets at a cost per cell (`SoftCost`) instead of keeping clear of it. The connections whose copper the path found comes within a keepout of
+   * are taken up, the path is laid, and those connections are routed again around it. The change stays only when fewer connections are open
+   * than before it; else the board is put back as it was and the cells of the crossing cost more for the next try (history), so it looks
+   * elsewhere. Copper the board had before, escape stubs and locked copper are never taken up. One router serves the whole repair: the run's
+   * copper is kept apart in it (`Router.laid`), so taking some up is a count down, not a new router.
+   */
+  const repair = (until: number): AttemptOutcome => {
+    if (performance.now() > until) return finish()
+    const openLines = (a: PcbAnalysis) => a.ratsnest.filter((r) => !wanted || wanted.has(r.netId))
+    let an = analyze()
+    let open = openLines(an).length
+    if (!open) return finish()
+    const onBoard = { traces: new Set(p.traces.map((t) => t.id)), vias: new Set(p.vias.map((v) => v.id)) }
+    interface Taken {
+      net: string
+      path: RoutedPath
+      traceIds: string[]
+      viaIds: string[]
+      shapes: Shape[]
+      box: Box
+      live: boolean
+    }
+    const laidList: Taken[] = []
+    const use = useFor(everyNet(), widths)
+    const own = new Set<string>()
+    for (const rp of runPaths) {
+      if (!rp.path.net || !rp.traceIds.every((id) => onBoard.traces.has(id)) || !rp.viaIds.every((id) => onBoard.vias.has(id))) continue
+      for (const id of [...rp.traceIds, ...rp.viaIds]) own.add(id)
+    }
+    const drills = kicadHoles || rr.classed ? new Map(p.vias.map((v) => [v.id, v.drill])) : undefined
+    const fixed = obstacleShapes(an, drills, (it) => (it.kind === "segment" && own.has(it.traceId)) || (it.kind === "via" && own.has(it.viaId)))
+    // In fine-pitch mode, as the passes' router does, a new via keeps its drill clear of every other via's.
+    const router = new Router(p, fixed, use.profiles, until - performance.now(), mode.fine, rr, use.viaNets, true)
+    if (variant?.viaCost) router.viaCost = variant.viaCost
+    for (const t of p.traces) if (stubIds.has(t.id)) router.stubKeys.add(stubKey(t))
+    const take = (rp: { path: RoutedPath; traceIds: string[]; viaIds: string[] }): Taken => {
+      const shapes = router.pathShapes(rp.path.net!, rp.path)
+      const box = shapes.map(shapeBox).reduce((a, b) => ({ minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) }))
+      return { net: rp.path.net!, path: rp.path, traceIds: rp.traceIds, viaIds: rp.viaIds, shapes, box, live: true }
+    }
+    for (const rp of runPaths) {
+      if (!rp.path.net || !rp.traceIds.every((id) => onBoard.traces.has(id)) || !rp.viaIds.every((id) => onBoard.vias.has(id))) continue
+      const t = take(rp)
+      for (const s of t.shapes) router.addShape(s, t.net, true)
+      laidList.push(t)
+    }
+    const margin = router.keepMargin
+    const holeNeed = kicadHoles ? kicadHoleClearance(project) : 0
+    /** Edge to edge, between two pieces of copper a router lays. */
+    const apart = (a: Shape, b: Shape): number => {
+      const half = (s: Shape) => (s.kind === "segment" ? s.width / 2 : s.kind === "via" ? s.diameter / 2 : 0)
+      if (a.kind === "segment" && b.kind === "segment") return segmentSegmentDistance(a.a, a.b, b.a, b.b) - half(a) - half(b)
+      if (a.kind === "segment" && b.kind === "via") return pointSegmentDistance(b.at, a.a, a.b) - half(a) - half(b)
+      if (a.kind === "via" && b.kind === "segment") return pointSegmentDistance(a.at, b.a, b.b) - half(a) - half(b)
+      if (a.kind === "via" && b.kind === "via") return Math.hypot(a.at.x - b.at.x, a.at.y - b.at.y) - half(a) - half(b)
+      return Infinity
+    }
+    /** From a via's hole to a piece of copper (KiCad's hole clearance). */
+    const fromHole = (v: Shape, b: Shape): number => {
+      if (v.kind !== "via" || !v.drill) return Infinity
+      return apart({ kind: "via", at: v.at, diameter: v.drill, layers: v.layers }, b)
+    }
+    const tooClose = (netA: string, a: Shape, netB: string, b: Shape): boolean => {
+      if (!a.layers.some((l) => b.layers.includes(l))) return false
+      if (apart(a, b) < rr.gap(rr.of(netA), netB) + margin) return true
+      return holeNeed > 0 && (fromHole(a, b) < holeNeed + margin || fromHole(b, a) < holeNeed + margin)
+    }
+    /** The laid connections of other nets that a path's copper comes within a keepout of. */
+    const crossed = (net: string, shapes: Shape[]): number[] => {
+      const reach = 2 + holeNeed
+      const box = shapes.map(shapeBox).reduce((a, b) => ({ minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) }))
+      const near = { minX: box.minX - reach, minY: box.minY - reach, maxX: box.maxX + reach, maxY: box.maxY + reach }
+      const out: number[] = []
+      laidList.forEach((t, k) => {
+        if (!t.live || t.net === net || !boxesOverlap(t.box, near)) return
+        if (t.shapes.some((b) => shapes.some((a) => tooClose(net, a, t.net, b)))) out.push(k)
+      })
+      return out
+    }
+    /** Route what is open on `nets` with the router as it stands, joining islands as they connect. */
+    const routeOpen = (nets: Set<string>): { paths: RoutedPath[]; before: number } => {
+      const a = analyze()
+      const islands = islandsByNet(a)
+      const parent = new Map<number, number>()
+      const find = (x: number): number => {
+        let r = x
+        while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!
+        return r
+      }
+      const lines = openLines(a)
+        .filter((r) => nets.has(r.netId))
+        .sort((x, y) => Math.hypot(x.a.x - x.b.x, x.a.y - x.b.y) - Math.hypot(y.a.x - y.b.x, y.a.y - y.b.y))
+      const paths: RoutedPath[] = []
+      for (const line of lines) {
+        if (performance.now() > until) break
+        const entry = islands.get(line.netId)
+        if (!entry) continue
+        const ra = islandAt(entry, line.a)
+        const rb = islandAt(entry, line.b)
+        if (ra === null || rb === null) continue
+        const ca = find(ra)
+        const cb = find(rb)
+        if (ca === cb) continue
+        const src = entry.shapes.get(ca) ?? []
+        const tgt = entry.shapes.get(cb) ?? []
+        const path = widest(line.netId, widthsFor(line.netId), (w, nw, dry) => router.route(line.netId, src, tgt, w, undefined, undefined, nw, dry), [line.a, line.b])
+        if (!path) continue
+        paths.push(path)
+        parent.set(ca, cb)
+        entry.shapes.set(cb, [...tgt, ...src, ...router.pathShapes(line.netId, path)])
+        entry.shapes.delete(ca)
+      }
+      return { paths, before: openLines(a).length }
+    }
+    const history = router.newHistory()
+    const soft: SoftCost = { penalty: SOFT_PENALTY, history }
+    const tries = new Map<string, number>()
+    let progress = true
+    while (progress && performance.now() < until && open) {
+      progress = false
+      an = analyze()
+      const islands = islandsByNet(an)
+      const lines = openLines(an).sort((x, y) => Math.hypot(x.a.x - x.b.x, x.a.y - x.b.y) - Math.hypot(y.a.x - y.b.x, y.a.y - y.b.y))
+      for (const line of lines) {
+        if (performance.now() > until) break
+        const key = `${line.netId}|${line.a.x},${line.a.y}|${line.b.x},${line.b.y}`
+        const tried = tries.get(key) ?? 0
+        if (tried >= REPAIR_TRIES) continue
+        tries.set(key, tried + 1)
+        const entry = islands.get(line.netId)
+        if (!entry) continue
+        const ra = islandAt(entry, line.a)
+        const rb = islandAt(entry, line.b)
+        if (ra === null || rb === null || ra === rb) continue
+        const src = entry.shapes.get(ra) ?? []
+        const tgt = entry.shapes.get(rb) ?? []
+        let path: RoutedPath | null = null
+        let pathWidth = 0
+        for (const w of widthsFor(line.netId)) {
+          path = router.route(line.netId, src, tgt, w, undefined, soft)
+          pathWidth = w
+          if (path) break
+        }
+        if (!path) continue
+        // Laid narrower than its net's own width, it is a narrowing like any the passes make (`widest`).
+        const own = ownWidth(line.netId)
+        if (own !== undefined && pathWidth < own - 1e-9) thin.set(path, { netId: line.netId, width: pathWidth, runIds: [], allIds: [], ends: [line.a, line.b] })
+        const shapes = router.pathShapes(line.netId, path)
+        const hit = crossed(line.netId, shapes)
+        if (hit.length > MAX_RIPPED) {
+          router.bumpHistory(history, path, HISTORY_STEP)
+          continue
+        }
+        const snapshot = { p, routed, addedTraces, addedVias }
+        const mark = runPaths.length
+        // Take up what the path crosses, lay it, and route again what was taken up.
+        const dropT = new Set<string>()
+        const dropV = new Set<string>()
+        for (const k of hit) {
+          const t = laidList[k]
+          t.live = false
+          for (const s of t.shapes) router.removeLaid(s, t.net)
+          for (const id of t.traceIds) dropT.add(id)
+          for (const id of t.viaIds) dropV.add(id)
+        }
+        p = { ...p, traces: p.traces.filter((t) => !dropT.has(t.id)), vias: p.vias.filter((v) => !dropV.has(v.id)) }
+        addedTraces -= dropT.size
+        addedVias -= dropV.size
+        routed -= hit.length
+        router.commit(line.netId, path)
+        p = apply(p, [path], rr, laid)
+        routed++
+        addedTraces += path.traces.length
+        addedVias += path.vias.length
+        const again = routeOpen(new Set(hit.map((k) => laidList[k].net)))
+        p = apply(p, again.paths, rr, laid)
+        routed += again.paths.length
+        for (const q of again.paths) {
+          addedTraces += q.traces.length
+          addedVias += q.vias.length
+        }
+        // Each connection routed again joins two islands, one line fewer.
+        const left = again.before - again.paths.length
+        if (left < open) {
+          open = left
+          for (const rp of runPaths.slice(mark)) laidList.push(take(rp))
+          progress = true
+          break
+        }
+        // Put it all back as it was.
+        router.uncommit(line.netId, path)
+        for (const q of again.paths) router.uncommit(q.net!, q)
+        for (const k of hit) {
+          const t = laidList[k]
+          t.live = true
+          for (const s of t.shapes) router.addShape(s, t.net, true)
+        }
+        runPaths.length = mark
+        ;({ p, routed, addedTraces, addedVias } = snapshot)
+        router.bumpHistory(history, path, HISTORY_STEP)
+      }
+    }
+    return finish()
   }
+
+  // The passes are done: the router fine-pitch mode kept from step to step goes (a repair makes its own).
+  live = null
+  return { ...finish(), repair }
 }

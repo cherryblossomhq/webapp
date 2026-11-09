@@ -11,6 +11,8 @@ import { uid } from "../lib/id"
 import { removeStitching, routeAroundStitching, stitchVias } from "../model/stitch"
 import { pourMissNote } from "../model/pourReach"
 import { autoroute, type AutorouteResult } from "../model/autoroute"
+import { drawHint, narrowList, openList } from "./routeReport"
+import type { PcbAnalysis } from "../model/pcb"
 import { blockPorts, readingOrder } from "../model/blockPorts"
 import { netInfo } from "../model/tidy/nets"
 import { tidySchematic } from "../model/tidy"
@@ -45,7 +47,7 @@ import {
   resolvePinSpec,
   updateComponent,
 } from "../model/ops"
-import { copperRemovedNote } from "../model/boardCopper"
+import { copperRemovedNote, removeCopper } from "../model/boardCopper"
 import { isAutoNetName } from "../model/netNames"
 import { rekeyAutoNets } from "../model/rekeyNets"
 import { addUnit, mirrorSelection, renameReference, setFieldPlace, setSymbolVariant } from "../model/schematicEdit"
@@ -1422,6 +1424,11 @@ const runChecksTool: ToolSpec = {
     for (const v of violations) counts.set(v.kind, (counts.get(v.kind) ?? 0) + 1)
     if (counts.size) lines.push(`PCB: ${[...counts].map(([k, n]) => `${n} ${k}`).join(", ")}`)
     for (const v of violations.filter((x) => x.kind !== "unrouted").slice(0, 25)) lines.push(`- ${v.severity}: ${v.message}`)
+    // Which connections, by their pins: a count alone sent Sakura moving parts at random to find the one that was open.
+    if (pcb.ratsnest.length && counts.has("unrouted")) {
+      const netName = new Map(conn.nets.map((n) => [n.id, n.name]))
+      lines.push(`- unrouted: ${openList(project, pcb, pcb.ratsnest.map((r) => ({ net: netName.get(r.netId) ?? r.netId, netId: r.netId, a: r.a, b: r.b })), 15)}`)
+    }
     const parts = partFindings(project)
     if (parts.length) {
       lines.push(`Parts (${parts.length}):`)
@@ -1830,86 +1837,120 @@ const setRulesTool: ToolSpec = {
 }
 
 /**
- * What to tell the model about connections route_pcb left open. Connections at fine-pitch pads are
- * not a space problem: the router has already tried stubs and thinner traces, so moving parts apart
- * or a bigger board changes nothing for them. And the same layout, rules and time give the same
- * result, so clearing the routing and running it again only repeats it. Hand routing is offered
- * only once the fine-pitch retry has run and failed.
+ * What to tell the model about connections route_pcb left open: each by its pins, and what is left to try. The router has already
+ * routed the board several ways (orders, via costs, fine-pitch escapes, a rip-up and repair) and kept the best, and the same layout
+ * and rules give the same result, so clearing the routing and running it again only repeats it. What changes the result is the layout
+ * near the named pins (a part moved even 0.1 mm), the rules, or drawing the connection by hand. It used to say that connections at
+ * fine-pitch pads were "not a shortage of room, so spreading the parts out will not fix it", which on a user's USB-C bridge was wrong:
+ * moving one capacitor was what opened the channel.
  */
-export function unroutedAdvice(res: AutorouteResult): string {
+export function unroutedAdvice(res: AutorouteResult, project?: Project, analysis?: PcbAnalysis): string {
   const fine = Math.min(res.finePitchOpen, res.remaining)
   const rest = res.remaining - fine
-  const parts = [` ${res.remaining} connection(s) could not be routed.`]
+  const named = project && analysis && res.open?.length ? `: ${openList(project, analysis, res.open)}` : "."
+  const parts = [` ${res.remaining} connection(s) could not be routed${named}`]
+  if (res.tries > 1) parts.push(` The router routed the board ${res.tries} ways (in other orders and with other via costs, then a rip-up and repair) and kept the best.`)
   if (fine) {
     const where = ` ${fine} of them end at fine-pitch pads (pads less than 0.7 mm apart, as on a USB-C receptacle or a QFN).`
     if (res.finePitchTried === null) {
       // The retry did not run: the pads leave no room for even a minimum-width trace at these rules, or time ran out.
       parts.push(
-        `${where} The fine-pitch retry (escape stubs and thinner traces) did not run to the end: at this clearance and minimum trace width a trace cannot leave those pads, or the time ran out. This is not a shortage of room, so spreading the parts out or enlarging the board will not fix it.` +
+        `${where} The fine-pitch retry (escape stubs and thinner traces) did not run to the end: at this clearance and minimum trace width a trace cannot leave those pads, or the time ran out.` +
           " To go on: set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, set_clearance_rule with ref for that part alone when its own land puts its pads closer than the board's clearance, or use place_parts to turn the part so its pads face open board.",
       )
     } else {
       parts.push(
-        `${where} The router already tried short escape stubs from those pads and traces thinner than the default, down to ${res.finePitchTried} mm, the board's minimum trace width (supply nets and nets with a width set keep theirs away from the pads), escaping in alternate directions, and one rip-up of the copper beside them. This is not a shortage of room, so spreading the parts out or enlarging the board will not fix it.` +
-          " To go on: use place_parts to move or turn the fine-pitch part so its pads face open board, set_design_rules for a finer fab class (smaller minimum trace width and clearance) if the board's fab can make it, set_clearance_rule with ref for that part alone when its own land puts its pads closer than the board's clearance, or, if none fits, tell the user to route those connections by hand.",
+        `${where} It tried short escape stubs from those pads and traces down to ${res.finePitchTried} mm, the board's minimum trace width (supply nets and nets with a width set keep theirs away from the pads), escaping in alternate directions.` +
+          " What is in the way is copper of other connections beside those pins, so the layout there decides it: use place_parts to move or turn a part at those pins, or a part beside them, even by a few tenths of a millimetre, then route_pcb with clear true; draw_trace the connection from pin to pin; set_design_rules for a finer fab class if the board's fab can make it; or, if none fits, tell the user to route those connections by hand.",
       )
     }
   }
   if (rest) {
-    parts.push(` ${rest} other connection(s) may be short of room: move parts apart with place_parts or enlarge the board with set_board, then run route_pcb.`)
+    parts.push(` ${rest} other connection(s) may be short of room: move parts apart with place_parts or enlarge the board with set_board, then route_pcb with clear true; or draw_trace them from pin to pin.`)
   }
   parts.push(" Do not clear_routing and run route_pcb again on the same layout: the same layout and rules give the same result, so change the layout, the rules or the board first.")
   return parts.join("")
 }
 
-/** What to tell the model about nets that were given a width and had connections routed narrower: quietly thinner copper on a supply is a fault. */
 /**
- * What to do about nets routed narrower than their width. Routing them first only helps while the other nets' traces are not down yet:
- * after a whole-board route that means clearing every net, and after a route of those nets alone the same call again gives the same.
+ * What to say about nets routed narrower than their width: where, by the pins of each connection and the stretch that is thin. The router
+ * holds such a net at its width wherever it fits and necks down only for the stretch that has no room (a neck out of a pad smaller than the
+ * width, or out of a fine-pitch row, is none), and it has already tried other orders, so routing it first changes nothing; drawing that
+ * stretch at the width, or making room at it, does. It used to say "VBUS (1 at 0.25 mm, not 0.4 mm)" and nothing of where, and the
+ * whole connection was thin: an assistant reported it after every route for an evening and moved parts at random to fix it.
  */
-export function narrowedAdvice(res: AutorouteResult, routedAlone = false): string {
+export function narrowedAdvice(res: AutorouteResult, project?: Project, analysis?: PcbAnalysis): string {
   if (!res.narrowed?.length) return ""
-  const nets = res.narrowed.map((n) => `${n.net} (${n.widths.length} at ${[...new Set(n.widths)].sort((a, b) => b - a).map((w) => `${w} mm`).join(" or ")}, not ${n.width} mm)`)
-  const names = res.narrowed.map((n) => n.net).join(", ")
-  const first = routedAlone
-    ? `routing ${names} again gives the same unless other nets' traces took the room (then clear_routing with no nets, and route_pcb with nets [${names}] before the rest)`
-    : `clear_routing with no nets, then route_pcb with nets [${names}] before the rest, so they take the room first`
-  return ` Narrower than their net's width, for want of room at that width: ${nets.join("; ")}. Where it carries current, ${first}; or draw_trace from pin to pin at the width; or make room (place_parts, set_board). Else tell the user.`
+  const where =
+    project && analysis && res.narrowed.every((n) => n.spans?.length)
+      ? narrowList(project, analysis, res.narrowed)
+      : res.narrowed.map((n) => `${n.net} (${n.widths.length} at ${[...new Set(n.widths)].sort((a, b) => b - a).map((w) => `${w} mm`).join(" or ")}, not ${n.width} mm)`).join("; ")
+  const first = res.narrowed[0]?.spans?.[0]
+  const hint = project && analysis && first ? drawHint(project, analysis, first) : ""
+  const whole = res.narrowed.some((n) => n.spans?.some((sp) => sp.length >= sp.total - 0.05))
+  return (
+    ` Narrower than their net's width, for want of room at that width: ${where}.` +
+    `${whole ? " A connection narrower all the way had room for no more anywhere along it." : " Everywhere else these nets are at their width."} Where it carries current: draw_trace that connection from pin to pin at the width${hint}, or make room at that stretch with place_parts (or set_board), then route_pcb with clear true. A stretch of a few tenths of a millimetre beside a small pad carries what the pad does; say how long it is when you tell the user rather than calling the net too thin.`
+  )
 }
 
 const routePcbTool: ToolSpec = {
   name: "route_pcb",
   description:
-    "Autoroute open ratsnest connections on the two outer layers with vias, keeping existing traces. Lay out the PCB first. nets routes only those nets: route current-carrying nets first, at their set_net_width, so they take the room before the signals, then call again with no nets for the rest. Pads of poured nets join the pour by a short trace or a via. Stitching vias are stitched again after routing.",
+    "Autoroute open connections on every copper layer, changing layer by through vias. One call routes every net: nets with a width (set_net_width) and supplies keep it wherever it fits and neck down only where there is no room, and while anything is open or narrower the router routes the board other ways and keeps the best. So never route nets in calls of their own; priority puts some first. clear takes up the unlocked routing first (route from scratch). The answer names each open connection and narrowed stretch by its pins. Poured nets' pads join the pour; stitching is redone. Lay out the PCB first.",
   input_schema: {
     type: "object",
-    properties: { nets: { type: "array", items: { type: "string" }, description: "Only these nets, e.g. [\"VIN\", \"VOUT\"]; every net when omitted" } },
+    properties: {
+      nets: { type: "array", items: { type: "string" }, description: "Only these nets; every net when omitted" },
+      priority: { type: "array", items: { type: "string" }, description: "Nets routed first, in this order" },
+      clear: { type: "boolean", description: "Take up unlocked traces and vias (of nets, if given) first" },
+      optimize: { type: "boolean", description: "Use the whole time limit for fewer vias and less track" },
+    },
   },
   run: (project, input) => {
     if (!resolvedComponents(project).some((c) => c.pcb.placed && onBoard(c))) {
       return fail(project, noFootprintAdvice(project) ?? noneOnBoardAdvice(project) ?? "No parts are on the PCB yet; run layout_pcb first")
     }
-    const asked = Array.isArray(input.nets) ? [...new Set((input.nets as unknown[]).map((n) => String(n).trim()).filter(Boolean))] : []
+    const names = (key: string) => (Array.isArray(input[key]) ? [...new Set((input[key] as unknown[]).map((n) => String(n).trim()).filter(Boolean))] : [])
+    const asked = names("nets")
+    const first = names("priority")
     const named = getConnectivity(project).nets.filter((n) => n.pins.length > 0)
-    const missing = asked.filter((name) => !named.some((n) => n.name === name))
+    const missing = [...asked, ...first].filter((name) => !named.some((n) => n.name === name))
     if (missing.length) {
-      return fail(project, `No net named ${missing.join(", ")}. Nets: ${named.filter((n) => n.named).map((n) => n.name).slice(0, 20).join(", ") || "none named yet"}.`)
+      return fail(project, `No net named ${[...new Set(missing)].join(", ")}. Nets: ${named.filter((n) => n.named).map((n) => n.name).slice(0, 20).join(", ") || "none named yet"}.`)
     }
-    const ids = asked.length ? named.filter((n) => asked.includes(n.name)).map((n) => n.id) : undefined
+    const idOf = (name: string) => named.find((n) => n.name === name)!.id
+    const ids = asked.length ? asked.map(idOf) : undefined
     const of = asked.length ? ` of ${asked.join(", ")}` : ""
-    const res = routeAroundStitching(project, (p) => autoroute(p, ids ? { nets: ids } : {}))
-    if (!res.routed && !res.remaining) return ok(project, `Every connection${of} is already routed.`, "Nothing to route")
+    // From scratch: the unlocked copper of what is routed goes first, as clear_routing would take it (stitching vias and blind, buried and
+    // micro vias stay: the router makes through vias only, and stitching is redone after routing).
+    let start = project
+    let cleared = ""
+    if (input.clear === true) {
+      const analysis = getPcbAnalysis(project)
+      const want = (net: string | null | undefined) => !ids || (!!net && ids.includes(net))
+      const traces = project.traces.filter((t) => !t.locked && want(analysis.traceNet.get(t.id)))
+      const vias = project.vias.filter((v) => !v.locked && !v.net && v.kind === undefined && want(analysis.viaNet.get(v.id)))
+      if (traces.length || vias.length) {
+        start = removeCopper(project, new Set(traces.map((t) => t.id)), new Set(vias.map((v) => v.id)))
+        cleared = `Cleared ${traces.length} trace(s) and ${vias.length} via(s) first. `
+      }
+    }
+    const res = routeAroundStitching(start, (p) => autoroute(p, { ...(ids && { nets: ids }), ...(first.length && { order: first.map(idOf) }), ...(input.optimize === true && { optimize: true }) }))
+    if (!res.routed && !res.remaining) return ok(start, `${cleared}Every connection${of} is already routed.`, "Nothing to route")
+    const analysis = getPcbAnalysis(res.project)
     // Asked for some nets only, the router makes no fine-pitch retry (it would route the others first), so that is not yet tried.
     const unrouted = !res.remaining
       ? ""
       : ids && res.finePitchOpen
-        ? ` ${res.remaining} connection(s)${of} could not be routed, ${res.finePitchOpen} of them at fine-pitch pads: route_pcb with no nets retries those with escape stubs and thinner traces.`
-        : unroutedAdvice(res)
-    const tail = narrowedAdvice(res, !!ids) + unrouted
-    const rest = ids ? getPcbAnalysis(res.project).ratsnest.filter((r) => !ids.includes(r.netId)).length : 0
+        ? ` ${res.remaining} connection(s)${of} could not be routed: ${openList(res.project, analysis, res.open)}. ${res.finePitchOpen} of them at fine-pitch pads: route_pcb with no nets retries those with escape stubs and thinner traces.`
+        : unroutedAdvice(res, res.project, analysis)
+    const tail = narrowedAdvice(res, res.project, analysis) + unrouted
+    const rest = ids ? analysis.ratsnest.filter((r) => !ids.includes(r.netId)).length : 0
+    const tries = res.tries > 1 && !res.remaining && !res.narrowed?.length ? ` (the best of ${res.tries} routings)` : ""
     return ok(
       res.project,
-      `Routed ${res.routed} connection(s)${of} with ${res.addedTraces} trace(s) and ${res.addedVias} via(s).${copperLayers(project.board).length > 2 ? " The router uses the two outer layers only; the inner layers are as they were." : ""}${tail}${rest ? ` ${rest} connection(s) of other nets are still open: route_pcb routes them.` : ""}`,
+      `${cleared}Routed ${res.routed} connection(s)${of} with ${res.addedTraces} trace(s) and ${res.addedVias} via(s)${tries}.${tail}${rest ? ` ${rest} connection(s) of other nets are still open: route_pcb routes them.` : ""}`,
       res.remaining ? `Routed ${res.routed}${of}, ${res.remaining} left` : `Routed ${res.routed} connections${of}`,
     )
   },

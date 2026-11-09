@@ -109,15 +109,19 @@ const file = (p: Project) => maskVersion(serializeProject(p))
 
 const physical = (p: Project) => p.components.filter((c) => c.pcb.placed && isPhysical(findPart(c.partId)))
 
-/** Which part each variant changes: the first, second and third placed part, by the file's order. */
+/**
+ * Which part each variant changes: the first, second and third placed part, by the file's order. Each keeps the shipped `updatedAt`,
+ * which the edit stamps with the clock and the title block shows as its date, so `look`'s schematic doesn't change hash every day.
+ */
 function variantsOf(p: Project): [string, Project][] {
   const parts = physical(p)
   const [a, b, c] = parts
+  const dated = (v: Project): Project => ({ ...v, updatedAt: p.updatedAt })
   return [
     ["shipped", p],
-    ["unplaced", updateComponent(p, a.id, { pcb: { placed: false } })],
-    ["moved-turned", updateComponent(p, b.id, { pcb: { x: b.pcb.x + 2.5, y: b.pcb.y - 1.5, rot: ((b.pcb.rot + 90) % 360) as Rotation } })],
-    ["flipped", updateComponent(p, c.id, { pcb: { side: c.pcb.side === "top" ? "bottom" : "top" } })],
+    ["unplaced", dated(updateComponent(p, a.id, { pcb: { placed: false } }))],
+    ["moved-turned", dated(updateComponent(p, b.id, { pcb: { x: b.pcb.x + 2.5, y: b.pcb.y - 1.5, rot: ((b.pcb.rot + 90) % 360) as Rotation } }))],
+    ["flipped", dated(updateComponent(p, c.id, { pcb: { side: c.pcb.side === "top" ? "bottom" : "top" } }))],
   ]
 }
 

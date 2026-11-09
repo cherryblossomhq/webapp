@@ -1,6 +1,7 @@
 import { Component, useEffect, useState, type ReactNode } from "react"
 import { connectManagedAi, type ManagedAiHost } from "./ai/managedAi"
 import { connectSupplierParts, type SupplierPartsSource } from "./ai/supplierParts"
+import { connectWebSource, type WebSource } from "./ai/webSource"
 import { createProject } from "./model/ops"
 import { ProjectFileError } from "./model/projectFile"
 import { Dashboard } from "./pages/Dashboard"
@@ -108,6 +109,11 @@ export interface AppProps {
    */
   supplierParts?: SupplierPartsSource
   /**
+   * The web, for Sakura: a search, the text of a page or a PDF at a link, and a 3D model file at a
+   * link (`ai/webSource.ts`). Without it Sakura's web tools say they aren't available.
+   */
+  web?: WebSource
+  /**
    * Where the 3D model files a user adds are kept: the website's is the signed-in account. This
    * browser's IndexedDB when absent.
    */
@@ -138,6 +144,7 @@ export interface AppProps {
 
 let connectedHost: ManagedAiHost | undefined
 let connectedParts: SupplierPartsSource | undefined
+let connectedWeb: WebSource | undefined
 let defaultStorage: ProjectStorage | undefined
 let defaultModelFiles: ModelFileStore | undefined
 /** Once per page load, whatever React does with effects: each run would make another project. */
@@ -145,7 +152,7 @@ let promptHandled = false
 
 type Load = { state: "loading" } | { state: "ready" } | { state: "missing" } | { state: "failed"; message: string }
 
-export function App({ managedAi, storage: given, initialPrompt, supplierParts, modelFiles, partModels, account, feedback, basePath: base = "" }: AppProps) {
+export function App({ managedAi, storage: given, initialPrompt, supplierParts, web, modelFiles, partModels, account, feedback, basePath: base = "" }: AppProps) {
   // During render rather than in an effect: the copilot panel's effects run before this
   // component's, and its first account fetch needs the host's token already. Only when the
   // prop changes, so a host installed through the development hook isn't undone by a re-render.
@@ -156,6 +163,10 @@ export function App({ managedAi, storage: given, initialPrompt, supplierParts, m
   if (supplierParts !== connectedParts) {
     connectedParts = supplierParts
     connectSupplierParts(supplierParts)
+  }
+  if (web !== connectedWeb) {
+    connectedWeb = web
+    connectWebSource(web)
   }
   // This browser's tabs see each other on a project, as people on an account's project do; with a
   // stand-in account (the harness's `?account`), the Share dialog works on invitations kept in memory.

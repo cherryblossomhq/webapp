@@ -73,6 +73,7 @@ import { splitIgnored } from "../model/erc"
 import { looseIslands, takenCount, withoutTaken, wiringAt, type Taken } from "../model/unwire"
 import { lookTool } from "./lookTool"
 import { readDatasheetTool } from "./datasheetTool"
+import { WEB_TOOLS, webToolLabel } from "./webTools"
 import { createPartTool, findPartTool, getPartDataTool, verifyPartsTool } from "./partTools"
 import { designDrawings, drawingsMore, drawingToolLabel, drawingToolSpecs } from "./drawingTools"
 import { arrangeBlocksTool } from "./arrangeTool"
@@ -313,14 +314,19 @@ const getDesign: ToolSpec = {
     if (blockName && refs.length) return fail(project, "Give block or refs, not both.")
     let picked: Set<string> | undefined
     let pickedBlock: SchematicBlock | undefined
+    let missingRefs: string[] = []
     if (blockName) {
       pickedBlock = findBlock(project, blockName)
       if (!pickedBlock) return fail(project, `No block ${blockName}. Blocks: ${blockNames(project)}`)
       picked = new Set([...pickedBlock.components, ...contentsOf(project, [pickedBlock.id]).components])
     } else if (refs.length) {
-      const found = componentsByRef(project, refs)
+      // The refs the design has are read; the others are named, rather than the whole call refused for one typo.
+      const known = refs.filter((r) => findByRef(project, r))
+      if (!known.length) return fail(project, `No component ${refs.join(", ")}. Call get_design without refs for the designators.`)
+      const found = componentsByRef(project, known)
       if (typeof found === "string") return fail(project, found)
       picked = new Set(found.map((c) => c.id))
+      missingRefs = refs.filter((r) => !known.includes(r))
     }
     const shown = (c: ComponentInstance) => (!only || (c.inst ?? "") === only.path) && (!picked || picked.has(c.id))
     const useOfRef = new Map(project.components.map((c) => [c.ref, c.inst ?? ""]))
@@ -384,7 +390,12 @@ const getDesign: ToolSpec = {
       .filter((n) => n.named || n.pins.length > 1)
       .filter((n) => !only || n.pins.some((p) => useOfRef.get(refOf.get(p.componentId) ?? "") === only!.path))
       .filter((n) => !picked || n.pins.some((p) => picked!.has(p.componentId)))
-      .map((n) => ({ name: n.name, pins: n.pins.map((p) => `${refOf.get(p.componentId)}.${p.pin}`) }))
+      .map((n) => {
+        // Read for some parts, a net like GND lists their pins and counts the rest: its dozens of pins were most of a scoped answer.
+        const mine = picked ? n.pins.filter((p) => picked!.has(p.componentId)) : n.pins
+        const others = n.pins.length - mine.length
+        return { name: n.name, pins: mine.map((p) => `${refOf.get(p.componentId)}.${p.pin}`), ...(picked && others ? { other_pins: others } : {}) }
+      })
     const erc = splitIgnored(getErc(project), project.ignoredChecks)
     const frames = new Map(blockFrames(project).map((f) => [f.id, f.box]))
     const info = project.blocks?.length ? netInfo(project) : null
@@ -452,6 +463,29 @@ const getDesign: ToolSpec = {
         pcb_warnings: pcb.violations.filter((v) => v.severity === "warning").length,
         unplaced_on_pcb: resolvedComponents(project).filter((c) => onBoard(c) && !c.pcb.placed).length,
       },
+    }
+    if (picked) {
+      // Read for some parts: what is about them. The page, board, rules and drawings are the same for every part, and were most of
+      // a scoped answer (12k characters at the median over MCP), sent again on every call.
+      const scoped = {
+        project: project.name,
+        scope: `Only ${pickedBlock ? `block ${pickedBlock.name}` : "these parts"}, with the nets that touch them (pins of other parts counted). get_design without block or refs has the board, the rules and the drawings.`,
+        ...(missingRefs.length ? { not_found: `No component ${missingRefs.join(", ")}` } : {}),
+        ...(only ? { showing_sheet: only.human } : {}),
+        components,
+        ...(powerSymbols.length ? { power_symbols: powerSymbols } : {}),
+        nets,
+        ...(blocks.length ? { blocks } : {}),
+      }
+      const summary = `Read ${pickedBlock ? pickedBlock.name : `${components.length} part${components.length === 1 ? "" : "s"}`} of the design`
+      const scopedText = JSON.stringify(scoped)
+      if (scopedText.length <= DESIGN_BUDGET) return ok(project, scopedText, summary)
+      // Still too much for one answer (a block of a hundred parts): the parts by name, to ask for fewer at a time.
+      return ok(
+        project,
+        JSON.stringify({ ...scoped, too_big: `${plural(components.length, "component")} with their pins are too many for one answer: ask again with fewer refs.`, components: components.map((c) => [c.ref, c.part, c.value].filter(Boolean).join(" ")), nets: nets.map((n) => n.name) }),
+        summary,
+      )
     }
     const text = JSON.stringify(design)
     if (text.length <= DESIGN_BUDGET) return ok(project, text, `Read the design (${components.length} components, ${nets.length} nets)`)
@@ -702,7 +736,10 @@ const addComponentTool: ToolSpec = {
     required: ["part_id"],
   },
   run: (project, input) => {
-    const partId = String(input.part_id)
+    const asked = String(input.part_id)
+    // A project part named by its name or part number, when that is one part: assistants guessed ids from names (`ws2812b_v5_...`).
+    const byName = findPart(asked) ? [] : (project.parts ?? []).filter((p) => [p.name, p.props?.mpn].some((n) => n && n.toLowerCase() === asked.trim().toLowerCase()))
+    const partId = byName.length === 1 ? byName[0].id : asked
     const part = findPart(partId)
     if (!part) return fail(project, `Unknown part "${partId}".${partSuggestions(project, partId)}`)
     const props = stringProps(input.props)
@@ -1291,6 +1328,61 @@ function removeLoose(project: Project): { project: Project; taken: Taken[]; kept
   return { project: at, taken, kept: islands.length - taken.length }
 }
 
+/**
+ * No-connect flags on pins, as the Inspector's pin list sets them (`ComponentInstance.nc`): a pin left
+ * open on purpose, which Checks then doesn't report. Users asked Sakura to "put an x on all the unused
+ * pins" and got red crosses drawn over the sheet, since no tool set one (November 2026).
+ */
+const noConnectTool: ToolSpec = {
+  name: "set_no_connect",
+  description:
+    "Mark pins as left unconnected on purpose (a no-connect flag, the cross on the pin), so Checks stops reporting them; clear true takes the flag off. For a chip's unused pins, a connector's spare contacts, a module's pins you don't use. Refused for a pin that is wired to anything: remove_wiring it first.",
+  input_schema: {
+    type: "object",
+    properties: {
+      pins: { type: "array", items: { type: "string" }, minItems: 1, description: "Pins as REF.PIN, e.g. [\"U1.5\", \"U1.NC\"]" },
+      clear: { type: "boolean", description: "true: take the flags off these pins" },
+    },
+    required: ["pins"],
+  },
+  run: (project, input) => {
+    const clear = input.clear === true
+    const conn = getConnectivity(project)
+    const marks = new Map<string, Set<string>>()
+    const said: string[] = []
+    const refused: string[] = []
+    for (const raw of input.pins as string[]) {
+      const ref = resolvePinSpec(project, raw)
+      if (!ref) {
+        refused.push(`${raw} (no such pin)`)
+        continue
+      }
+      const c = project.components.find((x) => x.id === ref.componentId)!
+      const net = conn.nets.find((n) => n.id === conn.pinNet.get(pinKey(c.id, ref.pin)))
+      if (!clear && net && (net.named || net.pins.length > 1)) {
+        refused.push(`${c.ref}.${ref.pin} (on ${net.name})`)
+        continue
+      }
+      const set = marks.get(c.id) ?? new Set(c.nc ?? [])
+      if (clear) set.delete(ref.pin)
+      else set.add(ref.pin)
+      marks.set(c.id, set)
+      said.push(`${c.ref}.${ref.pin}`)
+    }
+    if (!said.length) return fail(project, `No pin was ${clear ? "cleared" : "marked"}: ${refused.join(", ")}. ${clear ? "" : "A pin that is wired is connected, not left open: remove_wiring it first if it should be."}`.trim())
+    const next = {
+      ...project,
+      updatedAt: Date.now(),
+      components: project.components.map((c) => {
+        const set = marks.get(c.id)
+        return set ? { ...c, nc: set.size ? [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) : undefined } : c
+      }),
+    }
+    const left = refused.length ? ` Not ${clear ? "cleared" : "marked"}: ${refused.join(", ")}${clear ? "" : ", which are wired"}.` : ""
+    return ok(next, `${clear ? "Took the no-connect flag off" : "Marked as not connected"}: ${said.join(", ")}.${left}`, `${clear ? "Cleared" : "Set"} no-connect on ${said.length} pin${said.length === 1 ? "" : "s"}`)
+  },
+}
+
 const removeWiringTool: ToolSpec = {
   name: "remove_wiring",
   description:
@@ -1487,7 +1579,7 @@ const layoutPcbTool: ToolSpec = {
     if (!moved.size) return ok(project, all ? "No part can move: every part is locked or held by locked traces." : "Every part is already placed on the PCB.", "PCB already laid out")
     const b = next.board
     const outside = getPcbAnalysis(next).violations.filter((v) => v.kind === "outside-board").length
-    const hint = outside ? ` ${outside} part(s) did not fit on the ${b.width}x${b.height} mm board; enlarge it with set_board.` : ""
+    const hint = outside ? ` ${outside} part(s) did not fit on the ${b.width}x${b.height} mm board: tell the user, and enlarge it with set_board only if they say its size may change.` : ""
     // X20: parts that do not sit in the placement area that holds them (an area too small for them, or a part locked outside it).
     const out = placementProblems(next).map((p) => p.component.ref)
     const areaHint = out.length ? ` ${out.length} part(s) are outside their placement area (${out.slice(0, 8).join(", ")}${out.length > 8 ? " and more" : ""}): make it bigger with set_pour and its id, or unlock them.` : ""
@@ -1519,9 +1611,32 @@ function outlineReport(b: Project["board"]) {
 }
 
 /** The outline edits of set_board, or the sentence that says why they cannot be made. */
+/** Where the board is, for a refusal about a place on it: x and y in mm, as get_design and add_cutouts use them. */
+function boardExtent(project: Project): string {
+  const pts = explicitPaths(project).flatMap((p) => flattenPath(p))
+  if (!pts.length) return `the board is ${project.board.width} by ${project.board.height} mm`
+  const xs = pts.map((p) => p.x)
+  const ys = pts.map((p) => p.y)
+  const r = (n: number) => Math.round(n * 100) / 100
+  return `the board spans x ${r(Math.min(...xs))} to ${r(Math.max(...xs))} and y ${r(Math.min(...ys))} to ${r(Math.max(...ys))} mm`
+}
+
 function shapeBoard(project: Project, input: Record<string, unknown>): { project: Project; changed: string[] } | string {
   let next = project
   const changed: string[] = []
+  // Cutouts are removed by the numbers the board had when the call was made, before a new outline replaces its paths.
+  if (input.remove_cutouts !== undefined) {
+    const list = input.remove_cutouts
+    if (!Array.isArray(list) || !list.every((n) => Number.isInteger(n))) return "remove_cutouts must be whole numbers"
+    const cuts = cutoutTexts(next.board)
+    if (list.some((n) => n < 0 || n >= cuts.length)) return cuts.length ? `remove_cutouts counts from 0 to ${cuts.length - 1}, as get_design lists the cutouts` : `The board has no cutouts to remove (${boardExtent(next)})`
+    const gone = new Set(list.map((n) => cuts[n].path))
+    next = setOutlinePaths(
+      next,
+      next.board.outline!.paths.filter((_, i) => !gone.has(i)),
+    )
+    changed.push(`${gone.size} cutout${gone.size === 1 ? "" : "s"} removed`)
+  }
   if (input.outline !== undefined) {
     if (typeof input.outline !== "string") return "outline must be text, or \"rect\""
     if (input.outline.trim().toLowerCase() === "rect") {
@@ -1538,18 +1653,6 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
       changed.push(`outline of ${paths.length} shape${paths.length === 1 ? "" : "s"}`)
     }
   }
-  if (input.remove_cutouts !== undefined) {
-    const list = input.remove_cutouts
-    if (!Array.isArray(list) || !list.every((n) => Number.isInteger(n))) return "remove_cutouts must be whole numbers"
-    const cuts = cutoutTexts(next.board)
-    if (list.some((n) => n < 0 || n >= cuts.length)) return cuts.length ? `remove_cutouts counts from 0 to ${cuts.length - 1}` : "The board has no cutouts"
-    const gone = new Set(list.map((n) => cuts[n].path))
-    next = setOutlinePaths(
-      next,
-      next.board.outline!.paths.filter((_, i) => !gone.has(i)),
-    )
-    changed.push(`${gone.size} cutout${gone.size === 1 ? "" : "s"} removed`)
-  }
   if (input.add_cutouts !== undefined) {
     if (typeof input.add_cutouts !== "string") return "add_cutouts must be text"
     const parsed = parseOutlineText(input.add_cutouts)
@@ -1560,7 +1663,7 @@ function shapeBoard(project: Project, input: Record<string, unknown>): { project
     for (const loop of loops) {
       const pts = flattenPath(loop)
       const edges = pts.map((q, i) => [q, pts[(i + 1) % pts.length]] as const)
-      if (!g || !g.rings.length || !pts.every((q) => g.contains(q)) || edges.some(([a, c]) => g.nearestToSegment(a, c, 1e-9) <= 1e-9)) return "A cutout must lie wholly inside the board, clear of its edge and of the other cutouts"
+      if (!g || !g.rings.length || !pts.every((q) => g.contains(q)) || edges.some(([a, c]) => g.nearestToSegment(a, c, 1e-9) <= 1e-9)) return `A cutout must lie wholly inside the board, clear of its edge and of the other cutouts (${boardExtent(next)}; coordinates are absolute, not from a corner)`
     }
     const added = addOutlinePaths(next, loops)
     if (added.crossing) return added.crossing
@@ -1613,10 +1716,9 @@ const setBoardTool: ToolSpec = {
       return fail(project, "The board has an outline of its own, so its size follows it and it has no corner radius or corner holes: pass outline \"rect\" to go back to a rectangle first")
     }
     if (input.width !== undefined || input.height !== undefined) {
-      if (input.height === undefined) return fail(project, "input.height is required with input.width")
-      if (input.width === undefined) return fail(project, "input.width is required with input.height")
-      const width = Number(input.width)
-      const height = Number(input.height)
+      // One side given keeps the other: "make it 60 mm wide" was refused for want of a height (14 times).
+      const width = input.width === undefined ? b.width : Number(input.width)
+      const height = input.height === undefined ? b.height : Number(input.height)
       if (!(width >= 5 && width <= 500 && height >= 5 && height <= 500)) {
         return fail(project, "Board width and height must be between 5 and 500 mm")
       }
@@ -1866,7 +1968,7 @@ export function unroutedAdvice(res: AutorouteResult, project?: Project, analysis
     }
   }
   if (rest) {
-    parts.push(` ${rest} other connection(s) may be short of room: move parts apart with place_parts or enlarge the board with set_board, then route_pcb with clear true; or draw_trace them from pin to pin.`)
+    parts.push(` ${rest} other connection(s) may be short of room: move parts apart with place_parts (or, if the user allows a bigger board, set_board), then route_pcb with clear true; or route_pcb nets [those nets] for them alone.`)
   }
   parts.push(" Do not clear_routing and run route_pcb again on the same layout: the same layout and rules give the same result, so change the layout, the rules or the board first.")
   return parts.join("")
@@ -2226,6 +2328,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   findPartTool,
   getPartDataTool,
   readDatasheetTool,
+  ...WEB_TOOLS,
   createPartTool,
   verifyPartsTool,
   addComponentTool,
@@ -2233,6 +2336,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   removeComponentTool,
   connectTool,
   removeWiringTool,
+  noConnectTool,
   drawWiringTool,
   editNet,
   ...sheetEditTools,
@@ -2298,7 +2402,10 @@ export function validateInput(schema: JsonSchema, value: unknown, path = "input"
       if (!value || typeof value !== "object" || Array.isArray(value)) return `${path} must be an object`
       const obj = value as Record<string, unknown>
       for (const key of schema.required ?? []) {
-        if (obj[key] === undefined) return `${path}.${key} is required`
+        if (obj[key] !== undefined) continue
+        // Fields this object doesn't have are ignored, so say which were given: `view` passed for `target` was the commonest miss.
+        const unknown = schema.properties ? Object.keys(obj).filter((k) => !(k in schema.properties!)) : []
+        return `${path}.${key} is required${unknown.length ? ` (${unknown.join(", ")} ${unknown.length > 1 ? "aren't fields" : "isn't a field"} here; the fields are ${Object.keys(schema.properties!).join(", ")})` : ""}`
       }
       for (const [key, v] of Object.entries(obj)) {
         const prop = schema.properties?.[key]
@@ -2342,7 +2449,16 @@ const SHEET_BUILDERS = new Set(["add_component", "group_parts", "edit_block", "a
 /** A tool with a sheet runs on that sheet alone; the others on the project. */
 function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: unknown, ctx: ToolContext): ToolOutcome {
   if (spec.name === "connect") return onSheet(spec, project, input, prepared, ctx, (p) => sheetOfPins(p, input))
-  if (spec.name === "tidy_schematic") return onSheet(spec, project, input, prepared, ctx)
+  // The blocks' own sheet when they name one, else the sheet the editor shows: it was refused for want of a sheet seven times in a
+  // week. With no editor (an assistant over MCP) and no blocks to go by, it still asks which sheet rather than tidy the root.
+  if (spec.name === "tidy_schematic") return onSheet(spec, project, input, prepared, ctx, (p) => {
+    const named = Array.isArray(input.blocks) ? input.blocks.map(String) : []
+    const sheets = new Set(named.map((n) => findBlock(p, n)).filter((b) => b !== undefined).map((b) => b.inst ?? ""))
+    if (sheets.size === 1) return [...sheets][0]
+    if (!ctx.sheet) return undefined
+    const r = shownUse(p, ctx)
+    return "error" in r ? r : r.use.path
+  })
   if (spec.name === "remove_wiring") return onSheet(spec, project, input, prepared, ctx, (p) => {
     if (Array.isArray(input.pins) && input.pins.length) return sheetOfPins(p, input)
     const r = shownUse(p, ctx)
@@ -2355,9 +2471,49 @@ function runSpec(spec: ToolSpec, project: Project, input: ToolInput, prepared: u
   return out.project === project || !isHierarchical(project) ? out : { ...out, project: syncEdited(project, out.project) }
 }
 
-export function runTool(project: Project, name: string, input: unknown, context: ToolContext = {}): ToolOutcome {
+/** Names assistants reach for in place of a tool's own field, and the field each means: renamed before a call is checked. */
+const ALIASES: Record<string, Record<string, string>> = {
+  look: { view: "target" },
+  group_parts: { name: "block" },
+  find_part: { q: "query", search: "query", part: "query" },
+  search_parts: { q: "query", search: "query" },
+  get_design: { ref: "refs" },
+  web_search: { q: "query" },
+  read_web_page: { link: "url" },
+}
+
+/**
+ * A call's input as the tool takes it: aliases renamed (`ALIASES`), and for the tools that read a part
+ * by its supplier number, a placed part named by `ref` or `part_id` turned into the number it was built
+ * from. Assistants asked get_part_data and read_datasheet about "U1" and were refused seven times.
+ */
+export function normalizeInput(project: Project, name: string, input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input
+  const spec = specByName.get(name)
+  const props = spec?.input_schema.properties ?? {}
+  let out = input as Record<string, unknown>
+  for (const [alias, field] of Object.entries(ALIASES[name] ?? {})) {
+    if (out[alias] === undefined || out[field] !== undefined || alias in props) continue
+    const { [alias]: value, ...rest } = out
+    out = { ...rest, [field]: field === "refs" && typeof value === "string" ? [value] : value }
+  }
+  if ((name === "get_part_data" || name === "read_datasheet") && out.lcsc === undefined && out.database_id === undefined && out.name === undefined && out.url === undefined) {
+    const ref = typeof out.ref === "string" ? out.ref.trim() : ""
+    const partId = typeof out.part_id === "string" ? out.part_id.trim() : (ref && project.components.find((c) => c.ref === ref)?.partId) || ""
+    const part = partId ? project.parts?.find((p) => p.id === partId) : undefined
+    if (part) {
+      const { ref: _r, part_id: _p, ...rest } = out
+      const lcsc = part.source?.supplier?.lcsc ?? part.source?.check?.lcsc ?? part.props?.lcsc
+      out = lcsc ? { ...rest, lcsc } : name === "read_datasheet" ? { ...rest, name: part.props?.mpn ?? part.name } : out
+    }
+  }
+  return out
+}
+
+export function runTool(project: Project, name: string, rawInput: unknown, context: ToolContext = {}): ToolOutcome {
   const spec = specByName.get(name)
   if (!spec) return fail(project, `Unknown tool ${name}`)
+  const input = normalizeInput(project, name, rawInput)
   const err = validateInput(spec.input_schema, input ?? {})
   if (err) return fail(project, `Invalid input: ${err}`)
   try {
@@ -2382,6 +2538,7 @@ export async function executeTool(
 ): Promise<ToolOutcome & { base: Project | null }> {
   const spec = specByName.get(name)
   if (!spec) return { ...fail(start, `Unknown tool ${name}`), base: start }
+  input = normalizeInput(start, name, input)
   const err = validateInput(spec.input_schema, input ?? {})
   if (err) return { ...fail(start, `Invalid input: ${err}`), base: start }
   const args = (input ?? {}) as ToolInput
@@ -2430,6 +2587,8 @@ export function toolActivityLabel(name: string, input: unknown): string {
       return `Connecting ${Array.isArray(i.pins) ? i.pins.join(", ") : "pins"}`
     case "remove_wiring":
       return Array.isArray(i.pins) && i.pins.length ? `Removing the wiring at ${i.pins.join(", ")}` : "Removing loose wiring"
+    case "set_no_connect":
+      return Array.isArray(i.pins) ? `Marking ${i.pins.length} pin${i.pins.length === 1 ? "" : "s"} not connected` : "Marking pins not connected"
     case "get_wiring":
       return `Reading the wiring${typeof i.block === "string" ? ` of ${i.block}` : ""}`
     case "draw_wiring":
@@ -2479,7 +2638,7 @@ export function toolActivityLabel(name: string, input: unknown): string {
     case "undo":
       return typeof i.steps === "number" && i.steps > 1 ? `Undoing ${i.steps} changes` : "Undoing the last change"
     default:
-      return drawingToolLabel(name, i) ?? pcbToolLabel(name, i) ?? name
+      return drawingToolLabel(name, i) ?? pcbToolLabel(name, i) ?? webToolLabel(name, i) ?? name
   }
 }
 
@@ -2493,7 +2652,12 @@ export function toolPhase(name: string): string {
     case "get_wiring":
     case "look":
     case "read_datasheet":
+    case "read_web_page":
       return "Reading"
+    case "web_search":
+      return "Searching the web"
+    case "set_3d_model":
+      return "Editing parts"
     case "search_parts":
     case "find_part":
     case "get_part_data":
@@ -2506,6 +2670,7 @@ export function toolPhase(name: string): string {
       return "Editing parts"
     case "connect":
     case "remove_wiring":
+    case "set_no_connect":
     case "draw_wiring":
     case "edit_net":
       return "Wiring"

@@ -143,7 +143,8 @@ describe("what route_pcb says about connections it could not route", () => {
   it("is the old advice, minus the loop, when no fine-pitch pad is involved", () => {
     const text = unroutedAdvice(result(0, 2, null))
     expect(text).not.toContain("fine-pitch")
-    expect(text).toContain("enlarge the board")
+    // A bigger board only when the user allows it: users pushed back on boards grown to fit (November 2026).
+    expect(text).toContain("if the user allows a bigger board, set_board")
     expect(text).toContain("Do not clear_routing")
   })
 

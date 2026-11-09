@@ -73,13 +73,12 @@ function drawnPad(p: DrawnPad, label: string): PadDef | string {
   if (slot !== undefined && !(slot > drill!)) return `${label}: slot_length (${mm(slot)}) must be longer than drill (${mm(drill!)}), which is the slot's width`
 
   if (p.plated === false) {
-    // A bare hole: no copper, so no pin and no size of its own but the hole's.
+    // A bare hole: no copper, so no pin and no size of its own but the hole's. What a hole can't have
+    // (a number, a pad's shape and size, paste or mask) is left out rather than refused: an assistant
+    // drawing a connector's locating pegs gave them a pad's fields, and was refused nine times. A number
+    // is still refused: it says the hole is a pin, which is a mistake to point at, not to drop.
     if (number) return `${label}: a non-plated hole is no pin, so it has no number`
-    if (drill === undefined) return `${label}: a non-plated hole needs drill`
-    if (pasted || p.mask_margin !== undefined || p.corner_ratio !== undefined) return `${label}: a non-plated hole has no copper, so no paste, mask or corner settings`
-    if (p.shape !== undefined || p.w !== undefined || p.h !== undefined || p.d !== undefined) {
-      return `${label}: a non-plated hole has no copper, so its size is drill (and slot_length, along x unless turned by rotation); leave out shape, w, h and d`
-    }
+    if (drill === undefined) return `${label}: a non-plated hole needs drill, its diameter`
     const x = round(p.x)
     const y = round(p.y)
     if (slot === undefined) return { pin: null, shape: "circle", x, y, width: round(drill), height: round(drill), holeDiameter: round(drill), layer: "through", plated: false }

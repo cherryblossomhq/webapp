@@ -7,13 +7,15 @@ import type { Project } from "../model/types"
 import type { ChatConversation } from "./chatFile"
 import { acquireBoard, wholeBoardAction, type BoardLease } from "../store/boardLease"
 import { supplierParts } from "./supplierParts"
+import { webSource } from "./webSource"
 import { createRepeatGuard } from "./repeatGuard"
+import { compactHistory, shouldCompact } from "./compact"
 import { executeTool, TOOL_DEFINITIONS, type FunctionTool, type ToolContext, type ToolOutcome } from "./tools"
 import type { LookImage } from "./vision/encode"
 import { KEEP_IMAGES, MAX_LOOKS_PER_REQUEST, newLookBudget } from "./vision/limits"
 import { LOOK_LIMIT_SUMMARY } from "./lookTool"
 import { pictureMessage, pruneImages } from "./vision/messages"
-import { DESIGN_GUIDE, designNotes, LOOKING_GUIDE } from "./designGuide"
+import { DESIGN_GUIDE, designNotes, EDITOR_GUIDE, LOOKING_GUIDE, WEB_GUIDE } from "./designGuide"
 
 export { hasKicadSymbols, KICAD_NET_NOTE, SHEETS_NOTE, UNITS_NOTE } from "./designGuide"
 
@@ -38,7 +40,11 @@ ${DESIGN_GUIDE}
 
 ${LOOKING_GUIDE}
 
-Replies are shown in a narrow side panel: keep them short and concrete. Say what you changed and any assumptions, as a sentence or two or a short list. No preamble.`
+${WEB_GUIDE}
+
+${EDITOR_GUIDE}
+
+Replies are shown in a narrow side panel: keep them short and concrete. Say what you changed and any assumptions, as a sentence or two or a short list. No preamble. When the user listed several things to do, end with each one marked done or not done, and why not. A line you write while tools still run is not your answer: the answer is your last message, so never leave the user with only "Now the other five sheets."`
 
 /** The static prompt carries a cache breakpoint: tools and system are the same on every request. */
 const SYSTEM_MESSAGE: Extract<ChatMessage, { role: "system" }> = {
@@ -72,6 +78,16 @@ export type CopilotEvent =
  * requests into one trace and is the provider's cache affinity key.
  */
 const conversations = new Map<string, ChatConversation>()
+
+/** What the model is told after the provider's safety filter declined a message, so it can say so truthfully. */
+const DECLINED_NOTE =
+  "Editor note, not from the user: the model provider's safety filter declined the user's last message, so it isn't shown here and nothing was done for it. If the user asks about it, say that message was declined, without guessing its content, and help with the design."
+
+/** When each chat's last request ended, so the next knows whether the provider's cache of it is still warm. */
+const lastEnded = new Map<string, number>()
+
+/** Declined requests in a row, by chat: a chat declined twice running is told to start again. */
+const declinedInARow = new Map<string, number>()
 
 /** Forget a chat's conversation: its next request starts a new one. */
 export function clearHistory(chat: string) {
@@ -162,6 +178,11 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
   const conversation = conversations.get(key) ?? { messages: [], id: chat ?? crypto.randomUUID() }
   conversations.set(key, conversation)
   const history = conversation.messages
+  // Older requests' tool results made small, when it costs no cache (`compact.ts`); never within a request.
+  if (!tools && shouldCompact(history, lastEnded.get(key))) {
+    const compacted = compactHistory(history).messages
+    if (compacted !== history) history.splice(0, history.length, ...compacted)
+  }
   const startLength = history.length
   history.push({ role: "user", content: prompt })
   // The pictures this request may take; a new request starts with a full allowance.
@@ -180,6 +201,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
     onEvent({ type: "error", message: `Stopped after ${MAX_ITERATIONS} steps. Send a message to continue.` })
   }
   let stopReason: string | null = null
+  /** The provider declined this request: the note saying so stays in the history. */
+  let declinedNow = false
   // Per request: an identical call that keeps failing is refused after its second failure.
   const repeats = createRepeatGuard()
   // The board leases this request holds for the whole-board tool it is running; every one is let go of when its call ends, and any left when the request does.
@@ -211,11 +234,20 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
 
       if (turn.finishReason === "content_filter") {
         // A declined first turn is dropped so the next message starts clean; later turns
-        // keep their tool history because those changes were already applied.
+        // keep their tool history because those changes were already applied. Either way the model
+        // is told, or asked about it later it says it declined nothing (it did, in a user's chat).
         if (iteration === 0) history.length = startLength
-        onEvent({ type: "error", message: "Sakura declined this request. Try rephrasing it." })
+        history.push({ role: "user", content: DECLINED_NOTE })
+        declinedNow = true
+        const times = (declinedInARow.get(key) ?? 0) + 1
+        declinedInARow.set(key, times)
+        onEvent({
+          type: "error",
+          message: times > 1 ? "Sakura declined this again. Start a new chat (the + at the top of this panel) to go on: this one keeps being declined." : "Sakura declined this request. Try rephrasing it.",
+        })
         break
       }
+      declinedInARow.delete(key)
 
       if (!turn.text && !turn.toolCalls.length) break
       history.push({
@@ -271,6 +303,9 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
         }
         const context: ToolContext = {
           parts: supplierParts(),
+          web: webSource(),
+          // Reading a model file needs three.js, loaded only when Sakura first fetches one.
+          addModelFile: (file, footprint, signal) => import("../editor/three/files/addModelFile").then((m) => m.addModelFile(file, footprint, signal)),
           signal,
           looks,
           selection: () => useUi.getState().selection,
@@ -385,6 +420,7 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
   if (outOfSteps && !(together && !failed)) stopped()
   // A prompt nothing answered (stopped, or the request failed) is dropped, or the next message
   // would carry it along and the copilot would act on both.
-  if (history.length === startLength + 1) history.length = startLength
+  if (history.length === startLength + 1 && !declinedNow) history.length = startLength
+  lastEnded.set(key, Date.now())
   finish(stopReason)
 }

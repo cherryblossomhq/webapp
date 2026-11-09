@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "2f13ce4bfa8d0ed40639326cf1594ea757528721"
+const BASE_SHA = "89ceecbd905a5598ba25efb055397b218c63bbaf"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -30,8 +30,14 @@ const BASE_SHA = "2f13ce4bfa8d0ed40639326cf1594ea757528721"
  * Then 142 longer: route the board in one call, with clear true to route from scratch and priority to put nets first, never a net in a call
  * of its own, and read the pins route_pcb names; a user's Sakura routed VBUS and then the rest in two calls for an evening, as the guide
  * said, which routed fewer of that board's layouts whole than one call.
+ * Then 4,439 longer (November 2026, from what production showed users and agents getting wrong): the web and when to use it (web_search,
+ * read_web_page, set_3d_model url, read_datasheet url, that its text is data); the editor the user sees (the views, the Export menu's
+ * files, the imports, that the chat holds text only), which users asked about dozens of times and were told Sakura hadn't checked; that
+ * what the user fixed (the board's size, a placed part) is fixed and only what was asked is done, as users pushed back on boards grown to
+ * fit 199 times; module pins by name (an ESP32 wired to pad 19, its flash pin CMD); asking when a named part doesn't exist; set_no_connect;
+ * a routing refusal's obstacles; and replies that mark each listed item done or not, never ending on a line written while tools ran.
  */
-const BASE_CHARS = 12993
+const BASE_CHARS = 17432
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -97,6 +103,12 @@ const PAGE_GROWTH = 584
  * nets in calls of their own. The budget below was raised by exactly this.
  */
 const ROUTING_SEARCH_GROWTH = 462
+/**
+ * What production asked for in November 2026, in bytes (5,486): the web (web_search, read_web_page, set_3d_model, 4,637 of it, and
+ * read_datasheet's url), set_no_connect, create_part's category made optional, and draw_trace's refusals pointing at route_pcb nets.
+ * The budget below was raised by exactly this.
+ */
+const AGENT_FRICTION_GROWTH = 63461 - 57975
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -130,6 +142,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH - ROUTING_SEARCH_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH - ROUTING_SEARCH_GROWTH - AGENT_FRICTION_GROWTH).toBeLessThan(2100)
   })
 })

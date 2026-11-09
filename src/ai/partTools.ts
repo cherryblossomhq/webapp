@@ -86,7 +86,7 @@ export const findPartTool: ToolSpec<FindPrepared> = {
   },
   async prepare(_project, input, ctx) {
     if (!ctx.parts) return { error: `${UNAVAILABLE}. Make the part with create_part from the datasheet and tell the user it is unverified.` }
-    const query = String(input.query).trim()
+    const query = searchQuery(input.query)
     const index = ctx.parts.index
     // Both at once: the database answers in tens of milliseconds, and it still answers when the supplier is busy.
     const [supplier, stored] = await Promise.all([
@@ -110,7 +110,7 @@ export const findPartTool: ToolSpec<FindPrepared> = {
     }
   },
   run(project, input, prepared) {
-    const query = String(input.query).trim()
+    const query = searchQuery(input.query)
     if (!prepared || "error" in prepared) return fail(project, prepared?.error ?? UNAVAILABLE)
     const fromDatabase = storedSection(prepared.stored, prepared.storedCredit, prepared.response)
     if (!prepared.response) {
@@ -369,6 +369,49 @@ function landOf(input: ToolInput, partName: string): { land: FootprintDef; from:
   return got
 }
 
+/**
+ * A search phrase the parts routes take: letters, digits, spaces and . , + - / # ( ) _, 2 to 64 of
+ * them. Anything else is a space rather than a refusal: "10k 1%" and "VCC=3.3V" were refused, and the
+ * error named the route's `q`, a field the tool doesn't have.
+ */
+export const searchQuery = (raw: unknown) =>
+  String(raw ?? "")
+    .replace(/[^\p{L}\p{N} .,+\-/#()_]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64)
+    .trim()
+
+/** Words a part's description or name uses, and the category they put it in; the first that matches wins. */
+const CATEGORY_WORDS: [RegExp, PartCategory][] = [
+  [/\b(module|wroom|wrover|devkit|dev board|breakout|lora|gnss|gps receiver|cellular|xiao)\b/i, "Modules"],
+  [/\b(regulator|ldo|dc-?dc|buck|boost|pmic|charger|load switch|voltage reference|supervisor)\b/i, "Power"],
+  // A chip's description often names what it connects to (a USB bridge, a Type-C controller): those are chips.
+  [/\b(controller|bridge|transceiver|driver|amplifier|op-?amp|comparator|mcu|microcontroller|sensor|adc|dac|codec|eeprom|flash|sram|logic|buffer|multiplexer|interface ic|uart|phy)\b/i, "ICs"],
+  [/\b(mosfet|transistor|bjt|igbt|jfet)\b/i, "Transistors"],
+  [/\b(diode|led|tvs|zener|schottky|rectifier)\b/i, "Diodes"],
+  [/\b(connector|header|terminal block|terminal|socket|receptacle|wafer|jack|plug|fpc|ffc|crimp|housing|pin strip)\b/i, "Connectors"],
+  [/\b(switch|button|relay|buzzer|speaker|motor|encoder|potentiometer)\b/i, "Electromechanical"],
+  [/\b(resistor|capacitor|inductor|ferrite|bead|crystal|resonator|oscillator|fuse|thermistor|varistor)\b/i, "Passives"],
+]
+const PREFIX_CATEGORY: Record<string, PartCategory> = { J: "Connectors", P: "Connectors", CN: "Connectors", D: "Diodes", LED: "Diodes", Q: "Transistors", SW: "Electromechanical", K: "Electromechanical", BZ: "Electromechanical", R: "Passives", C: "Passives", L: "Passives", Y: "Passives", F: "Passives", FB: "Passives", U: "ICs", IC: "ICs", M: "Modules" }
+
+/**
+ * The category a part goes under: the one given, else the parts database's, else what the
+ * supplier's description, the designator prefix or the name say, else ICs. It used to be required
+ * even with an lcsc whose record says what the part is, and assistants were refused for leaving it
+ * out (20 times in a week, November 2026).
+ */
+function categoryFor(input: ToolInput, prepared: CreatePrepared | undefined): PartCategory {
+  if (typeof input.category === "string" && (CUSTOM_CATEGORIES as readonly string[]).includes(input.category)) return input.category as PartCategory
+  if (prepared?.kind === "database" && prepared.part.category && (CUSTOM_CATEGORIES as readonly string[]).includes(prepared.part.category)) return prepared.part.category as PartCategory
+  const words = [prepared?.kind === "supplier" ? `${prepared.part.description ?? ""} ${prepared.part.package ?? ""}` : "", String(input.description ?? ""), String(input.name ?? "")].join(" ")
+  const byWords = CATEGORY_WORDS.find(([re]) => re.test(words))
+  if (byWords) return byWords[1]
+  const prefix = typeof input.ref_prefix === "string" ? input.ref_prefix.trim().toUpperCase() : ""
+  return PREFIX_CATEGORY[prefix] ?? "ICs"
+}
+
 type CreatePrepared =
   | {
       kind: "supplier"
@@ -524,7 +567,6 @@ From memory (no supplier record):
       keywords: { type: "array", items: { type: "string" } },
       replaces: { type: "string", description: "part_id of a part made earlier in this project that this definition corrects; its components switch to the new one, their wiring kept on each pin by number" },
     },
-    required: ["category"],
   },
   async prepare(_project, input, ctx): Promise<CreatePrepared> {
     const databaseId = String(input.database_id ?? "").trim()
@@ -603,7 +645,7 @@ From memory (no supplier record):
   },
   run(project, input, prepared) {
     if (prepared?.kind === "refused") return fail(project, prepared.text)
-    const category = input.category as PartCategory
+    const category = categoryFor(input, prepared)
     const props = stringProps(input.props)
     const padAlias = stringProps(input.pad_alias)
     if (!props || !padAlias) return fail(project, "props and pad_alias must be objects of string values")
@@ -676,8 +718,12 @@ From memory (no supplier record):
           if (pads.length > 2) pinsFrom = "memory"
         } else if (pads.length && pads.length <= 2) {
           pins = pads.map((n) => ({ number: n, name: n }))
+        } else if (pads.length && category === "Connectors") {
+          // A connector's pins are its contacts in order: the numbers are the pinout, and the supplier's land is the part.
+          pins = pads.map((n) => ({ number: n, name: n }))
+          notes = [...notes, `LCSC ${part.lcsc}'s symbol names no pins, so each of its ${pads.length} contacts is named by its number, as its land numbers them; shell or mounting pads are pins too, to wire to GND or leave unconnected. Pin 1 is where the land puts it: check it against the datasheet's drawing if the order matters.`]
         } else {
-          return fail(project, `LCSC ${part.lcsc}'s symbol numbers its ${pads.length || "?"} pins without naming them, so there is no pinout to build from. Pass pins from the datasheet with lcsc "${part.lcsc}" (the land still comes from the supplier), and tell the user the pinout is unverified.`)
+          return fail(project, `LCSC ${part.lcsc}'s symbol numbers its ${pads.length || "?"} pins without naming them, so there is no pinout to build from. Read the pin table (read_datasheet lcsc "${part.lcsc}" section pins), then pass pins from it with lcsc "${part.lcsc}" (the land still comes from the supplier); if it is a connector, pass category "Connectors" and its contacts are named by number. Tell the user where the pinout came from.`)
         }
       }
       let landFrom: PartSource["land"]

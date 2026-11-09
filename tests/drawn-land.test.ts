@@ -225,7 +225,6 @@ describe("create_part with a land drawn pad by pad", () => {
     expect(refused({ pads: [{ ...pads[0], paste: false }, ...pads.slice(1)] })).toContain("pad 1: paste settings are for surface-mount pads")
     expect(refused({ pads: [{ ...pads[0], slot_length: 2 }, ...pads.slice(1)] })).toContain("a slot runs along a pad's longer side")
     expect(refused({ pads: [{ number: "1", x: 0, y: 0, w: 1, h: 1, drill: 0.5, plated: false }, ...pads.slice(1)] })).toContain("a non-plated hole is no pin")
-    expect(refused({ pads: [...pads, { x: 6.35, y: 3, shape: "oval", w: 1, h: 2, drill: 1, slot_length: 2, plated: false }] })).toContain("leave out shape, w, h and d")
     expect(refused({ pads: [...pads, { number: "4", x: 300, y: 0, d: 2, drill: 1 }] })).toContain("over 250 mm out")
     expect(refused(PHOENIX_LAND, { footprint: "pinrow3" })).toContain("Pass footprint or land, not both")
     // Pins and pads still have to match one to one.

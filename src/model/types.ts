@@ -844,7 +844,7 @@ export interface PartSource {
    */
   datasheet?: {
     at: string
-    /** The LCSC part whose datasheet was read. */
+    /** The LCSC part whose datasheet was read, or the link of a PDF read in its place (`read_datasheet url`). */
     lcsc: string
     /** The pages of the pin table that were compared. */
     pages: number[]

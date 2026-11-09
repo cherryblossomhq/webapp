@@ -1,6 +1,7 @@
 import type { Project } from "../model/types"
 import type { HistoryState, KeepOutcome, NameOutcome, OpenedVersion } from "../store/history"
 import type { SupplierPartsSource } from "./supplierParts"
+import type { AddModelFile, WebSource } from "./webSource"
 import type { LookImage, LookRenderer } from "./vision/encode"
 import type { LookBudget } from "./vision/limits"
 
@@ -66,6 +67,10 @@ export interface ToolContext {
   sheet?: { shown(): string; show(path: string): void }
   /** The project's version history, which `save_version`, `list_versions` and `restore_version` reach. Absent where storage keeps none (the harness). */
   versions?: ToolVersions
+  /** The web (`web_search`, `read_web_page`, `set_3d_model url`, `read_datasheet url`). Absent where the host gives none. */
+  web?: WebSource | null
+  /** How a model file fetched for `set_3d_model` is read, kept and placed: the page's, absent on the server. */
+  addModelFile?: AddModelFile
   /** Sakura's own changes on the user's undo stack, which `undo` takes back. Absent where there is none (an assistant over MCP). */
   undo?: (steps: number) => UndoReport
 }

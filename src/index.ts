@@ -25,7 +25,8 @@ if (process.env.NODE_ENV === "development") {
     import("./store/partModels"),
     import("./store/accountStore"),
     import("./model/projectFile"),
-  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, partModels, accountStore, projectFile]) => {
+    import("./ai/webSource"),
+  ]).then(([projectStore, uiStore, analysis, instances, managedAi, supplierParts, partModels, accountStore, projectFile, webSource]) => {
     Object.assign(window, {
       __cherryblossom: {
         projectApi: projectStore.projectApi,
@@ -52,6 +53,8 @@ if (process.env.NODE_ENV === "development") {
         // And for its supplier part data, and the supplier's and KiCad's 3D models.
         connectSupplierParts: supplierParts.connectSupplierParts,
         connectPartModels: partModels.connectPartModels,
+        // And for Sakura's web.
+        connectWebSource: webSource.connectWebSource,
       },
     })
   })
@@ -62,6 +65,7 @@ export type { AssistantActivity, ManagedAiHost } from "./ai/managedAi"
 export type { AccountUser, EditorAccount } from "./store/account"
 export type { EditorFeedback, FeedbackSink, FeedbackTopic } from "./store/feedback"
 export type { PartsIndexSource, SupplierPartsSource } from "./ai/supplierParts"
+export type { WebModelFile, WebSource } from "./ai/webSource"
 export type { ModelFileStore } from "./store/modelFiles"
 export type { PartModelSource } from "./store/partModels"
 export type {

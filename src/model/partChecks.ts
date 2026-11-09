@@ -72,7 +72,7 @@ export function partFindings(project: Project): PartFinding[] {
                     ? `made from memory (${src.note})`
                     : "made from memory"
         // Sakura's read of a datasheet is said, and does not settle it: it is not a supplier check.
-        const sheet = src?.datasheet ? `; Sakura compared its pins with the datasheet (p.${src.datasheet.pages.join(", ")}, LCSC ${src.datasheet.lcsc}), which is not a supplier check` : ""
+        const sheet = src?.datasheet ? `; Sakura compared its pins with the datasheet (p.${src.datasheet.pages.join(", ")}, ${/^https?:/i.test(src.datasheet.lcsc) ? src.datasheet.lcsc : `LCSC ${src.datasheet.lcsc}`}), which is not a supplier check` : ""
         if (spec.pins.length > 2 || isPolarized(spec)) add("warning", `${label}: pinout and footprint not verified against a supplier; ${why}${sheet}`)
         else add("warning", `${label}: footprint ${spec.footprint} not checked against a supplier land; ${why}`)
       }

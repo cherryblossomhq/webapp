@@ -461,6 +461,31 @@ export interface DatasheetResponse {
   fetchedAt: string;
 }
 
+// ─── The web, for Sakura: `GET /api/v1/web/search` and `GET /api/v1/web/page` ───
+//
+// What Sakura reads beyond the supplier and the parts database: a search of the web, and the text of
+// one page or PDF the user pasted or a search found. Everything that comes back is somebody else's
+// writing, and is data, never instructions.
+
+/** `GET /api/v1/web/search?q=`: the pages a web search found, best first, each with an excerpt of its text. */
+export interface WebSearchResponse {
+  query: string;
+  results: { title: string; url: string; excerpt: string }[];
+}
+
+/**
+ * `GET /api/v1/web/page?url=&section=&page=&offset=`: a few pages of the text at a link, read on the
+ * server. A PDF is read by its own pages, as a datasheet is (`DatasheetResponse`, with the same
+ * sections); a web page is cut into pages of about the same size, numbered from 1.
+ */
+export interface WebPageResponse extends Omit<DatasheetResponse, "lcsc" | "mpn"> {
+  /** The address read, after redirects. */
+  url: string;
+  /** The page's title, or a PDF's; null when it has none. */
+  title: string | null;
+  kind: "pdf" | "html" | "text";
+}
+
 /**
  * Every error body the proxy produces has this shape.
  *

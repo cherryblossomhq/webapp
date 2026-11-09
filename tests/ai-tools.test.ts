@@ -75,7 +75,8 @@ describe("copilot tools", () => {
     const p = createProject("t")
     expect(runTool(p, "add_component", { part_id: "resistor", rotation: 45 }).result).toContain("input.rotation must be one of")
     expect(runTool(p, "connect", { pins: "R1.1" }).result).toContain("input.pins must be an array")
-    expect(runTool(p, "set_board", { width: 30 }).result).toContain("input.height is required")
+    // One side given keeps the other.
+    expect(runTool(p, "set_board", { width: 30 }).project.board).toMatchObject({ width: 30, height: p.board.height })
     expect(runTool(p, "nope", {}).isError).toBe(true)
     for (const def of TOOL_DEFINITIONS) expect(validateInput(def.function.parameters, {})).toSatisfy((e) => e === null || e.includes("required"))
   })

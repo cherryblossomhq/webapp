@@ -1,4 +1,4 @@
-import { boxesOverlap, normalizeAngle, round, type Box } from "../lib/geometry"
+import { boxesOverlap, closestPointOnSegment, normalizeAngle, polylineSegments, round, segmentSegmentDistance, type Box } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { boardObstacles, exitCorridors } from "../model/autoplace"
 import { boxOnBoard, outlineGeometry } from "../model/outline"
@@ -473,7 +473,7 @@ function placeNear(
     reach: NEAR_REACH,
     penalty,
   })
-  if (!spot) return { error: `no clear spot within ${NEAR_REACH} mm of ${spec}: the courtyards, holes, copper and pin exits around it are in the way. Move something aside first, try the other side, or enlarge the board` }
+  if (!spot) return { error: `no clear spot within ${NEAR_REACH} mm of ${spec}: the courtyards, holes, copper and pin exits around it are in the way. Move something aside first or try the other side; a bigger board only if the user has said its size may change` }
 
   let placed: ComponentInstance = { ...c, pcb: { ...c.pcb, x: spot.x, y: spot.y, rot: spot.rot, side: spot.side, placed: true } }
   const notes: string[] = []
@@ -846,6 +846,83 @@ function dogleg(a: Vec2, b: Vec2): Vec2[] {
 
 const at = (p: Vec2) => `(${round(p.x, 3)}, ${round(p.y, 3)})`
 
+/**
+ * What a trace would run into on its layer, in order along it: other nets' pads, traces and vias it
+ * touches or comes closer to than their clearance, each with where. Read on the board before the
+ * trace is added. Refusals used to say only "Short between GND, 5V", with no item and no place, and
+ * an assistant then moved its detour half a millimetre at a time, 24 tries in a row (November 2026).
+ */
+export function obstaclesAlong(project: Project, trace: { points: Vec2[]; width: number; layer: string }, net: string, max = 4): string[] {
+  const sch = getConnectivity(project)
+  const analysis = getPcbAnalysis(project)
+  const classes = classIndex(project.rules)
+  const names = new Map(sch.nets.map((n) => [n.id, n.name]))
+  const segs = polylineSegments(trace.points)
+  if (!segs.length) return []
+  const starts: number[] = []
+  segs.reduce((sum, [a, b]) => (starts.push(sum), sum + Math.hypot(b.x - a.x, b.y - a.y)), 0)
+  const half = trace.width / 2
+  const hits: { along: number; key: string; text: string }[] = []
+  /** The nearest point of the trace to a point, and how far along the trace it is. */
+  const nearest = (p: Vec2) => {
+    let best = { d: Infinity, along: 0, point: p }
+    segs.forEach(([a, b], i) => {
+      const q = closestPointOnSegment(p, a, b)
+      const d = Math.hypot(q.x - p.x, q.y - p.y)
+      if (d < best.d) best = { d, along: starts[i] + Math.hypot(q.x - a.x, q.y - a.y), point: q }
+    })
+    return best
+  }
+  const how = (gap: number, clearance: number) => (gap <= 1e-6 ? "crosses" : `comes ${gapMm(gap)} mm from (clearance ${len(clearance)})`)
+  for (const c of project.components) {
+    if (!c.pcb.placed || !onBoard(c)) continue
+    for (const pad of pcbPads(c)) {
+      if (!pad.layers.includes(trace.layer as CopperLayer)) continue
+      const padNet = pad.pin ? (names.get(sch.pinNet.get(pinKey(c.id, pad.pin)) ?? "") ?? null) : null
+      if (padNet === net) continue
+      const clearance = classes.pair(net, padNet, null, c.id)
+      const gap = Math.min(...segs.map(([a, b]) => segmentPadDistance(a, b, pad))) - half
+      if (gap >= clearance - 1e-6) continue
+      const n = nearest({ x: pad.x, y: pad.y })
+      const name = pad.pin ?? pad.padNumber ?? "?"
+      hits.push({ along: n.along, key: `p${c.id}${name}`, text: `${how(gap, clearance)} ${c.ref}.${name}'s pad (${padNet ?? (pad.plated === false ? "a hole" : "no net")}) at ${at({ x: pad.x, y: pad.y })}` })
+    }
+  }
+  for (const t of project.traces) {
+    if (t.layer !== trace.layer) continue
+    const tNet = names.get(analysis.traceNet.get(t.id) ?? "") ?? null
+    if (tNet === net) continue
+    const clearance = classes.pair(net, tNet)
+    let best = { gap: Infinity, p: t.points[0] }
+    for (const [c, d] of polylineSegments(t.points)) {
+      for (const [a, b] of segs) {
+        const gap = segmentSegmentDistance(a, b, c, d) - half - t.width / 2
+        if (gap < best.gap) best = { gap, p: closestPointOnSegment(nearest(c).point, c, d) }
+      }
+    }
+    if (best.gap >= clearance - 1e-6) continue
+    hits.push({ along: nearest(best.p).along, key: `t${t.id}`, text: `${how(best.gap, clearance)} a ${tNet ?? "loose"} trace${t.locked ? " (locked)" : ""} near ${at(best.p)} (id ${t.id})` })
+  }
+  for (const v of project.vias) {
+    const vNet = names.get(analysis.viaNet.get(v.id) ?? "") ?? v.net ?? null
+    if (vNet === net) continue
+    const clearance = classes.pair(net, vNet)
+    const n = nearest(v)
+    const gap = n.d - half - v.diameter / 2
+    if (gap >= clearance - 1e-6) continue
+    hits.push({ along: n.along, key: `v${v.id}`, text: `${how(gap, clearance)} a ${vNet ?? "loose"} via at ${at(v)}` })
+  }
+  const seen = new Set<string>()
+  const out = hits.sort((a, b) => a.along - b.along).filter((h) => !seen.has(h.key) && seen.add(h.key))
+  return [...out.slice(0, max).map((h) => h.text), ...(out.length > max ? [`and ${out.length - max} more`] : [])]
+}
+
+/** A refusal's way forward: the obstacles named, then what to try. */
+function aroundIt(obstacles: string[], net: string) {
+  const what = obstacles.length ? ` In the way, in order along it: ${obstacles.join("; ")}.` : ""
+  return `${what} Give points that go round ${obstacles.length > 1 ? "them" : "it"}, use another layer, or let the router find the path for this net alone with route_pcb nets ["${net}"].`
+}
+
 const drawTraceTool: PcbToolSpec = {
   name: "draw_trace",
   description:
@@ -921,10 +998,13 @@ const drawTraceTool: PcbToolSpec = {
     const on = after.traceNet.get(drawn.trace.id)
     const route = `${start ? `from ${fromEnd!.spec} ${at(start)}` : ""}${start && finish ? " " : ""}${finish ? `to ${toEnd!.spec} ${at(finish)}` : ""}`
     const where = route ? ` (${route}, through ${drawn.trace.points.map(at).join(", ")})` : ""
-    if (on === "short") return fail(project, `Not drawn${where}: it would short ${net} to another net. ${errorsAdded(project, next, ["short"]).slice(0, 3).join(" ")} Give points that go round it.`)
+    if (on === "short") return fail(project, `Not drawn${where}: it would short ${net} to another net.${aroundIt(obstaclesAlong(project, { points: drawn.trace.points, width, layer }, net), net)}`)
     if (on !== netId) return fail(project, `Not drawn: it touches no copper of ${net}${on ? "" : " (nothing at all)"}. Start or end it on a pin (from, to), or on a pad's centre, a via or a trace of ${net}.`)
     const bad = errorsAdded(project, next, COPPER_ERRORS)
-    if (bad.length) return fail(project, `Not drawn${where}: ${bad.slice(0, 4).join(" ")}${bad.length > 4 ? ` And ${bad.length - 4} more.` : ""} Give points that go round it, or narrow it.`)
+    if (bad.length) {
+      const obstacles = obstaclesAlong(project, { points: drawn.trace.points, width, layer }, net)
+      return fail(project, `Not drawn${where}: ${bad.slice(0, 4).join(" ")}${bad.length > 4 ? ` And ${bad.length - 4} more.` : ""}${aroundIt(obstacles, net)}${obstacles.length ? "" : " Or narrow it."}`)
+    }
     const open = (a: typeof after) => a.ratsnest.filter((r) => r.netId === netId).length
     const length = drawn.trace.points.reduce((sum, p, i, all) => (i ? sum + Math.hypot(p.x - all[i - 1].x, p.y - all[i - 1].y) : 0), 0)
     const left = open(after)

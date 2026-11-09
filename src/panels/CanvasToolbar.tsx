@@ -476,7 +476,10 @@ export function PcbToolbar() {
               renewBoardNow()
               if (res.addedTraces || res.addedVias) projectApi().commit(() => res.project)
               if (!res.routed && !res.remaining) setStatus("Nothing left to route")
-              else if (res.remaining) setStatus(`Routed ${res.routed} connections; ${res.remaining} need routing by hand`)
+              else if (res.remaining) {
+                const nets = [...new Set(res.open.map((o) => o.net))]
+                setStatus(`Routed ${res.routed} connections; ${res.remaining} need routing by hand (${nets.slice(0, 3).join(", ")}${nets.length > 3 ? "…" : ""})`)
+              }
               else setStatus(`Routed ${res.routed} connections with ${res.addedVias} vias`)
             } finally {
               setRouting(false)

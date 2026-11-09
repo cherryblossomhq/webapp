@@ -76,20 +76,41 @@ describe("a trace wider than its pads", () => {
     }
   })
 
-  it("says which nets went in narrower than their width, for want of room", () => {
+  it("says which connection went in narrower than its width, where and how much, and goes as wide as fits", () => {
     // 9 mm of copper does not fit across an 8 mm board.
     const p = runTool(board(8), "set_net_width", { widths: { L1: 9 } }).project
     const out = runTool(p, "route_pcb", {})
     expect(out.isError).toBe(false)
-    expect(out.result).toMatch(/Narrower than their net's width, for want of room at that width: L1 \(1 at [0-9.]+ mm, not 9 mm\)/)
+    // By its pins, with its length and where it is: a count alone ("L1 (1 at 0.25 mm, not 9 mm)") left Sakura guessing which connection.
+    expect(out.result).toMatch(/Narrower than their net's width, for want of room at that width: L1 \(9 mm\) [0-9.]+ mm for all of the [0-9.]+ mm from J1\.1 to J2\.1, between \(/)
     expect(out.result).not.toMatch(/L2 \(/)
-    // What to do is route that net first or draw it, not stand a polygon pour in for the trace.
-    // Every other net is routed by now, so routing L1 first means clearing them all, not L1 alone.
-    expect(out.result).toContain("clear_routing with no nets, then route_pcb with nets [L1] before the rest")
-    expect(out.result).toContain("draw_trace from pin to pin")
+    // As wide as there is room for, not straight down to the default 0.25 mm.
+    const width = Number(/L1 \(9 mm\) ([0-9.]+) mm/.exec(out.result)![1])
+    expect(width).toBeGreaterThan(0.25)
+    // What to do is draw it or make room, not stand a polygon pour in for the trace, nor route it in a call of its own.
+    expect(out.result).toContain('draw_trace that connection from pin to pin at the width (from "J1.1" to "J2.1")')
     expect(out.result).not.toContain("set_pour")
-    // Routed alone it was first already: the same call again gives the same.
-    const alone = runTool(p, "route_pcb", { nets: ["L1"] })
-    expect(alone.result).toContain("routing L1 again gives the same unless other nets' traces took the room")
+    expect(out.result).not.toContain("before the rest")
+  })
+
+  it("holds a net at its width wherever it fits and necks down only through the gap that has no room", () => {
+    // A wall of keepout across the board on both layers, with a 1.2 mm gap in front of each pin row: a 2 mm trace cannot pass, 1 mm can.
+    // The old router laid the whole connection at the next width it could, the default 0.25 mm, end to end; on a user's USB-C bridge that
+    // put a 0.4 mm VBUS at 0.25 mm from its capacitor to its pin, through two vias, for want of room in one spot.
+    let p = runTool(board(40), "set_net_width", { widths: { L1: 2 } }).project
+    for (const [y0, y1] of [[-20, -4.35], [-3.15, 3.15], [4.35, 20]]) {
+      p = runTool(p, "set_pour", { layer: "both", keepout: ["tracks", "vias"], polygon: [-0.5, y0, 0.5, y0, 0.5, y1, -0.5, y1] }).project
+    }
+    const res = autoroute(p, { timeLimitMs: Infinity })
+    expect(res.remaining).toBe(0)
+    expect(errors(res.project)).toEqual([])
+    const l1 = tracesOn(res.project, "L1")
+    expect(l1.some((t) => t.width === 2)).toBe(true)
+    const span = res.narrowed?.find((n) => n.net === "L1")?.spans
+    expect(span).toHaveLength(1)
+    // as wide as the gap takes, for the wall's 1 mm and the 1 mm a 2 mm trace keeps from it on each side, and 2 mm everywhere else
+    expect(span![0].width).toBeGreaterThanOrEqual(0.75)
+    expect(span![0].total).toBeGreaterThan(20)
+    expect(span![0].length).toBeLessThan(span![0].total / 4)
   })
 })

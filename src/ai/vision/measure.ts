@@ -12,6 +12,7 @@ import type { Project, Vec2 } from "../../model/types"
 import { getConnectivity, getPcbAnalysis } from "../../store/analysis"
 import { pcbContent, schematicContent } from "./framing"
 import { onBoard } from "../../model/partFlags"
+import { openList } from "../routeReport"
 
 // What the model gets beside a picture: counts and positions it can act on. The old editor's
 // research found models fix what a number names far more reliably than what a picture hints at,
@@ -326,6 +327,8 @@ export interface PcbMeasure {
   /** Open connections of the ratsnest, and the nets they belong to. */
   unrouted: number
   unroutedNets: string[]
+  /** The first few of them by their pins ("GND: C3.2 to U1.17 (EP)"): the picture's dashed lines are hard to read at fine pitch. */
+  unroutedPins: string
   traces: number
   vias: number
   pours: number
@@ -371,6 +374,7 @@ export function measurePcb(project: Project): PcbMeasure {
     overlaps,
     unrouted: pcb.ratsnest.length,
     unroutedNets,
+    unroutedPins: pcb.ratsnest.length ? openList(project, pcb, pcb.ratsnest.map((r) => ({ net: netNames.get(r.netId) ?? r.netId, netId: r.netId, a: r.a, b: r.b })), 6) : "",
     traces: project.traces.length,
     vias: project.vias.length,
     pours: project.zones.length,
@@ -437,7 +441,7 @@ export function describePcb(m: PcbMeasure): string[] {
   if (m.unplaced.length) problems.push(`${m.unplaced.length} part(s) not placed: ${more(m.unplaced)}`)
   if (m.offBoard.length) problems.push(`${m.offBoard.length} part(s) off the board: ${more(m.offBoard)}`)
   if (m.overlaps.length) problems.push(`${m.overlaps.length} courtyard overlap(s): ${pairs(m.overlaps)}`)
-  if (m.unrouted) problems.push(`${m.unrouted} unrouted connection(s) on ${m.unroutedNets.length} net(s): ${more(m.unroutedNets)}`)
+  if (m.unrouted) problems.push(`${m.unrouted} unrouted connection(s) on ${m.unroutedNets.length} net(s): ${more(m.unroutedNets)}${m.unroutedPins ? ` (${m.unroutedPins})` : ""}`)
   if (m.errors) problems.push(`${m.errors} check error(s)`)
   lines.push(problems.length ? `Problems: ${problems.join("; ")}` : "Problems: none found (all placed, on the board, no overlaps, nothing unrouted)")
   return lines

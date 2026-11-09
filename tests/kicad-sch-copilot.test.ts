@@ -9,7 +9,7 @@ import { importSheet, place } from "./kicad-sch-parts"
 // units and KiCad symbols is given only to a design that has such parts.
 
 /** The system prompt as it is on main, as sha1 of its text: a design with no KiCad symbols is given exactly this. */
-const BASE_SHA = "681fabec8eca9fa540fc2b8e8f6cd129272e3b61"
+const BASE_SHA = "2f13ce4bfa8d0ed40639326cf1594ea757528721"
 /**
  * The prompt grew by one bullet (340 characters) that tells Sakura when to split a design into sheets and which tools do it; every design is given it, since a design with one sheet is where the first sheet is made.
  * Then 10 characters shorter: an empty sheet is tidied with whole_sheet rather than no blocks, which is the same to Sakura and the only way that works over MCP.
@@ -27,8 +27,11 @@ const BASE_SHA = "681fabec8eca9fa540fc2b8e8f6cd129272e3b61"
  * nets that travel, and group a path's parts in one block; Sakura named nearly every net, so its sheets were labels everywhere.
  * Then 127 longer: each sheet is a page (get_design page) to keep the drawing inside and clear of the title block, which a whole-sheet tidy
  * lays out on and edit_sheet changes; less the drawn sheet title, which the title block now says.
+ * Then 142 longer: route the board in one call, with clear true to route from scratch and priority to put nets first, never a net in a call
+ * of its own, and read the pins route_pcb names; a user's Sakura routed VBUS and then the rest in two calls for an evening, as the guide
+ * said, which routed fewer of that board's layouts whole than one call.
  */
-const BASE_CHARS = 12851
+const BASE_CHARS = 12993
 /** The tool definitions on main, as JSON bytes: what the KiCad import adds (the board's and the schematic's together) is small. */
 const TOOLS_ON_MAIN = 35524
 /** What the board lanes added on top of the join, in bytes: X2 (`set_board` takes an outline and cutouts, `place_parts` takes degrees: 617 bytes) and X3 (`set_pour` takes a polygon, a priority, a keepout and an id: 511 bytes); X1, X4 and X5 add the layers to `set_board` and the tracks (245 bytes); X10, X11, X12 and X14 add none. */
@@ -88,6 +91,12 @@ const POWER_ROUTING_GROWTH = 910
  * sheet, the root included, and get_design says it reads each sheet's page. The budget below was raised by exactly this.
  */
 const PAGE_GROWTH = 584
+/**
+ * What routing a crowded board well asked for, in bytes (462): `route_pcb` takes `priority` (nets first, in the one call), `clear` (route from
+ * scratch in one call) and `optimize`, and says it holds widths and routes the board other ways itself, so an assistant stops routing
+ * nets in calls of their own. The budget below was raised by exactly this.
+ */
+const ROUTING_SEARCH_GROWTH = 462
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -121,6 +130,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH - ROUTING_SEARCH_GROWTH).toBeLessThan(2100)
   })
 })

@@ -68,15 +68,13 @@ describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () =
 
   it("reaches 0 open inside the default time budget", () => {
     const s = laidOut()
-    // Measured in CPU time, so that a busy machine cannot fail it: the default budget is 10 s of wall
-    // time for everything, the fine-pitch retry included, and a route that needs under 70% of that in
-    // CPU still finishes in it on a machine a third slower (the process counts every worker thread, so this is generous).
-    const c0 = process.cpuUsage()
-    const res = autoroute(s.project, { timeLimitMs: Infinity })
-    const c = process.cpuUsage(c0)
+    // In the default budget, 10 s of wall time for everything: the router's own routing reaches 0 open in about a second, and the rest
+    // of the time goes to routing it other ways for less of VBUS narrower (bounded, as nothing is open), never past the budget.
+    const t0 = performance.now()
+    const res = autoroute(s.project)
     expect(res.remaining).toBe(0)
     expect(drcErrors(res.project)).toEqual([])
-    expect((c.user + c.system) / 1000).toBeLessThan(7_000)
+    expect(performance.now() - t0).toBeLessThan(10_000 + 2_000)
   }, 120_000)
 
   it("through route_pcb, as Sakura ran it, leaves nothing open and says nothing about spreading parts", () => {
@@ -107,14 +105,17 @@ describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () =
 })
 
 describe("what route_pcb says about connections it could not route", () => {
-  const result = (finePitchOpen: number, remaining: number, tried: number | null): AutorouteResult => ({ project: {} as Project, routed: 3, remaining, addedTraces: 0, addedVias: 0, finePitchOpen, finePitchTried: tried })
+  const result = (finePitchOpen: number, remaining: number, tried: number | null): AutorouteResult => ({ project: {} as Project, routed: 3, remaining, addedTraces: 0, addedVias: 0, finePitchOpen, finePitchTried: tried, open: [], tries: 6 })
 
-  it("blames fine-pitch pads, says what was tried, and does not send Sakura to spread parts out", () => {
+  it("names fine-pitch pads, says what was tried, and sends Sakura to the layout at those pins rather than spreading every part out", () => {
     const text = unroutedAdvice(result(4, 4, 0.15))
     expect(text).toContain("4 of them end at fine-pitch pads")
     expect(text).toContain("escape stubs")
     expect(text).toContain("down to 0.15 mm")
-    expect(text).toContain("will not fix it")
+    expect(text).toContain("routed the board 6 ways")
+    // Moving a part at those pins, even a little, is what changes the result (a capacitor moved 0.1 mm opened the channel on a user's board).
+    expect(text).toContain("place_parts to move or turn a part at those pins")
+    expect(text).toContain("draw_trace")
     expect(text).not.toContain("spread the parts out or enlarge the board")
     expect(text).not.toContain("move parts apart")
     expect(text).toContain("Do not clear_routing and run route_pcb again on the same layout")

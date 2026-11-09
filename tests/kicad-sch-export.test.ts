@@ -94,12 +94,13 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
  * only (file version 4), the shipped examples' chips are their own parts: the same Circuit JSON and picture, a note that says parts made for the
  * project have no library link, and get_design naming each chip by its part's id. Since every sheet is a page (file version 6), the picture paints
  * the page and get_design reports it, and the shipped examples are tidied onto theirs, which moved their schematics; the frozen examples' Circuit
- * JSON, which has no page, is what it was.
+ * JSON, which has no page, is what it was. Since the router holds a supply at its width where it fits (November 2026), node's two supply
+ * links at its chip are 0.4 mm with necks at the pads where they were 0.25 mm end to end, so its Circuit JSON, which carries the traces, changed.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
   // its routed copper changed once a through-hole pad joined a pour by its copper and not only by its centre (`joinsFill`), and with it the board in its Circuit JSON
   "esp32-robot": { circuit: "45ec49bca9c0878a", notes: "1c3eb23971c052c9", svg: "77f0488437816220", design: "20c059c85ad4e9ce" },
-  node: { circuit: "f674a00db0cad354", notes: "1c3eb23971c052c9", svg: "35ce782ffd47a8dc", design: "e08957f5d1cd4957" },
+  node: { circuit: "17d4b73f3aedf059", notes: "1c3eb23971c052c9", svg: "35ce782ffd47a8dc", design: "e08957f5d1cd4957" },
   blinker: { circuit: "d0de030633fd1584", notes: "1c3eb23971c052c9", svg: "23e33b2748a01c91", design: "1e71ce5fbd65c239" },
   regulator: { circuit: "028e450ab3e9ae35", notes: "1c3eb23971c052c9", svg: "a12701ea013f02c0", design: "a0e0fd6f05254bbc" },
   mcu: { circuit: "e250b8e1798ac8db", notes: "1c3eb23971c052c9", svg: "ea17ffaaf15a3946", design: "6f7a68f071d98908" },

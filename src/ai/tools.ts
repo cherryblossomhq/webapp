@@ -1610,7 +1610,6 @@ function outlineReport(b: Project["board"]) {
   }
 }
 
-/** The outline edits of set_board, or the sentence that says why they cannot be made. */
 /** Where the board is, for a refusal about a place on it: x and y in mm, as get_design and add_cutouts use them. */
 function boardExtent(project: Project): string {
   const pts = explicitPaths(project).flatMap((p) => flattenPath(p))
@@ -1621,6 +1620,7 @@ function boardExtent(project: Project): string {
   return `the board spans x ${r(Math.min(...xs))} to ${r(Math.max(...xs))} and y ${r(Math.min(...ys))} to ${r(Math.max(...ys))} mm`
 }
 
+/** The outline edits of set_board, or the sentence that says why they cannot be made. */
 function shapeBoard(project: Project, input: Record<string, unknown>): { project: Project; changed: string[] } | string {
   let next = project
   const changed: string[] = []

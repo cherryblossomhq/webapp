@@ -1,5 +1,5 @@
 import { round } from "../../lib/geometry"
-import { mountingHoles, ownTexts } from "../../model/board"
+import { mountingHoles } from "../../model/board"
 import type { SchematicConnectivity } from "../../model/connectivity"
 import { isPhysical, pcbPads, pcbSilk, valueText, type WorldPad } from "../../model/instances"
 import { findPart } from "../../model/library"
@@ -504,10 +504,6 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     const sx = wt.mirror ? -1 : 1
     const at = { x: wt.x + sx * (dx * Math.cos(a) - dy * Math.sin(a)), y: wt.y + dx * Math.sin(a) + dy * Math.cos(a) }
     text({ layer, at, height: wt.size, rot: wt.drawRot, mirror: wt.mirror, stroke: wt.thickness, content, comp, designator: wt.kind === "reference", comment: wt.kind === "value" })
-  }
-  for (const t of ownTexts(project)) {
-    const layer = t.side === "bottom" ? L.bottomOverlay : L.topOverlay
-    text({ layer, at: { x: t.x, y: t.y }, height: t.size, rot: (t as { rot?: number }).rot ?? 0, mirror: t.side === "bottom", stroke: Math.max(0.15, t.size * 0.14), content: t.text, comp: NONE })
   }
 
   // ---------- pours ----------

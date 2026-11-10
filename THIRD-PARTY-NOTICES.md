@@ -12,7 +12,7 @@ notice, not an endorsement or a statement of affiliation.
 | [React](https://github.com/facebook/react) | The UI | MIT |
 | [three.js](https://github.com/mrdoob/three.js) | The 3D view | MIT |
 | [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCascade) | Reading STEP models | LGPL-2.1 |
-| [Clipper2](https://github.com/AngusJohnson/Clipper2), as [`@countertype/clipper2-ts`](https://www.npmjs.com/package/@countertype/clipper2-ts) | Copper pours | BSL-1.0 |
+| [Clipper2](https://github.com/AngusJohnson/Clipper2), as [`@countertype/clipper2-ts`](https://www.npmjs.com/package/@countertype/clipper2-ts) and, compiled to WebAssembly, [`clipper2-wasm`](https://github.com/ErikSom/Clipper2-WASM) | Copper pours (the WebAssembly build fills big ones) | BSL-1.0 |
 | [polygon-clipping](https://github.com/mfogel/polygon-clipping) | Board and pour geometry | MIT |
 | [earcut](https://github.com/mapbox/earcut) | Triangulating the 3D board | ISC |
 | [tscircuit](https://github.com/tscircuit) packages: `@tscircuit/footprinter`, `@tscircuit/circuit-json-util`, `circuit-json`, `circuit-json-to-kicad`, `kicadts`, `schematic-symbols`, `format-si-unit` | Footprints, Circuit JSON, the KiCad export | MIT / ISC |

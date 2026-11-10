@@ -32,7 +32,8 @@ async function openTwice(page: Page) {
   await hook(page);
   const other = await page.context().newPage();
   await other.goto(page.url());
-  await expect(other.getByRole("textbox", { name: "Project name" })).toBeVisible();
+  // The dev server may compile a project's address the first time a test asks for it, then load the page again.
+  await expect(other.getByRole("textbox", { name: "Project name" })).toBeVisible({ timeout: 20_000 });
   await hook(other);
   return other;
 }
@@ -102,6 +103,41 @@ test.describe("working on one project together", () => {
     // Esc hands the view back.
     await other.keyboard.press("Escape");
     await expect(other.getByText(/^Following /)).toHaveCount(0);
+  });
+
+  test("opening the PCB places this tab's new parts, and leaves someone else's for a click", async ({ page }) => {
+    // An assistant over MCP placed parts a call at a time, and the user's tab, opening its PCB view between two of its calls,
+    // put every part the assistant hadn't reached yet on the board.
+    const other = await openTwice(page);
+    const placed = (p: Page) =>
+      p.evaluate(() => (window as unknown as Hook).__cherryblossom.projectApi().project.components.map((c) => `${c.ref} ${(c as unknown as { pcb: { placed: boolean } }).pcb.placed}`));
+    await addResistor(page, "c_mine");
+    await expect.poll(() => placed(other)).toEqual(["R1 false"]);
+
+    await other.getByRole("tab", { name: "PCB" }).click();
+    await expect(other.locator("[data-unplaced]")).toHaveText(/R1 isn't on the board yet/);
+    await other.waitForTimeout(500);
+    expect(await placed(other)).toEqual(["R1 false"]);
+
+    // The tab that added it places it when it opens the PCB, and the note goes in both.
+    await page.getByRole("tab", { name: "PCB" }).click();
+    await expect.poll(() => placed(other)).toEqual(["R1 true"]);
+    await expect(other.locator("[data-unplaced]")).toHaveCount(0);
+
+    // A part added elsewhere while the PCB is open waits too, until Place it.
+    await other.evaluate(() =>
+      (window as unknown as Hook).__cherryblossom.projectApi().commit((p) => {
+        const project = p as { components: unknown[] };
+        const r2 = { id: "c_theirs", partId: "resistor", ref: "R2", props: { value: "1k" }, footprint: "0603", sch: { x: 4, y: 0, rot: 0 }, pcb: { x: 0, y: 0, rot: 0, side: "top", placed: false } };
+        return { ...project, components: [...project.components, r2] };
+      }),
+    );
+    const note = page.locator("[data-unplaced]");
+    await expect(note).toHaveText(/R2 isn't on the board yet/);
+    expect(await placed(page)).toEqual(["R1 true", "R2 false"]);
+    await note.getByRole("button", { name: "Place it" }).click();
+    await expect.poll(() => placed(other)).toEqual(["R1 true", "R2 true"]);
+    await expect(note).toHaveCount(0);
   });
 });
 

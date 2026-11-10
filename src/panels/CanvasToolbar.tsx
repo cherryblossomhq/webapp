@@ -1,4 +1,4 @@
-import { Ban, BetweenHorizontalStart, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, Layers2, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
+import { Ban, BetweenHorizontalStart, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { imageFacts } from "../lib/imageFacts"
 import { addImage } from "../model/boardObjects"
@@ -15,7 +15,7 @@ import type { Project } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { heldNote, renewBoardNow, useBoardLease, withBoard } from "../store/boardLease"
 import { projectApi, useProjectStore } from "../store/projectStore"
-import { cycleOtherLayers, useUi, type LabelChoice, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
+import { useUi, type LabelChoice, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
 import type { OtherLayers, PourLook } from "../store/settings"
 import { useAt } from "../model/sheets"
 import { shownPath } from "../store/sheetScope"
@@ -626,15 +626,6 @@ export function PcbToolbar() {
               )}
             </label>
           )}
-          <IconButton
-            label={`Other layers: ${OTHER_LAYER_CHOICES.find((c) => c.value === otherLayers)!.label}`}
-            hint="Show, dim or hide the copper layers you are not working on"
-            shortcut="⇧S"
-            active={otherLayers !== "show"}
-            onClick={cycleOtherLayers}
-          >
-            <Layers2 size={16} />
-          </IconButton>
           <div className="relative">
             <IconButton label="Layers" hint="Choose which layers are drawn" active={showLayers} aria-expanded={showLayers} onClick={() => setShowLayers(!showLayers)}>
               <Eye size={16} />

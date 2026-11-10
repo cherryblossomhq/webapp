@@ -308,7 +308,7 @@ export function selectionOfMember(project: Project, id: string): string | null {
   if (project.traces.some((t) => t.id === id)) return `t:${id}`
   if (project.vias.some((v) => v.id === id)) return `v:${id}`
   if (project.graphics?.some((g) => g.id === id)) return `g:${id}`
-  if (project.texts.some((t) => t.layer !== undefined && t.id === id)) return `x:${id}`
+  if (project.texts.some((t) => t.id === id)) return `x:${id}`
   if (project.dimensions?.some((d) => d.id === id)) return `m:${id}`
   if (project.images?.some((m) => m.id === id)) return `i:${id}`
   return null
@@ -321,7 +321,7 @@ export function groupSelection(project: Project, group: PcbGroup): string[] {
     t: new Set(project.traces.map((t) => t.id)),
     v: new Set(project.vias.map((v) => v.id)),
     g: new Set((project.graphics ?? []).map((g) => g.id)),
-    x: new Set(project.texts.filter((t) => t.layer !== undefined).map((t) => t.id)),
+    x: new Set(project.texts.map((t) => t.id)),
     m: new Set((project.dimensions ?? []).map((d) => d.id)),
     i: new Set((project.images ?? []).map((m) => m.id)),
   }
@@ -433,7 +433,7 @@ function aliveIds(project: Project): Set<string> {
   for (const t of project.traces) value.add(t.id)
   for (const v of project.vias) value.add(v.id)
   for (const g of project.graphics ?? []) value.add(g.id)
-  for (const t of project.texts) if (t.layer !== undefined) value.add(t.id)
+  for (const t of project.texts) value.add(t.id)
   for (const d of project.dimensions ?? []) value.add(d.id)
   for (const m of project.images ?? []) value.add(m.id)
   aliveCache = { key, value }

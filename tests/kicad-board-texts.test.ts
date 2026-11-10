@@ -15,6 +15,7 @@ import { createProject } from "../src/model/ops"
 import { fabricationNotes } from "../src/export/notes"
 import { applyProjectSettings } from "../src/export/kicadPost"
 import type { Project } from "../src/model/types"
+import { silkscreenText } from "../src/model/textCodec"
 import { checkTexts, textsRoundTripOk } from "./kicad-texts-check"
 import { roundTripOk } from "./kicad-graphics-check"
 import { textOracle } from "./kicad-census/texts.mjs"
@@ -446,12 +447,9 @@ describe("the stored form", () => {
 })
 
 describe("the order of the board's texts through the stored form", () => {
-  it("keeps the editor's own texts and KiCad's where they were, whatever the order", () => {
+  it("keeps the board's texts where they were, whatever the order", () => {
     const base = imp(board({ body: [gtext("one", "1 1", '"F.SilkS"', fx()), gtext("two", "2 2", '"F.SilkS"', fx())] })).project
-    const own = [
-      { id: "own1", text: "A", x: 1, y: 1, size: 1, rot: 0, side: "top" as const },
-      { id: "own2", text: "B", x: 2, y: 2, size: 1, rot: 0, side: "top" as const },
-    ]
+    const own = [silkscreenText({ id: "own1", text: "A", x: 1, y: 1, size: 1, rot: 0, side: "top" }), silkscreenText({ id: "own2", text: "B", x: 2, y: 2, size: 1, rot: 0, side: "top" })]
     const [k1, k2] = base.texts
     for (const order of [[own[0], k1, own[1], k2], [k1, own[0], k2, own[1]], [own[0], own[1], k1, k2], [k2, k1]]) {
       const p = { ...base, texts: order }

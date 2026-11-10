@@ -205,11 +205,9 @@ const MIGRATIONS: Record<number, (project: Json) => Json> = {
   6: (project) => project,
 }
 
-
-/** The text to store or download for a project. */
 /**
- * The board's texts in the order they were saved in: the editor's own silkscreen text and KiCad's can be mixed, and the stored form keeps them
- * apart (`texts` and `kt`), so `kp` says where each of KiCad's was (absent when they all come last, as a board brought in from KiCad has them).
+ * The board's texts in the order they were saved in, from a file before November 2026: the editor's own silkscreen text (no layer) and KiCad's
+ * were kept apart (`texts` and `kt`), so `kp` says where each of KiCad's was (absent when they all come last, as a board brought in from KiCad has them).
  */
 function orderTexts(own: BoardText[], kicad: BoardText[], kp: unknown, objects: number): BoardText[] {
   const total = own.length + kicad.length
@@ -298,6 +296,7 @@ function storedComponent(c: ComponentInstance): unknown {
   return { ...rest, ...(units ? { units: units.map((u) => [u.name, u.pins.some((n) => /\s/.test(n) || n === "") ? u.pins : u.pins.join(" ")]) } : {}) }
 }
 
+/** The text to store or download for a project. */
 export function serializeProject(project: Project, { pretty = false } = {}): string {
   const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, scope: _scope, ...plain } = project
   const document = Object.fromEntries(Object.entries(plain).map(([key, value]) => [key, storedValue(key, value)])) as unknown as ProjectDocument

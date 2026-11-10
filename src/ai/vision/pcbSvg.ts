@@ -4,7 +4,6 @@ import { copperColor, pourColor } from "../../editor/theme"
 import type { Box } from "../../lib/geometry"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { PCB } from "../../editor/theme"
-import { boardTextStrokes, boardTextStrokeWidth, ownTexts } from "../../model/board"
 import { pcbCourtyard, pcbCourtyardRing, pcbSilk, slotEnds, type WorldPad } from "../../model/instances"
 import { holeCentre } from "../../model/padDistance"
 import { nonCopperFills, type OtherFill } from "../../model/nonCopperFill"
@@ -164,7 +163,7 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
   const otherFills = nonCopperFills(project)
   const kindOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.kind ?? "user"
   const sideOf = (d: { shape: BoardShape }) => shapeLayerInfo(d.shape.layer)?.side ?? null
-  // The KiCad texts on the board and in its placed parts, with the layer each is on; none on a board that has none.
+  // The texts on the board and in its placed parts, with the layer each is on; none on a board that has none.
   const texts = worldTexts(project).flatMap((wt) => {
     if (!wt.placed || wt.hidden) return []
     const t = layerText(project, wt)
@@ -239,10 +238,6 @@ export function pcbSvg(project: Project, box: Box, size: PixelSize, opts: PcbVie
       const d = designators.get(c.id)
       if (d) for (const path of designatorStrokes(d)) body += line(path, color, SILK_WIDTH)
       body += "</g>"
-    }
-    for (const tx of ownTexts(project)) {
-      if (!shownSet.has(tx.side)) continue
-      for (const path of boardTextStrokes(tx)) body += line(path, tx.side === "top" ? PCB.silk : PCB.silkBottom, boardTextStrokeWidth(tx))
     }
     for (const d of drawings) {
       const side = sideOf(d)

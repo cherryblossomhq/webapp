@@ -29,9 +29,6 @@ import type { BoardDimension, BoardText, ComponentInstance, PartText, Project, T
 // its position is mirrored, its angle is the part's turn minus its own, and its mirror flag is the other way
 // round (a mirror and a turn compose: R(rot) Mx R(a) Mx^m = R(rot - a) Mx^(1 - m)), and its layer is on the other side.
 
-/** A text is a KiCad text when it has a layer; one with none is the editor's own silkscreen text and is not handled here. */
-export const isKicadText = (t: BoardText): t is BoardText & { layer: string } => t.layer !== undefined
-
 /** The layers a text can be on: the drawing layers and the board's edge. */
 export function textLayerKind(layer: string): ShapeLayerKind | "edge" | null {
   if (layer === "Edge.Cuts") return "edge"
@@ -300,8 +297,8 @@ function fromAttrs(base: Pick<WorldText, "id" | "owner" | "index" | "kind" | "pl
   }
 }
 
-/** A board text as a world text (the editor's own silkscreen text is not one). */
-export const boardTextWorld = (t: BoardText & { layer: string }, index = 0): WorldText =>
+/** A board text as a world text. */
+export const boardTextWorld = (t: BoardText, index = 0): WorldText =>
   fromAttrs({ id: boardTextId(t.id), owner: "#board", index, kind: "board", placed: true, source: t, content: t.text }, t, { x: t.x, y: t.y, rot: t.rot, mirror: t.mirror === true, layer: t.layer }, false)
 
 /** A text's pose: where it is, the angle it is drawn at and whether it is mirrored; what a cached outline is mapped by. */
@@ -383,15 +380,12 @@ export const isDimensionText = (t: WorldText) => t.owner === DIMENSION_TEXT_OWNE
  */
 let all: { board: Project["board"]; components: Project["components"]; texts: Project["texts"]; dimensions: Project["dimensions"]; value: WorldText[] }[] = []
 
-/** Every KiCad text of the board and of its parts, board text first. Reused while the parts and the board's text are unchanged. */
+/** Every text of the board and of its parts, board text first. Reused while the parts and the board's text are unchanged. */
 export function worldTexts(project: Project): WorldText[] {
   const hit = all.find((a) => a.board === project.board && a.components === project.components && a.texts === project.texts && a.dimensions === project.dimensions)
   if (hit) return hit.value
   const out: WorldText[] = []
-  project.texts?.forEach((t, index) => {
-    if (!isKicadText(t)) return
-    out.push(fromAttrs({ id: boardTextId(t.id), owner: "#board", index, kind: "board", placed: true, source: t, content: t.text }, t, { x: t.x, y: t.y, rot: t.rot, mirror: t.mirror === true, layer: t.layer }, false))
-  })
+  project.texts?.forEach((t, index) => out.push(boardTextWorld(t, index)))
   for (const d of project.dimensions ?? []) {
     const wt = dimensionWorldText(d)
     if (wt) out.push(wt)

@@ -2,7 +2,6 @@ import { uid } from "../lib/id"
 import { pointInBox, pointSegmentDistance, round, type Box } from "../lib/geometry"
 import { computeConnectivity } from "./connectivity"
 import { classIndex, classValues } from "./netClasses"
-import { boardTextStrokes, ownTexts } from "./board"
 import { textsOnLayer } from "./texts"
 import { pcbCourtyard, pcbSilk } from "./instances"
 import type { AutorouteResult } from "./autoroute"
@@ -76,16 +75,6 @@ export function stitchVias(project: Project, net: string, pitch = stitchPitch(pr
   }
   const outlines = base.components.flatMap((c) => (c.pcb.placed ? pcbSilk(c).flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const)) : []))
   for (const side of ["F.SilkS", "B.SilkS"]) for (const t of textsOnLayer(base, side)) silk.push({ minX: t.box.minX - r, maxX: t.box.maxX + r, minY: t.box.minY - r, maxY: t.box.maxY + r })
-  for (const t of ownTexts(base)) {
-    const pts = boardTextStrokes(t).flat()
-    if (!pts.length) continue
-    silk.push({
-      minX: Math.min(...pts.map((p) => p.x)) - r,
-      maxX: Math.max(...pts.map((p) => p.x)) + r,
-      minY: Math.min(...pts.map((p) => p.y)) - r,
-      maxY: Math.max(...pts.map((p) => p.y)) + r,
-    })
-  }
   const others = base.vias.map((v) => ({ at: { x: v.x, y: v.y }, r: v.diameter / 2, keep: r + gapTo(pcb.viaNet.get(v.id)) }))
   // X1: a stitching via is a through via, which has copper on every layer: it keeps out of the pours of other nets on the inner layers too.
   const innerFills = pcb.zoneFills.filter((f) => isInner(f.layer) && f.netName !== net).map((f) => ({ testers: f.polygons.map(fillTester), keep: r + gapTo(f.netId) }))

@@ -1527,14 +1527,12 @@ export interface KeptFill {
 }
 
 /**
- * What a text has beyond the editor's own silkscreen text, as KiCad's text objects have it (X9). A text with a
- * `layer` is a KiCad text: it is laid out by KiCad's rules (`lib/kicadText.ts`), with the attributes below. One
- * with none is the editor's own silkscreen text, drawn as it always was, and the rest of these are not used.
- * Each is optional and its absence is KiCad's default.
+ * How a text is drawn, as KiCad's text objects have it (X9): it is laid out by KiCad's rules (`lib/kicadText.ts`).
+ * Each attribute but the layer is optional, and its absence is KiCad's default.
  */
 export interface TextAttrs {
   /** KiCad's name of the layer it is on: `F.SilkS`, `B.Cu`, `F.Mask`, `User.1`, `Edge.Cuts`... On a part, `F.` is the part's own side. */
-  layer?: string
+  layer: string
   /** Glyph width (mm) when it is not the height (`size`). */
   w?: number
   /** Pen width (mm); absent is automatic, an eighth of the width (a fifth when bold). */
@@ -1594,11 +1592,7 @@ export interface TextBox {
   margins: [number, number, number, number]
 }
 
-/**
- * Text on the board. Size is the cap height in mm for the editor's own silkscreen text, and the glyph
- * height for a KiCad text (one with a `layer`). `rot` is the angle in degrees counter-clockwise; the editor's
- * own text turns by quarter turns only, a KiCad text by any angle.
- */
+/** Text on the board. Size is the glyph height in mm; `rot` is the angle in degrees counter-clockwise. */
 export interface BoardText extends TextAttrs {
   id: string
   text: string
@@ -1620,7 +1614,6 @@ export interface BoardText extends TextAttrs {
 export interface PartText extends TextAttrs {
   kind: "reference" | "value" | "user"
   text?: string
-  layer: string
   x: number
   y: number
   size: number

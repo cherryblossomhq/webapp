@@ -37,7 +37,7 @@ import { libraryFootprint } from "../model/footprintLibrary"
 import { componentFootprint, isNpth, isSchematicPart, pcbCourtyard, pcbPads, pcbSilk, powerNetName, schematicBounds, schematicPins, slotEnds, unitOwners, valueText, type WorldPad } from "../model/instances"
 import { findPart } from "../model/library"
 import { holeCentre, padOutline } from "../model/padDistance"
-import { boardColors, boardTextStrokeWidth, mountingHoles, ownTexts, roundedOutline } from "../model/board"
+import { boardColors, mountingHoles, roundedOutline } from "../model/board"
 import { outlineRegionsAt, outlineState, signedArea } from "../model/outline"
 import { analyzePcbOnce, type PcbAnalysis } from "../model/pcb"
 import { flattenPath } from "../model/shapes"
@@ -960,24 +960,6 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
     void schId
   }
   elements.push(...cad)
-
-  // Free silkscreen text.
-  for (const t of ownTexts(project)) {
-    elements.push({
-      type: "pcb_silkscreen_text",
-      pcb_silkscreen_text_id: ids.next("pcb_silkscreen_text"),
-      font: "tscircuit2024",
-      pcb_component_id: "",
-      text: t.text,
-      font_size: t.size,
-      anchor_position: pt(t),
-      anchor_alignment: "center",
-      ccw_rotation: t.rot,
-      layer: t.side,
-      ...(t.side === "bottom" ? { is_mirrored: true } : {}),
-    })
-    void boardTextStrokeWidth
-  }
 
   // ---------- Copper ----------
   const netNameOf = new Map(sch.nets.map((n) => [n.id, n.name]))

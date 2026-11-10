@@ -75,7 +75,7 @@ export interface TextsReport {
   designators_hidden: number
 }
 
-/** What get_design says about KiCad texts, or null when the project has none, so a board drawn here says nothing new. */
+/** What get_design says about the texts of the board and its parts, or null when the project has none. */
 export function textsReport(project: Project): TextsReport | null {
   const all = worldTexts(project).filter((t) => t.placed && !isDimensionText(t))
   if (!all.length) return null

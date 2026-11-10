@@ -13,7 +13,7 @@ import type { BoardText, ComponentInstance, PartText, TextAttrs, TextOutline } f
 //   board:   "kt": [ [2, "T", 10, 5, 0, "TEXT", 0] ]
 //
 // A part's own entries are on its component (`tx`, replacing the in-memory `texts`); board text is a list of its
-// own at the top of the project (`kt`, beside `texts`, which keeps the editor's own silkscreen text as objects).
+// own at the top of the project (`kt`).
 // The kind letter: R reference, V value, U text of its own, T board text; a lowercase R or V carries the text it
 // shows when that is not the part's reference or value; a `+` after it says a text box follows the rest
 // (width, height, border width or -1, margins left, top, right and bottom); a `~` after that says the text's cached
@@ -44,7 +44,7 @@ export interface TextStyleDef {
 
 type Entry = (string | number | Entry)[]
 
-type Styled = TextAttrs & { layer: string; size: number }
+type Styled = TextAttrs & { size: number }
 
 const styleOf = (t: Styled): TextStyleDef => ({
   l: t.layer,
@@ -68,7 +68,7 @@ const styleOf = (t: Styled): TextStyleDef => ({
 
 
 /** A style as the attributes and size it stands for, or null when it does not read. */
-function readStyle(raw: unknown): (TextAttrs & { layer: string; size: number }) | null {
+function readStyle(raw: unknown): Styled | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
   const d = raw as Partial<TextStyleDef>
   if (typeof d.l !== "string" || !isTextLayer(d.l) || !num(d.s) || !(d.s > 0)) return null
@@ -141,7 +141,7 @@ function partEntry(styles: Styles, t: PartText): Entry {
   return t.text !== undefined ? [style, `${letter.toLowerCase()}${plus}`, t.x, t.y, t.rot, t.text, ...tail] : [style, `${letter}${plus}`, t.x, t.y, t.rot, ...tail]
 }
 
-function boardEntry(styles: Styles, t: BoardText & { layer: string }, place: number): Entry {
+function boardEntry(styles: Styles, t: BoardText, place: number): Entry {
   return [styles.of(t), `T${t.box ? "+" : ""}${t.outline ? "~" : ""}`, t.x, t.y, t.rot, t.text, t.id === defaultTextId(place) ? 0 : t.id, ...boxTail(t), ...outlineTail(t)]
 }
 
@@ -150,28 +150,21 @@ export const defaultTextId = (place: number) => `kt${place + 1}`
 
 export interface PackedTexts {
   textStyles?: TextStyleDef[]
-  /** Board text of KiCad's kind. */
+  /** Board text. */
   kt?: Entry[]
-  /** Where each of `kt` stood among all the board's texts, when they are not all after the editor's own (the order a load gives back). */
-  kp?: number[]
   /** Per component id, the entries of its text. */
   tx?: Record<string, Entry[]>
 }
 
-/** The texts of a project as stored. The caller drops `texts` from components and the KiCad ones from the project's list. */
+/** The texts of a project in the compact form written until November 2026, which the reader still reads. The caller drops `texts` from components and the project. */
 export function packTexts(texts: BoardText[], components: ComponentInstance[]): PackedTexts {
   const styles = new Styles()
-  const board = texts.filter((t): t is BoardText & { layer: string } => t.layer !== undefined)
-  const kt = board.map((t, place) => boardEntry(styles, t, place))
-  const positions = texts.flatMap((t, i) => (t.layer !== undefined ? [i] : []))
-  const own = texts.length - positions.length
-  const tail = positions.every((p, i) => p === own + i)
+  const kt = texts.map((t, place) => boardEntry(styles, t, place))
   const tx: Record<string, Entry[]> = {}
   for (const c of components) if (c.texts) tx[c.id] = c.texts.map((t) => partEntry(styles, t))
   return {
     ...(styles.list.length ? { textStyles: styles.list } : {}),
     ...(kt.length ? { kt } : {}),
-    ...(kt.length && !tail ? { kp: positions } : {}),
     ...(Object.keys(tx).length ? { tx } : {}),
   }
 }
@@ -251,10 +244,8 @@ export function unpackBoardTexts(raw: unknown, styles: TextStyleDef[]): BoardTex
 }
 
 /**
- * A board text on the silkscreen of a side, mirrored on the bottom, with the pen the editor draws such text with. Before every board text had a
- * layer (November 2026) the editor kept its own silkscreen text apart, with a side and no layer (the examples' titles, a Circuit JSON import's
- * text, text placed by hand early on), and nothing could pick, list or edit it: it was drawn and exported, and neither the PCB editor, Sakura nor
- * an assistant could reach it. That text is read as this now.
+ * A board text on the silkscreen of a side, mirrored on the bottom: an example's title, a Circuit JSON import's text, and the silkscreen text
+ * a file before version 7 stored with a side and no layer.
  */
 export function silkscreenText(t: { id: string; text: string; x: number; y: number; size: number; rot: number; side: "top" | "bottom" }): BoardText {
   const bottom = t.side === "bottom"
@@ -274,7 +265,7 @@ export function silkscreenText(t: { id: string; text: string; x: number; y: numb
   return normalizeBoardTextObjects([text], new Set())[0] ?? text
 }
 
-/** Board text written as objects with a layer (a hand-written file): each that reads as one, with an id once. */
+/** Board text written as objects: each that reads as one, with an id once. */
 export function normalizeBoardTextObjects(raw: unknown[], taken: Set<string>): BoardText[] {
   const out: BoardText[] = []
   for (const item of raw) {

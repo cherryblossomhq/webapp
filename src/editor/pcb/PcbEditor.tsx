@@ -17,7 +17,7 @@ import {
 import { findPart } from "../../model/library"
 import { pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
 import { addTrace, autoPlacePcb, netTraceWidth, removeItems, unplacedParts, updateComponent } from "../../model/ops"
-import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../../model/board"
+import { mountingHoles } from "../../model/board"
 import { addOutlinePaths, addOutlineShape, addSlot, moveOutlineArcMid, moveOutlineVertex, nearestOutlineSeg, outlineSelectionId, parseOutlineSelectionId, pathVertices, removeOutlinePath, slotPath, splitOutlineSeg, toggleOutlineArc, translateOutlinePath } from "../../model/outlineOps"
 import { pathsSvgPath, segEnd, segStart, type ShapePath } from "../../model/shapes"
 import { BOARD_OWNER, pointPadDistance, segmentPadDistance, type CopperItem } from "../../model/pcb"
@@ -1306,24 +1306,6 @@ export function PcbEditor() {
                       />
                     ))}
                     {designators.get(c.id) && <DesignatorText d={designators.get(c.id)!} />}
-                  </g>,
-                ]),
-              )}
-              {byOpacity(
-                ownTexts(project).map((tx): Faded => [
-                  tx.side === front ? 1 : 0.55,
-                  <g key={tx.id}>
-                    {boardTextStrokes(tx).map((path, i) => (
-                      <polyline
-                        key={i}
-                        points={path.map((p) => `${p.x},${p.y}`).join(" ")}
-                        fill="none"
-                        stroke={tx.side === "top" ? PCB.silk : PCB.silkBottom}
-                        strokeWidth={boardTextStrokeWidth(tx)}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    ))}
                   </g>,
                 ]),
               )}

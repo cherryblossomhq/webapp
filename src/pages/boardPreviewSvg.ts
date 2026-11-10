@@ -1,11 +1,12 @@
 import { resolvedComponents } from "../model/ruleAreas"
-import { DEFAULT_MASK_COLOR, boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../model/board"
+import { DEFAULT_MASK_COLOR, boardColors, boardFinish, finishMetal, mountingHoles } from "../model/board"
 import type { SchematicConnectivity } from "../model/connectivity"
 import { isNpth, pcbCourtyard, pcbPads, pcbSilk, slotEnds, type WorldPad } from "../model/instances"
 import { onBoard } from "../model/partFlags"
 import { analyzePcb } from "../model/pcb"
 import type { ZoneFill } from "../model/pour"
 import { pathsSvgPath } from "../model/shapes"
+import { layerText, worldTexts } from "../model/texts"
 import type { Project } from "../model/types"
 
 /**
@@ -119,10 +120,12 @@ export function boardPreviewSvg(project: Project, fills: ZoneFill[]): string {
   for (const v of project.vias) out.push(`<circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.drill / 2)}" fill="${viaHole}"/>`)
   out.push(`<g fill="none" stroke="${silk}" stroke-linecap="round" stroke-linejoin="round" opacity="0.92">`)
   for (const c of parts) if (c.pcb.side === "top") for (const path of pcbSilk(c)) out.push(`<polyline points="${pts(path)}" stroke-width="0.15"/>`)
-  for (const t of ownTexts(project)) {
-    if (t.side !== "top") continue
-    const w = n(boardTextStrokeWidth(t))
-    for (const path of boardTextStrokes(t)) out.push(`<polyline points="${pts(path)}" stroke-width="${w}"/>`)
+  for (const wt of worldTexts(project)) {
+    const t = wt.owner === "#board" && wt.layer === "F.SilkS" ? layerText(project, wt) : null
+    if (!t) continue
+    for (const s of t.strokes) out.push(`<polyline points="${pts(s.length === 1 ? [s[0], s[0]] : s)}" stroke-width="${n(t.pen)}"/>`)
+    if (t.fills.length) out.push(`<path d="${t.fills.flat().map((ring) => `M${pts(ring)}Z`).join("")}" fill="${silk}" stroke="none" fill-rule="evenodd"/>`)
+    if (t.border) out.push(`<polyline points="${pts([...t.border.points, t.border.points[0]])}" stroke-width="${n(t.border.width)}"/>`)
   }
   out.push(`</g></g></svg>`)
   return out.join("")

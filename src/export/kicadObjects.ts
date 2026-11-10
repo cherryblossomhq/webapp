@@ -185,7 +185,7 @@ export function applyBoardObjects(pcb: string, project: Project, drawings: Map<s
     if (u) members.set(c.id, [u])
   }
   for (const g of project.graphics ?? []) members.set(g.id, drawings.get(`g:${g.id}`) ?? [])
-  for (const t of project.texts) if (t.layer !== undefined) members.set(t.id, texts.get(`x:${t.id}`) ?? [])
+  for (const t of project.texts) members.set(t.id, texts.get(`x:${t.id}`) ?? [])
   for (const [id, list] of ids) members.set(id, list)
   let lost = 0
   for (const t of project.traces) {

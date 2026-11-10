@@ -9,6 +9,7 @@ import { symbolBox } from "../src/model/ruleAreas"
 import type { DrawingLine } from "../src/model/types"
 import { TEMPLATES } from "../src/model/templates"
 import type { Project } from "../src/model/types"
+import { silkscreenText } from "../src/model/textCodec"
 import { EXTENSION_NAMES as BOARD_EXTENSION_NAMES } from "../src/model/kicad/board"
 import { importKicadSchematic } from "../src/model/kicad/schematic"
 import { importKicadBoard } from "../src/model/kicad/board"
@@ -46,10 +47,10 @@ describe("B1: an editor-drawn board of 4 or more layers keeps its silkscreen tex
     }, 120000)
   }
 
-  it("the 4-layer file puts a text where the Gerber plots it: the editor's place in the file's frame, its size and side", async () => {
+  it("the 4-layer file puts a bottom silkscreen text where it is, in the file's frame, with its size, pen and mirror", async () => {
     const tpl = built(TEMPLATES[0].id)
     const four = setCopperLayerCount(tpl, 4).project
-    const withBottom: Project = { ...four, texts: [...(four.texts ?? []), { id: "tb", text: "UNDER", x: 12.5, y: 7.25, size: 1.5, rot: 90, side: "bottom" }] }
+    const withBottom: Project = { ...four, texts: [...(four.texts ?? []), silkscreenText({ id: "tb", text: "UNDER", x: 12.5, y: 7.25, size: 1.5, rot: 90, side: "bottom" })] }
     const pcb = pcbOf((await kicadFiles(withBottom)).files)
     const block = pcb.slice(pcb.indexOf('(gr_text "UNDER"'))
     expect(block.slice(0, block.indexOf("\n)\n"))).toMatch(/\(at 12\.5 -7\.25 90\)[\s\S]*\(layer "B\.SilkS"\)[\s\S]*\(size 1\.5 1\.5\)[\s\S]*\(thickness 0\.21\)[\s\S]*\(justify mirror\)/)

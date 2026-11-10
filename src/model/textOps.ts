@@ -8,7 +8,7 @@ import { getDesignators, REF_SIZE, SILK_WIDTH } from "./silk"
 import { flipShapeLayer } from "./shapeLayers"
 import { copperCount } from "./stack"
 import { defaultTextId } from "./textCodec"
-import { isKicadText, isTextLayer, partTextWorld, type WorldText } from "./texts"
+import { isTextLayer, partTextWorld, type WorldText } from "./texts"
 import type { BoardText, ComponentInstance, PartText, Project, Rotation, TextAttrs, Vec2 } from "./types"
 
 // Editing texts: those on the board (`Project.texts`, the ones with a layer) and those of a part (`ComponentInstance.texts`).
@@ -104,28 +104,28 @@ const sideOfLayer = (layer: string): "top" | "bottom" => (layer.startsWith("B.")
 // ---------- on the board ----------
 
 /** A new board text. The attributes not given are the defaults of a new text on the layer. */
-export function addBoardText(project: Project, text: Omit<BoardText, "id" | "side"> & { layer: string }): { project: Project; text: BoardText } {
-  const place = (project.texts ?? []).filter(isKicadText).length
+export function addBoardText(project: Project, text: Omit<BoardText, "id" | "side">): { project: Project; text: BoardText } {
+  const place = (project.texts ?? []).length
   const free = (id: string) => !(project.texts ?? []).some((t) => t.id === id)
   let id = defaultTextId(place)
   for (let n = place; !free(id); n++) id = defaultTextId(n)
   if (!free(id)) id = uid("kt")
-  const added = { ...text, id, side: sideOfLayer(text.layer) } as BoardText
+  const added: BoardText = { ...text, id, side: sideOfLayer(text.layer) }
   return { project: touch({ ...project, texts: [...(project.texts ?? []), added] }), text: added }
 }
 
 export function updateBoardTexts(project: Project, ids: string[], patch: TextPatch): Project {
   const set = new Set(ids)
-  if (!project.texts?.some((t) => set.has(t.id) && isKicadText(t))) return project
+  if (!project.texts?.some((t) => set.has(t.id))) return project
   return touch({
     ...project,
     texts: project.texts.map((t) => {
-      if (!set.has(t.id) || !isKicadText(t)) return t
+      if (!set.has(t.id)) return t
       const next = applyAttrs(t, patch)
       if (finite(patch.rot)) next.rot = norm360(patch.rot)
       if (finite(patch.x)) next.x = r6(patch.x)
       if (finite(patch.y)) next.y = r6(patch.y)
-      next.side = sideOfLayer(next.layer!)
+      next.side = sideOfLayer(next.layer)
       return next
     }),
   })
@@ -134,14 +134,14 @@ export function updateBoardTexts(project: Project, ids: string[], patch: TextPat
 /** Moves the board texts that are not locked by (dx, dy). */
 export function moveBoardTexts(project: Project, ids: string[], dx: number, dy: number): Project {
   const set = new Set(ids)
-  if ((dx === 0 && dy === 0) || !project.texts?.some((t) => set.has(t.id) && isKicadText(t) && !t.locked)) return project
-  return touch({ ...project, texts: project.texts.map((t) => (set.has(t.id) && isKicadText(t) && !t.locked ? { ...t, x: r6(t.x + dx), y: r6(t.y + dy) } : t)) })
+  if ((dx === 0 && dy === 0) || !project.texts?.some((t) => set.has(t.id) && !t.locked)) return project
+  return touch({ ...project, texts: project.texts.map((t) => (set.has(t.id) && !t.locked ? { ...t, x: r6(t.x + dx), y: r6(t.y + dy) } : t)) })
 }
 
 export function removeBoardTexts(project: Project, ids: string[]): Project {
   const set = new Set(ids)
-  if (!project.texts?.some((t) => set.has(t.id) && isKicadText(t))) return project
-  return touch({ ...project, texts: project.texts.filter((t) => !(set.has(t.id) && isKicadText(t))) })
+  if (!project.texts?.some((t) => set.has(t.id))) return project
+  return touch({ ...project, texts: project.texts.filter((t) => !set.has(t.id)) })
 }
 
 // ---------- in a part ----------

@@ -1,4 +1,4 @@
-import { boardTextStrokes, boardTextStrokeWidth, mountingHoles, ownTexts } from "../model/board"
+import { mountingHoles } from "../model/board"
 import { isNpth, maskSides, padOnLayer, pasteSides, pcbPads, pcbSilk, type WorldPad } from "../model/instances"
 import { arcOf, bareOpeningWidth, bareTraces } from "../model/arcTracks"
 import { copperLayers, kicadLayerName, viaDiameterOn, viaLayers } from "../model/stack"
@@ -478,10 +478,6 @@ export function gerberSilkscreen(project: Project, side: PcbSide): string {
     for (const path of pcbSilk(c)) w.stroke(path, SILK_WIDTH)
     const d = designators.get(c.id)
     if (d) for (const stroke of designatorStrokes(d)) w.stroke(stroke, SILK_WIDTH)
-  }
-  for (const t of ownTexts(project)) {
-    if (t.side !== side) continue
-    for (const stroke of boardTextStrokes(t)) w.stroke(stroke, boardTextStrokeWidth(t))
   }
   for (const shape of drawingsOn(project, side === "top" ? "F.SilkS" : "B.SilkS")) plotShape(w, shape)
   plotOtherZones(w, project, side === "top" ? "F.SilkS" : "B.SilkS")

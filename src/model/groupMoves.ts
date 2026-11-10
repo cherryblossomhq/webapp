@@ -58,7 +58,7 @@ export function moveObjects(project: Project, selection: string[], dx: number, d
   if (t.size) next = { ...next, traces: next.traces.map((q) => (t.has(q.id) ? { ...q, points: q.points.map(moved) } : q)) }
   if (v.size) next = { ...next, vias: next.vias.map((q) => (v.has(q.id) ? { ...q, ...moved(q) } : q)) }
   if (g.size && next.graphics) next = { ...next, graphics: next.graphics.map((q) => (g.has(q.id) ? moveShape(q, dx, dy) : q)) }
-  if (x.size) next = { ...next, texts: next.texts.map((q) => (x.has(q.id) && q.layer !== undefined ? { ...q, x: r6(q.x + dx), y: r6(q.y + dy) } : q)) }
+  if (x.size) next = { ...next, texts: next.texts.map((q) => (x.has(q.id) ? { ...q, x: r6(q.x + dx), y: r6(q.y + dy) } : q)) }
   if (m.size && next.dimensions) next = { ...next, dimensions: next.dimensions.map((q) => (m.has(q.id) ? moveDimension(q, dx, dy) : q)) }
   if (i.size) next = moveImages(next, [...i], dx, dy)
   // X21: a tuning pattern or other generated item that went whole takes its layout points with it.
@@ -150,7 +150,7 @@ export function rotateObjects(project: Project, selection: string[]): TurnResult
     vias: project.vias.map((q) => (v.has(q.id) ? { ...q, ...turn(q) } : q)),
     ...(project.graphics ? { graphics: project.graphics.map((q) => (g.has(q.id) ? turnGraphic(q, turn) : q)) } : {}),
     texts: project.texts.map((q): BoardText => {
-      if (!x.has(q.id) || q.layer === undefined) return q
+      if (!x.has(q.id)) return q
       const p = turn({ x: q.x, y: q.y })
       return { ...q, x: p.x, y: p.y, rot: r6((q.rot + 90) % 360) }
     }),

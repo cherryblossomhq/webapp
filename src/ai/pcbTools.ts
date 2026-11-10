@@ -26,7 +26,7 @@ import { addTrace, addVia, netTraceWidth, resolvePinSpec, updateComponent } from
 import { pourMissNote } from "../model/pourReach"
 import { copperCount, copperLayers } from "../model/stack"
 import { addBoardText, removeBoardTexts, resetPartTexts, updateBoardTexts, updatePartText, withDesignatorText } from "../model/textOps"
-import { isKicadText, isTextLayer, partTextWorld, textLayerKind } from "../model/texts"
+import { isTextLayer, partTextWorld, textLayerKind } from "../model/texts"
 import { getDesignators } from "../model/silk"
 import { defaultTextStyle } from "../editor/pcb/textEditing"
 import { copperOn, removeCopper } from "../model/boardCopper"
@@ -1053,16 +1053,17 @@ const pcbTextTool: PcbToolSpec = {
     }
     let next: Project
     let what: string
+    let on: string
     if (id) {
-      const t = (project.texts ?? []).find((x) => x.id === id && isKicadText(x))
+      const t = (project.texts ?? []).find((x) => x.id === id)
       if (!t) return fail(project, `There is no board text ${id}; get_design lists them`)
       if (input.remove === true) return ok(removeBoardTexts(project, [id]), `Removed the text "${t.text}".`, "Removed a board text")
-      const to = layer ?? t.layer!
+      on = layer ?? t.layer
       next = updateBoardTexts(project, [id], {
         ...(typeof input.text === "string" ? { text: input.text } : {}),
         ...(num(input.x) !== undefined ? { x: num(input.x) } : {}),
         ...(num(input.y) !== undefined ? { y: num(input.y) } : {}),
-        ...(size !== undefined ? { size, w: null, thickness: defaultTextStyle(to).thickness * (size / defaultTextStyle(to).size) } : {}),
+        ...(size !== undefined ? { size, w: null, thickness: defaultTextStyle(on).thickness * (size / defaultTextStyle(on).size) } : {}),
         ...(layer !== undefined ? { layer, mirror: layer.startsWith("B.") } : {}),
         ...(num(input.rotation) !== undefined ? { rot: num(input.rotation) } : {}),
       })
@@ -1071,15 +1072,14 @@ const pcbTextTool: PcbToolSpec = {
       const text = typeof input.text === "string" ? input.text : ""
       if (!text.trim()) return fail(project, "Give the text")
       if (num(input.x) === undefined || num(input.y) === undefined) return fail(project, "Give x and y, the text's middle")
-      const on = layer ?? "F.SilkS"
+      on = layer ?? "F.SilkS"
       const style = defaultTextStyle(on)
       const height = size ?? style.size
       const made = addBoardText(project, { layer: on, text, x: num(input.x)!, y: num(input.y)!, rot: num(input.rotation) ?? 0, size: height, thickness: round(style.thickness * (height / style.size), 4), ...(on.startsWith("B.") ? { mirror: true as const } : {}) })
       next = made.project
       what = `Put "${text}" on ${on} at (${num(input.x)}, ${num(input.y)}), ${len(height)} mm tall (id ${made.text.id})`
     }
-    const onCopper = textLayerKind(layer ?? (project.texts ?? []).find((x) => x.id === id)?.layer ?? "F.SilkS") === "copper"
-    if (onCopper) {
+    if (textLayerKind(on) === "copper") {
       const bad = errorsAdded(project, next, COPPER_ERRORS)
       if (bad.length) return fail(project, `Not placed: ${bad.slice(0, 3).join(" ")} Move it clear of other copper, or put it on silkscreen.`)
     }

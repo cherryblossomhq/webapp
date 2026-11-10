@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { TEMPLATES } from "../src/model/templates"
+import { silkscreenText } from "../src/model/textCodec"
 import type { Project } from "../src/model/types"
 
 // The shipped examples as they were drawn before Tidy redraws them (October 2026), kept as
@@ -12,7 +13,10 @@ import type { Project } from "../src/model/types"
 
 const DIR = join(__dirname, "fixtures", "examples-before-tidy")
 
+// Their board text was stored as before every text had a layer (file version 7), with a side and none: it is read as the reader reads it.
+const withLayers = (p: Project): Project => ({ ...p, texts: p.texts.map((t) => (t.layer ? t : silkscreenText(t))) })
+
 export const FROZEN_EXAMPLES: { id: string; project: Project }[] = TEMPLATES.map(({ id }) => ({
   id,
-  project: JSON.parse(readFileSync(join(DIR, `${id}.json`), "utf8")) as Project,
+  project: withLayers(JSON.parse(readFileSync(join(DIR, `${id}.json`), "utf8")) as Project),
 }))

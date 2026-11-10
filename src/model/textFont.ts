@@ -2,9 +2,9 @@ import { kicadCjkLoaded, kicadFontLoaded, loadKicadFont, needsCjk } from "../lib
 import { valueText } from "./instances"
 import type { Project } from "./types"
 
-// When a project needs KiCad's stroke font. A project with KiCad text (a text with a layer, on the board or on a part) is
-// laid out with KiCad's own glyphs, which are a module of their own (`lib/kicadFont`), loaded here and only here: a project
-// with none, which is every board drawn in the editor, never fetches it and keeps drawing with the editor's own letters.
+// When a project needs KiCad's stroke font. A project with text (on the board, or a part's own) is laid out with KiCad's
+// own glyphs, which are a module of their own (`lib/kicadFont`), loaded here and only here: a project with none never
+// fetches it and keeps drawing with the editor's own letters.
 
 /** What the project's texts need: nothing, the Latin, Greek, Cyrillic and symbol tables, or the CJK table as well. */
 export function textFontNeed(project: Project): "none" | "base" | "cjk" {
@@ -13,7 +13,6 @@ export function textFontNeed(project: Project): "none" | "base" | "cjk" {
     if (s && need !== "cjk" && needsCjk(s)) need = "cjk"
   }
   for (const t of project.texts ?? []) {
-    if (t.layer === undefined) continue
     if (need === "none") need = "base"
     see(t.text)
   }

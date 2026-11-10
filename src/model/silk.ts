@@ -1,7 +1,7 @@
 import { boxesOverlap, type Box } from "../lib/geometry"
 import { resolvedComponents } from "../model/ruleAreas"
 import { strokeText, strokeTextWidth } from "../lib/strokeFont"
-import { boardTextStrokes, mountingHoles, ownTexts } from "./board"
+import { mountingHoles } from "./board"
 import { boxOnBoard, outlineGeometry } from "./outline"
 import { findPart } from "./library"
 import { pcbCourtyard, pcbPads, pcbSilk } from "./instances"
@@ -164,10 +164,7 @@ export function placeDesignators(project: Project): Map<string, Designator> {
     })),
   )
   const holes = mountingHoles(b).map((h) => inflate({ minX: h.x - h.diameter / 2, maxX: h.x + h.diameter / 2, minY: h.y - h.diameter / 2, maxY: h.y + h.diameter / 2 }, PAD_CLEAR))
-  const texts = ownTexts(project).flatMap((t) => {
-    const box = strokesBox(boardTextStrokes(t), TEXT_CLEAR)
-    return box ? [{ side: t.side, box }] : []
-  })
+  const texts: { side: PcbSide; box: Box }[] = []
   const bodies = placed.flatMap((c) => {
     const cy = pcbCourtyard(c)
     return cy ? [{ id: c.id, side: c.pcb.side, box: cy }] : []
@@ -184,7 +181,7 @@ export function placeDesignators(project: Project): Map<string, Designator> {
   ]
   // A filled drawing is ink a designator would vanish into, so it is kept clear of like board text.
   for (const f of drawings.filled) texts.push({ side: f.side, box: inflate(f.box, TEXT_CLEAR) })
-  // So is a KiCad text on the silkscreen (a part's own text and board text of a board brought in from KiCad).
+  // So is a text on the silkscreen (board text and a part's own text).
   for (const side of ["top", "bottom"] as const) for (const t of textsOnLayer(project, side === "top" ? "F.SilkS" : "B.SilkS")) texts.push({ side, box: inflate(t.box, TEXT_CLEAR) })
 
   const out = new Map<string, Designator>()

@@ -1,7 +1,7 @@
 import { viaLayers } from "../../model/stack"
 import { viaTentedOn } from "../../model/viaRules"
 import * as THREE from "three"
-import { boardColors, boardFinish, boardTextStrokes, boardTextStrokeWidth, finishMetal, mountingHoles, ownTexts } from "../../model/board"
+import { boardColors, boardFinish, finishMetal, mountingHoles } from "../../model/board"
 import { isNpth, maskSides, pcbSilk, type WorldPad } from "../../model/instances"
 import { maskMargin, padOpeningRings } from "../../model/padOpening"
 import { designatorStrokes, getDesignators, SILK_WIDTH } from "../../model/silk"
@@ -250,9 +250,6 @@ function silkStrokes(input: PaintInput, side: CopperLayer): { paths: Vec2[][]; w
     if (d) parts.push(...designatorStrokes(d))
   }
   out.push({ paths: parts, width: SILK_WIDTH })
-  for (const t of ownTexts(input.project)) {
-    if (t.side === side && t.text.trim()) out.push({ paths: boardTextStrokes(t), width: boardTextStrokeWidth(t) })
-  }
   return out
 }
 

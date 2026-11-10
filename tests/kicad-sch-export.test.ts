@@ -97,7 +97,8 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
  * JSON, which has no page, is what it was. Since the router holds a supply at its width where it fits (November 2026), node's two supply
  * links at its chip are 0.4 mm with necks at the pads where they were 0.25 mm end to end, so its Circuit JSON, which carries the traces, changed.
  * Since the examples' board text (a title, a revision) is silkscreen text like any other (November 2026), get_design lists it, the notes say how
- * text is written, and the stitching vias of esp32-robot and node keep clear of letters a little wider than the editor's own.
+ * text is written, and the stitching vias of esp32-robot and node keep clear of letters a little wider than the editor's own; the frozen examples'
+ * text, stored with no layer, is read onto the silkscreen as a file's is, so the same holds for them, and their Circuit JSON writes it as before.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
   // its routed copper changed once a through-hole pad joined a pour by its copper and not only by its centre (`joinsFill`), and with it the board in its Circuit JSON
@@ -106,12 +107,12 @@ const BEFORE: Record<string, { circuit: string; notes: string; svg: string; desi
   blinker: { circuit: "16a3a3388b0e33c2", notes: "745ddc673be98554", svg: "23e33b2748a01c91", design: "ba0b6590714fcf2d" },
   regulator: { circuit: "ad26257cce4e8920", notes: "745ddc673be98554", svg: "a12701ea013f02c0", design: "771c9bcb2b7d2488" },
   mcu: { circuit: "d07e48b604bc98dd", notes: "745ddc673be98554", svg: "ea17ffaaf15a3946", design: "cecb80eb05af8545" },
-  "frozen-esp32-robot": { circuit: "730bfa45500b69ff", notes: "ecde5db8bdf09607", svg: "5625527337c0fdfa", design: "e324505f9497df97" },
-  "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "37dcf934825ccd5d", design: "bb294a819509f723" },
-  "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "d832e75b40094bcd", design: "1d94adacefed092a" },
-  "frozen-regulator": { circuit: "fcb711afa8d98b8e", notes: "ecde5db8bdf09607", svg: "1969635755327601", design: "b429b401e5ddd143" },
+  "frozen-esp32-robot": { circuit: "1e671b5d2cd4e872", notes: "a4fa7d0262d568e3", svg: "5625527337c0fdfa", design: "f04c54595f0b2ddc" },
+  "frozen-node": { circuit: "327680cd47e4a6ed", notes: "a4fa7d0262d568e3", svg: "37dcf934825ccd5d", design: "5b21f1a2af3036bd" },
+  "frozen-blinker": { circuit: "a2d639f5fe62ea13", notes: "a4fa7d0262d568e3", svg: "d832e75b40094bcd", design: "13d7eb1a8b604249" },
+  "frozen-regulator": { circuit: "3b059189310f5dfd", notes: "a4fa7d0262d568e3", svg: "1969635755327601", design: "8ae6279e63d9ca39" },
   // get_design now says its one stray supply port (#PWR1, touching nothing) reaches no part: `loose_wiring`.
-  "frozen-mcu": { circuit: "847672861b48a2b6", notes: "ecde5db8bdf09607", svg: "7f6b9cf60e75ae82", design: "e0f759f247e30682" },
+  "frozen-mcu": { circuit: "c7a4d044ee83f0ae", notes: "a4fa7d0262d568e3", svg: "7f6b9cf60e75ae82", design: "bfe90c8445a870e7" },
 }
 
 describe("the editor's own projects", () => {

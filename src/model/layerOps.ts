@@ -152,7 +152,7 @@ export function layerContent(project: Project, layer: CopperLayer): LayerContent
     vias: project.vias.filter((v) => v.kind !== undefined && (v.from === layer || v.to === layer)).length,
     zones: project.zones.filter((z) => (z.layers ?? [z.layer]).includes(layer)).length,
     drawings: (project.graphics ?? []).filter((g) => onLayerName(g.layer, layer)).length,
-    texts: project.texts.filter((t) => t.layer !== undefined && onLayerName(t.layer, layer)).length,
+    texts: project.texts.filter((t) => onLayerName(t.layer, layer)).length,
     pads: (project.footprints ?? []).reduce((n, f) => n + f.pads.filter((p) => p.layers?.inner?.includes(layer) || p.stack?.layers[layer] || p.zoneLayers?.includes(layer)).length, 0),
   }
 }
@@ -203,7 +203,7 @@ export function setCopperLayerCount(project: Project, count: number): { project:
     vias: project.vias.filter((v) => v.kind === undefined || (alive(v.from!) && alive(v.to!))).map((v) => cleanViaDrills(v.zoneLayers?.some((l) => !alive(l)) ? { ...v, zoneLayers: v.zoneLayers.filter(alive) } : v, alive)),
     zones,
     ...(project.graphics ? { graphics: project.graphics.filter((g) => !alsoNames.has(g.layer)) } : {}),
-    texts: project.texts.filter((t) => t.layer === undefined || !alsoNames.has(t.layer)),
+    texts: project.texts.filter((t) => !alsoNames.has(t.layer)),
     ...(footprints ? { footprints } : {}),
   }
   removed.traces = project.traces.length - next.traces.length
@@ -232,7 +232,7 @@ export function dropDeadLayers(project: Project): Project {
     project.zones.every(zoneOk) &&
     project.vias.every(viaOk) &&
     (project.graphics ?? []).every((g) => aliveName(g.layer)) &&
-    project.texts.every((t) => t.layer === undefined || aliveName(t.layer))
+    project.texts.every((t) => aliveName(t.layer))
   )
     return project
   const zones = project.zones.flatMap((z) => {
@@ -248,7 +248,7 @@ export function dropDeadLayers(project: Project): Project {
     vias: project.vias.filter((v) => v.kind === undefined || (alive(v.from!) && alive(v.to!))).map((v) => (v.zoneLayers?.some((l) => !alive(l)) ? { ...v, zoneLayers: v.zoneLayers.filter(alive) } : v)),
     zones,
     ...(project.graphics ? { graphics: project.graphics.filter((g) => aliveName(g.layer)) } : {}),
-    texts: project.texts.filter((t) => t.layer === undefined || aliveName(t.layer)),
+    texts: project.texts.filter((t) => aliveName(t.layer)),
   }
 }
 

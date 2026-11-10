@@ -6,6 +6,7 @@ import { boardPreviewSvg, previewFills } from "../src/pages/boardPreviewSvg"
 import { boardPreview } from "../src/pages/previews"
 import { projectPicture } from "../src/store/projectActions"
 import type { ProjectStorage, StoredProjectSummary } from "../src/store/storage"
+import type { Project } from "../src/model/types"
 
 // A projects page's previews: drawn as SVG text in a worker (on this thread here), and a picture kept with each project.
 // Node has no canvas, so the kept picture is a stand-in.
@@ -26,6 +27,15 @@ describe("boardPreviewSvg", () => {
       expect(svg.endsWith("</svg>")).toBe(true)
       expect(svg).not.toMatch(/NaN|undefined/)
     }
+  })
+
+  it("draws the board's text on the front silkscreen, and not the back's", () => {
+    const p = EXAMPLES.find((e) => e.project.texts.some((t) => t.layer === "F.SilkS"))!.project
+    const fills = previewFills(p, computeConnectivity(p))
+    const lines = (texts: Project["texts"]) => boardPreviewSvg({ ...p, texts }, fills).split("<polyline").length
+    const bare = lines([])
+    expect(lines(p.texts)).toBeGreaterThan(bare)
+    expect(lines(p.texts.map((t) => ({ ...t, layer: "B.SilkS", mirror: true as const, side: "bottom" as const })))).toBe(bare)
   })
 
   it("writes a colour from the file into the markup only when it is a hex colour", () => {

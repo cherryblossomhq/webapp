@@ -1,3 +1,4 @@
+import { applyChanges } from "@cherryblossom/project-changes"
 import { imp } from "./kicad-sheets-fixtures"
 import { board, footprint, pad } from "./kicad-board-fixtures"
 import { ALL } from "./kicad-test-helpers"
@@ -25,7 +26,9 @@ import {
   serializeProject,
   summarizeProject,
 } from "../src/model/projectFile"
+import { updateBoardTexts } from "../src/model/textOps"
 import type { CustomPartSpec, Project } from "../src/model/types"
+import { projectChanges } from "../src/store/changes"
 
 const origin = { id: "p1", createdAt: 1_000, updatedAt: 2_000 }
 
@@ -105,7 +108,7 @@ describe("the project file", () => {
     expect(again.project.futureField).toEqual({ a: 1 })
   })
 
-  it.each([7, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
+  it.each([8, 14, 15])("refuses a file at version %i from a newer editor rather than dropping what it can't read", (version) => {
     const file = JSON.parse(serializeProject(createProject()))
     file.version = version
     expect(problem(() => parseProjectFile(file, origin))).toBe("too_new")
@@ -307,7 +310,7 @@ describe("version 2, before footprint flags and the nets of tracks and vias", ()
     const migrated = migrateProjectFile(v2)
     expect(pageless(migrated)).toEqual({ ...v2.project, sheets: [{ id: "root" }] })
     expect(JSON.parse(serializeProject(parseProjectFile(v2, origin))).version).toBe(PROJECT_FILE_VERSION)
-    expect(PROJECT_FILE_VERSION).toBe(6)
+    expect(PROJECT_FILE_VERSION).toBe(7)
   })
   it("a reader of version 2 would refuse a newer file: the bump is what keeps a flag from being lost", () => {
     const written = JSON.parse(serializeProject(parseProjectFile(v2, origin)))
@@ -861,10 +864,10 @@ describe("version 3 is the whole KiCad import", () => {
   }
   const body = (p: Project) => JSON.parse(serializeProject(p)).project
 
-  it("a newly saved file says 6, three versions after it", () => {
-    expect(PROJECT_FILE_VERSION).toBe(6)
-    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(6)
-    expect(JSON.parse(serializeProject(rich())).version).toBe(6)
+  it("a newly saved file says 7, four versions after it", () => {
+    expect(PROJECT_FILE_VERSION).toBe(7)
+    expect(JSON.parse(serializeProject(createProject("new"))).version).toBe(7)
+    expect(JSON.parse(serializeProject(rich())).version).toBe(7)
   })
 
   it("reading a file of the current version changes nothing", () => {
@@ -883,8 +886,8 @@ describe("version 3 is the whole KiCad import", () => {
     expect(pageless(read).sheets).toEqual([{ id: "root" }])
   })
 
-  it("a file at 7, 14 or 15 is newer than this editor", () => {
-    for (const version of [7, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
+  it("a file at 8, 14 or 15 is newer than this editor", () => {
+    for (const version of [8, 14, 15, 16, 100]) expect(problem(() => parseProjectFile({ ...JSON.parse(serializeProject(createProject())), version }, origin))).toBe("too_new")
   })
 })
 
@@ -1021,7 +1024,7 @@ describe("version 6: every sheet is a page", () => {
     // The empty sheet gets the page every new sheet has; the far one goes where its drawing is.
     expect(paperOf(read, "s1")).toEqual(DEFAULT_PAPER)
     expect(paperOf(read, "s2").x).toBeGreaterThan(80)
-    expect(JSON.parse(serializeProject(read)).version).toBe(6)
+    expect(JSON.parse(serializeProject(read)).version).toBe(PROJECT_FILE_VERSION)
   })
 
   it("puts the page of a project read from KiCad where KiCad has it, its corner at the origin", () => {
@@ -1083,5 +1086,38 @@ describe("version 6: every sheet is a page", () => {
     }
     const custom = parseProjectFile({ ...file, project: { ...file.project, sheets: [{ id: "root", paper: { size: "User", width: 300, height: 200, x: 1, y: 2 } }] } }, origin)
     expect(paperOf(custom)).toEqual({ size: "User", width: 300, height: 200, x: 1, y: 2 })
+  })
+})
+
+describe("version 7: every board text has a layer", () => {
+  /** A version 6 document with the editor's own silkscreen text, a side and no layer, as the examples' titles were stored. */
+  const v6 = () => {
+    const file = JSON.parse(serializeProject(createProject("Old text")))
+    return { ...file, version: 6, project: { ...file.project, texts: [{ id: "tx_1", text: "555 BLINKER", x: 0, y: 8.6, size: 1.5, rot: 0, side: "bottom" }] } }
+  }
+  /** The stored document after `edit`, worked out on the project as read, is applied to it by the live sync's paths, read again. */
+  const throughStore = (stored: { project: unknown }, edit: (p: Project) => Project) => {
+    const before = parseProjectFile(stored, origin)
+    const file = structuredClone(stored)
+    file.project = applyChanges(file.project as never, projectChanges(before, edit(before)))
+    return parseProjectFile(file, origin).texts[0]
+  }
+  const EDITS: [string, (p: Project) => Project][] = [
+    ["made bold", (p) => updateBoardTexts(p, ["tx_1"], { bold: true })],
+    ["given a pen of its own", (p) => updateBoardTexts(p, ["tx_1"], { thickness: 0.3 })],
+    ["put on copper", (p) => updateBoardTexts(p, ["tx_1"], { layer: "B.Cu" })],
+  ]
+
+  it("is read onto its side's silkscreen and written whole at version 7, so an edit of it lands as it was made", () => {
+    const read = parseProjectFile(v6(), origin)
+    expect(read.texts[0]).toMatchObject({ layer: "B.SilkS", mirror: true, thickness: 0.21 })
+    // The first copy to open a version 6 document writes it whole: that is what the bump is for.
+    const written = JSON.parse(serializeProject({ ...read, ...origin }))
+    expect(written.version).toBe(7)
+    expect(written.project.texts[0]).toMatchObject({ layer: "B.SilkS", mirror: true, thickness: 0.21 })
+    for (const [what, edit] of EDITS) expect(throughStore(written, edit), what).toEqual(edit(read).texts[0])
+    // Applied to the version 6 document as it was stored, the same edits were lost on the next read.
+    expect(throughStore(v6(), EDITS[0][1])).not.toHaveProperty("bold")
+    expect(throughStore(v6(), EDITS[1][1])?.thickness).toBe(0.21)
   })
 })

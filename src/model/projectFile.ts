@@ -68,7 +68,7 @@ import type { LabelShape, Rotation, BoardDimension, BoardGraphic, PcbGroup, Refe
  */
 
 export const PROJECT_FILE_FORMAT = "cherryblossom.project"
-export const PROJECT_FILE_VERSION = 6
+export const PROJECT_FILE_VERSION = 7
 
 /** A project as stored: everything but where it is stored. */
 export type ProjectDocument = Omit<Project, "id" | "createdAt" | "updatedAt">
@@ -189,6 +189,11 @@ const STEPS_2_TO_3: ((project: Json) => Json)[] = [
  * every other project, a board-only KiCad import included, is centred. The first copy to open a project writes it whole, so the page is
  * stored once and never worked out again; the bump also keeps a version 5 reader, which would drop the pages and save the loss back, from
  * opening one.
+ *
+ * Version 7 gives every board text a layer. The editor's own silkscreen text was stored with a side and no layer (the examples' titles, a
+ * Circuit JSON import's text, text placed early on); the reader makes it a text on its side's silkscreen (`silkscreenText`), and a version 6
+ * document reads as it was otherwise. The bump is what has the first copy to open such a project write it whole: an edit to the text (made
+ * bold, a pen of its own, another layer) is worked out on the text with its layer, and applied to a stored one with none it was lost on the next read.
  */
 const MIGRATIONS: Record<number, (project: Json) => Json> = {
   0: ({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...project }) => project,
@@ -197,6 +202,7 @@ const MIGRATIONS: Record<number, (project: Json) => Json> = {
   3: libraryParts,
   4: (project) => project,
   5: sheetPaper,
+  6: (project) => project,
 }
 
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
 import { BUILT_EXTENSIONS } from "../src/model/kicad/board"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import { placementAreas, placementProblems } from "../src/model/placementAreas"
 import { analyzePcb } from "../src/model/pcb"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -99,7 +99,7 @@ describe("the stored file", () => {
       rule("off", '(placement (enabled no) (component_class "X"))', right),
     ])
     const text = serializeProject(r.project)
-    expect(JSON.parse(text).version).toBe(6)
+    expect(JSON.parse(text).version).toBe(PROJECT_FILE_VERSION)
     const back = parseProjectFile(text, { id: r.project.id })
     expect(back.zones.map((z) => z.placement)).toEqual(r.project.zones.map((z) => z.placement))
     expect(back.components.map((c) => [c.classes, c.sheetPath])).toEqual(r.project.components.map((c) => [c.classes, c.sheetPath]))

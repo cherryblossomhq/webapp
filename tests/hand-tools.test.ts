@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { pcbToolLabel } from "../src/ai/pcbTools"
 import { runTool } from "../src/ai/tools"
 import { computeConnectivity } from "../src/model/connectivity"
 import { pairClearance } from "../src/model/netClasses"
@@ -206,6 +207,22 @@ describe("pcb_text on parts' designators", () => {
     expect(reset.project.components.every((c) => c.texts === undefined)).toBe(true)
     expect(reset.result).toContain("J1: designator placed for you")
     expect(runTool(reset.project, "pcb_text", { refs: ["J1"], reset: true }).result).toContain("J1's designator is already placed for you")
+  })
+
+  it("leaves a designator the editor places to the editor when it is only shown", () => {
+    const p = board()
+    const shown = runTool(p, "pcb_text", { refs: ["J1", "J2"], hidden: false })
+    expect(shown.isError, shown.result).toBe(false)
+    expect(shown.project).toBe(p)
+    expect(shown.summary).toBe("Showed 2 designators")
+    expect(shown.result).toContain("J1: designator placed for you")
+  })
+
+  it("names what it does in the transcript", () => {
+    expect(pcbToolLabel("pcb_text", { refs: ["R1"] })).toBe("Reading R1's designator")
+    expect(pcbToolLabel("pcb_text", { refs: ["R1"], reset: true })).toBe("Placing R1's designator for you again")
+    expect(pcbToolLabel("pcb_text", { refs: ["R1"], field: "value", hidden: true })).toBe("Hiding R1's value text")
+    expect(pcbToolLabel("pcb_text", { refs: ["R1", "R2"], size: 0.8 })).toBe("Changing R1, R2's designator")
   })
 
   it("refuses what a designator can't take, changing nothing", () => {

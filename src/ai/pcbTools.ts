@@ -1110,7 +1110,8 @@ function partTextTool(project: Project, input: Record<string, unknown>, layer: s
   if ((x !== undefined || y !== undefined) && parts.length > 1) return fail(project, `Give x and y for one part at a time: they place its ${what}'s middle`)
   const hide = input.remove === true ? true : typeof input.hidden === "boolean" ? input.hidden : undefined
   const reset = input.reset === true
-  const changes = x !== undefined || y !== undefined || size !== undefined || rot !== undefined || layer !== undefined || hide !== undefined
+  const placing = x !== undefined || y !== undefined || size !== undefined || rot !== undefined || layer !== undefined
+  const changes = placing || hide !== undefined
   if (reset && changes) return fail(project, `reset gives the ${what} back to the editor's placement: give it alone`)
   if (reset && field === "value") return fail(project, "reset is for designators")
 
@@ -1158,6 +1159,11 @@ function partTextTool(project: Project, input: Record<string, unknown>, layer: s
         refused.push(`${c.ref} has no designator on the board`)
         continue
       }
+      // A designator the editor places is shown already: showing it leaves it the editor's, to be placed again as the board changes.
+      if (!placing && hide === false) {
+        done.push(describe(c))
+        continue
+      }
       next = withDesignatorText(next, c.id)
     }
     const now = next.components.find((p) => p.id === c.id)!
@@ -1186,7 +1192,7 @@ function partTextTool(project: Project, input: Record<string, unknown>, layer: s
   const result = `${done.join(". ")}.${refused.length ? ` Not changed: ${refused.join(". ")}.` : ""}`
   if (!changes && !reset) return ok(project, result, `Read ${parts.length > 1 ? "designators" : `${parts[0].ref}'s ${what}`}`)
   const n = done.length > 1 ? `${done.length} ${what}s` : `a ${what}`
-  const summary = reset ? `Placed ${n} for you again` : hide === true ? `Hid ${n}` : `Changed ${n}`
+  const summary = reset ? `Placed ${n} for you again` : hide === true ? `Hid ${n}` : !placing ? `Showed ${n}` : `Changed ${n}`
   return ok(next, result, summary)
 }
 
@@ -1217,7 +1223,11 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       if (input.refs !== undefined) {
         const refs = (Array.isArray(input.refs) ? input.refs : [input.refs]).map(String)
         const who = refs.slice(0, 4).join(", ") + (refs.length > 4 ? "..." : "")
-        return `${input.remove === true || input.hidden === true ? "Hiding" : "Changing"} ${who}'s ${input.field === "value" ? "value text" : "designator"}`
+        const field = input.field === "value" ? "value text" : "designator"
+        const changing = ["x", "y", "size", "rotation", "layer", "hidden", "remove"].some((k) => input[k] !== undefined)
+        if (input.reset === true) return `Placing ${who}'s ${field} for you again`
+        if (!changing) return `Reading ${who}'s ${field}`
+        return `${input.remove === true || input.hidden === true ? "Hiding" : "Changing"} ${who}'s ${field}`
       }
       return input.remove === true ? "Removing a board text" : typeof input.text === "string" ? `Putting "${input.text}" on the board` : "Changing a board text"
     }

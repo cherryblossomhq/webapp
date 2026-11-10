@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { importKicadBoard } from "../src/model/kicad/board"
-import { parseProjectFile, serializeProject } from "../src/model/projectFile"
+import { parseProjectFile, PROJECT_FILE_VERSION, serializeProject } from "../src/model/projectFile"
 import { refillZones } from "../src/model/zoneOps"
 import type { Project } from "../src/model/types"
 import { board, footprint, pad } from "./kicad-board-fixtures"
@@ -191,7 +191,7 @@ describe("a zone keeps KiCad's own fill", () => {
   it("a stored project from before kept fills loads as it did", () => {
     const p = imported([zoneA(false)])
     const doc = JSON.parse(serializeProject(p))
-    expect(doc.version).toBe(6)
+    expect(doc.version).toBe(PROJECT_FILE_VERSION)
     const back = parseProjectFile(doc, origin(p))
     expect(back.zones[0].kept).toBeUndefined()
     expect(back.zones[0].net).toBe("GND")

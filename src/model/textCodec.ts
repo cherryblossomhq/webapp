@@ -250,7 +250,6 @@ export function unpackBoardTexts(raw: unknown, styles: TextStyleDef[]): BoardTex
   return out
 }
 
-/** Board text written as objects with a layer (a hand-written file): each that reads as one, with an id once. */
 /**
  * A board text on the silkscreen of a side, mirrored on the bottom, with the pen the editor draws such text with. Before every board text had a
  * layer (November 2026) the editor kept its own silkscreen text apart, with a side and no layer (the examples' titles, a Circuit JSON import's
@@ -275,6 +274,7 @@ export function silkscreenText(t: { id: string; text: string; x: number; y: numb
   return normalizeBoardTextObjects([text], new Set())[0] ?? text
 }
 
+/** Board text written as objects with a layer (a hand-written file): each that reads as one, with an id once. */
 export function normalizeBoardTextObjects(raw: unknown[], taken: Set<string>): BoardText[] {
   const out: BoardText[] = []
   for (const item of raw) {

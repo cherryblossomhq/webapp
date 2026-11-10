@@ -47,8 +47,9 @@ describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () =
     // No trace is below the rules' minimum, however thin the escape.
     const min = res.project.rules.minTraceWidth
     expect(Math.min(...res.project.traces.map((t) => t.width))).toBeGreaterThanOrEqual(min)
-    expect(ms).toBeLessThan(60_000)
-  }, 120_000)
+    // About 20 s on a laptop and three times that on a shared CI runner: the guard is for a router gone several times slower.
+    expect(ms).toBeLessThan(120_000)
+  }, 180_000)
 
   it("keeps the supply nets at their set width away from the pads", () => {
     const s = laidOut()

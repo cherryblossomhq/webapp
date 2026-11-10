@@ -101,7 +101,9 @@ describe("route_pcb names what it leaves", () => {
   })
 
   it("routes the board other ways while a connection stays open, and says so", () => {
-    const res = autoroute(walled(board(), [-3.75]), { timeLimitMs: 4_000 })
+    // Untimed, so the variants tried, and which of the two nets is left open, are the same on every machine: under a time limit a slow
+    // runner tries fewer and can keep L2 open instead.
+    const res = autoroute(walled(board(), [-3.75]), { timeLimitMs: Infinity })
     expect(res.remaining).toBe(1)
     expect(res.open).toEqual([expect.objectContaining({ net: "L1" })])
     expect(res.tries).toBeGreaterThan(1)

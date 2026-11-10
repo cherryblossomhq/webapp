@@ -83,8 +83,8 @@ export function CopilotPanel() {
   const last = entries[entries.length - 1]
   const limitOffered = last?.kind === "error" && !!last.offer
 
-  // "Upgrade to Pro", "Upgrade to Ultra" and pay-as-you-go open in a new tab: coming back to this
-  // one should find the plan bought, and the picker with the models it adds.
+  // "Upgrade to Pro", "Upgrade to Ultra" and "Buy credits" open in a new tab: coming back to this
+  // one should find the plan or credits bought, and the picker with the models a plan adds.
   useEffect(() => {
     if (!planGated && !limitOffered) return
     const refresh = () => void useAccount.getState().load(true)
@@ -475,31 +475,26 @@ function EmptyState({ gate, unreachable, onPick, recent }: { gate: Gate; unreach
 
 /**
  * A request refused on the plan's day or month allowance, with the ways past it: Ultra for a Pro
- * user, pay-as-you-go for anyone whose plan has it. Both are the host's pages; pay-as-you-go is
- * turned on there, beside the line that says what turning it on agrees to, never from here.
+ * user, credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
+ * there, beside the line that says what buying agrees to, never from here.
  */
 function LimitNotice({ text, offer }: { text: string; offer: LimitOffer }) {
   const host = managedAiHost()
-  const { upgrade, payAsYouGo } = offer
-  const next =
-    payAsYouGo === "raise"
-      ? upgrade
-        ? "Your pay-as-you-go limit for the month is spent too. Raise it, or upgrade to Ultra for a larger allowance."
-        : "Your pay-as-you-go limit for the month is spent too. Raise it to keep working."
-      : payAsYouGo === "enable"
-        ? upgrade
-          ? "Upgrade to Ultra for a larger allowance, or turn on pay-as-you-go to keep working and pay only for what you use past it."
-          : "Turn on pay-as-you-go to keep working and pay only for what you use past it."
-        : "Upgrade to Ultra for a larger allowance."
+  const { upgrade, buyCredits } = offer
+  const next = buyCredits
+    ? upgrade
+      ? "Upgrade to Ultra for a larger allowance, or buy credits to keep working past it. Auto-refill can keep them topped up."
+      : "Buy credits to keep working past it. Auto-refill can keep them topped up."
+    : "Upgrade to Ultra for a larger allowance."
   return (
     <Notice
       title="You've reached your plan's AI limit"
       action={
         <div className="flex flex-wrap gap-2">
           {upgrade && <LinkButton href={host?.upgradeUrl}>Upgrade to Ultra</LinkButton>}
-          {payAsYouGo && (
+          {buyCredits && (
             <LinkButton href={host?.accountUrl} quiet={upgrade}>
-              {payAsYouGo === "raise" ? "Raise limit" : "Turn on pay-as-you-go"}
+              Buy credits
             </LinkButton>
           )}
         </div>

@@ -63,22 +63,22 @@ export function copilotModel(account: MeResponse, preferred: string | null): str
 export interface LimitOffer {
   /** Ultra, for a Pro user: a larger allowance. */
   upgrade: boolean
-  /** Turn pay-as-you-go on, or, when it is on and its monthly limit is spent, raise that limit. */
-  payAsYouGo: "enable" | "raise" | null
+  /** Buy credits, on the host's account page, to keep working past the allowance. */
+  buyCredits: boolean
 }
 
 /**
  * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. The
- * minute burst is the same on every plan and pay-as-you-go never buys past it; the day and month
- * allowances are what Ultra raises and pay-as-you-go goes past. `onDemand` on `/api/v1/me` says
- * whether that is one click away, already on with its cap spent (what stopped the request), or not
- * offered to this account at all. On with room left means the cap was raised since the refusal:
- * trying again is the way past it, not raising it once more.
+ * minute burst is the same on every plan and credits never buy past it; the day and month
+ * allowances are what Ultra raises and credits go past. `credits` on `/api/v1/me` says whether
+ * this account can buy them, and whether auto-refill is already adding some, in which case the
+ * refusal says to try again in a moment and offering to buy more would be noise. A balance left
+ * means credits were bought since the refusal: trying again is the way past it.
  */
 export function limitOffer(account: MeResponse | null, limit: RateLimitWindow | undefined): LimitOffer | null {
   if (!account || !limit || limit === "minute") return null
+  const { available, balance, refilling } = account.credits
+  if (refilling || balance > 0) return null
   const upgrade = account.plan.tier === "pro"
-  const { available, enabled, spentCents, capCents } = account.onDemand
-  const payAsYouGo = !available ? null : !enabled ? "enable" : spentCents >= capCents ? "raise" : null
-  return upgrade || payAsYouGo ? { upgrade, payAsYouGo } : null
+  return upgrade || available ? { upgrade, buyCredits: available } : null
 }

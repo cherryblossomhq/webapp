@@ -17,7 +17,7 @@ export type Entry =
   | { kind: "user"; id: number; text: string }
   | { kind: "assistant"; id: number; text: string }
   | { kind: "tool"; id: number; toolId: string; label: string; status: "running" | "ok" | "error"; changed: boolean }
-  /** `offer`: what a plan limit's refusal offered when it happened (Ultra, pay-as-you-go). */
+  /** `offer`: what a plan limit's refusal offered when it happened (Ultra, credits). */
   | { kind: "error"; id: number; text: string; failure?: FailureKind; offer?: LimitOffer }
   /** The blocks Clean up with AI proposes, waiting for the user's word. */
   | { kind: "plan"; id: number; plan: ProposedPlan; status: PlanStatus }

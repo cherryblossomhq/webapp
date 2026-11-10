@@ -13,7 +13,7 @@ const account = (plan: Partial<MeResponse["plan"]> = {}): MeResponse => ({
   plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/small", "vendor/large"], ...plan },
   limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
   usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
-  onDemand: { available: true, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
+  credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
 })
 
 /** An OpenAI-style SSE stream of chunks, ending in [DONE]. */
@@ -186,16 +186,18 @@ describe("copilot over managed AI", () => {
     await vi.waitFor(() => expect(calls.filter((c) => c.url.endsWith("/me"))).toHaveLength(3))
   })
 
-  it("offers Ultra and pay-as-you-go when Pro runs out, as the plan is after the refusal", async () => {
+  it("offers Ultra and credits when Pro runs out, as the account is after the refusal", async () => {
     const limited = (limit: string) => () =>
       Response.json({ error: { type: "rate_limited", message: "Daily limit reached (600 AI actions/day on the Pro plan).", limit } }, { status: 429 })
     replies = [limited("day")]
-    expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ kind: "limit", offer: { upgrade: true, payAsYouGo: "enable" } })
+    expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ kind: "limit", offer: { upgrade: true, buyCredits: true } })
 
-    // Pay-as-you-go turned on in another tab since: its spent cap is what stopped this one.
-    me = () => Response.json({ ...account(), onDemand: { available: true, enabled: true, capCents: 5_000, creditsThisPeriod: 10_000_000, spentCents: 5_000 } })
+    // Auto-refill turned on in another tab since, and adding credits now: trying again is the way past.
+    me = () => Response.json({ ...account(), credits: { ...account().credits, autoRefill: true, refilling: true } })
     replies = [limited("month")]
-    expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ offer: { upgrade: true, payAsYouGo: "raise" } })
+    const refilling = (await run("route it")).find((e) => e.type === "error")
+    expect(refilling).toMatchObject({ kind: "limit" })
+    expect(refilling).not.toHaveProperty("offer")
 
     // The minute burst is the same on every plan: nothing to buy.
     replies = [limited("minute")]
@@ -269,26 +271,24 @@ describe("reasoning replay", () => {
 })
 
 describe("limitOffer", () => {
-  const onDemand = (available: boolean, enabled: boolean) => ({ ...account(), onDemand: { ...account().onDemand, available, enabled } })
+  const credits = (c: Partial<MeResponse["credits"]>): MeResponse => ({ ...account(), credits: { ...account().credits, ...c } })
   const ultra = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "ultra", name: "Ultra" } })
 
-  it("offers Ultra to Pro, and pay-as-you-go where the account has it", () => {
-    expect(limitOffer(onDemand(true, false), "day")).toEqual({ upgrade: true, payAsYouGo: "enable" })
-    expect(limitOffer(onDemand(true, true), "month")).toEqual({ upgrade: true, payAsYouGo: "raise" })
-    expect(limitOffer(onDemand(false, false), "month")).toEqual({ upgrade: true, payAsYouGo: null })
-    expect(limitOffer(ultra(onDemand(true, false)), "month")).toEqual({ upgrade: false, payAsYouGo: "enable" })
+  it("offers Ultra to Pro, and credits where the account can buy them", () => {
+    expect(limitOffer(credits({ available: true }), "day")).toEqual({ upgrade: true, buyCredits: true })
+    expect(limitOffer(credits({ available: false }), "month")).toEqual({ upgrade: true, buyCredits: false })
+    expect(limitOffer(ultra(credits({ available: true })), "month")).toEqual({ upgrade: false, buyCredits: true })
   })
 
-  it("doesn't ask to raise a cap that has room again", () => {
-    const raised = { ...account(), onDemand: { ...account().onDemand, enabled: true, capCents: 10_000, spentCents: 5_000 } }
-    expect(limitOffer(raised, "day")).toEqual({ upgrade: true, payAsYouGo: null })
-    expect(limitOffer(ultra(raised), "day")).toBeNull()
+  it("offers nothing while auto-refill is adding credits, or once some were bought", () => {
+    expect(limitOffer(credits({ autoRefill: true, refilling: true }), "month")).toBeNull()
+    expect(limitOffer(credits({ balance: 1_000_000, balanceCents: 500 }), "month")).toBeNull()
   })
 
   it("offers nothing for the burst, an unknown window, or a plan with nothing to buy", () => {
-    expect(limitOffer(onDemand(true, false), "minute")).toBeNull()
-    expect(limitOffer(onDemand(true, false), undefined)).toBeNull()
+    expect(limitOffer(credits({}), "minute")).toBeNull()
+    expect(limitOffer(credits({}), undefined)).toBeNull()
     expect(limitOffer(null, "day")).toBeNull()
-    expect(limitOffer(ultra(onDemand(false, false)), "day")).toBeNull()
+    expect(limitOffer(ultra(credits({ available: false })), "day")).toBeNull()
   })
 })

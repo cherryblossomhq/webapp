@@ -371,7 +371,7 @@ const account: MeResponse = {
   plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/small", "vendor/large"] },
   limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
   usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
-  onDemand: { available: true, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
+  credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
 }
 
 /** The first request the copilot sends, captured as it goes out: the system message and the tools. */

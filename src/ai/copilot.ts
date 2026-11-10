@@ -340,8 +340,8 @@ export async function runCopilot(prompt: string, { signal, onEvent, tools, chat 
     if (signal?.aborted) {
       stopReason = "aborted"
     } else if (err instanceof ManagedAiError) {
-      // A limit offers what the plan and pay-as-you-go are now, not what they were when the panel
-      // opened: pay-as-you-go may have been turned on in another tab since.
+      // A limit offers what the plan and credits are now, not what they were when the panel
+      // opened: credits may have been bought in another tab since.
       const offer = err.kind === "limit" ? limitOffer((await useAccount.getState().load(true)) ?? useAccount.getState().account, err.limit) : null
       onEvent({ type: "error", message: err.message, kind: err.kind, ...(offer && { offer }) })
       // The plan or session changed under the panel: show what it is now.

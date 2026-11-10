@@ -7,7 +7,7 @@ import { IconButton, useDismiss } from "../ui/controls"
 
 /**
  * The button in Sakura's header, after the chat history, that opens the account's AI usage: this
- * period's credits, today's actions, gift credits and pay-as-you-go, as `GET /api/v1/me` has them.
+ * period's credits, today's actions, gift credits and credits bought, as `GET /api/v1/me` has them.
  * Opening it fetches them again, since every request Sakura makes spends some. Changing any of it
  * is the host's usage page.
  */
@@ -31,9 +31,9 @@ export function UsageMenu({ account }: { account: MeResponse }) {
 }
 
 function Usage({ account }: { account: MeResponse }) {
-  const { plan, limits, usage, onDemand } = account
+  const { plan, limits, usage, credits } = account
   const accountUrl = managedAiHost()?.accountUrl
-  // Past the allowance the month keeps counting what gift credits and pay-as-you-go paid for, so
+  // Past the allowance the month keeps counting what gift and bought credits paid for, so
   // the allowance reads full, never over (as the account page has it).
   const included = Math.min(usage.monthlyTokens, limits.monthlyTokens)
   const gift = usage.giftCredits ?? 0
@@ -58,11 +58,14 @@ function Usage({ account }: { account: MeResponse }) {
         format={(n) => n.toLocaleString("en-US")}
         note={usage.dayResetsAt ? `Resets at ${time(usage.dayResetsAt)}` : "One action is one model call; a request makes several"}
       />
-      {(gift > 0 || onDemand.available) && (
+      {(gift > 0 || credits.available || credits.balance > 0) && (
         <div className="flex flex-col gap-1.5 border-t border-line pt-2.5 text-[12px]">
           {gift > 0 && <Row label="Gift credits" value={`${compact(gift)} left`} />}
-          {onDemand.available && (
-            <Row label="Pay-as-you-go" value={onDemand.enabled ? `${usd(onDemand.spentCents)} of ${usd(onDemand.capCents)}` : "Off"} />
+          {(credits.available || credits.balance > 0) && (
+            <Row
+              label="Credits bought"
+              value={`${usd(credits.balanceCents)} left${credits.refilling ? ", refilling" : credits.autoRefill ? ", auto-refill on" : ""}`}
+            />
           )}
         </div>
       )}

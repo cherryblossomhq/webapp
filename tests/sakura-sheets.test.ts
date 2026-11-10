@@ -340,7 +340,7 @@ describe("A page edit with a rename", () => {
     plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/large"] },
     limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
     usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
-    onDemand: { available: true, enabled: false, capCents: 0, creditsThisPeriod: 0, spentCents: 0 },
+    credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
   }
   const sse = (...chunks: object[]) =>
     new Response([...chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`), "data: [DONE]\n\n"].join(""), { status: 200, headers: { "content-type": "text/event-stream" } })

@@ -47,31 +47,31 @@ export interface MeResponse {
     dayResetsAt: number | null;
     monthlyTokens: number;
     monthResetsAt: number | null;
-    /** Gift credits left: spent past the monthly limit, before on-demand. Absent from older servers. */
+    /** Gift credits left: spent past the monthly limit, before credits bought. Absent from older servers. */
     giftCredits?: number;
   };
   /**
-   * On-demand (pay-as-you-go) usage: what a plan does *after* its included
-   * allowance runs out.
+   * Prepaid credits: what a plan does *after* its included allowance runs out.
+   * Bought up front (or by auto-refill) on the account page, spent past the
+   * day's and the month's limits, never billed afterwards.
    *
    * It is here rather than folded into `limits` because a client's question is
    * never "what is the ceiling" alone — it is "did the work stop, and can this
-   * user do anything about it". A refusal with `available: true, enabled: false`
-   * has a one-click remedy; the same refusal with `available: false` needs an
-   * upgrade; with `enabled: true` it means the spend cap was reached, and
-   * offering to turn on something already on would be nonsense.
+   * user do anything about it". A refusal with `available: true` has a remedy
+   * on the account page (buy some); with `refilling: true` the remedy is
+   * already on its way, and offering to buy more would be noise.
    */
-  onDemand: {
-    /** The plan permits on-demand usage at all. Off on Free and Enterprise. */
+  credits: {
+    /** The account can buy credits: Pro or Ultra, billed by Stripe. */
     available: boolean;
-    /** The user has turned it on. Always false when `available` is false. */
-    enabled: boolean;
-    /** Monthly ceiling in US cents. Usage stops here even when enabled. */
-    capCents: number;
-    /** Credits used beyond the included quota in the current 30-day window. */
-    creditsThisPeriod: number;
-    /** What those credits will cost, in US cents, billed in arrears. */
-    spentCents: number;
+    /** Credits left. */
+    balance: number;
+    /** What they're worth, in US cents, rounded down. */
+    balanceCents: number;
+    /** Auto-refill is on. */
+    autoRefill: boolean;
+    /** Auto-refill is charging for more right now. */
+    refilling: boolean;
   };
 }
 
@@ -479,7 +479,7 @@ export interface ApiErrorResponse {
 
 /**
  * The managed-AI window a `429` was refused on. `day` and `month` are the
- * plan's allowance, which a bigger plan or pay-as-you-go raises; `minute` is a
- * burst limit, the same on every plan and not for sale.
+ * plan's allowance, which a bigger plan or credits bought go past; `minute` is
+ * a burst limit, the same on every plan and not for sale.
  */
 export type RateLimitWindow = "minute" | "day" | "month";

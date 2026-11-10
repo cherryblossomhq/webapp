@@ -97,9 +97,9 @@ Every screenshot here is the editor as it runs from this repository, on its ship
       <br>
       <sub>Two layers, routed and poured, with designators placed clear of the pads.</sub>
       <h3>Layout that does the tedious part</h3>
-      Auto-placement puts each decoupling capacitor beside the pin it serves, and a regulator's capacitors, inductor and feedback divider at its pins. The autorouter runs A* on two layers with vias, net-aware clearances and per-net trace widths, and keeps the copper you routed by hand.
+      Auto-placement puts each decoupling capacitor beside the pin it serves, and a regulator's capacitors, inductor and feedback divider at its pins. The autorouter runs A* on every copper layer with vias, net-aware clearances, KiCad's hole clearance and per-net trace widths, takes up and re-lays what blocks a connection it left open, and keeps the copper you routed by hand.
       <br><br>
-      Interactive routing with 45° bends, arcs and vias, up to 32 copper layers with blind and buried vias, bottom-side parts, any board outline, mounting holes, text in KiCad's own font, dimensions, and pours and zones with thermal spokes and stitching vias.
+      Interactive routing with 45° bends, arcs and vias, traces reshaped by dragging their segments and corners, up to 32 copper layers with blind and buried vias, bottom-side parts, any board outline, mounting holes, text in KiCad's own font, dimensions, and pours and zones with thermal spokes and stitching vias.
     </td>
   </tr>
   <tr>
@@ -160,16 +160,16 @@ Every screenshot here is the editor as it runs from this repository, on its ship
     </td>
     <td width="33%" valign="top">
       <h4>✏️ Schematic</h4>
-      Wires · net labels · power and ground ports · junctions · no-connect flags · blocks · hierarchical sheets · buses · variants · text, lines, arrows, polygons and rectangles for titles and notes · copy, paste and duplicate · Tidy · Clean up · rotate, flip and drag with nets kept intact.
+      Wires · net labels · global labels and ports · power and ground ports · junctions · no-connect flags · blocks · hierarchical sheets with entries drawn by hand · pages with a border, zones and a title block that fills itself in · buses · variants · text, lines, arrows, polygons and rectangles for titles and notes · copy, paste and duplicate · Tidy · Clean up · rotate, flip and drag with nets kept intact.
       <h4>🟥 PCB</h4>
-      Auto-place · re-pack · autoroute · interactive routing · arcs · vias · up to 32 copper layers · net classes · per-net widths · copper pours and zones · keepouts · thermal spokes · stitching vias · locked parts and copper · any board outline, cutouts, mounting holes · dimensions · reference images · stackup, copper weight, finish, mask and silkscreen colours · design rules in mm or mil.
+      Auto-place · re-pack · autoroute on every layer · interactive routing · trace reshaping · arcs · vias · up to 32 copper layers · net classes · per-net widths · copper pours and zones · keepouts · thermal spokes · stitching vias · locked parts and copper · any board outline, cutouts, mounting holes · dimensions · reference images · stackup, copper weight, finish, mask and silkscreen colours · design rules in mm or mil.
     </td>
     <td width="33%" valign="top">
       <h4>📤 Exports</h4>
       Gerber RS-274X · Excellon drill · BOM CSV · pick-and-place CSV · fabrication notes · KiCad 9 project · Circuit JSON · STEP AP214 assembly · PNG from the 3D view · the project file.
       <h4>⌨️ Shortcuts</h4>
       Schematic: <code>W</code> wire · <code>L</code> label · <code>B</code> block · <code>R</code> rotate · <code>T</code> tidy · <code>⌘G</code> group.<br>
-      PCB: <code>X</code> route · <code>V</code> via · <code>L</code> layer · <code>F</code> flip.<br>
+      PCB: <code>W</code> route · <code>V</code> via · <code>L</code> layer · <code>F</code> flip.<br>
       Both: <code>⌘Z</code> undo · <code>[</code> <code>]</code> panels. The full list is in <a href="AGENTS.md#shortcuts">AGENTS.md</a>.
     </td>
   </tr>
@@ -244,8 +244,8 @@ architecture, the file format, how Tidy and the router work, and the sharp edges
 > [!IMPORTANT]
 > **Early stage.** The schematic and PCB editors work end to end and the examples
 > go all the way to Gerbers, but expect rough edges and breaking changes. The
-> autorouter routes a board's two outer layers and leaves its inner ones to you,
-> and there is no simulation yet. Please file issues with the steps, your browser,
+> autorouter can leave a dense board's last connections to you, and there is no
+> simulation yet. Please file issues with the steps, your browser,
 > and a project file if you can share one.
 
 ## Contributing

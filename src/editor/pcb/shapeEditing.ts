@@ -43,13 +43,15 @@ export interface ShapeVisibility {
   hidden: Record<string, boolean>
   /** The editor's layer switches (`top`, `bottom`, `silk`). */
   layers: { top: boolean; bottom: boolean; silk: boolean }
+  /** With the other copper layers hidden (`otherLayers`), whether a layer is still drawn: what is on the others cannot be picked. */
+  only?: (layer: string) => boolean
 }
 
 /** Whether a drawing is on screen: its layer is not hidden, and the copper or silkscreen switch of its side is on. A part not placed has none. */
 export function shapeShown(ws: WorldShape, vis: ShapeVisibility): boolean {
   if (!ws.placed) return false
   const name = ws.shape.layer
-  if (vis.hidden[name]) return false
+  if (vis.hidden[name] || (vis.only && !vis.only(name))) return false
   const info = shapeLayerInfo(name)
   if (info?.kind === "copper") return info.side === "bottom" ? vis.layers.bottom : vis.layers.top
   if (info?.kind === "silk") return vis.layers.silk

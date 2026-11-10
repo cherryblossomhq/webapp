@@ -103,6 +103,14 @@ describe("hit testing", () => {
     expect(hitShape(shapes, { x: 5, y: 0 }, 0.1, vis())?.id).toBe("g:over")
     expect(hitShape(shapes, { x: 5, y: 0 }, 0.1, vis({ "User.1": true }))?.id).toBe("g:under")
   })
+
+  it("with the other layers hidden, picks only what is on a layer still drawn", () => {
+    const shapes = [world(line("F.SilkS"), "g:top"), world(line("B.SilkS"), "g:bottom")]
+    const topAlone: ShapeVisibility = { ...vis(), only: (l) => !l.startsWith("B.") }
+    expect(hitShape(shapes, { x: 5, y: 0 }, 0.1, vis())?.id).toBe("g:bottom")
+    expect(hitShape(shapes, { x: 5, y: 0 }, 0.1, topAlone)?.id).toBe("g:top")
+    expect(marqueeShapes(shapes, { minX: 4, minY: -1, maxX: 6, maxY: 1 }, topAlone)).toEqual(["g:top"])
+  })
 })
 
 describe("selection ids", () => {

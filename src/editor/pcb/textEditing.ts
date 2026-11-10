@@ -63,6 +63,7 @@ export function hitText(project: Project, at: Vec2, tol: number, vis: ShapeVisib
   let body: boolean | null = documentation ? null : false
   for (let k = cands.length - 1; k >= 0; k--) {
     const t = shown[cands[k]]
+    if (vis.only && !vis.only(t.layer)) continue
     if (isDocumentationText(t) && (body ??= bodyUnder(project, at))) continue
     const b = boxes[cands[k]]
     if (b && near(at, b, tol)) return t
@@ -102,6 +103,7 @@ function textIndex(project: Project, vis: ShapeVisibility) {
 export function marqueeTexts(project: Project, box: Box, vis: ShapeVisibility): string[] {
   const out: string[] = []
   for (const t of visibleTexts(project, vis)) {
+    if (vis.only && !vis.only(t.layer)) continue
     const b = textBox(project, t)
     if (b && boxesOverlap(box, inflate(b, 0))) out.push(t.id)
   }

@@ -91,7 +91,7 @@ export function hitImage(project: Project, at: Vec2, vis: ShapeVisibility): stri
 export function marqueeBoardObjects(project: Project, box: Box, vis: ShapeVisibility): string[] {
   const out: string[] = []
   for (const d of project.dimensions ?? []) {
-    if (vis.hidden[d.layer]) continue
+    if (vis.hidden[d.layer] || (vis.only && !vis.only(d.layer))) continue
     if (boxesOverlap(box, dimensionBox(d))) out.push(`m:${d.id}`)
   }
   for (const m of project.images ?? []) if (imageShown(m, vis) && boxesOverlap(box, imageBox(m))) out.push(`i:${m.id}`)

@@ -32,13 +32,24 @@ function laidOut(): Session {
   return s
 }
 
-describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () => {
-  it("routes every connection at the board's own rules with no DRC error, without moving a part", () => {
-    const s = laidOut()
-    const before = s.project
+/**
+ * That board routed with no time limit, once for the tests that read it: the router is deterministic and a project is never changed
+ * in place, so each routing it again only spent another 25 s of CPU on the same answer.
+ */
+let unlimited: { before: Project; res: AutorouteResult; ms: number } | undefined
+function routedUnlimited() {
+  if (!unlimited) {
+    const before = laidOut().project
     const t0 = performance.now()
     const res = autoroute(before, { timeLimitMs: Infinity })
-    const ms = performance.now() - t0
+    unlimited = { before, res, ms: performance.now() - t0 }
+  }
+  return unlimited
+}
+
+describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () => {
+  it("routes every connection at the board's own rules with no DRC error, without moving a part", () => {
+    const { before, res, ms } = routedUnlimited()
     expect(res.remaining).toBe(0)
     expect(open(res.project)).toEqual([])
     expect(drcErrors(res.project).map((v) => v.message)).toEqual([])
@@ -52,8 +63,7 @@ describe("USB-C receptacle (USB4105, 0.5 mm pitch) on the session's board", () =
   }, 180_000)
 
   it("keeps the supply nets at their set width away from the pads", () => {
-    const s = laidOut()
-    const res = autoroute(s.project, { timeLimitMs: Infinity })
+    const { res } = routedUnlimited()
     const a = analysis(res.project)
     const net = (name: string) => a.traceNet && [...a.traceNet].filter(([, n]) => n === `net:${name}`).map(([id]) => id)
     const j1 = pcbPads(res.project.components.find((c) => c.ref === "J1")!)

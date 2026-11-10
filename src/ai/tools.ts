@@ -2478,6 +2478,7 @@ const ALIASES: Record<string, Record<string, string>> = {
   find_part: { q: "query", search: "query", part: "query" },
   search_parts: { q: "query", search: "query" },
   get_design: { ref: "refs" },
+  pcb_text: { ref: "refs" },
   web_search: { q: "query" },
   read_web_page: { link: "url" },
 }

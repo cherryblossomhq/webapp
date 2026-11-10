@@ -4,6 +4,9 @@ import { computeConnectivity } from "../src/model/connectivity"
 import { pairClearance } from "../src/model/netClasses"
 import { createProject } from "../src/model/ops"
 import { analyzePcb } from "../src/model/pcb"
+import { getDesignators } from "../src/model/silk"
+import { worldTexts } from "../src/model/texts"
+import { built } from "./built"
 import type { Project } from "../src/model/types"
 
 // What an assistant over MCP could not do on a 10 A board: keep its mains nets further from the rest than the board's clearance,
@@ -163,5 +166,69 @@ describe("pcb_text", () => {
     expect(over.isError).toBe(true)
     expect(over.result).toContain("Not placed")
     expect(runTool(board(), "pcb_text", { text: "X", x: 0, y: 0, layer: "Edge.Cuts" }).isError).toBe(true)
+  })
+})
+
+describe("pcb_text on parts' designators", () => {
+  const designator = (p: Project, ref: string) => worldTexts(p).find((t) => t.component?.ref === ref && t.kind === "reference")
+
+  it("says where a designator the editor placed is, then moves, resizes and turns it, keeping it the part's", () => {
+    const p = board()
+    const auto = getDesignators(p).get(p.components.find((c) => c.ref === "J1")!.id)!
+    const read = runTool(p, "pcb_text", { refs: ["J1"] })
+    expect(read.isError, read.result).toBe(false)
+    expect(read.project).toBe(p)
+    expect(read.result).toContain(`J1: designator placed for you on F.SilkS at (${auto.x}, ${auto.y})`)
+
+    const moved = runTool(p, "pcb_text", { ref: "J1", x: -12, y: 8, size: 1.5, rotation: 90 })
+    expect(moved.isError, moved.result).toBe(false)
+    expect(moved.result).toContain("J1: designator on F.SilkS at (-12, 8), 1.5 mm, angle 90")
+    expect(designator(moved.project, "J1")).toMatchObject({ x: -12, y: 8, size: 1.5, drawRot: 90, layer: "F.SilkS", hidden: false })
+    // It is the part's text now, so it goes where the part goes.
+    const j1 = moved.project.components.find((c) => c.ref === "J1")!
+    expect(j1.texts).toEqual([expect.objectContaining({ kind: "reference", size: 1.5 })])
+    expect(getDesignators(moved.project).has(j1.id)).toBe(false)
+  })
+
+  it("hides and shows designators, several at once, and gives them back to the editor's placement", () => {
+    const hidden = runTool(board(), "pcb_text", { refs: ["J1", "J2"], remove: true })
+    expect(hidden.isError, hidden.result).toBe(false)
+    expect(hidden.summary).toBe("Hid 2 designators")
+    expect(designator(hidden.project, "J1")?.hidden).toBe(true)
+    expect(designator(hidden.project, "J2")?.hidden).toBe(true)
+    expect(JSON.parse(runTool(hidden.project, "get_design", {}).result).texts).toMatchObject({ designators_hidden: 2 })
+
+    const shown = runTool(hidden.project, "pcb_text", { refs: ["J2"], hidden: false })
+    expect(designator(shown.project, "J2")?.hidden).toBe(false)
+
+    const reset = runTool(shown.project, "pcb_text", { refs: ["J1", "J2"], reset: true })
+    expect(reset.isError, reset.result).toBe(false)
+    expect(reset.project.components.every((c) => c.texts === undefined)).toBe(true)
+    expect(reset.result).toContain("J1: designator placed for you")
+    expect(runTool(reset.project, "pcb_text", { refs: ["J1"], reset: true }).result).toContain("J1's designator is already placed for you")
+  })
+
+  it("refuses what a designator can't take, changing nothing", () => {
+    const p = board()
+    expect(runTool(p, "pcb_text", { refs: ["J1"], text: "IN" }).result).toContain("rename the part with update_component new_ref")
+    expect(runTool(p, "pcb_text", { refs: ["J9"], hidden: true }).result).toContain("There is no part J9")
+    expect(runTool(p, "pcb_text", { refs: ["J1", "J2"], x: 0, y: 0 }).result).toContain("one part at a time")
+    expect(runTool(p, "pcb_text", { refs: ["J1"], layer: "F.Cu" }).result).toContain("silkscreen or fab layers")
+    expect(runTool(p, "pcb_text", { refs: ["J1"], field: "value", hidden: true }).result).toContain("J1 has no value text on the board")
+    expect(runTool(p, "pcb_text", { refs: ["J1"], id: "kt1" }).result).toContain("not both")
+  })
+})
+
+describe("pcb_text on an example's own text", () => {
+  it("lists the board's title in get_design and changes and removes it by its id", () => {
+    const p = built("blinker")
+    const design = JSON.parse(runTool(p, "get_design", {}).result)
+    const title = design.texts.board.find((t: { text: string }) => t.text === "555 BLINKER")
+    expect(title).toMatchObject({ layer: "F.SilkS" })
+    const changed = runTool(p, "pcb_text", { id: title.id, text: "MY BLINKER" })
+    expect(changed.isError, changed.result).toBe(false)
+    expect(changed.project.texts.find((t) => t.id === title.id)?.text).toBe("MY BLINKER")
+    const removed = runTool(p, "pcb_text", { id: title.id, remove: true })
+    expect(removed.project.texts.some((t) => t.id === title.id)).toBe(false)
   })
 })

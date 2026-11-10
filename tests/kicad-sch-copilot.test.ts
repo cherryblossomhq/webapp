@@ -109,6 +109,12 @@ const ROUTING_SEARCH_GROWTH = 462
  * The budget below was raised by exactly this.
  */
 const AGENT_FRICTION_GROWTH = 63461 - 57975
+/**
+ * `pcb_text` takes `refs` (with `field`, `hidden` and `reset`): a part's designator, or its value text, moved, resized, turned, hidden or
+ * handed back to the editor's placement. No tool reached a designator, and a user's assistant could not tidy the silkscreen. The budget
+ * below was raised by exactly this.
+ */
+const DESIGNATOR_GROWTH = 64024 - 63461
 
 const text = (blocks: ReturnType<typeof systemMessageFor>["content"]) => (typeof blocks === "string" ? [blocks] : blocks.map((b) => b.text))
 
@@ -142,6 +148,6 @@ describe("Sakura's system prompt", () => {
 
   it("keeps the growth of the tool descriptions and schemas small", () => {
     const size = Buffer.byteLength(JSON.stringify(TOOL_DEFINITIONS))
-    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH - ROUTING_SEARCH_GROWTH - AGENT_FRICTION_GROWTH).toBeLessThan(2100)
+    expect(size - TOOLS_ON_MAIN - BOARD_LANES_GROWTH - SHEET_TOOLS_GROWTH - PLACEMENT_GROWTH - DRAWN_LAND_GROWTH - HAND_TOOLS_GROWTH - SCHEMATIC_DRAWING_GROWTH - DESIGN_PARTS_GROWTH - CLEARANCE_RULES_GROWTH - VERSION_TOOLS_GROWTH - POWER_ROUTING_GROWTH - PAGE_GROWTH - ROUTING_SEARCH_GROWTH - AGENT_FRICTION_GROWTH - DESIGNATOR_GROWTH).toBeLessThan(2100)
   })
 })

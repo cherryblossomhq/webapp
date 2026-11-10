@@ -80,6 +80,24 @@ describe("the project file", () => {
     expect(migrateProjectFile(bare)).not.toHaveProperty("id")
   })
 
+  it("reads the editor's own silkscreen text, which had a side and no layer, as text on that side's silkscreen", () => {
+    // The examples' titles and a Circuit JSON import's text were stored so, and nothing could pick, list or edit them.
+    const file = JSON.parse(serializeProject(createProject("Old text")))
+    file.project.texts = [
+      { id: "tx_1", text: "555 BLINKER", x: 0, y: 8.6, size: 1.5, rot: 0, side: "top" },
+      { id: "tx_2", text: "REV A", x: 1, y: -2, size: 0.8, rot: 90, side: "bottom" },
+      { id: "kt1", layer: "F.Fab", text: "KEPT", x: 0, y: 0, size: 1, rot: 0 },
+      { id: "tx_3", text: 7, x: 0, y: 0, size: 1, rot: 0, side: "top" },
+    ]
+    const read = parseProjectFile(file, origin)
+    expect(read.texts).toEqual([
+      { id: "tx_1", layer: "F.SilkS", text: "555 BLINKER", x: 0, y: 8.6, size: 1.5, rot: 0, thickness: 0.21, side: "top" },
+      { id: "tx_2", layer: "B.SilkS", text: "REV A", x: 1, y: -2, size: 0.8, rot: 90, thickness: 0.15, mirror: true, side: "bottom" },
+      expect.objectContaining({ id: "kt1", layer: "F.Fab", text: "KEPT" }),
+    ])
+    expect(parseProjectFile(serializeProject({ ...read, ...origin }), origin).texts).toEqual(read.texts)
+  })
+
   it("keeps fields it doesn't know through a read and a write", () => {
     const file = JSON.parse(serializeProject(createProject("Kept")))
     file.project.futureField = { a: 1 }

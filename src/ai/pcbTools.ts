@@ -24,9 +24,10 @@ import {
 } from "../model/netClasses"
 import { addTrace, addVia, netTraceWidth, resolvePinSpec, updateComponent } from "../model/ops"
 import { pourMissNote } from "../model/pourReach"
-import { copperLayers } from "../model/stack"
-import { addBoardText, removeBoardTexts, updateBoardTexts } from "../model/textOps"
-import { isKicadText, isTextLayer, textLayerKind } from "../model/texts"
+import { copperCount, copperLayers } from "../model/stack"
+import { addBoardText, removeBoardTexts, resetPartTexts, updateBoardTexts, updatePartText, withDesignatorText } from "../model/textOps"
+import { isKicadText, isTextLayer, partTextWorld, textLayerKind } from "../model/texts"
+import { getDesignators } from "../model/silk"
 import { defaultTextStyle } from "../editor/pcb/textEditing"
 import { copperOn, removeCopper } from "../model/boardCopper"
 import { pointPadDistance, segmentPadDistance } from "../model/pcb"
@@ -1021,7 +1022,7 @@ const drawTraceTool: PcbToolSpec = {
 const pcbTextTool: PcbToolSpec = {
   name: "pcb_text",
   description:
-    "Put text on the board, as the PCB editor's text tool does (a connector's A, B, C, a board name, a version): x, y its middle, size its height, 1 mm by default. layer F.SilkS by default, B.SilkS (mirrored), F.Fab or copper (F.Cu, B.Cu), which may not touch another net. With id (get_design lists board texts), change, move or remove it.",
+    "Put text on the board, as the PCB editor's text tool does (a connector's A, B, C, a board name, a version): x, y its middle, size its height, 1 mm by default. layer F.SilkS by default, B.SilkS (mirrored), F.Fab or copper (F.Cu, B.Cu), which may not touch another net. With id (get_design lists board texts), change, move or remove it. With refs, the parts' designators on the silkscreen instead (field value: their value text, where they have one): alone, where each is; x, y (one part), size, rotation, layer (silkscreen or fab), hidden true or false, remove hides it, reset places it for you again. A designator is the part's reference: rename with update_component new_ref.",
   input_schema: {
     type: "object",
     properties: {
@@ -1033,6 +1034,10 @@ const pcbTextTool: PcbToolSpec = {
       rotation: { type: "number", description: "Degrees counter-clockwise" },
       id: { type: "string" },
       remove: { type: "boolean" },
+      refs: { type: "array", items: { type: "string" }, description: "Designators of parts, e.g. [\"R1\", \"C3\"]" },
+      field: { type: "string", enum: ["designator", "value"] },
+      hidden: { type: "boolean" },
+      reset: { type: "boolean" },
     },
   },
   run: (project, input) => {
@@ -1042,6 +1047,10 @@ const pcbTextTool: PcbToolSpec = {
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined)
     const size = num(input.size)
     if (size !== undefined && !(size >= 0.3 && size <= 20)) return fail(project, "size must be between 0.3 and 20 mm")
+    if (input.refs !== undefined) {
+      if (id) return fail(project, "Give id for a board text or refs for parts' designators, not both")
+      return partTextTool(project, input, layer, size)
+    }
     let next: Project
     let what: string
     if (id) {
@@ -1078,6 +1087,109 @@ const pcbTextTool: PcbToolSpec = {
   },
 }
 
+/**
+ * pcb_text with refs: a part's designator (or its value text) on the board. The editor places a designator beside its part (`model/silk.ts`) until
+ * the part is given texts of its own; a change here gives it one where the editor had it (`withDesignatorText`, the Inspector's "Place designator
+ * by hand"), and reset hands it back. An assistant asked to clean up a board's silkscreen could reach board text only, and said it could not.
+ */
+function partTextTool(project: Project, input: Record<string, unknown>, layer: string | undefined, size: number | undefined): ToolOutcome {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined)
+  const field = input.field === undefined || input.field === "designator" || input.field === "reference" ? "reference" : input.field === "value" ? "value" : null
+  if (!field) return fail(project, "field is designator (the default) or value")
+  const what = field === "reference" ? "designator" : "value text"
+  if (typeof input.text === "string") return fail(project, field === "reference" ? "A designator shows the part's reference: rename the part with update_component new_ref" : "A value text shows the part's value: change it with update_component")
+  if (layer !== undefined && textLayerKind(layer) !== "silk" && textLayerKind(layer) !== "fab") return fail(project, `A ${what} goes on the silkscreen or fab layers (F.SilkS, B.SilkS, F.Fab, B.Fab), not ${layer}`)
+  const names = (Array.isArray(input.refs) ? input.refs : [input.refs]).flatMap((r) => (typeof r === "string" && r.trim() ? [r.trim()] : []))
+  if (!names.length) return fail(project, "Give the parts' designators in refs, e.g. [\"R1\", \"C3\"]")
+  const missing = names.filter((r) => !findByRef(project, r))
+  if (missing.length) return fail(project, `There is no part ${missing.join(", ")}; get_design lists them`)
+  const parts = [...new Map(names.map((r) => findByRef(project, r)!).map((c) => [c.id, c])).values()]
+  const x = num(input.x)
+  const y = num(input.y)
+  const rot = num(input.rotation)
+  if ((x !== undefined || y !== undefined) && parts.length > 1) return fail(project, `Give x and y for one part at a time: they place its ${what}'s middle`)
+  const hide = input.remove === true ? true : typeof input.hidden === "boolean" ? input.hidden : undefined
+  const reset = input.reset === true
+  const changes = x !== undefined || y !== undefined || size !== undefined || rot !== undefined || layer !== undefined || hide !== undefined
+  if (reset && changes) return fail(project, `reset gives the ${what} back to the editor's placement: give it alone`)
+  if (reset && field === "value") return fail(project, "reset is for designators")
+
+  let next = project
+  const count = () => copperCount(next.board)
+  /** Where the part's text is now, said as get_design would. */
+  const describe = (c: ComponentInstance): string => {
+    const now = next.components.find((p) => p.id === c.id)!
+    const index = now.texts?.findIndex((t) => t.kind === field) ?? -1
+    if (index < 0) {
+      if (field === "value" || now.texts) return `${c.ref} has no ${what} on the board`
+      const d = getDesignators(next).get(c.id)
+      return d ? `${c.ref}: designator placed for you on ${d.side === "bottom" ? "B" : "F"}.SilkS at (${len(d.x)}, ${len(d.y)}), ${len(d.size)} mm${d.rot ? `, angle ${d.rot}` : ""}` : `${c.ref} has no designator on the board`
+    }
+    const t = partTextWorld(now, now.texts![index], index, count())
+    return `${c.ref}: ${what} on ${t.layer} at (${len(round(t.x, 3))}, ${len(round(t.y, 3))}), ${len(round(t.size, 3))} mm${t.drawRot ? `, angle ${len(round(t.drawRot, 2))}` : ""}${t.hidden ? ", hidden" : ""}${t.locked ? ", locked" : ""}`
+  }
+
+  const done: string[] = []
+  const refused: string[] = []
+  for (const c of parts) {
+    if (!isPhysical(findPart(c.partId))) {
+      refused.push(`${c.ref} has nothing on the board`)
+      continue
+    }
+    if (!c.pcb.placed) {
+      refused.push(`${c.ref} is not placed on the board yet`)
+      continue
+    }
+    if (reset) {
+      if (!c.texts) refused.push(`${c.ref}'s designator is already placed for you`)
+      else {
+        const dropped = c.texts.filter((t) => t.kind !== "reference").length
+        next = resetPartTexts(next, c.id)
+        done.push(`${describe(c)}${dropped ? ` (its ${dropped} other text${dropped > 1 ? "s" : ""} went with it)` : ""}`)
+      }
+      continue
+    }
+    if (!changes) {
+      done.push(describe(c))
+      continue
+    }
+    if (field === "reference" && !c.texts) {
+      if (!getDesignators(next).get(c.id)) {
+        refused.push(`${c.ref} has no designator on the board`)
+        continue
+      }
+      next = withDesignatorText(next, c.id)
+    }
+    const now = next.components.find((p) => p.id === c.id)!
+    const index = now.texts?.findIndex((t) => t.kind === field) ?? -1
+    if (index < 0) {
+      refused.push(`${c.ref} has no ${what} on the board`)
+      continue
+    }
+    const text = partTextWorld(now, now.texts![index], index, count())
+    if (text.locked && (x !== undefined || y !== undefined || rot !== undefined)) {
+      refused.push(`${c.ref}'s ${what} is locked; unlock it in the Inspector first`)
+      continue
+    }
+    const style = defaultTextStyle(layer ?? text.layer)
+    next = updatePartText(next, c.id, index, {
+      ...(x !== undefined ? { x } : {}),
+      ...(y !== undefined ? { y } : {}),
+      ...(rot !== undefined ? { rot } : {}),
+      ...(size !== undefined ? { size, w: null, thickness: round(style.thickness * (size / style.size), 4) } : {}),
+      ...(layer !== undefined ? { layer, mirror: layer.startsWith("B.") } : {}),
+      ...(hide !== undefined ? { hide } : {}),
+    })
+    done.push(describe(c))
+  }
+  if (!done.length) return fail(project, `${refused.join(". ")}.`)
+  const result = `${done.join(". ")}.${refused.length ? ` Not changed: ${refused.join(". ")}.` : ""}`
+  if (!changes && !reset) return ok(project, result, `Read ${parts.length > 1 ? "designators" : `${parts[0].ref}'s ${what}`}`)
+  const n = done.length > 1 ? `${done.length} ${what}s` : `a ${what}`
+  const summary = reset ? `Placed ${n} for you again` : hide === true ? `Hid ${n}` : `Changed ${n}`
+  return ok(next, result, summary)
+}
+
 export const pcbToolSpecs: PcbToolSpec[] = [placePartsTool, setNetWidthTool, setNetClassTool, setClearanceRuleTool, clearRoutingTool, drawTraceTool, pcbTextTool]
 
 /** Activity labels of these tools, for the transcript. */
@@ -1101,8 +1213,14 @@ export function pcbToolLabel(name: string, input: Record<string, unknown>): stri
       return input.net === undefined && input.from !== undefined
         ? `Drawing a trace from ${String(input.from)}${input.to !== undefined ? ` to ${String(input.to)}` : ""}`
         : `Drawing a trace of ${String(input.net ?? "a net")}`
-    case "pcb_text":
+    case "pcb_text": {
+      if (input.refs !== undefined) {
+        const refs = (Array.isArray(input.refs) ? input.refs : [input.refs]).map(String)
+        const who = refs.slice(0, 4).join(", ") + (refs.length > 4 ? "..." : "")
+        return `${input.remove === true || input.hidden === true ? "Hiding" : "Changing"} ${who}'s ${input.field === "value" ? "value text" : "designator"}`
+      }
       return input.remove === true ? "Removing a board text" : typeof input.text === "string" ? `Putting "${input.text}" on the board` : "Changing a board text"
+    }
     default:
       return null
   }

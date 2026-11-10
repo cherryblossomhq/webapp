@@ -251,6 +251,30 @@ export function unpackBoardTexts(raw: unknown, styles: TextStyleDef[]): BoardTex
 }
 
 /** Board text written as objects with a layer (a hand-written file): each that reads as one, with an id once. */
+/**
+ * A board text on the silkscreen of a side, mirrored on the bottom, with the pen the editor draws such text with. Before every board text had a
+ * layer (November 2026) the editor kept its own silkscreen text apart, with a side and no layer (the examples' titles, a Circuit JSON import's
+ * text, text placed by hand early on), and nothing could pick, list or edit it: it was drawn and exported, and neither the PCB editor, Sakura nor
+ * an assistant could reach it. That text is read as this now.
+ */
+export function silkscreenText(t: { id: string; text: string; x: number; y: number; size: number; rot: number; side: "top" | "bottom" }): BoardText {
+  const bottom = t.side === "bottom"
+  const text: BoardText = {
+    id: t.id,
+    layer: bottom ? "B.SilkS" : "F.SilkS",
+    text: t.text,
+    x: t.x,
+    y: t.y,
+    size: t.size,
+    rot: t.rot,
+    thickness: Math.round(Math.max(0.15, t.size * 0.14) * 1e4) / 1e4,
+    ...(bottom ? { mirror: true as const } : {}),
+    side: t.side,
+  }
+  // As a stored text reads, key for key, so a project made with one writes what it reads back.
+  return normalizeBoardTextObjects([text], new Set())[0] ?? text
+}
+
 export function normalizeBoardTextObjects(raw: unknown[], taken: Set<string>): BoardText[] {
   const out: BoardText[] = []
   for (const item of raw) {

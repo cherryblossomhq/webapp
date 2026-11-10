@@ -31,7 +31,7 @@ import { readDrawing } from "./symbolDrawing"
 import { normalizeOverrides, normalizeProjectVariants, normalizeSheetOverrides } from "./variants"
 import { normalizeStack } from "./stackCodec"
 import { copperLayers } from "./stack"
-import { normalizeBoardTextObjects, normalizePartTexts, unpackBoardTexts, unpackPartTexts, type TextStyleDef } from "./textCodec"
+import { normalizeBoardTextObjects, normalizePartTexts, silkscreenText, unpackBoardTexts, unpackPartTexts, type TextStyleDef } from "./textCodec"
 import { repairUnits } from "./units"
 import type { LabelShape, Rotation, BoardDimension, BoardGraphic, PcbGroup, ReferenceImage, BoardShape, BoardText, ComponentInstance, CustomPartSpec, DrawingBox, DrawingLine, DrawingText, FieldPlace, FootprintDef, PadDef, PartDatabaseSource, PartSource, GenValue, Project, SchematicBlock, SchematicDrawing, SymbolDrawing, Trace, Vec2, Via, Wire } from "./types"
 
@@ -223,21 +223,35 @@ function orderTexts(own: BoardText[], kicad: BoardText[], kp: unknown, objects: 
 }
 
 /**
- * The board's texts: the list as it is written, the editor's own silkscreen text as it was and each of KiCad's read as a text. A file written before keeps KiCad's
- * compact (`kt`, placed among the editor's by `kp`); one an edit since put in the list as an object stands for the stored one of its id.
+ * The board's texts: the list as it is written, each of KiCad's read as a text. A file written before keeps KiCad's compact (`kt`, placed among
+ * the editor's own by `kp`); one an edit since put in the list as an object stands for the stored one of its id. The editor's own silkscreen text
+ * (no layer) is read as a text on its side's silkscreen (`silkscreenText`), so it is picked, listed and edited like the rest.
  */
 function boardTexts(raw: Json, styles: TextStyleDef[]): BoardText[] {
   const rawTexts = list<Record<string, unknown>>(raw.texts)
   const kt = (raw as { kt?: unknown }).kt
+  let read: BoardText[]
   if (kt === undefined) {
     const taken = new Set<string>()
-    return rawTexts.flatMap((t) => (isObject(t) && t.layer !== undefined ? normalizeBoardTextObjects([t], taken) : [t as unknown as BoardText]))
+    read = rawTexts.flatMap((t) => (isObject(t) && t.layer !== undefined ? normalizeBoardTextObjects([t], taken) : [t as unknown as BoardText]))
+  } else {
+    const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
+    const objects = normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set())
+    const edited = new Set(objects.map((t) => t.id))
+    const kicadTexts = [...objects, ...unpackBoardTexts(kt, styles).filter((t) => !edited.has(t.id))]
+    read = orderTexts(ownTexts as unknown as BoardText[], kicadTexts, (raw as { kp?: unknown }).kp, rawTexts.length - ownTexts.length)
   }
-  const ownTexts = rawTexts.filter((t) => !isObject(t) || t.layer === undefined)
-  const objects = normalizeBoardTextObjects(rawTexts.filter((t) => isObject(t) && t.layer !== undefined), new Set())
-  const edited = new Set(objects.map((t) => t.id))
-  const kicadTexts = [...objects, ...unpackBoardTexts(kt, styles).filter((t) => !edited.has(t.id))]
-  return orderTexts(ownTexts as unknown as BoardText[], kicadTexts, (raw as { kp?: unknown }).kp, rawTexts.length - ownTexts.length)
+  const taken = new Set(read.flatMap((t) => (isObject(t) && t.layer !== undefined ? [t.id] : [])))
+  return read.flatMap((t) => (isObject(t) && t.layer !== undefined ? [t] : ownSilkscreenText(t, taken)))
+}
+
+/** The editor's own silkscreen text, stored with a side and no layer, as a text on that side's silkscreen; none when it is not a text. */
+function ownSilkscreenText(t: unknown, taken: Set<string>): BoardText[] {
+  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
+  if (!isObject(t) || typeof t.id !== "string" || !t.id || taken.has(t.id) || typeof t.text !== "string" || !num(t.x) || !num(t.y)) return []
+  taken.add(t.id)
+  const size = num(t.size) && t.size > 0 ? t.size : 1
+  return [silkscreenText({ id: t.id, text: t.text, x: t.x, y: t.y, size, rot: num(t.rot) ? normalizeAngle(t.rot) : 0, side: t.side === "bottom" ? "bottom" : "top" })]
 }
 
 /** The items of a stored list written as objects, each read by `read` (which may throw on one that is not one), with an id once. */

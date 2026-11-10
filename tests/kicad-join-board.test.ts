@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { setCopperLayerCount } from "../src/model/layerOps"
-import { ownTexts } from "../src/model/board"
 import { built } from "./built"
 import { analyzePcb } from "../src/model/pcb"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -42,7 +41,7 @@ describe("B1: an editor-drawn board of 4 or more layers keeps its silkscreen tex
       const four = setCopperLayerCount(two, 4).project
       const a = grTexts(pcbOf((await kicadFiles(two)).files))
       const b = grTexts(pcbOf((await kicadFiles(four)).files))
-      expect(a.length).toBe(ownTexts(two).length)
+      expect(a.length).toBe(two.texts.length)
       expect(b).toEqual(a)
     }, 120000)
   }

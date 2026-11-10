@@ -12,6 +12,7 @@ import { createProject, labelPin } from "./ops"
 import { pageFor, sheetDrawingBox } from "./paper"
 import { ROOT_SHEET } from "./sheets"
 import { SCH_GRID } from "./symbols"
+import { silkscreenText } from "./textCodec"
 import type {
   BoardText,
   ComponentInstance,
@@ -1017,15 +1018,17 @@ export function projectFromCircuitJson(elements: unknown[], options: CircuitJson
   const texts: BoardText[] = []
   for (const t of of<PcbSilkscreenText>("pcb_silkscreen_text")) {
     if (t.pcb_component_id || !t.text?.trim() || !t.anchor_position) continue
-    texts.push({
-      id: uid("tx"),
-      text: t.text,
-      x: round(t.anchor_position.x),
-      y: round(t.anchor_position.y),
-      size: t.font_size ?? 1,
-      rot: quarterTurn(t.ccw_rotation).rot,
-      side: t.layer === "bottom" ? "bottom" : "top",
-    })
+    texts.push(
+      silkscreenText({
+        id: uid("tx"),
+        text: t.text,
+        x: round(t.anchor_position.x),
+        y: round(t.anchor_position.y),
+        size: t.font_size ?? 1,
+        rot: quarterTurn(t.ccw_rotation).rot,
+        side: t.layer === "bottom" ? "bottom" : "top",
+      }),
+    )
   }
 
   if (skipped.length) notes.push(`Left out ${skipped.length} part${skipped.length > 1 ? "s" : ""} with no pads on the board: ${skipped.join(", ")}.`)

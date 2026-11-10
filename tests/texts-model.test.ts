@@ -11,11 +11,12 @@ import { placeDesignators } from "../src/model/silk"
 import { packTexts } from "../src/model/textCodec"
 import { addBoardText, addPartText, landAngle, landPoint, moveBoardTexts, movePartTexts, patchTexts, removeBoardTexts, removePartText, resetPartTexts, updateBoardTexts, updatePartText, withDesignatorText } from "../src/model/textOps"
 import { boardTextId, componentTexts, drawRotation, expandTextVars, hasExpression, parseTextId, partTextId, partTextWorld, shownOf, textInk, textShown, textVariables, worldTexts } from "../src/model/texts"
-import type { ComponentInstance, PartText, Project, Rotation } from "../src/model/types"
+import type { BoardText, ComponentInstance, PartText, Project, Rotation } from "../src/model/types"
 import { textFacts, textLayerGroups, textRowText } from "../src/panels/textInspector"
 
+/** The blinker without its board text (its title and revision), so a test's text is the board's only one. */
 const blinker = () => {
-  const p = structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project) as Project
+  const p = { ...structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project), texts: [] } as Project
   registerProjectParts(p)
   return p
 }
@@ -226,8 +227,9 @@ describe("editing a part's text", () => {
 
 describe("the editor's own text and designators are what they were", () => {
   it("editor text is drawn by the editor's font, by its quarter turns, and a KiCad text next to it changes nothing about it", () => {
-    const p = blinker()
-    const own = p.texts[0]
+    // Text with a side and no layer, as the editor kept its own before every text had one: a stored file's is read onto the silkscreen.
+    const own: BoardText = { id: "tx_1", text: "555 BLINKER", x: 0, y: 8.6, size: 1.5, rot: 0, side: "top" }
+    const p = { ...blinker(), texts: [own] }
     const strokes = boardTextStrokes(own)
     const q = addBoardText(p, { layer: "F.SilkS", text: "k", x: 0, y: 0, rot: 33, size: 1 }).project
     expect(boardTextStrokes(q.texts[0])).toEqual(strokes)

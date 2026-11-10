@@ -96,14 +96,16 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0,
  * the page and get_design reports it, and the shipped examples are tidied onto theirs, which moved their schematics; the frozen examples' Circuit
  * JSON, which has no page, is what it was. Since the router holds a supply at its width where it fits (November 2026), node's two supply
  * links at its chip are 0.4 mm with necks at the pads where they were 0.25 mm end to end, so its Circuit JSON, which carries the traces, changed.
+ * Since the examples' board text (a title, a revision) is silkscreen text like any other (November 2026), get_design lists it, the notes say how
+ * text is written, and the stitching vias of esp32-robot and node keep clear of letters a little wider than the editor's own.
  */
 const BEFORE: Record<string, { circuit: string; notes: string; svg: string; design: string }> = {
   // its routed copper changed once a through-hole pad joined a pour by its copper and not only by its centre (`joinsFill`), and with it the board in its Circuit JSON
-  "esp32-robot": { circuit: "45ec49bca9c0878a", notes: "1c3eb23971c052c9", svg: "77f0488437816220", design: "20c059c85ad4e9ce" },
-  node: { circuit: "17d4b73f3aedf059", notes: "1c3eb23971c052c9", svg: "35ce782ffd47a8dc", design: "e08957f5d1cd4957" },
-  blinker: { circuit: "d0de030633fd1584", notes: "1c3eb23971c052c9", svg: "23e33b2748a01c91", design: "1e71ce5fbd65c239" },
-  regulator: { circuit: "028e450ab3e9ae35", notes: "1c3eb23971c052c9", svg: "a12701ea013f02c0", design: "a0e0fd6f05254bbc" },
-  mcu: { circuit: "e250b8e1798ac8db", notes: "1c3eb23971c052c9", svg: "ea17ffaaf15a3946", design: "6f7a68f071d98908" },
+  "esp32-robot": { circuit: "0b92becc7a995b33", notes: "745ddc673be98554", svg: "77f0488437816220", design: "17a59344c0a3298d" },
+  node: { circuit: "81f7ad7d156416f0", notes: "745ddc673be98554", svg: "35ce782ffd47a8dc", design: "b91ca2dffeef552e" },
+  blinker: { circuit: "16a3a3388b0e33c2", notes: "745ddc673be98554", svg: "23e33b2748a01c91", design: "ba0b6590714fcf2d" },
+  regulator: { circuit: "ad26257cce4e8920", notes: "745ddc673be98554", svg: "a12701ea013f02c0", design: "771c9bcb2b7d2488" },
+  mcu: { circuit: "d07e48b604bc98dd", notes: "745ddc673be98554", svg: "ea17ffaaf15a3946", design: "cecb80eb05af8545" },
   "frozen-esp32-robot": { circuit: "730bfa45500b69ff", notes: "ecde5db8bdf09607", svg: "5625527337c0fdfa", design: "e324505f9497df97" },
   "frozen-node": { circuit: "7306744c065a5c8c", notes: "ecde5db8bdf09607", svg: "37dcf934825ccd5d", design: "bb294a819509f723" },
   "frozen-blinker": { circuit: "e6b3dc44a58a612f", notes: "ecde5db8bdf09607", svg: "d832e75b40094bcd", design: "1d94adacefed092a" },

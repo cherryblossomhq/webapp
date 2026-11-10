@@ -94,7 +94,8 @@ function parseGerber(text: string): Parsed {
 
 // ---------- projects ----------
 
-const blinker = () => structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project) as Project
+/** The blinker without its board text (its title and revision), so what a test adds is all the board draws besides its parts. */
+const blinker = () => ({ ...structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project), texts: [] }) as Project
 
 const withGraphics = (shapes: BoardShape[], base: Project = blinker()): Project => ({ ...base, graphics: shapes.map((s, i): BoardGraphic => ({ ...s, id: `zg${i}` })) })
 

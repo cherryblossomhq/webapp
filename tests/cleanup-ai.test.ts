@@ -13,6 +13,7 @@ import { EXAMPLES } from "../src/model/examples"
 import { isPhysical, schematicPins } from "../src/model/instances"
 import { findPart } from "../src/model/library"
 import { normalizeProject } from "../src/model/projectFile"
+import { ensureTextFont } from "../src/model/textFont"
 import type { Project } from "../src/model/types"
 import { useAccount } from "../src/store/accountStore"
 import { activeEntries, useCopilot, type Entry } from "../src/store/copilotStore"
@@ -107,7 +108,7 @@ const blocksByName = (p: Project) => {
 let before: Project
 let id: string
 
-beforeEach(() => {
+beforeEach(async () => {
   requests = []
   script = []
   connectManagedAi({ getAccessToken: async () => "token-1" })
@@ -121,6 +122,8 @@ beforeEach(() => {
     return next(requests[requests.length - 1], init.signal)
   })
   before = example("node")
+  // Its board's text is drawn with KiCad's font: loaded first, so the store does not swap the project for a copy when it arrives.
+  await ensureTextFont(before)
   useProjectStore.getState().open(before)
   id = before.id
   clearHistory(id)

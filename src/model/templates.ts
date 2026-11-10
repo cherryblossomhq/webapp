@@ -9,7 +9,8 @@ import { stitchVias } from "./stitch"
 import { findPin, addComponent, addLabel, addTrace, addVia, autoPlacePcb, connectPins, createProject, labelPin, resolvePinSpec } from "./ops"
 import { SCH_GRID } from "./symbols"
 import { tidySchematic } from "./tidy"
-import type { BoardText, CopperLayer, CustomPartSpec, MountingHoles, PcbSide, Project, Rotation, Vec2 } from "./types"
+import { silkscreenText } from "./textCodec"
+import type { CopperLayer, CustomPartSpec, MountingHoles, PcbSide, Project, Rotation, Vec2 } from "./types"
 
 interface Builder {
   project: Project
@@ -128,7 +129,7 @@ function builder(name: string, description: string): Builder {
       }
     },
     text(text, x, y, size, rot = 0) {
-      const t: BoardText = { id: uid("tx"), text, x, y, size, rot, side: "top" }
+      const t = silkscreenText({ id: uid("tx"), text, x, y, size, rot, side: "top" })
       b.project = { ...b.project, texts: [...b.project.texts, t] }
     },
     track(points, width = b.project.rules.traceWidth, layer = "top") {

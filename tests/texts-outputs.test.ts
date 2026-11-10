@@ -25,7 +25,8 @@ import { textOracle } from "./kicad-census/texts.mjs"
 // Text objects (X9) in every output: Gerber, the checks, pours, Sakura's picture, the 3D board, the KiCad export, Circuit JSON, the
 // notes and get_design. A board with none says nothing new anywhere.
 
-const blinker = () => structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project) as Project
+/** The blinker without its board text (its title and revision), so a test's text is the board's only one. */
+const blinker = () => ({ ...structuredClone(EXAMPLES.find((e) => e.id === "blinker")!.project), texts: [] }) as Project
 const ALL: GerberLayerName[] = ["F_Cu", "B_Cu", "F_Mask", "B_Mask", "F_Silkscreen", "B_Silkscreen", "F_Paste", "B_Paste", "Edge_Cuts"]
 const FILE_OF: Record<string, GerberLayerName> = { "F.Cu": "F_Cu", "B.Cu": "B_Cu", "F.Mask": "F_Mask", "B.Mask": "B_Mask", "F.Paste": "F_Paste", "B.Paste": "B_Paste", "F.SilkS": "F_Silkscreen", "B.SilkS": "B_Silkscreen", "Edge.Cuts": "Edge_Cuts" }
 
@@ -266,11 +267,12 @@ describe("designators", () => {
     const overlaps = d1.box.minX < box.maxX && d1.box.maxX > box.minX && d1.box.minY < box.maxY && d1.box.maxY > box.minY
     expect(overlaps).toBe(false)
   })
-  it("the five shipped examples have no part text, so every designator is the editor's, as before", () => {
+  it("the five shipped examples have no part text, so every designator is the editor's, and their board text is on the silkscreen", () => {
     for (const example of EXAMPLES) {
       expect(example.project.components.every((c) => c.texts === undefined), example.id).toBe(true)
-      expect((example.project.texts ?? []).every((t) => t.layer === undefined), example.id).toBe(true)
-      expect(worldTexts(example.project), example.id).toEqual([])
+      expect(example.project.texts.length, example.id).toBeGreaterThan(0)
+      expect(example.project.texts.every((t) => t.layer === "F.SilkS"), example.id).toBe(true)
+      expect(worldTexts(example.project).map((t) => t.kind), example.id).toEqual(example.project.texts.map(() => "board"))
     }
   })
 })

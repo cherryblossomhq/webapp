@@ -165,6 +165,25 @@ describe("altiumFiles", () => {
     expect(rules.find((r) => r.props.get("NAME") === "BoardOutlineClearance")!.kind).toBe(63)
   }, 120_000)
 
+  it("names each pour's polygon in its clearance rule, and a net's own width by its Altium name, before its class's", async () => {
+    const source = built("blinker")
+    const unnamed = computeConnectivity(source).nets.find((n) => !n.named && n.pins.length > 1)!
+    const project: Project = {
+      ...source,
+      zones: source.zones.map((z) => ({ ...z, clearance: 0.5 })),
+      rules: { ...source.rules, netWidths: { GND: 0.6, [unnamed.name]: 0.5 }, netClasses: [{ name: "Power", nets: ["GND"], traceWidth: 0.4 }] },
+    }
+    const { s, nets } = board(bytesOf((await altiumFiles(project)).files, ".PcbDoc"))
+    const polygons = propRecords(s.get("Polygons6/Data")!).map((p) => String.fromCharCode(...p.get("NAME")!.split(",").map(Number)))
+    const rules = ruleRecords(s.get("Rules6/Data")!).map((r) => r.props)
+    const scope = rules.find((r) => r.get("NAME")!.startsWith("Clearance_Pour_"))!.get("SCOPE1EXPRESSION")!
+    expect([...scope.matchAll(/InNamedPolygon\('([^']*)'\)/g)].map((m) => m[1]).sort()).toEqual([...new Set(polygons)].sort())
+    const widths = rules.filter((r) => r.get("RULEKIND") === "Width")
+    for (const r of widths.filter((x) => x.get("SCOPE1EXPRESSION")!.startsWith("InNet("))) expect(nets).toContain(/InNet\('(.*)'\)/.exec(r.get("SCOPE1EXPRESSION")!)![1])
+    const priority = (scope1: string) => Number(widths.find((r) => r.get("SCOPE1EXPRESSION") === scope1)!.get("PRIORITY"))
+    expect(priority("InNet('GND')")).toBeLessThan(priority("InNetClass('Power')"))
+  }, 120_000)
+
   it("labels each part with its designator and links it to the schematic's part", async () => {
     const { files: f } = await files("mcu")
     const { s } = board(bytesOf(f, ".PcbDoc"))
@@ -354,6 +373,21 @@ describe("altiumFiles: the schematic", () => {
     const file = root.find((r) => r.get("RECORD") === "33")!.get("TEXT")!
     expect(sheets.has(file)).toBe(true)
     expect(f[Object.keys(f).find((n) => n.endsWith(".PrjPcb"))!]).toContain(`DocumentPath=${file}`)
+  }, 120_000)
+
+  it("hangs the editor's own text and a text box down from their top", async () => {
+    const source = built("blinker")
+    const project: Project = {
+      ...source,
+      drawings: [...(source.drawings ?? []), { id: "t1", type: "text", x: 1, y: 2, text: "NOTE", size: 0.2 }, { id: "b1", type: "textbox", x: 1, y: 2, w: 2, h: 1, rot: 0, text: "BOX" }],
+    }
+    const records = schRecords(bytesOf((await altiumFiles(project)).files, ".SchDoc"))
+    const note = records.find((r) => r.get("RECORD") === "4" && r.get("TEXT") === "NOTE")!
+    // Altium's justification rows run bottom (0), middle (1), top (2).
+    expect(Math.floor(Number(note.get("JUSTIFICATION")) / 3)).toBe(2)
+    const box = records.find((r) => r.get("RECORD") === "28" && r.get("TEXT") === "BOX")!
+    expect(schCoord(box, "CORNER.Y")).toBeCloseTo(schCoord(note, "LOCATION.Y"), 3)
+    expect(schCoord(box, "CORNER.Y") - schCoord(box, "LOCATION.Y")).toBeCloseTo(50, 3)
   }, 120_000)
 
   it("keeps a name Windows-1252 cannot hold in UTF-8 beside it", async () => {

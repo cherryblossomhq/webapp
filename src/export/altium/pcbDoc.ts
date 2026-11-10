@@ -11,7 +11,7 @@ import { arcCircle, flattenPath, shapePaths, type PathSeg, type ShapePath } from
 import { placeDesignators, SILK_WIDTH } from "../../model/silk"
 import { copperLayers, viaLayers } from "../../model/stack"
 import { shownOf, worldTexts } from "../../model/texts"
-import type { ComponentInstance, CopperLayer, Project, Vec2 } from "../../model/types"
+import type { ComponentInstance, CopperLayer, Project, Vec2, Zone } from "../../model/types"
 import { viaTentedOn } from "../../model/viaRules"
 import { isRuleArea, zoneLayers, zoneRings, zoneSettings } from "../../model/zones"
 import { outlinePaths } from "../kicadBoard"
@@ -160,6 +160,8 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
   }
   const nameOfId = (id: string | null | undefined) => (id && id !== "short" ? (ctx.netNames.get(id) ?? null) : null)
   const byProjectName = new Map(ctx.sch.nets.map((n) => [n.name, n.id]))
+  /** The Altium name of a net the project names (a pour's, a width's, a class member's). */
+  const altiumNet = (name: string) => ctx.netNames.get(byProjectName.get(name) ?? "") ?? name
   // Every named net first, in the schematic's order, so the list reads as the project's nets do.
   for (const n of ctx.sch.nets) if (n.pins.length) netOf(ctx.netNames.get(n.id))
 
@@ -338,7 +340,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     const span = viaLayers(project.board, v)
     const from = copperLayerNumber(span[0])
     const to = copperLayerNumber(span[span.length - 1])
-    const net = netOf(nameOfId(pcb.viaNet.get(v.id)) ?? (v.net ? (ctx.netNames.get(byProjectName.get(v.net) ?? "") ?? v.net) : null))
+    const net = netOf(nameOfId(pcb.viaNet.get(v.id)) ?? (v.net ? altiumNet(v.net) : null))
     const tentTop = viaTentedOn(project.rules, v, "top")
     const tentBottom = viaTentedOn(project.rules, v, "bottom")
     vias.u8(3)
@@ -407,7 +409,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
 
   for (const t of project.traces) {
     const layer = copperLayerNumber(t.layer)
-    const net = netOf(nameOfId(pcb.traceNet.get(t.id)) ?? (t.net ? (ctx.netNames.get(byProjectName.get(t.net) ?? "") ?? t.net) : null))
+    const net = netOf(nameOfId(pcb.traceNet.get(t.id)) ?? (t.net ? altiumNet(t.net) : null))
     if (t.arc && t.points.length === 3) arc(layer, t.points[0], t.points[1], t.points[2], t.width, { net, locked: t.locked })
     else for (let i = 0; i + 1 < t.points.length; i++) track(layer, t.points[i], t.points[i + 1], t.width, { net, locked: t.locked })
   }
@@ -430,7 +432,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
       continue
     }
     if (shape.layer === "Edge.Cuts" && ws.owner === "#board") continue
-    const net = shape.net ? netOf(ctx.netNames.get(byProjectName.get(shape.net) ?? "") ?? shape.net) : NONE
+    const net = shape.net ? netOf(altiumNet(shape.net)) : NONE
     const paths = shapePaths(shape)
     if (shape.fill && shape.type !== "line" && shape.type !== "arc") {
       const rings = paths.filter((p) => p.closed).map((p) => flattenPath(p))
@@ -520,7 +522,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     const rings = z.outline ? zoneRings(z) : [boardRing]
     const ring = rings[0]
     if (!ring || ring.length < 3) continue
-    const netName = z.net ? (ctx.netNames.get(byProjectName.get(z.net) ?? "") ?? z.net) : ""
+    const netName = z.net ? altiumNet(z.net) : ""
     const net = netName ? netOf(netName) : NONE
     for (const layer of zoneLayers(z)) {
       const index = polygonCount++
@@ -554,7 +556,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
         ["POUROVERSTYLE", 1],
         ["RESTORENET", netName],
         // Altium writes a polygon's name as the numbers of its characters.
-        ["NAME", [...(z.name ?? `${netName || "NoNet"}_${layerName(copperLayerNumber(layer))}`)].map((ch) => ch.charCodeAt(0)).join(",")],
+        ["NAME", [...polygonName(z, netName, layer)].map((ch) => ch.charCodeAt(0)).join(",")],
         ["POURINDEX", pourOrder.get(z.id) ?? 0],
         ["IGNOREVIOLATIONS", false],
         ["NET", net === NONE ? undefined : net],
@@ -598,7 +600,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
   const classes = new Bytes()
   let classCount = 0
   for (const cls of project.rules.netClasses ?? []) {
-    const members = cls.nets.map((n) => ctx.netNames.get(byProjectName.get(n) ?? "") ?? n).filter((n) => netIndex.has(n))
+    const members = cls.nets.map(altiumNet).filter((n) => netIndex.has(n))
     const pairs: [string, PropValue][] = [
       ["SELECTION", false],
       ["LAYER", "TOP"],
@@ -617,7 +619,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     propRecord(classes, props(pairs, "long"))
     classCount++
   }
-  const { bytes: rules, count: ruleCount } = rulesData(project, ids)
+  const { bytes: rules, count: ruleCount } = rulesData(project, ids, pourZones, altiumNet)
 
   const nets = new Bytes()
   for (const name of netList) {
@@ -682,6 +684,9 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     counts: { components: placed.length, pads: padCount, vias: viaCount, tracks: trackCount, arcs: arcCount, texts: textCount, polygons: polygonCount, regions: regionCount, nets: netList.length },
   }
 }
+
+/** The name of a pour's polygon on `layer`: what its NAME holds and a rule's `InNamedPolygon` names it by. */
+const polygonName = (z: Zone, netName: string, layer: CopperLayer) => z.name ?? `${netName || "NoNet"}_${layerName(copperLayerNumber(layer))}`
 
 /** The angle of a slotted hole's axis, degrees. */
 function slotAngle(pad: WorldPad): number {
@@ -833,8 +838,11 @@ function boardProps(project: Project, shapePath: ShapePath | undefined, at: { mi
   return props(pairs, "long")
 }
 
-/** Rules6: the design rules as Altium rules, the board's own first, then a width and a clearance for each net class, which outrank them. */
-function rulesData(project: Project, ids: Set<string>): { bytes: Uint8Array; count: number } {
+/**
+ * Rules6: the design rules as Altium rules, the board's own first, then a width and a clearance for each net class, which outrank them. `pours` are the
+ * zones written as polygons, and `altiumNet` the Altium name of a net the project names.
+ */
+function rulesData(project: Project, ids: Set<string>, pours: Zone[], altiumNet: (name: string) => string): { bytes: Uint8Array; count: number } {
   const r = project.rules
   const w = new Bytes()
   let count = 0
@@ -868,22 +876,24 @@ function rulesData(project: Project, ids: Set<string>): { bytes: Uint8Array; cou
   }
   const classes = r.netClasses ?? []
   // Altium's priority 1 is the highest. A pour keeps its own clearance from everything (the editor fills it so), then a net class's clearance outranks the board's.
-  const pourGaps = [...new Set(project.zones.filter((z) => z.clearance !== undefined && !z.keepout).map((z) => z.clearance!))]
+  const pourGaps = [...new Set(pours.filter((z) => z.clearance !== undefined).map((z) => z.clearance!))]
   let p = 1
   const clearance = (name: string, scope1: string, gap: number, scope2 = "All") =>
     rule(0, name, "Clearance", scope1, [["GAP", mil(gap)], ["GENERICCLEARANCE", mil(gap)], ["IGNOREPADTOPADCLEARANCEINFOOTPRINT", false]], { priority: p++, netScope: "DifferentNets", scope2 })
   for (const gap of pourGaps) {
-    const names = project.zones.filter((z) => z.clearance === gap && !z.keepout).map((z) => `InNamedPolygon('${z.name ?? z.net}')`)
-    clearance(`Clearance_Pour_${real(gap / 0.0254, 2)}mil`, names.join(" Or "), gap)
+    // Each polygon by the name it is written with, one per layer of its zone.
+    const names = new Set(pours.filter((z) => z.clearance === gap).flatMap((z) => zoneLayers(z).map((layer) => polygonName(z, z.net ? altiumNet(z.net) : "", layer))))
+    clearance(`Clearance_Pour_${real(gap / 0.0254, 2)}mil`, [...names].map((n) => `InNamedPolygon('${n}')`).join(" Or "), gap)
   }
   clearance("Clearance_Pours", "IsPolygon", r.pourClearance)
   for (const c of classes) if (c.clearance !== undefined) clearance(`Clearance_${c.name}`, `InNetClass('${c.name}')`, c.clearance)
   clearance("Clearance", "All", r.clearance)
   rule(63, "BoardOutlineClearance", "BoardOutlineClearance", "All", [["GAP", mil(r.edgeClearance)], ["GENERICCLEARANCE", mil(r.edgeClearance)], ["IGNOREPADTOPADCLEARANCEINFOOTPRINT", false]], { netScope: "DifferentNets" })
+  // A net's own width outranks its class's, as the router takes it (`netWidths[name] ?? classWidth(name)`).
+  const netWidths = Object.entries(r.netWidths ?? {}).map(([net, width]) => [altiumNet(net), width] as const)
+  netWidths.forEach(([net, width], i) => rule(2, `Width_${net}`, "Width", `InNet('${net}')`, [["MAXLIMIT", mil(Math.max(width, 5))], ["MINLIMIT", mil(r.minTraceWidth)], ["PREFEREDWIDTH", mil(width)]], { priority: i + 1 }))
   const widthClasses = classes.filter((c) => c.traceWidth !== undefined)
-  widthClasses.forEach((c, i) => rule(2, `Width_${c.name}`, "Width", `InNetClass('${c.name}')`, [["MAXLIMIT", mil(Math.max(c.traceWidth!, 5))], ["MINLIMIT", mil(r.minTraceWidth)], ["PREFEREDWIDTH", mil(c.traceWidth!)]], { priority: i + 1 }))
-  const netWidths = Object.entries(r.netWidths ?? {})
-  netWidths.forEach(([net, width], i) => rule(2, `Width_${net}`, "Width", `InNet('${net}')`, [["MAXLIMIT", mil(Math.max(width, 5))], ["MINLIMIT", mil(r.minTraceWidth)], ["PREFEREDWIDTH", mil(width)]], { priority: widthClasses.length + i + 1 }))
+  widthClasses.forEach((c, i) => rule(2, `Width_${c.name}`, "Width", `InNetClass('${c.name}')`, [["MAXLIMIT", mil(Math.max(c.traceWidth!, 5))], ["MINLIMIT", mil(r.minTraceWidth)], ["PREFEREDWIDTH", mil(c.traceWidth!)]], { priority: netWidths.length + i + 1 }))
   rule(2, "Width", "Width", "All", [["MAXLIMIT", mil(5)], ["MINLIMIT", mil(r.minTraceWidth)], ["PREFEREDWIDTH", mil(r.traceWidth)]], { priority: widthClasses.length + netWidths.length + 1 })
   rule(11, "RoutingVias", "RoutingVias", "All", [["HOLEWIDTH", mil(r.viaDrill)], ["WIDTH", mil(r.viaDiameter)], ["VIASTYLE", "Through Hole"], ["MINHOLEWIDTH", mil(r.minViaDrill ?? r.minDrill)], ["MINWIDTH", mil(r.minViaDiameter ?? r.viaDiameter)], ["MAXHOLEWIDTH", mil(Math.max(r.viaDrill, 1))], ["MAXWIDTH", mil(Math.max(r.viaDiameter, 2))]])
   rule(42, "HoleSize", "HoleSize", "All", [["ABSOLUTEVALUES", true], ["MAXLIMIT", mil(6.35)], ["MINLIMIT", mil(r.minDrill)], ["MAXPERCENT", "80.000"], ["MINPERCENT", "20.000"]])

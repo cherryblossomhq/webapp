@@ -381,12 +381,15 @@ function writeSheet(ctx: SchContext, view: Project, sheetId: string, junctions: 
         const at = s.at(d)
         if (d.type === "text" && lines.length === 1) {
           const col = d.align === "right" ? 2 : d.align === "center" ? 1 : 0
-          const row = d.valign === "top" ? 2 : d.valign === "middle" ? 1 : 0
+          // `y` is the text's top unless it says otherwise (the editor's own texts have no `valign`).
+          const row = d.valign === "bottom" ? 0 : d.valign === "middle" ? 1 : 2
           s.add([["RECORD", 4], ["OWNERPARTID", -1], ...loc(at), ["ORIENTATION", ((d.rot ?? 0) / 90) % 4], ["JUSTIFICATION", row * 3 + col], ["COLOR", colorOf(d.stroke?.color) ?? NAVY], ["FONTID", s.font(size, !!d.bold, !!d.italic)], ["TEXT", d.text]])
         } else {
           const w = d.type === "textbox" ? d.w : Math.max(...lines.map((l) => l.length)) * size * 0.8
           const h = d.type === "textbox" ? d.h : lines.length * size * 1.6
-          const lo = s.at({ x: d.x, y: d.y - (d.type === "textbox" ? 0 : h) })
+          // A text box hangs down from its corner (`boxCorners`); a text from its top, unless `valign` puts `y` at its middle or bottom.
+          const top = d.type === "textbox" || !d.valign || d.valign === "top" ? d.y : d.valign === "middle" ? d.y + h / 2 : d.y + h
+          const lo = s.at({ x: d.x, y: top - h })
           s.add([["RECORD", 28], ["OWNERPARTID", -1], ...loc(lo), ...loc({ x: lo.x + w * K, y: lo.y + h * K }, "CORNER"), ["AREACOLOR", 0xffffff], ["FONTID", s.font(size)], ["ALIGNMENT", 1], ["WORDWRAP", true], ["COLOR", NAVY], ["ISSOLID", false], ["SHOWBORDER", d.type === "textbox"], ["TEXT", lines.join("~1")]])
         }
         break

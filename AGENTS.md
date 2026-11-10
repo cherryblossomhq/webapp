@@ -50,6 +50,7 @@ npm run dev             # the editor on http://localhost:5173
 npm run check           # typecheck + unit tests + production build: run before committing
 npm run typecheck       # tsc, strict, with noUnused*
 npm run test            # vitest over tests/: node, or jsdom where a suite says so
+npx vitest run --changed main   # only the tests that import what the branch changed
 npm run test:e2e        # Playwright, against the dev server (npm run test:e2e:install once)
 npm run test:corpus     # tests/corpus, over a local KiCad corpus (KICAD_CORPUS=<dir>)
 npm run examples        # rebuild the shipped examples (see below)
@@ -67,6 +68,8 @@ one and fails when it no longer matches its file, so a change to a template, a
 part, a footprint, the router or the pours means `npm run examples` and
 committing the JSON. Builds are reproducible for that: `withStableIds`
 (`lib/id.ts`) numbers a template's ids, and the router has no time limit.
+Every other test takes an example from `tests/built.ts`, which reads the
+shipped file rather than routing the template again in each test file.
 
 Before finishing a change: `npm run check`, then look at it in a real browser.
 Use a GPU-enabled Chromium for the 3D view. There is no lint step.
@@ -95,19 +98,22 @@ docs/       images for the README
 
 | Prop | What | This build |
 |---|---|---|
-| `storage` | Where projects are kept (`ProjectStorage`, `src/store/storage.ts`), with the sources that come with them, each optional: `sharing` (the Share dialog), `presence` (faces, cursors, selections), `history` (version history) and `locks` (the board lease) | absent: this browser's `localStorage`, with `presence` between its tabs (`browserPresence`, a `BroadcastChannel`) and no sharing, history or lease |
+| `storage` | Where projects are kept (`ProjectStorage`, `src/store/storage.ts`), with the sources that come with them, each optional: `sharing` (the Share dialog), `presence` (faces, cursors, selections), `history` (version history), `locks` (the board lease) and `chats` (Sakura's chats, `ChatSource`, `src/store/chats.ts`) | absent: this browser's `localStorage`, with `presence` between its tabs (`browserPresence`, a `BroadcastChannel`), chats kept for the page, and no sharing, history or lease |
 | `modelFiles` | Where the 3D model files a user adds are kept (`ModelFileStore`, `src/store/modelFiles.ts`) | absent: this browser's IndexedDB |
 | `partModels` | Where the 3D models parts come with are fetched from: the supplier's and KiCad's, the built-in parts' included (`PartModelSource`, `src/store/partModels.ts`) | absent: those parts show only their pads |
 | `managedAi` | The session Sakura calls models with (`ManagedAiHost`, `src/ai/managedAi.ts`) | one with no token, so Sakura asks to sign in; signing in opens the hosted app |
 | `supplierParts` | Supplier pins, land patterns and datasheets by LCSC number, and the parts index (`SupplierPartsSource`, `src/ai/supplierParts.ts`) | absent: parts come from the built-in library, and Sakura's from memory |
+| `web` | The web, for Sakura's web tools: a search, the text of a page or a PDF at a link, and a 3D model file at a link (`WebSource`, `src/ai/webSource.ts`; see [Sakura's web](#sakuras-web-aiwebtoolsts)) | absent: those tools say the web isn't available |
 | `account` | Who is signed in, and the host's pages for projects, settings and signing out (`EditorAccount`, `src/store/account.ts`) | absent: the editor's own dashboard is the home page |
+| `feedback` | Where the top bar's Feedback form sends a topic and a message, with the project and view (`FeedbackSink`, `src/store/feedback.ts`) | absent: no Feedback button |
 | `initialPrompt` | A request to open a new project with, in Sakura's composer | absent |
 | `basePath` | Where the editor is mounted: the dashboard is this path and a project `<basePath>/p/<id>` | absent: the site's root |
 
 Every prop is optional. `src/index.ts` exports `App` and the types a host
 implements them with (`ProjectStorage`, `SharingSource`, `PresenceSource`,
-`HistorySource`, `LockSource`, `ModelFileStore`, `PartModelSource`,
-`SupplierPartsSource`, `EditorAccount`, `ManagedAiHost`).
+`HistorySource`, `LockSource`, `ChatSource`, `ModelFileStore`,
+`PartModelSource`, `SupplierPartsSource`, `WebSource`, `EditorAccount`,
+`FeedbackSink`, `ManagedAiHost`).
 
 What that arrangement relies on:
 
@@ -190,6 +196,12 @@ a session and a parts source through the development hook, against mocked
   7.6 MB WASM file, loaded in a worker only when a STEP model is first drawn, and
   by the tests to read exported files back. Being LGPL, it stays a separate file
   a user could replace; don't inline it into a bundle.
+- **`clipper2-wasm`** (Clipper2 in WebAssembly, BSL-1.0) is the other WASM file,
+  214 KB, loaded by the fill worker for its big offsets and booleans
+  (`model/wasmClipper.ts`); the page and the tests use the TypeScript port
+  (`@countertype/clipper2-ts`). Its loader imports Node's `module` on the
+  branch it takes under Node, so a host's bundler has to make that an empty
+  module in the browser, as Vite does for Node's built-ins.
 - **`THIRD-PARTY-NOTICES.md`** lists the third-party components and the code
   ported from KiCad, with their licences.
 
@@ -227,8 +239,12 @@ KiCad users read without thinking.
   (`group` in `templates.ts`). Their chips and modules are parts of their own
   (`examples/parts.json`), as a project's are, since the library has none.
 - **Schematic**: about 70 basic library parts (see [Library parts](#library-parts)),
-  power and ground ports, orthogonal wires, net labels (on vertical wires they
-  run along the wire, so labels on neighbouring pins sit side by side),
+  power and ground ports, orthogonal wires, labels in Altium's three kinds:
+  net labels (on vertical wires they run along the wire, so labels on
+  neighbouring pins sit side by side), global labels (one net on every sheet,
+  each drawn with the other sheets that have its name, `[Power, MCU]`) and
+  ports (a hierarchical label, which joins the entry of its name on the sheet
+  symbol above; see [Sheets](#sheets-s1-in-project-file-version-3)),
   junction dots, rubber-banding when parts move, copy/paste, undo/redo.
   Everything is at KiCad's proportions, with 0.1 for its 50 mil grid: two
   terminal parts are 300 mil from pin to pin, chips have their pins on a
@@ -236,6 +252,34 @@ KiCad users read without thinking.
   The discrete symbols are our own drawings (`model/discreteSymbols.ts`); a
   pin of a shipped one never moves without a file migration, since saved
   projects place parts by their origin and wires end where the pins were.
+- **Sheets are pages** (`model/paper.ts`), as in Altium and KiCad: each sheet
+  has a paper size (KiCad's named ones, A5 to A0, ANSI A to E, US Letter,
+  Legal and Ledger, or a custom width and height in mm), landscape unless
+  portrait, and its top-left corner on the sheet, on the 0.1 grid
+  (`SchematicSheet.paper`, read with `paperOf`; A4 landscape about the origin,
+  `DEFAULT_PAPER`, for a sheet that has none). The page is drawn under
+  everything as KiCad's default drawing sheet draws it, so the canvas shows
+  what KiCad shows for the exported file: a frame on a 10 mm margin and
+  another 2 mm inside it, zones every 50 mm between them (1, 2, 3... across,
+  A, B, C... down), and a 108 by 32 mm title block against the inner frame's
+  bottom-right corner that fills itself in (`titleBlockOf`: the project's
+  name, Sheet N of M, the sheet's name, the size, the date it was last saved,
+  and the Revision, Company and Author properties; a KiCad sub-sheet's own
+  title block instead, where it has one). The canvas outside the page is a
+  step darker than the paper (`outside` in `SchPalette`), which hides the
+  grid there; the border is `frame`. `editor/schematic/pagePaint.ts` paints
+  it for the canvas (`PageView`, memoised on the page, its title block and
+  the zoom, so a drag doesn't redraw it) and for `look`'s picture alike. The
+  first view, showing another sheet, a whole-sheet Tidy and `F` fit the page
+  and anything drawn off it (`pageView`). The page never moves or grows by
+  itself while drawing: the Inspector's Sheet section changes its size and
+  orientation, Fit to drawing makes it the smallest of its family that holds
+  the drawing, placed around it (`fitSheetPaper`), and a whole-sheet Tidy
+  lays the drawing out on it and grows it when it must. A new project and a
+  new sheet start on `DEFAULT_PAPER`; Move to new sheet puts A4 landscape
+  about what moved. "On the page" is each thing drawn (`sheetItemBoxes`)
+  inside the inner frame and clear of the title block (`holds`,
+  `drawingOnPage`), so a drawing may fill the room beside the title block.
 - **Schematic blocks** (`model/blocks.ts`): named groups of parts (USB-C
   INPUT, 3.3V POWER, MCU) drawn as thin frames with a big title, like an
   engineering sheet. A block stores its name and its components, one block
@@ -268,7 +312,9 @@ KiCad users read without thinking.
   `orange`, `yellow`, `green`, `blue`, `purple`) and drawn in a shade of each
   for the light sheet and another for the dark one (`theme.ts`); a fill is a
   soft tint of one. Lines are thin, medium or thick, solid, dashed or dotted;
-  texts have five sizes (small 0.1 to title 0.5), bold, italic, monospace,
+  texts have a size typed in mm or mil (the Inspector's unit), with five named
+  ones to pick from beside it (small 1.27 mm to title 6.35 mm), bold, italic,
+  monospace,
   alignment, a border and a background, and turn to read upwards. They sit
   under the circuit, in their own order (Bring to front, Send to back). A
   drawing tool draws on the grid (`Alt` for off it), `Shift` makes a square or
@@ -283,13 +329,17 @@ KiCad users read without thinking.
   (`carryDrawings` in `model/tidy/index.ts`) and leaves the rest where they
   are. **Sakura has the same drawings**, through `draw` and
   `edit_drawings` (`ai/drawingTools.ts`): it reads the user's in `get_design`,
-  edits them by id, and is asked to give a sheet it builds a title and only
-  the notes a reader needs. `editor/schematic/drawingPaint.ts` is what both
+  edits them by id, sizes a text by name or in mm (`size_mm`, which is how
+  `get_design` reports a size that isn't a named one), and is asked to draw only
+  the notes a reader needs (the title block names the sheet, so it draws no
+  title). `editor/schematic/drawingPaint.ts` is what both
   the canvas and `look`'s picture draw them with.
 - **Tidy** (`model/tidy`, see [Tidy](#tidy-arranging-the-schematic)): the
   schematic redrawn as an engineering sheet, blocks in reading order, from
   the toolbar's broom, `T`, or Sakura's `tidy_schematic`. With one block
-  selected it tidies that block where it is. One undo step, and it never
+  selected it tidies that block where it is. A whole-sheet tidy lays the
+  blocks out on the sheet's page and grows it a size when they don't fit
+  (see [Tidy](#tidy-arranging-the-schematic)). One undo step, and it never
   changes what is connected.
 - **Clean up** (`model/cleanup`, see [Clean up](#clean-up-grouping-the-schematic)):
   the toolbar's labelled button. It puts the parts that are in no block into
@@ -309,7 +359,10 @@ KiCad users read without thinking.
   nudged to shorten the wiring; Re-pack clears unlocked copper and stitches
   the pours again, copper drawn by hand in the PCB editor is locked so Re-pack
   keeps it and the parts it reaches, and a part can be locked in the Inspector
-  so no placement, drag, rotation or flip moves it), ratsnest, interactive
+  so no placement, drag, rotation or flip moves it; opening the PCB view places
+  the parts this tab added since it opened the project, and the toolbar names
+  the rest with a Place them button, see
+  [Working together](#what-working-together-needed-solving-panelscollabnoticestsx)), ratsnest, interactive
   routing on two layers with 45° bends and vias, bottom-side placement, a
   resizable board outline, corner mounting holes and silkscreen text. Both copper layers are
   drawn opaque over a black substrate in EDA colours (red top, blue bottom), so
@@ -321,16 +374,79 @@ KiCad users read without thinking.
   floating bar on a selected part shows its position with rotate and flip
   buttons; the layer menu toggles copper, silkscreen, courtyards, ratsnest and
   labels.
-- **Autorouter**: two-layer grid A* with vias and net-aware clearances. Nets can
+- **Reshaping a trace by hand** (`model/traceDrag.ts`), as Altium drags one: pressing a straight track
+  with Select and dragging moves the segment under the pointer square to itself (only that part of the
+  move counts; a segment along x, along y or at 45° lands with its line on the grid, Alt is off the grid).
+  An end joined by one straight segment slides along that segment's line, so a 45° bend stays one; once
+  that segment would shrink past nothing the end carries on along the one before it, past corners nothing
+  else meets (a short stub the grid left in a route is swallowed), and with none left a 45° jog from the
+  last corner takes over, so a bump pulled flat and on through turns over. Where a track tees into, or a
+  via or pad sits on, the middle of a segment an end slides along, the end stops there and jogs, as at a
+  corner something meets (`cutsFor` puts a corner in for it), so a branch routed from the middle of a
+  track is never left behind. An end on a pad, a via, a junction of several tracks, an arc or a segment in
+  line stays, and a 45° jog joins it to the segment (square when two would cross); an end nothing joins
+  moves with it; a track ending on the segment's middle keeps its end on it at its own angle; and a
+  segment is never pulled through itself (it stops). A neighbour can be another track: a route committed
+  in pieces is reshaped across them. The corners of a single selected straight track are handles, and a
+  corner goes where it is dragged with the ends of the tracks there. A drag leaves each track's lock as it
+  was: an autorouted track reshaped by hand stays unlocked, so Sakura's `clear_routing` and Re-pack still
+  clear it, and asking before they do is the user's or Sakura's call, not the drag's. Clearances are not kept: the checks say what a drag ran
+  into. A track in a group still moves with its group; an arc track keeps its three handles. The plan is
+  worked out once at the press (`planSegmentDrag`, against the board's pads and vias in
+  `PcbAnalysis.items`) and applied each frame to the drag's base (`dragSegment`); on a big board the drag
+  keeps the board's drawing and draws the changed tracks over it, as a part drag does. Tests:
+  `tests/trace-drag.test.ts`.
+- **Autorouter**: grid A* on every copper layer, one grid per layer, changing layer
+  by through vias (a board of two layers is routed exactly as it was before
+  inner layers were added), with net-aware clearances; on a board from KiCad
+  it also keeps KiCad's hole clearance (`min_hole_clearance`) from every hole,
+  as Checks hold it there. **Connections still open after the passes are
+  repaired** (`repair` in `attempt`): each is searched again crossing the
+  copper the run laid for other nets at a cost, what it crosses is taken up,
+  it is laid and what was taken up is routed again around it, kept only when
+  fewer connections are open after; under a limit of a minute or more the
+  passes get 70% of it and the repair the rest, under the editor's 10 s all
+  of it. The first pass keeps to the outer layers, at a two-layer board's
+  speed; the passes after it route what is left on every layer. A board that routes whole never reaches the
+  repair, so the examples route as they did.
+  **A routing that is not clean is routed again other ways** (`VARIANTS`,
+  `compareResults` in `autoroute`): while the best so far leaves a connection
+  open or a net narrower than its width, the board is routed again with the
+  wide nets first, the failed nets first, longest first, shuffled orders,
+  cheaper or dearer vias, the old whole-connection fallback and the other
+  fine-pitch modes, each repaired, and the best is kept: fewest open, then
+  least length narrower, then fewest vias, then least track. Open
+  connections get the whole limit; a narrowing alone gets four times the
+  first routing's time (3 s at least) and six variants without improvement
+  (with no time limit, as the examples are built, the six variants alone, so
+  the result doesn't depend on the machine).
+  A board that routes clean is routed once, as before; `optimize` searches
+  the whole limit for fewer vias. Nets can
   have their own trace width (set in the Inspector's net list, e.g. 1 mm for
   motor and battery current), supply nets get wider traces by default, a
   trace wider than a pad it ends on leaves the pad by a **neck** as wide as
   the pad (to the grid), as far as the wide copper is clear of the pad
   (`neckDown`: the search starts in the pad where the wide trace would be
-  clear, so the narrower neck is too), connections with no room for their
-  width at all fall back to narrower ones, and `route_pcb` names the nets
-  given a width whose connections did (`narrowed`), pads drop vias into
-  ground pours, and failed nets are retried first. Necks used to be missing:
+  clear, so the narrower neck is too). **A net with a width of its own, or a
+  supply, that has no room for it somewhere is held at it everywhere else**:
+  the search runs at two widths at once (`Router.route` with `narrow`, a
+  node is a cell, a layer and a width), each cell at the narrower one
+  costing `NARROW_EXTRA` more, so it necks down for the stretch with no room
+  only, to the widest of a half, a quarter, the rules' preferred widths and
+  the supply or default width that gets through (the narrowest is probed
+  first, `dry`, so a hopeless connection costs one search). It used to lay
+  the whole connection at the next width: a user's 0.4 mm VBUS went 0.25 mm
+  from its capacitor to its pin, through two vias. A narrower stretch of
+  under 0.6 mm out of copper no wider than it (a fine-pitch row's pad, the
+  neck out of one) and one between two pads of one part that are both
+  narrower than the width (a USB-C receptacle's VBUS pair) are no narrowing.
+  `route_pcb` names each connection that is narrower anywhere, by its pins,
+  with how much of it and where (`narrowed[].spans`), a pad its net's pour
+  does not reach joins the nearest piece of it, by a trace on the pour's
+  layer or a via into another layer's, an inner plane's too (`fanout`), and failed nets are
+  retried first. A surface-mount pad on its pour's own layer used to be left
+  out of that, so it was joined pad to pad by a trace over its own pour.
+  Necks used to be missing:
   a trace started only where it fitted in a pad whole, so 3 mm on a 10 A
   board with 2.6 mm terminal pads came out at the default width end to end,
   and nothing said so but a clause of `set_net_width`'s reply. A neck is no
@@ -353,11 +469,20 @@ KiCad users read without thinking.
   never when the pads leave no room at the board's rules or when everything
   routed, so boards that route are unchanged. One time budget (10 s) covers
   the lot, checked inside every search and between steps. In this mode a new
-  via keeps its drill clear of every existing via's.
-  `route_pcb` says which left-over connections are at fine-pitch pads and what
-  was tried, and tells Sakura not to clear and re-route the same layout (the
-  router is deterministic); only connections away from fine-pitch pads are
-  blamed on room.
+  via keeps its drill clear of every existing via's, the repair's too.
+  `route_pcb` names every connection left open by its pins and coordinates
+  (`open`, `ai/routeReport.ts`), as `run_checks` names every unrouted one,
+  says how many routings it tried and which ends are at fine-pitch pads, and
+  tells Sakura not to clear and re-route the same layout (the router is
+  deterministic) but to change the layout at those pins, draw the connection
+  or loosen the rules. It takes `clear` (take up the unlocked routing first:
+  "route from scratch" in one call), `priority` (nets first, in order, in the
+  one call: `order` in the router) and `optimize`. It used to give counts
+  only and say fine-pitch connections were "not a shortage of room", and the
+  guide told Sakura to route current-carrying nets in a call of their own
+  first: on a user's USB-C bridge it spent an evening moving capacitors 0.1
+  mm at a time without learning which connection was open, and the two-call
+  order routed fewer of that board's layouts whole than one call did.
 - **Copper pours**: board-wide fills per net and layer (Clipper2; zones of any shape: see Zones (X3) under Reading KiCad boards), with
   clearance to other nets, thermal spokes (2 or 4, square or at 45°, on
   through-hole pads or all pads, or none) across a thermal gap of their own
@@ -378,8 +503,12 @@ KiCad users read without thinking.
   silkscreen; pour islands the grid misses get a via of their own so they aren't
   removed.
 - **Checks**: unconnected pins (with no-connect flags for unused pins), unrouted
-  connections, shorts, clearance, parts off the board, courtyard overlap, a
-  decoupling capacitor more than 3 mm from every supply pin it could serve, and
+  connections, shorts, clearance, parts off the board, courtyard overlap (a
+  part at an angle that isn't a quarter turn by its turned courtyard, not the
+  box around it), a decoupling capacitor more than 3 mm from every supply pin
+  it could serve (of an IC, a regulator, an RF module or an LED with a supply
+  pin, the WS2812B: an assistant's LED chain had each LED's 100 nF reported
+  far from the one IC on 5 V), and
   against the design rules: trace width, drill size, annular ring, hole to
   hole, copper to the board edge, vias in SMD pads and floating copper. Project
   parts made from memory are warnings ("U3 (TPS61023): pinout and footprint not
@@ -444,7 +573,8 @@ KiCad users read without thinking.
   as a STEP assembly for mechanical CAD (from the Export menu or the 3D view's
   toolbar). None of them involves the AI.
 - **Light and dark themes**: follows the system setting until you pick one with
-  the sun/moon button in the top bar or under Settings.
+  the theme button in the top bar, which cycles System, then the scheme the
+  system isn't showing, then the other (`nextThemePref`).
 - **Parts search**: understands values ("10k", "4k7", "100nF", "16 MHz"),
   packages ("0805", "SOT-23"), pin counts ("6 pin header"), part-number
   fragments ("555", "328p", in the project's own parts), synonyms ("ldo",
@@ -496,7 +626,8 @@ KiCad users read without thinking.
   `set_clearance_rule` gives one pair of nets, or one part's pads, a clearance
   of their own in place of the classes', smaller or larger, like the
   Inspector's Clearance rules, `draw_trace` draws
-  a locked trace through given points and `pcb_text` puts, changes or removes a
+  a locked trace from pin to pin (`from`, `to`: it starts and ends on their
+  pads' centres, and the net is theirs) or through given points, and `pcb_text` puts, changes or removes a
   board text like the PCB editor's route and text tools, and `clear_routing`
   deletes copper so it can be routed again (`src/ai/pcbTools.ts`; the search for
   a free spot beside a pin is `model/placeNear.ts`). `draw_trace` and copper
@@ -505,8 +636,21 @@ KiCad users read without thinking.
   assistant over MCP asked for all three on its first 10 A board: it kept
   mains nets apart by raising every net's clearance, carried current in
   polygon pours for want of a wide trace, and could not label a terminal
-  block's pins. `get_design` reports each
-  part's PCB position, side, rotation and lock. Every change is a separate undo step. It is a panel of its
+  block's pins. It went on choosing pours after `draw_trace` came (a
+  rectifier board with VBUS and three phases poured as strips, with traces of
+  their own nets laid over them): `draw_trace` took only
+  coordinates, which start on a pad's centre, and no tool says where a pad's
+  centre is, while `route_pcb`'s answer for a net that went in narrower said
+  to carry it in copper with `set_pour polygon`. So `draw_trace` takes pins,
+  `route_pcb` takes `nets` (a net's open connections only) and `priority`
+  (nets first, in the one call), and the narrowed answer and the design
+  guide point at those instead of a pour. `get_design` reports each
+  part's PCB position, side, rotation and lock. Every change is a separate undo step, which Sakura's
+  own `undo` can take back; it saves named versions before a risky change and restores them to go back
+  (`save_version`, `list_versions`, `restore_version`; see [Version history](#version-history-panelshistorypaneltsx-storehistoryts-storehistoryactionsts)). It reads the web
+  (`web_search`, `read_web_page`, `read_datasheet url`) and gives a part a 3D model file from a link
+  (`set_3d_model`), see [Sakura's web](#sakuras-web-aiwebtoolsts), and marks pins left open on purpose
+  (`set_no_connect`, the Inspector's no-connect flag). It is a panel of its
   own on the left, between the parts library and the canvas. "Sakura" is the
   product's name for it; the code still calls it the copilot. It needs a
   managed-AI session from the host (see [The host](#the-host)): this build has
@@ -528,7 +672,11 @@ KiCad users read without thinking.
   and a closed panel leaves a tab hanging off that edge of the canvas, in its
   upper half, with an icon and its name written down it ("Parts", "Ask AI") to
   reopen it. There are no panel toggles in the top bar. The library's
-  categories fold away from their headings.
+  categories fold away from their headings. Sakura's panel is as wide as its
+  right edge is dragged (`ui/PanelResizer.tsx`: 280 to 800 px, leaving the
+  canvas 360), kept in this browser's settings (`copilotWidth`); a
+  double-click on the edge puts it back to 368, and the arrow keys move it
+  when the edge has the focus.
 - **Project parts**: a part the copilot makes (`create_part`) is stored in the
   project, so it opens the same in any browser and from an exported file. It
   is listed under "This project" in the library and placed like any other.
@@ -543,6 +691,79 @@ KiCad users read without thinking.
   included, and makes project parts of them, the 3D model too. It needs no
   backend, so this build has it. See [Imported from KiCad
   files](#imported-from-kicad-files).
+
+## Speed on big boards
+
+CERN's Macbeth (1,566 parts, 5,798 tracks, 5,215 vias, 127 zones; a public
+KiCad board) is what the PCB and 3D views are measured on. What keeps them
+quick, and what to keep when changing them:
+
+- **The board is a still layer** (`StillLayer` in `editor/viewport.tsx`). The
+  PCB view draws the board and its marks in a layer of its own, under the
+  rest, and the pad and net labels in another over it. A pan or a zoom only
+  changes the CSS transform of those layers, which the graphics card applies
+  to what it drew; the board is drawn again once a zoom stops (250 ms), the
+  labels once any move stops. What changes with the pointer (the lit net, the
+  selection, the tools' previews) is in the view's own SVG, which is small.
+- **Few elements, few faint ones** (`editor/pcb/boardPaths.tsx`). Tracks of
+  one width, pads of one colour, drills and vias are each one path, every
+  filled shape wound the same way round so overlapping pads fill where they
+  overlap, and faint things are grouped (`byOpacity`). Each element the page has is gone through on every
+  move of the pointer (to find what is under it), and each element with an
+  opacity of its own is a piece the page sorts into layers again on every
+  frame: Macbeth had 110,000 elements, 18,586 of them faint, and a frame took
+  a quarter of a second. Group faint things in one `<g opacity>` for each
+  opacity; never give one element of the board an opacity or a transform of
+  its own.
+- **Nothing on every move of the pointer goes through the whole board.**
+  Picking asks a grid (`lib/cellGrid.ts`: `hitIndex` for copper and parts,
+  `hitShape`, `hitText`), the lit net comes from each net's copper found once
+  (`netCopper`), and the cursor is React state only while a tool draws at
+  it. The lists the render draws from are memoised on the project.
+- **The page does not analyse a big board** (more than 3,000 parts, tracks
+  and vias, `store/analysis.ts`). It opens with its copper and KiCad's kept
+  fills drawn as they are (`openingAnalysis`), shows an edit at once
+  (`followEdit`), and takes connections, checks and fills from the workers.
+  A pour with no fill yet leaves its net's connections out until it has one
+  (`connectionsPending`), which Checks says.
+- **The 3D view compiles its shaders off the page** (`compileFirst` in
+  `boardScene.ts`): nothing is drawn until `compileAsync` is done, so the
+  page doesn't wait on the graphics driver where it offers
+  `KHR_parallel_shader_compile`. Without it (SwiftShader, as in CI's headless
+  Chromium) three.js compiles on the page's thread, and the environment map
+  (`studioEnvironment.ts`) is drawn there in any case.
+- **A big board's 3D board is made in a worker** (`boardBuild.worker.ts`):
+  its geometry and the drawings of its faces, sent back as arrays and bitmaps
+  (`boardTransfer.ts`), which the page puts together (`assembleBoard`); the
+  board shown stays until the new one comes. A rebuild of Macbeth's held the
+  page for 4 s, and now for 1. The worker reads a pixel of each drawing
+  before sending it, so the page's first frame of the board does not also
+  wait for the graphics process to finish drawing them.
+- **A canvas path of many rings is left open, and in Chromium the copper is
+  blurred once** (`ringsPath`, `blurOnce` in `boardTextures.ts`). Chromium's
+  `closePath` reads the whole path built so far (16,000 rings took 4.6 s, and
+  30 ms left open; a fill closes them anyway), and it spends about 20 ms on
+  each blurred draw the size of a big board, so a side with pours or tracks
+  has its copper drawn sharp on a canvas of its own and laid on each map with
+  one blur (Macbeth's faces: 6.3 s, now 1.3 s). Firefox blurs each draw for a
+  tenth of that, and the extra canvas saved it nothing, so it and Safari draw
+  as before. Time such a change in both engines, each run in turn: the one
+  run second came out a fifth slower here whatever it was.
+- **The pours are filled by Clipper2 compiled to WebAssembly** in the fill
+  worker (`model/wasmClipper.ts`, `clipper2-wasm`, BSL-1.0): the offsets and
+  booleans of 4,000 points or more (`setFastClipper` in `zoneGeom.ts`);
+  smaller ones, the bevel join and the page stay with the TypeScript port.
+  Macbeth's pours filled in 149 s where they took 377, to the same copper
+  (0.0138 mm² differs of 876,387). Its loader imports Node's `module` on the
+  branch it takes under Node, which the bundler makes an empty module in the
+  browser (see [Dependencies](#dependencies)).
+
+`tests/big-board-speed.test.ts` holds the parts that can be tested without a
+browser. To measure the views, open a big board in the dev server
+(`npm run dev`) through the development hook (`parseProjectFile` and
+`projectStore` on `window.__cherryblossom`: this browser's storage holds about
+5 MB, and Macbeth's project is 26), wait for `getLiveAnalysis` to have no
+`checksPending` or `zonesPending`, and time each input to the frame after it.
 
 ## Library parts
 
@@ -592,8 +813,8 @@ Conventions:
 | Schematic | | PCB | |
 |---|---|---|---|
 | `V` | select | `S` | select |
-| `W` | wire | `X` | route |
-| `L` | net label | `V` | via tool / via while routing |
+| `W` | wire | `W` | route |
+| `L` / `Tab` | label: net label, global label or port / the next kind (`⇧Tab` the one before) | `V` | via tool / via while routing |
 | `R` | rotate | `R` / `F` | rotate / flip side |
 | `X` / `Y` | mirror top to bottom / left to right | | |
 | `/` | flip wire bend | `L` | switch layer |
@@ -602,7 +823,7 @@ Conventions:
 | `⇧R` | rectangle | | |
 | `⌘D` / `⌘C` `⌘V` | duplicate / copy, paste | `/` | flip trace bend |
 | `⌘G` / `⇧⌘G` | group as a block / ungroup | | |
-| `F` | fit | `F` (nothing selected) | fit board |
+| `F` | fit the page | `F` (nothing selected) | fit board |
 | `T` | tidy the sheet, or the selected block | | |
 
 The PCB toolbar also has autoroute and ground-pour buttons (the pour button also
@@ -610,8 +831,8 @@ adds stitching vias); the Inspector sets the board, the design rules, pours and
 stitching.
 
 The less used tools are grouped behind a chevron, as Figma keeps its shapes
-(`ui/ToolGroup.tsx`): on the schematic bus and bus entry, block and sheet, line
-and rectangle; on the board copper zone and keepout, the shapes with the slot,
+(`ui/ToolGroup.tsx`): on the schematic bus and bus entry, block, sheet and
+sheet entry, line and rectangle; on the board copper zone and keepout, the shapes with the slot,
 and text with dimensions and reference images. A group's button is its last
 used tool and picks it again; a key still picks any tool, and the group then
 shows that one, lit.
@@ -624,7 +845,19 @@ The schematic's sheets (the root is `Main`, never named after the project) are
 tabs docked under it (`panels/SheetTabs.tsx`), as Altium's document tabs: one
 per use of a sheet, in tree order, by name alone, the sheet shown raised;
 pointing at one says where it is in the tree, and a double-click renames it.
-The `+` after them makes a new empty sheet (`addSheetInFreeSpace`: its symbol
+A right-click on a tab (or the context-menu key, or `⇧F10`) opens its menu
+(`role="menu"`, the `MenuItem` rows of `ui/controls.tsx`): Rename (the tab's
+own field), Open the sheet above, Use again and Delete for a sheet below Main,
+Rename alone for Main, and only Open the sheet above for a viewer (nothing on
+Main). Use again and Delete are the symbol's own actions
+(`editor/schematic/sheetActions.ts`: `reuseSheet`, `deleteSheetSymbols`), the
+ones the symbol's Inspector and the `Del` key run, each one undo step: Delete
+says what went with the symbol (`removalNote`, worked out before the edit; the
+`Del` key worked it out after and so never said it) and shows the
+sheet above when the use shown went. The `Del` key and the Inspector's Delete
+selection are one function (`deleteSelectedHere`), so a selection of symbols,
+entries and parts goes the same way from either: the button once knew nothing
+of sheet entries and cleared the selection with them still there. The `+` after them makes a new empty sheet (`addSheetInFreeSpace`: its symbol
 in free space on the sheet shown, 2 by 1.2), shows it, and has its tab ready
 to be named. A sheet is a name: no file name is shown or asked for, and the
 KiCad export names each sheet's file after it (`sheetFileNames`), except a sheet
@@ -649,7 +882,7 @@ there, else in free space. The result is compared pin for pin with the
 netlist before and refused, changing nothing, if anything differs
 (`tests/sheet-refactor.test.ts` moves every block of every example, and
 seeded random selections, once and then again inside a sheet used twice).
-The symbol is then selected (the Inspector lists its pins) and its tab is
+The symbol is then selected (the Inspector lists its entries) and its tab is
 ready to be named. The button at the tabs' left, or `⌘B` (from either view),
 once there are two sheets, opens the menu of every sheet
 (`panels/SheetMenu.tsx`) above it, which lists the same uses as rows with no
@@ -657,11 +890,18 @@ folds, since a sheet is never a folder: the sheets on Main sit beside it, a
 sheet drawn on one of those is set in under it with a guide line, and a sheet
 used again says how many uses it has (`×2`). A click (or the arrows and Enter)
 shows that use and closes the menu, a double-click or F2 renames it, and with
-nothing selected the Inspector's Sheet section names and goes up from the sheet
-shown (`renameSheetUse` in `model/sheetOps.ts`). There are no page numbers:
-the KiCad export numbers its pages in tree order (`SheetUse.page`). A
+nothing selected the Inspector's Sheet section, on every schematic (one sheet
+included), names and goes up from the sheet shown (`renameSheetUse` in
+`model/sheetOps.ts`) and holds its page (size, a custom width and height,
+orientation, Fit to drawing: `setSheetPaper`, `fitSheetPaper`) and its title
+block (Title, Revision, Company and Drawn by typed in, `setTitleField`: the
+project's name and properties, or a KiCad sub-sheet's own entries; Sheet N of
+M, the size and the date to read), each edit one undo step of the whole
+project. A sheet's number is its use's place in tree order (`SheetUse.page`),
+which the title block shows as Sheet N of M and the KiCad export numbers its
+pages by. A
 project of one sheet has the `Main` tab and the `+` only, and nothing for a
-viewer.
+viewer; its Sheet section is in the Inspector all the same.
 
 ## Layout
 
@@ -675,10 +915,12 @@ viewer.
   the footprint adapter, data-defined footprints
   (`footprintLibrary.ts`, `footprintModules.ts`, `footprintConnectors.ts`, on
   `footprintKit.ts`), connectivity, schematic blocks and Tidy (`tidy/`),
+  sheets' pages and title blocks (`paper.ts`),
   PCB analysis/DRC, copper pours, autorouter, pure editing operations,
   templates and the shipped examples (`examples.ts`, `examples/*.json`).
 - `src/editor`: SVG viewport, schematic and PCB editors (the schematic's
-  drawings are painted by `schematic/drawingPaint.ts`), canvas palettes
+  drawings are painted by `schematic/drawingPaint.ts`, its page by
+  `schematic/pagePaint.ts`), canvas palettes
   (`theme.ts`), three.js board (`three/files` holds the readers for model
   files and their cache).
 - `src/pages`: dashboard and editor. What the dashboard does to stored
@@ -742,10 +984,11 @@ viewer.
 ## Not included yet
 
 Simulation,
-schematic drawings of the drawing tools in the Circuit JSON export (the KiCad export writes them), routing on inner layers, rip-up of existing
-traces during autorouting, dragging a database or supplier part onto the
+schematic drawings of the drawing tools in the Circuit JSON export (the KiCad export writes them), blind and buried vias made by the router, taking up
+traces the board had before autorouting (the repair takes up only what the run laid), dragging a database or supplier part onto the
 canvas (click or Enter), and product analytics (the editor's one event is the
-KiCad import's, sent only to a sink the host connects). Working together, still to
+KiCad import's, sent only to a sink the host connects, besides what the
+Feedback form hands its host). Working together, still to
 come: seeing a part move while someone drags it (it moves when they let go),
 following someone's camera in the 3D view (following switches to the view),
 comments, handing a project to another owner, and Sakura for
@@ -776,7 +1019,7 @@ applies changes to its JSON with `@cherryblossom/project-changes`
 browser and a downloaded file:
 
 ```json
-{ "format": "cherryblossom.project", "version": 5, "project": { "name": "…", "components": [], … } }
+{ "format": "cherryblossom.project", "version": 6, "project": { "name": "…", "components": [], … } }
 ```
 
 - `project` is `Project` without `id`, `createdAt` and `updatedAt`, which
@@ -847,10 +1090,27 @@ browser and a downloaded file:
 - **Schematic drawings** (`Project.drawings`, the lines, boxes and text of the
   drawing tools) were added to the format without a version of their own; their
   absence is the default, so every version reads as having none.
+- **Version 6** makes every sheet a page (`SchematicSheet.paper`, see
+  [Features](#features)). Reading a version 5 document (`migrations/sheetPaper.ts`)
+  lists the root and gives each sheet the smallest landscape A4 to A0 that
+  holds its drawing (estimated from the stored points, a part's reach taken
+  as 1.5 units), centred on it, and a drawing too big for A0 gets A0 centred
+  on it. A project the KiCad schematic import made is recognised by
+  `Project.netNames` (only it sets it; the `KiCad file version` property is
+  no test, since the board import writes it too, and a board-only import is
+  centred like any other project): its page keeps its corner at the origin,
+  where KiCad has it, sized by the smallest landscape A4 to A0 whose inner
+  frame reaches the drawing's right and bottom (its overflow past the left
+  and top is the estimate's margin), A0 when none does. The
+  first copy to open a project writes it whole, so the page is stored once and
+  never worked out again on load. `normalizeSheets` reads `paper` and drops a
+  malformed one (the sheet is then drawn on the default page); the bump keeps a
+  version 5 reader, which would drop the pages and save the loss back, from
+  opening one.
 - **Writing** (`serializeProject`) always writes the current version, so a
   project is upgraded the first time it is saved after a format change.
 
-**To change the format** (the next version is 6), bump `PROJECT_FILE_VERSION` and add the migration from
+**To change the format** (the next version is 7), bump `PROJECT_FILE_VERSION` and add the migration from
 the previous one — plain JSON in and out, importing nothing from the live
 model, since it describes a format as it was — with a document of the old
 version in `tests/project-file.test.ts`. A new optional field that
@@ -1008,8 +1268,8 @@ work or leave it on no sheet. An empty sheet goes as the step said.
 - **The board lease**: whole-board actions take a per-project lease first, so
   two people (or one person's two tabs) never rewrite the board at once.
   Sakura's tools: `layout_pcb` (and `relayout_all`), `route_pcb`,
-  `clear_routing` without nets or refs, `tidy_schematic` without blocks
-  (`wholeBoardAction`). The toolbar: Re-pack, Autoroute, Tidy (button and `T`),
+  `clear_routing` without nets or refs, `tidy_schematic` without blocks,
+  `restore_version` (`wholeBoardAction`). The toolbar: Re-pack, Autoroute, Tidy (button and `T`),
   Clean up (free and with AI). Left out because each touches what the call
   names: `place_parts`, `set_board`, `set_pour`, `set_net_width`,
   `group_parts`, `edit_block`.
@@ -1040,6 +1300,13 @@ work or leave it on no sheet. An empty sheet goes as the step said.
 - **Someone joins**: a note, and their face.
 - **Made a viewer, or an editor, while it is open**: a note, and the editor
   changes at once.
+- **Someone else is placing parts**: opening the PCB view used to place every
+  part not on the board, and an assistant over MCP placing them one call at a
+  time found all the ones it hadn't reached placed by the user's tab between
+  two calls. A tab now places only the parts it added (`isCreatedHere`,
+  `autoPlacePcb`'s `only`); the PCB toolbar names the others, which the view
+  doesn't draw, with a Place them button (`UnplacedNote` in
+  `panels/CanvasToolbar.tsx`, under the board lease as Layout).
 - **Viewers** (`role` in the project store): edits are refused before they
   happen, with a note each time; the Inspector's controls are disabled (a
   `fieldset`), the library and the editing tools too, and Sakura says it works
@@ -1076,9 +1343,11 @@ Storage refuses every write then; the editor never asks, as with any viewer.
 ### Version history (`panels/HistoryPanel.tsx`, `store/history.ts`, `store/historyActions.ts`)
 
 - **Where it opens**: the clock button in the top bar (only where storage has a `history` source; this browser's has none). A column on the left like the sheet tree: "Current version", then the copies the server kept, newest first, each with when, who edited in its span and what changed since the one before (parts, wires, traces, vias, zones, labels, other items: added, removed, changed). A named version carries a tag.
-- **What is kept** is the host's to decide (`HistorySource` in `store/history.ts`: the list, `open`, `name`, `unname` and `restore`); the editor draws what it is given. The hosted app keeps copies as a project is edited, one before each restore, and the ones an editor names, which are never pruned.
+- **What is kept** is the host's to decide (`HistorySource` in `store/history.ts`: the list (`watch`), `open`, `name`, `unname`, `remove`, `restore` and `keep`); the editor draws what it is given. The hosted app keeps copies as a project is edited, one before each restore, and the ones an editor names, which are never pruned but can be deleted; the rest it thins as they age.
 - **Preview**: a click shows a version in place of the project, read-only (`projectStore.startPreview`). The store's `role` reads `viewer` while it is open, so every edit path refuses with no sync traffic; `preview.live` follows everyone's edits behind it, and "Back to current" shows it. The banner over the canvas (`PreviewBanner`) says so and carries the way back and the restore.
+- **Each version's ⋮ menu** (`VersionMenu`): **Rename** types over the title (Enter or leaving keeps it, Escape drops it; an empty name takes a name off, `unname`); **Fork to a new project** (`forkVersion` in `historyActions.ts`) reads the version and stores it as a new project of the user's own, named "<project> (<version name or date>)", as Duplicate on the projects page does: the open project and its history are untouched, and the panel links to the fork (a new tab, so nothing here closes). Viewers fork too, signed out no one (no menu). **Delete…** (editors and owners) asks once more inside the menu, then `history.remove` deletes the version and its document; what it said changed and who edited pass to the next newer version, as the thinning does, and a preview of it is left.
 - **Restore** (editors and owners): this tab's pending edits land first, then `history.restore` keeps the current document as a version and writes the old one whole at the next revision, logged with no changes, the same write as `replace`. Every open copy (this one too) hears a gap, loads the document again and carries on, with no page reload. The restoring tab's undo history is dropped (its steps were worked out against a state that is gone). Restoring the "Before restoring" version undoes a restore.
+- **Sakura's checkpoints, and an assistant's** (`ai/versionTools.ts`): `save_version` names the project as it is now (or an older version), `list_versions` reads the history, `restore_version` brings a version back, and `undo` takes back Sakura's own last changes. They exist because a session spent 110 of its 212 replies rebuilding earlier states by hand (moving parts back, clearing and redrawing one trace 61 times, rerouting), some of it wrongly (a board it said had never routed fully had; another came back off centre), and Sakura said none of its tools could save or snapshot the project. The host gives the tools the history (`ToolContext.versions`: `copilotVersions` in `historyActions.ts`, which lets this tab's edits land first so a checkpoint holds them; the hosted app's MCP server gives its own). **A restore by a tool is an edit, not `history.restore`**: `HistorySource.keep` keeps the project as it is now as the "Before restoring" version, then the version's document is read and the change from the project to it is committed (`projectChanges`): one undo step in the editor, which the user's Undo and Sakura's `undo` take back, and one batch over MCP, which every open copy applies as a collaborator's, with no reload and nobody's undo history dropped. It takes the board lease. **`undo` is the editor's alone** (`undoOwn` in `projectStore.ts`): every step Sakura commits is marked `by: "sakura"` with its transcript line as `label` (Clean up with AI's one step too), and `undo` takes back the newest steps while they are Sakura's, as the user's Undo would (they stay redoable), stopping at a step of the user's own. The change happens in the tool's `prepare`, so its `run` reports and `applied` tells the copilot to show a change with nothing to commit. Tests: `tests/sakura-versions.test.ts` (a scripted model saves, undoes, restores; the user's own edit stops undo).
 - **Not done**: a diff of two versions on the canvas, restoring part of a version, version comments.
 
 ### Testing it
@@ -1096,25 +1365,38 @@ and a viewer's refused edit.
 
 - **The host provides the session.** `App` takes a `managedAi` prop
   (`ManagedAiHost` in `src/ai/managedAi.ts`): a `getAccessToken` that returns
-  a fresh WorkOS token, the PostHog distinct id, `signIn`, and the upgrade and
-  account links. This build's (`host/main.tsx`) has no token, and its
+  a fresh access token for the signed-in user, an analytics distinct id,
+  `signIn`, and the upgrade and account links. This build's (`host/main.tsx`) has no token, and its
   `signIn` opens the hosted app. `App` connects it during render, not in
   an effect, because the copilot panel's first account fetch runs in an effect
   of its own and child effects run first.
 - **No plan logic here.** `GET /api/v1/me` says which models the plan has
-  (`store/accountStore.ts`); the picker lists them by their product names from
+  (`store/accountStore.ts`); the picker (`panels/ModelPicker.tsx`, an outlined
+  button beside Sakura's name) lists them by their product names from
   `@cherryblossom/ai-models` (here `host/ai-models.ts`, which names a model by
-  its id), with a weighted model's credits beside its name
-  ("Sakura 2 High (4× credits)", `modelNameWithWeight`), and the default is the
-  plan's last, strongest one. Everything else is the proxy's error contract:
+  its id and has no roster, so nothing is locked), each with its tagline and a
+  weighted model's credits ("4× credits", `creditWeightLabel`) in the list
+  itself rather than a tooltip, and opens with one model too, to say what it
+  is. Under them, locked, are the roster's models the plan doesn't have, each
+  tagged with the first plan that grants it (`firstPlanWith`, so a Pro user
+  sees "Sakura 2 High" with "Ultra") and linking to the host's `upgradeUrl`;
+  nothing there picks one. The default is the plan's last, strongest one. The
+  gauge in Sakura's header, after the chat history (`panels/UsageMenu.tsx`),
+  opens the same `/me` as the host's account page: this period's credits and
+  today's actions against the plan's, gift credits and credits bought
+  (`MeResponse.credits`), fetched again each time it opens, with a link to the
+  host's `accountUrl`; it only shows, and changes nothing. Everything else is
+  the proxy's error contract:
   `401` asks to sign in, `403 plan_required | model_not_allowed` offers plans,
   `429` shows the
   server's sentence and, for a day or month limit (`error.limit`), what gets
   past it (`limitOffer` in `store/accountStore.ts`, from `/me` fetched again at
-  the refusal): Ultra for a Pro user, which is the host's `upgradeUrl`, and
-  turning pay-as-you-go on, or raising its spent cap, which is its
-  `accountUrl`. The offer is kept on the error entry as it was when made, so
-  an old notice doesn't change once pay-as-you-go is on. A minute limit, or a
+  the refusal, `LimitOffer { upgrade, buyCredits }`): Ultra for a Pro user,
+  which is the host's `upgradeUrl`, and "Buy credits", which is its
+  `accountUrl`, the account's usage page, where credits are bought and
+  auto-refill turned on (never in the editor). The offer is kept on the error
+  entry as it was when made, so an old notice doesn't change once credits are
+  bought. A minute limit, or a
   plan with nothing to buy, links to usage as before. A plan without managed AI — Free, which is
   the editor without the AI — keeps every editing tool and loses only the
   composer. In its place Free gets two offers (`GateNotice` in
@@ -1123,19 +1405,82 @@ and a viewer's refused edit.
   Codex and Cursor, each linked to its own steps (`assistantGuides`, the
   host's; `assistantsUrl` when it has none). A conversation that loses its
   plan midway shows them under the thread.
-- **The wire is Chat Completions through OpenRouter.** Tools are OpenAI
-  function tools; the proxy refuses OpenRouter's routing and server-tool
-  fields, so nothing here may send them. Reasoning is on (`medium`), and each
+- **The user's own assistant has a chip above the composer**, on every plan
+  (`panels/AssistantChip.tsx`, words in `panels/assistantActivity.ts`): which
+  one it is, from the name it gave the hosted app's MCP server (`assistantClient`, with the
+  mark `panels/assistantLogos.tsx` shares with the Free notice), and what it
+  is doing: at work on this project with its latest tool's phase
+  (`toolPhase`), at work elsewhere, or when it was last used. "At work" is a
+  call in the last minute (`WORKING_MS`), since the server never hears a turn
+  end. The host feeds it live through `ManagedAiHost.watchAssistant`
+  (`AssistantActivity`); without one there is no chip.
+- **Chats are kept, several per project**, as in Cursor. The
+  panel's header starts a new chat and opens the history (a list of the
+  project's chats, newest first, searched by title, deleted on a second
+  press); a new chat lists the three newest under its welcome. A chat is the
+  user's own: a collaborator's are theirs. The host keeps them through
+  `ProjectStorage.chats` (`ChatSource`, `store/chats.ts`): the hosted app's
+  keeps them in the account, so they follow the user to any device; without
+  one (this build, the tests) `memoryChats` keeps them for the page. Each chat
+  has its own conversation (`RunOptions.chat`; a run without one is the open
+  project's), so a new chat tells the model nothing of the others, and one
+  opened again carries on with the trace id and messages it had. A chat is
+  stored as a chat file (`ai/chatFile.ts`): the panel's entries and the
+  model's messages, without pictures or entry ids, with only each request's
+  last reasoning, fitted to 2 MB by shortening the oldest tool results and
+  then dropping the oldest requests from what the model is told. **The file is
+  in parts**, a header and one part a request, and a save sends only the parts
+  that changed since the tab last saved or read the chat (`ChatWrite`, on top
+  of its `updatedAt`): carrying a chat on sends the request added, not the
+  whole chat again, and a part emptied to fit keeps its place so the parts
+  after it aren't sent again. A chat carried on elsewhere meanwhile answers `stale`, and
+  the tab writes it whole: the last write wins. It is saved when its first
+  message is sent (so it is listed at once), when Sakura is done, when a
+  plan's status changes, and while Sakura works at the first tool call to end
+  15 s after the last save (`CHECKPOINT_MS`), so a tab closed during a long
+  request keeps what was done so far; saves of one chat go one after another.
+  A call still running when it is saved is stored with a result saying so
+  (`UNFINISHED_RESULT`), so the chat carries on like any other. A new chat's
+  conversation id is its chat id, so its header is written once. A run carries on in its chat while another is shown, and the
+  running chat can't be deleted. Tests: `tests/chat-history.test.ts`.
+- **The wire is Chat Completions, through the hosted app's proxy.** Tools are
+  OpenAI function tools; the proxy refuses provider routing and server-tool
+  fields, so nothing here may send them. Sakura's web is its own function
+  tools over the host's `WebSource` (below), not a provider's server-side web
+  search. Reasoning is on (`medium`), and each
   assistant turn's `reasoning_details` go back with it, merged from their
   stream fragments first: Claude splits a thinking block across chunks, and
   replaying the pieces fails its signature check. One UUID per conversation is
-  the `X-Trace-Id` (one PostHog trace) and the `session_id` (cache affinity).
+  the `X-Trace-Id` (one trace in the host's analytics) and the `session_id`
+  (cache affinity).
 - **Stop stops the batch.** The loop checks the signal before every tool call
   in a turn (each skipped call still gets an error result, so the conversation
   stays valid) and `executeTool` before and after a call's lookups, so a turn of
   `find_part` plus two `add_component` pressed Stop during the lookup adds
   nothing. A turn is at most 32 rounds (`MAX_ITERATIONS`): a specific part is
   three or four rounds on its own (find, read, build, place).
+- **A long chat is kept small** (`ai/compact.ts`). Every round sends the whole
+  conversation, so a long chat's input, mostly old `get_design` answers sent
+  again on every round, is most of what it costs. At the start of a request,
+  results of the tools that only
+  read (`get_design`, `get_wiring`, `run_checks`, `look`, the lookups and web
+  reads) from before the last two requests become a line saying to read again,
+  and other tools' results past 2,000 characters are cut to their first 700.
+  Never within a request, whose rounds keep the history byte for byte for the
+  prompt cache; and only when the cache has gone cold anyway (the chat was
+  quiet longer than `CACHE_COLD_MS`, 4.5 minutes, since the provider keeps a
+  cache 5) or the history is past `COMPACT_ABOVE_CHARS` (about 140k tokens).
+  The stored chat is the compacted one. Tests: `tests/agent-friction.test.ts`.
+- **Flailing is stopped** (`ai/repeatGuard.ts`). Besides an identical call
+  failing twice, a tool failing `STREAK_LIMIT` (4) times in a row on one thing
+  (the same pins, part, net, name or link, whatever else changes) is refused
+  the fifth time with a sentence to change approach or tell the user. The
+  identical-call limit alone hardly ever fired, while one request drew the
+  same trace 24 times with its points moved half a millimetre each time.
+- **A declined request is said to the model too.** On `content_filter` the
+  history keeps an editor note that the provider declined the last message, so
+  asked about it later Sakura doesn't say "I haven't declined anything", as it
+  did; a chat declined twice running is told to start a new chat.
 - **The system prompt's design rules are `ai/designGuide.ts`**: the design,
   parts and good practice sections (and the KiCad, units and sheets notes),
   which the hosted app's MCP server teaches too (see
@@ -1144,13 +1489,27 @@ and a viewer's refused edit.
   always were, so an edit to the guide is an edit to Sakura's prompt (and a new
   prompt cache) as well; `copilot.ts` adds who Sakura is, when it looks and how
   it replies.
+- **It wires paths and names what travels.** The guide has Sakura connect a
+  block's own path (a divider into a pin, an LED and its resistor, a driver to
+  its connector) two pins at a time with no `net_name`, so Tidy draws it as
+  wire, and name only supplies, buses, nets that leave their block and nets the
+  board refers to by name; it groups a path's parts in one block. It used to
+  say to prefer `net_name` beyond a short hop, and since Tidy labels every
+  piece of a named net, Sakura's sheets came out labels everywhere, an LED and
+  its resistor included. `connect` and `tidy_schematic` say the
+  same in their descriptions.
 - **Sakura can look at its own work** (`ai/lookTool.ts`, the `look` tool, with
   its drawing and measuring code in `ai/vision/`). It takes a picture of the
   schematic, the PCB (top, bottom or both, with layers named) or the 3D board,
   whole or zoomed to `refs`, the user's selection or a `region`, and returns the
   numbers behind it as the tool result: overlaps, wires through symbols, texts
   drawn over symbols, unconnected pins, parts off the board, unplaced parts,
-  unrouted connections, bounds. The schematic's picture has the block frames
+  unrouted connections, bounds. The board's courtyard overlaps are the ones
+  `run_checks` reports (`measurePcb` reads the analysis's, which name their
+  two parts in `items`), and its picture draws a courtyard turned with its
+  part: `look` compared the boxes around them, and told an assistant of
+  overlaps between parts at 72 degrees that didn't touch and Checks didn't
+  have. The schematic's picture has the block frames
   and the drawings, as the user sees them. Models act on numbers more than on pictures, so every problem the
   picture can show is also written out, and a failed picture still leaves them.
   - **Off screen.** The schematic and PCB are drawn as SVG built from the
@@ -1161,8 +1520,8 @@ and a viewer's refused edit.
   - **How the picture reaches the model.** A Chat Completions tool result is
     text, so the picture goes in a **user message right after the turn's tool
     results**, an `image_url` part holding a base64 PNG (JPEG for a heavy 3D
-    view) data URL (`vision/messages.ts`), which OpenRouter hands to Claude as
-    an image. The text part says it is not from the user. Pictures are counted
+    view) data URL (`vision/messages.ts`), which the provider hands to Claude
+    as an image. The text part says it is not from the user. Pictures are counted
     one by one across the whole history (`pruneImages`): the newest
     `KEEP_IMAGES` (2) stay, or all of a turn's if it made three, and older ones
     become a line of text, since a picture rides in every later request. Before
@@ -1188,7 +1547,7 @@ and a viewer's refused edit.
   - **The proxy** (the hosted app's) accepts these pictures and nothing wider:
     only `text` parts in every role, plus an `image_url` part in a user
     message, only as a PNG or JPEG data URL whose bytes start like one (never a
-    link, which OpenRouter would fetch), at most 640,000 characters each, 8 and
+    link, which the provider would fetch), at most 640,000 characters each, 8 and
     3.2 MB per request; any other part type is a 400. `limits.ts` holds those
     caps (`PROXY_MAX_*`), `tests/fixtures/imagePolicy.ts` restates the proxy's
     rules with them, and `tests/look-images.test.ts` runs what the editor sends
@@ -1226,6 +1585,17 @@ and a viewer's refused edit.
   they touch. A 600-part design's list fits (`tests/design-budget.test.ts`).
   `get_wiring` is held to 30,000 the same way (see
   [Schematic edits by the copilot](#schematic-edits-by-the-copilot)).
+- **The prompt knows the editor around it** (`EDITOR_GUIDE` in
+  `designGuide.ts`, in Sakura's prompt and the hosted app's MCP server's
+  instructions alike): the views, the Export menu's files, the imports, and
+  that the chat holds text only. Users asked "how do I get the Gerbers" and
+  "where is the PCB view" again and again and were told Sakura hadn't checked
+  what the editor offers. The guide also says that what the user fixed (the
+  board's size, a placed part) is fixed and to do only what was asked (Sakura
+  kept proposing to grow a board that "cannot change"), to name a module's
+  pins by name (an ESP32 wired to pad 19, its flash pin CMD, for GPIO19), and
+  the reply rules: each listed item marked done or not, never ending on a line
+  written while tools ran.
 - **Tests stub `fetch`** (`tests/copilot.test.ts`), so they pin the request
   the proxy receives as well as the loop's behaviour. `tests/copilot-parts.test.ts`
   scripts the model turn by turn (find, read, build, place) against recorded
@@ -1236,6 +1606,40 @@ and a viewer's refused edit.
   each must do). It is recorded against the real endpoints on the hosted app's
   side, which checks that replaying the raw answers still gives exactly this
   file.
+
+## Sakura's web (`ai/webTools.ts`)
+
+Users asked Sakura to read links they pasted (a vendor's docs, a Digi-Key
+page, a datasheet PDF), to look up a part, a reference design or a price, and
+to find a part's 3D model, and it answered that it couldn't browse and went
+on from memory. The host's `WebSource` (`ai/webSource.ts`; this build has
+none, so these tools say the web isn't available) gives it:
+
+- **`web_search`**: up to 6 pages with an excerpt each, `site` to keep to one
+  website. A search counts against the user's credits on the hosted app, and
+  the guide says to search once with good words.
+- **`read_web_page`**: the text at a link, about 2.5k tokens a call, a PDF by
+  its pages and with the datasheet reader's sections, a web page cut into
+  pages; `find` starts at the first page with some words. `read_datasheet url`
+  reads a datasheet PDF at a link the same way, and keeps its `confirm_part`
+  (only when the text names the part).
+- **`set_3d_model`**: a model file at a link (STEP, WRL, OBJ, STL, GLB, or a
+  zip of one; a maker's file or KiCad's 3D library on GitLab), the supplier's
+  model of an LCSC part, or none; then `rotate` or `offset_mm` to adjust it
+  after a `look` at the 3D board. The host fetches and checks the file; the
+  page reads it, keeps it like a file the user added (the host's
+  `modelFiles`) and fits it to the footprint
+  (`editor/three/files/addModelFile.ts`, the Inspector's path, handed to the
+  tool as `ToolContext.addModelFile` since it needs three.js, which a server
+  can't load).
+- **What comes back is quoted data**, between `[web text begins ...]` and
+  `[web text ends]` markers nothing inside can close (`quoteWeb`), and
+  `WEB_GUIDE` (Sakura's prompt only) says it is never instructions, to cite
+  the site, to try the supplier and the parts database first for parts, and to
+  read a pasted link before answering about it.
+- **Not on the hosted app's MCP server**: an assistant the user brings has the
+  web of its own, and these spend Sakura's credits (`WEB_TOOL_NAMES` names
+  them).
 
 ## MCP: Sakura's tools for the user's own AI
 
@@ -1249,6 +1653,38 @@ told instead (`tidy_schematic` with neither `blocks` nor `whole_sheet` tidies
 nothing on a sheet with parts), `look` draws with the `ToolContext.renderer`
 the server gives it, and the model's per-project state is scoped (see
 [The host](#the-host)).
+
+- **Not every tool is on it.** `show_sheet` only changes which sheet the
+  user's editor shows; `undo` takes back steps on the editor's undo stack,
+  where an assistant's calls are not (it saves and restores versions instead);
+  and Sakura's web tools are left out (see [Sakura's web](#sakuras-web-aiwebtoolsts)).
+  The lookups that read nothing of the user's (`find_part`, `get_part_data`,
+  `read_datasheet`, `search_parts`) take `project_id` optionally there and
+  run on a blank project without one: assistants looking a part up before
+  making a project were refused for leaving it out.
+- **A description stays under 4096 characters**, where Claude Code cuts off
+  one it loads up front. `create_part`'s ran past it, so an assistant never
+  saw its last paragraph, the one on `land`, and found the field only through
+  an error message.
+- **What assistants got wrong, and the fixes**: `draw_trace` failed most
+  often, its refusals naming no place ("Short between GND, 5V"), so a
+  refusal now lists what is in the way in order along the trace, with where
+  and how close (`obstaclesAlong` in `ai/pcbTools.ts`), and points at
+  `route_pcb nets` for that one net. Field names agents reach for are renamed
+  (`ALIASES` in `ai/tools.ts`: `look view`, `group_parts name`, `get_design
+  ref`, `find_part q`), a placed part named by `ref` or `part_id` to
+  `get_part_data` or `read_datasheet` is read by the LCSC number it was built
+  from (`normalizeInput`), and a missing required field's error names the
+  fields given that the tool ignored. `get_design` with `refs` reads the ones
+  the design has and names the others, and a scoped answer leaves out the
+  page, board, rules and drawings and counts other parts' pins on a net like
+  GND. `create_part` takes no
+  `category` when the record says what the part is (`categoryFor`), names a
+  connector's contacts by number when the supplier's symbol names none, and
+  takes a non-plated hole drawn with a pad's fields. `set_board` keeps the
+  other side when given one, removes cutouts by the numbers the board had
+  before a new outline, and says where the board is when a cutout misses it.
+  `find_part` strips characters the parts search can't take.
 
 ## Schematic edits by the copilot
 
@@ -1670,11 +2106,26 @@ empty, else the blocks it added or changed parts in. What a tidy keeps that
 reaches no part, `remove_wiring` with `loose` deletes, and the tool's result
 says so.
 
+- **On the page**: a whole-sheet tidy lays the blocks out on the sheet's page
+  (`paperOf`), from the inner frame's top-left a block gap in, packed to the
+  page's shape and clear of its title block (`packRows` with a target: an
+  arrangement that fits beats one that doesn't). Everything it places is then
+  held to the page (`holds`, each on its own): the tidied frames, the blocks
+  it kept as drawn, what reaches no part stowed below them and what a KiCad
+  sheet drew. When something isn't, the page grows one size in its family
+  (A4 to A3, US Letter to US Ledger, a custom page to just big enough), its
+  top-left corner kept, and the blocks are packed again, until it holds;
+  the message says so ("The sheet grew from A4 to A3 to hold it."), and when
+  even the largest of the family can't, that it doesn't fit. What stays as
+  drawn left of the page or above it no size reaches, so the page isn't
+  grown for it and the message points at Fit to drawing. The page is stored
+  on the view's sheet, so every use of it shares it. A one-block tidy leaves
+  the page alone. `tests/tidy-page.test.ts` holds it.
 - **Between blocks** (`flow.ts`): reading order by signal flow, from the nets
   and the parts on them: the connector on the highest supply first, then
   regulation, the controller (the chip with the most pins), the chips it talks
   to, then connectors and indicators, then test points. Frames go in rows with
-  even gutters, the row width chosen for a compact, landscape sheet; a short
+  even gutters, the row width chosen for a compact sheet of the page's shape; a short
   frame goes under the one before it rather than alone on a row. Parts in no
   block are gathered into a block named OTHER.
 - **Inside a block** (`clusters.ts`): each chip, connector or module is drawn
@@ -1686,8 +2137,20 @@ says so.
   three small parts of its own path serve (`wiredSupplyPins`: a regulator's
   capacitors, a connector, diode and regulator in a line, a chip's one or two
   decoupling capacitors) is wired like a signal, and the chips it joins are one
-  cluster. The clusters of a block are packed like frames on the sheet, nets
-  between them labelled.
+  cluster. Chips and connectors that meet point to point are one too
+  (`joinLinked`): a signal net whose pins in the block lie in the clusters of
+  exactly two of them (a driver's output and its terminal, a USB connector and
+  its ESD chip) is a link, and the two are drawn as one cluster, wired on it.
+  A net on three or more (a bus) is no link. A cluster holds at most three
+  chips, connectors and modules (`LINKED_SEEDS`), links are taken in the order
+  of their nets' keys, and only pin counts and the netlist decide. A joined
+  cluster is drawn once, as it comes first; unless every link is wired whole,
+  the clusters it was made from are drawn apart, as before, with the links
+  labelled, so one that can't be wired (a terminal facing away from its
+  driver, or with its pins the other way round, since Tidy never turns or
+  mirrors a box part) costs one attempt and nothing that tidied before fails
+  to. One link that can't be wired leaves every link of the cluster labelled. The clusters of a block are packed like frames
+  on the sheet, nets between them labelled.
 - **About a part** (`block.ts`): the main part first, then decoupling
   capacitors in rows above it (upright, supply port on top, ground below),
   chains on neighbouring pins (an LED and its resistor) fanned out into
@@ -1695,10 +2158,14 @@ says so.
   part at the cheapest spot near what it connects to, a two-pin part on a port
   upright where it can be, every spot tried for real: drawn, wired (`route.ts`, A* on the 0.1 grid
   with a cost per bend) and given room for its labels and ports, and refused if
-  anything would touch anything else (`space.ts`). Supplies get power and
+  anything would touch anything else (`space.ts`). A small part is wired to
+  all it shares with the cluster; a chip, connector or module only on a supply
+  the block wires and on its links, and a spot for one with a link is looked
+  for twice as far out, since it is big. Supplies get power and
   ground ports at their pins, except a supply the block wires, which gets one
-  port per wired piece; a net that leaves the cluster, has a name, or couldn't
-  be wired whole gets a label, reading across (its stub turns off a pin on the
+  port per wired piece; a net that leaves the cluster, has a name (one
+  `connect` made up, `NET3`, counts as none), or couldn't be wired whole gets
+  a label, reading across (its stub turns off a pin on the
   top or bottom, or off a wire across). A port stands the rail's way, on a stub
   that bends if it must; it is turned aside only where neither fits (a cost,
   not a rule). A wire may tee into another at a bend as well as along it, but
@@ -1728,9 +2195,10 @@ says so.
   between them (the BME280's CSB tied to 3V3 under SDI and SCK), whose labels
   then have nowhere to go.
 - **Same choices every time**: while parts are placed, a name Tidy gave a net
-  (`U1_XTAL1`, or the editor's `Net-(R1-2)`) counts for nothing; only names
-  someone else gave do (`TidyNet.given`). So a second tidy, which finds those
-  names drawn, makes every choice the first one did.
+  (`U1_XTAL1`, or the editor's `Net-(R1-2)`) or `connect` made up (`NET3`)
+  counts for nothing; only names someone else gave do (`TidyNet.given`). So a
+  second tidy, which finds those names drawn, makes every choice the first one
+  did.
 - **Names**: an unnamed net that needs a label is named after its most telling
   pin (`U1_OUT`), as the tscircuit importer names them, and a pour, stitching
   via or trace width follows it to its new name. A named net keeps the name it
@@ -1740,7 +2208,13 @@ says so.
   is drawn (`room.ts`), never on wire that reaches no part (stowed below the
   blocks, it would move with that wire next time). A name with no room anywhere
   is left out and the message says so; it never stops the rest of the sheet
-  being tidied.
+  being tidied. A net whose one name is one `connect` made up (`NET3`, for
+  three pins joined with no name; `madeUpNets` in `nets.ts`) is drawn as an
+  unnamed net: it keeps `NET3` on the labels it needs (where it leaves its
+  block, so the labels a one-block tidy leaves outside still match), and where
+  it is wired whole the name goes with its labels, the netlist check allowing
+  it, and a pour, via, width or net class on `NET3` follows the net to the name
+  it goes by now.
 - **Labels or ports, by choice** (`Project.netStyles`, by the name a net's
   labels and ports give it): `label` draws a net with labels even when its
   name or pins make it a supply, `port` with power or ground ports;
@@ -1760,8 +2234,17 @@ says so.
   crossing; everything on the grid; frames around their parts and clear of each
   other, in reading order; tidying twice changes nothing, and a copy under new
   ids comes out the same; the 38-part example in under 150 ms and a 150-part
-  design in under a second. `tests/tidy-metrics.ts` measures all of it from a
-  project alone.
+  design in under a second. Made-up designs of chips and connectors that meet
+  point to point (`LINKED_DESIGNS`: a motor driver and its terminals, turned to
+  face it and not, a USB-C connector and its ESD chip, an op-amp into an ADC, a
+  bus over three chips, four shift registers in a chain) hold the links: wired
+  where they can be, labelled where they can't, never more than three chips to
+  a cluster. The shipped examples gain no link: the esp32-robot's motor
+  driver and its two terminals are joined, tried and drawn apart, labelled.
+  Its terminals are wired opposite ways round (MOTA in the driver's pin order,
+  MOTB reversed), and mirroring either terminal or both still leaves the
+  outputs labelled, so mirroring them in the template doesn't make a wired
+  example. `tests/tidy-metrics.ts` measures all of it from a project alone.
 
 ## Clean up: grouping the schematic
 
@@ -2127,6 +2610,13 @@ that no one editing a board downloads.
 - The converter draws a schematic unit as 15 mm and ours is 12.7 mm (ten of
   KiCad's 50 mil), so the schematic is scaled by 12.7 / 15 first, which puts
   every pin on KiCad's grid exactly.
+- **Every sheet's file is on its own page** (`paperOf`, `model/paper.ts`):
+  the converter's `(paper ...)` is replaced with the sheet's (`applyPaper`,
+  `kicadPost.ts`), and its `circuitOrigin` puts the page's top-left corner at
+  KiCad's (0, 0) (`pageOrigin` in `kicad.ts`: an editor point (x, y) lands at
+  (origin.x + 12.7x, origin.y − 12.7y) mm), for every project. The corner is
+  on the 0.1 grid, so the grid stays KiCad's; a sheet imported from KiCad has
+  its page at (0, 0) and comes back at the millimetre it had.
 - Its floating point leaves a pin and the wire on it a fraction of a nanometre
   apart, which KiCad reads as one point and other readers do not; numbers are
   rounded to a nanometre (`tidyNumbers`).
@@ -2140,8 +2630,10 @@ that no one editing a board downloads.
   design rules, default sizes, net classes (every class with all its sizes, its nets as patterns that match them exactly) and per-net widths (as net
   classes of their own that set only the width and come first) in the
   `.kicad_pro`, the mask web, paste ratio and mask bridges in the board's setup, each pour's clearance, thinnest neck and thermal gap and
-  bridge, the mask and paste openings, and the project's name, revision,
-  company, description and properties in the title block and the project's text
+  bridge, the mask and paste openings, the title block of each sheet's file as
+  the page shows it (`titleBlockOf` in `model/paper.ts`, of the sheet's first
+  use: the project's name, revision, company, date, description and properties,
+  or a KiCad sub-sheet's own entries) and the project's text
   variables. Pours arrive filled (the converter writes the computed fill);
   KiCad refills them with B. `tests/kicad-export.test.ts` reads the files back
   to check each, including that a flag is where KiCad puts the pin (the symbol's
@@ -2335,11 +2827,10 @@ has pads with X7 features or states a minimum mask web.
   (`model/arcTracks.ts` has the exact distances; `pcb.ts` items stay `segment` with an `arc`); draw one with `traceD` (`editor/pcb/traceGraphics.ts`) and never flatten one for a check. A via has an
   optional `kind` (blind, buried, micro), `from`, `to`, per-side `tent`, `unused`, `zoneLayers`, `free` and a `stack` of diameters; absent kind is a through via; use `viaLayers`, `viaDiameterOn` and
   `viaTentedOn` (`model/viaRules.ts`). A pad has `layers.inner` and an optional `stack` (padstack) that `padVariants` in `instances.ts` turns into the shape on each layer; `pruneUnused` in `pcb.ts`
-  is KiCad's flashing rule. The router routes the two outer layers only, keeps its vias off the copper of inner layers and its new vias are through vias; Sakura says so (`route_pcb`), and
-  `clear_routing` keeps inner traces. Outputs: Gerber and drill per layer and span (`gerber.ts`, `excellon.ts`: `drillSets`), STEP and 3D drill only the through vias (a note says how many are not
+  is KiCad's flashing rule. The router routes every copper layer and its new vias are through vias; `clear_routing` clears traces on every layer and keeps blind, buried and micro vias. Outputs: Gerber and drill per layer and span (`gerber.ts`, `excellon.ts`: `drillSets`), STEP and 3D drill only the through vias (a note says how many are not
   drawn), Circuit JSON has `num_layers` and `inner1` to `inner8`, and the writer (`kicadBoard.ts`) writes layers, stackup, arcs, via words and padstacks back (a project with a stack goes by the native
   writer). The corpus checks them against the raw file with an independent oracle (`tests/kicad-census/layers.mjs`, `tests/kicad-layers-check.ts`). Not built: blind holes in the STEP solid, inner
-  copper in the 3D view, routing on inner layers.
+  copper in the 3D view, blind, buried and micro vias made by the router.
 - **Tuning patterns, pad lengths, net chains, via protection, backdrill and post-machining (X21, X22).** A KiCad `generated` item (a tuning pattern, a via stack, via stitching) is a `PcbGroup` with a
   `gen` (`PcbGenerator`: its kind, copper layer and KiCad's own property list, points in the project's frame, `model/generators.ts`): moving or turning the group carries its points
   (`carryGenerators`, called by `moveObjects` and `rotateObjects`), and Ungroup takes it apart into plain tracks and vias. The importer (`kicad/board/drilling.ts` reads KiCad 10's grammar,
@@ -2433,7 +2924,7 @@ files at once, and a dropped folder.
 - `analytics.ts`: the editor sends no events of its own. The import sends one `kicad_import` event
   (outcome, KiCad stamp and release, missing extension ids, board KB, duration; never a name) to a
   sink the host connects with `connectAnalytics` (exported by `src/projects.ts`); the hosted app's
-  projects page connects PostHog. The editor's own dashboard, this build's home, connects none, so
+  projects page connects its analytics. The editor's own dashboard, this build's home, connects none, so
   it sends nothing.
 - **Two pages run it.** The editor's `Dashboard.tsx` (this build's) and the hosted app's projects
   page each draw the same controller and the same report (`sections.ts`, as data) in their own style.
@@ -2464,7 +2955,8 @@ project file, version 3 (see "Symbols with units, mirrors, fields and drawings" 
 - `symbols.ts` turns a cached symbol into a `SymbolDrawing` (`drawingFromLib`: every shape with its width, dash, colour and fill, every pin with its type, shape, alternates and visibility, units, body
   styles, jumpers, the place and look of each field, all in the editor's units and KiCad's own numbers to 0.001 mm) and into the spec of a part (`specFromSymbol`); `link.ts` links footprints to symbols:
   path, then timestamp, then reference, then nothing (KiCad 6's root list and KiCad 7's instances give the same board path; a reused sheet links several footprints to one symbol). `build.ts` makes the
-  project of a flat sheet: a symbol is a component of a part drawn from its drawing (one part per drawing and footprint, the drawing stored once under its hash in `Project.symbols`), placed with its
+  project of a flat sheet, listing every sheet with its page (the file's `(paper ...)`, read whole by `read.ts`: GERBER is a `User` page 812.8 mm square, an unknown
+  name A4; its corner at (0, 0), where KiCad has its page): a symbol is a component of a part drawn from its drawing (one part per drawing and footprint, the drawing stored once under its hash in `Project.symbols`), placed with its
   turn, mirror, unit, body style, fields and chosen pin alternates; the units of one reference are several components, the one the board's footprint is linked to being the part and the others its twins;
   a power symbol of one power-input pin is a power port that keeps KiCad's drawing; a junction on a wire's body cuts the wire, a no-connect pin is left out of the nets by connectivity, a hidden
   power-input pin joins the global net of its name by connectivity as well. What the editor would join or name differently from KiCad is a `lossy` need with its extension, and the importer refuses a
@@ -2578,10 +3070,32 @@ every use of a reused sheet stays alike); for a project of one sheet the view is
 (`commitHere`, `dragHere`, `dropHere`, `commitFor`, `shownProject`) is how a schematic edit is made: use it, not `projectApi().commit`, for anything
 that edits parts, wires, labels or drawings. `computeConnectivity` works per use (a name joins by use, a sheet pin joins the labels of its name on the
 sheet below its symbol, a global name joins everywhere; `byUse` has what a reused sheet's wire ids mean per use); `sameSchematic` must say a sheet symbol
-changed, or the connectivity cache would be stale. Sakura's `get_design`, `get_wiring`, `connect`, `draw_wiring`, `tidy_schematic`, `add_component`, `group_parts`, `edit_block`, `arrange_blocks` and `draw` take `sheet` (`ai/sheetTools.ts`; the sheet shown when none is named), and builds sheets with `add_sheet` (new, or `reuse` for another use), `edit_sheet` (rename, move, resize, pins, delete), `add_hier_label`, `wire_sheet_pin` and `show_sheet`, all through the `sheetOps` functions the editor uses. `get_design` lists each sheet with its box and pins. Copper layers have a colour each, up to 32 (`copperColor` and `pourColor` in `editor/theme.ts`, the only place that decides one; `panels/CopperLayerList.tsx` is the list with swatches and eyes). Circuit JSON
+changed, or the connectivity cache would be stale. Sakura's `get_design`, `get_wiring`, `connect`, `draw_wiring`, `tidy_schematic`, `add_component`, `group_parts`, `edit_block`, `arrange_blocks` and `draw` take `sheet` (`ai/sheetTools.ts`; the sheet shown when none is named), and builds sheets with `add_sheet` (new, or `reuse` for another use), `edit_sheet` (rename, move, resize, pins, delete, and any sheet's page, the root's included: `page_size`, `orientation`, `page_width_mm` and `page_height_mm` for a custom page, `fit_page`), `add_hier_label`, `wire_sheet_pin` and `show_sheet`, all through the `sheetOps` functions the editor uses. `get_design` lists each sheet with its box and pins, and every sheet's `page` (its size, orientation, the area inside its border and its title block, in sheet units; top-level for a project of one sheet). A sheet's page is `SchematicSheet.paper`, shared by every use of the sheet. Copper layers have a colour each, up to 32 (`copperColor` and `pourColor` in `editor/theme.ts`, the only place that decides one; `panels/CopperLayerList.tsx` is the list with swatches and eyes). Circuit JSON
 and the board are flattened (`export/flatten.ts`); the KiCad export writes a file for each sheet, named after it (`export/kicadSheets.ts`).
 A flag on a sheet symbol reaches the parts through `withSheetFlags`
 (BOM, position file, exports), not the PCB view. Several top level sheets (KiCad 10) are refused by name (`S1T`).
+
+**Drawing the hierarchy by hand**, as in Altium, in its words: a **port** is a hierarchical label and a **sheet entry** a sheet pin (`SheetPin`). The label tool
+(`L`) places a net label, a global label or a port (`uiStore.labelKind`, kept for the session, picked in the `LabelOptions` bar under the toolbar or with `Tab`
+and `⇧Tab`, in the name box too); Port is off on Main, which has no sheet above, and the tool places a net label there. `addLabel` takes the kind, and gives a
+global label or a port a shape (bidirectional unless given). In a project drawn here a net label has no `kind` at all: `setLabelStyle` back to "This sheet"
+clears it, since `local` would draw it as KiCad's (`isKicadLabel`). Every name typed for a label or an entry goes through `typedLabelName` (`model/busNames.ts`):
+upper case in a project drawn here, so an entry `data` meets its port `DATA`, the case kept in a KiCad project. Every label has the label Inspector
+(`LabelInspector`: text, Joins, Shape, the text style only where something draws it), and a port's has "Go to the sheet entry". **Entries are on the canvas**:
+selected as `e:<symbol id>:<pin id>` (picked before the symbol's rectangle and before a wire ending at its point; `PeerLayer` draws a collaborator's), slid
+along the edges and round the corners by a drag (`moveSheetPin`, at the free place nearest the pointer, `edgeSpot` and `sheetPinSpot` in `model/sheetOps.ts`:
+on the grid, a grid step from each corner, never on another entry; the wires and labels at it follow as they follow a moved symbol, and the drop is checked as
+any drag is, `guardDrop`), deleted by `Del`, ended on by the wire tool, and a double-click on one shows its port (`revealPort`). The Sheet entry tool (in the
+block and sheet group) adds one where the edge is clicked, through the label tool's name box; the symbol's Inspector adds one in an inline field with its side.
+**Entries and ports are kept in step, adding only** (Altium's Synchronize Sheet Entries and Ports): a port placed or a label switched to Port gives its entry
+to every symbol of its sheet, and an entry added on the canvas or in the Inspector gets its port inside, in a column beside the sheet's drawing
+(`syncSheetEntry`; the canvas says what it added, in a plain `info` notice). Each is one commit of the edit on the sheet shown (`commitOnUse`) followed by
+`syncSheetEntry` **on the whole project**, never inside a view: `mergeSheetView` tags every new label with the view's sheet, so a port made for another sheet
+inside a view would land on the wrong one (it throws on a view). A rename or a delete is not kept in step; the checks say when the two sides differ. `addSheetPin`
+stays a plain primitive, which Sakura's `edit_sheet add_pins` and `add_hier_label` rely on. **Intersheet references**: in a project of several sheets drawn
+here, each global label draws after its flag the other uses whose sheet has a global label of its name (`model/intersheetRefs.ts`, `globalLabelUses` worked
+out from the whole project and kept per project), and a click on a name shows that use with its label selected. They are worked out and never stored, and stay
+out of `labelBox`, so hit tests, Tidy, frames and every export are as they were; a KiCad project's labels draw none.
 
 ### Directive labels, rule areas and symbols from libraries (S8 and S12, in project file version 3)
 

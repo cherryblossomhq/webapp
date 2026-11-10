@@ -1,4 +1,4 @@
-import { Ban, BetweenHorizontalStart, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
+import { Ban, BetweenHorizontalStart, BoxSelect, BroomSparkles, Network, Circle, CircleDot, Eye, Hexagon, ImagePlus, Layers2, LoaderCircle, MousePointer2, PaintBucket, Pentagon, PenLine, Pill, Route, Ruler, Slash, Spline, Square, SquareDashed, Tag, Type, Wand2, Waypoints } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { imageFacts } from "../lib/imageFacts"
 import { addImage } from "../model/boardObjects"
@@ -15,7 +15,8 @@ import type { Project } from "../model/types"
 import { getConnectivity } from "../store/analysis"
 import { heldNote, renewBoardNow, useBoardLease, withBoard } from "../store/boardLease"
 import { projectApi, useProjectStore } from "../store/projectStore"
-import { useUi, type LabelChoice, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
+import { cycleOtherLayers, useUi, type LabelChoice, type LayerVisibility, type PcbTool, type SchTool, type ViaChoice } from "../store/uiStore"
+import type { OtherLayers, PourLook } from "../store/settings"
 import { useAt } from "../model/sheets"
 import { shownPath } from "../store/sheetScope"
 import { copperLayers, layerLabel } from "../model/stack"
@@ -152,6 +153,18 @@ const LAYER_NAMES: [keyof LayerVisibility, string, string | null][] = [
   ["board", "Board edge", PCB.edge],
   ["ratsnest", "Ratsnest", null],
   ["labels", "Pin and net labels", null],
+]
+
+/** The ways the other copper layers are drawn, as the toolbar and the Layers menu name them. */
+const OTHER_LAYER_CHOICES: { value: OtherLayers; label: string; title: string }[] = [
+  { value: "show", label: "Show", title: "Every shown layer in its colour, the active one in front" },
+  { value: "dim", label: "Dim", title: "The active layer in colour, the others faded to grey behind it" },
+  { value: "hide", label: "Hide", title: "The active layer alone, with the pads and vias through it" },
+]
+const POUR_CHOICES: { value: PourLook; label: string; title: string }[] = [
+  { value: "filled", label: "Filled", title: "Pours filled with their copper" },
+  { value: "outline", label: "Outline", title: "The edge of each pour's copper alone, so what lies under it shows" },
+  { value: "hidden", label: "Off", title: "Pours not drawn (they are still checked and exported)" },
 ]
 
 const GROUND_NAMES = ["GND", "GROUND", "VSS", "0V"]
@@ -443,6 +456,9 @@ export function PcbToolbar() {
   const setViaTo = useUi((s) => s.setViaTo)
   const hiddenShapeLayers = useUi((s) => s.hiddenShapeLayers)
   const toggleShapeLayer = useUi((s) => s.toggleShapeLayer)
+  const otherLayers = useUi((s) => s.settings.otherLayers)
+  const pourLook = useUi((s) => s.settings.pours)
+  const updateSettings = useUi((s) => s.updateSettings)
   const project = useProjectStore((s) => s.project)
   const drawingLayers = useMemo(() => (project ? usedShapeLayers(worldShapes(project), worldTexts(project).map((t) => t.layer)) : []), [project])
   const [showLayers, setShowLayers] = useState(false)
@@ -610,12 +626,32 @@ export function PcbToolbar() {
               )}
             </label>
           )}
+          <IconButton
+            label={`Other layers: ${OTHER_LAYER_CHOICES.find((c) => c.value === otherLayers)!.label}`}
+            hint="Show, dim or hide the copper layers you are not working on"
+            shortcut="⇧S"
+            active={otherLayers !== "show"}
+            onClick={cycleOtherLayers}
+          >
+            <Layers2 size={16} />
+          </IconButton>
           <div className="relative">
             <IconButton label="Layers" hint="Choose which layers are drawn" active={showLayers} aria-expanded={showLayers} onClick={() => setShowLayers(!showLayers)}>
               <Eye size={16} />
             </IconButton>
             {showLayers && (
-              <div className="absolute left-0 top-10 max-h-[70vh] w-[220px] max-w-[calc(100vw-24px)] overflow-y-auto overflow-x-hidden rounded-[10px] border border-line bg-surface p-1.5 shadow-menu">
+              <div className="absolute left-0 top-10 max-h-[70vh] w-[236px] max-w-[calc(100vw-24px)] overflow-y-auto overflow-x-hidden rounded-[10px] border border-line bg-surface p-1.5 shadow-menu">
+                <div className="space-y-2 px-2 pb-1.5 pt-1">
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-ink-3">Other layers</div>
+                    <Segmented size="sm" value={otherLayers} onChange={(v) => updateSettings({ otherLayers: v })} options={OTHER_LAYER_CHOICES.map((c) => ({ ...c, shortcut: "⇧S" }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-ink-3">Pours</div>
+                    <Segmented size="sm" value={pourLook} onChange={(v) => updateSettings({ pours: v })} options={POUR_CHOICES} />
+                  </div>
+                </div>
+                <div className="mx-2 my-1 border-t border-line" />
                 {project && <CopperLayerList board={project.board} />}
                 <div className="mx-2 my-1 border-t border-line" />
                 {LAYER_NAMES.map(([key, label, color], i) => (

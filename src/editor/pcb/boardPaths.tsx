@@ -16,10 +16,11 @@ export interface PathPiece {
   d: string
 }
 
-/** Things in one list for each opacity, the faintest first. */
+/** Things in one list for each opacity, the faintest first; those of no opacity are left out (the other side's, with the other layers hidden). */
 function byOpacityOf<T>(items: [opacity: number, item: T][]): [number, T[]][] {
   const groups = new Map<number, T[]>()
   for (const [o, item] of items) {
+    if (o <= 0) continue
     const list = groups.get(o)
     if (list) list.push(item)
     else groups.set(o, [item])

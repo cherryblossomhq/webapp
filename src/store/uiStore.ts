@@ -3,7 +3,7 @@ import type { Box } from "../lib/geometry"
 import { DEFAULT_TEXT_SIZE } from "../model/drawings"
 import { composeOrientation } from "../model/ops"
 import type { CopperLayer, DimensionKind, DrawingStyle, DrawingText, Mirror, Rotation } from "../model/types"
-import { loadSettings, saveSettings, type Settings } from "./settings"
+import { loadSettings, OTHER_LAYERS, saveSettings, type Settings } from "./settings"
 
 export type View = "schematic" | "pcb" | "3d"
 /** The schematic's tools: editing, then the block tool, then the drawing tools. */
@@ -282,6 +282,12 @@ export const useUi = create<UiState>((set, get) => ({
 }))
 
 export const uiApi = () => useUi.getState()
+
+/** Draw the other copper layers the next way (`⇧S`, Altium's key for its single layer mode): shown, dimmed, hidden, and shown again. */
+export function cycleOtherLayers() {
+  const ui = uiApi()
+  ui.updateSettings({ otherLayers: OTHER_LAYERS[(OTHER_LAYERS.indexOf(ui.settings.otherLayers) + 1) % OTHER_LAYERS.length] })
+}
 
 export const selectionIds = (selection: string[], prefix: "c" | "w" | "l" | "b" | "d" | "t" | "v" | "g" | "m" | "i" | "z" | "h" | "e") =>
   selection.filter((s) => s.startsWith(`${prefix}:`)).map((s) => s.slice(2))

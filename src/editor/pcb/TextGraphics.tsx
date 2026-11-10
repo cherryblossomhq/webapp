@@ -14,11 +14,12 @@ const ring = (r: { x: number; y: number }[]) => `M${r.map((p) => `${p.x},${p.y}`
  * One KiCad text as the board shows it: its strokes with its pen, a knockout filled with the letters left out, a text box's border.
  * Mask and paste text is drawn thin and every layer that is not copper or silkscreen soft, as a drawing on them is.
  */
-export function TextDraw({ t, project, px, selected = false, opacity = 1 }: { t: WorldText; project: Project; px: number; selected?: boolean; opacity?: number }) {
+export function TextDraw({ t, project, px, selected = false, opacity = 1, color: given }: { t: WorldText; project: Project; px: number; selected?: boolean; opacity?: number; color?: string }) {
   const lt: LayerText | null = layerText(project, t)
   if (!lt) return null
   const kind = textLayerKind(t.layer)
-  const color = textLayerColor(t.layer)
+  // `color` is a copper layer's as the board draws it now (`copperLook`): softer on a layer behind the one worked on.
+  const color = given ?? textLayerColor(t.layer)
   const thin = kind === "mask" || kind === "paste"
   const soft = thin || kind === "fab" || kind === "courtyard" || kind === "adhesive" || kind === "user"
   const width = Math.max(thin ? Math.min(lt.pen, 0.08) : lt.pen, px)

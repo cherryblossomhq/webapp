@@ -1,4 +1,5 @@
 import type { DrawingColor } from "../model/types"
+import type { OtherLayers } from "../store/settings"
 import { useTheme } from "../store/themeStore"
 
 // Canvas colours mirror the CSS tokens in index.css; SVG attributes need literal values.
@@ -126,8 +127,8 @@ export const SCH_DARK: SchPalette = {
 export const useSch = (): SchPalette => useTheme((s) => (s.scheme === "dark" ? SCH_DARK : SCH_LIGHT))
 
 // Layout colours follow EDA convention so layers read at a glance: red top, blue bottom.
-// Both copper layers are drawn opaque over a black substrate, so the clearance gaps of the
-// front pour show the layer behind it and every trace and pad gets a contrasting outline.
+// The layer worked on is drawn in front in its full colour over a black substrate, the others
+// softer behind it (`copperLook`), so every trace and pad of the front layer stands out.
 export const PCB = {
   outside: "#121115",
   grid: "rgba(255,255,255,0.08)",
@@ -196,3 +197,37 @@ export function pourColor(layer: string): string {
   const k = Number(layer.slice(2))
   return INNER_POUR[(Math.max(1, Number.isFinite(k) ? k : 1) - 1) % INNER_POUR.length]
 }
+
+/**
+ * A colour taken toward the board's black: `light` of its brightness kept (1 is the colour itself) and `sat` of its saturation (1 keeps it,
+ * 0 is the grey of its own lightness).
+ */
+export function shade(hex: string, light: number, sat = 1): string {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+  const grey = 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+  return `#${c.map((v) => Math.round(Math.max(0, Math.min(255, (grey + (v - grey) * sat) * light))).toString(16).padStart(2, "0")).join("")}`
+}
+
+/** The colours a copper layer is drawn in on the board, and the opacity of its pour. */
+export interface CopperLook {
+  track: string
+  pour: string
+  /** Its surface-mount pads (pads through the board are drawn alike on every layer). */
+  pad: string
+  pourOpacity: number
+}
+
+/**
+ * How a copper layer is drawn. The layer worked on is in front in its full colour, its pour a darker shade of it so every track and pad on the pour
+ * reads, and a little see-through, so what the other layers carry under it shows faintly. The other layers are softer (`show`) or nearly grey (`dim`),
+ * and their pours darker still: the gaps a pour leaves round a track then read as the dark board they are, not as rings of another layer's colour.
+ */
+export function copperLook(layer: string, active: boolean, others: OtherLayers): CopperLook {
+  const c = copperColor(layer)
+  if (active) return { track: c, pour: shade(c, 0.58, 0.92), pad: PCB.pad, pourOpacity: 0.84 }
+  if (others === "dim") return { track: shade(c, 0.4, 0.2), pour: shade(c, 0.15, 0.2), pad: shade(PCB.padBack, 0.42, 0.2), pourOpacity: 1 }
+  return { track: shade(c, 0.74, 0.78), pour: shade(c, 0.2, 0.5), pad: PCB.padBack, pourOpacity: 1 }
+}
+
+/** How strongly the other side's silkscreen, drawings and parts are drawn, by how the other layers are: 0 is not drawn. */
+export const otherSideOpacity = (others: OtherLayers): number => (others === "show" ? 0.55 : others === "dim" ? 0.3 : 0)

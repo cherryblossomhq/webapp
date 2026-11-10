@@ -42,7 +42,7 @@ import type { ComponentInstance, CopperLayer, Project, ReferenceImage, Vec2, Via
 import { DRAG_FOLLOW_ITEMS, getConnectivity, getLiveAnalysis, useFillTick } from "../../store/analysis"
 import { reportPointer, reportViewport, stopFollowing } from "../../store/presence"
 import { isCreatedHere, projectApi, useProjectStore } from "../../store/projectStore"
-import { copperShown, selectionIds, uiApi, useUi } from "../../store/uiStore"
+import { copperShown, cycleOtherLayers, selectionIds, uiApi, useUi } from "../../store/uiStore"
 import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { clampLayer, copperLayers, layerLabel, layerOfKicadName, viaLayers } from "../../model/stack"
 import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../model/arcTracks"
@@ -71,7 +71,7 @@ import {
   type DrawTool,
   type ShapeVisibility,
 } from "./shapeEditing"
-import { copperColor, PCB, pourColor } from "../theme"
+import { copperColor, copperLook, otherSideOpacity, PCB } from "../theme"
 import { addZone, deleteZoneCorner, insertZoneCorner, makeZone, moveZone, removeZones, setZoneCorner } from "../../model/zoneOps"
 import { OtherZoneFills, ZoneOutlines, ZonePreview } from "./ZoneDraw"
 import { nonCopperFills } from "../../model/nonCopperFill"
@@ -138,31 +138,53 @@ const boardBox = (p: Project): Box => ({
   maxY: p.board.y + p.board.height / 2,
 })
 
+/** The copper layer drawn in front: the active one, or the first shown in the stack when its copper is hidden. */
+const frontLayer = (stack: readonly CopperLayer[], layer: CopperLayer, shown: (l: CopperLayer) => boolean): CopperLayer => [layer, ...stack].find(shown) ?? layer
+
+/** With the other layers hidden (`otherLayers`), the one copper layer drawn, the only one whose copper can be picked; null when they are not hidden. */
+function aloneLayer(p: Project, layer: CopperLayer): CopperLayer | null {
+  const ui = uiApi()
+  return ui.settings.otherLayers === "hide" ? frontLayer(copperLayers(p.board), layer, (l) => copperShown(ui, l)) : null
+}
+
+/** Whether a drawing or text layer is drawn with `front` alone: it is `front`'s copper, or of its side, or of no side (a user layer, the board's edge). */
+function drawnAlone(name: string, front: CopperLayer): boolean {
+  const copper = layerOfKicadName(name)
+  if (copper) return copper === front
+  const side = shapeLayerInfo(name)?.side
+  return !side || side === front
+}
+
 function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): Hit | null {
   const bb = boardBox(p)
   if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) return { type: "boardHandle" }
   // Only what is near the pointer is tried (`hitIndex`), in the order the whole board would be.
   const index = hitIndex(p, items)
   const near: Box = { minX: at.x - tol * 0.5, minY: at.y - tol * 0.5, maxX: at.x + tol * 0.5, maxY: at.y + tol * 0.5 }
+  const ui = uiApi()
+  // With the other layers hidden only what is drawn is picked: the front layer's copper, the pads and vias through it, and the parts, drawings and
+  // texts of its side.
+  const alone = aloneLayer(p, layer)
+  const vis = shapeVisibility(alone)
   // Pads on the active layer first, then any pad.
   const pads = index.padGrid.near(near).map((i) => index.pads[i])
-  for (const pass of [true, false]) {
+  for (const pass of alone ? [true] : [true, false]) {
     for (const it of pads) {
       if (it.pad.componentId === BOARD_OWNER) continue
-      if (pass && !it.layers.includes(layer)) continue
+      if (pass && !it.layers.includes(alone ?? layer)) continue
       if (pointPadDistance(at, it.pad) <= tol * 0.5) return { type: "pad", pad: it.pad, netId: it.netId }
     }
   }
   for (const i of index.viaGrid.near(near)) {
     const v = p.vias[i]
+    if (alone && !viaLayers(p.board, v).includes(alone)) continue
     if (Math.hypot(at.x - v.x, at.y - v.y) <= v.diameter / 2 + tol * 0.5) return { type: "via", id: v.id, at: { x: v.x, y: v.y } }
   }
-  const ui = uiApi()
   // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first, the last drawn first.
   const traces = index.traceGrid
     .near(near)
     .map((i) => p.traces[i])
-    .filter((t) => copperShown(ui, t.layer))
+    .filter((t) => copperShown(ui, t.layer) && (!alone || t.layer === alone))
     .sort((a, b) => (a.layer === layer ? 1 : 0) - (b.layer === layer ? 1 : 0))
   for (let i = traces.length - 1; i >= 0; i--) {
     const t = traces[i]
@@ -179,17 +201,18 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     }
   }
   // Text: the text itself, board text and a part's alike.
-  const text = hitText(p, at, tol * 0.5, shapeVisibility())
+  const text = hitText(p, at, tol * 0.5, vis)
   if (text) return { type: "text", id: text.id }
   // Drawings: a board drawing is picked itself, a part's drawing picks the part.
   const shapes = worldShapes(p)
   if (shapes.length) {
-    const s = hitShape(shapes, at, tol * 0.5, shapeVisibility())
+    const s = hitShape(shapes, at, tol * 0.5, vis)
     if (s) return s.select ? { type: "shape", id: s.select } : s.owner === "#board" ? { type: "shape", id: s.id } : { type: "component", id: s.owner }
   }
   const parts = index.partGrid.near({ minX: at.x, minY: at.y, maxX: at.x, maxY: at.y })
   for (let i = parts.length - 1; i >= 0; i--) {
     const { c, courtyard } = index.parts[parts[i]]
+    if (alone && c.pcb.side !== alone) continue
     if (pointInBox(at, courtyard)) return { type: "component", id: c.id }
   }
   // A zone with a polygon, by its edge or its copper, where nothing above it is.
@@ -203,12 +226,16 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     if (near && near.distance <= tol * 0.5) return { type: "outline", path: near.path, seg: near.seg }
   }
   // A reference image is under everything else, so it is picked only where nothing is on top of it.
-  const image = hitImage(p, at, shapeVisibility())
+  const image = hitImage(p, at, vis)
   if (image) return { type: "image", id: image }
   return null
 }
 
-const shapeVisibility = (): ShapeVisibility => ({ hidden: uiApi().hiddenShapeLayers, layers: uiApi().layers })
+const shapeVisibility = (alone: CopperLayer | null = null): ShapeVisibility => ({
+  hidden: uiApi().hiddenShapeLayers,
+  layers: uiApi().layers,
+  only: alone ? (name) => drawnAlone(name, alone) : undefined,
+})
 
 function hitSelectionId(h: Hit | null): string | null {
   if (!h) return null
@@ -278,6 +305,8 @@ export function PcbEditor() {
   const layers = useUi((s) => s.layers)
   const hiddenCopper = useUi((s) => s.hiddenCopper)
   const hiddenShapeLayers = useUi((s) => s.hiddenShapeLayers)
+  const otherLayers = useUi((s) => s.settings.otherLayers)
+  const pourLook = useUi((s) => s.settings.pours)
   const drawLayer = useUi((s) => s.drawLayer)
   const uiSlotWidth = useUi((s) => s.slotWidth)
   const drawWidth = useUi((s) => s.drawWidth)
@@ -855,15 +884,19 @@ export function PcbEditor() {
     if (m.kind === "marquee") {
       const box = normBox(m.start, m.current)
       const ids: string[] = []
+      // With the other layers hidden, only what is drawn (`hitTest`): a Delete must not take what cannot be seen.
+      const alone = aloneLayer(project, activeLayerNow())
+      const vis = shapeVisibility(alone)
       for (const c of resolvedComponents(project)) {
+        if (alone && c.pcb.side !== alone) continue
         const cy = c.pcb.placed ? pcbCourtyard(c) : null
         if (cy && boxesOverlap(box, cy)) ids.push(`c:${c.id}`)
       }
-      for (const t of project.traces) if (t.points.some((pt) => pointInBox(pt, box))) ids.push(`t:${t.id}`)
-      for (const v of project.vias) if (pointInBox(v, box)) ids.push(`v:${v.id}`)
-      ids.push(...marqueeShapes(worldShapes(project), box, shapeVisibility()))
-      ids.push(...marqueeTexts(project, box, shapeVisibility()))
-      ids.push(...marqueeBoardObjects(project, box, shapeVisibility()))
+      for (const t of project.traces) if ((!alone || t.layer === alone) && t.points.some((pt) => pointInBox(pt, box))) ids.push(`t:${t.id}`)
+      for (const v of project.vias) if ((!alone || viaLayers(project.board, v).includes(alone)) && pointInBox(v, box)) ids.push(`v:${v.id}`)
+      ids.push(...marqueeShapes(worldShapes(project), box, vis))
+      ids.push(...marqueeTexts(project, box, vis))
+      ids.push(...marqueeBoardObjects(project, box, vis))
       const base = m.additive ? uiApi().selection : []
       uiApi().select(expandToGroups(project, [...new Set([...base, ...ids])]))
       setMode({ kind: "idle" })
@@ -998,6 +1031,7 @@ export function PcbEditor() {
       else if (!viewer && drawKey) uiApi().setPcbTool(tool === drawKey ? "select" : drawKey)
       else if (key === "w" && !viewer) uiApi().setPcbTool("route")
       else if (key === "v") uiApi().setPcbTool(tool === "select" && !viewer ? "via" : "select")
+      else if (key === "s" && e.shiftKey) cycleOtherLayers()
       else if (key === "s") uiApi().setPcbTool("select")
       else if (key === "l") uiApi().setActiveLayer(nextCopperLayer(projectApi().project!, activeLayerNow(), e.shiftKey ? -1 : 1))
       else if (key === "f" && !e.shiftKey) {
@@ -1112,18 +1146,24 @@ export function PcbEditor() {
   // What the render below draws from, made again only when what it depends on changes: hovering or selecting draws the editor again, and on a
   // board of 1,566 parts each of these went through thousands of things every time.
   const placed = useMemo(() => resolvedComponents(project).filter((c) => c.pcb.placed && onBoard(c)), [project])
-  // Every copper layer is opaque; the active one is in front, so gaps in its pour show the others, which lie in stack order (the back first) behind it.
+  // The active layer is in front, whole and in its full colour; the others lie in stack order (the back first) behind it, softer, dimmed or not drawn
+  // (`otherLayers`, as KiCad's inactive layer modes and Altium's single layer mode). Their pours are drawn under all of their copper, so a plane
+  // between them hides no other layer's tracks, and the front layer's pour is a little see-through over them (`copperLook`).
   const stack = copperLayers(project.board)
   const copperOn = (l: CopperLayer) => copperShown({ layers, hiddenCopper }, l)
-  /** A via's ring as the board draws it, or null when none of its layers is shown: one that does not run the whole stack (X5) in the colour of the layer it starts on, dashed. */
+  const layerOrder: CopperLayer[] = layer === "top" && stack.length === 2 ? ["bottom", "top"] : [...[...stack].reverse().filter((l) => l !== layer), layer]
+  const front = frontLayer(stack, layer, copperOn)
+  /** Whether a copper layer is drawn: shown, and the front one when the other layers are hidden. */
+  const drawn = (l: CopperLayer) => copperOn(l) && (otherLayers !== "hide" || l === front)
+  const lookOf = (l: CopperLayer) => copperLook(l, l === front, otherLayers)
+  const behind = layerOrder.filter((l) => l !== front && drawn(l))
+  /** A via's ring as the board draws it, or null when none of its layers is drawn: one that does not run the whole stack (X5) in the colour of the layer it starts on, dashed. */
   const viaLook = (v: Via): { ringColor: string; partial: boolean } | null => {
     const span = viaLayers(project.board, v)
-    if (!span.some((l) => copperOn(l))) return null
+    if (!span.some((l) => drawn(l))) return null
     const partial = v.kind !== undefined
-    return { ringColor: partial ? copperColor(span.find((l) => copperOn(l)) ?? span[0]) : PCB.via, partial }
+    return { ringColor: partial ? copperColor(span.find((l) => drawn(l)) ?? span[0]) : PCB.via, partial }
   }
-  const layerOrder: CopperLayer[] = layer === "top" && stack.length === 2 ? ["bottom", "top"] : [...[...stack].reverse().filter((l) => l !== layer), layer]
-  const front = copperOn(layer) ? layer : [...layerOrder].reverse().find((l) => copperOn(l)) ?? layer
   // An explicit highlight (from the net list) dims everything else; hover only outlines.
   const dimOthers = !!highlightNet
   const selectedComps = selectionIds(selection, "c")
@@ -1138,9 +1178,11 @@ export function PcbEditor() {
   const otherShown = (name: string) => !hiddenShapeLayers[name] && (shapeLayerInfo(name)?.kind !== "silk" || layers.silk)
   const hlName = highlightNet ? netName(highlightNet) : null
   const shapeDim = (net: string | undefined) => (dimOthers && net !== hlName ? 0.3 : 1)
+  /** How strongly the other side is drawn (its silkscreen, drawings and parts): softer, fainter or not at all, as the other copper layers are. */
+  const farSide = otherSideOpacity(otherLayers)
   const sideOpacity = (layerName: string) => {
     const side = shapeLayerInfo(layerName)?.side
-    return side && side !== front ? 0.55 : 1
+    return side && side !== front ? farSide : 1
   }
   const shapeKindOf = (layerName: string) => shapeLayerInfo(layerName)?.kind ?? "user"
   const drawPreview = mode.kind === "draw" && cursor ? previewShape(mode.tool, mode.points, cursor, drawStyle()) : null
@@ -1166,9 +1208,66 @@ export function PcbEditor() {
   // what they show changes, at the zoom step of `drawingPx`: a pan, a zoom within a step and a move of the pointer give React the same elements, so
   // it compares nothing of a board of 100,000 of them (CERN's Macbeth took 1.5 s for each step of a pan, and for each move of the pointer).
   const boardDrawing = (px: number): ReactNode =>
-    keepDrawing(drawings.current, dragKept ? "board!" : "board", [project, pcb, keptSelection, heldNet, layer, layers, hiddenCopper, hiddenShapeLayers, px, imagesRead], () => {
+    keepDrawing(drawings.current, dragKept ? "board!" : "board", [project, pcb, keptSelection, heldNet, layer, layers, hiddenCopper, hiddenShapeLayers, otherLayers, pourLook, px, imagesRead], () => {
       const netOf = (it: CopperItem) => (it.kind === "pad" ? it.netId : null)
       const dim = (net: string | null | undefined) => (dimOthers && net !== highlightNet ? 0.3 : 1)
+      // A layer's pours: filled, or the edge of their copper alone (`pourLook`), which leaves what lies under them in plain sight.
+      const pourDrawing = (l: CopperLayer) => {
+        if (pourLook === "hidden") return null
+        const look = lookOf(l)
+        return (
+          <g key={`pour-${l}`}>
+            {pours
+              .filter((f) => f.layer === l)
+              .map((f) =>
+                pourLook === "outline" ? (
+                  <path key={f.zoneId} d={f.d} fill="none" stroke={look.track} strokeWidth={1.2 * px} strokeLinejoin="round" strokeOpacity={dim(f.netId)} />
+                ) : (
+                  <path key={f.zoneId} d={f.d} fill={look.pour} fillRule="evenodd" fillOpacity={look.pourOpacity * dim(f.netId)} />
+                ),
+              )}
+          </g>
+        )
+      }
+      // A layer's tracks, copper drawings and text and surface-mount pads, in its look.
+      const copperDrawing = (l: CopperLayer) => {
+        const look = lookOf(l)
+        return (
+          <g key={`copper-${l}`}>
+            {/* The tracks: the lit net's glow under all the copper, then the copper, as a path for each width */}
+            {(() => {
+              const glows: [number, PathPiece][] = []
+              const copper: [number, PathPiece][] = []
+              for (const tr of project.traces) {
+                if (tr.layer !== l) continue
+                const net = pcb.traceNet.get(tr.id) ?? null
+                const d = traceD(tr)
+                if (heldNet && net === heldNet) glows.push([dim(net), { style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d }])
+                copper.push([dim(net), { style: `track|${tr.width}`, props: { fill: "none", stroke: look.track, strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d }])
+              }
+              return fadedPaths([...glows, ...copper])
+            })()}
+            {byOpacity(
+              shown
+                .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
+                .map((s): Faded => [shapeDim(s.shape.net), <ShapeDraw key={s.id} shape={s.shape} color={look.track} px={px} selected={false} />]),
+            )}
+            {shownTexts
+              .filter((tx) => textLayerKind(tx.layer) === "copper" && layerOfKicadName(tx.layer) === l)
+              .map((tx) => (
+                <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} color={look.track} />
+              ))}
+            {padPaths(
+              pcb.items.flatMap((it) =>
+                it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l
+                  ? [{ opacity: dim(netOf(it)), pad: it.pad, id: it.id, color: look.pad, highlight: !!heldNet && it.netId === heldNet }]
+                  : [],
+              ),
+              px,
+            )}
+          </g>
+        )
+      }
       return (
         <g>
           {layers.board && outlinePaths?.length ? (
@@ -1182,55 +1281,19 @@ export function PcbEditor() {
             <ReferenceImageDraw key={m.id} image={m} px={px} selected={selected.has(`i:${m.id}`)} />
           ))}
 
-          {layerOrder.map((l) =>
-            copperOn(l) ? (
-              <g key={l}>
-                {pours
-                  .filter((f) => f.layer === l)
-                  .map((f) => (
-                    <path key={f.zoneId} d={f.d} fill={pourColor(l)} fillRule="evenodd" fillOpacity={dim(f.netId)} />
-                  ))}
-                {/* The tracks: the lit net's glow under all the copper, then the copper, as a path for each width */}
-                {(() => {
-                  const glows: [number, PathPiece][] = []
-                  const copper: [number, PathPiece][] = []
-                  for (const tr of project.traces) {
-                    if (tr.layer !== l) continue
-                    const net = pcb.traceNet.get(tr.id) ?? null
-                    const d = traceD(tr)
-                    if (heldNet && net === heldNet) glows.push([dim(net), { style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d }])
-                    copper.push([dim(net), { style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d }])
-                  }
-                  return fadedPaths([...glows, ...copper])
-                })()}
-                {byOpacity(
-                  shown
-                    .filter((s) => shapeKindOf(s.shape.layer) === "copper" && layerOfKicadName(s.shape.layer) === l)
-                    .map((s): Faded => [shapeDim(s.shape.net), <ShapeDraw key={s.id} shape={s.shape} color={copperColor(l)} px={px} selected={false} />]),
-                )}
-                {shownTexts
-                  .filter((tx) => textLayerKind(tx.layer) === "copper" && layerOfKicadName(tx.layer) === l)
-                  .map((tx) => (
-                    <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />
-                  ))}
-                {padPaths(
-                  pcb.items.flatMap((it) =>
-                    it.kind === "pad" && it.layers.length === 1 && it.layers[0] === l
-                      ? [{ opacity: dim(netOf(it)), pad: it.pad, id: it.id, color: l === front ? PCB.pad : PCB.padBack, highlight: !!heldNet && it.netId === heldNet }]
-                      : [],
-                  ),
-                  px,
-                )}
-              </g>
-            ) : null,
-          )}
+          {/* The layers behind the front one: all their pours, then all their copper, so no layer's plane hides another's tracks */}
+          {behind.map(pourDrawing)}
+          {behind.map(copperDrawing)}
+          {/* The front layer, whole, over them */}
+          {drawn(front) && pourDrawing(front)}
+          {drawn(front) && copperDrawing(front)}
 
           {/* Through-hole pads, mounting holes and vias span the layers they have copper on (every one for a through-hole pad and a through via) */}
-          {stack.some((l) => copperOn(l)) && (
+          {stack.some((l) => drawn(l)) && (
             <>
               {padPaths(
                 pcb.items.flatMap((it) =>
-                  it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => copperOn(l))
+                  it.kind === "pad" && it.layers.length >= 2 && it.layers.some((l) => drawn(l))
                     ? [{ opacity: dim(netOf(it)), pad: it.pad, id: it.id, color: PCB.pad, highlight: !!heldNet && it.netId === heldNet }]
                     : [],
                 ),
@@ -1266,7 +1329,7 @@ export function PcbEditor() {
                 const k = textLayerKind(tx.layer)
                 return k !== "copper" && k !== "silk"
               })
-              .map((tx): Faded => [(textSide(tx.layer) && textSide(tx.layer) !== front ? 0.55 : 1) * 0.85, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
+              .map((tx): Faded => [(textSide(tx.layer) && textSide(tx.layer) !== front ? farSide : 1) * 0.85, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
           )}
 
           {/* PCB points (X23): the board's and those of the parts on it, on the layers they name */}
@@ -1282,7 +1345,7 @@ export function PcbEditor() {
               {byOpacity(
                 shownTexts
                   .filter((tx) => textLayerKind(tx.layer) === "silk")
-                  .map((tx): Faded => [textSide(tx.layer) !== front ? 0.55 : 1, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
+                  .map((tx): Faded => [textSide(tx.layer) !== front ? farSide : 1, <TextDraw key={tx.id} t={tx} project={project} px={px} selected={false} />]),
               )}
               <OtherZoneFills fills={otherFills} silk shown={otherShown} opacityOf={sideOpacity} />
               {byOpacity(
@@ -1292,7 +1355,7 @@ export function PcbEditor() {
               )}
               {byOpacity(
                 placed.map((c): Faded => [
-                  c.pcb.side === front ? 1 : 0.55,
+                  c.pcb.side === front ? 1 : farSide,
                   <g key={`s${c.id}`}>
                     {pcbSilk(c).map((path, i) => (
                       <polyline
@@ -1315,7 +1378,7 @@ export function PcbEditor() {
       )
     })
   const passingHighlight = (px: number): ReactNode =>
-    keepDrawing(drawings.current, "passing", [project, pcb, passingNet, layer, layers, hiddenCopper, px], () => {
+    keepDrawing(drawings.current, "passing", [project, pcb, passingNet, layer, layers, hiddenCopper, otherLayers, px], () => {
       if (!passingNet) return null
       // As few paths as the board's own copper (`boardPaths.tsx`), from the net's own copper (`netCopper`): pointing at a pad of a ground net lights
       // thousands of pieces of copper. It is drawn over the whole board, so only the front layer's copper is drawn again (it is on top anyway): the
@@ -1324,7 +1387,7 @@ export function PcbEditor() {
       return (
         <g>
           {layerOrder.map((l) => {
-            if (!copperOn(l)) return null
+            if (!drawn(l)) return null
             const glows: PathPiece[] = []
             const copper: PathPiece[] = []
             for (const tr of net.traces) {
@@ -1344,7 +1407,7 @@ export function PcbEditor() {
             )
           })}
           {padPaths(
-            net.pads.flatMap((it) => (it.layers.length >= 2 && it.layers.some((l) => copperOn(l)) ? [{ opacity: 1, pad: it.pad, id: it.id, color: PCB.pad, highlight: true }] : [])),
+            net.pads.flatMap((it) => (it.layers.length >= 2 && it.layers.some((l) => drawn(l)) ? [{ opacity: 1, pad: it.pad, id: it.id, color: PCB.pad, highlight: true }] : [])),
             px,
           )}
           {viaPaths(
@@ -1363,18 +1426,18 @@ export function PcbEditor() {
     })
   const hoveredPart = hover?.type === "component" ? hover.id : null
   const selectionDrawing = (px: number): ReactNode =>
-    keepDrawing(drawings.current, "selection", [project, pcb, selection, hoveredPart, layer, layers, hiddenCopper, hiddenShapeLayers, px], () => {
+    keepDrawing(drawings.current, "selection", [project, pcb, selection, hoveredPart, layer, layers, hiddenCopper, hiddenShapeLayers, otherLayers, px], () => {
       if (!selection.length && !hoveredPart) return null
       // Drawn over the board as the lit net is (`passingHighlight`): a selected track of a layer behind the front one is its glow alone, and nothing
       // on a copper layer that is hidden is drawn.
       const onShownCopper = (name: string) => {
         const l = layerOfKicadName(name)
-        return !!l && copperOn(l)
+        return !!l && drawn(l)
       }
       return (
         <g>
           {layerOrder.map((l) =>
-            copperOn(l)
+            drawn(l)
               ? project.traces
                   .filter((tr) => tr.layer === l && selected.has(`t:${tr.id}`))
                   .map((tr) => {
@@ -1389,7 +1452,7 @@ export function PcbEditor() {
               : null,
           )}
           {project.vias
-            .filter((v) => selected.has(`v:${v.id}`) && viaLayers(project.board, v).some((l) => copperOn(l)))
+            .filter((v) => selected.has(`v:${v.id}`) && viaLayers(project.board, v).some((l) => drawn(l)))
             .map((v) => (
               <g key={v.id}>
                 <circle cx={v.x} cy={v.y} r={v.diameter / 2} fill={PCB.select} />
@@ -1439,14 +1502,14 @@ export function PcbEditor() {
   const movedParts = dragKept && mode.kind === "drag" ? new Set(mode.ids) : null
   const reshapedTraces = dragKept && reshaping && dragBase ? (() => {
     const before = new Set(dragBase.traces)
-    return project.traces.filter((t) => !before.has(t) && copperOn(t.layer))
+    return project.traces.filter((t) => !before.has(t) && drawn(t.layer))
   })() : []
   const movingDrawing = (px: number): ReactNode => {
     if (reshapedTraces.length)
       return (
         <g>
           {reshapedTraces.map((tr) => (
-            <path key={tr.id} d={traceD(tr)} fill="none" stroke={copperColor(tr.layer)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
+            <path key={tr.id} d={traceD(tr)} fill="none" stroke={lookOf(tr.layer).track} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />
           ))}
         </g>
       )
@@ -1457,12 +1520,12 @@ export function PcbEditor() {
     return (
       <g>
         {padPaths(
-          pads.map((it) => ({ opacity: 1, pad: it.pad, id: it.id, color: it.layers.includes(front) ? PCB.pad : PCB.padBack, highlight: false })),
+          pads.flatMap((it) => (it.layers.some((l) => drawn(l)) ? [{ opacity: 1, pad: it.pad, id: it.id, color: it.layers.length >= 2 || it.layers.includes(front) ? PCB.pad : lookOf(it.layers[0]).pad, highlight: false }] : [])),
           px,
         )}
         {layers.silk &&
-          moved.map((c) => (
-            <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : 0.55}>
+          moved.filter((c) => c.pcb.side === front || farSide > 0).map((c) => (
+            <g key={`s${c.id}`} opacity={c.pcb.side === front ? 1 : farSide}>
               {pcbSilk(c).map((path, i) => (
                 <polyline key={i} points={path.map((q) => `${q.x},${q.y}`).join(" ")} fill="none" stroke={c.pcb.side === "top" ? PCB.silk : PCB.silkBottom} strokeWidth={SILK_WIDTH} strokeLinecap="round" strokeLinejoin="round" />
               ))}

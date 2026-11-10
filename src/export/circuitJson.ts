@@ -1088,7 +1088,7 @@ function projectToCircuitJsonFlat(project: Project, options: { nameAllNets?: boo
     else drawingNotes.push("Solder mask, paste, adhesive and user layer drawings have no element in Circuit JSON and are left out.")
   }
 
-  // ---------- Text of a board brought in from KiCad ----------
+  // ---------- Text on the board and of its parts ----------
   // The KiCad export writes it itself, with its pen, justification and every attribute, so it is left out of the circuit it converts.
   if (!options.forKicad && worldTexts(project).some((t) => t.placed && !t.hidden)) {
     const written = textElements(project, { pcbIds: new Map(parts.map((p) => [p.c.id, p.pcbId])), next: (prefix) => ids.next(prefix) })

@@ -121,7 +121,7 @@ export function boardPreviewSvg(project: Project, fills: ZoneFill[]): string {
   out.push(`<g fill="none" stroke="${silk}" stroke-linecap="round" stroke-linejoin="round" opacity="0.92">`)
   for (const c of parts) if (c.pcb.side === "top") for (const path of pcbSilk(c)) out.push(`<polyline points="${pts(path)}" stroke-width="0.15"/>`)
   for (const wt of worldTexts(project)) {
-    const t = wt.owner === "#board" && wt.layer === "F.SilkS" ? layerText(project, wt) : null
+    const t = wt.owner === "#board" && wt.layer === "F.SilkS" && !wt.hidden ? layerText(project, wt) : null
     if (!t) continue
     for (const s of t.strokes) out.push(`<polyline points="${pts(s.length === 1 ? [s[0], s[0]] : s)}" stroke-width="${n(t.pen)}"/>`)
     if (t.fills.length) out.push(`<path d="${t.fills.flat().map((ring) => `M${pts(ring)}Z`).join("")}" fill="${silk}" stroke="none" fill-rule="evenodd"/>`)

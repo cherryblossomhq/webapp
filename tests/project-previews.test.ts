@@ -36,6 +36,7 @@ describe("boardPreviewSvg", () => {
     const bare = lines([])
     expect(lines(p.texts)).toBeGreaterThan(bare)
     expect(lines(p.texts.map((t) => ({ ...t, layer: "B.SilkS", mirror: true as const, side: "bottom" as const })))).toBe(bare)
+    expect(lines(p.texts.map((t) => ({ ...t, hide: true })))).toBe(bare)
   })
 
   it("writes a colour from the file into the markup only when it is a hex colour", () => {

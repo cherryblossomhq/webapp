@@ -1022,7 +1022,7 @@ const drawTraceTool: PcbToolSpec = {
 const pcbTextTool: PcbToolSpec = {
   name: "pcb_text",
   description:
-    "Put text on the board, as the PCB editor's text tool does (a connector's A, B, C, a board name, a version): x, y its middle, size its height, 1 mm by default. layer F.SilkS by default, B.SilkS (mirrored), F.Fab or copper (F.Cu, B.Cu), which may not touch another net. With id (get_design lists board texts), change, move or remove it. With refs, the parts' designators on the silkscreen instead (field value: their value text, where they have one): alone, where each is; x, y (one part), size, rotation, layer (silkscreen or fab), hidden true or false, remove hides it, reset places it for you again. A designator is the part's reference: rename with update_component new_ref.",
+    "Put text on the board, as the PCB editor's text tool does (a connector's A, B, C, a board name, a version): x, y its middle, size its height, 1 mm by default. layer F.SilkS by default, B.SilkS (mirrored), F.Fab or copper (F.Cu, B.Cu), which may not touch another net. With id (get_design lists board texts), change, move or remove it. With refs, the parts' designators on the silkscreen instead (field value: their value text, where they have one): alone, where each is; x, y (one part), size, rotation, layer (silkscreen or fab), hidden true or false, remove hides it, reset places it for you again (and drops the part's other texts, its value and fab texts too). A designator is the part's reference: rename with update_component new_ref.",
   input_schema: {
     type: "object",
     properties: {

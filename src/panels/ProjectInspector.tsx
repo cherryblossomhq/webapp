@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { uid } from "../lib/id"
 import { KicadReportDialog } from "../kicadImport/ReportDialog"
 import { loadReport } from "../kicadImport/reportStore"
-import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, SURFACE_FINISHES } from "../model/board"
+import { boardColors, boardFinish, DEFAULT_MASK_COLOR, defaultSilkColor, MOUNTING_HOLE_PRESETS, mountingHoles, SURFACE_FINISHES } from "../model/board"
 import { boardAreaMm2, describeOutline } from "../model/outline"
 import { resetOutline } from "../model/outlineOps"
 import { clearImportedNoConnect, importedNoConnectCount } from "../model/importMarks"
@@ -313,6 +313,65 @@ function BoardSection({ project }: { project: Project }) {
         </Group>
       )}
       <Stackup project={project} />
+    </Section>
+  )
+}
+
+/**
+ * The board's corner mounting holes, picked on the board: one setting for all four (a hole in each corner, `inset` from both edges), so a change
+ * here changes them all, and Remove takes all four away (the Board section's Mounting holes brings them back).
+ */
+export function MountingHolesInspector({ project }: { project: Project }) {
+  const m = project.board.mountingHoles
+  const holes = mountingHoles(project.board)
+  const unit = useLengthUnit()
+  if (!m || !holes.length) return null
+  // A screw is its drill and pad. How far in the holes sit is kept when the screw changes, unless it is nearer the edge than the screw's own inset.
+  const preset = MOUNTING_HOLE_PRESETS.find((o) => o.holes.drill === m.drill && o.holes.diameter === m.diameter)
+  const set = (patch: Partial<typeof m>) => {
+    const next = { ...m, ...patch }
+    // The ring is never narrower than the drill: a drill as wide as it (or wider) is a hole with no copper round it.
+    setBoard({ mountingHoles: { ...next, diameter: Math.max(next.diameter, next.drill) } })
+  }
+  return (
+    <Section title="Mounting holes">
+      <Row label="Holes" value={`${holes.length}, one in each corner`} />
+      <Row label="Annular ring" value={`${formatLength((m.diameter - m.drill) / 2, unit)} ${unit}`} mono />
+      <Group label="Screw">
+        <Segmented
+          size="sm"
+          value={preset?.id ?? "custom"}
+          onChange={(v) => {
+            const picked = MOUNTING_HOLE_PRESETS.find((o) => o.id === v)?.holes
+            if (picked) setBoard({ mountingHoles: { ...picked, inset: Math.max(m.inset, picked.inset) } })
+          }}
+          options={[
+            ...MOUNTING_HOLE_PRESETS.map((o) => ({ value: o.id, label: o.label, title: `${o.holes.drill} mm drill, ${o.holes.diameter} mm pad` })),
+            ...(preset ? [] : [{ value: "custom", label: "Custom", title: "A drill or pad of its own" }]),
+          ]}
+        />
+      </Group>
+      <div className="grid grid-cols-3 gap-2">
+        <Field label="Drill">
+          <LengthInput ariaLabel="Mounting hole drill" min={0.1} value={m.drill} onCommit={(v) => v !== null && set({ drill: v })} />
+        </Field>
+        <Field label="Pad">
+          <LengthInput ariaLabel="Mounting hole pad" min={0.1} value={m.diameter} onCommit={(v) => v !== null && set({ diameter: v })} />
+        </Field>
+        <Field label="From edges">
+          <LengthInput ariaLabel="Mounting hole inset" min={0} value={m.inset} onCommit={(v) => v !== null && set({ inset: v })} />
+        </Field>
+      </div>
+      <p className="text-[12px] text-ink-3">The four corner holes are one setting of the board: a change here changes all of them.</p>
+      <Button
+        variant="danger"
+        onClick={() => {
+          setBoard({ mountingHoles: null })
+          uiApi().clearSelection()
+        }}
+      >
+        <Trash2 size={14} /> Remove mounting holes
+      </Button>
     </Section>
   )
 }

@@ -72,6 +72,12 @@ export function mountingHoles(b: BoardDef): MountingHole[] {
   ].map((p) => ({ ...p, drill: m.drill, diameter: m.diameter }))
 }
 
+/** A corner mounting hole's selection id in the PCB view (`mh:<hole id>`). The four are one setting of the board, so a click picks them all. */
+export const mountingHoleSelectionId = (id: string) => `mh:${id}`
+
+/** The corner mounting holes a selection holds, by hole id. */
+export const selectedMountingHoles = (selection: readonly string[]): string[] => selection.filter((s) => s.startsWith("mh:")).map((s) => s.slice(3))
+
 export const M3_HOLES = { drill: 3.2, diameter: 6, inset: 3.5 }
 
 /** Corner holes for common screws: clearance drill, plated ring and edge inset. */

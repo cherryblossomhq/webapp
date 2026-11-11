@@ -17,9 +17,10 @@ import {
 import { findPart } from "../../model/library"
 import { pcbCourtyard, pcbSilk, type WorldPad } from "../../model/instances"
 import { addTrace, autoPlacePcb, netTraceWidth, removeItems, unplacedParts, updateComponent } from "../../model/ops"
-import { mountingHoles } from "../../model/board"
+import { mountingHoles, mountingHoleSelectionId, selectedMountingHoles } from "../../model/board"
 import { addOutlinePaths, addOutlineShape, addSlot, moveOutlineArcMid, moveOutlineVertex, nearestOutlineSeg, outlineSelectionId, parseOutlineSelectionId, pathVertices, removeOutlinePath, slotPath, splitOutlineSeg, toggleOutlineArc, translateOutlinePath } from "../../model/outlineOps"
 import { pathsSvgPath, segEnd, segStart, type ShapePath } from "../../model/shapes"
+import { outlineGeometry, pointInRing } from "../../model/outline"
 import { BOARD_OWNER, pointPadDistance, segmentPadDistance, type CopperItem } from "../../model/pcb"
 import { addDimension, expandToGroups, groupSelection, removeDimensions, removeImages, topGroup, touchesGroup } from "../../model/boardObjects"
 import { lockedInSelection, moveObjects, rotateObjects, selectionBounds } from "../../model/groupMoves"
@@ -47,7 +48,7 @@ import { PeerCursors, PeerSelections } from "../PeerLayer"
 import { clampLayer, copperLayers, layerLabel, layerOfKicadName, viaLayers } from "../../model/stack"
 import { arcOf, closestPointOnArc, isArcTrace, pointArcDistance } from "../../model/arcTracks"
 import { makeArcTrace, makeVia, moveArcPoint, nextCopperLayer } from "../../model/layerOps"
-import { traceD } from "./traceGraphics"
+import { litTrack, selectedTrack, traceD } from "./traceGraphics"
 import { dragSegment, dragVertex, planSegmentDrag, planVertexDrag, snapSegmentMove, type SegmentDrag, type VertexDrag } from "../../model/traceDrag"
 import { hitIndex, netCopper } from "./hitIndex"
 import { byOpacity, fadedPaths, mergedPaths, padPaths, viaPaths, type PathPiece } from "./boardPaths"
@@ -86,6 +87,8 @@ export const PCB_GRID = 0.25
 type Hit =
   | { type: "pad"; pad: WorldPad; netId: string | null }
   | { type: "via"; id: string; at: Vec2 }
+  /** One of the board's corner mounting holes, by its id (`mountingHoles`). */
+  | { type: "hole"; id: string }
   /** `seg` is the segment the point is on (its first point's index); an arc track's is 0. */
   | { type: "trace"; id: string; point: Vec2; layer: CopperLayer; seg: number }
   | { type: "component"; id: string }
@@ -155,6 +158,9 @@ function drawnAlone(name: string, front: CopperLayer): boolean {
   return !side || side === front
 }
 
+/** How the analysis names a corner mounting hole's pad: this, then the hole's id. */
+const BOARD_HOLE_PREFIX = `pad:${BOARD_OWNER}:`
+
 function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): Hit | null {
   const bb = boardBox(p)
   if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) return { type: "boardHandle" }
@@ -170,9 +176,11 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
   const pads = index.padGrid.near(near).map((i) => index.pads[i])
   for (const pass of alone ? [true] : [true, false]) {
     for (const it of pads) {
-      if (it.pad.componentId === BOARD_OWNER) continue
       if (pass && !it.layers.includes(alone ?? layer)) continue
-      if (pointPadDistance(at, it.pad) <= tol * 0.5) return { type: "pad", pad: it.pad, netId: it.netId }
+      if (pointPadDistance(at, it.pad) > tol * 0.5) continue
+      // The board's own corner holes are pads of no part: picked as the holes they are, as KiCad picks a mounting hole's footprint.
+      if (it.pad.componentId === BOARD_OWNER) return { type: "hole", id: it.id.slice(BOARD_HOLE_PREFIX.length) }
+      return { type: "pad", pad: it.pad, netId: it.netId }
     }
   }
   for (const i of index.viaGrid.near(near)) {
@@ -222,8 +230,16 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
   }
   // The board's own outline, last: a part or copper on the edge is picked before it.
   if (p.board.outline?.paths.length) {
-    const near = nearestOutlineSeg(p.board.outline.paths, at)
+    const paths = p.board.outline.paths
+    const near = nearestOutlineSeg(paths, at)
     if (near && near.distance <= tol * 0.5) return { type: "outline", path: near.path, seg: near.seg }
+    // A cutout (a slot, a hole cut through the board) is picked anywhere inside it too, the smallest that holds the point: there is nothing else in
+    // a hole to click, and its edge is a hairline.
+    const hole = outlineGeometry(p.board)
+      ?.rings.filter((r) => r.hole && pointInBox(at, r.box) && pointInRing(at, r.pts))
+      .sort((a, b) => a.area - b.area)[0]
+    const edge = hole && nearestOutlineSeg([paths[hole.path]], at)
+    if (hole && edge) return { type: "outline", path: hole.path, seg: edge.seg }
   }
   // A reference image is under everything else, so it is picked only where nothing is on top of it.
   const image = hitImage(p, at, vis)
@@ -241,6 +257,7 @@ function hitSelectionId(h: Hit | null): string | null {
   if (!h) return null
   if (h.type === "pad") return `c:${h.pad.componentId}`
   if (h.type === "via") return `v:${h.id}`
+  if (h.type === "hole") return mountingHoleSelectionId(h.id)
   if (h.type === "trace") return `t:${h.id}`
   if (h.type === "component") return `c:${h.id}`
   if (h.type === "shape") return h.id
@@ -729,9 +746,10 @@ export function PcbEditor() {
         return
       }
     }
-    // Ctrl or Cmd picks the one object, inside its group; otherwise a group is picked whole, as KiCad picks one.
+    // Ctrl or Cmd picks the one object, inside its group; otherwise a group is picked whole, as KiCad picks one. The corner holes are one setting
+    // of the board, so they are picked together.
     const alone = native.ctrlKey || native.metaKey
-    const picked = alone ? [id] : expandToGroups(p, [id])
+    const picked = h?.type === "hole" ? mountingHoles(p.board).map((x) => mountingHoleSelectionId(x.id)) : alone ? [id] : expandToGroups(p, [id])
     if (native.shiftKey) {
       const have = new Set(uiApi().selection)
       if (picked.every((x) => have.has(x))) uiApi().select(uiApi().selection.filter((x) => !picked.includes(x)))
@@ -907,7 +925,7 @@ export function PcbEditor() {
     }
   }
 
-  const onDoubleClick = () => {
+  const onDoubleClick = (e: ViewportPointerEvent) => {
     const m = modeRef.current
     if (m.kind === "route") {
       commitRoute(m)
@@ -918,6 +936,13 @@ export function PcbEditor() {
     } else if (m.kind === "zone") {
       commitZone(m)
       setMode({ kind: "idle" })
+    } else if (m.kind === "idle" && tool === "select") {
+      // A double click on anything opens it in the Inspector, as KiCad and Altium open an object's properties. The clicks before it picked it (with
+      // its group, or the other corner holes), and that selection stays.
+      const id = hitSelectionId(hitTest(project, e.world, tol(), layer, pcb.items, pcb.zoneFills))
+      if (!id) return
+      if (!uiApi().selection.includes(id)) uiApi().select([id])
+      uiApi().setSidePanel("inspector")
     }
   }
 
@@ -1091,9 +1116,12 @@ export function PcbEditor() {
         const outlinePieces = sel.map(parseOutlineSelectionId).filter((x): x is { path: number; seg: number } => x !== null)
         if (held.size) setNote(`${held.size} locked ${held.size === 1 ? "object stays" : "objects stay"}; unlock ${held.size === 1 ? "it" : "them"} (or the group) to delete ${held.size === 1 ? "it" : "them"}`)
         const zoneIds = selectedZoneIds(sel)
-        if (!traces.length && !vias.length && !drawings.length && !texts.length && !dims.length && !images.length && !outlinePieces.length && !zoneIds.length) return
+        // The corner holes go together: they are one setting of the board (the Board section's Mounting holes brings them back).
+        const holes = selectedMountingHoles(sel).length > 0
+        if (!traces.length && !vias.length && !drawings.length && !texts.length && !dims.length && !images.length && !outlinePieces.length && !zoneIds.length && !holes) return
         e.preventDefault()
-        projectApi().commit((p0) => {
+        projectApi().commit((current) => {
+          const p0 = holes ? { ...current, board: { ...current.board, mountingHoles: null } } : current
           const p = zoneIds.length ? removeZones(p0, zoneIds.filter((id) => !p0.zones.find((z) => z.id === id)?.locked)) : p0
           // Shapes of the outline go last index first, so the others keep their numbers.
           const shapesOut = [...new Set(outlinePieces.map((x) => x.path))].sort((a, b) => b - a).reduce((acc, idx) => removeOutlinePath(acc, idx), p)
@@ -1234,18 +1262,18 @@ export function PcbEditor() {
         const look = lookOf(l)
         return (
           <g key={`copper-${l}`}>
-            {/* The tracks: the lit net's glow under all the copper, then the copper, as a path for each width */}
+            {/* The tracks: the copper, as a path for each width, then the lit net's tracks lit over it at their own width */}
             {(() => {
-              const glows: [number, PathPiece][] = []
               const copper: [number, PathPiece][] = []
+              const lit: [number, PathPiece][] = []
               for (const tr of project.traces) {
                 if (tr.layer !== l) continue
                 const net = pcb.traceNet.get(tr.id) ?? null
                 const d = traceD(tr)
-                if (heldNet && net === heldNet) glows.push([dim(net), { style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d }])
                 copper.push([dim(net), { style: `track|${tr.width}`, props: { fill: "none", stroke: look.track, strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d }])
+                if (heldNet && net === heldNet) lit.push([dim(net), litTrack(d, tr.width, false)])
               }
-              return fadedPaths([...glows, ...copper])
+              return fadedPaths([...copper, ...lit])
             })()}
             {byOpacity(
               shown
@@ -1382,23 +1410,24 @@ export function PcbEditor() {
       if (!passingNet) return null
       // As few paths as the board's own copper (`boardPaths.tsx`), from the net's own copper (`netCopper`): pointing at a pad of a ground net lights
       // thousands of pieces of copper. It is drawn over the whole board, so only the front layer's copper is drawn again (it is on top anyway): the
-      // other layers' tracks get their glow and their pads their lit outline, and none of their copper covers what lies above it.
+      // other layers' tracks are lit alone and their pads get their lit outline, and none of their copper covers what lies above it. A lit track
+      // is lit at its own width (`litTrack`): a glow round it read as a wider track.
       const net = netCopper(project, pcb, passingNet) ?? { traces: [], pads: [], vias: [] }
       return (
         <g>
           {layerOrder.map((l) => {
             if (!drawn(l)) return null
-            const glows: PathPiece[] = []
             const copper: PathPiece[] = []
+            const lit: PathPiece[] = []
             for (const tr of net.traces) {
               if (tr.layer !== l) continue
               const d = traceD(tr)
-              glows.push({ style: `glow|${tr.width}`, props: { fill: "none", stroke: PCB.select, strokeWidth: tr.width + 3 * px, strokeLinecap: "round", strokeLinejoin: "round", strokeOpacity: 0.6 }, d })
               if (l === front) copper.push({ style: `track|${tr.width}`, props: { fill: "none", stroke: copperColor(l), strokeWidth: tr.width, strokeLinecap: "round", strokeLinejoin: "round" }, d })
+              lit.push(litTrack(d, tr.width, l !== front))
             }
             return (
               <g key={l}>
-                {mergedPaths([...glows, ...copper])}
+                {mergedPaths([...copper, ...lit])}
                 {padPaths(
                   net.pads.flatMap((it) => (it.layers.length === 1 && it.layers[0] === l ? [{ opacity: 1, pad: it.pad, id: it.id, color: PCB.pad, highlight: true, outline: l !== front }] : [])),
                   px,
@@ -1428,8 +1457,9 @@ export function PcbEditor() {
   const selectionDrawing = (px: number): ReactNode =>
     keepDrawing(drawings.current, "selection", [project, pcb, selection, hoveredPart, layer, layers, hiddenCopper, hiddenShapeLayers, otherLayers, px], () => {
       if (!selection.length && !hoveredPart) return null
-      // Drawn over the board as the lit net is (`passingHighlight`): a selected track of a layer behind the front one is its glow alone, and nothing
-      // on a copper layer that is hidden is drawn.
+      // Drawn over the board as the lit net is (`passingHighlight`), and every piece at its own size, never bigger: a selected track keeps its width
+      // (`selectedTrack`), and one of a layer behind the front one is lit alone, over the front layer's copper. Nothing on a copper layer that is
+      // hidden is drawn.
       const onShownCopper = (name: string) => {
         const l = layerOfKicadName(name)
         return !!l && drawn(l)
@@ -1440,17 +1470,18 @@ export function PcbEditor() {
             drawn(l)
               ? project.traces
                   .filter((tr) => tr.layer === l && selected.has(`t:${tr.id}`))
-                  .map((tr) => {
-                    const d = traceD(tr)
-                    return (
-                      <g key={tr.id}>
-                        <path d={d} fill="none" stroke={PCB.select} strokeWidth={tr.width + 3 * px} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.95} />
-                        {l === front && <path d={d} fill="none" stroke={copperColor(l)} strokeWidth={tr.width} strokeLinecap="round" strokeLinejoin="round" />}
-                      </g>
-                    )
-                  })
+                  .map((tr) => <g key={tr.id}>{mergedPaths(selectedTrack(traceD(tr), tr.width, px, l === front ? copperColor(l) : null))}</g>)
               : null,
           )}
+          {stack.some((l) => drawn(l)) &&
+            mountingHoles(project.board)
+              .filter((h) => selected.has(mountingHoleSelectionId(h.id)))
+              .map((h) => (
+                <g key={h.id}>
+                  <circle cx={h.x} cy={h.y} r={h.diameter / 2} fill={PCB.select} />
+                  <circle cx={h.x} cy={h.y} r={h.drill / 2} fill={PCB.hole} />
+                </g>
+              ))}
           {project.vias
             .filter((v) => selected.has(`v:${v.id}`) && viaLayers(project.board, v).some((l) => drawn(l)))
             .map((v) => (

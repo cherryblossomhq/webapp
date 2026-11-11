@@ -882,7 +882,8 @@ export function SchematicEditor() {
       const f = frames.find((x) => x.id === h.id)!
       uiApi().select([`b:${f.id}`])
       setEditing({ kind: "block", id: f.id, value: f.name })
-    } else if (h?.type === "component" || h?.type === "block") {
+    } else if (h?.type === "component" || h?.type === "block" || h?.type === "field") {
+      // A part, its designator or value, or a block opens in the Inspector.
       uiApi().select([hitId(h)!])
       uiApi().setSidePanel("inspector")
     }

@@ -16,6 +16,7 @@ import { isExact } from "../model/sheetItems"
 import { removeItems, updateComponent } from "../model/ops"
 import { partSourceLine } from "../model/partSource"
 import { removeDimensions, removeImages } from "../model/boardObjects"
+import { selectedMountingHoles } from "../model/board"
 import { removeGraphics } from "../model/shapeOps"
 import { addUnit, mirrorSelection, renameReference, rotateSelection, setFieldPlace, setSymbolVariant } from "../model/schematicEdit"
 import { bodyStyleCount, fieldPlaceOf, hasFieldPlaces, unitCount, unitLetters } from "../model/symbolDrawing"
@@ -41,7 +42,7 @@ import { ViaMachiningSection } from "./MachiningPanels"
 import { NetLengthSection } from "./GeneratorPanels"
 import { DrawingInspector } from "./DrawingInspector"
 import { ModelSection } from "./ModelSection"
-import { ProjectInspector } from "./ProjectInspector"
+import { MountingHolesInspector, ProjectInspector } from "./ProjectInspector"
 import { ComponentVariantsSection } from "./VariantPanels"
 import { DrawingInspector as BoardDrawingInspector, PartDrawingsSection } from "./ShapePanels"
 import { DimensionInspector, GroupSection, ImageInspector } from "./BoardObjectPanels"
@@ -152,6 +153,8 @@ export function Inspector() {
     return <BoardDrawingInspector graphics={graphics} />
   }
   if (selection.length > 0 && selection.every((id) => parseOutlineSelectionId(id) !== null)) return <OutlineInspector project={project} selection={selection} />
+  const holes = selectedMountingHoles(selection)
+  if (holes.length > 0 && holes.length === selection.length) return <MountingHolesInspector project={project} />
   if (selection.length > 0) {
 
     const counts = [
@@ -167,6 +170,7 @@ export function Inspector() {
       [dimensions.length, "dimension"],
       [images.length, "image"],
       [zoneIds.length, "zone"],
+      [holes.length, "mounting hole"],
       [sheetIds.length, "sheet"],
       [entries.length, "sheet entry"],
     ].filter(([n]) => n) as [number, string][]
@@ -202,6 +206,7 @@ export function Inspector() {
                 for (const t of texts.filter((x) => x.kind === "user").sort((a, b) => b.index - a.index)) out = removePartText(out, t.owner, t.index)
                 if (dimSel.length) out = removeDimensions(out, dimSel)
                 if (imgSel.length) out = removeImages(out, imgSel)
+                if (holes.length) out = { ...out, board: { ...out.board, mountingHoles: null } }
                 return out
               })
               uiApi().clearSelection()

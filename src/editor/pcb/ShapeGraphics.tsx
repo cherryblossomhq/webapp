@@ -37,6 +37,7 @@ function pieceD(p: DashPiece): string {
 /**
  * One drawing: stroked by its width with round caps and joins, filled when it is, cut into
  * dashes the way the Gerber cuts it. Mask and paste are drawn thin, so they read as outlines.
+ * Selected, it is lit at its own size, never bigger: a drawing's width is made on the board.
  */
 export function ShapeDraw({ shape, color, px, selected = false, opacity = 1 }: { shape: BoardShape; color: string; px: number; selected?: boolean; opacity?: number }) {
   const kind = shapeLayerInfo(shape.layer)?.kind
@@ -47,7 +48,6 @@ export function ShapeDraw({ shape, color, px, selected = false, opacity = 1 }: {
   const dashed = shape.dash ? dashShape(shape) : []
   return (
     <g opacity={opacity}>
-      {selected && <path d={d} fill="none" stroke={PCB.select} strokeWidth={width + 3 * px} strokeLinecap="round" strokeLinejoin="round" opacity={0.95} />}
       {shape.fill ? (
         <path d={d} fill={color} fillOpacity={soft ? 0.4 : 1} fillRule="evenodd" stroke={dashed.length ? "none" : color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" />
       ) : null}
@@ -64,6 +64,12 @@ export function ShapeDraw({ shape, color, px, selected = false, opacity = 1 }: {
           <polygon key={i} points={points} fill={color} fillOpacity={soft ? 0.4 : 1} stroke={part.width > 0 ? color : "none"} strokeWidth={part.width} strokeLinejoin="round" />
         )
       })}
+      {selected && shape.fill && (
+        <path d={d} fill={PCB.select} fillRule="evenodd" stroke={dashed.length ? "none" : PCB.select} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />
+      )}
+      {selected && (dashed.length || !shape.fill) && (
+        <path d={dashed.length ? dashed.map(pieceD).join("") : d} fill="none" stroke={PCB.select} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />
+      )}
     </g>
   )
 }

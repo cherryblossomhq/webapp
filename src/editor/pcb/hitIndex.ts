@@ -1,9 +1,11 @@
 import { CellGrid } from "../../lib/cellGrid"
 import { emptyBox, expandBox, type Box } from "../../lib/geometry"
 import { arcOf, isArcTrace } from "../../model/arcTracks"
-import { pcbCourtyard } from "../../model/instances"
+import { pcbCourtyard, pcbSilk } from "../../model/instances"
+import { onBoard } from "../../model/partFlags"
 import type { CopperItem, PcbAnalysis } from "../../model/pcb"
 import { resolvedComponents } from "../../model/ruleAreas"
+import { getDesignators, SILK_WIDTH } from "../../model/silk"
 import type { ComponentInstance, Project, Trace, Via, Vec2 } from "../../model/types"
 
 // What the pointer is over, found among what is near it: the PCB view asks on every move of the pointer, and going through each of a board's
@@ -22,6 +24,11 @@ interface HitIndex {
   /** The parts that are placed, in the order of `resolvedComponents`, with their courtyards. */
   parts: { c: ComponentInstance; courtyard: Box }[]
   partGrid: CellGrid
+  /** The silkscreen the board draws for each part on it (`pcbSilk`): its outline's lines, and its automatic designator. */
+  silk: { c: ComponentInstance; path: Vec2[] }[]
+  silkGrid: CellGrid
+  designators: { c: ComponentInstance; box: Box }[]
+  designatorGrid: CellGrid
 }
 
 /** The box of points, `pad` round them. */
@@ -57,7 +64,25 @@ export function hitIndex(p: Project, items: CopperItem[]): HitIndex {
     partGrid.add(parts.length, courtyard)
     parts.push({ c, courtyard })
   }
-  const index = { pads, padGrid, viaGrid, traceGrid, parts, partGrid }
+  const silk: HitIndex["silk"] = []
+  const silkGrid = new CellGrid()
+  const designators: HitIndex["designators"] = []
+  const designatorGrid = new CellGrid()
+  const labels = getDesignators(p)
+  for (const c of resolvedComponents(p)) {
+    if (!c.pcb.placed || !onBoard(c)) continue
+    for (const path of pcbSilk(c)) {
+      if (path.length < 2) continue
+      silkGrid.add(silk.length, boxOf(path, SILK_WIDTH / 2))
+      silk.push({ c, path })
+    }
+    const d = labels.get(c.id)
+    if (d) {
+      designatorGrid.add(designators.length, d.box)
+      designators.push({ c, box: d.box })
+    }
+  }
+  const index = { pads, padGrid, viaGrid, traceGrid, parts, partGrid, silk, silkGrid, designators, designatorGrid }
   indexKept = { p, items, index }
   return index
 }

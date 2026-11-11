@@ -24,7 +24,7 @@ import { outlineGeometry, pointInRing } from "../../model/outline"
 import { BOARD_OWNER, pointPadDistance, segmentPadDistance, type CopperItem } from "../../model/pcb"
 import { addDimension, expandToGroups, groupSelection, removeDimensions, removeImages, topGroup, touchesGroup } from "../../model/boardObjects"
 import { lockedInSelection, moveObjects, rotateObjects, selectionBounds } from "../../model/groupMoves"
-import { worldShapes } from "../../model/shapeItems"
+import { BOARD_SHAPE_OWNER, worldShapes, type WorldShape } from "../../model/shapeItems"
 import { shapeLayerInfo } from "../../model/shapeLayers"
 import { textLayerKind } from "../../model/texts"
 import { addGraphic, moveGraphics, removeGraphics } from "../../model/shapeOps"
@@ -161,7 +161,31 @@ function drawnAlone(name: string, front: CopperLayer): boolean {
 /** How the analysis names a corner mounting hole's pad: this, then the hole's id. */
 const BOARD_HOLE_PREFIX = `pad:${BOARD_OWNER}:`
 
-function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): Hit | null {
+/** What a drawing under the pointer picks: a board drawing itself, a dimension's line the dimension, a part's drawing the part. */
+const shapeHit = (s: WorldShape): Hit => (s.select ? { type: "shape", id: s.select } : s.owner === BOARD_SHAPE_OWNER ? { type: "shape", id: s.id } : { type: "component", id: s.owner })
+
+/** A part whose own silkscreen (`pcbSilk`: its outline's lines, its automatic designator) is under the point, of the parts `takes` allows; it picks the part. */
+function partSilkHit(index: ReturnType<typeof hitIndex>, at: Vec2, tol: number, takes: (c: ComponentInstance) => boolean): Hit | null {
+  const near: Box = { minX: at.x - tol, minY: at.y - tol, maxX: at.x + tol, maxY: at.y + tol }
+  const designators = index.designatorGrid.near(near)
+  for (let k = designators.length - 1; k >= 0; k--) {
+    const { c, box } = index.designators[designators[k]]
+    if (takes(c) && boxesOverlap(near, box)) return { type: "component", id: c.id }
+  }
+  const lines = index.silkGrid.near(near)
+  for (let k = lines.length - 1; k >= 0; k--) {
+    const { c, path } = index.silk[lines[k]]
+    if (!takes(c)) continue
+    for (let s = 0; s < path.length - 1; s++) if (pointSegmentDistance(at, path[s], path[s + 1]) <= SILK_WIDTH / 2 + tol) return { type: "component", id: c.id }
+  }
+  return null
+}
+
+/**
+ * What is under the pointer. `copper` is for a tool looking for copper to start or end on (routing, a via): the silkscreen drawn over it does not
+ * hide it then.
+ */
+export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = [], { copper = false } = {}): Hit | null {
   const bb = boardBox(p)
   if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) return { type: "boardHandle" }
   // Only what is near the pointer is tried (`hitIndex`), in the order the whole board would be.
@@ -187,6 +211,19 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     const v = p.vias[i]
     if (alone && !viaLayers(p.board, v).includes(alone)) continue
     if (Math.hypot(at.x - v.x, at.y - v.y) <= v.diameter / 2 + tol * 0.5) return { type: "via", id: v.id, at: { x: v.x, y: v.y } }
+  }
+  // The silkscreen of the side in front is drawn over all the copper, so it is picked before a track under it, as it is seen: a part's outline,
+  // designator or silkscreen text over a track picked the track. A pad or a via, small and deliberate, still comes first.
+  const front = frontLayer(copperLayers(p.board), layer, (l) => copperShown(ui, l))
+  if (!copper && ui.layers.silk && (front === "top" || front === "bottom")) {
+    const side = front
+    const silkOnly: ShapeVisibility = { ...vis, only: (name) => (!vis.only || vis.only(name)) && shapeLayerInfo(name)?.kind === "silk" && shapeLayerInfo(name)?.side === side }
+    const text = hitText(p, at, tol * 0.5, silkOnly)
+    if (text) return { type: "text", id: text.id }
+    const s = hitShape(worldShapes(p), at, tol * 0.5, silkOnly)
+    if (s) return shapeHit(s)
+    const part = partSilkHit(index, at, tol * 0.5, (c) => c.pcb.side === side)
+    if (part) return part
   }
   // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first, the last drawn first.
   const traces = index.traceGrid
@@ -215,7 +252,12 @@ function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
   const shapes = worldShapes(p)
   if (shapes.length) {
     const s = hitShape(shapes, at, tol * 0.5, vis)
-    if (s) return s.select ? { type: "shape", id: s.select } : s.owner === "#board" ? { type: "shape", id: s.id } : { type: "component", id: s.owner }
+    if (s) return shapeHit(s)
+  }
+  // A part's own silkscreen on the other side, and a designator outside its courtyard.
+  if (ui.layers.silk) {
+    const part = partSilkHit(index, at, tol * 0.5, (c) => !alone || c.pcb.side === alone)
+    if (part) return part
   }
   const parts = index.partGrid.near({ minX: at.x, minY: at.y, maxX: at.x, maxY: at.y })
   for (let i = parts.length - 1; i >= 0; i--) {
@@ -414,7 +456,7 @@ export function PcbEditor() {
   /** Snap to pad centres / via centres when hovering copper, otherwise to the grid. */
   const snapTarget = useCallback(
     (world: Vec2, free = false): { at: Vec2; hit: Hit | null } => {
-      const h = hitTest(projectApi().project!, world, tol(), activeLayerNow(), getLiveAnalysis(projectApi().project!).items)
+      const h = hitTest(projectApi().project!, world, tol(), activeLayerNow(), getLiveAnalysis(projectApi().project!).items, [], { copper: true })
       if (h?.type === "pad") return { at: { x: h.pad.x, y: h.pad.y }, hit: h }
       if (h?.type === "via") return { at: h.at, hit: h }
       if (h?.type === "trace") return { at: { x: round(h.point.x), y: round(h.point.y) }, hit: h }

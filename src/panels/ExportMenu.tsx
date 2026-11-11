@@ -1,4 +1,4 @@
-import { Box, Braces, CircuitBoard, Cpu, Download, FileJson, FileSpreadsheet, Package } from "lucide-react"
+import { Box, Braces, CircuitBoard, Download, FileJson, FileSpreadsheet, Package } from "lucide-react"
 import { resolvedComponents } from "../model/ruleAreas"
 import { useEffect, useRef, useState } from "react"
 import { buildFabricationZip, downloadBlob, downloadProjectFile, downloadText, projectFileName } from "../export/bundle"
@@ -128,8 +128,8 @@ export function ExportMenu() {
           <MenuItem icon={<FileSpreadsheet size={16} />} title="Bill of materials" detail="CSV, one line per distinct part" onClick={() => run(() => downloadText(bomCsv(placedProject()), projectFileName(projectApi().project!, "bom.csv"), "text/csv"))} />
           <MenuItem icon={<FileSpreadsheet size={16} />} title="Pick and place" detail="CSV of part positions for assembly" onClick={() => run(() => downloadText(pnpCsv(placedProject()), projectFileName(projectApi().project!, "pnp.csv"), "text/csv"))} />
           <MenuItem icon={<Braces size={16} />} title="Circuit JSON" detail="Parts, nets, schematic and board for tscircuit tools" onClick={exportCircuitJson} />
-          <MenuItem icon={<CircuitBoard size={16} />} title="KiCad project" detail="Schematic, board and project as a .zip for KiCad 9" onClick={exportKicad} />
-          <MenuItem icon={<Cpu size={16} />} title="Altium project" beta detail="Schematic, board and project as a .zip for Altium Designer" onClick={exportAltium} />
+          <MenuItem icon={<CircuitBoard size={16} />} title="KiCad project" beta detail="Schematic, board and project as a .zip for KiCad 9" onClick={exportKicad} />
+          <MenuItem icon={<CircuitBoard size={16} />} title="Altium project" beta detail="Schematic, board and project as a .zip for Altium Designer" onClick={exportAltium} />
           <MenuItem icon={<Box size={16} />} title="3D model (STEP)" detail="The board and every part as an assembly for mechanical CAD" onClick={exportStep} />
           <MenuItem
             icon={<FileJson size={16} />}

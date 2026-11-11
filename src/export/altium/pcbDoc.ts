@@ -1,17 +1,19 @@
 import { round } from "../../lib/geometry"
 import { mountingHoles } from "../../model/board"
 import type { SchematicConnectivity } from "../../model/connectivity"
-import { isPhysical, pcbPads, pcbSilk, valueText, type WorldPad } from "../../model/instances"
+import { isPhysical, maskSides, pasteSides, pcbPads, pcbSilk, valueText, type WorldPad } from "../../model/instances"
 import { findPart } from "../../model/library"
+import { maskMargin, offsetRings, pasteMargins } from "../../model/padOpening"
 import { onBoard } from "../../model/partFlags"
+import { polygonKit, type FillPolygon } from "../../model/pour"
 import type { PcbAnalysis } from "../../model/pcb"
 import { resolvedComponents } from "../../model/ruleAreas"
 import { worldShapes } from "../../model/shapeItems"
 import { arcCircle, flattenPath, shapePaths, type PathSeg, type ShapePath } from "../../model/shapes"
 import { placeDesignators, SILK_WIDTH } from "../../model/silk"
 import { copperLayers, viaLayers } from "../../model/stack"
-import { shownOf, worldTexts } from "../../model/texts"
-import type { ComponentInstance, CopperLayer, Project, Vec2, Zone } from "../../model/types"
+import { DIMENSION_TEXT_OWNER, shownOf, worldTexts } from "../../model/texts"
+import type { ComponentInstance, CopperLayer, PcbSide, Project, Vec2, Zone } from "../../model/types"
 import { viaTentedOn } from "../../model/viaRules"
 import { isRuleArea, zoneLayers, zoneRings, zoneSettings } from "../../model/zones"
 import { outlinePaths } from "../kicadBoard"
@@ -219,9 +221,17 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
 
   // ---------- pads ----------
   const pads = new Bytes()
+  // The copper of the polygons is in `Regions6`; a region of its own (a custom pad's copper and openings, a filled drawing, a keep-out, a board
+  // cutout) is a shape-based region, which is where Altium keeps one and where KiCad's importer reads it from.
   const regions = new Bytes()
+  const shapeRegions = new Bytes()
   let padCount = 0
   let regionCount = 0
+  let shapeRegionCount = 0
+  const freeRegion = (o: RegionSpec) => {
+    writeRegion(shapeRegions, o, true)
+    shapeRegionCount++
+  }
   let customPads = 0
   const count = copper.length
   const writePad = (pad: WorldPad, comp: number, net: number, name: string) => {
@@ -259,15 +269,20 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     const offsetSet = Math.abs(offset.x) > 1e-6 || Math.abs(offset.y) > 1e-6
     const roundRect = corner > 0 && shape === 2
     const extended = slot || offsetSet || roundRect
+    // The sides the pad has copper on, and of those the ones its mask is closed over (no opening there, or tented) and the ones it has no paste on. A
+    // custom pad's small stand-in has neither: its openings are regions of its own outline (below).
+    const sides = (["top", "bottom"] as const).filter((s) => pad.layers.includes(s))
+    const tented = (s: PcbSide) => custom || !maskSides(pad).includes(s) || pad.tented?.[s === "top" ? "front" : "back"] === true
+    const noPaste = smd && (custom || sides.some((s) => !pasteSides(pad).includes(s)))
     const maskManual = pad.maskMargin !== undefined
-    const pasteManual = pad.pasteMargin !== undefined
+    const pasteManual = pad.pasteMargin !== undefined || noPaste
     pads.u8(2)
     pads.block((w) => w.u8(Math.min(255, cp1252(name).length)).bytes(cp1252(name).subarray(0, 255)))
     pads.block((w) => w.u8(0))
     pads.block((w) => w.u8(4).bytes(cp1252("|&|0")))
     pads.block((w) => w.u8(0))
     pads.block((r) => {
-      r.u8(layer).u16(flagsOf()).u16(net).u16(NONE).u16(comp).u32(0xffffffff)
+      r.u8(layer).u16(flagsOf({ tentTop: sides.includes("top") && tented("top"), tentBottom: sides.includes("bottom") && tented("bottom") })).u16(net).u16(NONE).u16(comp).u32(0xffffffff)
       r.i32(X(hole.x)).i32(Y(hole.y))
       for (let i = 0; i < 3; i++) r.i32(pcbUnits(w)).i32(pcbUnits(h))
       r.i32(pcbUnits(pad.holeDiameter ?? 0))
@@ -279,7 +294,8 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
       // 63 to 85: the power plane connection (relief, conductor width, entries, air gap, expansion, clearance), as Altium writes its defaults.
       r.zeros(4)
       r.u8(0).i32(pcbUnits(0.254)).u16(4).i32(pcbUnits(0.254)).i32(pcbUnits(0.508)).i32(pcbUnits(0.254))
-      r.i32(pcbUnits(pad.pasteMargin ?? 0))
+      // A pad with no paste has an expansion that takes in its whole size, which is how Altium leaves a pad out of the stencil.
+      r.i32(pcbUnits(noPaste ? -Math.max(w, h) : (pad.pasteMargin ?? 0)))
       r.i32(pcbUnits(pad.maskMargin ?? project.rules.maskExpansion))
       // 94 to 105: which cached values hold, and whether the paste and mask expansions follow the rules (1) or the pad (2), as Altium 14 writes them.
       r.bytes([0, 0, 0, 1, 1, 1, 1])
@@ -289,11 +305,9 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
       r.u32(v7Layer(layer))
       r.zeros(2)
     })
-    if (!extended) {
-      pads.block(() => {})
-      return
-    }
+    // The size and shape block, empty for a pad that needs none of it.
     pads.block((r) => {
+      if (!extended) return
       for (let i = 0; i < 29; i++) r.i32(pcbUnits(w))
       for (let i = 0; i < 29; i++) r.i32(pcbUnits(h))
       for (let i = 0; i < 29; i++) r.u8(shape)
@@ -310,11 +324,21 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     })
     if (custom) {
       customPads++
+      // Its copper on each of its layers, and its openings in the mask and the stencil on the sides it has them, grown by their margins as the
+      // Gerbers grow them. The rings are counted even-odd (a pad with a hole in it, or in pieces), so they are made into outlines and holes first.
       const rings = pad.rings ?? (pad.points ? [pad.points] : [])
-      for (const l of pad.layers) {
-        const cl = copperLayerNumber(l)
-        writeRegion(regions, { layer: cl, net, comp, outline: rings[0], holes: rings.slice(1), x: X, y: Y })
-        regionCount++
+      const polygons = (grow: number): FillPolygon[] => polygonKit.regions(polygonKit.unionEvenOdd(offsetRings(rings, grow).map(polygonKit.path)))
+      const put = (layer: number, polys: FillPolygon[], onNet: boolean) => {
+        for (const [outline, ...holes] of polys) {
+          if (!outline || outline.length < 3) continue
+          freeRegion({ layer, net: onNet ? net : NONE, comp, outline, holes, x: X, y: Y })
+        }
+      }
+      const copperPolys = polygons(0)
+      for (const l of pad.layers) put(copperLayerNumber(l), copperPolys, true)
+      for (const s of ["top", "bottom"] as const) {
+        if (maskSides(pad).includes(s) && pad.tented?.[s === "top" ? "front" : "back"] !== true) put(s === "top" ? L.topSolder : L.bottomSolder, polygons(maskMargin(pad, project.rules)), false)
+        if (pasteSides(pad).includes(s)) put(s === "top" ? L.topPaste : L.bottomPaste, polygons(pasteMargins(pad, project.rules).x), false)
       }
     }
   }
@@ -330,7 +354,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
   for (const [i, h] of mountingHoles(project.board).entries()) {
     writePad({ componentId: "#board", pin: null, padNumber: null, shape: "circle", x: h.x, y: h.y, width: h.diameter, height: h.diameter, holeDiameter: h.drill, layers: copper as CopperLayer[] }, NONE, NONE, `MH${i + 1}`)
   }
-  if (customPads) notes.push(`${customPads} pad${customPads > 1 ? "s have" : " has"} a shape Altium has no pad for (a polygon or a chamfered corner): each is a small pad at its place with its copper drawn as a region of its part on the same net, which is how Altium makes a custom pad.`)
+  if (customPads) notes.push(`${customPads} pad${customPads > 1 ? "s have" : " has"} a shape Altium has no pad for (a polygon or a chamfered corner): each is a small pad at its place with its copper, solder mask opening and paste drawn as regions of its part, the copper on the pad's net, which is how Altium makes a custom pad.`)
 
   // ---------- vias ----------
   const vias = new Bytes()
@@ -437,8 +461,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     if (shape.fill && shape.type !== "line" && shape.type !== "arc") {
       const rings = paths.filter((p) => p.closed).map((p) => flattenPath(p))
       if (rings.length) {
-        writeRegion(regions, { layer, net, comp, outline: rings[0], holes: rings.slice(1), x: X, y: Y })
-        regionCount++
+        freeRegion({ layer, net, comp, outline: rings[0], holes: rings.slice(1), x: X, y: Y })
       }
     }
     if (shape.width > 0 || !shape.fill) for (const p of paths) segs(layer, p, Math.max(shape.width, 0), { net, comp })
@@ -490,7 +513,8 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
   }
   for (const wt of worldTexts(project)) {
     if (!wt.placed || wt.hidden) continue
-    const comp = wt.owner === "#board" ? NONE : (compIndex.get(wt.owner) ?? null)
+    // A dimension's text is the board's, as its lines are.
+    const comp = wt.owner === "#board" || wt.owner === DIMENSION_TEXT_OWNER ? NONE : (compIndex.get(wt.owner) ?? null)
     if (comp === null) continue
     const layer = shapeLayerNumber(wt.layer, copper)
     if (layer === null) continue
@@ -570,22 +594,29 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     }
   }
   if (pourZones.length) notes.push("Pours are Altium polygons with their outline, net, layer and priority, filled as Cherry Blossom filled them; repour them in Altium (Tools, Polygon Pours, Repour All) to fill them by its rules.")
-  const keepouts = project.zones.filter((z) => isRuleArea(z))
-  for (const z of keepouts) {
+  // A rule area is a keep-out region of what copper it keeps out, as Altium's restrictions name it (vias 1, tracks 2, copper 4, SMD pads 8,
+  // through-hole pads 16). One that keeps out only parts, or only places them, keeps no copper out and has no Altium keep-out.
+  let partAreas = 0
+  for (const z of project.zones.filter((z) => isRuleArea(z))) {
+    const k = z.keepout ?? {}
+    const restrictions = (k.vias ? 0x01 : 0) | (k.tracks ? 0x02 : 0) | (k.pour ? 0x04 : 0) | (k.pads ? 0x18 : 0)
+    if (!restrictions) {
+      partAreas++
+      continue
+    }
     const rings = zoneRings(z)
     if (!rings[0]) continue
     for (const layer of zoneLayers(z).length ? zoneLayers(z) : (["top"] as CopperLayer[])) {
-      writeRegion(regions, { layer: copperLayerNumber(layer), net: NONE, comp: NONE, outline: rings[0], holes: rings.slice(1), x: X, y: Y, keepout: true })
-      regionCount++
+      freeRegion({ layer: copperLayerNumber(layer), net: NONE, comp: NONE, outline: rings[0], holes: rings.slice(1), x: X, y: Y, keepout: restrictions })
     }
   }
+  if (partAreas) notes.push(`${partAreas} rule area${partAreas > 1 ? "s keep" : " keeps"} out or place${partAreas > 1 ? "" : "s"} only parts, which an Altium keep-out cannot say, and ${partAreas > 1 ? "are" : "is"} left out.`)
   // Holes in the board are board cutouts.
   for (const path of outline.slice(1)) {
     if (!path.closed) continue
     const ring = flattenPath(path)
     if (ring.length < 3) continue
-    writeRegion(regions, { layer: L.multi, net: NONE, comp: NONE, outline: ring, holes: [], x: X, y: Y, cutout: true })
-    regionCount++
+    freeRegion({ layer: L.multi, net: NONE, comp: NONE, outline: ring, holes: [], x: X, y: Y, cutout: true })
   }
 
   // ---------- the board ----------
@@ -665,7 +696,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     Texts6: storage(textCount, texts.done()),
     WideStrings6: storage(textCount, wide.done()),
     Regions6: storage(regionCount, regions.done()),
-    ShapeBasedRegions6: storage(0, new Uint8Array(0)),
+    ShapeBasedRegions6: storage(shapeRegionCount, shapeRegions.done()),
     ComponentBodies6: storage(0, new Uint8Array(0)),
     Dimensions6: storage(0, new Uint8Array(0)),
     DifferentialPairs6: storage(0, new Uint8Array(0)),
@@ -677,7 +708,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
   return {
     bytes: writeCfb(tree),
     notes,
-    counts: { components: placed.length, pads: padCount, vias: viaCount, tracks: trackCount, arcs: arcCount, texts: textCount, polygons: polygonCount, regions: regionCount, nets: netList.length },
+    counts: { components: placed.length, pads: padCount, vias: viaCount, tracks: trackCount, arcs: arcCount, texts: textCount, polygons: polygonCount, regions: regionCount + shapeRegionCount, nets: netList.length },
   }
 }
 
@@ -708,15 +739,29 @@ const fontName = (name: string) => {
   return out
 }
 
-/** A region: copper (or a keep-out, or a board cutout) of one outline with holes, its vertices as doubles in Altium's unit. */
-function writeRegion(
-  w: Bytes,
-  o: { layer: number; net: number; comp: number; polygon?: number; outline: Vec2[]; holes: Vec2[][]; x: (x: number) => number; y: (y: number) => number; keepout?: boolean; cutout?: boolean },
-) {
+interface RegionSpec {
+  layer: number
+  net: number
+  comp: number
+  polygon?: number
+  outline: Vec2[]
+  holes: Vec2[][]
+  x: (x: number) => number
+  y: (y: number) => number
+  /** A keep-out of what these restrictions say. */
+  keepout?: number
+  cutout?: boolean
+}
+
+/**
+ * A region: copper (or a keep-out, or a board cutout) of one outline with holes, its vertices as doubles in Altium's unit; a shape-based one's
+ * outline as Altium's vertices (a flag for an arc, the point, the centre, the radius and two angles) closed by its first point again.
+ */
+function writeRegion(w: Bytes, o: RegionSpec, shapeBased = false) {
   const holes = o.holes.filter((h) => h.length >= 3)
   w.u8(11)
   w.block((r) => {
-    r.u8(o.layer).u16(flagsOf({ keepout: o.keepout })).u16(o.net).u16(o.polygon ?? NONE).u16(o.comp).u32(0xffffffff)
+    r.u8(o.layer).u16(flagsOf({ keepout: !!o.keepout })).u16(o.net).u16(o.polygon ?? NONE).u16(o.comp).u32(0xffffffff)
     r.u8(0).u16(holes.length).u16(0)
     const list = props(
       [
@@ -726,10 +771,10 @@ function writeRegion(
         ["SUBPOLYINDEX", o.polygon !== undefined ? 0 : -1],
         ["UNIONINDEX", 0],
         ["ARCRESOLUTION", "0.5mil"],
-        ["ISSHAPEBASED", false],
+        ["ISSHAPEBASED", shapeBased],
         ["CAVITYHEIGHT", "0mil"],
         ...(o.cutout ? ([["ISBOARDCUTOUT", true]] as [string, PropValue][]) : []),
-        ...(o.keepout ? ([["KEEPOUTRESTRICTIONS", 31]] as [string, PropValue][]) : []),
+        ...(o.keepout ? ([["KEEPOUTRESTRICTIONS", o.keepout]] as [string, PropValue][]) : []),
       ],
       "long",
       "",
@@ -739,7 +784,10 @@ function writeRegion(
       r.u32(ring.length)
       for (const p of ring) r.f64(o.x(p.x)).f64(o.y(p.y))
     }
-    vertices(o.outline)
+    if (shapeBased) {
+      r.u32(o.outline.length)
+      for (const p of [...o.outline, o.outline[0]]) r.u8(0).i32(o.x(p.x)).i32(o.y(p.y)).i32(0).i32(0).i32(0).f64(0).f64(0)
+    } else vertices(o.outline)
     for (const h of holes) vertices(h)
   })
 }

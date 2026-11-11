@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest"
 import { altiumFiles, altiumNetNames } from "../src/export/altium"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
 import { isSchematicPart, pcbPads } from "../src/model/instances"
+import { importKicadBoard } from "../src/model/kicad/board/import"
 import { findPart } from "../src/model/library"
 import { onBoard } from "../src/model/partFlags"
 import { resolvedComponents, withRuleAreaFlags } from "../src/model/ruleAreas"
 import { copperCount } from "../src/model/stack"
+import { DIMENSION_TEXT_OWNER, shownOf, worldTexts } from "../src/model/texts"
 import type { Project, Vec2 } from "../src/model/types"
 import { binaryRecords, milProp, propRecords, readPads, readRegions, readStreams, readTexts, readTracks, readVias, ruleRecords, schCoord, schRecords, type Props } from "./altium/read"
 import { built } from "./built"
+import { board as kicadBoard, footprint as kicadFootprint, pad as kicadPad } from "./kicad-board-fixtures"
 import { imp } from "./kicad-sheets-fixtures"
+import { rectangle, withZone } from "./zones-fixtures"
 
 // There is no Altium here to open the files, so these read them back as KiCad's Altium importer reads them (the compound file by SheetJS's reader,
 // not the writer's own), and hold every pad, track, via and pin to the project. `altium-kicad.test.ts` has KiCad itself read the board.
@@ -51,7 +55,7 @@ describe("altiumFiles", () => {
     const header = (n: string) => new DataView(s.get(`${n}/Header`)!.buffer).getUint32(0, true)
     expect(new TextDecoder("utf-16le").decode(s.get("FileHeader")!.subarray(4))).toBe("PCB 5.0 Bi")
     for (const n of ["Board6", "Nets6", "Components6", "Polygons6", "Classes6"]) expect(header(n), n).toBe(propRecords(s.get(`${n}/Data`)!).length)
-    for (const n of ["Pads6", "Vias6", "Tracks6", "Arcs6", "Texts6", "Regions6"]) expect(header(n), n).toBe(binaryRecords(s.get(`${n}/Data`)!).length)
+    for (const n of ["Pads6", "Vias6", "Tracks6", "Arcs6", "Texts6", "Regions6", "ShapeBasedRegions6"]) expect(header(n), n).toBe(binaryRecords(s.get(`${n}/Data`)!).length)
     expect(header("Rules6")).toBe(ruleRecords(s.get("Rules6/Data")!).length)
     const sch = schRecords(bytesOf(f, ".SchDoc"))
     expect(sch[0].get("HEADER")).toBe("Protel for Windows - Schematic Capture Binary File Version 5.0")
@@ -68,6 +72,7 @@ describe("altiumFiles", () => {
     expect(new Set(readTexts(s.get("Texts6/Data")!, s.get("WideStrings6/Data")!).map((t) => t.length))).toEqual(new Set([230]))
     // A region's record ends where its last hole's vertices end.
     for (const r of readRegions(s.get("Regions6/Data")!)) expect(r.end).toBe(r.length)
+    for (const r of readRegions(s.get("ShapeBasedRegions6/Data")!, true)) expect(r.end).toBe(r.length)
   }, 120_000)
 
   for (const id of EXAMPLES) {
@@ -195,6 +200,71 @@ describe("altiumFiles", () => {
       expect(texts.some((t) => t.designator && t.component === i && t.text === c.get("SOURCEDESIGNATOR"))).toBe(true)
       expect(schIds.has(c.get("SOURCEUNIQUEID")!.replace(/^\\/, ""))).toBe(true)
     }
+  }, 120_000)
+})
+
+describe("altiumFiles: what a board from KiCad has", () => {
+  const imported = (body: string[]): Project => {
+    const r = importKicadBoard(kicadBoard({ setup: "(setup (pad_to_mask_clearance 0.05))", body }))
+    if (r.status !== "imported") throw new Error(r.message)
+    return r.project
+  }
+  const square = (n: number) => `(primitives (gr_poly (pts (xy 0 0) (xy ${n} 0) (xy ${n} ${n}) (xy 0 ${n})) (width 0) (fill yes)))`
+  const box = (ring: Vec2[]) => ({ minX: Math.min(...ring.map((p) => p.x)), maxX: Math.max(...ring.map((p) => p.x)), minY: Math.min(...ring.map((p) => p.y)), maxY: Math.max(...ring.map((p) => p.y)) })
+
+  it("opens a custom pad in the mask and the stencil by its own outline, and its small stand-in pad in neither", async () => {
+    const project = imported([
+      kicadFootprint({
+        ref: "U1",
+        at: "10 5",
+        pads: [
+          kicadPad({ number: "1", at: "0 0", shape: "custom", size: "0.5 0.5", extra: `(options (clearance outline) (anchor circle)) ${square(2)}` }),
+          kicadPad({ number: "2", at: "-4 0", shape: "custom", size: "0.5 0.5", layers: '"F.Cu" "F.Mask"', extra: `(options (clearance outline) (anchor circle)) ${square(2)}` }),
+        ],
+      }),
+    ])
+    const custom = pcbPads(project.components[0]).filter((p) => p.shape === "polygon" && !p.oriented)
+    expect(custom).toHaveLength(2)
+    const { s, at } = board(bytesOf((await altiumFiles(project)).files, ".PcbDoc"))
+    const regions = readRegions(s.get("ShapeBasedRegions6/Data")!, true).filter((r) => r.component === 0)
+    const on = (layer: number) => regions.filter((r) => r.layer === layer).map((r) => box(r.outline.map(at)))
+    expect(on(1)).toHaveLength(2)
+    // The mask opening is the copper grown by the margin on every side; only the pad that lists F.Paste is in the stencil.
+    const copper = box(custom[0].points!)
+    const mask = on(37).find((b) => b.minX > copper.minX - 1 && b.maxX < copper.maxX + 1)!
+    expect(mask).toBeDefined()
+    expect(near(mask.minX, copper.minX - 0.05, 1e-3) && near(mask.maxX, copper.maxX + 0.05, 1e-3) && near(mask.maxY, copper.maxY + 0.05, 1e-3)).toBe(true)
+    expect(on(37)).toHaveLength(2)
+    expect(on(35)).toHaveLength(1)
+    // The stand-ins are tented and leave the stencil (a paste expansion as large as they are).
+    for (const r of binaryRecords(s.get("Pads6/Data")!)) {
+      const v = r.subs[4]
+      expect(v.getUint8(1) & 0x20, "tented on top").toBe(0x20)
+      expect(v.getUint8(101), "paste expansion set by the pad").toBe(2)
+      expect(v.getInt32(86, true)).toBeLessThan(0)
+    }
+  }, 120_000)
+
+  it("keeps a dimension's text with its lines", async () => {
+    const project = imported([kicadFootprint({ ref: "R1", pads: [kicadPad({ at: "0 0" })] }), '(dimension (type aligned) (layer "Dwgs.User") (pts (xy 0 0) (xy 10 0)) (height 3) (style (thickness 0.1) keep_text_aligned))'])
+    const want = worldTexts(project).filter((t) => t.owner === DIMENSION_TEXT_OWNER)
+    expect(want).toHaveLength(1)
+    const { s } = board(bytesOf((await altiumFiles(project)).files, ".PcbDoc"))
+    const texts = readTexts(s.get("Texts6/Data")!, s.get("WideStrings6/Data")!)
+    expect(texts.some((t) => t.layer === 56 + 4 && t.component === 0xffff && t.text === shownOf(project, want[0]))).toBe(true)
+  }, 120_000)
+})
+
+describe("altiumFiles: rule areas", () => {
+  it("keeps out only the copper a rule area keeps out, and leaves out one that only places parts", async () => {
+    let project = withZone(built("blinker"), rectangle(2, 2, 6, 6), { keepout: { vias: true, tracks: true } }, "k1")
+    project = withZone(project, rectangle(8, 2, 12, 6), { keepout: {}, placement: { by: "group", name: "x" } }, "k2")
+    const result = await altiumFiles(project)
+    const { s } = board(bytesOf(result.files, ".PcbDoc"))
+    const keepouts = readRegions(s.get("ShapeBasedRegions6/Data")!, true).filter((r) => r.props.get("KEEPOUTRESTRICTIONS") !== undefined)
+    expect(keepouts).toHaveLength(1)
+    expect(keepouts[0].props.get("KEEPOUTRESTRICTIONS")).toBe(String(0x01 | 0x02))
+    expect(result.notes.some((n) => /rule area/.test(n))).toBe(true)
   }, 120_000)
 })
 

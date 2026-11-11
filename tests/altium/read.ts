@@ -202,12 +202,23 @@ export function readTexts(data: Uint8Array, wide: Uint8Array) {
   }))
 }
 
-export function readRegions(data: Uint8Array) {
+/** The regions of `Regions6`, or with `shapeBased` of `ShapeBasedRegions6`, whose outline is Altium's vertices (37 bytes each) closed by its first again. */
+export function readRegions(data: Uint8Array, shapeBased = false) {
   return binaryRecords(data).map(({ subs: [r] }) => {
     const holes = r.getUint16(14, true)
     const len = r.getUint32(18, true)
     const props = parseProps(new Uint8Array(r.buffer, r.byteOffset + 22, len))
     let o = 22 + len
+    const shaped = () => {
+      const n = r.getUint32(o, true)
+      o += 4
+      const pts: { x: number; y: number }[] = []
+      for (let i = 0; i <= n; i++) {
+        if (i < n) pts.push({ x: mm(r.getInt32(o + 1, true)), y: mm(r.getInt32(o + 5, true)) })
+        o += 37
+      }
+      return pts
+    }
     const ring = () => {
       const n = r.getUint32(o, true)
       o += 4
@@ -218,7 +229,7 @@ export function readRegions(data: Uint8Array) {
       }
       return pts
     }
-    const outline = ring()
+    const outline = shapeBased ? shaped() : ring()
     const cut: { x: number; y: number }[][] = []
     for (let i = 0; i < holes; i++) cut.push(ring())
     return { layer: r.getUint8(0), net: r.getUint16(3, true), polygon: r.getUint16(5, true), component: r.getUint16(7, true), props, outline, holes: cut, end: o, length: r.byteLength }

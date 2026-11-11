@@ -1,6 +1,7 @@
 import JSZip from "jszip"
 import type { AnyCircuitElement } from "circuit-json"
 import { applyToPoint } from "transformation-matrix"
+import { isExact } from "../model/sheetItems"
 import { computeConnectivity } from "../model/connectivity"
 import { findPart } from "../model/library"
 import { powerNetName } from "../model/instances"
@@ -28,7 +29,7 @@ import { uuidFrom } from "./kicadUuid"
 import { ROOT_SHEET, isHierarchical, sheetsOf, sheetView, useAt, usesOfSheet } from "../model/sheets"
 import { mayHaveBuses } from "../model/busConnectivity"
 import { variantExportNotes, variantNames } from "../model/variants"
-import { addBlockGroups, addBusItems, addSheetItems, localizePower, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
+import { addBlockGroups, addBusItems, addSheetItems, localizePower, editorTextFit, redrawPowerPorts, roundedFill, applySymbolFlags, rewriteLabels, rewriteWireStrokes } from "./kicadSheet"
 import { addNoConnects, addSymbolFields, applyComponentClasses, applyPowerTexts, finishPower, applyBoardSettings, applyFootprintFlags, applyFootprintModels, applyFootprintNames, applyMountingHoleMarks, applyProjectSettings, boardFootprintIds, kicadCustomRules, kicadDruText, noConnectPins, symbolFields, applyPaper, writeSymbolLinks, shareUnitSymbols, type PlacedField } from "./kicadPost"
 
 // KiCad files from Circuit JSON, through tscircuit's `circuit-json-to-kicad` (MIT), loaded when
@@ -185,7 +186,7 @@ function schematicText(
     return { text: t.text, x: at.x, y: at.y, angle: t.angle, size: t.size * EDITOR_MM_PER_UNIT, h: t.h, v: t.v }
   }
   const links = data.symbols.map((l) => ({ id: l.id, owner: l.owner, unit: l.unit, virtual: l.virtual, part: l.part, reference: field(l.reference), value: field(l.value), texts: l.texts?.map((t) => field(t)!), refPrefix: l.refPrefix, pins: l.pins }))
-  let schText = applyPowerTexts(writeSymbolLinks(addNoConnects(addSymbolFields(sch.getOutputString(), fields), flags), links, libOf), data.powerTexts.map((t) => ({ id: t.id, field: field(t.text)! })))
+  let schText = applyPowerTexts(writeSymbolLinks(addNoConnects(addSymbolFields(redrawPowerPorts(sch.getOutputString()), fields), flags), links, libOf), data.powerTexts.map((t) => ({ id: t.id, field: field(t.text)! })))
   // Flags of symbols, and what only a project named as KiCad names its nets has: labels as they were drawn, wire strokes, and the drawings of the sheet.
   // A symbol says its own flags (`symbolFlags`), never those a sheet symbol above it gives: the file is every use of the sheet's.
   schText = applySymbolFlags(schText, new Map(view.components.map((c) => [c.ref, { flags: symbolFlags.get(c.id)?.flags, fieldsAutoplaced: c.fieldsAutoplaced }] as const).filter(([, c]) => c.flags || c.fieldsAutoplaced)))
@@ -351,6 +352,7 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   if (project.drawings?.some((d) => d.type === "busentry" && d.toBus)) sheetNotes.push("KiCad 6 and later have one kind of bus entry in the file, from a wire to a bus; a bus-to-bus entry (KiCad 5's) is written as a short bus segment, which joins the same two buses.")
   if (project.drawings?.some((d) => d.type === "line" && d.arrows && !d.closed)) sheetNotes.push("KiCad's lines have no arrowheads, so each one is a small filled triangle drawn at the end.")
   if (project.drawings?.some((d) => d.type === "text" && d.mono && d.valign === undefined)) sheetNotes.push("The monospace face of a text has no setting in KiCad; the text is written in KiCad's own.")
+  if (project.drawings?.some((d) => d.type === "text" && !isExact(d) && editorTextFit(d).glyphWidth !== undefined)) sheetNotes.push("KiCad's font is wider than the editor's, so a text drawn on the sheet is written with narrower letters where KiCad would draw it longer: it keeps its place, and a text in a box stays in its box.")
   if (project.components.some((c) => findPart(c.partId)?.powerLocal)) sheetNotes.push("A local power symbol is written as one: its library symbol has (power local) (KiCad 10), so its net belongs to the sheet it is on.")
   if (project.components.some((c) => c.flags?.excludeFromPos || c.flags?.virtual)) sheetNotes.push("A part left out of the position file is written as a footprint attribute on the board; the KiCad 9 schematic has no such flag.")
   if ([...symbolFlags.values()].some((c) => c.flags?.dnp || c.flags?.excludeFromBom || c.flags?.notOnBoard || c.flags?.excludeFromSim)) sheetNotes.push("Do not populate, out of the BOM, not on the board and out of simulation are written on the symbol; do not populate and out of the BOM are also attributes of its footprint.")

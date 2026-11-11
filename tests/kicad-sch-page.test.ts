@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { kicadFiles } from "../src/export/kicad"
 import { KICAD_LINE_PITCH, kicadTextWidth } from "../src/export/kicadFont"
-import { textSize } from "../src/model/drawings"
+import { textFrame, textSize } from "../src/model/drawings"
+import { paperMm, paperOf } from "../src/model/paper"
+import { fitSheetPaper } from "../src/model/sheetOps"
 import type { Project, SchematicDrawing } from "../src/model/types"
 import { built } from "./built"
 
@@ -64,12 +66,14 @@ describe("a sheet drawn in the editor on KiCad's page", () => {
   ].join("\n")
   const title: SchematicDrawing = { id: "title", type: "text", text: "3.3 V SUPPLY - AMS1117", x: -4.7, y: 2.6, size: 0.5, bold: true }
   const notes: SchematicDrawing = { id: "notes", type: "text", text: NOTES, x: -4.7, y: -5, size: 0.14, border: true }
-  const withDrawings = (p: Project): Project => ({ ...p, drawings: [...(p.drawings ?? []), title, notes] })
+  // The page holds them, as Fit to drawing makes it: the export keeps the editor's page and everything where it is on it.
+  const withDrawings = (p: Project): Project => fitSheetPaper({ ...p, drawings: [...(p.drawings ?? []), title, notes] }, "")
 
-  it("keeps the notes under a design in their box, on the page and clear of the title block", async () => {
-    const [sch] = await schematics(withDrawings(built("regulator")))
-    const paper = sch.match(/\(paper\s+"?(A\d)"?/)![1]
-    const [paperW, paperH] = { A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841] }[paper as "A4"]
+  it("keeps the notes under a design in their box, where the editor draws them, on the page and clear of the title block", async () => {
+    const project = withDrawings(built("regulator"))
+    const [sch] = await schematics(project)
+    const page = paperOf(project)
+    const { width: paperW, height: paperH } = paperMm(page)
     const box = sch.match(/\(text_box "NOTES DE CONCEPTION[\s\S]*?\n {4}\(at (\S+ \S+) 0\)\n {4}\(size (\S+ \S+)\)\n {4}\(margins (\S+ \S+ \S+ \S+)\)[\s\S]*?\(font \(size ([\d.]+ [\d.]+)\)/)!
     const [x, y] = nums(box[1])
     const [w, h] = nums(box[2])
@@ -80,6 +84,10 @@ describe("a sheet drawn in the editor on KiCad's page", () => {
     for (const line of lines) expect(kicadTextWidth(line, width), line).toBeLessThanOrEqual(w - ml - mr)
     expect(height * (1.15 + (lines.length - 1) * KICAD_LINE_PITCH)).toBeLessThanOrEqual(h - mt - mb + 1e-6)
     expect(width).toBeLessThan(height)
+    // Its top-left corner where the editor draws it on the page (the page's corner is KiCad's origin, y down).
+    const frame = textFrame(notes as Extract<SchematicDrawing, { type: "text" }>)
+    expect(x).toBeCloseTo((frame.minX - page.x) * 12.7, 3)
+    expect(y).toBeCloseTo((page.y - frame.maxY) * 12.7, 3)
     // On the paper, and above KiCad's title block (the bottom 44 mm of its right side).
     expect(x).toBeGreaterThan(10)
     expect(x + w).toBeLessThan(paperW - 10)

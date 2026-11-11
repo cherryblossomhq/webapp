@@ -1,4 +1,4 @@
-import { round, mm6, type Box } from "../lib/geometry"
+import { round, mm6 } from "../lib/geometry"
 import { labelJustify } from "../model/labelShapes"
 import { SCH_LIGHT } from "../editor/theme"
 import { LINE_HEIGHT, TEXT_PAD, textFrame, textLines, textSize, WEIGHT_WIDTH, withAlpha } from "../model/drawings"
@@ -132,13 +132,6 @@ export function editorTextFit(d: Extract<SchematicDrawing, { type: "text" }>): {
   const room = textSize(d).width
   // A little under the editor's width, so a line KiCad measures to the box's edge is not wrapped onto the next.
   return kicad > room ? { glyphWidth: round((d.size * room * 0.98) / kicad, 5), across } : { across }
-}
-
-/** What a text of the drawing tools covers on KiCad's page: its frame on the editor's sheet, with its lines as far apart as KiCad draws them. */
-export function writtenTextBounds(d: Extract<SchematicDrawing, { type: "text" }>): Box {
-  const b = textFrame(d)
-  const { across } = editorTextFit(d)
-  return d.rot === 90 ? { ...b, maxX: b.maxX + across } : { ...b, minY: b.minY - across }
 }
 
 /**

@@ -127,9 +127,9 @@ export function ExportMenu() {
           <MenuItem icon={<Package size={16} />} title="Fabrication files" detail="Gerbers, drill, BOM and pick-and-place as a .zip" onClick={exportGerbers} />
           <MenuItem icon={<FileSpreadsheet size={16} />} title="Bill of materials" detail="CSV, one line per distinct part" onClick={() => run(() => downloadText(bomCsv(placedProject()), projectFileName(projectApi().project!, "bom.csv"), "text/csv"))} />
           <MenuItem icon={<FileSpreadsheet size={16} />} title="Pick and place" detail="CSV of part positions for assembly" onClick={() => run(() => downloadText(pnpCsv(placedProject()), projectFileName(projectApi().project!, "pnp.csv"), "text/csv"))} />
-          <MenuItem icon={<Braces size={16} />} title="Circuit JSON (tscircuit)" detail="Parts, nets, schematic and board for tscircuit tools" onClick={exportCircuitJson} />
+          <MenuItem icon={<Braces size={16} />} title="Circuit JSON" detail="Parts, nets, schematic and board for tscircuit tools" onClick={exportCircuitJson} />
           <MenuItem icon={<CircuitBoard size={16} />} title="KiCad project" detail="Schematic, board and project as a .zip for KiCad 9" onClick={exportKicad} />
-          <MenuItem icon={<Cpu size={16} />} title="Altium project" detail="Schematic, board and project as a .zip for Altium Designer" onClick={exportAltium} />
+          <MenuItem icon={<Cpu size={16} />} title="Altium project" beta detail="Schematic, board and project as a .zip for Altium Designer" onClick={exportAltium} />
           <MenuItem icon={<Box size={16} />} title="3D model (STEP)" detail="The board and every part as an assembly for mechanical CAD" onClick={exportStep} />
           <MenuItem
             icon={<FileJson size={16} />}
@@ -148,12 +148,15 @@ export function ExportMenu() {
   )
 }
 
-function MenuItem({ icon, title, detail, onClick }: { icon: React.ReactNode; title: string; detail: string; onClick: () => void }) {
+function MenuItem({ icon, title, detail, beta, onClick }: { icon: React.ReactNode; title: string; detail: string; beta?: boolean; onClick: () => void }) {
   return (
     <button role="menuitem" onClick={onClick} className="flex w-full items-start gap-3 rounded-[7px] px-2.5 py-2 text-left hover:bg-chrome">
       <span className="mt-0.5 text-ink-2">{icon}</span>
       <span>
-        <span className="block text-[13px] font-[600] text-ink">{title}</span>
+        <span className="flex items-center gap-1.5 text-[13px] font-[600] text-ink">
+          {title}
+          {beta && <span className="rounded-full border border-warn px-1.5 text-[11px] font-[500] leading-4 text-warn">beta</span>}
+        </span>
         <span className="block text-[12px] text-ink-2">{detail}</span>
       </span>
     </button>

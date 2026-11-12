@@ -80,11 +80,16 @@ export function imageShown(m: ReferenceImage, vis: ShapeVisibility): boolean {
 
 /** The topmost image under a point (later images are on top), as a selection id. */
 export function hitImage(project: Project, at: Vec2, vis: ShapeVisibility): string | null {
+  for (const id of imagesAt(project, at, vis)) return id
+  return null
+}
+
+/** Every reference image under the point, the top one first (`hitImage` is the first), as selection ids. */
+export function* imagesAt(project: Project, at: Vec2, vis: ShapeVisibility): Generator<string> {
   const images = project.images ?? []
   for (let i = images.length - 1; i >= 0; i--) {
-    if (imageShown(images[i], vis) && pointInBox(at, imageBox(images[i]))) return `i:${images[i].id}`
+    if (imageShown(images[i], vis) && pointInBox(at, imageBox(images[i]))) yield `i:${images[i].id}`
   }
-  return null
 }
 
 /** The dimensions and images a marquee touches, as selection ids. */

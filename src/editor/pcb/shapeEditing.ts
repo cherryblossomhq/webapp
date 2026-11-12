@@ -92,6 +92,12 @@ export function pointShapeInkDistance(at: Vec2, shape: BoardShape): number {
  * drawings are on top; board drawings come before a part's in the list, so a part's win a tie.
  */
 export function hitShape(shapes: WorldShape[], at: Vec2, tol: number, vis: ShapeVisibility): WorldShape | null {
+  for (const s of shapesAt(shapes, at, tol, vis)) return s
+  return null
+}
+
+/** Every drawing under the point, the one drawn last first (`hitShape` is the first). */
+export function* shapesAt(shapes: WorldShape[], at: Vec2, tol: number, vis: ShapeVisibility): Generator<WorldShape> {
   // Only the drawings whose boxes are near the point are tried, the last first, as going through them all would: a board's parts have tens of
   // thousands of drawings, and the PCB view asks on every move of the pointer.
   const { grid, boxes } = shapeIndex(shapes)
@@ -102,9 +108,8 @@ export function hitShape(shapes: WorldShape[], at: Vec2, tol: number, vis: Shape
     if (!shapeShown(s, vis)) continue
     const b = boxes[i]
     if (at.x < b.minX - tol || at.x > b.maxX + tol || at.y < b.minY - tol || at.y > b.maxY + tol) continue
-    if (pointShapeInkDistance(at, s.shape) <= tol) return s
+    if (pointShapeInkDistance(at, s.shape) <= tol) yield s
   }
-  return null
 }
 
 const shapeIndexes = new WeakMap<WorldShape[], { grid: CellGrid; boxes: Box[] }>()

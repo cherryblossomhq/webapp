@@ -27,8 +27,14 @@ function edgeDistance(z: Zone, at: Vec2): number {
  * area holds it, on the layer shown. Later zones win, as they are drawn on top.
  */
 export function zoneHit(project: Project, at: Vec2, tol: number, layer: CopperLayer, fills: ZoneFill[]): string | null {
+  for (const z of zonesAt(project, at, tol, layer, fills)) return z.id
+  return null
+}
+
+/** Every zone under the point (`zoneHit` is the first): those whose edge it is on, then those it is inside (`inside`: in its copper, or in a rule area). */
+export function* zonesAt(project: Project, at: Vec2, tol: number, layer: CopperLayer, fills: ZoneFill[]): Generator<{ id: string; inside: boolean }> {
   const polygons = project.zones.filter((z) => z.outline)
-  for (let i = polygons.length - 1; i >= 0; i--) if (edgeDistance(polygons[i], at) <= tol * 0.5) return polygons[i].id
+  for (let i = polygons.length - 1; i >= 0; i--) if (edgeDistance(polygons[i], at) <= tol * 0.5) yield { id: polygons[i].id, inside: false }
   for (let i = polygons.length - 1; i >= 0; i--) {
     const z = polygons[i]
     if (!zoneLayers(z).includes(layer)) continue
@@ -36,12 +42,11 @@ export function zoneHit(project: Project, at: Vec2, tol: number, layer: CopperLa
     if (z.keepout) {
       // X20: a placement area that keeps nothing out is picked by its edge only: it usually holds half the board, and the board's own edge and the parts inside it would be out of reach.
       if (z.placement && Object.keys(z.keepout).length === 0) continue
-      if (area && areaContains(area, at)) return z.id
+      if (area && areaContains(area, at)) yield { id: z.id, inside: true }
       continue
     }
-    for (const f of fills) if (f.zoneId === z.id && f.layer === layer && f.polygons.some((poly) => fillTester(poly)(at))) return z.id
+    if (fills.some((f) => f.zoneId === z.id && f.layer === layer && f.polygons.some((poly) => fillTester(poly)(at)))) yield { id: z.id, inside: true }
   }
-  return null
 }
 
 /** The corner of a zone within `reach` of a point. */

@@ -33,7 +33,7 @@ import { boardTextId, dimensionWorldText, parseTextId, worldTexts } from "../../
 import { imageSize } from "../../model/boardObjects"
 import { imageState, imageUrl } from "../../store/imageFiles"
 import { useImages } from "../../store/useImages"
-import { buildDimension, DIMENSION_TOOL_KEY, dimensionClicks, dimensionHint, hitImage, imageShown, marqueeBoardObjects } from "./boardObjectEditing"
+import { buildDimension, DIMENSION_TOOL_KEY, dimensionClicks, dimensionHint, imagesAt, imageShown, marqueeBoardObjects } from "./boardObjectEditing"
 import { groupSelected, ungroupSelected } from "./groupActions"
 import { dimensionShapes } from "../../model/dimensions"
 import { formatLength, nextPreferredWidth } from "../../model/rules"
@@ -56,7 +56,7 @@ import { CanvasHint } from "../schematic/SchematicEditor"
 import { PointMark, ShapeDraw, shapeLayerColor } from "./ShapeGraphics"
 import { worldPoints } from "../../model/pcbPoints"
 import { TextDraw, textSide } from "./TextGraphics"
-import { defaultTextStyle, hitText, marqueeTexts, movableTexts, textIds, TEXT_TOOL_KEY, visibleTexts } from "./textEditing"
+import { defaultTextStyle, marqueeTexts, movableTexts, textIds, textsAt, TEXT_TOOL_KEY, visibleTexts } from "./textEditing"
 import {
   addDrawPoint,
   buildShape,
@@ -64,10 +64,10 @@ import {
   DRAW_TOOL_KEYS,
   EDGE_CUTS_LAYER,
   graphicIds,
-  hitShape,
   isDrawTool,
   marqueeShapes,
   previewShape,
+  shapesAt,
   visibleShapes,
   type DrawTool,
   type ShapeVisibility,
@@ -76,15 +76,16 @@ import { copperColor, copperLook, otherSideOpacity, PCB } from "../theme"
 import { addZone, deleteZoneCorner, insertZoneCorner, makeZone, moveZone, removeZones, setZoneCorner } from "../../model/zoneOps"
 import { OtherZoneFills, ZoneOutlines, ZonePreview } from "./ZoneDraw"
 import { nonCopperFills } from "../../model/nonCopperFill"
-import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, PLACEMENT_TOOL_KEY, selectedZoneIds, zoneHit, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
+import { closesPolygon, cornerAt, KEEPOUT_TOOL_KEY, midpointAt, PLACEMENT_TOOL_KEY, selectedZoneIds, zonesAt, zoneSelectionId, ZONE_TOOL_KEY } from "./zoneEditing"
 import { defaultPlacement } from "../../model/placementAreas"
 import { Tooltip } from "../../ui/Tooltip"
 import { isTyping, Viewport, type StillLayer, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
 import { onBoard } from "../../model/partFlags"
+import { PickMenu, pickRows, type PickRow } from "./PickMenu"
 
 export const PCB_GRID = 0.25
 
-type Hit =
+export type Hit =
   | { type: "pad"; pad: WorldPad; netId: string | null }
   | { type: "via"; id: string; at: Vec2 }
   /** One of the board's corner mounting holes, by its id (`mountingHoles`). */
@@ -99,8 +100,8 @@ type Hit =
   /** A reference image; `id` is its selection id (`i:<id>`). */
   | { type: "image"; id: string }
   | { type: "boardHandle" }
-  /** A zone with a polygon, by its outline or its copper (`z:<id>`). */
-  | { type: "zone"; id: string }
+  /** A zone with a polygon, by its outline or its copper (`z:<id>`); `inside` when the point is in its copper or its area, not on its edge. */
+  | { type: "zone"; id: string; inside?: boolean }
   /** A piece of the board's own outline (`o:<path>:<piece>`). */
   | { type: "outline"; path: number; seg: number }
 
@@ -164,30 +165,61 @@ const BOARD_HOLE_PREFIX = `pad:${BOARD_OWNER}:`
 /** What a drawing under the pointer picks: a board drawing itself, a dimension's line the dimension, a part's drawing the part. */
 const shapeHit = (s: WorldShape): Hit => (s.select ? { type: "shape", id: s.select } : s.owner === BOARD_SHAPE_OWNER ? { type: "shape", id: s.id } : { type: "component", id: s.owner })
 
-/** A part whose own silkscreen (`pcbSilk`: its outline's lines, its automatic designator) is under the point, of the parts `takes` allows; it picks the part. */
-function partSilkHit(index: ReturnType<typeof hitIndex>, at: Vec2, tol: number, takes: (c: ComponentInstance) => boolean): Hit | null {
+/** The parts whose own silkscreen (`pcbSilk`: their outline's lines, their automatic designator) is under the point, of the parts `takes` allows; each picks its part. */
+function* partSilkHits(index: ReturnType<typeof hitIndex>, at: Vec2, tol: number, takes: (c: ComponentInstance) => boolean): Generator<Hit> {
   const near: Box = { minX: at.x - tol, minY: at.y - tol, maxX: at.x + tol, maxY: at.y + tol }
   const designators = index.designatorGrid.near(near)
   for (let k = designators.length - 1; k >= 0; k--) {
     const { c, box } = index.designators[designators[k]]
-    if (takes(c) && boxesOverlap(near, box)) return { type: "component", id: c.id }
+    if (takes(c) && boxesOverlap(near, box)) yield { type: "component", id: c.id }
   }
   const lines = index.silkGrid.near(near)
   for (let k = lines.length - 1; k >= 0; k--) {
     const { c, path } = index.silk[lines[k]]
     if (!takes(c)) continue
-    for (let s = 0; s < path.length - 1; s++) if (pointSegmentDistance(at, path[s], path[s + 1]) <= SILK_WIDTH / 2 + tol) return { type: "component", id: c.id }
+    for (let s = 0; s < path.length - 1; s++) {
+      if (pointSegmentDistance(at, path[s], path[s + 1]) <= SILK_WIDTH / 2 + tol) {
+        yield { type: "component", id: c.id }
+        break
+      }
+    }
   }
+}
+
+/**
+ * What is under the pointer: the first of `hitsAt`. `copper` is for a tool looking for copper to start or end on (routing, a via): the silkscreen
+ * drawn over it does not hide it then.
+ */
+export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = [], { copper = false } = {}): Hit | null {
+  for (const h of hitsAt(p, at, tol, layer, items, fills, { copper })) return h
   return null
 }
 
 /**
- * What is under the pointer. `copper` is for a tool looking for copper to start or end on (routing, a via): the silkscreen drawn over it does not
- * hide it then.
+ * Everything under the pointer that a click could pick, one entry for each thing a click selects, the one picked first (`hitTest`) first: what a
+ * double click there lists when it is more than one (`PickMenu`), as Altium lists the objects under a double click and KiCad clarifies a
+ * selection. The copper of a pour, the inside of a rule area and a reference image are under everything, so they are listed only where nothing
+ * else is: on a poured board every track, part and via would otherwise ask.
  */
-export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = [], { copper = false } = {}): Hit | null {
+export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): { hit: Hit; id: string }[] {
+  const seen = new Set<string>()
+  const front: { hit: Hit; id: string }[] = []
+  const behind: { hit: Hit; id: string }[] = []
+  for (const hit of hitsAt(p, at, tol, layer, items, fills)) {
+    const id = hitSelectionId(hit)
+    // A shape of the outline is listed once, by the piece the pointer is on.
+    const key = hit.type === "outline" ? `o:${hit.path}` : id
+    if (!id || !key || seen.has(key)) continue
+    seen.add(key)
+    ;((hit.type === "zone" && hit.inside) || hit.type === "image" ? behind : front).push({ hit, id })
+  }
+  return front.length ? front : behind
+}
+
+/** Everything under the pointer, in the order a click picks it: what is drawn on top first. A thing may come more than once. */
+function* hitsAt(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = [], { copper = false } = {}): Generator<Hit> {
   const bb = boardBox(p)
-  if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) return { type: "boardHandle" }
+  if (!p.board.outline?.paths.length && Math.hypot(at.x - bb.maxX, at.y - bb.minY) <= tol * 1.6) yield { type: "boardHandle" }
   // Only what is near the pointer is tried (`hitIndex`), in the order the whole board would be.
   const index = hitIndex(p, items)
   const near: Box = { minX: at.x - tol * 0.5, minY: at.y - tol * 0.5, maxX: at.x + tol * 0.5, maxY: at.y + tol * 0.5 }
@@ -203,14 +235,14 @@ export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, i
       if (pass && !it.layers.includes(alone ?? layer)) continue
       if (pointPadDistance(at, it.pad) > tol * 0.5) continue
       // The board's own corner holes are pads of no part: picked as the holes they are, as KiCad picks a mounting hole's footprint.
-      if (it.pad.componentId === BOARD_OWNER) return { type: "hole", id: it.id.slice(BOARD_HOLE_PREFIX.length) }
-      return { type: "pad", pad: it.pad, netId: it.netId }
+      if (it.pad.componentId === BOARD_OWNER) yield { type: "hole", id: it.id.slice(BOARD_HOLE_PREFIX.length) }
+      else yield { type: "pad", pad: it.pad, netId: it.netId }
     }
   }
   for (const i of index.viaGrid.near(near)) {
     const v = p.vias[i]
     if (alone && !viaLayers(p.board, v).includes(alone)) continue
-    if (Math.hypot(at.x - v.x, at.y - v.y) <= v.diameter / 2 + tol * 0.5) return { type: "via", id: v.id, at: { x: v.x, y: v.y } }
+    if (Math.hypot(at.x - v.x, at.y - v.y) <= v.diameter / 2 + tol * 0.5) yield { type: "via", id: v.id, at: { x: v.x, y: v.y } }
   }
   // The silkscreen of the side in front is drawn over all the copper, so it is picked before a track under it, as it is seen: a part's outline,
   // designator or silkscreen text over a track picked the track. A pad or a via, small and deliberate, still comes first.
@@ -218,12 +250,9 @@ export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, i
   if (!copper && ui.layers.silk && (front === "top" || front === "bottom")) {
     const side = front
     const silkOnly: ShapeVisibility = { ...vis, only: (name) => (!vis.only || vis.only(name)) && shapeLayerInfo(name)?.kind === "silk" && shapeLayerInfo(name)?.side === side }
-    const text = hitText(p, at, tol * 0.5, silkOnly)
-    if (text) return { type: "text", id: text.id }
-    const s = hitShape(worldShapes(p), at, tol * 0.5, silkOnly)
-    if (s) return shapeHit(s)
-    const part = partSilkHit(index, at, tol * 0.5, (c) => c.pcb.side === side)
-    if (part) return part
+    for (const text of textsAt(p, at, tol * 0.5, silkOnly)) yield { type: "text", id: text.id }
+    for (const s of shapesAt(worldShapes(p), at, tol * 0.5, silkOnly)) yield shapeHit(s)
+    yield* partSilkHits(index, at, tol * 0.5, (c) => c.pcb.side === side)
   }
   // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first, the last drawn first.
   const traces = index.traceGrid
@@ -236,57 +265,46 @@ export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, i
     if (isArcTrace(t)) {
       // X4: an arc track is picked by its curve.
       const arc = arcOf(t.points)
-      if (pointArcDistance(at, arc) <= t.width / 2 + tol * 0.5) return { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer, seg: 0 }
+      if (pointArcDistance(at, arc) <= t.width / 2 + tol * 0.5) yield { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer, seg: 0 }
       continue
     }
     for (let s = 0; s < t.points.length - 1; s++) {
       if (pointSegmentDistance(at, t.points[s], t.points[s + 1]) <= t.width / 2 + tol * 0.5) {
-        return { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[s], t.points[s + 1]), layer: t.layer, seg: s }
+        yield { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[s], t.points[s + 1]), layer: t.layer, seg: s }
+        break
       }
     }
   }
   // Text: the text itself, board text and a part's alike.
-  const text = hitText(p, at, tol * 0.5, vis)
-  if (text) return { type: "text", id: text.id }
+  for (const text of textsAt(p, at, tol * 0.5, vis)) yield { type: "text", id: text.id }
   // Drawings: a board drawing is picked itself, a part's drawing picks the part.
   const shapes = worldShapes(p)
-  if (shapes.length) {
-    const s = hitShape(shapes, at, tol * 0.5, vis)
-    if (s) return shapeHit(s)
-  }
+  if (shapes.length) for (const s of shapesAt(shapes, at, tol * 0.5, vis)) yield shapeHit(s)
   // A part's own silkscreen on the other side, and a designator outside its courtyard.
-  if (ui.layers.silk) {
-    const part = partSilkHit(index, at, tol * 0.5, (c) => !alone || c.pcb.side === alone)
-    if (part) return part
-  }
+  if (ui.layers.silk) yield* partSilkHits(index, at, tol * 0.5, (c) => !alone || c.pcb.side === alone)
   const parts = index.partGrid.near({ minX: at.x, minY: at.y, maxX: at.x, maxY: at.y })
   for (let i = parts.length - 1; i >= 0; i--) {
     const { c, courtyard } = index.parts[parts[i]]
     if (alone && c.pcb.side !== alone) continue
-    if (pointInBox(at, courtyard)) return { type: "component", id: c.id }
+    if (pointInBox(at, courtyard)) yield { type: "component", id: c.id }
   }
   // A zone with a polygon, by its edge or its copper, where nothing above it is.
-  if (p.zones.some((z) => z.outline)) {
-    const z = zoneHit(p, at, tol, layer, fills)
-    if (z) return { type: "zone", id: z }
-  }
+  if (p.zones.some((z) => z.outline)) for (const z of zonesAt(p, at, tol, layer, fills)) yield { type: "zone", id: z.id, inside: z.inside }
   // The board's own outline, last: a part or copper on the edge is picked before it.
   if (p.board.outline?.paths.length) {
     const paths = p.board.outline.paths
     const near = nearestOutlineSeg(paths, at)
-    if (near && near.distance <= tol * 0.5) return { type: "outline", path: near.path, seg: near.seg }
+    if (near && near.distance <= tol * 0.5) yield { type: "outline", path: near.path, seg: near.seg }
     // A cutout (a slot, a hole cut through the board) is picked anywhere inside it too, the smallest that holds the point: there is nothing else in
     // a hole to click, and its edge is a hairline.
     const hole = outlineGeometry(p.board)
       ?.rings.filter((r) => r.hole && pointInBox(at, r.box) && pointInRing(at, r.pts))
       .sort((a, b) => a.area - b.area)[0]
     const edge = hole && nearestOutlineSeg([paths[hole.path]], at)
-    if (hole && edge) return { type: "outline", path: hole.path, seg: edge.seg }
+    if (hole && edge) yield { type: "outline", path: hole.path, seg: edge.seg }
   }
   // A reference image is under everything else, so it is picked only where nothing is on top of it.
-  const image = hitImage(p, at, vis)
-  if (image) return { type: "image", id: image }
-  return null
+  for (const image of imagesAt(p, at, vis)) yield { type: "image", id: image }
 }
 
 const shapeVisibility = (alone: CopperLayer | null = null): ShapeVisibility => ({
@@ -357,7 +375,12 @@ const drawingPx = (scale: number) => 1 / Math.SQRT2 ** Math.round(Math.log(scale
 export function PcbEditor() {
   const project = useProjectStore((s) => s.project)!
   const dragBase = useProjectStore((s) => s.transientBase)
-  const selection = useUi((s) => s.selection)
+  const storeSelection = useUi((s) => s.selection)
+  /** The list a double click opened where several things are under the pointer (`PickMenu`), and the row pointed at in it. */
+  const [picker, setPicker] = useState<{ at: Vec2; rows: PickRow[]; preview: string | null } | null>(null)
+  // The row pointed at in that list is drawn as the selection, so the board shows which thing it is before it is picked. The selection itself is
+  // unchanged until then: handlers read the store's (`uiApi().selection`), never this.
+  const selection = picker?.preview ? [picker.preview] : storeSelection
   const tool = useUi((s) => s.pcbTool)
   const layer = clampLayer(project.board, useUi((s) => s.activeLayer))
   const unit = useUi((s) => s.settings.units)
@@ -427,8 +450,9 @@ export function PcbEditor() {
 
   const tol = () => 6 / (vpRef.current?.transform().scale ?? 14)
 
-  // A tool stays with its own clicks: switching tools drops a drawing that was half made.
+  // A tool stays with its own clicks: switching tools drops a drawing that was half made, and the list of what was under a double click.
   useEffect(() => {
+    setPicker(null)
     if (modeRef.current.kind === "draw" || modeRef.current.kind === "dim") setMode({ kind: "idle" })
     // A tool that draws at the pointer starts where the pointer is, not where the last such tool left it.
     setCursor(cursorRef.current)
@@ -979,14 +1003,27 @@ export function PcbEditor() {
       commitZone(m)
       setMode({ kind: "idle" })
     } else if (m.kind === "idle" && tool === "select") {
-      // A double click on anything opens it in the Inspector, as KiCad and Altium open an object's properties. The clicks before it picked it (with
-      // its group, or the other corner holes), and that selection stays.
-      const id = hitSelectionId(hitTest(project, e.world, tol(), layer, pcb.items, pcb.zoneFills))
-      if (!id) return
-      if (!uiApi().selection.includes(id)) uiApi().select([id])
-      uiApi().setSidePanel("inspector")
+      // A double click on anything opens it in the Inspector, as KiCad and Altium open an object's properties. Where several things are under the
+      // pointer (a track under a part, a via in a pad, a text on a drawing) it lists them first, as Altium does, and the one picked opens.
+      const hits = hitsUnder(project, e.world, tol(), layer, pcb.items, pcb.zoneFills)
+      if (hits.length > 1) {
+        const rows = pickRows(project, hits, { traceNet: pcb.traceNet, viaNet: pcb.viaNet, netName, unit })
+        if (rows.length > 1) {
+          setPicker({ at: e.world, rows, preview: null })
+          return
+        }
+      }
+      if (hits.length) inspect(hits[0].id)
     }
   }
+
+  /** Opens a thing in the Inspector. The clicks before a double click picked it (with its group, or the other corner holes), and that selection stays. */
+  const inspect = (id: string) => {
+    if (!uiApi().selection.includes(id)) uiApi().select([id])
+    uiApi().setSidePanel("inspector")
+  }
+  const closePicker = useCallback(() => setPicker(null), [])
+  const previewPick = useCallback((id: string | null) => setPicker((x) => (x && x.preview !== id ? { ...x, preview: id } : x)), [])
 
   const onContextMenu = () => {
     const m = modeRef.current
@@ -1698,7 +1735,7 @@ export function PcbEditor() {
   ]
 
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0" data-pick-board>
       <Viewport
         ref={vpRef}
         initialScale={14}
@@ -1735,10 +1772,23 @@ export function PcbEditor() {
                 }}
               />
             )}
-            {barComponent && <SelectionBar c={barComponent} t={t} />}
+            {barComponent && !picker && <SelectionBar c={barComponent} t={t} />}
             <PeerCursors view="pcb" project={project} t={t} />
-            {selectedOutline && outlinePaths?.[selectedOutline.path]?.segs[selectedOutline.seg] && mode.kind === "idle" && tool === "select" && (
+            {selectedOutline && outlinePaths?.[selectedOutline.path]?.segs[selectedOutline.seg] && mode.kind === "idle" && tool === "select" && !picker && (
               <OutlineBar path={outlinePaths[selectedOutline.path]} index={selectedOutline.path} seg={selectedOutline.seg} t={t} />
+            )}
+            {picker && (
+              <PickMenu
+                at={picker.at}
+                rows={picker.rows}
+                t={t}
+                onPreview={previewPick}
+                onPick={(id) => {
+                  setPicker(null)
+                  inspect(id)
+                }}
+                onClose={closePicker}
+              />
             )}
           </>
         )}

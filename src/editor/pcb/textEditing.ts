@@ -56,6 +56,12 @@ const bodyUnder = (project: Project, at: Vec2) =>
  * win over the body of a part under the point, as in KiCad: a click on a part's middle picks the part, and a drag moves it, not the text.
  */
 export function hitText(project: Project, at: Vec2, tol: number, vis: ShapeVisibility): WorldText | null {
+  for (const t of textsAt(project, at, tol, vis)) return t
+  return null
+}
+
+/** Every text under the point, the one drawn last first (`hitText` is the first). */
+export function* textsAt(project: Project, at: Vec2, tol: number, vis: ShapeVisibility): Generator<WorldText> {
   // Only the texts on screen whose boxes are near the point are tried (`textIndex`), the last first, as going through them all would.
   const { shown, grid, boxes, documentation } = textIndex(project, vis)
   const cands = grid.near({ minX: at.x - tol, minY: at.y - tol, maxX: at.x + tol, maxY: at.y + tol })
@@ -66,9 +72,8 @@ export function hitText(project: Project, at: Vec2, tol: number, vis: ShapeVisib
     if (vis.only && !vis.only(t.layer)) continue
     if (isDocumentationText(t) && (body ??= bodyUnder(project, at))) continue
     const b = boxes[cands[k]]
-    if (b && near(at, b, tol)) return t
+    if (b && near(at, b, tol)) yield t
   }
-  return null
 }
 
 let textIndexKept: {

@@ -69,7 +69,39 @@ function featherTexture(): THREE.CanvasTexture {
 }
 
 /** Prefiltered studio environment for PBR reflections. */
-export function createStudioEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
+/**
+ * How the environment is tuned.
+ *
+ * `editor` is the working view: a dark, neutral room that tells the truth
+ * about a board being designed. It is deliberately undramatic, because its job
+ * is to let someone judge a solder mask and a silkscreen, not to flatter them.
+ *
+ * `hero` is the same rig lit for a picture. A metal only reads as metal when
+ * there is something bright for it to reflect, and a dark dome gives gold
+ * nothing but grey; the dome comes up, the softboxes come up with it, and the
+ * ground stays dark so the board still has a floor to sit on. Used by the
+ * capture script for the marketing stills, never by the editor — a working
+ * view that flatters a board is a working view that hides a fault.
+ */
+export type EnvironmentPreset = "editor" | "hero"
+
+type DomeColors = { zenith: string; horizon: string; ground: string }
+
+const DOMES: Record<EnvironmentPreset, DomeColors> = {
+  editor: { zenith: "#67636f", horizon: "#2b2931", ground: "#1c1a21" },
+  // Roughly three times the editor dome's luminance at the top, and a horizon
+  // bright enough to land along the edge of a chip body. The ground is lifted
+  // only a little: a bright floor flattens the board into its own reflection.
+  hero: { zenith: "#cfcada", horizon: "#8f8a9c", ground: "#2a2730" },
+}
+
+/** The softboxes gain this much in `hero`, on top of the brighter dome. */
+const HERO_BOX_GAIN = 1.45
+
+export function createStudioEnvironment(
+  renderer: THREE.WebGLRenderer,
+  preset: EnvironmentPreset = "editor",
+): THREE.Texture {
   const scene = new THREE.Scene()
   const disposables: { dispose(): void }[] = []
   const feather = featherTexture()
@@ -82,9 +114,9 @@ export function createStudioEnvironment(renderer: THREE.WebGLRenderer): THREE.Te
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
-      uZenith: { value: new THREE.Color("#67636f") },
-      uHorizon: { value: new THREE.Color("#2b2931") },
-      uGround: { value: new THREE.Color("#1c1a21") },
+      uZenith: { value: new THREE.Color(DOMES[preset].zenith) },
+      uHorizon: { value: new THREE.Color(DOMES[preset].horizon) },
+      uGround: { value: new THREE.Color(DOMES[preset].ground) },
     },
   })
   scene.add(new THREE.Mesh(domeGeom, domeMat))
@@ -94,7 +126,9 @@ export function createStudioEnvironment(renderer: THREE.WebGLRenderer): THREE.Te
     const dir = new THREE.Vector3(...box.dir).normalize()
     const geom = new THREE.PlaneGeometry(box.size[0], box.size[1])
     const mat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(box.color ?? "#ffffff").multiplyScalar(box.intensity),
+      color: new THREE.Color(box.color ?? "#ffffff").multiplyScalar(
+        box.intensity * (preset === "hero" ? HERO_BOX_GAIN : 1),
+      ),
       map: feather,
       blending: THREE.AdditiveBlending,
       depthWrite: false,

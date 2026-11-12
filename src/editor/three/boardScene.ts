@@ -25,7 +25,7 @@ import { modelLibrary } from "./files/library"
 import { placeModel } from "./files/place"
 import { frameBox } from "./framing"
 import { StudioFloor } from "./studio"
-import { createStudioEnvironment } from "./studioEnvironment"
+import { createStudioEnvironment, type EnvironmentPreset } from "./studioEnvironment"
 import { ViewCube } from "./viewCube"
 
 export type CameraPreset = "home" | "top" | "bottom"
@@ -89,6 +89,7 @@ export class BoardScene {
   private modelsFrame = 0
   private stopModels: () => void
   private gridVisible = true
+  private renderPreset: EnvironmentPreset = "editor"
   private fitKey = ""
   private bounds = new THREE.Box3(new THREE.Vector3(-25, -20, -1), new THREE.Vector3(25, 20, 1))
   private boardRect = { x: 0, y: 0, width: 50, height: 40 }
@@ -440,6 +441,33 @@ export class BoardScene {
     if (this.selectionBox) this.selectionBox.visible = visible
     this.updateBounds()
     this.fitShadow()
+    this.requestRender()
+  }
+
+  /**
+   * Switches the lighting rig between the working view and the picture.
+   *
+   * The editor's view is deliberately plain (see `studioEnvironment.ts`): a
+   * dark room, neutral tone mapping, nothing that would flatter a board whose
+   * mask or silkscreen the user is judging. A marketing still wants the
+   * opposite — gold pads need something bright to mirror, and filmic tone
+   * mapping holds a highlight instead of clipping it to white.
+   *
+   * It is a method rather than a constructor option because the capture script
+   * drives the editor itself: it opens a real project, waits for the board, and
+   * then calls `window.__board3d.setRenderPreset("hero")`. Nothing in the
+   * editor's own UI calls it.
+   */
+  setRenderPreset(preset: EnvironmentPreset) {
+    if (preset === this.renderPreset) return
+    this.renderPreset = preset
+    this.envTexture.dispose()
+    this.envTexture = createStudioEnvironment(this.renderer, preset)
+    this.scene.environment = this.envTexture
+    const hero = preset === "hero"
+    this.scene.environmentIntensity = hero ? 1.25 : 1
+    this.renderer.toneMapping = hero ? THREE.ACESFilmicToneMapping : THREE.NeutralToneMapping
+    this.renderer.toneMappingExposure = hero ? 1.35 : 1.08
     this.requestRender()
   }
 

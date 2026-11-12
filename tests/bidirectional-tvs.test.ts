@@ -4,6 +4,7 @@ import type { SupplierPartsSource } from "../src/ai/supplierParts"
 import { executeTool, runTool } from "../src/ai/tools"
 import { buildCustomPart, customPartProblems } from "../src/model/customParts"
 import { createProject } from "../src/model/ops"
+import { draftFromSupplierPart } from "../src/model/supplierPart"
 import type { CustomPartSpec, Project } from "../src/model/types"
 
 // A bidirectional TVS drawn as the one-way TVS. create_part with LCSC C148229 (Littelfuse SMAJ300CA,
@@ -99,6 +100,17 @@ describe("a part the supplier draws as two diodes back to back", () => {
     expect(triangles(oneWay.part)).toHaveLength(1)
     expect(oneWay.out.result).not.toContain("back to back")
     expect((await create({ lcsc: "C10766" })).spec.symbol).toBeUndefined()
+  })
+
+  it("is drawn the same from the library panel's From LCSC rows", () => {
+    const built = draftFromSupplierPart(RECORDS.C148229)
+    if ("error" in built) throw new Error(built.error)
+    expect(built.draft.symbol).toBe("tvs_bidirectional")
+    expect(built.draft.refPrefix).toBe("D")
+    expect(triangles(buildCustomPart({ id: "x", ...built.draft }))).toHaveLength(2)
+    const oneWay = draftFromSupplierPart(RECORDS.C10766)
+    if ("error" in oneWay) throw new Error(oneWay.error)
+    expect(oneWay.draft.symbol).toBeUndefined()
   })
 
   it("is said by get_part_data", async () => {

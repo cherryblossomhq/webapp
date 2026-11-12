@@ -36,7 +36,7 @@ const layerName = (name: string) => shapeLayerInfo(name)?.label ?? name
 const joined = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(" · ")
 const clip = (s: string, n = 28) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** The rows for what is under the pointer (`hitsUnder`), in its order; `id` is what each selects (`hitSelectionId`). */
+/** The rows for what is under the pointer (`hitsUnder`), in its order; `id` is what each selects. */
 export function pickRows(p: Project, hits: { hit: Hit; id: string }[], names: PickNames): PickRow[] {
   const rows: PickRow[] = []
   const len = (mm: number, unit = false) => formatLength(mm, names.unit, unit)
@@ -50,8 +50,10 @@ export function pickRows(p: Project, hits: { hit: Hit; id: string }[], names: Pi
     switch (h.type) {
       case "pad": {
         const c = p.components.find((x) => x.id === h.pad.componentId)
-        const pad = h.pad.padNumber ?? h.pad.pin
-        return c ? { kind: "Part", name: c.ref, detail: joined(pad ? `pad ${pad}` : "pad", names.netName(h.netId)) } : null
+        if (!c) return null
+        const pin = h.pad.pin ? findPart(c.partId)?.pins.find((x) => x.number === h.pad.pin)?.name : undefined
+        const number = h.pad.padNumber ?? h.pad.pin ?? `${h.index + 1}`
+        return { kind: "Pad", name: `${c.ref}.${number}`, detail: joined(pin && pin !== number ? clip(pin, 16) : null, names.netName(h.netId)) }
       }
       case "component": {
         const c = p.components.find((x) => x.id === h.id)

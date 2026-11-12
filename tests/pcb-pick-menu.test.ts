@@ -3,14 +3,16 @@ import { hitsUnder, hitTest } from "../src/editor/pcb/PcbEditor"
 import { pickRows } from "../src/editor/pcb/PickMenu"
 import { computeConnectivity } from "../src/model/connectivity"
 import { pcbCourtyard } from "../src/model/instances"
+import { padSelectionId, selectedPad } from "../src/model/padSelection"
+import { pointPadDistance } from "../src/model/padDistance"
 import { analyzePcb } from "../src/model/pcb"
 import type { ComponentInstance, Project, Vec2 } from "../src/model/types"
 import { useUi } from "../src/store/uiStore"
 import { built } from "./built"
 import { rectangle, withZone } from "./zones-fixtures"
 
-// A double click where several things are under the pointer lists them, as Altium does, the one a click picks first: a track or a via inside a
-// part's body was the only thing a double click there could open, and the part could not be opened from it.
+// A double click where several things are under the pointer lists them all, as Altium does, the one a click picks first: a track or a via
+// inside a part's body was the only thing a double click there could open, and the part (or a pad apart from its part) could not be opened.
 
 const TOL = 0.1
 const project = built("esp32-robot")
@@ -66,39 +68,53 @@ describe("what a double click lists", () => {
     expect(under(withVia(withTrack(project)), at)).toEqual(["v:v-pick", "t:t-pick", `c:${c.id}`])
   })
 
-  it("leaves out a rule area the point is inside when anything else is there, but lists it alone", () => {
+  it("lists a rule area under them too, last", () => {
     const zoned = withZone(project, rectangle(at.x - 3, at.y - 3, at.x + 3, at.y + 3), { keepout: { tracks: true } }, "k-pick")
-    expect(under(zoned, at)).toEqual([`c:${c.id}`])
-    const clear = { x: project.board.x - project.board.width / 2 + 0.6, y: project.board.y - project.board.height / 2 + 0.6 }
-    const corner = withZone(project, rectangle(clear.x - 0.5, clear.y - 0.5, clear.x + 0.5, clear.y + 0.5), { keepout: { tracks: true } }, "k-pick")
-    expect(under(corner, clear)).toEqual(["z:k-pick"])
+    expect(under(zoned, at)).toEqual([`c:${c.id}`, "z:k-pick"])
+  })
+
+  it("lists two parts over each other", () => {
+    const p = { ...project, components: [...project.components, { ...c, id: "c-over", ref: "U99" }] }
+    expect(under(p, at)).toEqual(expect.arrayContaining([`c:${c.id}`, "c:c-over"]))
   })
 })
 
-describe("a via or a pad over the tracks of its net", () => {
-  it("is listed without the tracks that end on it, which it is drawn over", () => {
-    const p = withVia(withTrack(project))
-    const via = p.vias.find((v) => v.id === "v-pick")!
-    // Give the via the track's net, as a routed one has: a track of the net ends on it.
-    const a = analysis(p)
-    const net = "n-test"
-    const nets = { ...a, viaNet: new Map([...a.viaNet, [via.id, net]]), traceNet: new Map([...a.traceNet, ["t-pick", net]]) }
-    expect(hitsUnder(p, at, TOL, "top", nets).map((h) => h.id)).toEqual(["v:v-pick", `c:${c.id}`])
-    // A track of another net under it is a short, and is listed.
-    const other = { ...nets, traceNet: new Map([...nets.traceNet, ["t-pick", "n-other"]]) }
-    expect(hitsUnder(p, at, TOL, "top", other).map((h) => h.id)).toEqual(["v:v-pick", "t:t-pick", `c:${c.id}`])
+describe("a via or a pad over tracks, and a part over its pads", () => {
+  it("lists a via's own tracks after it", () => {
+    const a = analysis(project)
+    const lists = project.vias.slice(0, 20).map((v) => hitsUnder(project, { x: v.x, y: v.y }, TOL, "top", a).map((h) => h.id))
+    for (const [i, ids] of lists.entries()) expect(ids[0]).toBe(`v:${project.vias[i].id}`)
+    expect(lists.some((ids) => ids.some((id) => id.startsWith("t:")))).toBe(true)
   })
 
-  it("is not listed on a routed board's vias with their tracks", () => {
+  it("lists a pad on its own, the track that ends on it, and its part, while a click still picks the part by the pad", () => {
     const a = analysis(project)
-    let checked = 0
-    for (const v of project.vias.slice(0, 20)) {
-      const ids = hitsUnder(project, { x: v.x, y: v.y }, TOL, "top", a).map((h) => h.id)
-      expect(ids.filter((id) => id.startsWith("t:"))).toEqual([])
-      expect(ids[0]).toBe(`v:${v.id}`)
-      checked++
+    // A top pad of a part with a top track ending inside it.
+    let found: { at: Vec2; pad: string; part: string; track: string } | null = null
+    for (const it of a.items) {
+      if (it.kind !== "pad" || it.pad.componentId === "#board" || !it.layers.includes("top")) continue
+      const seg = a.items.find((s) => s.kind === "segment" && s.layers.includes("top") && [s.a, s.b].some((e) => pointPadDistance(e, it.pad) <= 0))
+      if (seg?.kind !== "segment") continue
+      const end = pointPadDistance(seg.a, it.pad) <= 0 ? seg.a : seg.b
+      found = { at: end, pad: padSelectionId(it.pad.componentId, parseInt(it.id.split(":").pop()!, 10)), part: `c:${it.pad.componentId}`, track: `t:${seg.traceId}` }
+      break
     }
-    expect(checked).toBeGreaterThan(0)
+    expect(found).not.toBeNull()
+    const { at: end, pad, part, track } = found!
+    const ids = hitsUnder(project, end, TOL, "top", a).map((h) => h.id)
+    expect(ids[0]).toBe(pad)
+    expect(ids).toContain(track)
+    expect(ids).toContain(part)
+    expect(ids.indexOf(track)).toBeLessThan(ids.indexOf(part))
+    expect(hitTest(project, end, TOL, "top", a.items)).toMatchObject({ type: "pad" })
+    // The pad's selection names the pad, on the net the analysis puts it on.
+    const sp = selectedPad(project, a.items, pad)!
+    const item = a.items.find((it) => it.kind === "pad" && it.id === `pad:${sp.c.id}:${sp.index}`)
+    expect(item?.kind === "pad" && item.netId).toBe(sp.netId)
+    expect(`c:${sp.c.id}`).toBe(part)
+    // Its row says it is a pad, by its part and number.
+    const rows = pickRows(project, hitsUnder(project, end, TOL, "top", a), { traceNet: a.traceNet, viaNet: a.viaNet, netName: () => null, unit: "mm" })
+    expect(rows[0]).toMatchObject({ id: pad, kind: "Pad", name: `${sp.c.ref}.${sp.pad.padNumber ?? sp.pad.pin}` })
   })
 })
 

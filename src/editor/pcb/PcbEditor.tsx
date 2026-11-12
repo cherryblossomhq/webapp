@@ -81,12 +81,14 @@ import { defaultPlacement } from "../../model/placementAreas"
 import { Tooltip } from "../../ui/Tooltip"
 import { isTyping, Viewport, type StillLayer, type ViewportHandle, type ViewportPointerEvent, type ViewTransform } from "../viewport"
 import { onBoard } from "../../model/partFlags"
+import { padItemIndex, padSelectionId, parsePadSelectionId, selectedPad } from "../../model/padSelection"
 import { PickMenu, pickRows, type PickRow } from "./PickMenu"
 
 export const PCB_GRID = 0.25
 
 export type Hit =
-  | { type: "pad"; pad: WorldPad; netId: string | null }
+  /** `index` is the pad's in `pcbPads`, which its selection id names (`padSelectionId`): a click on a pad picks its part, the double-click list the pad. */
+  | { type: "pad"; pad: WorldPad; netId: string | null; index: number }
   | { type: "via"; id: string; at: Vec2 }
   /** One of the board's corner mounting holes, by its id (`mountingHoles`). */
   | { type: "hole"; id: string }
@@ -198,29 +200,34 @@ export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, i
 /**
  * What a double click lists where several things are under it (`PickMenu`), as Altium lists the objects under a double click and KiCad clarifies a
  * selection: what a click there picks (`hitTest`, which reaches a few pixels) first, then everything under the pointer itself (within a pixel), in
- * the order a click picks them, one entry for each thing a click selects. Not everything within a click's reach: at a usual zoom a double click on
- * the middle of a track then listed the track beside it. A via or a pad is drawn over the ends of the tracks of its net that meet it, so those
- * are not listed with it: every via has some, and a double click on one listed four tracks. The copper of a pour, the inside of a rule area and a
- * reference image are under everything, so they are listed only where nothing else is: on a poured board every track, part and via would
- * otherwise ask.
+ * the order a click picks them, one entry for each thing that can be selected. Everything there is offered: a via and the tracks under it, a pad
+ * (`pd:`, on its own) and its part and the tracks it ends, two parts over each other, a pour under them. Not everything within a click's reach:
+ * at a usual zoom a double click on the middle of a track then listed the track beside it.
  */
-export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer, a: Pick<PcbAnalysis, "items" | "zoneFills" | "traceNet" | "viaNet">): { hit: Hit; id: string }[] {
+export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer, a: Pick<PcbAnalysis, "items" | "zoneFills">): { hit: Hit; id: string }[] {
   const { items, zoneFills: fills } = a
   const first = hitTest(p, at, tol, layer, items, fills)
   const seen = new Set<string>()
-  const front: { hit: Hit; id: string }[] = []
-  const behind: { hit: Hit; id: string }[] = []
+  const out: { hit: Hit; id: string }[] = []
+  const add = (hit: Hit, id: string, key = id) => {
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ hit, id })
+  }
+  const owners: string[] = []
   for (const hit of [...(first ? [first] : []), ...hitsAt(p, at, tol / 3, layer, items, fills)]) {
+    if (hit.type === "pad") {
+      // The pad itself; its part comes where the part's body is under the pointer, or after everything when the pad is past it.
+      add(hit, padSelectionId(hit.pad.componentId, hit.index))
+      owners.push(hit.pad.componentId)
+      continue
+    }
     const id = hitSelectionId(hit)
     // A shape of the outline is listed once, by the piece the pointer is on.
-    const key = hit.type === "outline" ? `o:${hit.path}` : id
-    if (!id || !key || seen.has(key)) continue
-    seen.add(key)
-    ;((hit.type === "zone" && hit.inside) || hit.type === "image" ? behind : front).push({ hit, id })
+    if (id) add(hit, id, hit.type === "outline" ? `o:${hit.path}` : id)
   }
-  const covering = new Set(front.map(({ hit }) => (hit.type === "via" ? a.viaNet.get(hit.id) : hit.type === "pad" ? hit.netId : null)).filter((n): n is string => !!n))
-  const shown = covering.size ? front.filter(({ hit }) => hit.type !== "trace" || !covering.has(a.traceNet.get(hit.id) ?? "")) : front
-  return shown.length ? shown : behind
+  for (const c of owners) add({ type: "component", id: c }, `c:${c}`)
+  return out
 }
 
 /** Everything under the pointer, in the order a click picks it: what is drawn on top first. A thing may come more than once. */
@@ -243,7 +250,7 @@ function* hitsAt(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
       if (pointPadDistance(at, it.pad) > tol * 0.5) continue
       // The board's own corner holes are pads of no part: picked as the holes they are, as KiCad picks a mounting hole's footprint.
       if (it.pad.componentId === BOARD_OWNER) yield { type: "hole", id: it.id.slice(BOARD_HOLE_PREFIX.length) }
-      else yield { type: "pad", pad: it.pad, netId: it.netId }
+      else yield { type: "pad", pad: it.pad, netId: it.netId, index: padItemIndex(it.id, it.pad.componentId) }
     }
   }
   for (const i of index.viaGrid.near(near)) {
@@ -485,8 +492,9 @@ export function PcbEditor() {
     if (hover?.type === "trace") return pcb.traceNet.get(hover.id) ?? null
     const ts = selectionIds(selection, "t")
     if (ts.length === 1) return pcb.traceNet.get(ts[0]) ?? null
+    if (selection.length === 1 && parsePadSelectionId(selection[0])) return selectedPad(project, pcb.items, selection[0])?.netId ?? null
     return null
-  }, [highlightNet, mode, hover, pcb, selection])
+  }, [highlightNet, mode, hover, pcb, selection, project])
   // The net the kept drawing holds lit (`boardDrawing`) is the one Checks picks. Any other lit net (a selected track's, the pointer's, the route's) is
   // drawn over it (`passingHighlight`), so moving the pointer from one net to the next, or selecting a track, does not draw the board again.
   const heldNet = highlightNet
@@ -1213,7 +1221,10 @@ export function PcbEditor() {
         const zoneIds = selectedZoneIds(sel)
         // The corner holes go together: they are one setting of the board (the Board section's Mounting holes brings them back).
         const holes = selectedMountingHoles(sel).length > 0
-        if (!traces.length && !vias.length && !drawings.length && !texts.length && !dims.length && !images.length && !outlinePieces.length && !zoneIds.length && !holes) return
+        if (!traces.length && !vias.length && !drawings.length && !texts.length && !dims.length && !images.length && !outlinePieces.length && !zoneIds.length && !holes) {
+          if (sel.some((id) => parsePadSelectionId(id))) setNote("A pad is part of its part's land pattern: select the part to delete it")
+          return
+        }
         e.preventDefault()
         projectApi().commit((current) => {
           const p0 = holes ? { ...current, board: { ...current.board, mountingHoles: null } } : current
@@ -1577,6 +1588,13 @@ export function PcbEditor() {
                   <circle cx={h.x} cy={h.y} r={h.drill / 2} fill={PCB.hole} />
                 </g>
               ))}
+          {padPaths(
+            selection.flatMap((id) => {
+              const sp = parsePadSelectionId(id) ? selectedPad(project, pcb.items, id) : null
+              return sp && sp.pad.layers.some((l) => drawn(l)) ? [{ opacity: 1, pad: sp.pad, id, color: PCB.select, highlight: true }] : []
+            }),
+            px,
+          )}
           {project.vias
             .filter((v) => selected.has(`v:${v.id}`) && viaLayers(project.board, v).some((l) => drawn(l)))
             .map((v) => (

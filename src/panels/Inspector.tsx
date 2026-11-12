@@ -32,6 +32,8 @@ import { commitFor, commitHere, viewFor } from "../store/sheetScope"
 import { selectionIds, uiApi, useUi } from "../store/uiStore"
 import { parseOutlineSelectionId } from "../model/outlineOps"
 import { OutlineInspector } from "./OutlineInspector"
+import { PadInspector } from "./PadInspector"
+import { parsePadSelectionId, selectedPad } from "../model/padSelection"
 import { ZoneInspector } from "./ZonePanels"
 import { removeZones } from "../model/zoneOps"
 import { Button, Field } from "../ui/controls"
@@ -155,6 +157,11 @@ export function Inspector() {
   if (selection.length > 0 && selection.every((id) => parseOutlineSelectionId(id) !== null)) return <OutlineInspector project={project} selection={selection} />
   const holes = selectedMountingHoles(selection)
   if (holes.length > 0 && holes.length === selection.length) return <MountingHolesInspector project={project} />
+  const pads = selection.filter((id) => parsePadSelectionId(id))
+  if (selection.length === 1 && pads.length === 1) {
+    const pad = selectedPad(project, getLiveAnalysis(project).items, pads[0])
+    if (pad) return <PadInspector selected={pad} project={project} />
+  }
   if (selection.length > 0) {
 
     const counts = [
@@ -171,6 +178,7 @@ export function Inspector() {
       [images.length, "image"],
       [zoneIds.length, "zone"],
       [holes.length, "mounting hole"],
+      [pads.length, "pad"],
       [sheetIds.length, "sheet"],
       [entries.length, "sheet entry"],
     ].filter(([n]) => n) as [number, string][]

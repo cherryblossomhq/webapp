@@ -6,6 +6,8 @@ import { drawingBounds } from "../model/drawings"
 import { pcbCourtyard, pcbPads, schematicBounds } from "../model/instances"
 import { labelBox } from "../model/labels"
 import { sheetPinGeometry } from "../model/labelShapes"
+import { padBox } from "../model/padDistance"
+import { parsePadSelectionId } from "../model/padSelection"
 import type { Project, Vec2 } from "../model/types"
 import { usePresence, type Collaborator } from "../store/presence"
 import { useUi, type View } from "../store/uiStore"
@@ -68,7 +70,13 @@ export function selectionBoxes(view: View, project: Project, selection: string[]
         box = pin ? sheetPinGeometry(pin).box : null
       }
     } else if (view === "pcb") {
-      if (kind === "c") {
+      const pd = parsePadSelectionId(key)
+      if (pd) {
+        // A pad picked on its own from the double-click list.
+        const c = components.get(pd.component)
+        const pad = c?.pcb.placed ? pcbPads(c)[pd.index] : undefined
+        box = pad ? padBox(pad) : null
+      } else if (kind === "c") {
         const c = components.get(id)
         box = c && c.pcb.placed ? (pcbCourtyard(c) ?? pointsBox(pcbPads(c).map((p) => ({ x: p.x, y: p.y })), 0.5)) : null
       } else if (kind === "t") {

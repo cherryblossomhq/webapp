@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { altiumFiles, altiumNetNames } from "../src/export/altium"
+import { strokeExtent } from "../src/export/altium/pcbDoc"
 import { computeConnectivity, pinKey } from "../src/model/connectivity"
+import { LINE_HEIGHT, textFrame } from "../src/model/drawings"
 import { isSchematicPart, pcbPads } from "../src/model/instances"
 import { importKicadBoard } from "../src/model/kicad/board/import"
 import { findPart } from "../src/model/library"
@@ -8,7 +10,7 @@ import { onBoard } from "../src/model/partFlags"
 import { resolvedComponents, withRuleAreaFlags } from "../src/model/ruleAreas"
 import { copperCount } from "../src/model/stack"
 import { DIMENSION_TEXT_OWNER, shownOf, worldTexts } from "../src/model/texts"
-import type { Project, Vec2 } from "../src/model/types"
+import type { DrawingText, Project, Vec2 } from "../src/model/types"
 import { binaryRecords, milProp, propRecords, readPads, readRegions, readStreams, readTexts, readTracks, readVias, ruleRecords, schCoord, schRecords, type Props } from "./altium/read"
 import { built } from "./built"
 import { board as kicadBoard, footprint as kicadFootprint, pad as kicadPad } from "./kicad-board-fixtures"
@@ -458,6 +460,67 @@ describe("altiumFiles: the schematic", () => {
     const box = records.find((r) => r.get("RECORD") === "28" && r.get("TEXT") === "BOX")!
     expect(schCoord(box, "CORNER.Y")).toBeCloseTo(schCoord(note, "LOCATION.Y"), 3)
     expect(schCoord(box, "CORNER.Y") - schCoord(box, "LOCATION.Y")).toBeCloseTo(50, 3)
+  }, 120_000)
+
+  it("sizes a font by its cell, as Altium does, so a text is as big as the editor draws it", async () => {
+    // Altium's SIZE n is a cell of n × 10 mils, 1.117 times Arial's em; the editor's size is the em (500 mils a unit).
+    const source = built("blinker")
+    const sizes = [0.1, 0.14, 0.2, 0.5]
+    const project: Project = { ...source, drawings: sizes.map((size, i) => ({ id: `t${i}`, type: "text", x: 0, y: -i, text: `SIZE ${size}`, size })) }
+    const records = schRecords(bytesOf((await altiumFiles(project)).files, ".SchDoc"))
+    const sheet = records.find((r) => r.get("RECORD") === "31")!
+    for (const size of sizes) {
+      const text = records.find((r) => r.get("RECORD") === "4" && r.get("TEXT") === `SIZE ${size}`)!
+      const cell = Number(sheet.get(`SIZE${text.get("FONTID")}`)) * 10
+      expect(Math.abs(cell / 1.1171875 - size * 500), `size ${size}`).toBeLessThanOrEqual(5 * 0.9)
+    }
+    // A designator, at the editor's 50 mil, is a 6 point font, not the 8 that drew it half as big again.
+    expect(sheet.get("SIZE1")).toBe("6")
+  }, 120_000)
+
+  it("writes a text of several lines a line at a time where the editor draws each, its border a rounded rectangle", async () => {
+    const source = built("blinker")
+    const note: DrawingText = { id: "n", type: "text", x: 1, y: 2, text: "A\nBB\n\nCCC", size: 0.2, align: "center", border: true }
+    const up: DrawingText = { id: "u", type: "text", x: 4, y: 2, text: "UP\nTWO", size: 0.1, rot: 90 }
+    const hidden: DrawingText = { id: "h", type: "text", x: 0, y: 0, text: "HIDDEN", size: 0.1, valign: "top", hidden: true }
+    const records = schRecords(bytesOf((await altiumFiles({ ...source, drawings: [note, up, hidden] })).files, ".SchDoc"))
+    const text = (t: string) => records.find((r) => r.get("RECORD") === "4" && r.get("TEXT") === t)!
+    // The sheet's offset, from the first line, which is anchored at the text's own point.
+    const o = { x: note.x - schCoord(text("A"), "LOCATION.X") / 50, y: note.y - schCoord(text("A"), "LOCATION.Y") / 50 }
+    const at = (r: Props, key = "LOCATION") => ({ x: o.x + schCoord(r, `${key}.X`) / 50, y: o.y + schCoord(r, `${key}.Y`) / 50 })
+    const pitch = 0.2 * LINE_HEIGHT
+    for (const [line, i] of [["A", 0], ["BB", 1], ["CCC", 3]] as const) {
+      expect(at(text(line)).x).toBeCloseTo(1, 4)
+      expect(at(text(line)).y, line).toBeCloseTo(2 - i * pitch, 4)
+      // Top centre: Altium's justification rows run bottom (0), middle (1), top (2).
+      expect(text(line).get("JUSTIFICATION")).toBe("7")
+    }
+    // Read upwards, each line is to the right of the one before, hanging from its top (top-left in its own frame).
+    expect(at(text("TWO")).x - at(text("UP")).x).toBeCloseTo(0.1 * LINE_HEIGHT, 4)
+    expect(at(text("TWO")).y).toBeCloseTo(2, 4)
+    expect([text("UP").get("ORIENTATION"), text("UP").get("JUSTIFICATION")]).toEqual(["1", "6"])
+    expect(records.some((r) => r.get("RECORD") === "28")).toBe(false)
+    // The border, where the editor draws it with its rounded corners.
+    const frame = textFrame(note)
+    const border = records.find((r) => r.get("RECORD") === "10")!
+    expect(at(border)).toEqual({ x: expect.closeTo(frame.minX, 4), y: expect.closeTo(frame.minY, 4) })
+    expect(at(border, "CORNER")).toEqual({ x: expect.closeTo(frame.maxX, 4), y: expect.closeTo(frame.maxY, 4) })
+    expect(schCoord(border, "CORNERXRADIUS")).toBeCloseTo(0.2 * 0.25 * 50, 4)
+    // A text the editor hides is not written.
+    expect(records.some((r) => r.get("TEXT") === "HIDDEN")).toBe(false)
+  }, 120_000)
+
+  it("centres a board text by the width Altium's stroke font draws it", async () => {
+    const source = built("blinker")
+    const words = "DANGER HIGH VOLTAGE"
+    const project: Project = { ...source, texts: [{ id: "warn", text: words, x: 5, y: 7, size: 1.5, rot: 0, side: "top", layer: "F.SilkS" }] }
+    const wt = worldTexts(project).find((t) => t.owner === "#board" && shownOf(project, t) === words)!
+    expect(wt.hj).toBe(0)
+    const { s, at } = board(bytesOf((await altiumFiles(project)).files, ".PcbDoc"))
+    const text = readTexts(s.get("Texts6/Data")!, s.get("WideStrings6/Data")!).find((t) => t.text === words)!
+    // Most of the font's characters advance one height and are two thirds of one wide: 18 advances (the I's five sixths), then the last E's ink.
+    expect(strokeExtent(words)).toBeCloseTo(17 + 5 / 6 + 2 / 3, 6)
+    expect(at(text).x).toBeCloseTo(wt.x - (strokeExtent(words) * 1.5) / 2, 3)
   }, 120_000)
 
   it("keeps a name Windows-1252 cannot hold in UTF-8 beside it", async () => {

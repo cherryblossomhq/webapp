@@ -521,7 +521,7 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     const content = shownOf(project, wt)
     if (!content) continue
     // KiCad places a text by its justification; Altium by the bottom-left of its line: move the anchor by the text's own width and height.
-    const width = content.length * wt.w * 0.9
+    const width = strokeExtent(content) * wt.size
     const dx = wt.hj === 0 ? -width / 2 : wt.hj === 1 ? -width : 0
     const dy = wt.vj === 0 ? -wt.size / 2 : wt.vj === -1 ? -wt.size : 0
     const a = (wt.drawRot * Math.PI) / 180
@@ -730,6 +730,19 @@ const utf16le = (s: string) => {
     out[i * 2 + 1] = s.charCodeAt(i) >> 8
   }
   return out
+}
+
+/**
+ * How far Altium's Default stroke font draws a line from its start, in text heights: every character's advance but the last's, and the last one's
+ * ink. The advances and widths are Altium's (AltiumSharp's `AltiumStrokeFontData`, Apache 2.0, from altium_monkey): most characters advance one
+ * height and are two thirds of one wide. Estimating 0.9 of a height a character put a centred 22-character silkscreen title 1.3 mm off.
+ */
+export function strokeExtent(text: string): number {
+  const advance = (c: string) => (c === "!" ? 1 / 3 : c === "|" ? 1 / 2 : c === "'" ? 2 / 3 : "().1:;>I\\^filt".includes(c) ? 5 / 6 : c === "%" ? 7 / 6 : c === '"' ? 4 / 3 : 1)
+  const ink = (c: string) => ("!|".includes(c) ? 0 : "'.:;".includes(c) ? 1 / 6 : "(),1I[]`fijlt".includes(c) ? 1 / 3 : c === " " ? 0.4 : "<>kr{}".includes(c) ? 1 / 2 : "\"%".includes(c) ? 5 / 6 : 2 / 3)
+  const chars = [...text]
+  if (!chars.length) return 0
+  return chars.slice(0, -1).reduce((sum, c) => sum + advance(c), 0) + ink(chars[chars.length - 1])
 }
 
 /** A font name as a text record holds it: 32 UTF-16 characters, the rest zeros. */

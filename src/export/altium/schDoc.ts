@@ -1,14 +1,16 @@
 import { orientPoint, round } from "../../lib/geometry"
 import { blockFrames } from "../../model/blocks"
 import type { SchematicConnectivity } from "../../model/connectivity"
+import { drawingBounds, LINE_HEIGHT, textFrame, textLines } from "../../model/drawings"
 import { dirVector, isSchematicPart, powerNetName, schematicBounds, schematicPins, valueText, type WorldPin } from "../../model/instances"
 import { findPart } from "../../model/library"
 import { pinTypeOfKind } from "../../model/pinKinds"
 import { samplePrimitive } from "../../model/primitiveGeometry"
 import { copyKey, isHierarchical, sheetsOf, sheetView, usesOfSheet, ROOT_SHEET } from "../../model/sheets"
 import { arcCircle } from "../../model/shapes"
+import { lookOfText, textLines as kicadLines, textLines2 } from "../../model/sheetItems"
 import { componentFields, FIELD_SIZE, symbolOf, symbolTextOnSheet, unitCount } from "../../model/symbolDrawing"
-import type { ComponentInstance, LabelShape, PartDef, PinType, Project, SymbolPort, SymbolPrimitive, Vec2 } from "../../model/types"
+import type { ComponentInstance, DrawingText, LabelShape, PartDef, PinType, Project, SymbolPort, SymbolPrimitive, Vec2 } from "../../model/types"
 import { writeCfb } from "./cfb"
 import { Bytes, overbar, props, propRecord, uniqueId, type PropValue } from "./records"
 
@@ -24,6 +26,14 @@ const BLUE = 0xff0000
 const PALE = 0xb0ffff
 const DARK_RED = 0x000080
 const SHEET_PAPER = 0xf8fcff
+/**
+ * Altium sizes a schematic font by its cell, from the top of its ascent to the bottom of its descent: `SIZE` n is n × 10 mils, which in Arial is
+ * an em 1.117 times smaller (its Windows ascent and descent, 1854 and 434 of 2048). Measured on a title block Altium saved (AltiumSharp's
+ * `SPI Isolator.SchDoc`): only at this scale does its disclaimer fit its box and its revision table's headers sit centred in their columns. Fonts
+ * were sized at 6 mils a point before, which drew every text 1.49 times the editor's from where it is anchored: a title ran into the line under it
+ * and a note past the page.
+ */
+const ARIAL_CELL = (1854 + 434) / 2048
 
 export interface SchContext {
   project: Project
@@ -115,9 +125,9 @@ class Sheet {
     this.records.push(pairs)
     return this.records.length - 1
   }
-  /** The font id of a text of `size` units. */
+  /** The font id of a text of `size` units: the editor's size is the em, and Altium's is the cell (see `ARIAL_CELL`). */
   font(size: number, bold = false, italic = false): number {
-    const pts = Math.max(4, Math.round((size * 500) / 6))
+    const pts = Math.max(1, Math.round((size * 500 * ARIAL_CELL) / 10))
     const key = `${pts}|${bold}|${italic}`
     if (!this.fonts.has(key)) this.fonts.set(key, { size: pts, bold, italic })
     return [...this.fonts.keys()].indexOf(key) + 1
@@ -145,6 +155,20 @@ function placement(extent: { x: number; y: number }, vertical: boolean): { ORIEN
   const col = along > 0 ? 0 : along < 0 ? 2 : 1
   const row = across > 0 ? 0 : across < 0 ? 2 : 1
   return { ORIENTATION: vertical ? 1 : 0, JUSTIFICATION: row * 3 + col }
+}
+
+/**
+ * A text of the drawing tools as Altium's text strings, one a line, each anchored where the editor draws that line. A text string holds one line;
+ * a text frame would lay the lines out itself, by its own line pitch and wrapping, and Altium reads its alignment by a number nothing confirms past
+ * left. The editor's own text hangs its lines down from its top at its pitch (sideways when it reads upwards), and a KiCad text is laid out as
+ * the canvas lays it out (`textLines2`).
+ */
+function drawingTextLines(d: DrawingText): { text: string; at: Vec2; place: ReturnType<typeof placement>; size: number }[] {
+  if (d.valign) return textLines2(d, d.rot ?? 0, lookOfText(d), kicadLines(d.text)).flatMap((l) => (l.text ? [{ text: l.text, at: { x: l.x, y: l.y }, place: placement(l.extent, l.vertical), size: l.size }] : []))
+  const upwards = d.rot === 90
+  const col = d.align === "right" ? 2 : d.align === "center" ? 1 : 0
+  const pitch = d.size * LINE_HEIGHT
+  return textLines(d).flatMap((text, i) => (text ? [{ text, at: upwards ? { x: d.x + i * pitch, y: d.y } : { x: d.x, y: d.y - i * pitch }, place: { ORIENTATION: upwards ? 1 : 0, JUSTIFICATION: 6 + col }, size: d.size }] : []))
 }
 
 /** The pin line of a port: a straight two-point path of the symbol that starts at the port and runs into the body. Its index and length, or null. */
@@ -222,8 +246,10 @@ function writeSheet(ctx: SchContext, view: Project, sheetId: string, junctions: 
     grow({ x: s.x + s.w, y: s.y + s.h })
   }
   for (const d of drawings) {
-    if ("x" in d && "y" in d) grow({ x: d.x, y: d.y })
-    if ("points" in d) d.points.forEach(grow)
+    const b = drawingBounds(d)
+    if (b.minX > b.maxX) continue
+    grow({ x: b.minX, y: b.minY })
+    grow({ x: b.maxX, y: b.maxY })
   }
   if (!Number.isFinite(box.minX)) Object.assign(box, { minX: 0, minY: 0, maxX: 1, maxY: 1 })
   const contentW = (box.maxX - box.minX) * K
@@ -374,24 +400,23 @@ function writeSheet(ctx: SchContext, view: Project, sheetId: string, junctions: 
       case "bezier":
         s.add([["RECORD", 5], ["OWNERPARTID", -1], ["LINEWIDTH", width], ["COLOR", color], ...pointList(d.points.map((p) => s.at(p)))])
         break
-      case "text":
-      case "textbox": {
-        const lines = d.text.split(/\r?\n/)
-        const size = d.type === "text" ? d.size : (d.look?.size ?? FIELD_SIZE)
-        const at = s.at(d)
-        if (d.type === "text" && lines.length === 1) {
-          const col = d.align === "right" ? 2 : d.align === "center" ? 1 : 0
-          // `y` is the text's top unless it says otherwise (the editor's own texts have no `valign`).
-          const row = d.valign === "bottom" ? 0 : d.valign === "middle" ? 1 : 2
-          s.add([["RECORD", 4], ["OWNERPARTID", -1], ...loc(at), ["ORIENTATION", ((d.rot ?? 0) / 90) % 4], ["JUSTIFICATION", row * 3 + col], ["COLOR", colorOf(d.stroke?.color) ?? NAVY], ["FONTID", s.font(size, !!d.bold, !!d.italic)], ["TEXT", d.text]])
-        } else {
-          const w = d.type === "textbox" ? d.w : Math.max(...lines.map((l) => l.length)) * size * 0.8
-          const h = d.type === "textbox" ? d.h : lines.length * size * 1.6
-          // A text box hangs down from its corner (`boxCorners`); a text from its top, unless `valign` puts `y` at its middle or bottom.
-          const top = d.type === "textbox" || !d.valign || d.valign === "top" ? d.y : d.valign === "middle" ? d.y + h / 2 : d.y + h
-          const lo = s.at({ x: d.x, y: top - h })
-          s.add([["RECORD", 28], ["OWNERPARTID", -1], ...loc(lo), ...loc({ x: lo.x + w * K, y: lo.y + h * K }, "CORNER"), ["AREACOLOR", 0xffffff], ["FONTID", s.font(size)], ["ALIGNMENT", 1], ["WORDWRAP", true], ["COLOR", NAVY], ["ISSOLID", false], ["SHOWBORDER", d.type === "textbox"], ["TEXT", lines.join("~1")]])
+      case "text": {
+        if (d.hidden) break
+        const ink = colorOf(d.stroke?.color) ?? NAVY
+        // The border and tint the editor draws round it, a rectangle with the editor's rounded corners under the text.
+        if (d.border || d.fill) {
+          const f = textFrame(d)
+          const area = colorOf(d.paint?.color) ?? PALE
+          const radius = d.size * 0.25 * K
+          s.add([["RECORD", 10], ["OWNERPARTID", -1], ...loc(s.at({ x: f.minX, y: f.minY })), ...loc(s.at({ x: f.maxX, y: f.maxY }), "CORNER"), ...coord("CORNERXRADIUS", radius), ...coord("CORNERYRADIUS", radius), ["LINEWIDTH", width], ["COLOR", d.border ? ink : area], ["AREACOLOR", area], ["ISSOLID", !!d.fill], ["TRANSPARENT", !d.fill]])
         }
+        for (const line of drawingTextLines(d)) s.add([["RECORD", 4], ["OWNERPARTID", -1], ...loc(s.at(line.at)), ...Object.entries(line.place), ["COLOR", ink], ["FONTID", s.font(line.size, !!d.bold, !!d.italic)], ["TEXT", line.text]])
+        break
+      }
+      case "textbox": {
+        // A KiCad text box is Altium's text frame: a box its text wraps in, hanging down from its corner (`boxCorners`).
+        const lo = s.at({ x: d.x, y: d.y - d.h })
+        s.add([["RECORD", 28], ["OWNERPARTID", -1], ...loc(lo), ...loc({ x: lo.x + d.w * K, y: lo.y + d.h * K }, "CORNER"), ["AREACOLOR", 0xffffff], ["FONTID", s.font(d.look?.size ?? FIELD_SIZE, !!d.look?.bold, !!d.look?.italic)], ["ALIGNMENT", 1], ["WORDWRAP", true], ["COLOR", NAVY], ["ISSOLID", false], ["SHOWBORDER", true], ["TEXT", d.text.split(/\r?\n/).join("~1")]])
         break
       }
       case "junction":

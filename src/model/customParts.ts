@@ -44,6 +44,8 @@ export const CUSTOM_SYMBOLS: Record<string, SymbolKind> = {
   schottky: polarized("schottky", "D", ANODE, CATHODE),
   zener: polarized("zener", "D", ANODE, CATHODE),
   tvs: polarized("tvs", "D", ANODE, CATHODE),
+  // No polarity: either pin, whatever it is called (A1 and A2 in KiCad, K and A on some supplier records).
+  tvs_bidirectional: twoTerminal("tvs_bidirectional", "D"),
   led: polarized("led", "D", ANODE, CATHODE),
   battery: polarized("battery", "BT", POSITIVE, NEGATIVE),
   buzzer: twoTerminal("buzzer", "BZ"),

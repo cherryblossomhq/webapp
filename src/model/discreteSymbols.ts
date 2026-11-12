@@ -358,6 +358,41 @@ const SYMBOLS = {
       [0.1, 0.1],
       [0.14, 0.14],
     ]),
+  /** Two diodes tip to tip with the TVS bar between them, as KiCad's D_TVS: no polarity, so either pin is either end. */
+  tvs_bidirectional: () =>
+    symbol(
+      [
+        path([
+          [-0.3, 0],
+          [-0.2, 0],
+        ]),
+        path([
+          [-0.2, 0.1],
+          [0, 0],
+          [-0.2, -0.1],
+          [-0.2, 0.1],
+        ]),
+        path([
+          [0.2, 0.1],
+          [0, 0],
+          [0.2, -0.1],
+          [0.2, 0.1],
+        ]),
+        path([
+          [-0.04, -0.14],
+          [0, -0.1],
+          [0, 0.1],
+          [0.04, 0.14],
+        ]),
+        path([
+          [0.2, 0],
+          [0.3, 0],
+        ]),
+        text("ref", 0, 0.14, "middle_bottom"),
+        text("value", 0, -0.14, "middle_top"),
+      ],
+      twoPins(),
+    ),
   led: () =>
     diode(
       [

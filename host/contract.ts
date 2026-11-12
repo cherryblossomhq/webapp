@@ -266,6 +266,14 @@ export interface SupplierModel3D {
   rotation: { x: number; y: number; z: number };
 }
 
+/**
+ * What a supplier's symbol draws, read from its shapes, when that says more than its pin names:
+ * `bidirectional_diode` is a two-pin part drawn as two diodes back to back on one line (a
+ * bidirectional TVS or ESD diode), whatever its pins are called. EasyEDA names the pins of
+ * SMAJ300CA `K` and `A` and draws no polarity.
+ */
+export type SupplierSymbolKind = "bidirectional_diode";
+
 /** `GET /api/v1/parts/{lcsc}`. */
 export interface SupplierPart {
   lcsc: string;
@@ -277,6 +285,8 @@ export interface SupplierPart {
   stock: number | null;
   /** Null when the supplier's symbol only numbers its pins: there is no pinout to use. */
   pins: SupplierPin[] | null;
+  /** What the supplier's symbol draws, when it is recognised; absent otherwise, and from answers made before symbols were read. */
+  symbol?: SupplierSymbolKind;
   /** Null when the record has no land pattern. */
   land: SupplierLand | null;
   /** The supplier's 3D model of the part, placed on `land`; null when it has none. Absent from answers made before models were read. */

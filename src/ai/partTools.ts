@@ -285,12 +285,37 @@ export const getPartDataTool: ToolSpec<PartPrepared> = {
       part.pins
         ? `Pins (${part.pins.length}, ${confidenceText(part)}): ${pinMapText(part.pins)}${partialNote(part)}`
         : "The supplier's symbol numbers its pins without naming them: there is no pinout to use.",
+      part.symbol === "bidirectional_diode" ? BIDIRECTIONAL_TEXT : null,
       land ? `Land (from ${part.land!.from}): ${land}.` : "No land pattern: create_part needs a footprint for this one.",
       land ? sizeText(part, part.model3d?.title) : null,
       part.provenance.attribution,
     ].filter(Boolean)
     return ok(project, `${lines.join("\n")}${upload}`, `Read ${part.lcsc} (${part.mpn})`)
   },
+}
+
+/** What get_part_data says of a part the supplier draws as two diodes back to back. */
+const BIDIRECTIONAL_TEXT =
+  "Symbol: two diodes back to back, so the part is bidirectional and its pins have no polarity, whatever they are named. create_part draws it as tvs_bidirectional."
+
+/** Symbols of a one-way diode, which a part the supplier draws as two diodes back to back is not. */
+const ONE_WAY_DIODES = new Set(["diode", "schottky", "zener", "tvs", "led"])
+
+/**
+ * The symbol a supplier's part is drawn with: the one asked for, unless the supplier's own drawing
+ * says otherwise. A two-pin part drawn as two diodes back to back is drawn as a bidirectional TVS,
+ * when nothing or a one-way diode was asked for: LCSC C148229 (SMAJ300CA, 300 V bidirectional)
+ * names its pins K and A, which read as the one-way `tvs`, and a one-way TVS from an AC line to
+ * ground reads as a short on every negative half-cycle (November 2026).
+ */
+function supplierSymbol(part: SupplierPart, pins: CustomPartSpec["pins"], asked: string | undefined): { symbol: string | undefined; note?: string } {
+  if (part.symbol !== "bidirectional_diode" || pins.length !== 2) return { symbol: asked }
+  if (asked && !ONE_WAY_DIODES.has(asked)) return { symbol: asked }
+  const names = pins.map((p) => p.name).join(" and ")
+  return {
+    symbol: "tvs_bidirectional",
+    note: `LCSC ${part.lcsc}'s symbol draws two diodes back to back, so it is drawn as a bidirectional TVS (tvs_bidirectional)${asked ? `, not the one-way ${asked} asked for` : ""}: its pins ${names} have no polarity, either way round is right.`,
+  }
 }
 
 // ---------- create_part ----------
@@ -525,7 +550,7 @@ From memory (no supplier record):
 - pins: every pin, numbered as on the datasheet (the footprint's pad numbers), unused ones too (name NC, kind nc). An exposed pad is numbered one past the last lead (17 on a 16-lead QFN), usually GND. Supplies (kind power) and grounds (kind ground) sit top and bottom, inputs left and outputs right, or set side.
 - footprint, with the package's real pitch and size: soic8, soic16 (1.27 mm); tssop8_p0.65mm, tssop20_p0.65mm, ssop24_p0.65mm; vssop8 (0.65 mm), vssop10 (0.5 mm) for MSOP; sot23, sot23_5, sot23_6, sot563, sot363, sot223, sot89; qfn16_w4_h4_p0.65mm_thermalpad, dfn8_w2.5_p0.5mm_pl0.5mm_pw0.25mm (approximations: prefer the supplier's land); lqfp48, tqfp32_p0.8mm, to220_3, to92, sod123, sod323, sma, dip8, pinrow4 (2.54 mm header), pinrow2_p5.08mm (terminal block), jst_ph_4, hc49; chips 0201, 0402, 0603, 0805, 1206. Refused, as they draw another land: dfn8, ssopN, tssopN, msop8, msop10, and qfnN or sonN with no size. Pads that share a pin (a SOT-223 tab) are mapped with pad_alias.
 - land, instead of footprint, when no footprint string draws it (a staggered or offset pin, an odd connector, a module): each pad's number, place, shape, size and through-hole drill, off the datasheet's drawing; pads with one number are one pin. Or land.kicad_mod with a KiCad footprint file's text. The result describes the land: compare it with the datasheet.
-- symbol: leave it out for ICs and modules (a box). For discretes pick one; polarized ones need pins named A/K, +/-, B/C/E or G/D/S.`,
+- symbol: leave it out for ICs and modules (a box). For discretes pick one; polarized ones need pins named A/K, +/-, B/C/E or G/D/S. tvs_bidirectional takes any pin names; a supplier part drawn bidirectional gets it unasked.`,
   input_schema: {
     type: "object",
     properties: {
@@ -649,11 +674,7 @@ From memory (no supplier record):
     const props = stringProps(input.props)
     const padAlias = stringProps(input.pad_alias)
     if (!props || !padAlias) return fail(project, "props and pad_alias must be objects of string values")
-    const symbol = typeof input.symbol === "string" && input.symbol ? input.symbol : undefined
-    const refPrefix =
-      (typeof input.ref_prefix === "string" && input.ref_prefix.trim().toUpperCase()) ||
-      (symbol && CUSTOM_SYMBOLS[symbol]?.ref) ||
-      DEFAULT_REF_PREFIX[category]
+    let symbol = typeof input.symbol === "string" && input.symbol ? input.symbol : undefined
     const keywords = Array.isArray(input.keywords) ? (input.keywords as string[]).map((k) => k.trim()).filter(Boolean) : []
     const drawn = drawnPinsOf(input)
     const footprintString = typeof input.footprint === "string" && input.footprint.trim() ? input.footprint.trim() : null
@@ -726,6 +747,9 @@ From memory (no supplier record):
           return fail(project, `LCSC ${part.lcsc}'s symbol numbers its ${pads.length || "?"} pins without naming them, so there is no pinout to build from. Read the pin table (read_datasheet lcsc "${part.lcsc}" section pins), then pass pins from it with lcsc "${part.lcsc}" (the land still comes from the supplier); if it is a connector, pass category "Connectors" and its contacts are named by number. Tell the user where the pinout came from.`)
         }
       }
+      const drawnAs = supplierSymbol(part, pins, symbol)
+      symbol = drawnAs.symbol
+      if (drawnAs.note) notes = [...notes, drawnAs.note]
       let landFrom: PartSource["land"]
       if (footprintIn) {
         footprint = footprintIn
@@ -787,6 +811,10 @@ From memory (no supplier record):
     if (given && land === given.land) notes.push(`Land from ${given.from}: ${describeLand(summarizeLand(landPads(land.pads)))}.`)
     if (!props.mpn && ["ICs", "Power", "Modules", "Transistors", "Diodes"].includes(category)) props.mpn = name
 
+    const refPrefix =
+      (typeof input.ref_prefix === "string" && input.ref_prefix.trim().toUpperCase()) ||
+      (symbol && CUSTOM_SYMBOLS[symbol]?.ref) ||
+      DEFAULT_REF_PREFIX[category]
     const draft: Omit<CustomPartSpec, "id"> = {
       name,
       description,

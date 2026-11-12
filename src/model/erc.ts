@@ -91,7 +91,7 @@ const DRIVER_PIN = /^(?:VDD|VCC|VSS|GND|V\+|VIN|DIN|DI|DOUT|DO|SDI|SDO|CI|CO|CKI
 const OPTOCOUPLER = /opto.?coupler|opto.?isolator|photo.?coupler/i
 
 /** Parts current flows straight through: diodes, fuses, ferrites, inductors, switches. */
-const THROUGH_SYMBOLS = new Set(["diode", "schottky", "zener", "tvs", "fuse", "ferrite_bead", "inductor", "switch"])
+const THROUGH_SYMBOLS = new Set(["diode", "schottky", "zener", "tvs", "tvs_bidirectional", "fuse", "ferrite_bead", "inductor", "switch"])
 const THROUGH_PARTS = new Set(["diode", "schottky", "zener", "inductor", "pushbutton", "pushbutton_smd", "slide_switch"])
 const CAPACITOR_SYMBOLS = new Set(["capacitor", "capacitor_polarized"])
 const CAPACITOR_PARTS = new Set(["capacitor", "capacitor_polarized", "capacitor_tantalum"])

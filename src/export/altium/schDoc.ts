@@ -161,10 +161,10 @@ function placement(extent: { x: number; y: number }, vertical: boolean): { ORIEN
  * A text of the drawing tools as Altium's text strings, one a line, each anchored where the editor draws that line. A text string holds one line;
  * a text frame would lay the lines out itself, by its own line pitch and wrapping, and Altium reads its alignment by a number nothing confirms past
  * left. The editor's own text hangs its lines down from its top at its pitch (sideways when it reads upwards), and a KiCad text is laid out as
- * the canvas lays it out (`textLines2`).
+ * the canvas lays it out (`textLines2`), its `~{overbar}` drawn as Altium's.
  */
 function drawingTextLines(d: DrawingText): { text: string; at: Vec2; place: ReturnType<typeof placement>; size: number }[] {
-  if (d.valign) return textLines2(d, d.rot ?? 0, lookOfText(d), kicadLines(d.text)).flatMap((l) => (l.text ? [{ text: l.text, at: { x: l.x, y: l.y }, place: placement(l.extent, l.vertical), size: l.size }] : []))
+  if (d.valign) return textLines2(d, d.rot ?? 0, lookOfText(d), kicadLines(d.text)).flatMap((l) => (l.text ? [{ text: overbar(l.text), at: { x: l.x, y: l.y }, place: placement(l.extent, l.vertical), size: l.size }] : []))
   const upwards = d.rot === 90
   const col = d.align === "right" ? 2 : d.align === "center" ? 1 : 0
   const pitch = d.size * LINE_HEIGHT
@@ -403,8 +403,8 @@ function writeSheet(ctx: SchContext, view: Project, sheetId: string, junctions: 
       case "text": {
         if (d.hidden) break
         const ink = colorOf(d.stroke?.color) ?? NAVY
-        // The border and tint the editor draws round it, a rectangle with the editor's rounded corners under the text.
-        if (d.border || d.fill) {
+        // The border and tint the editor draws round its own text (none round a KiCad text), a rectangle with the editor's rounded corners under the text.
+        if (!d.valign && (d.border || d.fill)) {
           const f = textFrame(d)
           const area = colorOf(d.paint?.color) ?? PALE
           const radius = d.size * 0.25 * K

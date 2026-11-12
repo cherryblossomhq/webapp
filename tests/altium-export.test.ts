@@ -510,6 +510,15 @@ describe("altiumFiles: the schematic", () => {
     expect(records.some((r) => r.get("TEXT") === "HIDDEN")).toBe(false)
   }, 120_000)
 
+  it("draws a KiCad text as the canvas does: no border round it, its overbar as Altium's", async () => {
+    const source = built("blinker")
+    // A border set on a KiCad text (Sakura's edit_drawings can) is drawn neither by the canvas nor by the KiCad export.
+    const kicad: DrawingText = { id: "k", type: "text", x: 1, y: 1, text: "~{RST} pin", size: 0.1, valign: "middle", border: true }
+    const records = schRecords(bytesOf((await altiumFiles({ ...source, drawings: [kicad] })).files, ".SchDoc"))
+    expect(records.some((r) => r.get("RECORD") === "4" && r.get("TEXT") === "R\\S\\T\\ pin")).toBe(true)
+    expect(records.some((r) => r.get("RECORD") === "10")).toBe(false)
+  }, 120_000)
+
   it("centres a board text by the width Altium's stroke font draws it", async () => {
     const source = built("blinker")
     const words = "DANGER HIGH VOLTAGE"

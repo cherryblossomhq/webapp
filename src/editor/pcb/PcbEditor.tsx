@@ -21,7 +21,7 @@ import { mountingHoles, mountingHoleSelectionId, selectedMountingHoles } from ".
 import { addOutlinePaths, addOutlineShape, addSlot, moveOutlineArcMid, moveOutlineVertex, nearestOutlineSeg, outlineSelectionId, parseOutlineSelectionId, pathVertices, removeOutlinePath, slotPath, splitOutlineSeg, toggleOutlineArc, translateOutlinePath } from "../../model/outlineOps"
 import { pathsSvgPath, segEnd, segStart, type ShapePath } from "../../model/shapes"
 import { outlineGeometry, pointInRing } from "../../model/outline"
-import { BOARD_OWNER, pointPadDistance, segmentPadDistance, type CopperItem } from "../../model/pcb"
+import { BOARD_OWNER, pointPadDistance, segmentPadDistance, type CopperItem, type PcbAnalysis } from "../../model/pcb"
 import { addDimension, expandToGroups, groupSelection, removeDimensions, removeImages, topGroup, touchesGroup } from "../../model/boardObjects"
 import { lockedInSelection, moveObjects, rotateObjects, selectionBounds } from "../../model/groupMoves"
 import { BOARD_SHAPE_OWNER, worldShapes, type WorldShape } from "../../model/shapeItems"
@@ -196,16 +196,21 @@ export function hitTest(p: Project, at: Vec2, tol: number, layer: CopperLayer, i
 }
 
 /**
- * Everything under the pointer that a click could pick, one entry for each thing a click selects, the one picked first (`hitTest`) first: what a
- * double click there lists when it is more than one (`PickMenu`), as Altium lists the objects under a double click and KiCad clarifies a
- * selection. The copper of a pour, the inside of a rule area and a reference image are under everything, so they are listed only where nothing
- * else is: on a poured board every track, part and via would otherwise ask.
+ * What a double click lists where several things are under it (`PickMenu`), as Altium lists the objects under a double click and KiCad clarifies a
+ * selection: what a click there picks (`hitTest`, which reaches a few pixels) first, then everything under the pointer itself (within a pixel), in
+ * the order a click picks them, one entry for each thing a click selects. Not everything within a click's reach: at a usual zoom a double click on
+ * the middle of a track then listed the track beside it. A via or a pad is drawn over the ends of the tracks of its net that meet it, so those
+ * are not listed with it: every via has some, and a double click on one listed four tracks. The copper of a pour, the inside of a rule area and a
+ * reference image are under everything, so they are listed only where nothing else is: on a poured board every track, part and via would
+ * otherwise ask.
  */
-export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: CopperItem[], fills: ZoneFill[] = []): { hit: Hit; id: string }[] {
+export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer, a: Pick<PcbAnalysis, "items" | "zoneFills" | "traceNet" | "viaNet">): { hit: Hit; id: string }[] {
+  const { items, zoneFills: fills } = a
+  const first = hitTest(p, at, tol, layer, items, fills)
   const seen = new Set<string>()
   const front: { hit: Hit; id: string }[] = []
   const behind: { hit: Hit; id: string }[] = []
-  for (const hit of hitsAt(p, at, tol, layer, items, fills)) {
+  for (const hit of [...(first ? [first] : []), ...hitsAt(p, at, tol / 3, layer, items, fills)]) {
     const id = hitSelectionId(hit)
     // A shape of the outline is listed once, by the piece the pointer is on.
     const key = hit.type === "outline" ? `o:${hit.path}` : id
@@ -213,7 +218,9 @@ export function hitsUnder(p: Project, at: Vec2, tol: number, layer: CopperLayer,
     seen.add(key)
     ;((hit.type === "zone" && hit.inside) || hit.type === "image" ? behind : front).push({ hit, id })
   }
-  return front.length ? front : behind
+  const covering = new Set(front.map(({ hit }) => (hit.type === "via" ? a.viaNet.get(hit.id) : hit.type === "pad" ? hit.netId : null)).filter((n): n is string => !!n))
+  const shown = covering.size ? front.filter(({ hit }) => hit.type !== "trace" || !covering.has(a.traceNet.get(hit.id) ?? "")) : front
+  return shown.length ? shown : behind
 }
 
 /** Everything under the pointer, in the order a click picks it: what is drawn on top first. A thing may come more than once. */
@@ -254,27 +261,36 @@ function* hitsAt(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     for (const s of shapesAt(worldShapes(p), at, tol * 0.5, silkOnly)) yield shapeHit(s)
     yield* partSilkHits(index, at, tol * 0.5, (c) => c.pcb.side === side)
   }
-  // Traces on a layer that is hidden cannot be picked; those on the active layer are tried first, the last drawn first.
+  // Traces on a layer that is hidden cannot be picked. One the pointer is on comes before one it is only within reach of, then those on the active
+  // layer, the last drawn first. At a usual zoom a click reaches past a thin track's edge to the track beside it, and the one drawn later was
+  // picked, not the one under the pointer.
   const traces = index.traceGrid
     .near(near)
     .map((i) => p.traces[i])
     .filter((t) => copperShown(ui, t.layer) && (!alone || t.layer === alone))
     .sort((a, b) => (a.layer === layer ? 1 : 0) - (b.layer === layer ? 1 : 0))
+  const found: { hit: Hit; on: boolean }[] = []
   for (let i = traces.length - 1; i >= 0; i--) {
     const t = traces[i]
     if (isArcTrace(t)) {
       // X4: an arc track is picked by its curve.
       const arc = arcOf(t.points)
-      if (pointArcDistance(at, arc) <= t.width / 2 + tol * 0.5) yield { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer, seg: 0 }
+      const d = pointArcDistance(at, arc)
+      if (d <= t.width / 2 + tol * 0.5) found.push({ hit: { type: "trace", id: t.id, point: closestPointOnArc(at, arc), layer: t.layer, seg: 0 }, on: d <= t.width / 2 })
       continue
     }
+    // The piece nearest the pointer, the one a drag of the track moves.
+    let best = -1
+    let bestD = Infinity
     for (let s = 0; s < t.points.length - 1; s++) {
-      if (pointSegmentDistance(at, t.points[s], t.points[s + 1]) <= t.width / 2 + tol * 0.5) {
-        yield { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[s], t.points[s + 1]), layer: t.layer, seg: s }
-        break
-      }
+      const d = pointSegmentDistance(at, t.points[s], t.points[s + 1])
+      if (d < bestD) [best, bestD] = [s, d]
+    }
+    if (best >= 0 && bestD <= t.width / 2 + tol * 0.5) {
+      found.push({ hit: { type: "trace", id: t.id, point: closestPointOnSegment(at, t.points[best], t.points[best + 1]), layer: t.layer, seg: best }, on: bestD <= t.width / 2 })
     }
   }
+  for (const f of found.sort((a, b) => Number(b.on) - Number(a.on))) yield f.hit
   // Text: the text itself, board text and a part's alike.
   for (const text of textsAt(p, at, tol * 0.5, vis)) yield { type: "text", id: text.id }
   // Drawings: a board drawing is picked itself, a part's drawing picks the part.
@@ -1005,7 +1021,7 @@ export function PcbEditor() {
     } else if (m.kind === "idle" && tool === "select") {
       // A double click on anything opens it in the Inspector, as KiCad and Altium open an object's properties. Where several things are under the
       // pointer (a track under a part, a via in a pad, a text on a drawing) it lists them first, as Altium does, and the one picked opens.
-      const hits = hitsUnder(project, e.world, tol(), layer, pcb.items, pcb.zoneFills)
+      const hits = hitsUnder(project, e.world, tol(), layer, pcb)
       if (hits.length > 1) {
         const rows = pickRows(project, hits, { traceNet: pcb.traceNet, viaNet: pcb.viaNet, netName, unit })
         if (rows.length > 1) {

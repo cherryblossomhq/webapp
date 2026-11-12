@@ -16,7 +16,7 @@ const TOL = 0.1
 const project = built("esp32-robot")
 
 const analysis = (p: Project) => analyzePcb(p, computeConnectivity(p))
-const under = (p: Project, at: Vec2) => hitsUnder(p, at, TOL, "top", analysis(p).items).map((h) => h.id)
+const under = (p: Project, at: Vec2) => hitsUnder(p, at, TOL, "top", analysis(p)).map((h) => h.id)
 
 /** A top part, and a point inside its body with nothing else there. */
 function bareBody(): { c: ComponentInstance; at: Vec2 } {
@@ -51,6 +51,17 @@ describe("what a double click lists", () => {
     expect(hitTest(p, at, TOL, "top", analysis(p).items)).toMatchObject({ type: "trace", id: "t-pick" })
   })
 
+  it("picks and lists the track under the pointer, not one only within a click's reach beside it, drawn later", () => {
+    // At a usual zoom a click reaches a few tenths of a millimetre: the second track's edge is within it, but not under the pointer. It was
+    // picked for being drawn later, and the double click listed both.
+    const reach = 0.6
+    const beside = { id: "t-beside", layer: "top" as const, width: 0.25, points: [{ x: at.x - 0.1, y: at.y + 0.275 }, { x: at.x + 0.1, y: at.y + 0.275 }] }
+    const tracked = withTrack(project)
+    const p = { ...tracked, traces: [...tracked.traces, beside] }
+    expect(hitTest(p, at, reach, "top", analysis(p).items)).toMatchObject({ type: "trace", id: "t-pick" })
+    expect(hitsUnder(p, at, reach, "top", analysis(p)).map((h) => h.id)).toEqual(["t:t-pick", `c:${c.id}`])
+  })
+
   it("lists a via on the track first", () => {
     expect(under(withVia(withTrack(project)), at)).toEqual(["v:v-pick", "t:t-pick", `c:${c.id}`])
   })
@@ -64,12 +75,39 @@ describe("what a double click lists", () => {
   })
 })
 
+describe("a via or a pad over the tracks of its net", () => {
+  it("is listed without the tracks that end on it, which it is drawn over", () => {
+    const p = withVia(withTrack(project))
+    const via = p.vias.find((v) => v.id === "v-pick")!
+    // Give the via the track's net, as a routed one has: a track of the net ends on it.
+    const a = analysis(p)
+    const net = "n-test"
+    const nets = { ...a, viaNet: new Map([...a.viaNet, [via.id, net]]), traceNet: new Map([...a.traceNet, ["t-pick", net]]) }
+    expect(hitsUnder(p, at, TOL, "top", nets).map((h) => h.id)).toEqual(["v:v-pick", `c:${c.id}`])
+    // A track of another net under it is a short, and is listed.
+    const other = { ...nets, traceNet: new Map([...nets.traceNet, ["t-pick", "n-other"]]) }
+    expect(hitsUnder(p, at, TOL, "top", other).map((h) => h.id)).toEqual(["v:v-pick", "t:t-pick", `c:${c.id}`])
+  })
+
+  it("is not listed on a routed board's vias with their tracks", () => {
+    const a = analysis(project)
+    let checked = 0
+    for (const v of project.vias.slice(0, 20)) {
+      const ids = hitsUnder(project, { x: v.x, y: v.y }, TOL, "top", a).map((h) => h.id)
+      expect(ids.filter((id) => id.startsWith("t:"))).toEqual([])
+      expect(ids[0]).toBe(`v:${v.id}`)
+      checked++
+    }
+    expect(checked).toBeGreaterThan(0)
+  })
+})
+
 describe("the rows of the list", () => {
   it("names each thing, with what tells it apart", () => {
     const p = withVia(withTrack(project))
     const a = analysis(p)
     const conn = computeConnectivity(p)
-    const rows = pickRows(p, hitsUnder(p, at, TOL, "top", a.items), {
+    const rows = pickRows(p, hitsUnder(p, at, TOL, "top", a), {
       traceNet: a.traceNet,
       viaNet: a.viaNet,
       netName: (id) => conn.nets.find((n) => n.id === id)?.name ?? null,

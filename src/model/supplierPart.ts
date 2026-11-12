@@ -2,7 +2,7 @@ import type { SupplierPart } from "@cherryblossom/api-contract"
 import { CUSTOM_SYMBOLS, DEFAULT_REF_PREFIX } from "./customParts"
 import { registerProjectFootprints } from "./footprints"
 import type { IndexDraft } from "./indexPart"
-import { landForSupplierPart, supplierPins } from "./supplier/build"
+import { landForSupplierPart, supplierDrawnSymbol, supplierPins } from "./supplier/build"
 import { supplierModelOn } from "./supplier/model"
 import type { CustomPartSpec, PartCategory } from "./types"
 
@@ -48,9 +48,8 @@ export function draftFromSupplierPart(part: SupplierPart): IndexDraft | { error:
   if (part.datasheet) props.datasheet = part.datasheet
   props.lcsc = part.lcsc
   const category = categoryOf(part)
-  // Drawn as the supplier draws it, as create_part does: two diodes back to back have no polarity,
-  // whatever their pins are named (LCSC C148229 names them K and A).
-  const symbol = part.symbol === "bidirectional_diode" && pins.length === 2 ? "tvs_bidirectional" : undefined
+  // Drawn as the supplier draws it, as create_part does.
+  const symbol = supplierDrawnSymbol(part.symbol, pins.length)
   const draft: Omit<CustomPartSpec, "id"> = {
     name: part.mpn,
     description: part.description || part.mpn,

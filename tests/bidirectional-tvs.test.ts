@@ -1,8 +1,9 @@
-import type { SupplierPart } from "@cherryblossom/api-contract"
+import type { PartIndexPart, SupplierPart } from "@cherryblossom/api-contract"
 import { describe, expect, it } from "vitest"
 import type { SupplierPartsSource } from "../src/ai/supplierParts"
 import { executeTool, runTool } from "../src/ai/tools"
 import { buildCustomPart, customPartProblems } from "../src/model/customParts"
+import { draftFromIndexPart } from "../src/model/indexPart"
 import { createProject } from "../src/model/ops"
 import { draftFromSupplierPart } from "../src/model/supplierPart"
 import type { CustomPartSpec, Project } from "../src/model/types"
@@ -52,12 +53,44 @@ const RECORDS: Record<string, SupplierPart> = {
   C10766: record("C10766", "SMAJ300A", "SMA_L4.3-W2.6-LS5.2-RD"),
 }
 
+/** A supplier record as the parts database keeps it (`recordSupplierPart`), under the index id given. */
+const kept = (id: string, part: SupplierPart): PartIndexPart => ({
+  id,
+  source: "easyeda",
+  sourceKey: part.lcsc,
+  mpn: part.mpn,
+  manufacturer: part.manufacturer,
+  package: part.package,
+  description: part.description,
+  datasheet: part.datasheet,
+  lcsc: part.lcsc,
+  keywords: [],
+  refPrefix: null,
+  category: null,
+  ...(part.symbol && { symbol: part.symbol }),
+  pins: part.pins!,
+  land: part.land!,
+  verification: part.provenance.confidence === "disputed" ? null : part.provenance.confidence,
+  model3d: null,
+  provenance: { converter: "easyeda@2", licence: "LicenseRef-EasyEDA-Library", attribution: part.provenance.attribution, fetchedAt: part.provenance.fetchedAt },
+})
+
+const STORED: Record<string, PartIndexPart> = { "7": kept("7", RECORDS.C148229), "8": kept("8", RECORDS.C10766) }
+
 const source: SupplierPartsSource = {
   async search() {
     throw new Error("no search in this test")
   },
   async part(lcsc) {
     return structuredClone(RECORDS[lcsc.trim().toUpperCase()] ?? null)
+  },
+  index: {
+    async search() {
+      throw new Error("no index search in this test")
+    },
+    async part(id) {
+      return structuredClone(STORED[id] ?? null)
+    },
   },
 }
 
@@ -119,6 +152,29 @@ describe("a part the supplier draws as two diodes back to back", () => {
     expect(read.result).toContain("two diodes back to back, so the part is bidirectional")
     const oneWay = await executeTool(project, () => project, "get_part_data", { lcsc: "C10766" }, { parts: source })
     expect(oneWay.result).not.toContain("bidirectional")
+  })
+
+  // The parts database keeps what the symbol draws with the record (`easyeda@2`), so a part placed
+  // from it is drawn as one read from the supplier is.
+  it("is drawn the same from the parts database's kept record", async () => {
+    const built = draftFromIndexPart(STORED["7"])
+    if ("error" in built) throw new Error(built.error)
+    expect(built.draft.symbol).toBe("tvs_bidirectional")
+    expect(built.draft.refPrefix).toBe("D")
+    const oneWay = draftFromIndexPart(STORED["8"])
+    if ("error" in oneWay) throw new Error(oneWay.error)
+    expect(oneWay.draft.symbol).toBeUndefined()
+
+    const { out, spec, part } = await create({ database_id: "7", symbol: "tvs" })
+    expect(spec.symbol).toBe("tvs_bidirectional")
+    expect(spec.refPrefix).toBe("D")
+    expect(triangles(part)).toHaveLength(2)
+    expect(out.result).toContain("not the one-way tvs asked for")
+    expect((await create({ database_id: "8", symbol: "tvs" })).spec.symbol).toBe("tvs")
+
+    const project = createProject("p")
+    const read = await executeTool(project, () => project, "get_part_data", { database_id: "7" }, { parts: source })
+    expect(read.result).toContain("two diodes back to back, so the part is bidirectional")
   })
 })
 

@@ -1,4 +1,4 @@
-import type { SupplierLand, SupplierPin } from "@cherryblossom/api-contract"
+import type { SupplierLand, SupplierPin, SupplierSymbolKind } from "@cherryblossom/api-contract"
 import { emptyBox, expandBox, round } from "../../lib/geometry"
 import { digest } from "../customParts"
 import { getFootprint, isValidFootprint } from "../footprints"
@@ -8,6 +8,14 @@ import { kindForRole } from "./roles"
 
 // A part built from a supplier's record: its pins, numbered and named as the supplier draws them,
 // and its land pattern as the supplier's own copper.
+
+/**
+ * The symbol a supplier's drawing calls for, whatever its pins are named: a two-pin part drawn as two
+ * diodes back to back has no polarity, so it is a bidirectional TVS. LCSC C148229 (SMAJ300CA) names
+ * its pins K and A, which read as the one-way `tvs`. Undefined when the pins' names decide.
+ */
+export const supplierDrawnSymbol = (kind: SupplierSymbolKind | null | undefined, pinCount: number): "tvs_bidirectional" | undefined =>
+  kind === "bidirectional_diode" && pinCount === 2 ? "tvs_bidirectional" : undefined
 
 /**
  * The footprinter family a supplier package belongs to, as a footprint-name prefix. The 3D view

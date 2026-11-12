@@ -387,6 +387,8 @@ export interface PartIndexPart {
   refPrefix: string | null;
   /** The editor's part category (`Power`, `ICs`...). */
   category: string | null;
+  /** What a supplier record's symbol draws, as `SupplierPart.symbol`; absent otherwise, and from records stored before it was kept. */
+  symbol?: SupplierSymbolKind;
   pins: PartIndexPin[];
   land: SupplierLand;
   /** Set for a supplier record that passed the pin and land checks; null for KiCad's. */

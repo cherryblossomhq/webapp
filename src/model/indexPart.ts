@@ -1,9 +1,9 @@
 import type { PartIndexPart } from "@cherryblossom/api-contract"
-import { buildCustomPart, CUSTOM_CATEGORIES, customPartId, customPartProblems, DEFAULT_REF_PREFIX } from "./customParts"
+import { buildCustomPart, CUSTOM_CATEGORIES, CUSTOM_SYMBOLS, customPartId, customPartProblems, DEFAULT_REF_PREFIX } from "./customParts"
 import { registerProjectFootprints } from "./footprints"
 import { registerPart } from "./library"
 import { kicadModel, modelAssignment, setModel, supplierModel } from "./models3d"
-import { landForSupplierPart, supplierPins } from "./supplier/build"
+import { landForSupplierPart, supplierDrawnSymbol, supplierPins } from "./supplier/build"
 import { supplierModelOnLand } from "./supplier/model"
 import type { CustomPartSpec, FootprintDef, Model3D, PartCategory, PartDatabaseSource, Project } from "./types"
 
@@ -54,16 +54,19 @@ export function draftFromIndexPart(part: PartIndexPart): IndexDraft | { error: s
   if (part.datasheet) props.datasheet = part.datasheet
   if (part.lcsc) props.lcsc = part.lcsc
   const keywords = [...new Set(part.keywords)].slice(0, 24)
+  // A kept supplier record is drawn as the supplier draws it, as the library panel's From LCSC rows and create_part lcsc draw it.
+  const symbol = supplierDrawnSymbol(part.symbol, part.pins.length)
   const draft: Omit<CustomPartSpec, "id"> = {
     name: part.mpn,
     description: part.description || part.mpn,
     category,
-    refPrefix: part.refPrefix || DEFAULT_REF_PREFIX[category],
+    refPrefix: part.refPrefix || (symbol ? CUSTOM_SYMBOLS[symbol].ref : DEFAULT_REF_PREFIX[category]),
     footprint: chosen.footprint,
     pins: supplierPins(
       part.pins,
       part.pins.map((pin) => ({ number: pin.number, name: pin.name, kind: pin.kind, side: pin.side })),
     ),
+    ...(symbol && { symbol }),
     props,
     valueProp: "mpn",
     ...(keywords.length && { keywords }),

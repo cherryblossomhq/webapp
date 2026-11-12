@@ -1,4 +1,4 @@
-import type { PartIndexHit, PartIndexPart, PartSearchResponse, SupplierPart } from "@cherryblossom/api-contract"
+import type { PartIndexHit, PartIndexPart, PartSearchResponse, SupplierPart, SupplierSymbolKind } from "@cherryblossom/api-contract"
 import {
   buildCustomPart,
   CUSTOM_CATEGORIES,
@@ -15,7 +15,7 @@ import { registerPart } from "../model/library"
 import { pinsCutOff, schematicEditProblems } from "../model/merges"
 import { pinsLeft, switchPart } from "../model/ops"
 import { setModel, modelAssignment } from "../model/models3d"
-import { landForSupplierPart, landPads, supplierLandPads, supplierPins, type LandedPart } from "../model/supplier/build"
+import { landForSupplierPart, landPads, supplierDrawnSymbol, supplierLandPads, supplierPins, type LandedPart } from "../model/supplier/build"
 import { supplierModelOn } from "../model/supplier/model"
 import { DRAWN_LAND_ADVICE, footprintNameProblem, footprintOptionProblem } from "../model/supplier/footprintGuard"
 import { describeLand, summarizeLand } from "../model/supplier/land"
@@ -219,6 +219,7 @@ function storedPartText(part: PartIndexPart): string {
     `database_id ${part.id}: ${part.mpn}${part.manufacturer ? ` by ${part.manufacturer}` : ""}, ${part.package ?? "package unknown"}, from the ${origin}.${part.description ? ` ${part.description}.` : ""}`,
     `${part.lcsc ? `LCSC ${part.lcsc}. ` : ""}${part.datasheet ? `Datasheet: ${part.datasheet}` : ""}`.trim(),
     `Pins (${part.pins.length}): ${pinMapText(part.pins)}`,
+    part.symbol === "bidirectional_diode" ? BIDIRECTIONAL_TEXT : null,
     `Land (from ${part.land.from}): ${land}.`,
     sizeText({ land: part.land, package: part.package, lcsc: indexLandKey(part) }, part.model3d?.source === "kicad" ? part.model3d.name : part.model3d?.model.title),
     part.provenance.attribution,
@@ -302,19 +303,23 @@ const BIDIRECTIONAL_TEXT =
 const ONE_WAY_DIODES = new Set(["diode", "schottky", "zener", "tvs", "led"])
 
 /**
- * The symbol a supplier's part is drawn with: the one asked for, unless the supplier's own drawing
- * says otherwise. A two-pin part drawn as two diodes back to back is drawn as a bidirectional TVS,
- * when nothing or a one-way diode was asked for: LCSC C148229 (SMAJ300CA, 300 V bidirectional)
- * names its pins K and A, which read as the one-way `tvs`, and a one-way TVS from an AC line to
- * ground reads as a short on every negative half-cycle (November 2026).
+ * The symbol a supplier's part is drawn with, read or kept in the parts database: the one asked for,
+ * unless the supplier's own drawing says otherwise. A two-pin part drawn as two diodes back to back is
+ * drawn as a bidirectional TVS, when nothing or a one-way diode was asked for: LCSC C148229
+ * (SMAJ300CA, 300 V bidirectional) names its pins K and A, which read as the one-way `tvs`, and a
+ * one-way TVS from an AC line to ground reads as a short on every negative half-cycle (November 2026).
  */
-function supplierSymbol(part: SupplierPart, pins: CustomPartSpec["pins"], asked: string | undefined): { symbol: string | undefined; note?: string } {
-  if (part.symbol !== "bidirectional_diode" || pins.length !== 2) return { symbol: asked }
-  if (asked && !ONE_WAY_DIODES.has(asked)) return { symbol: asked }
+function supplierSymbol(
+  part: { symbol?: SupplierSymbolKind; lcsc: string | null; sourceKey?: string },
+  pins: CustomPartSpec["pins"],
+  asked: string | undefined,
+): { symbol: string | undefined; note?: string } {
+  const drawn = supplierDrawnSymbol(part.symbol, pins.length)
+  if (!drawn || (asked && !ONE_WAY_DIODES.has(asked))) return { symbol: asked }
   const names = pins.map((p) => p.name).join(" and ")
   return {
-    symbol: "tvs_bidirectional",
-    note: `LCSC ${part.lcsc}'s symbol draws two diodes back to back, so it is drawn as a bidirectional TVS (tvs_bidirectional)${asked ? `, not the one-way ${asked} asked for` : ""}: its pins ${names} have no polarity, either way round is right.`,
+    symbol: drawn,
+    note: `LCSC ${part.lcsc ?? part.sourceKey}'s symbol draws two diodes back to back, so it is drawn as a bidirectional TVS (${drawn})${asked ? `, not the one-way ${asked} asked for` : ""}: its pins ${names} have no polarity, either way round is right.`,
   }
 }
 
@@ -711,6 +716,9 @@ From memory (no supplier record):
       pins = d.pins
       footprint = d.footprint
       land = built.land
+      const drawnAs = supplierSymbol(part, pins, symbol)
+      symbol = drawnAs.symbol
+      if (drawnAs.note) notes.push(drawnAs.note)
       source = { ...d.source!, ...(prepared.check && { check: prepared.check }) }
       for (const [key, value] of Object.entries(d.props)) if (value && !props[key]) props[key] = value
       for (const k of d.keywords ?? []) if (!keywords.includes(k)) keywords.push(k)

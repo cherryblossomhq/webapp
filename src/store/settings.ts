@@ -25,6 +25,17 @@ export const OTHER_LAYERS: OtherLayers[] = ["show", "dim", "hide"]
 export type PourLook = "filled" | "outline" | "hidden"
 export const POUR_LOOKS: PourLook[] = ["filled", "outline", "hidden"]
 
+/** What the Export dialog makes (`panels/ExportDialog.tsx`). */
+export type ExportFormat = "fabrication" | "bom" | "pnp" | "kicad" | "altium" | "circuit-json" | "step" | "project"
+export const EXPORT_FORMATS: ExportFormat[] = ["fabrication", "bom", "pnp", "kicad", "altium", "circuit-json", "step", "project"]
+
+/** Whether the KiCad and Altium exports carry the parts' 3D models, and whether the KiCad one copies KiCad's own library models too. */
+export interface ExportModelSettings {
+  kicad: boolean
+  kicadLibrary: boolean
+  altium: boolean
+}
+
 /** Preferences for this browser. Projects are not here: see `storage.ts`. */
 const SETTINGS_KEY = "cherryblossom:editor:settings"
 
@@ -40,6 +51,9 @@ export interface Settings {
   /** The PCB view's other copper layers (`⇧S` goes through them). */
   otherLayers: OtherLayers
   pours: PourLook
+  /** The format the Export dialog opens on: the last one exported. */
+  exportFormat: ExportFormat
+  exportModels: ExportModelSettings
 }
 
 /** How wide Sakura's panel can be dragged, and how wide it starts. */
@@ -47,7 +61,16 @@ export const COPILOT_WIDTH = { min: 280, max: 800, initial: 368 }
 
 export const clampCopilotWidth = (w: number) => Math.round(Math.min(COPILOT_WIDTH.max, Math.max(COPILOT_WIDTH.min, w)))
 
-export const DEFAULT_SETTINGS: Settings = { model: null, units: "mm", projectsView: "grid", copilotWidth: COPILOT_WIDTH.initial, otherLayers: "show", pours: "filled" }
+export const DEFAULT_SETTINGS: Settings = {
+  model: null,
+  units: "mm",
+  projectsView: "grid",
+  copilotWidth: COPILOT_WIDTH.initial,
+  otherLayers: "show",
+  pours: "filled",
+  exportFormat: "fabrication",
+  exportModels: { kicad: true, kicadLibrary: false, altium: true },
+}
 
 const oneOf = <T extends string>(v: unknown, of: T[], fallback: T): T => (of.includes(v as T) ? (v as T) : fallback)
 
@@ -60,10 +83,19 @@ export function loadSettings(): Settings {
     copilotWidth: typeof stored?.copilotWidth === "number" && Number.isFinite(stored.copilotWidth) ? clampCopilotWidth(stored.copilotWidth) : COPILOT_WIDTH.initial,
     otherLayers: oneOf(stored?.otherLayers, OTHER_LAYERS, DEFAULT_SETTINGS.otherLayers),
     pours: oneOf(stored?.pours, POUR_LOOKS, DEFAULT_SETTINGS.pours),
+    exportFormat: oneOf(stored?.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat),
+    exportModels: exportModelsOf(stored?.exportModels),
   }
   // The copilot used to take an Anthropic key pasted in here; don't leave one sitting in storage.
   if (stored && "anthropicApiKey" in stored) saveSettings(settings)
   return settings
+}
+
+function exportModelsOf(v: unknown): ExportModelSettings {
+  const o = v && typeof v === "object" ? (v as Record<string, unknown>) : {}
+  const d = DEFAULT_SETTINGS.exportModels
+  const flag = (k: keyof ExportModelSettings) => (typeof o[k] === "boolean" ? (o[k] as boolean) : d[k])
+  return { kicad: flag("kicad"), kicadLibrary: flag("kicadLibrary"), altium: flag("altium") }
 }
 
 export function saveSettings(s: Settings) {

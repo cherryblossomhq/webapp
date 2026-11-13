@@ -9,7 +9,7 @@ import { IconButton, Segmented } from "../ui/controls"
 import { Tooltip } from "../ui/Tooltip"
 import { AccountMenu } from "./AccountMenu"
 import { Collaborators, OfflinePill } from "./Collaborators"
-import { ExportMenu } from "./ExportMenu"
+import { ExportButton } from "./ExportDialog"
 import { FeedbackButton } from "./FeedbackButton"
 import { ThemeButton } from "./ThemeButton"
 import { checkTotals, useChecks } from "./ChecksPanel"
@@ -132,7 +132,7 @@ export function TopBar() {
             <span className="text-ink">{errors ? `${errors} ${errors === 1 ? "error" : "errors"}` : warnings ? `${warnings} ${warnings === 1 ? "warning" : "warnings"}` : "Checks pass"}</span>
           </button>
         </Tooltip>
-        <ExportMenu />
+        <ExportButton />
         <FeedbackButton />
         <ThemeButton />
         <AccountMenu />

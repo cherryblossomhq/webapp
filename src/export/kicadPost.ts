@@ -1,3 +1,4 @@
+import { carriedModelLines, halfTurned, type CarriedModels } from "./kicadModels"
 import type { AnyCircuitElement } from "circuit-json"
 import { round, mm6 } from "../lib/geometry"
 import { mountingHoles } from "../model/board"
@@ -224,23 +225,30 @@ export function applyFootprintFlags(pcb: string, project: Project): string {
 /**
  * Each footprint's 3D model where its part has one of KiCad's 3D library (a built-in part's own, `libraryModels.ts`, or one the project gave it), found by reference and written
  * last, as KiCad writes it. The converter writes none, so KiCad drew the board without bodies and a board read back drew only pads. A model of another kind (a supplier's, a
- * file the user added) has no path KiCad can name, and the export notes it.
+ * file the user added) is a file of the project when the export carries them (`carried`, `kicadModels.ts`, by component id); without them it has no path KiCad can name,
+ * and the export notes it.
  */
-export function applyFootprintModels(pcb: string, project: Project): { text: string; notes: string[] } {
-  const models = new Map(project.components.flatMap((c) => (c.footprint && c.pcb.placed && onBoard(c) ? [[c.ref, componentModel(project, c)] as const] : [])))
+export function applyFootprintModels(pcb: string, project: Project, carried?: CarriedModels["placed"]): { text: string; notes: string[] } {
+  const placed = new Map(project.components.filter((c) => c.footprint && c.pcb.placed && onBoard(c)).map((c) => [c.ref, c]))
   let other = 0
   const text = pcb.replace(FOOTPRINT_BLOCK, (block) => {
     const ref = referenceOf(block)
-    const model = ref === undefined ? undefined : models.get(ref)
-    if (!model) return block
-    if (model.source !== "kicad") {
+    const c = ref === undefined ? undefined : placed.get(ref)
+    const model = c && componentModel(project, c)
+    if (!c || !model) return block
+    // The converter turns a footprint on the bottom over the other way round from the editor (`HALF_TURN`).
+    const bottom = c.pcb.side === "bottom"
+    const own = carried?.get(c.id)
+    const lines = own ? carriedModelLines(own, bottom) : model.source === "kicad" ? kicadModelLines(bottom ? halfTurned(model) : model) : undefined
+    if (!lines) {
       other++
       return block
     }
     const end = block.lastIndexOf("\n  )")
-    return `${block.slice(0, end)}${kicadModelLines(model).map((l) => `\n    ${l}`).join("")}${block.slice(end)}`
+    return `${block.slice(0, end)}${lines.map((l) => `\n    ${l}`).join("")}${block.slice(end)}`
   })
-  return { text, notes: other ? ["A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written."] : [] }
+  // With the project's own model files, a model that isn't among them is said in their notes (it couldn't be read).
+  return { text, notes: other && !carried ? ["A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written."] : [] }
 }
 
 /**

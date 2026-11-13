@@ -17,7 +17,10 @@ import type { ComponentInstance, CopperLayer, PcbSide, Project, Vec2, Zone } fro
 import { viaTentedOn } from "../../model/viaRules"
 import { isRuleArea, zoneLayers, zoneRings, zoneSettings } from "../../model/zones"
 import { outlinePaths } from "../kicadBoard"
+import * as THREE from "three"
+import { componentMatrix } from "../placedModels"
 import { writeCfb, type CfbTree } from "./cfb"
+import { bodyPlacement, type AltiumModels } from "./models"
 import { Bytes, cp1252, delphiReal, mil, pcbUnits, props, propRecord, real, uniqueId, type PropValue } from "./records"
 
 // A `.PcbDoc`: Altium's board, a compound file with a storage for each kind of object (`Board6`, `Nets6`, `Components6`, `Pads6`, `Tracks6`...), each
@@ -121,13 +124,15 @@ export interface PcbContext {
   netNames: Map<string, string>
   /** The schematic's unique id path of each component (`\ABCDEFGH`, or `\SHEETSYM\ABCDEFGH` below a sheet symbol), by component id, and the sheet it is on. */
   sources: Map<string, { uniqueId: string; sheet: string; libRef: string; description?: string }>
+  /** The parts' 3D models, embedded as STEP files (`models.ts`); none leaves the board without bodies. */
+  models?: AltiumModels
 }
 
 export interface PcbDocResult {
   bytes: Uint8Array
   notes: string[]
   /** What was written, for the export's notes and its tests. */
-  counts: { components: number; pads: number; vias: number; tracks: number; arcs: number; texts: number; polygons: number; regions: number; nets: number }
+  counts: { components: number; pads: number; vias: number; tracks: number; arcs: number; texts: number; polygons: number; regions: number; nets: number; bodies: number }
 }
 
 /** The board of `ctx.project` as a `.PcbDoc`. */
@@ -215,6 +220,92 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
           ["JUMPERSVISIBLE", true],
         ],
         "long",
+      ),
+    )
+  }
+
+  // ---------- 3D bodies ----------
+  // A body for each part whose model is embedded: the model's id, where it sits (`bodyPlacement`), and its outline on the board, the box of its
+  // model seen from above (the box of the part's pads when the model's meshes weren't read), on the assembly layer of the part's side.
+  const bodies = new Bytes()
+  let bodyCount = 0
+  const f3 = (n: number) => n.toFixed(3)
+  for (const c of placed) {
+    const body = ctx.models?.bodies.get(c.id)
+    if (!body) continue
+    const at = bodyPlacement(project, c, body.matrix)
+    const layer = L.mech(at.projection ? 3 : 2)
+    const outline = bodyOutline(project, c, body.box)
+    bodies.u8(12)
+    bodies.block((r) => {
+      r.u8(layer).u16(flagsOf()).u16(NONE).u16(NONE).u16(compIndex.get(c.id)!).u32(0xffffffff)
+      r.u32(0).u8(0)
+      const list = props(
+        [
+          ["V7_LAYER", layerName(layer)],
+          ["NAME", " "],
+          ["KIND", 0],
+          ["SUBPOLYINDEX", -1],
+          ["UNIONINDEX", 0],
+          ["ARCRESOLUTION", "0.5mil"],
+          ["ISSHAPEBASED", false],
+          ["CAVITYHEIGHT", "0mil"],
+          ["STANDOFFHEIGHT", mil(Math.max(0, body.box?.min.z ?? 0))],
+          ["OVERALLHEIGHT", mil(Math.max(0, body.box?.max.z ?? 0))],
+          ["BODYPROJECTION", at.projection],
+          ["ARCRESOLUTION", "0.5mil"],
+          ["BODYCOLOR3D", 14737632],
+          ["BODYOPACITY3D", "1.000"],
+          ["IDENTIFIER", ""],
+          ["TEXTURE", ""],
+          ["TEXTURECENTERX", "0mil"],
+          ["TEXTURECENTERY", "0mil"],
+          ["TEXTURESIZEX", "0mil"],
+          ["TEXTURESIZEY", "0mil"],
+          ["TEXTUREROTATION", delphiReal(0)],
+          ["MODELID", body.model.id],
+          ["MODEL.CHECKSUM", body.model.checksum],
+          ["MODEL.EMBED", true],
+          ["MODEL.NAME", body.model.name],
+          ["MODEL.2D.X", milX(at.x)],
+          ["MODEL.2D.Y", milY(at.y)],
+          ["MODEL.2D.ROTATION", f3(0)],
+          ["MODEL.3D.ROTX", f3(at.rotation.x)],
+          ["MODEL.3D.ROTY", f3(at.rotation.y)],
+          ["MODEL.3D.ROTZ", f3(at.rotation.z)],
+          ["MODEL.3D.DZ", mil(at.dz)],
+          ["MODEL.SNAPCOUNT", 0],
+          ["MODEL.MODELTYPE", 1],
+          ["MODEL.MODELSOURCE", "Undefined"],
+        ],
+        "long",
+        "",
+      )
+      r.u32(list.length + 1).bytes(list).u8(0)
+      r.u32(outline.length)
+      for (const p of outline) r.f64(X(p.x)).f64(Y(p.y))
+    })
+    bodyCount++
+  }
+  // The models the bodies name, each once: its id, name and checksum in `Data`, its file zlib compressed in a stream numbered as it is listed.
+  const modelData = new Bytes()
+  for (const m of ctx.models?.models ?? []) {
+    propRecord(
+      modelData,
+      props(
+        [
+          ["EMBED", true],
+          ["MODELSOURCE", "Undefined"],
+          ["ID", m.id],
+          ["ROTX", f3(0)],
+          ["ROTY", f3(0)],
+          ["ROTZ", f3(0)],
+          ["DZ", 0],
+          ["CHECKSUM", m.checksum],
+          ["NAME", m.name],
+        ],
+        "long",
+        "",
       ),
     )
   }
@@ -697,18 +788,23 @@ export function writePcbDoc(ctx: PcbContext): PcbDocResult {
     WideStrings6: storage(textCount, wide.done()),
     Regions6: storage(regionCount, regions.done()),
     ShapeBasedRegions6: storage(shapeRegionCount, shapeRegions.done()),
-    ComponentBodies6: storage(0, new Uint8Array(0)),
+    ComponentBodies6: storage(bodyCount, bodies.done()),
     Dimensions6: storage(0, new Uint8Array(0)),
     DifferentialPairs6: storage(0, new Uint8Array(0)),
     Connections6: storage(0, new Uint8Array(0)),
     Coordinates6: storage(0, new Uint8Array(0)),
     EmbeddedFonts6: storage(0, new Uint8Array(0)),
+    ...(ctx.models?.models.length && { Models: { Header: header(ctx.models.models.length), Data: modelData.done(), ...Object.fromEntries(ctx.models.models.map((m, i) => [String(i), m.data])) } }),
   }
-  notes.push("3D models are not in the board: a part's 3D body is Altium's own, from its libraries.")
+  if (!ctx.models) notes.push("3D models are not in the board: a part's 3D body is Altium's own, from its libraries.")
+  else {
+    if (bodyCount) notes.push("The parts' 3D models are embedded in the board as STEP files, KiCad's own included, each part's body on the assembly layer of its side; a mesh file is written as a STEP file placed on its footprint.")
+    notes.push(...ctx.models.notes)
+  }
   return {
     bytes: writeCfb(tree),
     notes,
-    counts: { components: placed.length, pads: padCount, vias: viaCount, tracks: trackCount, arcs: arcCount, texts: textCount, polygons: polygonCount, regions: regionCount + shapeRegionCount, nets: netList.length },
+    counts: { components: placed.length, pads: padCount, vias: viaCount, tracks: trackCount, arcs: arcCount, texts: textCount, polygons: polygonCount, regions: regionCount + shapeRegionCount, nets: netList.length, bodies: bodyCount },
   }
 }
 
@@ -964,4 +1060,32 @@ function rulesData(project: Project, ids: Set<string>, pours: Zone[], altiumNet:
   rule(15, "ShortCircuit", "ShortCircuit", "All", [["ALLOWED", false]])
   rule(16, "UnRoutedNet", "UnRoutedNet", "All", [])
   return { bytes: w.done(), count }
+}
+
+/** A body's outline on the board, counter-clockwise: its model's box seen from above, else the box of the part's pads, else a millimetre square. */
+function bodyOutline(project: Project, c: ComponentInstance, box: THREE.Box3 | null): Vec2[] {
+  if (box && !box.isEmpty()) {
+    const at = componentMatrix(project, c)
+    const corners = [
+      [box.min.x, box.min.y],
+      [box.max.x, box.min.y],
+      [box.max.x, box.max.y],
+      [box.min.x, box.max.y],
+    ].map(([x, y]) => new THREE.Vector3(x, y, 0).applyMatrix4(at))
+    // A part on the bottom is seen from above turned over, which runs its corners the other way round.
+    if (c.pcb.side === "bottom") corners.reverse()
+    return corners.map((v) => ({ x: v.x, y: v.y }))
+  }
+  const pads = pcbPads(c)
+  if (!pads.length) return [-0.5, 0.5].flatMap((dx, i) => (i ? [0.5, -0.5] : [-0.5, 0.5]).map((dy) => ({ x: c.pcb.x + dx, y: c.pcb.y + dy })))
+  const x0 = Math.min(...pads.map((p) => p.x - p.width / 2))
+  const x1 = Math.max(...pads.map((p) => p.x + p.width / 2))
+  const y0 = Math.min(...pads.map((p) => p.y - p.height / 2))
+  const y1 = Math.max(...pads.map((p) => p.y + p.height / 2))
+  return [
+    { x: x0, y: y0 },
+    { x: x1, y: y0 },
+    { x: x1, y: y1 },
+    { x: x0, y: y1 },
+  ]
 }

@@ -14,6 +14,7 @@ import { kicadFiles } from "../src/export/kicad"
 import { applyOutline } from "../src/export/kicadOutline"
 import { outlineWarning } from "../src/export/outlineGuard"
 import { stepBoard, stepFile } from "../src/export/step3d"
+import { browserModelReader } from "../src/editor/three/files/library"
 import { writeStep } from "../src/export/step"
 import { autoroute } from "../src/model/autoroute"
 import { computeConnectivity } from "../src/model/connectivity"
@@ -347,10 +348,10 @@ describe("a board drawn from scratch with an outline, a cutout and a slot", () =
       expect(outlineWarning(populated())).toBeNull()
     })
     it("refuses the exports that need it closed or need one at all, with a message that says what to do", async () => {
-      await expect(stepFile(open())).rejects.toThrow(/STEP model cannot be made: the board outline is not closed/)
+      await expect(stepFile(open(), browserModelReader)).rejects.toThrow(/STEP model cannot be made: the board outline is not closed/)
       const none = { ...populated(), board: { ...populated().board, outline: { paths: [] } } }
       expect(() => gerberLayers(none)).toThrow(/the board has no outline/)
-      await expect(stepFile(none)).rejects.toThrow(/Draw one on the Edge\.Cuts layer/)
+      await expect(stepFile(none, browserModelReader)).rejects.toThrow(/Draw one on the Edge\.Cuts layer/)
     })
     it("keeps its edges as drawn in the KiCad export, and Circuit JSON says it has none", async () => {
       const { files } = await kicadFiles(open())

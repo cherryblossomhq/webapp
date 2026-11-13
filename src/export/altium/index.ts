@@ -8,6 +8,7 @@ import { copyKey, isHierarchical, sheetsOf, sheetUses, ROOT_SHEET, rootSheetName
 import { ensureTextFont } from "../../model/textFont"
 import type { Project } from "../../model/types"
 import { slugify } from "../bundle"
+import { altiumModels, type AltiumModelOptions } from "./models"
 import { writePcbDoc } from "./pcbDoc"
 import { prjPcbText } from "./prjPcb"
 import { uniqueId } from "./records"
@@ -40,8 +41,13 @@ export function altiumNetNames(nets: ReturnType<typeof computeConnectivity>["net
   return out
 }
 
+export interface AltiumExportOptions {
+  /** Embed the parts' 3D models in the board as STEP files; without this, the board has no bodies. */
+  models?: AltiumModelOptions
+}
+
 /** The schematic, board and project files of an Altium project, written from the project. */
-export async function altiumFiles(source: Project): Promise<AltiumExport> {
+export async function altiumFiles(source: Project, options: AltiumExportOptions = {}): Promise<AltiumExport> {
   // The board side follows the active variant and the flags of sheet symbols and rule areas, as the fabrication files do.
   const project = withRuleAreaFlags(source)
   await ensureTextFont(project)
@@ -84,7 +90,8 @@ export async function altiumFiles(source: Project): Promise<AltiumExport> {
   }
 
   const schematic = writeSchDocs({ project, sch, netNames, sheetFiles, componentIds, symbolIds, ids })
-  const board = writePcbDoc({ project, sch, pcb, netNames, sources })
+  const models = options.models ? await altiumModels(project, options.models) : undefined
+  const board = writePcbDoc({ project, sch, pcb, netNames, sources, ...(models && { models }) })
   const pcbName = `${base}.PcbDoc`
   const files: Record<string, Uint8Array | string> = {}
   for (const [name, bytes] of schematic.files) files[name] = bytes
@@ -101,8 +108,8 @@ export async function altiumFiles(source: Project): Promise<AltiumExport> {
   }
 }
 
-export async function altiumZip(project: Project): Promise<{ blob: Blob; notes: string[] }> {
-  const { files, notes } = await altiumFiles(project)
+export async function altiumZip(project: Project, options: AltiumExportOptions = {}): Promise<{ blob: Blob; notes: string[] }> {
+  const { files, notes } = await altiumFiles(project, options)
   const zip = new JSZip()
   const folder = zip.folder(slugify(project.name))!
   for (const [name, content] of Object.entries(files)) folder.file(name, content)

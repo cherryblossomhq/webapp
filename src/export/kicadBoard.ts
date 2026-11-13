@@ -14,6 +14,7 @@ import { flattenPath, mapShape, type PathSeg, type ShapePath } from "../model/sh
 import { componentTexts, shownOf, textBoxCorners, worldTexts, isDimensionText, type WorldText } from "../model/texts"
 import type { BoardDimension, BoardShape, ComponentInstance, FootprintDef, PadDef, PartText, PcbGroup, PinDef, Project, Vec2 } from "../model/types"
 import type { Model3D } from "../model/types"
+import { carriedModelLines, type CarriedModels } from "./kicadModels"
 import { drawing, LINE_END_NOTE, type Out } from "./kicadShapes"
 import { effects } from "./kicadTexts"
 import { stableUuid } from "./kicadUuid"
@@ -112,6 +113,11 @@ export interface KicadBoardOptions {
   fills?: ZoneFill[]
   /** The bytes of each reference image, and of each embedded font file (X19), by the id the project holds it by. */
   pictures?: Map<string, Uint8Array>
+  /**
+   * The parts whose 3D model is a file of the project (`kicadModels.ts`), by component id. With them, a model that is neither one of these nor one
+   * of KiCad's library is said in their notes, not here.
+   */
+  models?: CarriedModels["placed"]
 }
 
 /**
@@ -374,8 +380,10 @@ export function writeKicadBoard(project: Project, options: KicadBoardOptions = {
 
     // The project's model of the part, else a built-in part's own (a resistor added on 0603).
     const model = componentModel(project, c)
-    if (model?.source === "kicad") lines.push(...kicadModelLines(model).map((l) => `  ${l}`))
-    else if (model && !c.modelRefs?.length) notes.add("A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written.")
+    const carried = options.models?.get(c.id)
+    if (carried) lines.push(...carriedModelLines(carried).map((l) => `  ${l}`))
+    else if (model?.source === "kicad") lines.push(...kicadModelLines(model).map((l) => `  ${l}`))
+    else if (model && !c.modelRefs?.length && !options.models) notes.add("A 3D model that is not one of KiCad's stock library has no file the board can name, so it is not written.")
     // The models the project does not show are written back as the file had them.
     for (const ref of c.modelRefs ?? []) lines.push(`  ${ref}`)
     pushAll(lines, embeddedFontLines(project.fonts?.files.filter((f) => f.owner === c.id) ?? [], project.fonts?.parts?.includes(c.id) === true, options.pictures, "  ", missingFonts))

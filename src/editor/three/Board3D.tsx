@@ -129,8 +129,8 @@ export function Board3D() {
     setBusy(true)
     setStepNotice({ text: "Writing STEP...", notes: [] })
     try {
-      const { stepFile } = await import("../../export/step3d")
-      const { text, notes } = await stepFile(p, {
+      const [{ stepFile }, { browserModelReader }] = await Promise.all([import("../../export/step3d"), import("./files/library")])
+      const { text, notes } = await stepFile(p, browserModelReader, {
         onProgress: ({ done, total }) => total > 0 && setStepNotice({ text: `Reading 3D models: ${done} of ${total}`, notes: [] }),
       })
       downloadText(text, projectFileName(p, "step"), "model/step")

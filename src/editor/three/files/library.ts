@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react"
 import type * as THREE from "three"
 import { modelFileKey } from "../../../model/models3d"
 import type { Model3D, Model3DFormat } from "../../../model/types"
+import type { ModelReader } from "../../../export/placedModels"
 import { MAX_MODEL_FILE_BYTES, modelFiles } from "../../../store/modelFiles"
 import { partModels } from "../../../store/partModels"
 import { projectApi, useProjectStore } from "../../../store/projectStore"
@@ -189,4 +190,10 @@ export function useModelState(m: Model3D | null): { state: ReturnType<ModelLibra
   )
   const [s, error] = state.split("\n")
   return { state: s as ReturnType<ModelLibrary["state"]>, error: error || null }
+}
+
+/** How the page's exports read model files: the 3D view's copies, and the files from wherever the host keeps them. */
+export const browserModelReader: ModelReader = {
+  meshes: (m) => modelLibrary.load(m),
+  bytes: (m, format, signal) => fetchModelBytes(m, format, signal),
 }

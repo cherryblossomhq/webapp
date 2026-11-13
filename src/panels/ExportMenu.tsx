@@ -101,8 +101,8 @@ export function ExportMenu() {
   const exportStep = () =>
     run(async () => {
       const p = placedProject()
-      const { stepFile } = await import("../export/step3d")
-      const { text } = await stepFile(p, {
+      const [{ stepFile }, { browserModelReader }] = await Promise.all([import("../export/step3d"), import("../editor/three/files/library")])
+      const { text } = await stepFile(p, browserModelReader, {
         onProgress: ({ done, total }) => total > 0 && done < total && setNotice({ text: `Reading 3D models: ${done} of ${total}` }),
       })
       downloadText(text, projectFileName(p, "step"), "model/step")

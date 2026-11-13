@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import type { Occt, OcctResult } from "occt-import-js"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { modelLibrary } from "../src/editor/three/files/library"
+import { browserModelReader, modelLibrary } from "../src/editor/three/files/library"
 import * as THREE from "three"
 import { meshesOf, missingNote, stepFile } from "../src/export/step3d"
 import { EXAMPLES } from "../src/model/examples"
@@ -114,7 +114,7 @@ describe("the STEP export", () => {
     const p = example("blinker")
     // Every part here is a built-in one, drawn with its KiCad model.
     host()
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual([])
     const r = read(text)
     const b = bounds(r)
@@ -140,7 +140,7 @@ describe("the STEP export", () => {
     const r1 = p0.components.find((c) => c.ref === "R1")!
     const p = { ...p0, components: p0.components.map((c) => (c.id === r1.id ? { ...c, footprint: "0201" } : c)) }
     host()
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual([missingNote(["R1"])])
     const r = read(text)
     expect(designated(text, "R1")).toBe(false)
@@ -154,7 +154,7 @@ describe("the STEP export", () => {
     const model = supplierModel({ id: "a".repeat(32), title: "Cube", center: { x: 0, y: 0 }, bottom: 0, rotation: { x: 0, y: 0, z: 0 } })
     const p = setModel(p0, u1.partId, u1.footprint, model)
     const asked = host({ supplier: supplierCube })
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual([])
     expect(asked.filter((a) => a.startsWith("a")).sort()).toEqual([`${"a".repeat(32)}.obj`, `${"a".repeat(32)}.step`])
     const r = read(text)
@@ -180,7 +180,7 @@ describe("the STEP export", () => {
     let p = setModel(p0, a.partId, a.footprint, supplierModel({ ...cube, center: { x: 0, y: 0 } }))
     p = setModel(p, b.partId, b.footprint, supplierModel({ ...cube, center: { x: 1, y: 0 } }))
     const asked = host({ supplier: supplierCube })
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual([])
     expect(sharing.length).toBeGreaterThan(2)
     expect(asked.filter((a) => a === `${"e".repeat(32)}.step`)).toHaveLength(1)
@@ -209,7 +209,7 @@ describe("the STEP export", () => {
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
       },
     })
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual(["U1: Cube's STEP file couldn't be fetched (Model file limit reached.), so it is written as its mesh."])
     const r = read(text)
     const node = instances(r)[1 + placedComponents(p).findIndex((c) => c.ref === "U1")]
@@ -231,7 +231,7 @@ describe("the STEP export", () => {
         throw new Error("The parts supplier answered 404 (model).")
       },
     })
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual(["U1: Missing couldn't be read (The parts supplier answered 404 (model).), so it is left out."])
     read(text)
     expect(designated(text, "U1")).toBe(false)
@@ -246,7 +246,7 @@ describe("the STEP export", () => {
     const asked = host()
     const at = async (x: number) => {
       const p = setModel(p0, u1.partId, u1.footprint, { ...kicadModel(kicad)!, offset: { x, y: 0, z: 0 } })
-      const { text, notes } = await stepFile(p)
+      const { text, notes } = await stepFile(p, browserModelReader)
       expect(notes).toEqual([])
       const r = read(text)
       const node = instances(r)[1 + placedComponents(p).findIndex((c) => c.ref === "U1")]
@@ -270,7 +270,7 @@ describe("the STEP export", () => {
     const kicad = { source: "kicad" as const, id: "10.0.7/Package_SO.3dshapes/Gone.step", name: "Gone", offset: { x: 0, y: 0, z: 0 }, rotate: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }
     const p = setModel(p0, u1.partId, u1.footprint, kicadModel(kicad)!)
     host({ kicad: (id) => (id === kicad.id ? Promise.reject(new Error("The parts index answered 404 (model).")) : undefined) })
-    const { text, notes } = await stepFile(p)
+    const { text, notes } = await stepFile(p, browserModelReader)
     expect(notes).toEqual(["U1: Gone couldn't be read (The parts index answered 404 (model).), so it is left out."])
     read(text)
     modelLibrary.retryFailed()

@@ -180,3 +180,13 @@ export function writeStep(input: StepExportInput): StepExportResult {
   const timestamp = input.timestamp ?? new Date().toISOString().slice(0, 19)
   return { text: w.text({ name: `${name}.step`, author: input.author ?? "", timestamp }), notes }
 }
+
+/**
+ * One model on its own as a STEP AP214 file, from its triangles: a mesh file (OBJ, STL, GLB, VRML) written for a program that reads STEP
+ * models and not meshes, as KiCad and Altium do. Null when no mesh has a triangle.
+ */
+export function writeStepModel(name: string, meshes: StepMesh[], timestamp?: string): string | null {
+  const w = new StepWriter()
+  if (!writeMeshModel(w, meshes, name)) return null
+  return w.text({ name: `${name}.step`, author: "", timestamp: timestamp ?? new Date().toISOString().slice(0, 19) })
+}

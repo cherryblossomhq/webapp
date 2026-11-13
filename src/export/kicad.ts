@@ -12,6 +12,7 @@ import { paperOf, titleBlockOf } from "../model/paper"
 import { round } from "../lib/geometry"
 import type { ComponentInstance, Project, SymbolDrawing } from "../model/types"
 import { applyZones } from "./kicadZones"
+import { carriedKicadModels, KICAD_MODEL_FOLDER, type CarriedModels, type KicadModelOptions } from "./kicadModels"
 import { slugify } from "./bundle"
 import { projectToCircuitJson, type PlacedText } from "./circuitJson"
 import { imageBytes, pictureFiles, preloadImages } from "../store/imageFiles"
@@ -121,16 +122,16 @@ async function loadPictures(project: Project): Promise<Map<string, Uint8Array>> 
 }
 
 /** The board of a project that came from KiCad: the native writer, with the editor's fill of each zone and the pictures of the reference images. */
-async function nativeBoard(project: Project): Promise<BoardText> {
+async function nativeBoard(project: Project, models: CarriedModels | null): Promise<BoardText> {
   const pictures = await loadPictures(project)
   const fills = project.zones.length || hasPartZones(project) ? zoneFillsOf(project, () => computeConnectivity(project)) : []
-  const board = writeKicadBoard(project, { fills, pictures })
+  const board = writeKicadBoard(project, { fills, pictures, ...(models && { models: models.placed }) })
   const zoneNotes = project.zones.length || hasPartZones(project) ? ["Zones are written with their outlines, layers, nets, priorities and settings, filled as the editor filled them; press B in KiCad to refill them by its own rules. KiCad's thermal reliefs have four spokes; the pour's own spoke count and angle rules do not exist there."] : []
   return { text: board.text, notes: [...board.notes, ...zoneNotes], afterNotes: [], native: true }
 }
 
 /** The board of a project drawn in the editor: the converter's file with what it has no place for written into it. */
-async function converterBoard(project: Project, converted: string): Promise<BoardText> {
+async function converterBoard(project: Project, converted: string, carried: CarriedModels | null): Promise<BoardText> {
   // What the converter has no place for: put into the files it wrote.
   const flagged = applyComponentClasses(applyFootprintFlags(applyBoardSettings(applyMountingHoleMarks(applyFootprintNames(converted, project), project), project), project), project)
   // Zones with a polygon, rule areas and zone settings of their own are written by the editor (`kicadZones.ts`); whole-board pours go through the converter as they did.
@@ -143,8 +144,8 @@ async function converterBoard(project: Project, converted: string): Promise<Boar
   // Dimensions, reference images and groups come last, naming the items the writers above made (a board with none is written as it was).
   const pictures = await loadPictures(project)
   const objects = applyBoardObjects(texts.text, project, drawings.uuids, texts.uuids, pictures)
-  // The parts' 3D models of KiCad's library, last in each footprint.
-  const models = applyFootprintModels(objects.text, project)
+  // The parts' 3D models, last in each footprint: KiCad's library's, and the project's own files when the export carries them.
+  const models = applyFootprintModels(objects.text, project, carried?.placed)
   return { text: models.text, notes: [...zones.notes, ...padded.notes, ...drawings.notes, ...outline.notes, ...texts.notes, ...models.notes], afterNotes: objects.notes, native: false }
 }
 
@@ -224,6 +225,8 @@ function schematicText(
 
 export interface KicadExport {
   files: Record<string, string>
+  /** The parts' 3D model files, by path in the project's folder, when the export carries them (`kicadModels.ts`). */
+  models?: Record<string, Uint8Array>
   /** What didn't come across, in words for whoever exported it. */
   notes: string[]
   /** The exact bytes of the files that are the user's own, for a project imported from KiCad files (`keep/original.ts`); a zip is written from these. */
@@ -236,19 +239,45 @@ export interface KicadExport {
  * The schematic, board and project files of a KiCad 9 project. A project that came from KiCad files has them kept (`KicadCarry.original`): what the user did not
  * change is the user's own file, byte for byte, and what changed is written into it.
  */
-export async function kicadFiles(source: Project): Promise<KicadExport> {
-  if (!source.kicad?.original) return writtenKicadFiles(source)
-  // A project nobody changed is its files as they were: neither it nor the files it was imported from are written.
-  const unchanged = await unchangedExport(source)
-  if (unchanged) return unchanged
-  return keepOriginal(source, await writtenKicadFiles(source), writtenKicadFiles)
+export interface KicadExportOptions {
+  /** Carry the parts' 3D models as files of the project; without this, only KiCad's own library models are named, from KiCad's library. */
+  models?: KicadModelOptions
+}
+
+export async function kicadFiles(source: Project, options: KicadExportOptions = {}): Promise<KicadExport> {
+  // A project kept as the KiCad files it came from writes back those files' own models with them, named as they were: the files compared to find what
+  // changed are written without the project's own (`keep/original.ts`), so carrying them would patch every footprint that has one.
+  const carried = options.models && !source.kicad?.original ? await carriedKicadModels(source, options.models) : null
+  const written = (p: Project) => writtenKicadFiles(p, carried)
+  const result = await (async (): Promise<KicadExport> => {
+    if (!source.kicad?.original) return written(source)
+    // A project nobody changed is its files as they were: neither it nor the files it was imported from are written.
+    const unchanged = await unchangedExport(source)
+    if (unchanged) return unchanged
+    return keepOriginal(source, await written(source), written)
+  })()
+  return carried ? withModelFiles(result, carried) : result
+}
+
+/** The model files a board of the export names, beside its files, and the notes of those it carries: a board kept as the user's own file names none of them. */
+function withModelFiles(result: KicadExport, carried: CarriedModels): KicadExport {
+  const board = Object.entries(result.files).find(([name]) => name.endsWith(".kicad_pcb"))
+  const text = board ? (result.exact?.[board[0]] ? new TextDecoder().decode(result.exact[board[0]]) : board[1]) : ""
+  const models = Object.fromEntries([...carried.files].filter(([path]) => text.includes(`\${KIPRJMOD}/${path}"`)))
+  if (!Object.keys(models).length) return { ...result, notes: [...result.notes, ...carried.notes] }
+  const count = Object.keys(models).length
+  return {
+    ...result,
+    models,
+    notes: [...result.notes, `The parts' 3D models that are not KiCad's own are ${count === 1 ? "a STEP file" : `${count} STEP files`} in the project's ${KICAD_MODEL_FOLDER} folder, each footprint naming its own by \${KIPRJMOD}; a mesh file is written as a STEP file placed on its footprint.`, ...carried.notes],
+  }
 }
 
 /** Write what the export of a project from KiCad files compares with, ahead of the export (`keep/original.ts`). */
 export const prepareKicadExport = (source: Project) => warmBefore(source, writtenKicadFiles)
 
 /** The schematic, board and project files of a KiCad 9 project, all written from the project. */
-async function writtenKicadFiles(source: Project): Promise<KicadExport> {
+async function writtenKicadFiles(source: Project, carried: CarriedModels | null = null): Promise<KicadExport> {
   // S8: KiCad 9's file has no flag on a rule area, so the flags of one are written on the symbols it touches, which is where KiCad 9 reads them.
   // S9: nor does it have schematic variants, so its files are written from the symbols as the active variant makes them; `withRuleAreaFlags` applies the variant,
   // the sheet symbols' flags and the areas' in one chain. A project that is written as KiCad 10 files anyway (it has a local power symbol) keeps its variants in the
@@ -294,7 +323,7 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   pro.runUntilFinished()
 
   // A project that came from a KiCad board is written natively (`kicadBoard.ts`); one drawn in the editor goes through the converter, then the text writers below.
-  const board = native ? await nativeBoard(project) : await converterBoard(project, pcb.getOutputString())
+  const board = native ? await nativeBoard(project, carried) : await converterBoard(project, pcb.getOutputString(), carried)
   const boardText = board.text
   const footprintIds = boardFootprintIds(boardText)
   const sheetTexts = new Map<string, string>()
@@ -408,10 +437,11 @@ async function writtenKicadFiles(source: Project): Promise<KicadExport> {
   }
 }
 
-export async function kicadZip(project: Project): Promise<{ blob: Blob; notes: string[] }> {
-  const { files, notes, exact } = await kicadFiles(project)
+export async function kicadZip(project: Project, options: KicadExportOptions = {}): Promise<{ blob: Blob; notes: string[] }> {
+  const { files, notes, exact, models } = await kicadFiles(project, options)
   const zip = new JSZip()
   const folder = zip.folder(slugify(project.name))!
   for (const [name, content] of Object.entries(files)) folder.file(name, exact?.[name] ?? content)
+  for (const [name, bytes] of Object.entries(models ?? {})) folder.file(name, bytes)
   return { blob: await zip.generateAsync({ type: "blob", compression: "DEFLATE" }), notes }
 }

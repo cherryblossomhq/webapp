@@ -102,8 +102,8 @@ export type Hit =
   /** A reference image; `id` is its selection id (`i:<id>`). */
   | { type: "image"; id: string }
   | { type: "boardHandle" }
-  /** A zone with a polygon, by its outline or its copper (`z:<id>`); `inside` when the point is in its copper or its area, not on its edge. */
-  | { type: "zone"; id: string; inside?: boolean }
+  /** A zone with a polygon, by its outline or its copper (`z:<id>`). */
+  | { type: "zone"; id: string }
   /** A piece of the board's own outline (`o:<path>:<piece>`). */
   | { type: "outline"; path: number; seg: number }
 
@@ -312,7 +312,7 @@ function* hitsAt(p: Project, at: Vec2, tol: number, layer: CopperLayer, items: C
     if (pointInBox(at, courtyard)) yield { type: "component", id: c.id }
   }
   // A zone with a polygon, by its edge or its copper, where nothing above it is.
-  if (p.zones.some((z) => z.outline)) for (const z of zonesAt(p, at, tol, layer, fills)) yield { type: "zone", id: z.id, inside: z.inside }
+  if (p.zones.some((z) => z.outline)) for (const id of zonesAt(p, at, tol, layer, fills)) yield { type: "zone", id }
   // The board's own outline, last: a part or copper on the edge is picked before it.
   if (p.board.outline?.paths.length) {
     const paths = p.board.outline.paths

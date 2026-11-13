@@ -27,14 +27,14 @@ function edgeDistance(z: Zone, at: Vec2): number {
  * area holds it, on the layer shown. Later zones win, as they are drawn on top.
  */
 export function zoneHit(project: Project, at: Vec2, tol: number, layer: CopperLayer, fills: ZoneFill[]): string | null {
-  for (const z of zonesAt(project, at, tol, layer, fills)) return z.id
+  for (const id of zonesAt(project, at, tol, layer, fills)) return id
   return null
 }
 
-/** Every zone under the point (`zoneHit` is the first): those whose edge it is on, then those it is inside (`inside`: in its copper, or in a rule area). */
-export function* zonesAt(project: Project, at: Vec2, tol: number, layer: CopperLayer, fills: ZoneFill[]): Generator<{ id: string; inside: boolean }> {
+/** Every zone under the point (`zoneHit` is the first), by id: those whose edge it is on, then those it is inside (in its copper, or in a rule area). */
+export function* zonesAt(project: Project, at: Vec2, tol: number, layer: CopperLayer, fills: ZoneFill[]): Generator<string> {
   const polygons = project.zones.filter((z) => z.outline)
-  for (let i = polygons.length - 1; i >= 0; i--) if (edgeDistance(polygons[i], at) <= tol * 0.5) yield { id: polygons[i].id, inside: false }
+  for (let i = polygons.length - 1; i >= 0; i--) if (edgeDistance(polygons[i], at) <= tol * 0.5) yield polygons[i].id
   for (let i = polygons.length - 1; i >= 0; i--) {
     const z = polygons[i]
     if (!zoneLayers(z).includes(layer)) continue
@@ -42,10 +42,10 @@ export function* zonesAt(project: Project, at: Vec2, tol: number, layer: CopperL
     if (z.keepout) {
       // X20: a placement area that keeps nothing out is picked by its edge only: it usually holds half the board, and the board's own edge and the parts inside it would be out of reach.
       if (z.placement && Object.keys(z.keepout).length === 0) continue
-      if (area && areaContains(area, at)) yield { id: z.id, inside: true }
+      if (area && areaContains(area, at)) yield z.id
       continue
     }
-    if (fills.some((f) => f.zoneId === z.id && f.layer === layer && f.polygons.some((poly) => fillTester(poly)(at)))) yield { id: z.id, inside: true }
+    if (fills.some((f) => f.zoneId === z.id && f.layer === layer && f.polygons.some((poly) => fillTester(poly)(at)))) yield z.id
   }
 }
 

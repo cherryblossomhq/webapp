@@ -982,6 +982,11 @@ export function PcbEditor() {
       return
     }
     if (m.kind === "idle") {
+      // With the double-click list open, the board under the pointer is lit by nothing: only the row pointed at is drawn, as the selection.
+      if (picker) {
+        setHover(null)
+        return
+      }
       const h = hitTest(project, e.world, tol(), layer, pcb.items, pcb.zoneFills)
       setHover((prev) => (hitSelectionId(prev) === hitSelectionId(h) && prev?.type === h?.type ? prev : h))
     }
@@ -1034,6 +1039,7 @@ export function PcbEditor() {
         const rows = pickRows(project, hits, { traceNet: pcb.traceNet, viaNet: pcb.viaNet, netName, unit })
         if (rows.length > 1) {
           setPicker({ at: e.world, rows, preview: null })
+          setHover(null)
           return
         }
       }
@@ -1623,6 +1629,7 @@ export function PcbEditor() {
             return (
               <rect
                 key={`cy${c.id}`}
+                data-hover-part={isHover && !isSel ? c.ref : undefined}
                 x={cy.minX}
                 y={cy.minY}
                 width={cy.maxX - cy.minX}

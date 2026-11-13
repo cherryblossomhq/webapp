@@ -148,7 +148,10 @@ export function PickMenu({ at, rows, t, onPreview, onPick, onClose }: { at: Vec2
       aria-label="Select one of the objects here"
       className="pointer-events-auto absolute z-30 min-w-[240px] max-w-[380px] animate-pop-in rounded-[9px] border border-white/10 bg-[#1f1d25]/95 p-1 text-[12px] shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
       style={{ left: x + 6, top: y + 6 }}
+      // The pointer over the list is not over the board: what is under the list is neither lit nor picked.
       onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
       onMouseLeave={() => onPreview((document.activeElement as HTMLElement | null)?.dataset.pick ?? null)}

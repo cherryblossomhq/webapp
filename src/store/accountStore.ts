@@ -59,10 +59,16 @@ export function copilotModel(account: MeResponse, preferred: string | null): str
   return models[models.length - 1] ?? null
 }
 
+/**
+ * The plan one step up from each paid plan, by the name the pricing page sells it under: a
+ * larger allowance for a user who ran out. Super is the top; Enterprise is a conversation.
+ */
+const NEXT_PLAN: Partial<Record<MeResponse["plan"]["tier"], string>> = { pro: "Ultra", ultra: "Super" }
+
 /** The ways forward offered to a user refused on a plan limit. */
 export interface LimitOffer {
-  /** Ultra, for a Pro user: a larger allowance. */
-  upgrade: boolean
+  /** The plan to upgrade to for a larger allowance ("Ultra" for Pro, "Super" for Ultra), or null. */
+  upgrade: string | null
   /** Buy credits, on the host's account page, to keep working past the allowance. */
   buyCredits: boolean
 }
@@ -70,7 +76,7 @@ export interface LimitOffer {
 /**
  * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. The
  * minute burst is the same on every plan and credits never buy past it; the day and month
- * allowances are what Ultra raises and credits go past. `credits` on `/api/v1/me` says whether
+ * allowances are what the next plan up raises and credits go past. `credits` on `/api/v1/me` says whether
  * this account can buy them, and whether auto-refill is already adding some, in which case the
  * refusal says to try again in a moment and offering to buy more would be noise. A balance left
  * means credits were bought since the refusal: trying again is the way past it.
@@ -79,6 +85,6 @@ export function limitOffer(account: MeResponse | null, limit: RateLimitWindow | 
   if (!account || !limit || limit === "minute") return null
   const { available, balance, refilling } = account.credits
   if (refilling || balance > 0) return null
-  const upgrade = account.plan.tier === "pro"
+  const upgrade = NEXT_PLAN[account.plan.tier] ?? null
   return upgrade || available ? { upgrade, buyCredits: available } : null
 }

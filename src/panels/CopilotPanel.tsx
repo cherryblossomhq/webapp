@@ -83,7 +83,7 @@ export function CopilotPanel() {
   const last = entries[entries.length - 1]
   const limitOffered = last?.kind === "error" && !!last.offer
 
-  // "Upgrade to Pro", "Upgrade to Ultra" and "Buy credits" open in a new tab: coming back to this
+  // "Upgrade to Pro", "Upgrade to Ultra" (or Super) and "Buy credits" open in a new tab: coming back to this
   // one should find the plan or credits bought, and the picker with the models a plan adds.
   useEffect(() => {
     if (!planGated && !limitOffered) return
@@ -474,8 +474,8 @@ function EmptyState({ gate, unreachable, onPick, recent }: { gate: Gate; unreach
 }
 
 /**
- * A request refused on the plan's day or month allowance, with the ways past it: Ultra for a Pro
- * user, credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
+ * A request refused on the plan's day or month allowance, with the ways past it: the next plan up
+ * (Ultra for a Pro user, Super for an Ultra one), credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
  * there, beside the line that says what buying agrees to, never from here.
  */
 function LimitNotice({ text, offer }: { text: string; offer: LimitOffer }) {
@@ -483,17 +483,17 @@ function LimitNotice({ text, offer }: { text: string; offer: LimitOffer }) {
   const { upgrade, buyCredits } = offer
   const next = buyCredits
     ? upgrade
-      ? "Upgrade to Ultra for a larger allowance, or buy credits to keep working past it. Auto-refill can keep them topped up."
+      ? `Upgrade to ${upgrade} for a larger allowance, or buy credits to keep working past it. Auto-refill can keep them topped up.`
       : "Buy credits to keep working past it. Auto-refill can keep them topped up."
-    : "Upgrade to Ultra for a larger allowance."
+    : `Upgrade to ${upgrade} for a larger allowance.`
   return (
     <Notice
       title="You've reached your plan's AI limit"
       action={
         <div className="flex flex-wrap gap-2">
-          {upgrade && <LinkButton href={host?.upgradeUrl}>Upgrade to Ultra</LinkButton>}
+          {upgrade && <LinkButton href={host?.upgradeUrl}>Upgrade to {upgrade}</LinkButton>}
           {buyCredits && (
-            <LinkButton href={host?.accountUrl} quiet={upgrade}>
+            <LinkButton href={host?.accountUrl} quiet={!!upgrade}>
               Buy credits
             </LinkButton>
           )}

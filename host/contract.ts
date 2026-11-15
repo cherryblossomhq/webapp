@@ -11,8 +11,18 @@
  * `vitest.config.ts` and `tsconfig.json` alias the package name to it.
  */
 
-/** Subscription tiers, weakest first. */
-export type PlanTier = "free" | "pro" | "ultra" | "enterprise";
+/**
+ * Subscription tiers, weakest first. Users without an active subscription
+ * resolve to `free`.
+ *
+ * `pro`, `ultra` and `super` are the self-serve paid plans. They share a burst
+ * rate, and Ultra's and Super's daily actions and monthly credits are fixed
+ * multiples of Pro's (the hosted app's `ULTRA_MULTIPLIER` and
+ * `SUPER_MULTIPLIER`); Ultra also grants the frontier tier,
+ * which Pro does not, and Super grants what Ultra does (`PLAN_MODELS` in
+ * `@cherryblossom/ai-models`).
+ */
+export type PlanTier = "free" | "pro" | "ultra" | "super" | "enterprise";
 
 /**
  * `GET /api/v1/me` — the account snapshot. Informational only; the server
@@ -62,7 +72,7 @@ export interface MeResponse {
    * already on its way, and offering to buy more would be noise.
    */
   credits: {
-    /** The account can buy credits: Pro or Ultra, billed by Stripe. */
+    /** The account can buy credits: a self-serve paid plan, billed by Stripe. */
     available: boolean;
     /** Credits left. */
     balance: number;

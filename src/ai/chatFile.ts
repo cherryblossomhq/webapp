@@ -202,6 +202,11 @@ export function parseChat(parts: string[]): ChatContents | null {
       const e = { ...stored, id: i + 1 } as Entry
       if (e.kind === "tool" && e.status === "running") return { ...e, status: "error" }
       if (e.kind === "plan" && e.status === "applying") return { ...e, status: "cancelled" }
+      // A limit notice saved before the offer named its plan stored `upgrade: true`, which meant Ultra.
+      if (e.kind === "error" && e.offer && typeof e.offer.upgrade !== "string") {
+        const upgrade: unknown = e.offer.upgrade
+        return { ...e, offer: { ...e.offer, upgrade: upgrade === true ? "Ultra" : null } }
+      }
       return e
     })
   const messages = requests.flatMap((r) => r.messages).filter((m): m is ChatMessage => isRecord(m) && typeof m.role === "string")

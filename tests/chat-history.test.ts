@@ -147,6 +147,12 @@ describe("the chat file", () => {
     expect(read.entries.map((e) => ("status" in e ? e.status : e.kind))).toEqual(["error", "cancelled", "pending"])
   })
 
+  it("reads a limit notice saved before the offer named its plan as the plan it meant", () => {
+    const notice = (upgrade: unknown) => ({ kind: "error", text: "Limit reached.", offer: { upgrade, buyCredits: true } })
+    const read = parseChat([head(), JSON.stringify({ entries: [notice(true), notice(false), notice("Max")], messages: [] })])!
+    expect(read.entries.map((e) => e.kind === "error" && e.offer?.upgrade)).toEqual(["Ultra", null, "Max"])
+  })
+
   it("is titled by its first request, on one line", () => {
     expect(chatTitle([])).toBe("New chat")
     expect(chatTitle([{ kind: "assistant", id: 1, text: "Hi" }, user("  add a\n3.3 V  regulator ", 2)])).toBe("add a 3.3 V regulator")

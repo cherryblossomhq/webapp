@@ -474,7 +474,7 @@ function EmptyState({ gate, unreachable, onPick, recent }: { gate: Gate; unreach
 }
 
 /**
- * A request refused on the plan's day or month allowance, with the ways past it: the next plan up
+ * A request refused on the plan's monthly allowance, with the ways past it: the next plan up
  * (Ultra for a Pro user, Max for an Ultra one), credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
  * there, beside the line that says what buying agrees to, never from here.
  */

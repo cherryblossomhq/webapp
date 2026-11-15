@@ -74,15 +74,15 @@ export interface LimitOffer {
 }
 
 /**
- * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. The
- * minute burst is the same on every plan and credits never buy past it; the day and month
- * allowances are what the next plan up raises and credits go past. `credits` on `/api/v1/me` says whether
+ * What a refusal on `limit` can offer this account, or null when nothing it can buy helps. Only the
+ * month's allowance is for sale: the next plan up raises it and credits go past it. The minute and
+ * day limits are an abuse backstop, the same on every plan, that nothing raises. `credits` on `/api/v1/me` says whether
  * this account can buy them, and whether auto-refill is already adding some, in which case the
  * refusal says to try again in a moment and offering to buy more would be noise. A balance left
  * means credits were bought since the refusal: trying again is the way past it.
  */
 export function limitOffer(account: MeResponse | null, limit: RateLimitWindow | undefined): LimitOffer | null {
-  if (!account || !limit || limit === "minute") return null
+  if (!account || limit !== "month") return null
   const { available, balance, refilling } = account.credits
   if (refilling || balance > 0) return null
   const upgrade = NEXT_PLAN[account.plan.tier] ?? null

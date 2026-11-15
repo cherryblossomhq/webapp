@@ -19,8 +19,8 @@ import { memoryStorage } from "./memoryStorage"
 const account: MeResponse = {
   user: { id: "user_1", email: "a@b.c", name: "A" },
   plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/large"] },
-  limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
-  usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+  limits: { maxTokensPerRequest: 64000, monthlyTokens: 4_000_000 },
+  usage: { monthlyTokens: 0, monthResetsAt: null },
   credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
 }
 

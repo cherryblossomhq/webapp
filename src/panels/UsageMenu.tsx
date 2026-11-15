@@ -7,7 +7,7 @@ import { IconButton, useDismiss } from "../ui/controls"
 
 /**
  * The button in Sakura's header, after the chat history, that opens the account's AI usage: this
- * period's credits, today's actions, gift credits and credits bought, as `GET /api/v1/me` has them.
+ * period's credits, gift credits and credits bought, as `GET /api/v1/me` has them.
  * Opening it fetches them again, since every request Sakura makes spends some. Changing any of it
  * is the host's usage page.
  */
@@ -50,13 +50,6 @@ function Usage({ account }: { account: MeResponse }) {
         total={limits.monthlyTokens}
         format={compact}
         note={usage.monthResetsAt ? `Resets ${day(usage.monthResetsAt)}` : "The 30-day period starts with your first request"}
-      />
-      <Meter
-        label="AI actions today"
-        used={usage.requestsThisDay}
-        total={limits.requestsPerDay}
-        format={(n) => n.toLocaleString("en-US")}
-        note={usage.dayResetsAt ? `Resets at ${time(usage.dayResetsAt)}` : "One action is one model call; a request makes several"}
       />
       {(gift > 0 || credits.available || credits.balance > 0) && (
         <div className="flex flex-col gap-1.5 border-t border-line pt-2.5 text-[12px]">
@@ -129,4 +122,3 @@ function compact(n: number): string {
 
 const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`
 const day = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "long", day: "numeric" })
-const time = (ms: number) => new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })

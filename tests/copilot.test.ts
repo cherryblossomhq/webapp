@@ -11,8 +11,8 @@ import { useUi } from "../src/store/uiStore"
 const account = (plan: Partial<MeResponse["plan"]> = {}): MeResponse => ({
   user: { id: "user_1", email: "a@b.c", name: "A" },
   plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["vendor/small", "vendor/large"], ...plan },
-  limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4_000_000 },
-  usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+  limits: { maxTokensPerRequest: 64000, monthlyTokens: 4_000_000 },
+  usage: { monthlyTokens: 0, monthResetsAt: null },
   credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
 })
 
@@ -188,8 +188,8 @@ describe("copilot over managed AI", () => {
 
   it("offers Ultra and credits when Pro runs out, as the account is after the refusal", async () => {
     const limited = (limit: string) => () =>
-      Response.json({ error: { type: "rate_limited", message: "Daily limit reached (600 AI actions/day on the Pro plan).", limit } }, { status: 429 })
-    replies = [limited("day")]
+      Response.json({ error: { type: "rate_limited", message: "Monthly AI credit limit reached (4,000,000 credits/30 days on the Pro plan).", limit } }, { status: 429 })
+    replies = [limited("month")]
     expect((await run("route it")).find((e) => e.type === "error")).toMatchObject({ kind: "limit", offer: { upgrade: "Ultra", buyCredits: true } })
 
     // Auto-refill turned on in another tab since, and adding credits now: trying again is the way past.
@@ -199,9 +199,12 @@ describe("copilot over managed AI", () => {
     expect(refilling).toMatchObject({ kind: "limit" })
     expect(refilling).not.toHaveProperty("offer")
 
-    // The minute burst is the same on every plan: nothing to buy.
-    replies = [limited("minute")]
-    expect((await run("route it")).find((e) => e.type === "error")).not.toHaveProperty("offer")
+    // The minute and day limits are the same abuse backstop on every plan: nothing to buy.
+    me = () => Response.json(account())
+    for (const window of ["minute", "day"]) {
+      replies = [limited(window)]
+      expect((await run("route it")).find((e) => e.type === "error")).not.toHaveProperty("offer")
+    }
   })
 
   it("doesn't ask the user to sign in for the upstream's own 401", async () => {
@@ -276,10 +279,10 @@ describe("limitOffer", () => {
   const top = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "max", name: "Max" } })
 
   it("offers the next plan up, and credits where the account can buy them", () => {
-    expect(limitOffer(credits({ available: true }), "day")).toEqual({ upgrade: "Ultra", buyCredits: true })
+    expect(limitOffer(credits({ available: true }), "month")).toEqual({ upgrade: "Ultra", buyCredits: true })
     expect(limitOffer(credits({ available: false }), "month")).toEqual({ upgrade: "Ultra", buyCredits: false })
     expect(limitOffer(ultra(credits({ available: true })), "month")).toEqual({ upgrade: "Max", buyCredits: true })
-    expect(limitOffer(ultra(credits({ available: false })), "day")).toEqual({ upgrade: "Max", buyCredits: false })
+    expect(limitOffer(ultra(credits({ available: false })), "month")).toEqual({ upgrade: "Max", buyCredits: false })
     expect(limitOffer(top(credits({ available: true })), "month")).toEqual({ upgrade: null, buyCredits: true })
   })
 
@@ -288,10 +291,11 @@ describe("limitOffer", () => {
     expect(limitOffer(credits({ balance: 1_000_000, balanceCents: 500 }), "month")).toBeNull()
   })
 
-  it("offers nothing for the burst, an unknown window, or a plan with nothing to buy", () => {
-    expect(limitOffer(credits({}), "minute")).toBeNull()
+  it("offers nothing for the abuse backstop, an unknown window, or a plan with nothing to buy", () => {
+    expect(limitOffer(credits({ available: true }), "minute")).toBeNull()
+    expect(limitOffer(top(credits({ available: true })), "day")).toBeNull()
     expect(limitOffer(credits({}), undefined)).toBeNull()
-    expect(limitOffer(null, "day")).toBeNull()
-    expect(limitOffer(top(credits({ available: false })), "day")).toBeNull()
+    expect(limitOffer(null, "month")).toBeNull()
+    expect(limitOffer(top(credits({ available: false })), "month")).toBeNull()
   })
 })

@@ -15,9 +15,8 @@
  * Subscription tiers, weakest first. Users without an active subscription
  * resolve to `free`.
  *
- * `pro`, `ultra` and `max` are the self-serve paid plans. They share a burst
- * rate, and Ultra's and Max's daily actions and monthly credits are fixed
- * multiples of Pro's (the hosted app's `ULTRA_MULTIPLIER` and
+ * `pro`, `ultra` and `max` are the self-serve paid plans. Ultra's and Max's
+ * monthly credits are fixed multiples of Pro's (the hosted app's `ULTRA_MULTIPLIER` and
  * `MAX_PLAN_MULTIPLIER`); Ultra also grants the frontier tier,
  * which Pro does not, and Max grants what Ultra does (`PLAN_MODELS` in
  * `@cherryblossom/ai-models`).
@@ -44,17 +43,16 @@ export interface MeResponse {
     /** Model ids the plan may call. Empty when the plan has no managed AI. */
     allowedModels: string[];
   };
+  /**
+   * The plan's allowance. The request-rate backstop every plan shares (a
+   * minute's and a day's model calls) is deliberately not here: it is not
+   * part of a plan, and only a `429` with `limit` `minute` or `day` reveals it.
+   */
   limits: {
     maxTokensPerRequest: number;
-    requestsPerMinute: number;
-    requestsPerDay: number;
     monthlyTokens: number;
   };
   usage: {
-    requestsThisMinute: number;
-    minuteResetsAt: number | null;
-    requestsThisDay: number;
-    dayResetsAt: number | null;
     monthlyTokens: number;
     monthResetsAt: number | null;
     /** Gift credits left: spent past the monthly limit, before credits bought. Absent from older servers. */
@@ -63,7 +61,7 @@ export interface MeResponse {
   /**
    * Prepaid credits: what a plan does *after* its included allowance runs out.
    * Bought up front (or by auto-refill) on the account page, spent past the
-   * day's and the month's limits, never billed afterwards.
+   * month's limit, never billed afterwards.
    *
    * It is here rather than folded into `limits` because a client's question is
    * never "what is the ceiling" alone — it is "did the work stop, and can this
@@ -525,8 +523,9 @@ export interface ApiErrorResponse {
 }
 
 /**
- * The managed-AI window a `429` was refused on. `day` and `month` are the
- * plan's allowance, which a bigger plan or credits bought go past; `minute` is
- * a burst limit, the same on every plan and not for sale.
+ * The managed-AI window a `429` was refused on. `month` is the plan's
+ * allowance, which a bigger plan or credits bought go past; `minute` and `day`
+ * are an abuse backstop, the same on every plan, far above real use and not for
+ * sale.
  */
 export type RateLimitWindow = "minute" | "day" | "month";

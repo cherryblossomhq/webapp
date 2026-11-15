@@ -83,7 +83,7 @@ export function CopilotPanel() {
   const last = entries[entries.length - 1]
   const limitOffered = last?.kind === "error" && !!last.offer
 
-  // "Upgrade to Pro", "Upgrade to Ultra" (or Super) and "Buy credits" open in a new tab: coming back to this
+  // "Upgrade to Pro", "Upgrade to Ultra" (or Max) and "Buy credits" open in a new tab: coming back to this
   // one should find the plan or credits bought, and the picker with the models a plan adds.
   useEffect(() => {
     if (!planGated && !limitOffered) return
@@ -475,7 +475,7 @@ function EmptyState({ gate, unreachable, onPick, recent }: { gate: Gate; unreach
 
 /**
  * A request refused on the plan's day or month allowance, with the ways past it: the next plan up
- * (Ultra for a Pro user, Super for an Ultra one), credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
+ * (Ultra for a Pro user, Max for an Ultra one), credits for anyone whose plan can buy them. Both are the host's pages; credits are bought
  * there, beside the line that says what buying agrees to, never from here.
  */
 function LimitNotice({ text, offer }: { text: string; offer: LimitOffer }) {

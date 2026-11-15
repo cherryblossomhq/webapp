@@ -273,13 +273,13 @@ describe("reasoning replay", () => {
 describe("limitOffer", () => {
   const credits = (c: Partial<MeResponse["credits"]>): MeResponse => ({ ...account(), credits: { ...account().credits, ...c } })
   const ultra = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "ultra", name: "Ultra" } })
-  const top = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "super", name: "Super" } })
+  const top = (me: MeResponse): MeResponse => ({ ...me, plan: { ...me.plan, tier: "max", name: "Max" } })
 
   it("offers the next plan up, and credits where the account can buy them", () => {
     expect(limitOffer(credits({ available: true }), "day")).toEqual({ upgrade: "Ultra", buyCredits: true })
     expect(limitOffer(credits({ available: false }), "month")).toEqual({ upgrade: "Ultra", buyCredits: false })
-    expect(limitOffer(ultra(credits({ available: true })), "month")).toEqual({ upgrade: "Super", buyCredits: true })
-    expect(limitOffer(ultra(credits({ available: false })), "day")).toEqual({ upgrade: "Super", buyCredits: false })
+    expect(limitOffer(ultra(credits({ available: true })), "month")).toEqual({ upgrade: "Max", buyCredits: true })
+    expect(limitOffer(ultra(credits({ available: false })), "day")).toEqual({ upgrade: "Max", buyCredits: false })
     expect(limitOffer(top(credits({ available: true })), "month")).toEqual({ upgrade: null, buyCredits: true })
   })
 

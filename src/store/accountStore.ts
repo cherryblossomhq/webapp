@@ -61,13 +61,13 @@ export function copilotModel(account: MeResponse, preferred: string | null): str
 
 /**
  * The plan one step up from each paid plan, by the name the pricing page sells it under: a
- * larger allowance for a user who ran out. Super is the top; Enterprise is a conversation.
+ * larger allowance for a user who ran out. Max is the top; Enterprise is a conversation.
  */
-const NEXT_PLAN: Partial<Record<MeResponse["plan"]["tier"], string>> = { pro: "Ultra", ultra: "Super" }
+const NEXT_PLAN: Partial<Record<MeResponse["plan"]["tier"], string>> = { pro: "Ultra", ultra: "Max" }
 
 /** The ways forward offered to a user refused on a plan limit. */
 export interface LimitOffer {
-  /** The plan to upgrade to for a larger allowance ("Ultra" for Pro, "Super" for Ultra), or null. */
+  /** The plan to upgrade to for a larger allowance ("Ultra" for Pro, "Max" for Ultra), or null. */
   upgrade: string | null
   /** Buy credits, on the host's account page, to keep working past the allowance. */
   buyCredits: boolean

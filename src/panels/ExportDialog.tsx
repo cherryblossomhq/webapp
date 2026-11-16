@@ -437,7 +437,7 @@ function BoardStatus({ format, models }: { format: ExportFormat; models: ExportM
     if (withModels) {
       const parts = placedParts(project)
       const missing = parts.filter((c) => !componentModel(project, c)).map((c) => c.ref)
-      if (missing.length) out.push({ tone: "warn", text: `${missing.length} of ${plural(parts.length, "part")} ${missing.length === 1 ? "has" : "have"} no 3D model${format === "step" ? " and are left out" : ""}: ${listRefs(missing)}.` })
+      if (missing.length) out.push({ tone: "warn", text: `${missing.length} of ${plural(parts.length, "part")} ${missing.length === 1 ? "has" : "have"} no 3D model${format === "step" ? (missing.length === 1 ? " and is left out" : " and are left out") : ""}: ${listRefs(missing)}.` })
       else if (parts.length) out.push({ tone: "ok", text: `Every part on the board has a 3D model (${parts.length}).` })
     }
     return out

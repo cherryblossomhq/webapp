@@ -400,6 +400,204 @@ test.describe("reshaping a trace", () => {
   });
 });
 
+test.describe("picking on the board", () => {
+  type BoardHook = {
+    __cherryblossom: {
+      projectApi: () => {
+        project: {
+          board: { x: number; y: number; width: number; height: number; mountingHoles?: { drill: number; diameter: number; inset: number } | null };
+          traces: { id: string; layer: string; width: number; arc?: unknown; points: { x: number; y: number }[] }[];
+          vias: { id: string; x: number; y: number }[];
+        };
+      };
+      uiApi: () => { selection: string[]; panelOpen: boolean; togglePanel: () => void; clearSelection: () => void };
+    };
+  };
+  const board = (page: Page) => page.evaluate(() => (window as unknown as BoardHook).__cherryblossom.projectApi().project);
+  const ui = (page: Page) =>
+    page.evaluate(() => {
+      const u = (window as unknown as BoardHook).__cherryblossom.uiApi();
+      return { selection: u.selection, panelOpen: u.panelOpen };
+    });
+  /** Nothing selected and the side panel closed, so a double click has to open it. */
+  const reset = (page: Page) =>
+    page.evaluate(() => {
+      const u = (window as unknown as BoardHook).__cherryblossom.uiApi();
+      u.clearSelection();
+      if (u.panelOpen) u.togglePanel();
+    });
+  /** Where a board point is on the page, through the PCB view's own transform (the largest SVG in the canvas). */
+  const onScreen = (page: Page, x: number, y: number) =>
+    page.evaluate(([x, y]) => {
+      const area = (e: Element) => e.getBoundingClientRect().width * e.getBoundingClientRect().height;
+      const svg = [...document.querySelectorAll("main svg")].sort((a, b) => area(b) - area(a))[0] as SVGSVGElement;
+      const m = (svg.querySelector("g") as SVGGraphicsElement).getCTM()!;
+      const r = svg.getBoundingClientRect();
+      return { x: r.left + m.a * x + m.c * y + m.e, y: r.top + m.b * x + m.d * y + m.f };
+    }, [x, y] as const);
+
+  test("a double click opens a track, a via or a corner mounting hole in the Inspector, and the holes can be picked and deleted", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    await page.goto(HOME);
+    await page.getByRole("button", { name: /ESP32 robot controller/ }).click();
+    await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
+    await page.waitForFunction(() => "__cherryblossom" in window);
+    await page.getByRole("tab", { name: "PCB" }).click();
+    const p = await board(page);
+
+    // A track, by the middle of a long straight piece on the top layer.
+    const track = p.traces.find((t) => t.layer === "top" && !t.arc && Math.hypot(t.points[1].x - t.points[0].x, t.points[1].y - t.points[0].y) > 4)!;
+    await reset(page);
+    const mid = await onScreen(page, (track.points[0].x + track.points[1].x) / 2, (track.points[0].y + track.points[1].y) / 2);
+    await page.mouse.dblclick(mid.x, mid.y);
+    await expect.poll(() => ui(page)).toMatchObject({ panelOpen: true, selection: [expect.stringMatching(/^t:/)] });
+    await expect(page.getByRole("heading", { name: "Trace", level: 3, exact: true })).toBeVisible();
+
+    // A via: the tracks that end on it are under the pointer too, so the list opens, the via first.
+    await reset(page);
+    const via = await onScreen(page, p.vias[0].x, p.vias[0].y);
+    await page.mouse.dblclick(via.x, via.y);
+    const list = page.getByRole("menu", { name: /objects here/ });
+    await expect(list.getByRole("menuitem").first()).toHaveText(/Via/);
+    await list.getByRole("menuitem").first().click();
+    await expect.poll(() => ui(page)).toMatchObject({ panelOpen: true, selection: [`v:${p.vias[0].id}`] });
+    await expect(page.getByRole("heading", { name: "Via", level: 3, exact: true })).toBeVisible();
+
+    // A corner mounting hole: the four are one setting of the board, picked together.
+    const m = p.board.mountingHoles!;
+    await reset(page);
+    const hole = await onScreen(page, p.board.x - p.board.width / 2 + m.inset, p.board.y - p.board.height / 2 + m.inset);
+    await page.mouse.dblclick(hole.x, hole.y);
+    await expect.poll(async () => (await ui(page)).selection.sort()).toEqual(["mh:mh-bl", "mh:mh-br", "mh:mh-tl", "mh:mh-tr"]);
+    expect((await ui(page)).panelOpen).toBe(true);
+    await expect(page.getByRole("heading", { name: "Mounting holes", level: 3, exact: true })).toBeVisible();
+
+    // Delete takes them away, as one undo step.
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await board(page)).board.mountingHoles ?? null).toBeNull();
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(async () => (await board(page)).board.mountingHoles).toEqual(m);
+    expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+  });
+
+  test("a slot cut through the board is picked by a click anywhere inside it, not only on its edge", async ({ page }) => {
+    await newProject(page);
+    await page.getByRole("tab", { name: "PCB" }).click();
+    const b = (await board(page)).board;
+    const a = await onScreen(page, b.x - 6, b.y);
+    const z = await onScreen(page, b.x + 6, b.y);
+    await page.keyboard.press("o");
+    await page.mouse.click(a.x, a.y);
+    await page.mouse.click(z.x, z.y);
+    await expect(page.getByText("Slot cut into the board.")).toBeVisible();
+    await page.keyboard.press("s");
+    await reset(page);
+    // The middle of the slot: a millimetre from its edges, far more than a click's reach of them.
+    const mid = await onScreen(page, b.x, b.y);
+    await page.mouse.dblclick(mid.x, mid.y);
+    await expect.poll(() => ui(page)).toMatchObject({ panelOpen: true, selection: [expect.stringMatching(/^o:\d+:\d+$/)] });
+  });
+
+  test("a double click where several things overlap lists them, as Altium does, and opens the one picked", async ({ page }) => {
+    type Edit = {
+      __cherryblossom: {
+        projectApi: () => {
+          project: { components: { id: string; ref: string; pcb: { x: number; y: number } }[] };
+          commit: (f: (p: Record<string, unknown> & { traces: unknown[]; vias: unknown[] }) => unknown) => void;
+        };
+      };
+    };
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    await page.goto(HOME);
+    await page.getByRole("button", { name: /ESP32 robot controller/ }).click();
+    await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
+    await page.waitForFunction(() => "__cherryblossom" in window);
+    await page.getByRole("tab", { name: "PCB" }).click();
+
+    // A track across the body of the DevKit, with a via on it, where nothing else is.
+    const u1 = await page.evaluate(() => (window as unknown as Edit).__cherryblossom.projectApi().project.components.find((c) => c.ref === "U1")!);
+    const at = { x: u1.pcb.x + 0.4, y: u1.pcb.y + 0.4 };
+    await page.evaluate((at) => {
+      (window as unknown as Edit).__cherryblossom.projectApi().commit((p) => ({
+        ...p,
+        traces: [...p.traces, { id: "t-pick", layer: "top", width: 0.3, points: [{ x: at.x - 1.5, y: at.y }, { x: at.x + 1.5, y: at.y }] }],
+        vias: [...p.vias, { id: "v-pick", x: at.x + 1, y: at.y, diameter: 0.6, drill: 0.3 }],
+      }));
+    }, at);
+
+    // The track and the part, the track (what a click picks) first. The Inspector waits for a pick.
+    await reset(page);
+    const spot = await onScreen(page, at.x, at.y);
+    // Where the list's first row will be, the bare body of U1: the pointer there outlines the part.
+    await page.mouse.move(spot.x + 22, spot.y + 18);
+    await expect(page.locator("[data-hover-part]")).toHaveAttribute("data-hover-part", "U1");
+    await page.mouse.dblclick(spot.x, spot.y);
+    const menu = page.getByRole("menu", { name: /objects here/ });
+    await expect(menu.getByRole("menuitem")).toHaveText([/Track/, /Part\s*U1/]);
+    expect(await ui(page)).toMatchObject({ panelOpen: false, selection: ["t:t-pick"] });
+    // Over the list, only the row pointed at is drawn: the board under it is not hovered.
+    await menu.getByRole("menuitem", { name: /Track/ }).hover({ position: { x: 12, y: 8 } });
+    await expect(page.locator("[data-hover-part]")).toHaveCount(0);
+
+    // Pointing at a row changes nothing yet, and the board's keys stay away from the selection behind the list. Escape closes it.
+    await menu.getByRole("menuitem", { name: /Part/ }).hover();
+    await page.keyboard.press("Delete");
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    expect(await ui(page)).toMatchObject({ panelOpen: false, selection: ["t:t-pick"] });
+    expect(await page.evaluate(() => (window as unknown as BoardHook).__cherryblossom.projectApi().project.traces.some((t) => t.id === "t-pick"))).toBe(true);
+
+    // The part, picked from the list, opens in the Inspector.
+    await page.mouse.dblclick(spot.x, spot.y);
+    await menu.getByRole("menuitem", { name: /Part/ }).click();
+    await expect.poll(() => ui(page)).toMatchObject({ panelOpen: true, selection: [`c:${u1.id}`] });
+    await expect(menu).toHaveCount(0);
+
+    // On the via: the via first, then the track and the part under it.
+    const via = await onScreen(page, at.x + 1, at.y);
+    await page.mouse.dblclick(via.x, via.y);
+    await expect(menu.getByRole("menuitem")).toHaveText([/Via/, /Track/, /Part\s*U1/]);
+    // A press on the board only closes the list.
+    await page.mouse.click(via.x + 220, via.y + 160);
+    await expect(menu).toHaveCount(0);
+    expect((await ui(page)).selection).toEqual(["v:v-pick"]);
+
+    // A pad with a track ending on it: the pad on its own, the track and the pad's part, and the pad opens in the Inspector.
+    type Analysis = {
+      __cherryblossom: {
+        getLiveAnalysis: (p: unknown) => {
+          items: ({ kind: "pad"; pad: { componentId: string; x: number; y: number }; layers: string[] } | { kind: "segment"; a: { x: number; y: number }; b: { x: number; y: number }; layers: string[] } | { kind: "other" })[];
+        };
+      };
+    };
+    const padSpot = await page.evaluate(() => {
+      const hook = (window as unknown as Edit & Analysis).__cherryblossom;
+      const project = hook.projectApi().project;
+      const items = hook.getLiveAnalysis(project).items;
+      for (const it of items) {
+        if (it.kind !== "pad" || !it.layers.includes("top") || it.pad.componentId === "#board") continue;
+        const { x, y } = it.pad;
+        const ends = items.some((s) => s.kind === "segment" && s.layers.includes("top") && [s.a, s.b].some((e) => Math.hypot(e.x - x, e.y - y) < 1e-6));
+        if (ends) return { x, y, ref: project.components.find((c) => c.id === it.pad.componentId)!.ref };
+      }
+      return null;
+    });
+    expect(padSpot).not.toBeNull();
+    await reset(page);
+    const pad = await onScreen(page, padSpot!.x, padSpot!.y);
+    await page.mouse.dblclick(pad.x, pad.y);
+    await expect(menu.getByRole("menuitem").first()).toHaveText(new RegExp(`Pad\\s*${padSpot!.ref}\\.`));
+    await expect(menu.getByRole("menuitem", { name: /Track/ }).first()).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: new RegExp(`Part\\s*${padSpot!.ref}\\b`) })).toBeVisible();
+    await menu.getByRole("menuitem").first().click();
+    await expect.poll(() => ui(page)).toMatchObject({ panelOpen: true, selection: [expect.stringMatching(/^pd:/)] });
+    await expect(page.getByRole("heading", { name: new RegExp(`^Pad ${padSpot!.ref}\\.`), level: 3 })).toBeVisible();
+    expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+  });
+});
+
 test.describe("exports to other tools", () => {
   async function openBlinker(page: Page) {
     await page.goto(HOME);
@@ -407,12 +605,14 @@ test.describe("exports to other tools", () => {
     await expect(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
   }
 
-  test("the export menu downloads Circuit JSON that names the parts and says what stays behind", async ({ page }) => {
+  test("the export dialog downloads Circuit JSON that names the parts and says what stays behind", async ({ page }) => {
     await openBlinker(page);
     await page.getByRole("button", { name: "Export" }).click();
+    const dialog = page.getByRole("dialog", { name: "Export" });
+    await dialog.getByRole("option", { name: /Circuit JSON \(tscircuit\)/ }).click();
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByRole("menuitem", { name: /Circuit JSON \(tscircuit\)/ }).click(),
+      dialog.getByRole("button", { name: "Download Circuit JSON (tscircuit)" }).click(),
     ]);
     expect(download.suggestedFilename()).toMatch(/\.circuit\.json$/);
     const path = await download.path();
@@ -422,15 +622,31 @@ test.describe("exports to other tools", () => {
     await expect(page.getByRole("status")).toContainText("Exported Circuit JSON");
   });
 
-  test("the export menu downloads a KiCad project as a zip", async ({ page }) => {
+  test("the export dialog downloads a KiCad project as a zip, with its 3D models unless told not to", async ({ page }) => {
     test.slow();
     await openBlinker(page);
     await page.getByRole("button", { name: "Export" }).click();
+    const dialog = page.getByRole("dialog", { name: "Export" });
+    await dialog.getByRole("option", { name: /KiCad project/ }).click();
+    const include = dialog.getByRole("checkbox", { name: /Include 3D models/ });
+    await expect(include).toBeChecked();
+    // The library copy is an option of the models, off with them.
+    await include.uncheck();
+    await expect(dialog.getByRole("checkbox", { name: /Copy KiCad's library models too/ })).toBeDisabled();
+    await include.check();
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 60_000 }),
-      page.getByRole("menuitem", { name: /KiCad project/ }).click(),
+      dialog.getByRole("button", { name: "Download KiCad project" }).click(),
     ]);
     expect(download.suggestedFilename()).toMatch(/\.kicad\.zip$/);
+    await expect(page.getByRole("status")).toContainText("Exported a KiCad project");
+    // The dialog opens on the format exported last, and the arrow keys move through the formats.
+    await page.getByRole("button", { name: "Export" }).click();
+    await expect(dialog.getByRole("option", { name: /KiCad project/ })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("ArrowDown");
+    await expect(dialog.getByRole("option", { name: /Altium project/ })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
   });
 });
 
@@ -577,8 +793,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
-          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 64000, monthlyTokens: 4000000 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -670,8 +886,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
-          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 64000, monthlyTokens: 4000000 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -748,8 +964,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
-          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 64000, monthlyTokens: 4000000 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -809,8 +1025,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "free", name: "Free", managedAi: false, allowedModels: [] },
-          limits: { maxTokensPerRequest: 0, requestsPerMinute: 0, requestsPerDay: 0, monthlyTokens: 0 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 0, monthlyTokens: 0 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: false, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -850,8 +1066,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "free", name: "Free", managedAi: false, allowedModels: [] },
-          limits: { maxTokensPerRequest: 0, requestsPerMinute: 0, requestsPerDay: 0, monthlyTokens: 0 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 0, monthlyTokens: 0 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: false, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -886,8 +1102,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
-          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
-          usage: { requestsThisMinute: 1, minuteResetsAt: null, requestsThisDay: 40, dayResetsAt: null, monthlyTokens: 4000000, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 64000, monthlyTokens: 4000000 },
+          usage: { monthlyTokens: 4000000, monthResetsAt: null },
           credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -936,8 +1152,8 @@ test.describe("parts and Sakura", () => {
         json: {
           user: { id: "user_e2e", email: null, name: null },
           plan: { tier: "pro", name: "Pro", managedAi: true, allowedModels: ["anthropic/claude-sonnet-5.5"] },
-          limits: { maxTokensPerRequest: 64000, requestsPerMinute: 60, requestsPerDay: 600, monthlyTokens: 4000000 },
-          usage: { requestsThisMinute: 0, minuteResetsAt: null, requestsThisDay: 0, dayResetsAt: null, monthlyTokens: 0, monthResetsAt: null },
+          limits: { maxTokensPerRequest: 64000, monthlyTokens: 4000000 },
+          usage: { monthlyTokens: 0, monthResetsAt: null },
           credits: { available: true, balance: 0, balanceCents: 0, autoRefill: false, refilling: false },
         },
       }),
@@ -1258,7 +1474,7 @@ test.describe("projects", () => {
       const [entry] = JSON.parse(localStorage.getItem("cherryblossom:editor:index") ?? "[]");
       return JSON.parse(localStorage.getItem(`cherryblossom:editor:project:${entry.id}`) ?? "null");
     });
-    expect(stored).toMatchObject({ format: "cherryblossom.project", version: 6, project: { name: "Saved board" } });
+    expect(stored).toMatchObject({ format: "cherryblossom.project", version: 7, project: { name: "Saved board" } });
     expect(stored.project).not.toHaveProperty("id");
   });
 
@@ -1381,23 +1597,21 @@ test.describe("tooltips", () => {
     await expect(wire).toHaveAttribute("aria-pressed", "true");
   });
 
-  test("a button's tooltip stays off the menu it opened", async ({ page }) => {
+  test("a button's tooltip stays off the dialog it opened", async ({ page }) => {
     await newProject(page);
     const exportButton = page.getByRole("button", { name: "Export", exact: true });
     await exportButton.hover();
     await expect(page.getByRole("tooltip")).toBeVisible({ timeout: 1_000 });
 
-    // Opening the menu puts the tooltip away, and resting on the button again does not bring it back.
+    // Opening the dialog puts the tooltip away.
     await exportButton.click();
-    await expect(page.getByRole("menuitem", { name: /Fabrication files/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Fabrication files/ })).toBeVisible();
     await expect(page.getByRole("tooltip")).toBeHidden();
-    await page.mouse.move(600, 500);
-    await exportButton.hover();
     await page.waitForTimeout(500);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
 
     // Closed again, it explains itself as before.
-    await exportButton.click();
+    await page.keyboard.press("Escape");
     await expect(exportButton).toHaveAttribute("aria-expanded", "false");
     await page.mouse.move(600, 500);
     await exportButton.hover();

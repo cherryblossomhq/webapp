@@ -364,16 +364,55 @@ KiCad users read without thinking.
   the rest with a Place them button, see
   [Working together](#what-working-together-needed-solving-panelscollabnoticestsx)), ratsnest, interactive
   routing on two layers with 45° bends and vias, bottom-side placement, a
-  resizable board outline, corner mounting holes and silkscreen text. Both copper layers are
-  drawn opaque over a black substrate in EDA colours (red top, blue bottom), so
-  the clearance gaps of the front pour show the layer behind and every trace and
-  pad stands out. Designators are placed automatically beside each part (turned
+  resizable board outline, corner mounting holes and silkscreen text. Copper is drawn
+  over a black substrate in EDA colours (red top, blue bottom, a colour per inner
+  layer), the layer worked on in front (see **Seeing a board of many layers** below). Designators are placed automatically beside each part (turned
   with upright parts), clear of pads, board text and each other, and are drawn
   exactly as the Gerber silkscreen. Big pads show their pin names even with the
   whole board in view, and traces repeat their net name when zoomed in; a
   floating bar on a selected part shows its position with rotate and flip
   buttons; the layer menu toggles copper, silkscreen, courtyards, ratsnest and
   labels.
+- **Seeing a board of many layers** (`copperLook` in `editor/theme.ts`, the board drawing in
+  `PcbEditor.tsx`). Every copper layer used to be drawn opaque in its full colour, so a pour hid
+  the layers under it, and its clearance gaps showed the next layer's pour as a ring of that
+  colour round every track: with ground on both sides, each red track had a blue ring, on four
+  layers a green one, and with an inner plane picked the board was one green sheet. Now the
+  layer worked on is drawn whole in front, in its full colour, and its pour is a darker shade
+  of it, a little see-through (`pourOpacity`), so its tracks and pads read on it and the other
+  layers show faintly under it. The other layers are drawn behind it, all their pours first and
+  then all their copper, so no plane hides another layer's tracks; their tracks are softer and
+  their pours nearly black, so a gap round a front track reads as the bare board. **Other
+  layers** (`⇧S`, Altium's key for its single layer mode, or the Layers menu) goes Show, Dim (KiCad's dimmed inactive layers: the others
+  nearly grey, so the one layer worked on is the only colour), Hide (the layer alone, with the
+  pads and vias through it; only what is drawn is picked or taken by a marquee, so a
+  Delete never takes what can't be seen). **Pours** in the Layers menu are
+  Filled, Outline (the edge of their copper alone, KiCad's zone outlines) or Off; what is
+  checked and exported is the same. The other side's silkscreen and parts follow Other layers
+  (`otherSideOpacity`). Both are kept for the browser (`store/settings.ts`). Sakura's pictures
+  (`ai/vision/pcbSvg.ts`) keep their own colours. Tests: `tests/layer-colors.test.tsx`.
+- **Picking on the board** (`hitTest` in `editor/pcb/PcbEditor.tsx`). A double click on anything with Select (a part or its pad, a track,
+  a via, a drawing, a text, a zone, the outline, a corner mounting hole) opens it in the Inspector, as KiCad and Altium open an object's
+  properties; the schematic does the same for a part, its designator or value and a block. A selected or lit track (its net under the
+  pointer, picked in Checks) is drawn at exactly its own width, a white edge inside its sides and its copper lit within (`selectedTrack`,
+  `litTrack` in `traceGraphics.ts`), and a selected drawing at its own size: both used to get a glow 3 px wider, which read as a wider track.
+  The board's corner mounting holes (`board.mountingHoles`, pads of `BOARD_OWNER` in the analysis) were never picked; a click now picks all
+  four (`mh:<id>`, one setting of the board), the Inspector's Mounting holes section sets their screw, drill, pad and inset, and Delete
+  removes them. A cutout or slot in the outline is picked by a click anywhere inside it, not only on its hairline edge. **What is drawn on top
+  is picked first**: the silkscreen of the side in front (a part's outline and designator, a silkscreen drawing or text) is drawn over all the
+  copper, so it is tried after pads and vias and before tracks; a track under a part's outline used to win, and the part could not be picked
+  there. The other side's silkscreen comes after the tracks, and a tool snapping to copper (routing, a via: `hitTest`'s `copper`) looks
+  through the silkscreen. An automatic designator, which was never picked, picks its part. **Where several things are under a double click** (a
+  track or a via in a part's body, a via on a track, a text on a drawing) a list of them opens at the pointer, as Altium's does, the one a click
+  picks first at the top (`hitsUnder`, `editor/pcb/PickMenu.tsx`): pointing at a row (or the arrows) draws that thing selected, and nothing else (the board under the list is not hovered), a click or Enter
+  selects it and opens the Inspector, and Escape or a press elsewhere closes the list (a press on the board does nothing else). It lists everything
+  under the pointer itself (within a pixel) after what a click there picks, not everything within a click's reach: a via and the tracks under it,
+  a pad and the tracks it ends and its part, two parts over each other, a pour or a rule area under them, last. **A pad is selected on its own**
+  from the list (`pd:<component>:<index>`, `model/padSelection.ts`), drawn lit, its net lit, and shown in the Inspector (`panels/PadInspector.tsx`:
+  its pin, net, shape, size, drill, layers and place, read only, since a pad is its land pattern's); a click on a pad still picks its part, which
+  is what a drag moves, and Delete with only pads selected says to select the part. A track the pointer is on is picked before one only within a
+  click's reach: at a usual zoom a click on a thin track picked the track beside it when that one was drawn later. Tests: `tests/pcb-selection-look.test.tsx`,
+  `tests/pcb-silk-picking.test.ts`, `tests/pcb-pick-menu.test.ts`, the website's "picking on the board".
 - **Reshaping a trace by hand** (`model/traceDrag.ts`), as Altium drags one: pressing a straight track
   with Select and dragging moves the segment under the pointer square to itself (only that part of the
   move counts; a segment along x, along y or at 45° lands with its line on the grid, Alt is off the grid).
@@ -568,10 +607,27 @@ KiCad users read without thinking.
   brought in from KiCad can have, is left out of the file it is marked out of), fabrication
   notes (the board spec, the smallest features, the rules and the project's
   properties), the project file (re-importable), and, for other tools,
-  Circuit JSON (tscircuit) and a KiCad project (see
+  Circuit JSON (tscircuit), a KiCad project and an Altium project, each with
+  the parts' 3D models unless unticked (see
   [Taking boards to other tools](#taking-boards-to-other-tools)), and the board
-  as a STEP assembly for mechanical CAD (from the Export menu or the 3D view's
-  toolbar). None of them involves the AI.
+  as a STEP assembly for mechanical CAD (also on the 3D view's toolbar). None
+  of them involves the AI. An assistant over the hosted app's MCP server gets
+  the same files as a link (`export_files`, see [MCP](#mcp-sakuras-tools-for-the-users-own-ai)).
+- **The Export dialog** (`panels/ExportDialog.tsx`, the top bar's Export). It
+  was a menu of eight rows until the exports had options. The formats are a
+  list in four groups (Manufacturing, Other tools, Mechanical, Project), the
+  arrow keys moving through it and Enter or a double-click downloading; beside
+  it, what the file is for, what is in it, its options (the KiCad and Altium
+  projects' 3D models, and the KiCad one's copy of KiCad's own library models)
+  and what the board means for it before it is made: parts not on the board
+  yet, a fabrication export's DRC errors, unrouted connections and an open
+  outline, and the parts with no 3D model. The format last exported and the
+  options are kept for the browser (`exportFormat`, `exportModels` in
+  `store/settings.ts`). Reading 3D models shows its progress and Cancel stops
+  it (an `AbortSignal` down to each fetch). After a download the dialog
+  closes and a line under the button says what was exported, nothing more:
+  the exporters' notes are for the tests, these docs and an assistant's
+  `export_files` answer.
 - **Light and dark themes**: follows the system setting until you pick one with
   the theme button in the top bar, which cycles System, then the scheme the
   system isn't showing, then the other (`nextThemePref`).
@@ -628,7 +684,10 @@ KiCad users read without thinking.
   Inspector's Clearance rules, `draw_trace` draws
   a locked trace from pin to pin (`from`, `to`: it starts and ends on their
   pads' centres, and the net is theirs) or through given points, and `pcb_text` puts, changes or removes a
-  board text like the PCB editor's route and text tools, and `clear_routing`
+  board text like the PCB editor's route and text tools (with `refs`, it says where parts' designators are and
+  moves, resizes, turns, hides or resets them, or their value text with `field`, as the Inspector's "Place
+  designator by hand" and "Automatic designator" do: no tool reached a designator, and a user's assistant
+  could not tidy the silkscreen), and `clear_routing`
   deletes copper so it can be routed again (`src/ai/pcbTools.ts`; the search for
   a free spot beside a pin is `model/placeNear.ts`). `draw_trace` and copper
   text are refused where they would short a net, touch nothing of theirs, or
@@ -818,6 +877,7 @@ Conventions:
 | `R` | rotate | `R` / `F` | rotate / flip side |
 | `X` / `Y` | mirror top to bottom / left to right | | |
 | `/` | flip wire bend | `L` | switch layer |
+| | | `⇧S` | other layers: show, dim, hide |
 | `B` | block tool | `W` (routing) | next preferred trace width |
 | `⇧T` / `P` | text / line | | |
 | `⇧R` | rectangle | | |
@@ -927,10 +987,11 @@ viewer; its Sheet section is in the Inspector all the same.
   projects is `src/store/projectActions.ts`, shared with the hosted
   app's projects page through `src/projects.ts`.
 - `src/panels`: the top bar and its account menu, toolbars, inspector, checks, library, copilot,
-  settings and export menu.
+  settings and the Export dialog.
 - `src/export`: Gerber, Excellon, BOM, PnP and zip bundling, and the exits to
-  other tools: `circuitJson.ts`, `kicad.ts`, and `step3d.ts` over the STEP
-  writer in `step/`. The KiCad export writes the `.kicad_pcb` of a project that came
+  other tools: `circuitJson.ts`, `kicad.ts`, `altium/`, and `step3d.ts` over the STEP
+  writer in `step/`; the parts' 3D models for the last three are read once by
+  `placedModels.ts` (KiCad's files of them, `kicadModels.ts`; Altium's, `altium/models.ts`). The KiCad export writes the `.kicad_pcb` of a project that came
   from a KiCad board natively (`kicadBoard.ts`, X16: KiCad 9's format, in the file's
   own frame, so the board imports again as the same project); a project drawn in the
   editor goes through the converter and the text writers (`kicadPads.ts`,
@@ -994,8 +1055,8 @@ following someone's camera in the 3D view (following switches to the view),
 comments, handing a project to another owner, and Sakura for
 viewers (it changes the board, so it is an editor's). For 3D: checks against the real
 models (part heights, parts that collide, a model that doesn't sit on its
-pads), copper, mask and silkscreen as layers of the STEP export, 3D models in
-the KiCad export, model files inside a downloaded project file, and models for
+pads), copper, mask and silkscreen as layers of the STEP export, model files
+inside a downloaded project file, and models for
 the built-in parts KiCad has none of (the ESP32 DevKits, Arduino Nano, D1 Mini,
 XIAO and OLED modules, the slide switch, barrel jack, micro-USB, coin cell
 holder, trimmer and the screw terminals of no particular maker). For parts: drawing a symbol or a land by hand in the
@@ -1107,10 +1168,19 @@ browser and a downloaded file:
   malformed one (the sheet is then drawn on the default page); the bump keeps a
   version 5 reader, which would drop the pages and save the loss back, from
   opening one.
+- **Version 7** gives every board text a layer. The editor's own silkscreen
+  text was stored with a side and no layer (the examples' titles, a Circuit
+  JSON import's text, text placed early on), and nothing could pick, list or
+  edit it; the reader makes it a text on its side's silkscreen
+  (`silkscreenText` in `textCodec.ts`), and `MIGRATIONS[6]` changes nothing.
+  The bump is what has the first copy to open such a project write it whole:
+  an edit of the text is worked out on it with its layer, and applied to the
+  stored one, which had none, it was lost on the next read (made bold, given
+  a pen of its own, put on another layer).
 - **Writing** (`serializeProject`) always writes the current version, so a
   project is upgraded the first time it is saved after a format change.
 
-**To change the format** (the next version is 7), bump `PROJECT_FILE_VERSION` and add the migration from
+**To change the format** (the next version is 8), bump `PROJECT_FILE_VERSION` and add the migration from
 the previous one — plain JSON in and out, importing nothing from the live
 model, since it describes a format as it was — with a document of the old
 version in `tests/project-file.test.ts`. A new optional field that
@@ -1382,16 +1452,17 @@ and a viewer's refused edit.
   sees "Sakura 2 High" with "Ultra") and linking to the host's `upgradeUrl`;
   nothing there picks one. The default is the plan's last, strongest one. The
   gauge in Sakura's header, after the chat history (`panels/UsageMenu.tsx`),
-  opens the same `/me` as the host's account page: this period's credits and
-  today's actions against the plan's, gift credits and credits bought
+  opens the same `/me` as the host's account page: this period's credits
+  against the plan's, gift credits and credits bought
   (`MeResponse.credits`), fetched again each time it opens, with a link to the
   host's `accountUrl`; it only shows, and changes nothing. Everything else is
   the proxy's error contract:
   `401` asks to sign in, `403 plan_required | model_not_allowed` offers plans,
   `429` shows the
-  server's sentence and, for a day or month limit (`error.limit`), what gets
+  server's sentence and, for the month's limit (`error.limit`), what gets
   past it (`limitOffer` in `store/accountStore.ts`, from `/me` fetched again at
-  the refusal, `LimitOffer { upgrade, buyCredits }`): Ultra for a Pro user,
+  the refusal, `LimitOffer { upgrade, buyCredits }`): the next plan up by name (Ultra for a Pro
+  user, Max for an Ultra one),
   which is the host's `upgradeUrl`, and "Buy credits", which is its
   `accountUrl`, the account's usage page, where credits are bought and
   auto-refill turned on (never in the editor). The offer is kept on the error
@@ -1587,7 +1658,7 @@ and a viewer's refused edit.
   [Schematic edits by the copilot](#schematic-edits-by-the-copilot)).
 - **The prompt knows the editor around it** (`EDITOR_GUIDE` in
   `designGuide.ts`, in Sakura's prompt and the hosted app's MCP server's
-  instructions alike): the views, the Export menu's files, the imports, and
+  instructions alike): the views, the Export dialog's files, the imports, and
   that the chat holds text only. Users asked "how do I get the Gerbers" and
   "where is the PCB view" again and again and were told Sakura hadn't checked
   what the editor offers. The guide also says that what the user fixed (the
@@ -1661,7 +1732,9 @@ the server gives it, and the model's per-project state is scoped (see
   The lookups that read nothing of the user's (`find_part`, `get_part_data`,
   `read_datasheet`, `search_parts`) take `project_id` optionally there and
   run on a blank project without one: assistants looking a part up before
-  making a project were refused for leaving it out.
+  making a project were refused for leaving it out. The server has one tool
+  of its own, `export_files`, which makes any file of the Export dialog with
+  the same writers and answers a link that downloads it for a day.
 - **A description stays under 4096 characters**, where Claude Code cuts off
   one it loads up front. `create_part`'s ran past it, so an assistant never
   saw its last paragraph, the one on `land`, and found the field only through
@@ -1863,6 +1936,19 @@ eight sat on the wrong land. So:
   on lands drawn for that. Both are right because the symbol finds `A` and `K`
   by name; a drawing numbered the other way from its supplier is reported as a
   convention, not refused.
+- **A part the supplier draws as two diodes back to back is drawn
+  bidirectional** (`tvs_bidirectional`), whatever its pins are named: the parts
+  API reads the symbol's triangles (`symbol: "bidirectional_diode"`), and
+  `create_part` uses it when no symbol or a one-way diode's was asked for, and
+  says so; the library panel's From LCSC rows draw it so too
+  (`draftFromSupplierPart`), and so does a supplier record the parts database
+  kept (`draftFromIndexPart`, `create_part database_id`, from records stored
+  as `easyeda@2`: a record stored before is drawn by its pins' names until
+  someone reads the part again). One rule decides it for all three
+  (`supplierDrawnSymbol` in `model/supplier/build.ts`). LCSC C148229 (SMAJ300CA, 300 V bidirectional) names its pins `K` and
+  `A`, and was drawn as the one-way `tvs` (November 2026): from an AC line to
+  ground that reads as a short on every negative half-cycle. A part made before
+  is fixed with `create_part lcsc ... replaces`.
 - **Exposed pads take a pin number**: the footprinter's thermal pad is
   numbered one past the last lead (17 on a QFN-16, `PadDef.exposed`), as
   datasheets and supplier lands number it, so a part can wire it to ground. A
@@ -2053,6 +2139,7 @@ it in `panels/partActions.ts`.
   outputs right by default; discretes can use a library symbol
   (`CUSTOM_SYMBOLS`), with polarized pins matched by name (A/K, +/-, B/C/E,
   G/D/S) rather than by number, since packages disagree about numbering.
+  `tvs_bidirectional` has no polarity and takes two pins of any name.
 - A spec that no longer builds is dropped on load rather than breaking the
   project; its components show as unknown parts. Pasting a project part into
   another project copies its spec along (`withPartsFrom`), and its land
@@ -2479,7 +2566,7 @@ around, it is worse than a gap. It is gone, and nothing may bring one back.
 ### The STEP export (`export/step3d.ts`, `export/step/`)
 
 The board and every placed part as one AP214 assembly, for mechanical CAD:
-from the Export menu, or the 3D view's toolbar.
+from the Export dialog, or the 3D view's toolbar.
 
 - **What each part is in the file** (`step3d.ts`): its model (a supplier's or
   KiCad's STEP fetched for the export, or the STEP file the user added, copied
@@ -2516,6 +2603,72 @@ from the Export menu, or the 3D view's toolbar.
   faceted mesh of 100k triangles read as no triangles at all: very large meshes
   should be a supplier's STEP instead. Nothing has been opened in SolidWorks,
   Fusion or KiCad yet; do that by hand before relying on a release of it.
+
+### 3D models in the KiCad and Altium exports (`export/placedModels.ts`)
+
+The STEP assembly, the KiCad project and the Altium project carry the parts'
+models from one gatherer, `readPlacedModels`: each distinct model read once,
+however many parts use it, as a **STEP file's exact bytes and where they sit
+on the footprint** (a rigid matrix; a supplier's, KiCad's, or a STEP file the
+user added) or as **a mesh already placed on the footprint** (a mesh file, a
+model KiCad stretches, or a STEP file that couldn't be fetched, with a note),
+plus its box when its meshes were read. A part with no model, or one that
+can't be read, has none in the files, and the notes name it (the STEP
+assembly leaves the part out; KiCad and Altium keep it, without a body).
+
+- **The files are reached through a `ModelReader`**, so the gatherer imports
+  nothing a server can't load: the page's is `browserModelReader`
+  (`editor/three/files/library.ts`: the 3D view's copies, and the host's
+  stores); the hosted app's MCP server has a reader of its own. A server
+  can't read a STEP file's shape (OpenCascade runs in a worker of the
+  page), which a model placed by its own origin doesn't need: KiCad's, and
+  most files users add. A supplier's model is placed by its OBJ, which the
+  server reads, so only a user's STEP file centred on its footprint, or a
+  stretched one, is left out there, and its note says to export it from the
+  editor.
+- **KiCad** (`export/kicadModels.ts`, `kicadFiles(project, { models })`): each
+  model is a file of the project in `3dmodels/` (a STEP file as it is, a mesh
+  written as a STEP file already placed, `writeStepModel`), and the footprint
+  names it by `${KIPRJMOD}/3dmodels/<name>.step` with the offset and the
+  angles negated (KiCad turns a model clockwise by the written angles). KiCad's
+  own library models stay named from KiCad's installed library
+  (`${KICAD9_3DMODEL_DIR}`) unless `copyLibrary`, and a stretched one always
+  does (KiCad's scale places it exactly). A project kept as the KiCad files it
+  came from (`keep/original.ts`) carries none: its own files' models are
+  written back with them, and the files compared to find its edits are written
+  without models.
+- **A bottom footprint is turned over differently by the two KiCad writers.**
+  The editor turns a bottom part over about its y axis (its pads mirrored left
+  to right); KiCad turns a footprint over about its x axis. The native writer
+  takes up the half turn between them in the footprint's angle (its angle less
+  180, `kicadBoard.ts`); the converter writes the editor's angle, so a model's
+  placement on its footprint takes the half turn instead (`HALF_TURN`,
+  `halfTurned` for a KiCad library model). Until November 2026 the converter's
+  board placed every bottom-side model of KiCad's library half a turn round.
+- **Altium** (`export/altium/models.ts`, `altiumFiles(project, { models })`):
+  every model is embedded, KiCad's included, since Altium has no KiCad
+  library. The `.PcbDoc` gets a `Models` storage (`Header`, a `Data` record
+  per model: `EMBED`, `ID` (a GUID), `NAME`, `CHECKSUM`, Altium's
+  position-weighted byte sum, and a stream `0`, `1`... of the STEP file, zlib
+  compressed with `CompressionStream("deflate")`) and a `ComponentBodies6`
+  record per part (type 12, the region record's head with the part's index,
+  the body's property list, and its outline: the model's box seen from above,
+  else its pads' box). `bodyPlacement` writes it as KiCad's importer reads it:
+  `MODEL.2D.X`/`Y` where the model's origin is on the board, `MODEL.3D.DZ`
+  from the part's side of the board, `MODEL.3D.ROTX`/`Y`/`Z` turning it on the
+  board on the top and, on the bottom (`BODYPROJECTION` 1), on its footprint
+  turned over about x, less the part's turn. Bodies are on the assembly layer
+  of their side (Mechanical 2 or 3).
+- **Held to KiCad itself** (`tests/export-models.test.ts`): a board with parts
+  turned every way and some on the bottom, each kind of model on one of them,
+  is written as a KiCad project (by the converter, and natively after a trip
+  through KiCad) and as an Altium project that `kicad-cli pcb import` reads;
+  `kicad-cli pcb export step` of each must place every model where our own
+  STEP export does, box for box (0.02 mm across the board, 0.1 mm up it, where
+  KiCad stands parts on a 1.51 mm stackup and copper). Skipped without KiCad
+  (`KICAD_CLI`), as in CI. **Nothing has been opened in Altium Designer yet**:
+  the bodies follow what KiCad's importer reads and AltiumSharp writes.
+
 
 ## Taking boards to other tools
 
@@ -2605,7 +2758,8 @@ KiCad files come from [`circuit-json-to-kicad`](https://github.com/tscircuit/cir
 by `import()` when someone asks for KiCad, and it brings `kicadts`,
 `schematic-symbols` and a few more (all MIT; the converter declares none of
 them, so they are in `package.json`): about 4 MB of JavaScript
-that no one editing a board downloads.
+that no one editing a board downloads. The Export dialog's "KiCad project" is
+marked beta, as Altium's is, and Sakura's guide says so (`EDITOR_GUIDE`).
 
 - The converter draws a schematic unit as 15 mm and ours is 12.7 mm (ten of
   KiCad's 50 mil), so the schematic is scaled by 12.7 / 15 first, which puts
@@ -2617,6 +2771,21 @@ that no one editing a board downloads.
   (origin.x + 12.7x, origin.y − 12.7y) mm), for every project. The corner is
   on the 0.1 grid, so the grid stays KiCad's; a sheet imported from KiCad has
   its page at (0, 0) and comes back at the millimetre it had.
+- **Power and ground ports are the editor's drawings** (`redrawPowerPorts` in
+  `kicadSheet.ts`): the converter's own net symbols were about two and a half
+  times the editor's, on a leaning 5 mm stem, so grounds on neighbouring pins
+  of a chip were drawn over each other and over the labels between them (a
+  user's INA125P board, November 2026). Each library symbol is redrawn from
+  the editor's `ground` and `power` parts with its pin at its origin and its
+  pin name hidden, as KiCad's own power symbols are, and each placed one moves
+  by as much as its pin did.
+- **Texts of the drawing tools take the room they take in the editor**
+  (`editorTextFit`): KiCad's stroke font is wider (its advances, measured from
+  kicad-cli's plot, are `export/kicadFont.ts`), so a line KiCad would draw
+  longer is written with narrower glyphs (`(size H W)`), and a text box of
+  several lines is made taller for KiCad's line pitch (1.61 of the height,
+  where `line_spacing` changes nothing in a sheet). A text box's lines used to
+  wrap out of the bottom of the box. `tests/kicad-sch-page.test.ts` holds both.
 - Its floating point leaves a pin and the wire on it a fraction of a nanometre
   apart, which KiCad reads as one point and other readers do not; numbers are
   rounded to a nanometre (`tidyNumbers`).
@@ -2639,10 +2808,123 @@ that no one editing a board downloads.
   to check each, including that a flag is where KiCad puts the pin (the symbol's
   place plus the pin's place in its library symbol). Not carried: vias in pads,
   via tenting, thermal spoke count and angle (the notes say so).
+- **The parts' 3D models are files of the project** when the export carries
+  them, which the Export dialog does unless unticked: see [3D models in the
+  KiCad and Altium exports](#3d-models-in-the-kicad-and-altium-exports-exportplacedmodelsts).
 - There is no KiCad in this repo's CI. The output was checked with scripts
   that read the files back and report their nets and footprints, and compared
   with the netlist; a real
   KiCad open is still to be done by hand before relying on a release of it.
+
+### Altium (`export/altium/`)
+
+An Altium Designer project, written from the project with no converter: a
+`.SchDoc` for each sheet, a `.PcbDoc` and a `.PrjPcb`, in a zip
+(`altiumZip`, the Export dialog's "Altium project", marked beta there until a file
+has been opened in Altium Designer; `altiumFiles` for the files and their
+notes). Loaded by `import()` when asked for, as the KiCad writer is.
+Like KiCad, Altium is an exit: what it must keep is the board and the circuit.
+
+- **The container** (`cfb.ts`) is a Compound File Binary writer of our own
+  (version 3, 512-byte sectors, the mini stream for streams under 4 KB).
+  Altium opens it with Windows' structured storage, which finds a stream by
+  walking each storage's red-black tree of names, so siblings are a balanced
+  tree in the specification's order (shorter names first, then upper case),
+  black above the last level and red on it.
+- **The board** (`pcbDoc.ts`): a storage per kind of object, each a `Header`
+  (its count) and `Data`. The board, nets, classes, components, polygons and
+  rules are property lists; pads, vias, tracks, arcs, texts and regions binary
+  records **in the layout Altium 13 and 14 save** (a 120-byte pad, a 209-byte
+  via, a 45-byte track, a 56-byte arc, a 230-byte text), which every later
+  Altium reads and which has fewer bytes nobody has named than the 202-byte
+  pad of today's. The layouts are KiCad's Altium importer's
+  (`pcbnew/pcb_io/altium/altium_parser_pcb.cpp`) and AltiumSharp's (Apache
+  2.0, which also writes them); the bytes neither names are as an Altium 14
+  file has them. Everything is moved by a whole number of 100 mils so it is
+  positive, and the board's origin is put on the editor's, so Altium shows the
+  editor's coordinates. The board's shape is `Board6`'s outline (lines and
+  arcs), its holes board cutouts; the layer stack is the legacy `LAYERn` list,
+  copper linked top to bottom.
+  - Pads are round (a pill when its sides differ), rectangles and rounded
+    rectangles, at any angle, with slots and a hole off the copper's centre in
+    the size and shape block. Any other outline (a polygon, a chamfer, a custom
+    pad) is a small pad, tented and out of the stencil, with its copper (on its
+    net), its mask opening and its paste as regions of the part, each grown by
+    its margin as the Gerbers grow it, which is how Altium makes a custom pad.
+    A pad with no mask opening on a side (or tented there) is tented there,
+    and an SMD pad with no paste has a paste expansion as large as itself.
+  - **Regions are in two streams.** A pour's copper is in `Regions6`, naming
+    its polygon; a region of its own (a custom pad's, a filled drawing, a
+    keep-out, a board cutout) is a shape-based region in `ShapeBasedRegions6`,
+    its outline as Altium's vertices. KiCad's importer reads `Regions6` for
+    pour fills only, so those regions were all lost when they were written
+    there. A rule area is a keep-out of the copper it keeps out
+    (`KEEPOUTRESTRICTIONS`: vias, tracks, copper, pads); one that only keeps
+    out or places parts is left out, and the notes say so. KiCad 10.0's reader
+    reads every keep-out as keeping out everything (it looked for a misspelt
+    key); its master reads the restrictions.
+  - A pour is a polygon (outline, net, layer, pour order from the priority)
+    with the editor's fill as its regions, so the board opens poured; Altium
+    repours it by its own rules on request.
+  - Rules: clearance (a pour's own first, then each net class's, then the
+    board's), board outline clearance, widths (net classes and per-net widths
+    as rules of their own), via sizes, hole size, hole to hole, mask and paste
+    expansion, polygon and plane connection, short circuit and unrouted net.
+    A rule's leading u16 is its kind's number (Clearance 0, Width 2,
+    BoardOutlineClearance 63...), read from Altium's own files.
+  - Each part has its designator and comment as texts of the part, its
+    footprint name as `PATTERN`, and `SOURCEUNIQUEID` naming its schematic part
+    (through the sheet symbols above it), which is how Altium pairs the two.
+  - A text is anchored at the bottom-left of its line, moved there from the
+    editor's justification by the width Altium's Default stroke font draws it
+    (`strokeExtent`, its advances from AltiumSharp's `AltiumStrokeFontData`).
+    It used to be 0.9 of a height a character, which put a user's centred
+    22-character silkscreen title 1.3 mm off.
+- **The schematic** (`schDoc.ts`): the `FileHeader` stream, one property list
+  per object, the objects a part owns after it naming it by index. Altium's
+  unit is 10 mils and the editor's 500, so a unit is 50; the drawing is put in
+  the middle of the smallest standard sheet it fits on, on a 100-mil grid.
+  A placed part is written where it is, already turned and mirrored, as Altium
+  stores one. A pin's line (the symbol's two-point path from the port into the
+  body) becomes the pin's length and is not drawn twice; its tip is the
+  project's port. The editor's own symbols keep their pins' names and numbers
+  as texts of the part (Altium's own are hidden); a KiCad symbol's pins show
+  Altium's. Local labels are net labels, hierarchical labels ports (joining the
+  sheet entries of their name), global labels and supplies power ports (global
+  in Altium whatever the project's scope), no-connect flags No ERC marks, and a
+  part's footprint is its implementation by the board's name for it. Blocks
+  are a rectangle and a title. **Texts are as big as the editor draws them,
+  where it draws them**: Altium's font `SIZE` n is a cell of n × 10 mils, 1.117
+  times Arial's em, and the editor's size is the em (`ARIAL_CELL`; a title block
+  Altium saved, AltiumSharp's `SPI Isolator.SchDoc`, fits its texts only at that
+  scale). Fonts were sized at 6 mils a point until November 2026, which drew
+  every text half as big again from where it was anchored: a user's sheet title
+  ran into the line under it and its notes past the page. A text of the drawing
+  tools is one text string a line, each anchored where the editor draws that
+  line (`drawingTextLines`), its border or tint a rounded rectangle, because a
+  text frame lays its lines out by its own pitch and wrapping; a KiCad text box
+  stays a text frame. Nets nothing names are `NetR1_2`, as Altium
+  names them (`altiumNetNames`). Text Windows-1252 cannot hold is written
+  again in UTF-8 (`%UTF8%KEY`) before it, as Altium does.
+- **The parts' 3D models are embedded in the board** when the export carries
+  them (the Export dialog's default): see [3D models in the KiCad and Altium
+  exports](#3d-models-in-the-kicad-and-altium-exports-exportplacedmodelsts).
+- Not carried (the notes say so): pictures, tables and directive
+  labels of a sheet, a sheet's variants, differential pairs, via protection
+  and backdrills. A sheet used twice is one file drawn from its first use.
+- **Tests**: `tests/altium-export.test.ts` reads the files with SheetJS's
+  `cfb` (a dev dependency, not our writer) and a reader of the records as
+  KiCad's importer reads them (`tests/altium/read.ts`), and holds every pad,
+  track, via, pour, rule and part to the project; it rebuilds the schematic's
+  netlist from the records alone (pin tips, wires, labels, ports, sheet
+  entries) and compares it with the project's, pin for pin.
+  `tests/altium-kicad.test.ts` has KiCad 10 import the board
+  (`kicad-cli pcb import --format altium`) and finds every part and pad back
+  in place on its net, and KiCad's DRC finding the same unconnected items and
+  shorts as on the KiCad export; it is skipped without KiCad (`KICAD_CLI`), as
+  in CI. kicad-cli cannot read a `.SchDoc`; python-altium's renderer drew the
+  examples' sheets as the editor does. **Nothing has been opened in Altium
+  Designer yet**: do that by hand before relying on a release of it.
 
 ### Reading Circuit JSON (`model/circuitJsonImport.ts`)
 
@@ -2729,7 +3011,9 @@ has pads with X7 features or states a minimum mask web.
   such file starts with KiCad's copyright and licence notice and the KiCad files it ports). **KiCad's own stroke font is shipped** (listed with the rest of what is ported from KiCad in `THIRD-PARTY-NOTICES.md`):
   `lib/kicadFont/glyphsBase.ts` (U+0020 to U+2FFF) and `glyphsCjk.ts` (U+3000 to U+FFEE), each with KiCad's licence header, written by `tests/kicad-census/emit-newstroke.mjs`, imported only through
   `lib/kicadFont/load.ts` (`loadKicadFont`) when a project has KiCad text: `model/textFont.ts` (`ensureTextFont`), the project store's watch, the import engine and the exports call it. Until it has
-  loaded `editorStrokeFont` is used; the editor's own silkscreen text (`strokeFont.ts`) never uses KiCad's font, so editor-drawn boards are unchanged. A text box's stored rectangle is read by the
+  loaded `editorStrokeFont` is used; the designators the editor places (`strokeFont.ts`) never use KiCad's font. Board text with a side and no layer (the examples' titles, a Circuit
+  JSON import's, text placed early on) is read as text on its side's silkscreen since November 2026 (`silkscreenText` in `textCodec.ts`, project file version 7, so the first copy
+  to open one writes it whole), because nothing could pick, list or edit it, the PCB editor, Sakura and an assistant alike; it is drawn in KiCad's font from then on. A text box's stored rectangle is read by the
   file's version (`BOX_LIB_FRAME_FROM`, 20260616: older files store it as drawn, newer ones unturned), and its knockout is its own node `(knockout yes)`. `${LAYER}`, `${FOOTPRINT_NAME}`,
   `${FOOTPRINT_LIBRARY}` (from `ComponentInstance.fpid`) and `${FILENAME}` resolve from the board. `DesignRules.minViaDiameter` is KiCad's `via_min_size` (absent on a board drawn here; Checks
   `via-size`); a KiCad 4 or 5 board opens with no annular-ring minimum. `model/texts.ts` (variables, world place, ink, knockout polygons, by layer), `textOps.ts` (edits), `textCodec.ts` (compact storage

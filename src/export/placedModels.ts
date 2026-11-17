@@ -15,7 +15,7 @@ import type { StepColor, StepMesh } from "./step"
 // footprint. A part with no model, or whose model can't be read, gets nothing, and the notes say so.
 //
 // The files are reached through a `ModelReader`: the page's (`browserModelReader` in
-// `editor/three/files/library.ts`) or a server's (`mcp/exportFiles.ts`), so this module imports
+// `editor/three/files/library.ts`) or a server's, so this module imports
 // nothing a server can't load.
 
 /** How an export reaches model files. Each rejects with a sentence for the user. */

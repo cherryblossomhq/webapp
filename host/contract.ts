@@ -16,8 +16,7 @@
  * resolve to `free`.
  *
  * `pro`, `ultra` and `max` are the self-serve paid plans. Ultra's and Max's
- * monthly credits are fixed multiples of Pro's (the hosted app's `ULTRA_MULTIPLIER` and
- * `MAX_PLAN_MULTIPLIER`); Ultra also grants the frontier tier,
+ * monthly credits are fixed multiples of Pro's; Ultra also grants the frontier tier,
  * which Pro does not, and Max grants what Ultra does (`PLAN_MODELS` in
  * `@cherryblossom/ai-models`).
  */

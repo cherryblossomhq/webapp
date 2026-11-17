@@ -3,7 +3,7 @@ import { isHierarchical } from "../model/sheets"
 import type { Project } from "../model/types"
 
 // How to design in Cherry Blossom, as a model is told it: Sakura in its system prompt (`copilot.ts`)
-// and an assistant connected through MCP in the server's instructions (`mcp/instructions.ts`). One
+// and an assistant connected through MCP in the server's instructions. One
 // text, so the two can't teach different rules. Sakura's prompt is these sections joined in the
 // order they always were; a change to them is a change to Sakura's prompt, and its cache, too.
 

@@ -63,7 +63,7 @@ const firstName = (name: string) => {
   return name.trim().split(/\s+/)[0] || "Someone"
 }
 
-/** How an AI assistant's lease names its session (`mcp/session.ts`): one call through MCP, rather than a tab. */
+/** How an AI assistant's lease names its session: one call through MCP, rather than a tab. */
 export const ASSISTANT_SESSION_PREFIX = "mcp-"
 
 const byAssistant = (holder: LeaseHolder) => holder.sessionId.startsWith(ASSISTANT_SESSION_PREFIX)

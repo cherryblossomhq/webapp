@@ -10,7 +10,7 @@ import type { Project } from "./types"
 
 /**
  * What every edit is finished with before it is kept, wherever it is made: a commit or a drag in
- * the editor (`store/projectStore.ts`) and a tool an assistant calls through MCP (`mcp/session.ts`).
+ * the editor (`store/projectStore.ts`) and a tool an assistant calls through MCP.
  *
  * Labels with a name `connect` made up take the name of a net the edit joined them to, copper that names its net follows a rename, what an import marked that no longer holds is retired, a net chain loses what an edit deleted, a group loses what an edit deleted (and goes when nothing is left in it), and so does a part's clearance rule.
  * The first three stop at once for an edit that left the schematic alone, the group one for a board with no groups, the clearance rule one for a project with no part's rule, and the classes directive labels give (S8) for a project with none.

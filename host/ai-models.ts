@@ -8,7 +8,7 @@
  */
 
 /** The plans, in the order they are bought up. */
-export type ModelAccessPlan = "free" | "pro" | "ultra" | "enterprise";
+export type ModelAccessPlan = "free" | "pro" | "ultra" | "max" | "enterprise";
 
 export interface ManagedModel {
   id: string;

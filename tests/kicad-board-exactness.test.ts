@@ -545,16 +545,17 @@ describe("B6: every model is kept or named, never dropped", () => {
     expect(r.status === "imported" && r.project.models![0].model.id).toBe("10.0.7/Diode_SMD.3dshapes/D_SMB.step")
   })
   it("M3: a name the parts index cannot serve is named with its path, not left out in silence", () => {
-    expect(stockModelId("${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603.wrl")).toBeNull()
-    expect(stockModelId("Capacitors_SMD.3dshapes/C_0603.wrl")).toBeNull()
+    // KiCad 4's hand-soldering variant: no model of that name, and no alias (`C_0603` alone is one now).
+    expect(stockModelId("${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl")).toBeNull()
+    expect(stockModelId("Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl")).toBeNull()
     expect(stockModelId("${KISYS3DMOD}/Capacitor_SMD.3dshapes/C_0603_1608Metric.wrl")).toBe("10.0.7/Capacitor_SMD.3dshapes/C_0603_1608Metric.step")
     expect(stockModelId("${KICAD6_3DMODEL_DIR}/Resistor_SMD.3dshapes/R_0603_1608Metric.step")).toBe("10.0.7/Resistor_SMD.3dshapes/R_0603_1608Metric.step")
-    const r = importKicadBoard(board({ body: [fp("C1", [m("${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603.wrl")]), fp("C2", [m("Capacitors_SMD.3dshapes/C_0603.wrl")])] }), { built: ALL })
+    const r = importKicadBoard(board({ body: [fp("C1", [m("${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl")]), fp("C2", [m("Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl")])] }), { built: ALL })
     expect(r.status).toBe("imported")
     if (r.status !== "imported") return
     const e = r.report.entries.filter((x) => x.code === "model-not-brought")
-    expect(e.map((x) => x.object).sort()).toEqual(["3D model Capacitors_SMD.3dshapes/C_0603.wrl of C2", "3D model ${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603.wrl of C1"].sort())
-    expect(e.every((x) => /has no Capacitors_SMD.3dshapes\/C_0603.step/.test(x.why))).toBe(true)
+    expect(e.map((x) => x.object).sort()).toEqual(["3D model Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl of C2", "3D model ${KISYS3DMOD}/Capacitors_SMD.3dshapes/C_0603_HandSoldering.wrl of C1"].sort())
+    expect(e.every((x) => /has no Capacitors_SMD.3dshapes\/C_0603_HandSoldering.step/.test(x.why))).toBe(true)
   })
   it("a model KiCad stretches is held stretched, and the export writes the same scale back", async () => {
     const tall = "${KICAD6_3DMODEL_DIR}/Capacitor_THT.3dshapes/CP_Radial_D10.0mm_P5.00mm.wrl"

@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "A browser-based schematic and PCB editor: schematic capture, layout, autorouting, copper pours, checks, a 3D view, and Gerber, KiCad and STEP export.",
+  "description": "An open-source schematic and PCB editor in the browser, built for AI: schematic capture, layout, autorouting, copper pours, checks, a 3D view, and Gerber, KiCad, Altium and STEP export.",
   "keywords": [
     "pcb",
     "schematic",
@@ -14,6 +14,9 @@
     "circuit-design",
     "gerber",
     "kicad",
+    "altium",
+    "ai",
+    "mcp",
     "editor"
   ],
   "homepage": "https://github.com/cherryblossomhq/webapp#readme",

@@ -7,9 +7,10 @@
 <h1 align="center">Cherry Blossom</h1>
 
 <p align="center">
-  <b>A schematic and PCB editor that runs in your browser.</b><br>
-  Draw the schematic, lay out and route the board, check it, see it in 3D,<br>
-  and export Gerbers, KiCad and STEP. Open source, no install, no account.
+  <b>Build PCBs with AI, in an open-source editor that runs in your browser.</b><br>
+  Describe a board to Claude, ChatGPT, Cursor, Codex or Sakura, our copilot: it picks real parts,<br>
+  draws the schematic, lays out and routes the board, and checks its own work.<br>
+  Then take it from there by hand, and export Gerbers, KiCad, Altium and STEP.
 </p>
 
 <p align="center">
@@ -18,11 +19,13 @@
   <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react&logoColor=black">
   <img alt="Vite 7" src="https://img.shields.io/badge/Vite-7-646cff?style=flat-square&logo=vite&logoColor=white">
   <img alt="5,000+ tests" src="https://img.shields.io/badge/tests-5%2C000%2B-2f8a57?style=flat-square">
+  <img alt="MCP server for your own AI" src="https://img.shields.io/badge/MCP-your%20own%20AI-8b5cf6?style=flat-square">
   <img alt="Status: early" src="https://img.shields.io/badge/status-early-d69e2e?style=flat-square">
 </p>
 
 <p align="center">
   <a href="https://www.trycherryblossom.com/app"><b>Open the hosted app</b></a> ·
+  <a href="https://www.trycherryblossom.com/docs/mcp"><b>Connect your AI</b></a> ·
   <a href="https://www.trycherryblossom.com">trycherryblossom.com</a> ·
   <a href="https://github.com/cherryblossomhq/webapp/issues">Report a bug</a>
 </p>
@@ -36,16 +39,19 @@
 </p>
 
 > [!NOTE]
-> **This is the editor behind [trycherryblossom.com](https://www.trycherryblossom.com).**
-> The hosted app adds accounts, projects in the cloud that you share and edit
-> together, version history, supplier part data, KiCad's 3D models and
-> **Sakura**, an AI copilot that builds circuits from a sentence. Everything in
-> this repository — the whole editor, by hand — runs locally with no backend.
+> **This is the editor behind [trycherryblossom.com](https://www.trycherryblossom.com), and the tools AI designs with in it.**
+> Every action an AI takes on a board, from finding a part to routing the PCB,
+> is a tool in this repository ([`src/ai`](src/ai)), run on the same document
+> model and held to the same rules as your own edits. The hosted app connects
+> the AI (your own assistant over MCP, or Sakura) and adds accounts, projects in
+> the cloud that you share and edit together, version history, supplier part
+> data and KiCad's 3D models. Everything in this repository, the whole editor
+> by hand, runs locally with no backend.
 
 <p align="center">
+  <a href="#build-pcbs-with-ai">Build PCBs with AI</a> ·
   <a href="#features">Features</a> ·
   <a href="#everything-in-the-box">Everything in the box</a> ·
-  <a href="#sakura-the-ai-copilot">Sakura</a> ·
   <a href="#under-the-hood">Under the hood</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#contributing">Contributing</a> ·
@@ -57,25 +63,145 @@
 <table>
   <tr>
     <td width="25%" valign="top">
+      <h3>🤖 Built for AI</h3>
+      Describe a board and an AI picks real parts, wires the schematic, places and routes the PCB and runs the checks, with tools that refuse to short a net. Every step is an ordinary edit you can see, change or roll back.
+    </td>
+    <td width="25%" valign="top">
       <h3>📐 Drawn like a sheet</h3>
       KiCad's proportions on a 50 mil grid, named blocks, net labels and power ports. Tidy redraws a messy sheet as an engineering drawing in one keystroke, without changing what's connected.
     </td>
     <td width="25%" valign="top">
-      <h3>⚡ Routed in seconds</h3>
-      Automatic placement that knows a regulator's power stage, an autorouter with net classes, per-net widths and fine-pitch escapes, and copper pours and zones with thermals and stitching vias.
-    </td>
-    <td width="25%" valign="top">
-      <h3>✅ Checked before you order</h3>
-      Clearance, shorts, unrouted nets, courtyards, annular rings and the rest of the design rules, plus electrical checks that catch an LED with no resistor.
+      <h3>⚡ Routed and checked</h3>
+      Placement that knows a regulator's power stage, an autorouter with net classes, per-net widths and fine-pitch escapes, copper pours with thermals, and design rule and electrical checks before you order.
     </td>
     <td width="25%" valign="top">
       <h3>📦 KiCad in, fab files out</h3>
-      Import a KiCad project, board or schematic. Export Gerbers, Excellon drill, BOM and pick-and-place in one zip, with fabrication notes, or take the board elsewhere: KiCad, Circuit JSON and STEP.
+      Import a KiCad project, board or schematic. Export Gerbers, drill, BOM and pick-and-place in one zip, or take the board elsewhere: KiCad, Altium, Circuit JSON and STEP.
     </td>
   </tr>
 </table>
 
 <br>
+
+## Build PCBs with AI
+
+Cherry Blossom is an editor made for AI to design in, not a chat box bolted onto
+one. The schematic, the board and the checks are one typed model, and every
+action an AI can take is a tool with rules it can't break: it can't short two
+nets, cut a pin loose or guess a pinout without saying so. When it tries, the
+tool refuses with a sentence saying why, and the AI tries again. What you get
+back is an ordinary project: a schematic you can read, a board you can edit,
+and files a fab will take.
+
+There are two ways to bring the AI:
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🔌 Your own AI, over MCP</h3>
+      <b>Claude, ChatGPT, Claude Code, Codex, Cursor</b> or any MCP client gets Sakura's tools on your projects, through the hosted app's MCP server. It runs on the AI subscription you already pay for, so it's <b>free on every plan</b>, Free included.
+      <br><br>
+      Its edits land live in any editor tab that has the project open, like a collaborator's, so you can watch the board come together.
+      <br><br>
+      <a href="https://www.trycherryblossom.com/docs/mcp"><b>Setup guide →</b></a>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🌸 Sakura, the copilot in the editor</h3>
+      Nothing to install or connect: open a project and ask. Sakura searches the web and reads datasheets, builds the parts the library doesn't have from supplier data, wires and tidies the sheet, places and routes the board, runs the checks and looks at its own work before it reports.
+      <br><br>
+      Every change it makes can be undone like your own, and your chats are kept with each project. Included from the <b>Pro</b> plan.
+      <br><br>
+      <a href="https://www.trycherryblossom.com/app"><b>Open the app →</b></a>
+    </td>
+  </tr>
+</table>
+
+### Connect your AI in a minute
+
+**Claude Code, Codex and Cursor:** the [Cherry Blossom plugin](https://github.com/cherryblossomhq/skills)
+adds the MCP server and skills that teach your agent how to work in Cherry Blossom.
+
+```bash
+# Claude Code: then run /mcp in Claude Code to sign in
+claude plugin marketplace add cherryblossomhq/skills
+claude plugin install cherryblossom@cherryblossom
+
+# Codex: it opens the sign-in in your browser
+codex plugin marketplace add cherryblossomhq/skills
+codex plugin add cherryblossom@cherryblossom
+
+# Cursor: then Developer: Reload Window, and sign in from Cursor's MCP settings
+git clone https://github.com/cherryblossomhq/skills ~/.cursor/plugins/local/cherryblossom
+```
+
+**Claude, ChatGPT and any other MCP client:** add this URL as a custom
+connector (a remote MCP server, Streamable HTTP, with OAuth sign-in). Your
+assistant opens Cherry Blossom's sign-in; sign in and allow it. There is no API
+key to make or paste.
+
+```text
+https://www.trycherryblossom.com/api/mcp
+```
+
+The [setup guide](https://www.trycherryblossom.com/docs/mcp) has every client's
+steps. Then ask:
+
+> Make a new Cherry Blossom project for a 555 LED blinker, lay out and route the board, and check it.
+
+> Export the Gerbers for my LED blinker.
+
+### What the AI can do
+
+- **Start from a sentence.** Create a project, find real parts by value, package
+  or part number, read their datasheets, and build any part the library doesn't
+  have from supplier data, its pins and land pattern checked against the
+  supplier's (`find_part`, `search_parts`, `read_datasheet`, `create_part`).
+- **Draw the schematic.** Place parts, connect pins and name nets, group a
+  circuit into blocks, and tidy the sheet into a drawing an engineer can read,
+  across hierarchical sheets (`add_component`, `connect`, `group_parts`,
+  `tidy_schematic`).
+- **Lay out and route the board.** Set the outline and the stackup, place parts
+  by what they do (each decoupling capacitor at the pin it serves), size traces
+  for their current, autoroute, pour ground, and draw a trace by hand where it
+  matters (`set_board`, `layout_pcb`, `set_net_width`, `route_pcb`, `set_pour`,
+  `draw_trace`).
+- **Check its own work.** Run the design rule and electrical checks, and `look`
+  at the schematic or the board: a picture with the numbers behind it
+  (overlaps, wires through symbols, unconnected pins, parts off the board,
+  unrouted connections), so it fixes what it sees before it reports.
+- **Save and go back.** Name a version before a big change and restore it if
+  the change goes wrong (`save_version`, `restore_version`).
+- **Hand you the files.** Fabrication files, the BOM and pick-and-place, a KiCad
+  or Altium project with its 3D models, a STEP model or the project file, as a
+  download link (`export_files`, over MCP).
+
+### Why the boards come out right
+
+- **Nets are sacred.** Every tool call is checked against the netlist. An edit
+  that would join two nets nobody asked to join, or leave a pin loose, is
+  refused with the pins and nets named, and changes nothing
+  ([`src/model/merges.ts`](src/model/merges.ts)).
+- **Real parts, not remembered ones.** Parts come from supplier data when a
+  supplier has them; a part made from memory is marked unverified, and the
+  checks say so.
+- **It sees what it made.** `look` draws the sheet or the board as you see it,
+  and the checks point at each problem by part, pin and place.
+- **One design guide for every AI.** Sakura's prompt and the MCP server's
+  instructions are built from the same guide
+  ([`src/ai/designGuide.ts`](src/ai/designGuide.ts)): how to group a circuit,
+  decouple a chip, wire a block a reader can follow, and route a board, so your
+  own assistant designs by the same rules as Sakura.
+- **Its edits are your edits.** The same document model and the same rules as
+  your own. Sakura's steps are on your undo stack; your own assistant's land
+  live like a collaborator's, and it saves a version before a big change that
+  you can go back to. Nothing the AI makes is a black box you have to accept or
+  throw away.
+
+Sakura's tools, agent loop and design guide are in this repository
+([`src/ai`](src/ai)) and run in the browser; the models, the MCP server and the
+supplier data they call are the hosted app's. A local build has no session, so
+its Sakura panel offers to sign in at the hosted app instead of calling
+anything.
 
 ## Features
 
@@ -100,6 +226,8 @@ Every screenshot here is the editor as it runs from this repository, on its ship
       Auto-placement puts each decoupling capacitor beside the pin it serves, and a regulator's capacitors, inductor and feedback divider at its pins. The autorouter runs A* on every copper layer with vias, net-aware clearances, KiCad's hole clearance and per-net trace widths, takes up and re-lays what blocks a connection it left open, and keeps the copper you routed by hand.
       <br><br>
       Interactive routing with 45° bends, arcs and vias, traces reshaped by dragging their segments and corners, up to 32 copper layers with blind and buried vias, bottom-side parts, any board outline, mounting holes, text in KiCad's own font, dimensions, and pours and zones with thermal spokes and stitching vias.
+      <br><br>
+      The layer you work on is drawn in front, the others softer, dimmed or hidden (<code>⇧S</code>), and pours filled, outlined or off. Double-click where tracks, pads and silkscreen overlap and pick the one you meant from a list, as Altium does.
     </td>
   </tr>
   <tr>
@@ -124,11 +252,11 @@ Every screenshot here is the editor as it runs from this repository, on its ship
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/export.jpg" alt="The Export menu open over a schematic: Fabrication files, Bill of materials, Pick and place, Circuit JSON, KiCad project, 3D model (STEP) and Project file" width="100%">
+      <img src="docs/images/export.jpg" alt="The Export dialog open over the ESP32 robot controller: formats grouped as Manufacturing, Other tools, Mechanical and Project, with Fabrication files selected, what its zip holds, and a note that the checks pass with no DRC errors and nothing unrouted" width="100%">
       <br>
-      <sub>Everything a fab, an assembler or another tool needs, from one menu.</sub>
+      <sub>Everything a fab, an assembler or another tool needs, and what the board still lacks, before you download.</sub>
       <h3>Take it anywhere</h3>
-      RS-274X Gerbers with pours, mask and paste, Excellon drill with slots, a BOM, pick-and-place and fabrication notes, zipped. A KiCad 9 project with the rules and net classes carried over, Circuit JSON for tscircuit, and the whole board as a STEP assembly for mechanical CAD.
+      RS-274X Gerbers with pours, mask and paste, Excellon drill with slots, a BOM, pick-and-place and fabrication notes, zipped. A KiCad 9 project with the rules and net classes carried over, an Altium Designer project (beta), each with the parts' 3D models, Circuit JSON for tscircuit, and the whole board as a STEP assembly for mechanical CAD. The Export dialog says what each file holds and what the board still needs before it's made.
       <br><br>
       <b>KiCad in, too.</b> A KiCad project, board or schematic imports with its sheets, buses, zones, net classes and rules (KiCad 6 and later, and the schematics of KiCad 4 and 5). What the editor can't hold yet is named in a report, never dropped quietly, and the original files are kept with the project.
     </td>
@@ -162,37 +290,20 @@ Every screenshot here is the editor as it runs from this repository, on its ship
       <h4>✏️ Schematic</h4>
       Wires · net labels · global labels and ports · power and ground ports · junctions · no-connect flags · blocks · hierarchical sheets with entries drawn by hand · pages with a border, zones and a title block that fills itself in · buses · variants · text, lines, arrows, polygons and rectangles for titles and notes · copy, paste and duplicate · Tidy · Clean up · rotate, flip and drag with nets kept intact.
       <h4>🟥 PCB</h4>
-      Auto-place · re-pack · autoroute on every layer · interactive routing · trace reshaping · arcs · vias · up to 32 copper layers · net classes · per-net widths · copper pours and zones · keepouts · thermal spokes · stitching vias · locked parts and copper · any board outline, cutouts, mounting holes · dimensions · reference images · stackup, copper weight, finish, mask and silkscreen colours · design rules in mm or mil.
+      Auto-place · re-pack · autoroute on every layer · interactive routing · trace reshaping · arcs · vias · up to 32 copper layers · net classes · per-net widths · copper pours and zones · keepouts · thermal spokes · stitching vias · locked parts and copper · any board outline, cutouts, mounting holes · dimensions · reference images · other layers shown, dimmed or hidden · a pick list where things overlap · designators moved, hidden or reset · stackup, copper weight, finish, mask and silkscreen colours design rules in mm or mil.
     </td>
     <td width="33%" valign="top">
       <h4>📤 Exports</h4>
-      Gerber RS-274X · Excellon drill · BOM CSV · pick-and-place CSV · fabrication notes · KiCad 9 project · Circuit JSON · STEP AP214 assembly · PNG from the 3D view · the project file.
+      Gerber RS-274X · Excellon drill · BOM CSV · pick-and-place CSV · fabrication notes · KiCad 9 project with 3D models · Altium Designer project with 3D models (beta) · Circuit JSON · STEP AP214 assembly · PNG from the 3D view · the project file.
       <h4>⌨️ Shortcuts</h4>
       Schematic: <code>W</code> wire · <code>L</code> label · <code>B</code> block · <code>R</code> rotate · <code>T</code> tidy · <code>⌘G</code> group.<br>
-      PCB: <code>W</code> route · <code>V</code> via · <code>L</code> layer · <code>F</code> flip.<br>
+      PCB: <code>W</code> route · <code>V</code> via · <code>L</code> layer · <code>F</code> flip · <code>⇧S</code> other layers.<br>
       Both: <code>⌘Z</code> undo · <code>[</code> <code>]</code> panels. The full list is in <a href="AGENTS.md#shortcuts">AGENTS.md</a>.
     </td>
   </tr>
 </table>
 
 <br>
-
-## Sakura, the AI copilot
-
-The hosted app at [trycherryblossom.com](https://www.trycherryblossom.com/app) adds **Sakura**:
-describe a circuit or a change, and it picks parts, builds the ones the library
-doesn't have from supplier data, places and wires them, groups and annotates the
-sheet, lays out and routes the board, runs the checks, and looks at its own work
-before it reports. Every step is an ordinary edit you can undo.
-
-Sakura's tools and agent loop are in this repository (`src/ai`), and run in the
-browser; the models and the supplier data they call are the hosted app's. A local
-build has no session, so its Sakura panel offers to sign in at the hosted app
-instead of calling anything.
-
-The hosted app also gives an AI assistant you already use (Claude, ChatGPT,
-Cursor, Claude Code or any MCP client) Sakura's tools on your projects, through
-its MCP server. That server is part of the hosted app, not this repository.
 
 ## Under the hood
 
